@@ -5531,6 +5531,95 @@ mod agent_door {
             no_credential_on(&posts, "the relayed hop");
         }
 
+        /// EACH AGENT'S OWN CREDENTIAL, NEVER ITS NEIGHBOUR'S (predev `creds.rs` `Lease::header_for`:
+        /// a lease minted for one agent refuses a hop to another, `LeaseError::WrongAgent`; R5: an
+        /// agent with no `upstream_credential` is dialled with none). Three agents share ONE origin:
+        /// `planner` and `summarizer` with different secrets, `scout` with none. Every request
+        /// reaching an agent's own path — its relayed hop and busbar's own originated requests (the
+        /// `ListTasks` refresh, the push-config mirror) — carries that agent's credential and no
+        /// other. RED: the door's own requests were bound by origin alone, the last member bound at
+        /// it winning, so `planner`'s and `scout`'s originated requests carried `summarizer`'s
+        /// bearer.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn agents_sharing_an_origin_each_present_only_their_own_credential() {
+            let _one = PUBLISHING.lock().await;
+            let instance = "serve-agent-cred-shared-origin";
+            let _published = Published(instance);
+            let planner = secret_file("shared-planner", "planner-secret");
+            let summarizer = secret_file("shared-summarizer", "summarizer-secret");
+            let agent = Recorded::start(WORKING).await;
+            let entry = |name: &str, credential: Option<String>| {
+                let credential = credential
+                    .map(|c| format!(", upstream_credential: {c}"))
+                    .unwrap_or_default();
+                format!(
+                    "{name}: {{url: 'http://127.0.0.1:{}/{name}', allow_private: true, \
+                     reverify_ttl: '1h', pin: {{mechanism: jws_issuer_key, key: \
+                     '{}'}}{credential}}}",
+                    agent.port,
+                    key_info(&agent.issuer)
+                )
+            };
+            let section = [
+                entry("planner", Some(own(&planner, "bearer"))),
+                entry("summarizer", Some(own(&summarizer, "bearer"))),
+                entry("scout", None),
+            ]
+            .join("\n");
+            let s = served(instance, &section, false, None);
+            for (name, expected) in [
+                ("planner", Some("Bearer planner-secret".to_string())),
+                ("summarizer", Some("Bearer summarizer-secret".to_string())),
+                ("scout", None),
+            ] {
+                approve(&s, name).await;
+                no_credential_on(&split(agent.take()).0, "connect's card fetch");
+                let at = format!("/{name} ");
+                let mut heard = Vec::new();
+                let (status, body) =
+                    answered(&s.router, rpc(name, "message/send", SEND, Some(&s.token))).await;
+                assert_eq!(status, StatusCode::OK, "{name}: {body}");
+                let task = task_of(&body);
+                heard.extend(split(agent.take()).1);
+                let (status, body) =
+                    answered(&s.router, rpc(name, "tasks/list", "{}", Some(&s.token))).await;
+                assert_eq!(status, StatusCode::OK, "{name}: {body}");
+                heard.extend(split(agent.take()).1);
+                let set = format!(
+                    r#"{{"taskId":"{task}","pushNotificationConfig":{{"url":"https://93.184.215.14/cb"}}}}"#
+                );
+                let (status, body) = answered(
+                    &s.router,
+                    rpc(
+                        name,
+                        "tasks/pushNotificationConfig/set",
+                        &set,
+                        Some(&s.token),
+                    ),
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK, "{name}: {body}");
+                heard.extend(split(agent.take()).1);
+                assert!(
+                    heard.iter().any(|p| p.contains("ListTasks")),
+                    "{name}: busbar refreshed the agent's task list: {heard:?}"
+                );
+                assert!(
+                    heard
+                        .iter()
+                        .any(|p| p.contains("CreateTaskPushNotificationConfig")),
+                    "{name}: busbar mirrored its own callback onto the agent: {heard:?}"
+                );
+                for post in &heard {
+                    assert!(post.contains(&at), "{name}: only its own path: {post}");
+                    assert_eq!(header(post, "authorization"), expected, "{name}: {post}");
+                    assert_eq!(header(post, "x-api-key"), None, "{name}: {post}");
+                }
+            }
+            let _ = std::fs::remove_file(&planner);
+            let _ = std::fs::remove_file(&summarizer);
+        }
+
         /// ROTATION: the secret's source changes between two hops; the very next hop presents the
         /// new value (re-resolved per hop, as predev minted a lease per hop).
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
