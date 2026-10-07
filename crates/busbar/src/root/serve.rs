@@ -559,11 +559,23 @@ impl DoorApply {
     /// A plane that will not refresh keeps serving its current generation, logged.
     pub fn apply(&self, app: &busbar_kernel::state::App) {
         let now = self.current();
+        // THE SECTION AS BOOT BUILDS IT: the slot's section as written, with the generation's
+        // unified pools at its reserved `pools` key ([`with_pools`]); the plane is handed it with
+        // the core-owned `work:` struck ([`plane_settings`]).
         let section = app
             .plane_slots
             .get(self.facts.plane.as_str())
             .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
-            .map_or_else(|| now.section.clone(), |s| s.section.value.clone());
+            .map_or_else(
+                || now.section.clone(),
+                |s| {
+                    applied_section(
+                        s.section.section,
+                        &s.section.value,
+                        &installed_door_pools(app),
+                    )
+                },
+            );
         match self.refreshed(&section, now.generation + 1, &*app.secret_resolver) {
             Ok(next) => {
                 *self
@@ -591,11 +603,7 @@ impl DoorApply {
         generation: u64,
         secrets: &dyn busbar_contract::secret::SecretResolve,
     ) -> Result<DoorLive, String> {
-        let settings = if section.is_null() {
-            Vec::new()
-        } else {
-            serde_json::to_vec(section).map_err(|e| format!("its section: {e}"))?
-        };
+        let settings = plane_settings(section)?;
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
             &settings,
@@ -822,19 +830,63 @@ impl HookStage {
 #[must_use]
 pub fn with_pools(
     mut sections: BTreeMap<&'static str, serde_yaml::Value>,
-    pools: &[(
-        &'static str,
-        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
-    )],
+    pools: &DoorPoolsByKey,
 ) -> BTreeMap<&'static str, serde_yaml::Value> {
+    for (key, section) in &mut sections {
+        inject_pools(key, section, pools);
+    }
+    sections
+}
+
+/// The unified pools each door section carries at its reserved `pools` key, by section key.
+pub type DoorPoolsByKey = [(
+    &'static str,
+    BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+); 2];
+
+/// The door sections' unified pools as the generation `tools`/`agents` resolved them, by section
+/// key: the one table boot ([`with_pools`]) and a config apply ([`DoorApply::apply`]) both inject
+/// from, so a door plane's section is built the same way on both paths (audit root-R1 leftover C1).
+#[must_use]
+pub fn door_pools(
+    tools: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    agents: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+) -> DoorPoolsByKey {
+    [
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+            tools.clone(),
+        ),
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+            agents.clone(),
+        ),
+    ]
+}
+
+/// [`door_pools`] read off an installed generation: the pools a config apply resolved.
+#[must_use]
+pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
+    let none = BTreeMap::new();
+    let agents = busbar_kernel::plane::registry::plane_decl_for_config_section(
+        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+    )
+    .and_then(|decl| app.plane_pools(decl.key))
+    .unwrap_or(&none);
+    door_pools(&app.tool_pools, agents)
+}
+
+/// Put the unified pools `pools` names for section `key` at the section's reserved `pools` key. A
+/// section with no pools, or one that is not a map, is left as it is.
+fn inject_pools(key: &str, section: &mut serde_yaml::Value, pools: &DoorPoolsByKey) {
     use busbar_contract::section::{
         POOL_MEMBERS_KEY, POOL_MEMBER_GRANTED_KEY, POOL_REPEATABLE_KEY, RESERVED_POOLS_KEY,
     };
-    for (key, stated) in pools {
-        if stated.is_empty() {
+    for (owner, stated) in pools {
+        if *owner != key || stated.is_empty() {
             continue;
         }
-        let Some(serde_yaml::Value::Mapping(section)) = sections.get_mut(key) else {
+        let serde_yaml::Value::Mapping(section) = section else {
             continue;
         };
         let mut map = serde_yaml::Mapping::new();
@@ -860,7 +912,32 @@ pub fn with_pools(
         }
         section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
     }
-    sections
+}
+
+/// A config apply's section for the door plane serving `key`: the section as written, with the
+/// generation's unified pools injected exactly as boot injects them ([`with_pools`]).
+fn applied_section(
+    key: &str,
+    written: &serde_yaml::Value,
+    pools: &DoorPoolsByKey,
+) -> serde_yaml::Value {
+    let mut section = written.clone();
+    inject_pools(key, &mut section, pools);
+    section
+}
+
+/// THE SETTINGS A DOOR PLANE IS HANDED for its section: the section as JSON with the core-owned
+/// `work:` bounds struck (the kernel reads them; the plane never sees them). The one rule `open`
+/// and a config apply's refresh both apply (audit root-R1 leftover C1).
+fn plane_settings(section: &serde_yaml::Value) -> Result<Vec<u8>, String> {
+    if section.is_null() {
+        return Ok(Vec::new());
+    }
+    let mut section = section.clone();
+    if let Some(map) = section.as_mapping_mut() {
+        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
+    }
+    serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))
 }
 
 /// WHAT A DOOR PLANE'S EGRESS IS SEALED OVER: how its members are reached ([`DoorReach`]) and the
@@ -1157,11 +1234,11 @@ fn open(
     owned: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
-    let mut section = section.clone();
-    if let Some(map) = section.as_mapping_mut() {
-        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
-    }
-    let settings = serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))?;
+    let settings = if section.is_null() {
+        b"null".to_vec()
+    } else {
+        plane_settings(section)?
+    };
     let owned = if owned.is_empty() {
         Vec::new()
     } else {
