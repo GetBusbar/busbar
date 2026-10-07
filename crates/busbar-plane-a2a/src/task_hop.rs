@@ -26,6 +26,7 @@
 //! door ([`Callback`]), which holds it in plane memory as the engine's delivery does.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 
@@ -356,6 +357,91 @@ fn translated(
     }))
 }
 
+/// The four error-once latches of the refused record writes, one per condition as predev held them
+/// (`receive.rs` `RELAYED_OUTCOME_UNRECORDED_WARNED`, `STREAM_OUTCOME_UNRECORDED_WARNED`,
+/// `RESUME_CURSOR_UNRECORDED_WARNED`, `FAILURE_UNRECORDED_WARNED`): a store outage persists across
+/// every relayed outcome, so the first refusal of a kind is an error and the rest hold at debug.
+pub(crate) struct Latches {
+    relayed: AtomicBool,
+    streamed: AtomicBool,
+    cursor: AtomicBool,
+    failure: AtomicBool,
+}
+
+impl Latches {
+    pub(crate) const fn new() -> Self {
+        Self {
+            relayed: AtomicBool::new(false),
+            streamed: AtomicBool::new(false),
+            cursor: AtomicBool::new(false),
+            failure: AtomicBool::new(false),
+        }
+    }
+}
+
+static LATCHES: Latches = Latches::new();
+
+/// Emit the diagnostic at error the first time `latch` is tripped and at debug after that.
+macro_rules! latched {
+    ($latch:expr, $diag:expr, $($rest:tt)*) => {
+        if !$latch.swap(true, Ordering::Relaxed) {
+            busbar_contract::diag_error!($diag, $($rest)*)
+        } else {
+            busbar_contract::diag_debug!($diag, $($rest)*)
+        }
+    };
+}
+
+/// A record write the store refused, reported and never fatal: the hop SUCCEEDED, the caller is
+/// owed its answer, and the stream keeps flowing. The words are predev's, line for line.
+pub(crate) enum Refused {
+    /// The unary hop's reported state (predev `receive.rs` `record_state`, l.3239).
+    Relayed,
+    /// A streamed event's state (predev l.2965).
+    Streamed(TaskState),
+    /// The hop's task ended `failed` (predev `end_task`, l.3508).
+    Failure,
+    /// The artifact resume cursor (predev `advance_resume_cursor`, l.3198).
+    Cursor,
+}
+
+impl Refused {
+    pub(crate) fn report(&self, latches: &Latches, task: &str, error: &str) {
+        use crate::diagnostics::{A2A_FAILURE_UNRECORDED, A2A_RELAYED_OUTCOME_UNRECORDED};
+        match self {
+            Self::Relayed => latched!(
+                latches.relayed,
+                A2A_RELAYED_OUTCOME_UNRECORDED,
+                task = %task,
+                error = %error,
+                "a2a: the relayed task's outcome could not be recorded"
+            ),
+            Self::Streamed(state) => latched!(
+                latches.streamed,
+                A2A_RELAYED_OUTCOME_UNRECORDED,
+                task = %task,
+                state = %state.as_str(),
+                error = %error,
+                "a2a: a streamed task transition could not be recorded"
+            ),
+            Self::Failure => latched!(
+                latches.failure,
+                A2A_FAILURE_UNRECORDED,
+                task = %task,
+                error = %error,
+                "a2a: a failed task could not be recorded as failed"
+            ),
+            Self::Cursor => latched!(
+                latches.cursor,
+                A2A_RELAYED_OUTCOME_UNRECORDED,
+                task = %task,
+                error = %error,
+                "a2a: a streamed task's artifact resume cursor could not be recorded"
+            ),
+        }
+    }
+}
+
 /// SETTLE `task` on what its answer said; the record writes go to `out`. A write the store refuses
 /// is not the caller's failure: the answer stands. A relayed event settles as it passes: the state
 /// it reported, then the artifact it carried (the resume cursor, one chunk on), each chained over
@@ -394,7 +480,14 @@ pub fn settle(
         };
         match transitioned {
             Err(Halt::Pending) => return Err(Halt::Pending),
-            Err(Halt::Failed(_)) => {}
+            Err(Halt::Failed(words)) => {
+                let refused = match settled {
+                    Settled::Failed => Refused::Failure,
+                    Settled::Reported { .. } => Refused::Relayed,
+                    Settled::Event { .. } => Refused::Streamed(to),
+                };
+                refused.report(&LATCHES, &task.task_id, &words);
+            }
             Ok(row) => {
                 out.extend(step);
                 moved = row;
@@ -409,7 +502,7 @@ pub fn settle(
         };
         match bumped {
             Err(Halt::Pending) => return Err(Halt::Pending),
-            Err(Halt::Failed(_)) => {}
+            Err(Halt::Failed(words)) => Refused::Cursor.report(&LATCHES, &task.task_id, &words),
             Ok(_) => out.extend(step),
         }
     }

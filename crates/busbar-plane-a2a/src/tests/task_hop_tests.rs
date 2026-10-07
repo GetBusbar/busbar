@@ -1021,3 +1021,25 @@ fn a_transition_the_store_refuses_is_surfaced_and_the_answer_stands() {
         );
     }
 }
+
+/// **ERROR ONCE, THEN DEBUG**, per condition, as predev latched it (`receive.rs:3195-3201`): the
+/// first refusal of a kind is logged at ERROR and every one after it at DEBUG; a different kind has
+/// its own latch. The latches here are the test's own, so the order is not the process's.
+#[test]
+fn a_refused_write_is_an_error_the_first_time_and_debug_after() {
+    use tracing::Level;
+    let latches = Latches::new();
+    let (sent, heard) = std::sync::mpsc::channel();
+    tracing::subscriber::with_default(Capture(sent), || {
+        Refused::Cursor.report(&latches, "t1", "no such task");
+        Refused::Cursor.report(&latches, "t1", "no such task");
+        Refused::Cursor.report(&latches, "t2", "no such task");
+        Refused::Relayed.report(&latches, "t1", "no such task");
+    });
+    let levels: Vec<Level> = heard.try_iter().map(|(level, _)| level).collect();
+    assert_eq!(
+        levels,
+        [Level::ERROR, Level::DEBUG, Level::DEBUG, Level::ERROR],
+        "error on the first refusal of a kind, debug on the rest"
+    );
+}
