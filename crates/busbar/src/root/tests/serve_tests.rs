@@ -5163,6 +5163,37 @@ mod agent_door {
             state.contains("rejected"),
             "[{line}] a breaker refusal is `rejected`, never `failed`: {row}"
         );
+        // The other half of predev's visible behaviour: `GetTask` is relayed to the agent
+        // (predev relay.rs:943), so with the breaker open `tasks/get` on the refusal's id is
+        // refused in the breaker's words, `503` + `Retry-After`, and never dialled; the row is
+        // read through `ListTasks` (predev local.rs:235-264, busbar's own store).
+        let get = format!(r#"{{"id":"{task}"}}"#);
+        let response = {
+            use tower::ServiceExt as _;
+            s.router
+                .clone()
+                .oneshot(rpc("planner", "tasks/get", &get, Some(&s.token)))
+                .await
+                .expect("answers")
+        };
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "[{line}]"
+        );
+        assert!(
+            response.headers().get("retry-after").is_some(),
+            "[{line}] the relayed read carries Retry-After"
+        );
+        let refused = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("body");
+        let refused = String::from_utf8_lossy(&refused);
+        assert!(
+            refused.contains("breaker_open") && refused.contains("agent `planner`"),
+            "[{line}] tasks/get is refused in the breaker's words: {refused}"
+        );
+        assert!(!agent(), "[{line}] the read never dialled the agent");
     }
 
     /// Ported from busbar-a2a a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding
