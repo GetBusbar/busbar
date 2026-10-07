@@ -50,7 +50,10 @@ pub mod exchange;
 pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
-pub use services::{Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed, Wake};
+pub use services::{
+    Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed, TrustItem, TrustItems,
+    Wake,
+};
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;
 // THE AUTH KIND'S VERIFY DOOR over the safe layer (`auth_verify_door!`). An auth plugin keeps its
