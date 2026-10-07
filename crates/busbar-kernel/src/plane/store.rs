@@ -62,6 +62,9 @@ pub const KIND_AUDIT: &str = "audit";
 pub const KIND_RESIDUAL: &str = "usage_residual";
 /// That same plane's demotion record kind.
 pub const KIND_DEMOTION: &str = "demotion";
+/// The operator's trust decisions (the core-admin `/admin/trust` approve and revoke), one row per
+/// trust key, replayed at admit: core-neutral, every plane's.
+pub const KIND_TRUST_DECISION: &str = "trust_decision";
 /// The spent-approval ledger kind (a single-use token).
 pub(crate) const KIND_ASK: &str = "ask";
 
