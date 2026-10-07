@@ -1842,9 +1842,10 @@ async fn the_pools_doors_webhook_receiver_serves_a_signed_delivery_once() {
     assert_eq!(far.served(), 0, "a webhook reaches no member");
 }
 
-/// UNCONFIGURED: with no owned webhook section the plane states no public route, so the path is
-/// what 1.5.5 answered there (a keyed caller's fallback not-found), and a signed delivery is never
-/// served.
+/// UNCONFIGURED: with no owned webhook section the plane states no public route, so the path
+/// answers as 1.5.5's did (an unkeyed caller the data auth gate's 401, a keyed caller the fallback's
+/// not-found), and a signed delivery is never served. 1.5.5 refuses the section's key at boot, so
+/// every configuration 1.5.5 accepts is this one.
 #[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unconfigured_webhook_receiver_states_no_route() {
@@ -1877,7 +1878,10 @@ async fn an_unconfigured_webhook_receiver_states_no_route() {
     assert!(rig.public_routes.is_empty(), "no route stated");
     let signed = signed_head("msg_1", WEBHOOK_KEY, COMPLETED);
     let (status, _) = deliver(&rig.router, &path, &signed, COMPLETED).await;
-    assert_ne!(status, 200, "no receiver answers");
+    assert_eq!(
+        status, 401,
+        "no receiver answers: an unkeyed caller meets the data auth gate, as 1.5.5's did"
+    );
     let keyed = rig
         .send(
             "POST",
