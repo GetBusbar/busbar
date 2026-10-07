@@ -6924,9 +6924,10 @@ mod agent_door {
         assert_eq!(
             doc["error"]["message"],
             format!(
-                "a2a.hop.breaker_open: agent `planner-b` is unavailable: its circuit breaker is \
+                "{}.hop.breaker_open: agent `planner-b` is unavailable: its circuit breaker is \
                  open after repeated backend failures; busbar did not dispatch this request. \
-                 Retry after {retry_after}s"
+                 Retry after {retry_after}s",
+                surface("plane_key")
             ),
             "the refusal names the member the task is pinned to: {body}"
         );
