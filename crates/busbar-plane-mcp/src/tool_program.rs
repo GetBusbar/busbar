@@ -141,6 +141,11 @@ pub trait Peer {
     fn claim(&mut self, generation: u64, id: &Value) -> bool;
     /// The child said its lists changed: verify-on-call is brought forward.
     fn notice(&mut self);
+    /// The child announced that its resource `uri` changed (`notifications/resources/updated`):
+    /// the sessions watching it are told. A peer that holds no session hears nothing.
+    fn announced(&mut self, uri: &str) {
+        let _ = uri;
+    }
 }
 
 /// ONE EXCHANGE'S READING of a child's messages: its answer by id, the replies it owes the child,
@@ -289,8 +294,13 @@ impl Correlator {
         let reply = match message {
             ServerMessage::Notification(n) => {
                 match n.effect() {
-                    NotificationEffect::BringRefreshForward
-                    | NotificationEffect::RelayResourceUpdate => peer.notice(),
+                    NotificationEffect::BringRefreshForward => peer.notice(),
+                    NotificationEffect::RelayResourceUpdate => {
+                        peer.notice();
+                        if let Some(uri) = value.pointer("/params/uri").and_then(Value::as_str) {
+                            peer.announced(uri);
+                        }
+                    }
                     NotificationEffect::RelayProgress => {
                         let token = format!("busbar-{wait}");
                         if value

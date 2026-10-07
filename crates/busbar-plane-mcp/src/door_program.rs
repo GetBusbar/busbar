@@ -128,6 +128,11 @@ impl Peer for DoorPeer<'_> {
         // The child's lists moved: the next call re-verifies (the timing, never the content).
         self.plane.checked.remove(&self.member.to_string());
     }
+
+    fn announced(&mut self, uri: &str) {
+        // The child's resource changed: every session watching it hears so.
+        super::door_sessions::announce(self.plane, self.member, uri);
+    }
 }
 
 /// Drive `exchange` with member `member` on `ticket` from `base`: the door's greeting record kept.

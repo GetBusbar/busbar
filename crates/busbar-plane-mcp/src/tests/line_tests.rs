@@ -119,3 +119,18 @@ fn the_session_floor_fills_only_the_slot_the_request_left_empty() {
         "error"
     );
 }
+
+/// `initialize` naming a session revision this plane carries is answered in it (THE DESIGN section 2,
+/// the mcp bullet: revision by negotiation); naming none, or the stateless one, keeps the stateless
+/// answer.
+#[test]
+fn initialize_negotiates_a_session_revision() {
+    let init = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } });
+    let Era::Opened(revision, answer) = era(&init) else {
+        panic!("a session revision is opened");
+    };
+    assert_eq!(revision, crate::revision::Revision::R2025_06_18);
+    assert_eq!(answer["result"]["protocolVersion"], "2025-06-18");
+    let stateless = json!({ "jsonrpc": "2.0", "id": 2, "method": "initialize", "params": { "protocolVersion": "2026-07-28" } });
+    assert_eq!(era(&stateless), Era::Answer(initialize_result(&json!(2))));
+}
