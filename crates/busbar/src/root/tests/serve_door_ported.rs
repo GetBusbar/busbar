@@ -87,8 +87,11 @@ struct Recording {
     port: u16,
     hits: Arc<AtomicUsize>,
     /// Each request's line (`POST /v1/messages HTTP/1.1`) and body.
-    seen: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+    seen: Arc<Mutex<Vec<Seen>>>,
 }
+
+/// One request a far end read: its line and its body.
+type Seen = (String, Vec<u8>);
 
 impl Recording {
     fn served(&self) -> usize {
@@ -1666,7 +1669,6 @@ fn apply(rig: &DoorRig, instance: &str, members: &[u16], upstream_secs: u64) -> 
         )
         .expect("the providers");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
-    let _ = std::fs::remove_file(&key_file);
     let providers = crate::root::door_steps::provider_routes(&cfg.providers);
     let sections = crate::root::door_steps::kernel_sections(&cfg);
     let models = crate::root::model_egress::ModelServing {
@@ -1694,6 +1696,8 @@ fn apply(rig: &DoorRig, instance: &str, members: &[u16], upstream_secs: u64) -> 
             journal: Arc::clone(&rig.journal),
         },
     );
+    // The credential is read when the egress is sealed, inside the refresh.
+    let _ = std::fs::remove_file(&key_file);
     rig.appliers.0[0].current().generation
 }
 
