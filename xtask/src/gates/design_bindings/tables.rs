@@ -162,7 +162,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-27", &[
         ("test", "crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_stream_cut_after_its_first_byte_refunds_nothing", "the SSE-cut arm bills zero"),
-        ("test", "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_still_reports_what_streamed", "a translate abort bills no tokens"),
+        ("test", "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_bills_nothing", "a translate abort bills no tokens"),
         ("test", "crates/busbar-plane-llm/tests/exchange_reply.rs::an_untranslatable_answer_is_the_callers_500", "a buffered untranslatable 2xx bills zero"),
         ("test", "crates/busbar-plane-llm/tests/exchange_reply.rs::an_untranslatable_answer_is_the_callers_500", "over the translate cap is 500 and uncharged"),
         ("test", "crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_cut_before_the_first_byte_refunds_the_budget_unit", "the pre-first-byte cut refunds the lane unit"),

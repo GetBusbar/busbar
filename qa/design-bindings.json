@@ -1249,7 +1249,7 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_still_reports_what_streamed",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_bills_nothing",
      "proves": "a translate abort bills no tokens",
      "source": "curated",
      "status": "mapped"
@@ -1298,7 +1298,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, oracle-cell:route.failover|fo|primary-cut-stream, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_stream_cut_after_its_first_byte_refunds_nothing, test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_still_reports_what_streamed, test:crates/busbar-plane-llm/tests/exchange_reply.rs::an_untranslatable_answer_is_the_callers_500, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_cut_before_the_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_buffered_answer_cut_after_its_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_cancelled_stream_meters_only_a_reported_bill, test:crates/busbar/src/root/tests/serve_door.rs::the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, oracle-cell:route.failover|fo|primary-cut-stream, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_stream_cut_after_its_first_byte_refunds_nothing, test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_bills_nothing, test:crates/busbar-plane-llm/tests/exchange_reply.rs::an_untranslatable_answer_is_the_callers_500, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_cut_before_the_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_buffered_answer_cut_after_its_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_cancelled_stream_meters_only_a_reported_bill, test:crates/busbar/src/root/tests/serve_door.rs::the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee"
   },
   {
    "id": "PB-28",
