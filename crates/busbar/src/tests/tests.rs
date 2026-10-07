@@ -1389,3 +1389,41 @@ fn the_idle_purge_puts_each_arena_back_to_its_own_decay() {
         );
     }
 }
+
+/// THE LINE-SERVE FLAG IS THE PLANE'S (audit busbar-src H1): the root serves a plane on the
+/// process's own lines when a flag a linked plane declares is passed, read off the plane's `Flags:`
+/// rows; it names no flag of its own. A planted plane's flag asks for it, and the same word no plane
+/// declares does not.
+#[test]
+fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
+    let planted: &[crate::root::linked::CliHelpRow] = &[(
+        "flag",
+        "    --planted-serve      serve the planted plane on stdin/stdout",
+    )];
+    let args = |a: &[&str]| {
+        a.iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+    };
+    assert!(line_serve_requested(
+        &[planted],
+        args(&["busbar", "--planted-serve"])
+    ));
+    assert!(!line_serve_requested(
+        &[],
+        args(&["busbar", "--planted-serve"])
+    ));
+    assert!(!line_serve_requested(&[planted], args(&["busbar"])));
+}
+
+/// The composition root's own source spells no plane's line-serve flag.
+#[test]
+fn the_root_spells_no_planes_line_serve_flag() {
+    let main = include_str!("../main.rs");
+    let flag = ["--", "mcp", "-stdio"].concat();
+    assert!(
+        !main.contains(&format!("\"{flag}\"")),
+        "main.rs spells a plane's flag as a literal"
+    );
+}
