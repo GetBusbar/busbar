@@ -155,3 +155,39 @@ fn the_extended_card_names_each_entitled_agent_once_and_omits_a_leaking_one() {
     assert_eq!(skills[0]["id"], "planner");
     assert_eq!(skills[0]["name"], "Planner");
 }
+
+/// The card tells a caller where to send its request. If that string and the path the door claims
+/// were derived separately, the card would advertise an endpoint that 404s and nothing would notice,
+/// because each half is individually correct: so the advertised endpoint IS a claimed route.
+/// Ported from busbar-a2a a2a/tests/ingress_tests.rs::the_served_endpoint_and_the_mounted_path_are_one_derivation.
+#[test]
+fn the_served_endpoint_and_the_mounted_path_are_one_derivation() {
+    let endpoint = agent_endpoint(PUBLIC, "planner").expect("an endpoint");
+    assert_eq!(endpoint, "https://gw.example/a2a/agents/planner");
+    let served = rewrite_card(
+        &backend_card(),
+        "https://internal.corp.example/a2a",
+        PUBLIC,
+        "planner",
+    )
+    .expect("served");
+    assert_eq!(
+        served["url"], endpoint,
+        "the card advertises the one derivation"
+    );
+
+    let served_path = endpoint
+        .strip_prefix(PUBLIC)
+        .expect("the endpoint is under the public base");
+    for verb in ["GET", "POST"] {
+        let claimed = crate::door::ROUTES
+            .iter()
+            .find(|r| r.verb == verb && r.target.contains("{agent_id}"))
+            .unwrap_or_else(|| panic!("a claimed {verb} route names an agent"));
+        assert_eq!(
+            claimed.target.replace("{agent_id}", "planner"),
+            served_path,
+            "the card advertises an endpoint the door does not claim ({verb})"
+        );
+    }
+}

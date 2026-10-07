@@ -637,3 +637,52 @@ fn a_refused_hop_of_a_transport_pinned_registration_reads_as_the_pin_s_refusal()
         None
     );
 }
+
+/// `file:` and `data:` are the two that turn a fetch into a local read. Neither is reachable by
+/// opting into plaintext, because `allow_private` is about TRANSPORT confidentiality and these are
+/// not transports at all: any scheme other than `https` (and `http` under the opt-in) is refused.
+/// Ported from busbar-a2a a2a/tests/fetch_tests.rs::a_non_http_scheme_is_refused_however_the_plaintext_knob_is_set.
+#[test]
+fn a_non_http_scheme_is_refused_however_the_plaintext_knob_is_set() {
+    for allow_private in [false, true] {
+        for url in [
+            "file:///etc/passwd",
+            "data:application/json,{}",
+            "gopher://x/",
+            "ftp://a2a.vendor/card",
+            "FILE:///etc/passwd",
+        ] {
+            let refusal = scheme_refusal(url, allow_private).unwrap_or_else(|| {
+                panic!("`{url}` must be refused (allow_private {allow_private})")
+            });
+            assert!(refusal.contains("uses scheme"), "{url}: {refusal}");
+        }
+    }
+    // The opt-in admits plaintext http and nothing else.
+    assert_eq!(scheme_refusal("http://a2a.vendor/card", true), None);
+    assert!(scheme_refusal("http://a2a.vendor/card", false).is_some());
+}
+
+/// The redirect target is an ordinary-looking public NAME; only judging what it RESOLVED to catches
+/// it. The next hop is the target resolved against the hop that sent it (a name, judged from
+/// scratch like the first), and its refusal, for an internal answer, names the address in 1.5.5's
+/// words. The door's judgement of a hop is the host's; these are the plane's two halves of it.
+/// Ported from busbar-a2a a2a/tests/fetch_tests.rs::a_redirect_to_a_name_that_resolves_internally_is_refused_on_the_answer.
+#[test]
+fn a_redirect_to_a_name_that_resolves_internally_is_refused_on_the_answer() {
+    let next = next_hop(
+        "https://a2a.vendor/.well-known/agent-card.json",
+        302,
+        Some("https://cdn.partner/card.json"),
+        0,
+    )
+    .expect("a followable redirect")
+    .expect("a next hop");
+    assert_eq!(next, "https://cdn.partner/card.json");
+    assert_eq!(
+        refused_judgement(&next, svc::DEST_INTERNAL, Some("10.0.0.7")),
+        "SSRF guard refused the agent card fetch: host `cdn.partner` resolved to the internal \
+         address 10.0.0.7; set this registration's `allow_private: true` if reaching it is \
+         deliberate. A cloud-metadata address is refused whatever that is set to."
+    );
+}

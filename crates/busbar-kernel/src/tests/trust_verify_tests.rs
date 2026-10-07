@@ -275,3 +275,75 @@ fn only_a_declared_root_key_verifies() {
         (Outcome::Refused, SIGNATURES_NOT_JSON)
     );
 }
+
+/// A protected header that is not base64url, not JSON, or not an object is refused: a verifier that
+/// treated an unparseable header as an empty one would then read no `alg` from it.
+/// Ported from busbar-a2a a2a/tests/jws_tests.rs::a_malformed_protected_header_is_refused.
+#[test]
+fn a_malformed_protected_header_is_refused() {
+    let s = host();
+    for bad in [
+        "not base64url!".to_string(),
+        URL_SAFE_NO_PAD.encode(b"not json"),
+        URL_SAFE_NO_PAD.encode(b"[1,2]"),
+        URL_SAFE_NO_PAD.encode(b"\"s\""),
+    ] {
+        let sigs = json!([{ "protected": bad, "signature": URL_SAFE_NO_PAD.encode([0u8; 64]) }]);
+        assert_eq!(
+            verify(&s, "issuer", PAYLOAD, &sigs).value,
+            svc::SIGNED_MALFORMED_HEADER,
+            "header {bad:?} must be refused"
+        );
+    }
+}
+
+/// The protected header is used EXACTLY AS RECEIVED. Re-encoding it would change the bytes that
+/// were signed, so a genuine signature whose producer spelled the header differently than a
+/// serializer here would must still verify.
+/// Ported from busbar-a2a a2a/tests/jws_tests.rs::the_protected_header_is_verified_as_received_not_as_we_would_spell_it.
+#[test]
+fn the_protected_header_is_verified_as_received_not_as_we_would_spell_it() {
+    let s = host();
+    // Whitespace and a member order no serializer of ours would produce.
+    let protected = URL_SAFE_NO_PAD.encode(b"{ \"kid\" : \"vendor\",  \"alg\" : \"EdDSA\" }");
+    let input = format!("{protected}.{}", URL_SAFE_NO_PAD.encode(PAYLOAD));
+    let sig = key(1).sign(input.as_bytes());
+    let sigs = json!([{
+        "protected": protected,
+        "signature": URL_SAFE_NO_PAD.encode(sig.to_bytes())
+    }]);
+    assert_eq!(
+        verdict(&verify(&s, "issuer", PAYLOAD, &sigs)),
+        (Outcome::Ready, svc::SIGNED_VERIFIED, &b""[..])
+    );
+}
+
+/// The root key is parsed at the boundary: only the base64 SPKI form of an Ed25519 key is a root
+/// key. A raw 32-byte key, a wrong prefix and a wrong length are refused, so an operator pasting
+/// the wrong thing does not silently get it as the trust root; surrounding whitespace is trimmed.
+/// Ported from busbar-a2a a2a/tests/jws_tests.rs::only_a_well_formed_ed25519_key_info_becomes_an_issuer_key.
+#[test]
+fn only_a_well_formed_ed25519_key_info_becomes_an_issuer_key() {
+    use crate::trust::signed::root_key;
+    let k = key(1);
+    assert!(root_key(&key_info(&k)).is_ok());
+    assert!(root_key(&format!("  {}\n", key_info(&k))).is_ok());
+
+    let raw = STANDARD.encode(k.verifying_key().as_bytes());
+    assert_eq!(
+        root_key(&raw),
+        Err((svc::SIGNED_MALFORMED_ROOT, String::new()))
+    );
+    for bad in [
+        String::new(),
+        "not base64".to_string(),
+        STANDARD.encode([0u8; 44]),
+        STANDARD.encode([0u8; 12]),
+    ] {
+        assert_eq!(
+            root_key(&bad),
+            Err((svc::SIGNED_MALFORMED_ROOT, String::new())),
+            "issuer key {bad:?} must be refused"
+        );
+    }
+}

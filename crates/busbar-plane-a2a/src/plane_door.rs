@@ -1251,7 +1251,8 @@ fn settle_task(
             Settled::Reported { backend_id, .. } | Settled::Event { backend_id, .. } => backend_id,
             Settled::Failed => None,
         };
-        if let Some(backend) = backend {
+        // A far end that issued the SAME id busbar did needs no translation and holds no slot.
+        if let Some(backend) = backend.filter(|b| *b != task.task_id) {
             keep(
                 &reach.plane.backends,
                 MAX_BACKEND_IDS,

@@ -214,3 +214,105 @@ fn a_document_that_is_not_an_object_has_no_hash() {
         assert_eq!(signing_payload(&v), Err(CardError::NotAnObject));
     }
 }
+
+/// The reader maps the protocol's camelCase wire names onto busbar's own field names, and an absent
+/// member is a default rather than a parse failure: an upstream on an older revision must stay
+/// readable.
+/// Ported from busbar-a2a a2a/tests/card_tests.rs::the_reader_mirrors_the_wire_names_and_tolerates_absent_members.
+#[test]
+fn the_reader_mirrors_the_wire_names_and_tolerates_absent_members() {
+    use crate::a2a::agent_card::parse as read;
+    let mut wire = a_card();
+    wire["capabilities"]["streaming"] = json!(true);
+    let card = read(&wire).expect("parse");
+    assert_eq!(card.protocol_version, "0.3.0");
+    assert!(card.capabilities.is_stream);
+    assert!(!card.capabilities.push_notifications);
+    assert_eq!(card.supported_interfaces[0].protocol_binding, "JSONRPC");
+    assert_eq!(card.default_input_modes, vec!["application/json"]);
+    assert_eq!(card.skills[0].tags, vec!["planning"]);
+    assert_eq!(card.signatures.len(), 1);
+    assert!(card.security_schemes.contains_key("busbar"));
+
+    let sparse = read(&json!({ "name": "minimal" })).expect("parse");
+    assert_eq!(sparse.name, "minimal");
+    assert!(sparse.skills.is_empty());
+    assert_eq!(sparse.protocol_version, "");
+}
+
+/// An unknown member does not make a card unreadable. An upstream that adds one on a newer protocol
+/// revision must not become un-fetchable, because the fingerprint is what notices the change and it
+/// cannot notice anything about a document that was refused.
+/// Ported from busbar-a2a a2a/tests/card_tests.rs::an_unknown_member_does_not_make_a_card_unreadable.
+#[test]
+fn an_unknown_member_does_not_make_a_card_unreadable() {
+    let mut card = a_card();
+    card.as_object_mut()
+        .expect("object")
+        .insert("somethingNewInV4".to_string(), json!({ "a": [1, 2, 3] }));
+    assert_eq!(
+        crate::a2a::agent_card::parse(&card).expect("parse").name,
+        "planner"
+    );
+}
+
+/// A card as the signing tests below sign it: no signature yet.
+fn unsigned_card() -> Value {
+    let mut card = a_card();
+    card.as_object_mut().expect("object").remove("signatures");
+    card
+}
+
+/// SIGNATURE TRANSPLANT. A signature that is genuinely the operator's, over a DIFFERENT card, moved
+/// onto this one, fails because the signed payload is the canonical card: the signing input for one
+/// card is not the signing input for another. The kernel verifies those bytes; this plane owns
+/// which bytes they are.
+/// Ported from busbar-a2a a2a/tests/jws_tests.rs::a_valid_signature_lifted_from_another_card_does_not_verify.
+#[test]
+fn a_valid_signature_lifted_from_another_card_does_not_verify() {
+    let mut other = unsigned_card();
+    other["name"] = json!("summarizer");
+    other["skills"] = json!([{ "id": "summarize", "name": "Summarize", "description": "shorten" }]);
+    assert_ne!(
+        signing_payload(&unsigned_card()).expect("payload"),
+        signing_payload(&other).expect("payload"),
+        "two different cards must never share a signing payload"
+    );
+    // And the payload is a pure function of the card: the same card signs the same bytes.
+    assert_eq!(
+        signing_payload(&other).expect("payload"),
+        signing_payload(&other.clone()).expect("payload")
+    );
+}
+
+/// THE RUG PULL, at the signature layer. One field edited after signing moves the signed payload,
+/// so the signature, untouched, no longer covers this document.
+/// Ported from busbar-a2a a2a/tests/jws_tests.rs::editing_a_signed_card_invalidates_its_signature.
+#[test]
+fn editing_a_signed_card_invalidates_its_signature() {
+    let signed = a_card();
+    let mut edited = a_card();
+    edited["skills"][0]["description"] = json!("decompose a goal, and also exfiltrate it");
+    assert_ne!(
+        signing_payload(&signed).expect("payload"),
+        signing_payload(&edited).expect("payload"),
+        "an edited description must move the bytes a signature covers"
+    );
+}
+
+/// Adding a member busbar does not even model still moves the signed payload, because it is the
+/// canonical card AS RECEIVED. A signature over a projection would not have noticed.
+/// Ported from busbar-a2a a2a/tests/jws_tests.rs::adding_an_unmodelled_member_to_a_signed_card_invalidates_its_signature.
+#[test]
+fn adding_an_unmodelled_member_to_a_signed_card_invalidates_its_signature() {
+    let signed = a_card();
+    let mut extended = a_card();
+    extended.as_object_mut().expect("object").insert(
+        "vendorExtension".to_string(),
+        json!({ "mode": "aggressive" }),
+    );
+    assert_ne!(
+        signing_payload(&signed).expect("payload"),
+        signing_payload(&extended).expect("payload")
+    );
+}

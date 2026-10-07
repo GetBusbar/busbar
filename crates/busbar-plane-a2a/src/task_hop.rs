@@ -341,7 +341,7 @@ fn translated(
         if owned.contains_key(id) {
             continue;
         }
-        let Some(backend) = backends(id) else {
+        let Some(backend) = backends(id).filter(|b| b != id) else {
             continue;
         };
         if or_absent(tasks::get(reach, req.caller, id, req.now), None)?.is_some() {

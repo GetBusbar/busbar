@@ -419,3 +419,149 @@ fn a_request_with_no_inline_callback_registers_none() {
         .unwrap();
     assert_eq!(held.row.push_callback, "");
 }
+
+// ── the tenancy boundary, for every spelling of the task member ────────────────────────────────
+
+/// A `backends` answer that knows a far-end id for every busbar id asked about, so the only thing
+/// standing between a caller and a translation is the ownership read.
+fn far(id: &str) -> Option<String> {
+    Some(format!("far-{id}"))
+}
+
+/// What `ALICE`'s request opens over a fresh desk (Alice holds `t1`, Bob `t2`): the task it is for
+/// and the bytes sent on instead of hers, if any.
+fn alice_sends(envelope: &Value) -> (TaskHop, Option<Vec<u8>>) {
+    hop(opened_with(&mut desk(), envelope, ALICE, &far))
+}
+
+/// EVERY SPELLING OF THE ADDRESSING MEMBER, for the non-owner: the boundary must not depend on
+/// which of the three names a caller reached for. The owner's request is translated, and the
+/// non-owner's names a task it does not hold, so it is left as a never-existed id is left.
+/// Ported from busbar-a2a a2a/tests/idmap_tests.rs::no_spelling_of_the_task_member_crosses_the_boundary.
+#[test]
+fn no_spelling_of_the_task_member_crosses_the_boundary() {
+    for member in ["id", "taskId", "task_id"] {
+        let naming = |id: &str| {
+            json!({
+                "jsonrpc": "2.0", "id": 7, "method": "GetTaskPushNotificationConfig",
+                "params": { member: id }
+            })
+        };
+        let (task, instead) = alice_sends(&naming("t1"));
+        assert!(task.addressed, "`{member}` addresses the owner's task");
+        let sent: Value = serde_json::from_slice(
+            &instead.unwrap_or_else(|| panic!("`{member}` must still translate for the owner")),
+        )
+        .unwrap();
+        assert_eq!(sent["params"][member], "far-t1", "{member}");
+
+        // Bob holds `t2`: Alice naming it translates nothing, exactly as a task that never was.
+        let (task, instead) = alice_sends(&naming("t2"));
+        assert!(
+            !task.addressed,
+            "`{member}`: another caller's task is not addressed"
+        );
+        assert_eq!(
+            instead, None,
+            "`{member}` must not translate for a caller that does not hold the task"
+        );
+        let (_, never) = alice_sends(&naming("never-was"));
+        assert_eq!(never, instead, "{member}");
+    }
+}
+
+/// THE WRITE THROUGH THE SECOND TURN. `params.message.taskId` is how a caller continues a
+/// conversation: the owner's second turn reaches its own open task, and an intruder's pointed at
+/// another caller's task is left untranslated, the same as one pointed at a task that never was.
+/// Ported from busbar-a2a a2a/tests/idmap_tests.rs::the_second_turns_task_id_cannot_be_pointed_at_another_principals_conversation.
+#[test]
+fn the_second_turns_task_id_cannot_be_pointed_at_another_principals_conversation() {
+    let turn = |id: &str| {
+        send(json!({ "message": { "role": "ROLE_USER", "messageId": "m-9", "taskId": id } }))
+    };
+
+    let (_, mine) = alice_sends(&turn("t1"));
+    let mine: Value =
+        serde_json::from_slice(&mine.expect("the owner's second turn is translated")).unwrap();
+    assert_eq!(mine.pointer("/params/message/taskId").unwrap(), "far-t1");
+
+    let (_, at_bobs) = alice_sends(&turn("t2"));
+    let (_, at_nothing) = alice_sends(&turn("never-was"));
+    assert_eq!(at_bobs, None, "another caller's task is not joined");
+    assert_eq!(
+        at_bobs, at_nothing,
+        "a second turn at another caller's task is indistinguishable from one at a task that does not exist"
+    );
+}
+
+/// EVERY SPELLING OF THE INLINE CALLBACK IS FOUND, so every spelling is judged by the floor: v0.3's
+/// `pushNotificationConfig`, v1.0's flat `taskPushNotificationConfig` and its nested one. What is
+/// not found is not guarded; and a callback the floor refuses is refused in all three.
+/// Ported from busbar-a2a a2a/tests/ingress_tests.rs::every_spelling_of_the_callback_is_found_so_every_spelling_is_guarded.
+#[test]
+fn every_spelling_of_the_callback_is_found_so_every_spelling_is_guarded() {
+    let spellings = |url: &str| {
+        [
+            (
+                "v0.3",
+                json!({"params": {"configuration": {
+                    "pushNotificationConfig": {"url": url}}}}),
+            ),
+            (
+                "v1.0, flat",
+                json!({"params": {"configuration": {
+                    "taskPushNotificationConfig": {"id": "c", "url": url}}}}),
+            ),
+            (
+                "v1.0, nested",
+                json!({"params": {"configuration": {"taskPushNotificationConfig": {
+                    "name": "tasks/1", "pushNotificationConfig": {"url": url}}}}}),
+            ),
+        ]
+    };
+    for (label, envelope) in spellings("https://hook.example/a") {
+        assert_eq!(
+            inline_config(&envelope).and_then(|c| c.get("url")),
+            Some(&json!("https://hook.example/a")),
+            "the {label} spelling must be FOUND, because what is not found is not guarded"
+        );
+        let mut desk = desk();
+        let Opened::Hop { callback, .. } = opened(&mut desk, &envelope, ALICE) else {
+            panic!("the {label} spelling was refused");
+        };
+        assert_eq!(
+            callback.map(|c| c.url).as_deref(),
+            Some("https://hook.example/a"),
+            "{label}"
+        );
+    }
+    // The floor judges what was found: a plaintext callback is refused through each spelling.
+    for (label, envelope) in spellings("http://hook.example/a") {
+        let mut desk = desk();
+        let (status, code, message) = refusal_of(opened(&mut desk, &envelope, ALICE));
+        assert_eq!((status, code), (400, -32602), "{label}");
+        assert!(message.contains("must be https"), "{label}: {message}");
+    }
+    // And nothing is invented: a request that registers no callback acquires none.
+    for envelope in [
+        json!({"params": {}}),
+        json!({"params": {"configuration": {}}}),
+        json!({"params": {"configuration": {"taskPushNotificationConfig": {"id": "c"}}}}),
+        json!({"params": {"configuration": {"taskPushNotificationConfig": {"id": "c", "url": ""}}}}),
+    ] {
+        assert!(inline_config(&envelope).is_none(), "{envelope}");
+    }
+}
+
+/// A far end that issued the SAME id busbar did needs no translation: the caller's bytes go on
+/// unchanged, never re-serialized (and the pair would not occupy a slot).
+/// Ported from busbar-a2a a2a/tests/idmap_tests.rs::a_degenerate_pair_is_not_recorded (same-id half).
+#[test]
+fn a_far_end_id_equal_to_busbars_needs_no_translation() {
+    let mut desk = desk();
+    let same = |id: &str| (id == "t1").then(|| "t1".to_string());
+    let get_task =
+        json!({ "jsonrpc": "2.0", "id": 7, "method": "GetTask", "params": { "id": "t1" } });
+    let (_, instead) = hop(opened_with(&mut desk, &get_task, ALICE, &same));
+    assert_eq!(instead, None, "the caller's bytes go on unchanged");
+}

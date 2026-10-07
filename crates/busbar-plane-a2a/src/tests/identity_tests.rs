@@ -168,3 +168,63 @@ fn the_codes_a_far_end_may_answer_keep_section_5_4s_statuses() {
     assert_eq!(status_of_code(-32603), Some(500));
     assert_eq!(status_of_code(-32050), None);
 }
+
+/// The verbs that are ABOUT a task name it `taskId` (and A2A v1.0's JSON-RPC binding also accepts
+/// `task_id`; `GetTask` and `CancelTask` say `id`). All three spellings translate.
+/// Ported from busbar-a2a a2a/tests/idmap_tests.rs::every_spelling_of_the_task_member_is_translated.
+#[test]
+fn every_spelling_of_the_task_member_is_translated() {
+    let back = |id: &str| (id == "busbar-t").then(|| "backend-t".to_string());
+    for member in ["id", "taskId", "task_id"] {
+        let out = translate_request(
+            &json!({
+                "method": "GetTaskPushNotificationConfig",
+                "params": { member: "busbar-t", "keep": 3 }
+            }),
+            &back,
+        )
+        .unwrap_or_else(|| panic!("`{member}` must translate"));
+        let doc: Value = serde_json::from_slice(&out).expect("json");
+        assert_eq!(doc["params"][member], "backend-t", "{member}");
+        // Everything else survives: the translation is about identity and about nothing else.
+        assert_eq!(doc["params"]["keep"], 3, "{member}");
+        assert_eq!(doc["method"], "GetTaskPushNotificationConfig", "{member}");
+    }
+}
+
+/// Nothing degenerate is recorded: a far end that named no task id (an empty one) leaves nothing to
+/// map, so the id the door would record is absent, and an empty pair is never an identity.
+/// Ported from busbar-a2a a2a/tests/idmap_tests.rs::a_degenerate_pair_is_not_recorded.
+#[test]
+fn a_degenerate_pair_is_not_recorded() {
+    for result in [
+        json!({ "id": "" }),
+        json!({ "task": { "id": "" } }),
+        json!({ "statusUpdate": { "taskId": "" } }),
+        json!({}),
+    ] {
+        assert_eq!(backend_task_id(&result), None, "{result}");
+    }
+    assert_eq!(
+        backend_task_id(&json!({ "id": "far-1" })).as_deref(),
+        Some("far-1")
+    );
+}
+
+/// A MESSAGE'S OWN `id` IS NOT A TASK ID and must never be rewritten as one: a translation that
+/// reached for every member called `id` would corrupt an identity this map knows nothing about.
+/// Ported from busbar-a2a a2a/tests/idmap_tests.rs::a_messages_own_id_member_is_left_alone.
+#[test]
+fn a_messages_own_id_member_is_left_alone() {
+    let back = |id: &str| (id == "busbar-not-a-message-id").then(|| "backend-x".to_string());
+    let envelope = json!({ "params": { "message": { "id": "busbar-not-a-message-id" } } });
+    assert!(
+        translatable(&envelope).is_empty(),
+        "a message's `id` is not a task id and none is offered for translation"
+    );
+    assert_eq!(
+        translate_request(&envelope, &back),
+        None,
+        "nothing may be translated from a message's `id`"
+    );
+}
