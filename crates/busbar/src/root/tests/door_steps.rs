@@ -2269,6 +2269,60 @@ pub(crate) mod tool_door {
         assert!(rig.all_ended(), "the refused unit ended");
     }
 
+    /// THE RE-CHECK HONOURS THE REGISTRATION'S `timeout:` (ARCHITECT ruling on `timeout:`): an
+    /// upstream that accepts the tool-list fetch and never answers it is given up on at the operator's
+    /// one-second budget, not at a fixed thirty, and the call fails as an upstream failure, never
+    /// sent (ARCHITECT Q3 (c), as the unreachable fetch above), well inside the budget the caller is
+    /// waiting on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_tool_list_re_check_gives_up_at_the_registrations_timeout() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-verify-timeout";
+        let _published = Published(instance);
+        // A server that takes every connection and answers nothing on it.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let port = listener.local_addr().expect("its address").port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let section: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
+             pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  verify_ttl: 0s\n  \
+             timeout: 1s\n  tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
+            tool_digest()
+        ))
+        .expect("a section");
+        let rig = Rig::with(
+            instance,
+            port,
+            None,
+            None,
+            Some(section),
+            Footing::own(),
+            &|app| app,
+        );
+        // Bounded here so the RED is a named failure, not the harness's slow-test kill: before the
+        // budget was honoured, the fetch to a server that never answers did not return at all.
+        let (status, body) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            send(&rig.router, Some(&rig.token), CALL),
+        )
+        .await
+        .expect("the re-check gave up inside 10s: the registration's `timeout: 1s` is its budget");
+        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+        assert_eq!(
+            body["result"]["isError"], true,
+            "an upstream failure: {body}"
+        );
+        assert!(rig.all_ended(), "the refused unit ended");
+    }
+
     /// THE ARGUMENT GUARD (the served engine's argguard): a URL a call's arguments carry to a cloud
     /// metadata endpoint is refused before the call is sent, in the guard's words, with the field it
     /// was found at; the same call carrying an external URL is served.
