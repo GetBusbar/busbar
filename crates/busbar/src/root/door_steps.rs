@@ -426,6 +426,9 @@ struct DoorUnit {
     recorded: Option<u64>,
     /// A `ROUTE_SCOPE` unit several entries reach: those entries, named in its refusal's words.
     reachable: Vec<String>,
+    /// The end its plane reported for a reply the far end cut (abi/plane `PIECE_CUT`); `None`
+    /// when the unit's outcome decides.
+    reported: Option<busbar_contract::FinishClass>,
 }
 
 /// ONE UNIT'S KERNEL STEPS (see the module doc), lent to the plane driver for the unit's life.
@@ -705,16 +708,16 @@ impl Drop for DoorSteps<'_> {
     }
 }
 
-/// The record's facts for a unit of these steps.
-fn facts(op: OpClassId, outcome: &Outcome) -> busbar_contract::AuditFacts {
-    busbar_contract::AuditFacts {
-        op_class: op,
-        finish: if outcome.is_completed() {
-            busbar_contract::FinishClass::Complete
-        } else {
-            busbar_contract::FinishClass::Error
-        },
-    }
+/// The record's facts for a unit of these steps: a completed unit seals the end its plane
+/// reported where it reported one (a reply the far end cut: `Partial`, or `Error` when nothing of
+/// it reached the caller), `Complete` where it did not; any other outcome seals `Error`.
+fn facts(
+    op: OpClassId,
+    outcome: &Outcome,
+    reported: Option<busbar_contract::FinishClass>,
+) -> busbar_contract::AuditFacts {
+    let completed = outcome.is_completed();
+    busbar_kernel::door::admitted_facts(op, reported.filter(|_| completed), completed)
 }
 
 impl DriverSteps for DoorSteps<'_> {
@@ -761,6 +764,10 @@ impl DriverSteps for DoorSteps<'_> {
 
     fn affinity(&self, _ctx: &UnitCtx, hash: u64) {
         self.lock().affinity = Some(hash);
+    }
+
+    fn reported_finish(&self, _ctx: &UnitCtx, finish: busbar_contract::FinishClass) {
+        self.lock().reported = Some(finish);
     }
 }
 
@@ -1038,8 +1045,11 @@ impl Units for DoorSteps<'_> {
     }
 
     fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        let op = self.lock().op.unwrap_or(self.facts.audit_kind);
-        SeatVerdict::proceed(token, facts(op, outcome))
+        let (op, reported) = {
+            let u = self.lock();
+            (u.op.unwrap_or(self.facts.audit_kind), u.reported)
+        };
+        SeatVerdict::proceed(token, facts(op, outcome, reported))
     }
 
     fn audit_refused(
@@ -1052,7 +1062,10 @@ impl Units for DoorSteps<'_> {
         let step = refusal
             .step()
             .unwrap_or(busbar_contract::caps::StepName::Admit);
-        SeatVerdict::proceed(token, facts(op, &Outcome::Refused(step, refusal.reason())))
+        SeatVerdict::proceed(
+            token,
+            facts(op, &Outcome::Refused(step, refusal.reason()), None),
+        )
     }
 
     fn encode(

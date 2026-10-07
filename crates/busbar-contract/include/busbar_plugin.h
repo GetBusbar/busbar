@@ -382,6 +382,7 @@ extern "C" {
 #define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4 */
 #define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
 #define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
+#define BB_PLANE_ROUTE_COUNTED UINT8_C(8) /* [`ArriveOut::route_flags`], on a REFUSED arrival only: a dialect READ this request, so it is */
 #define BB_PLANE_FROM_CALLER UINT32_C(0) /* [`OnPieceIn::from`]: the piece is the caller's. */
 #define BB_PLANE_FROM_FAR_END UINT32_C(1) /* [`OnPieceIn::from`]: the piece is the far end's. */
 #define BB_PLANE_FROM_KERNEL UINT32_C(2) /* [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it */
@@ -390,6 +391,7 @@ extern "C" {
 #define BB_PLANE_PIECE_HAS_STATUS UINT32_C(4) /* [`OnPieceIn::flags`]: `status_code`/`status_class` are set. */
 #define BB_PLANE_PIECE_FIELDS UINT32_C(8) /* [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that */
 #define BB_PLANE_PIECE_CATALOGUE_MOVED UINT32_C(16) /* [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no */
+#define BB_PLANE_PIECE_CUT UINT32_C(32) /* [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_LAST`]: the far end ENDED BEFORE ITS END */
 #define BB_PLANE_EMIT_TO_FAR_END UINT32_C(1) /* [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller). */
 #define BB_PLANE_EMIT_DONE UINT32_C(2) /* [`OnPieceOut::flags`]: the unit's reply is complete. */
 #define BB_PLANE_PIECE_OUT_TEXT UINT32_C(4) /* [`OnPieceOut::flags`]: the bytes this answer emits are ONE text message (a carrier with text and */

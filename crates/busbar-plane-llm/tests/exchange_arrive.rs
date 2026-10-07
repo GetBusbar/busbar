@@ -207,3 +207,50 @@ fn a_dialect_path_takes_post_only_and_an_unknown_path_is_not_found_first() {
         "no dialect: the 404 comes first"
     );
 }
+
+/// A REFUSAL A DIALECT READ IS COUNTED (ARCHITECT RULING U11 Q3 2026-10-06): a path-model URL that
+/// names no model and action, or an action its dialect does not serve (`:countTokens`), is refused
+/// 404 and counted, as 1.5.5 counted it through `finish_rejected` (v1.5.5
+/// `crates/busbar/src/ingress/mod.rs:843`, `:864`, `:913`, `:931`); a path no dialect claims and a
+/// verb a dialect path does not take are refused uncounted, as is every other refusal by this rule.
+#[test]
+fn a_refusal_a_dialect_read_is_counted_and_one_none_read_is_not() {
+    for target in [
+        "/v1beta/models/gemini-pro:countTokens",
+        "/v1beta/models/gemini-pro:fly",
+    ] {
+        let d = no(target, &json(), b"{}");
+        assert_eq!((d.why, d.status), (Decline::PathNotFound, 404), "{target}");
+        assert!(d.counted(), "{target}: its dialect read it");
+    }
+    let d = no("/nowhere", &json(), b"{}");
+    assert_eq!((d.why, d.status), (Decline::NoResource, 404));
+    assert!(!d.counted(), "no dialect read an unknown path");
+    let d = arrive("GET", "/v1/chat/completions", &json(), b"", &()).expect_err("refused");
+    assert_eq!((d.why, d.status), (Decline::MethodNotAllowed, 405));
+    assert!(
+        !d.counted(),
+        "no dialect read a verb its path does not take"
+    );
+    for why in [
+        Decline::NoResource,
+        Decline::UnsupportedOperation,
+        Decline::BodyParse,
+        Decline::NotAnObject,
+        Decline::Reserialize,
+        Decline::MissingModel,
+        Decline::PathNotFound,
+        Decline::InvokeBody,
+        Decline::ProviderMismatch,
+        Decline::MethodNotAllowed,
+    ] {
+        let d = Declined {
+            why,
+            status: 404,
+            envelope: "",
+            kind: "not_found_error",
+            message: "x".into(),
+        };
+        assert_eq!(d.counted(), why == Decline::PathNotFound, "{why:?}");
+    }
+}

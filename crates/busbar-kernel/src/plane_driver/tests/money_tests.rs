@@ -729,6 +729,7 @@ fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
                 amount: 9,
             },
         ],
+        finish: None,
     };
     let bill = CancelBill::new(ReasonCode::ClientGone, Some(CANCEL_OK_PARTIAL), &facts);
     assert_eq!(bill.billed, vec![(INPUT, 40)]);

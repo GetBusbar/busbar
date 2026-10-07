@@ -447,13 +447,21 @@ impl Reply {
                 )
             }
             State::Relay {
-                mut relay, head, ..
+                mut relay,
+                head,
+                units,
             } => {
                 let cut = relay.cut(transport);
+                // The cut's report replaces a floor stated while relaying, even when it is zero: a
+                // transfer the far end failed bills only what it reported (owner ruling Q31).
+                let units = Units {
+                    stated: units.floor,
+                    ..Units::of(cut.usage.as_ref(), BTreeMap::new())
+                };
                 Piece {
                     head,
                     bytes: Cow::Owned(cut.bytes.unwrap_or_default()),
-                    units: Units::of(cut.usage.as_ref(), BTreeMap::new()),
+                    units,
                     verdict: Verdict::Hard,
                     fault: Some(Fault::Transient(cut.reason)),
                     done: true,

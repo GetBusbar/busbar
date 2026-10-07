@@ -28,14 +28,15 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     units_bill, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE,
     EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
-    FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, RECORD_AUDIT,
-    VERDICT_RETRY,
+    FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    RECORD_AUDIT, VERDICT_HARD, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::FAULT_NONE;
 use busbar_contract::caps::{Pass, ReasonCode, Route};
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
+use busbar_contract::FinishClass;
 use tokio::sync::watch;
 
 use super::cancel::{Buried, CancelBill, Checkpoint};
@@ -67,6 +68,10 @@ pub struct FarPiece {
     /// dispatch: a spill, the least-bad bypass, a queued slot), so it is never failed over: a
     /// retry verdict renders it, as 1.5.5 relayed a degraded dispatch's answer.
     pub relayed: bool,
+    /// With `last`: the far end ENDED BEFORE ITS END (its transfer failed or ran past its ceiling
+    /// before its framing said the answer was complete): pushed with `PIECE_CUT`, and the plane
+    /// ends the caller's reply as its dialect ends one cut short.
+    pub cut: bool,
 }
 
 /// What the walk answers for an attempt: the member to try, or the pool's exhaustion terminal.
@@ -1023,6 +1028,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 let far = Piece {
                     from: FROM_FAR_END,
                     flags: if piece.last { PIECE_LAST } else { 0 }
+                        | if piece.last && piece.cut {
+                            PIECE_CUT
+                        } else {
+                            0
+                        }
                         | if piece.fields { PIECE_FIELDS } else { 0 }
                         | if status.is_some() {
                             PIECE_HAS_STATUS
@@ -1053,6 +1063,13 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         // The plane's fault reading of a far-end answer, written on one window of it, and whether
         // the answer reported a count that bills.
         let (mut fault, mut billed) = (FAULT_NONE, false);
+        debug_assert!(
+            busbar_contract::abi::plane::check::check_piece_in(piece.from, piece.flags).is_ok(),
+            "the kernel lends only a well-formed piece"
+        );
+        // A CUT piece: whether a byte of the reply had reached the caller before it, which the
+        // plane's reading of the cut seals as the end it reached.
+        let cut_after_bytes = (piece.flags & PIECE_CUT != 0).then(|| run.lock().facts.streamed);
         loop {
             let (done, out, cause) = run.cross(&piece).await;
             if let Some(cause) = cause {
@@ -1235,6 +1252,19 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 continue;
             }
             let done = out.flags & EMIT_DONE != 0;
+            // THE END A CUT REACHED, as the plane reads it (abi/plane `PIECE_CUT`): a failure
+            // verdict on its closing answer is a reply cut short, PARTIAL when a byte of it had
+            // reached the caller before the cut and an ERROR when none had; a success verdict
+            // leaves the end to the reply's status.
+            if let Some(delivered) = cut_after_bytes {
+                if matches!(out.verdict, VERDICT_RETRY | VERDICT_HARD) {
+                    run.lock().facts.finish = Some(if delivered {
+                        FinishClass::Partial
+                    } else {
+                        FinishClass::Error
+                    });
+                }
+            }
             // THE PLANE'S READING of the far end's answer settles the attempt's breaker record and
             // budget unit (the walk's one rule, [`FarEnd::judged`]).
             if piece.from == FROM_FAR_END
