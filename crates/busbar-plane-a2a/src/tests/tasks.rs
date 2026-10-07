@@ -787,6 +787,32 @@ fn process_one() -> Book {
     book
 }
 
+/// Ported from busbar-a2a a2a/tests/taskstore_tests.rs::the_ram_default_loses_every_in_flight_task_and_the_registry_says_so.
+/// The negative twin of the restore cells: the same sequence over a memory store, whose records die
+/// with the process, loses everything, and the restore REPORTS an empty store rather than pretending.
+/// Durability is a property of the configured backend, never of the plane. The twin runs on the same
+/// `process_one` the durable cells restore from, so a store that stopped dropping would turn it red.
+#[test]
+fn the_ram_default_loses_every_in_flight_task_and_the_registry_says_so() {
+    let mut process_1 = process_one();
+    assert_eq!(
+        restore(&mut process_1).unwrap().active,
+        2,
+        "process 1 holds both tasks in its records"
+    );
+    // THE RESTART over a memory store: a NEW, empty one. The map dies with the process.
+    let mut process_2 = Book::default();
+    assert_eq!(
+        restore(&mut process_2).unwrap(),
+        Restored::default(),
+        "the memory store restores NOTHING: durability is a property of the configured backend"
+    );
+    assert!(
+        get(&mut process_2, BOB, "t-paused", 105).unwrap().is_none(),
+        "the interrupted task is genuinely gone"
+    );
+}
+
 /// Ported from busbar-a2a a2a/tests/taskstore_tests.rs::a_tampered_chain_is_reported_on_restore_and_the_task_is_still_restored.
 /// A chain the host reports broken at restore is named, and the task is still held: refusing it
 /// would let anyone who can write to the store delete a task by corrupting one event.

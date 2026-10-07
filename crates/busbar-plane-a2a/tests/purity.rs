@@ -304,3 +304,50 @@ fn no_diagnostic_line_of_the_plane_carries_the_push_token() {
     });
     assert!(lines > 0, "the scan read the plane's diagnostic lines");
 }
+
+/// THE PLANE DECLARES NO TRUST STATE OF ITS OWN.
+///
+/// Ported from the deleted engine crate's `reuse_tests::the_a2a_plane_declares_no_trust_state_of_its_own`.
+/// The trust lifecycle (the states, the drift, the approval, the pinned artifact and the verbs that
+/// move a registration through them) is the kernel's, written once and plane-neutral. The plane
+/// contributes its report types (`Sighting`, `Observation`: what a look saw) and parameterises the
+/// machine over them; a second declaration of the machine here is a fork, and two machines disagree
+/// the first time one of them is fixed. The sources are enumerated off disk (a hand-kept file list
+/// silently stops covering the newest code), and a scan that finds nothing is a failure, not a pass.
+#[test]
+fn the_a2a_plane_declares_no_trust_state_of_its_own() {
+    const BANNED: &[&str] = &[
+        "enum TrustState",
+        "enum Drift",
+        "struct Approval",
+        "trait PinnedArtifact",
+        "fn serves",
+        "fn suspend",
+        "fn resume",
+        "fn unpin",
+    ];
+    let mut scanned = 0usize;
+    let mut offenders = Vec::new();
+    walk(&src_dir(), &mut |path, text| {
+        scanned += 1;
+        for (n, line) in text.lines().enumerate() {
+            if is_comment(line) {
+                continue;
+            }
+            for needle in BANNED {
+                if line.contains(needle) {
+                    offenders.push(format!("{}:{}: `{needle}`", path.display(), n + 1));
+                }
+            }
+        }
+    });
+    assert!(
+        scanned >= 4,
+        "the scan found {scanned} source file(s), which cannot be right: a scan that discovers \
+         nothing passes vacuously"
+    );
+    assert!(
+        offenders.is_empty(),
+        "the plane forks the trust machine, which is the kernel's and plane-neutral: {offenders:?}"
+    );
+}
