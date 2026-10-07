@@ -2063,6 +2063,122 @@ mod agent_door {
         }
     }
 
+    /// What the presenting key's ledger holds, over every lane of its bucket: its admitted requests,
+    /// the fee units its admissions charged and its ends kept, the bytes ledgered, and its spend.
+    #[derive(Debug, Clone, Copy)]
+    struct Billed {
+        requests: u64,
+        fees: u64,
+        bytes: u64,
+        spend: i64,
+    }
+
+    impl Billed {
+        fn of(s: &Served) -> Self {
+            let now = busbar_kernel::store::now();
+            let usage = s
+                .gov
+                .usage_for(&s.app.cost, &s.key.id, now)
+                .expect("a read")
+                .expect("the key exists");
+            let lanes = s.gov.bucket_model_tokens(
+                &s.app.cost,
+                &s.key.id,
+                busbar_kernel::governance::WINDOW_TOTAL,
+                now,
+            );
+            let sum = |class: &str| -> u64 {
+                lanes
+                    .iter()
+                    .map(|(_, units)| units.get(class).copied().unwrap_or(0))
+                    .sum()
+            };
+            Billed {
+                requests: usage.requests,
+                fees: sum(busbar_contract::plane::PER_REQUEST),
+                bytes: sum(surface("bytes_class")),
+                spend: usage.spend_cents,
+            }
+        }
+    }
+
+    /// R2 (ruled; the kernel owns metering): A HOP THE BREAKER REFUSED COUNTS ITS REQUEST AND BILLS
+    /// NO FEE, NO BYTES AND NO SPEND. 1.5.5's llm rule, as its golden cells `cooldown|trip-then-serve`,
+    /// `concurrency|lane-atcapacity|n4` and `queue|timeout|n2` hold it: a request refused after its
+    /// admission is counted, and nothing it never consumed is billed.
+    ///
+    /// DIVERGES from origin/predev's `metered_verbs_tests.rs::a_hop_the_breaker_refused_bills_nothing`,
+    /// which asserted the refused hop wrote NO metering row at all: here the admission's
+    /// check-then-charge consumed the request (requests +1), the plane reported no fee unit for a
+    /// hop that never left (the admission's fee unit is refunded), and no byte is ledgered.
+    ///
+    /// RED arm: the first hop DID reach the failing agent, so it keeps its fee unit and its bytes —
+    /// a fix that simply stopped billing failing hops fails here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hop_the_breaker_refused_counts_its_request_and_bills_no_fee_no_bytes_no_spend() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-breaker-billed";
+        let _published = Published(instance);
+        let mut agent = Agent::start(503, r#"{"error":"down"}"#).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let mut reached = false;
+        for call in 0..32 {
+            let before = Billed::of(&s);
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            let dialled = agent.relayed();
+            let after = Billed::of(&s);
+            if body.contains("breaker_open") {
+                assert!(reached, "the RED arm ran first: a hop reached the agent");
+                assert!(!dialled, "the refused hop never dialled: {body}");
+                assert_eq!(
+                    after.requests - before.requests,
+                    1,
+                    "the refused hop's request is counted: {before:?} -> {after:?}"
+                );
+                assert_eq!(
+                    after.fees, before.fees,
+                    "the refused hop bills no fee: {before:?} -> {after:?}"
+                );
+                assert_eq!(
+                    after.bytes, before.bytes,
+                    "the refused hop bills no bytes: {before:?} -> {after:?}"
+                );
+                assert_eq!(
+                    after.spend, before.spend,
+                    "the refused hop spends nothing: {before:?} -> {after:?}"
+                );
+                return;
+            }
+            if dialled && !reached {
+                assert_eq!(
+                    after.requests - before.requests,
+                    1,
+                    "call {call}: {before:?} -> {after:?}"
+                );
+                assert_eq!(
+                    after.fees - before.fees,
+                    1,
+                    "call {call}: a hop that reached the agent keeps its fee: {before:?} -> {after:?}"
+                );
+                assert!(
+                    after.bytes > before.bytes,
+                    "call {call}: a hop that reached the agent bills its bytes: {before:?} -> {after:?}"
+                );
+                reached = true;
+            }
+        }
+        panic!("the breaker opened within 32 failing calls");
+    }
+
     /// B2 (restored, #42, #77(5)): A PRESENT AGENTS CARD SILENT ABOUT AN AGENT REFUSES THE CONFIG,
     /// at boot and on every apply, naming a paste-ready stub for exactly the agents it misses — in
     /// origin/predev's words (`billed_bytes_tests.rs::
