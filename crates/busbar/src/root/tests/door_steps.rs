@@ -318,6 +318,7 @@ fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
     super::ProviderRoute {
         base_url: "http://127.0.0.1:9".to_string(),
         protocol: protocol.to_string(),
+        error_map: Default::default(),
         credential: busbar_contract::secret_ref::SecretRef::none(),
         style: style.map(str::to_string),
         params: super::StyleParams::default(),
@@ -727,6 +728,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         super::ProviderRoute {
             base_url: "http://127.0.0.1:9".to_string(),
             protocol: "d".to_string(),
+            error_map: Default::default(),
             credential: busbar_contract::secret_ref::SecretRef::file(
                 key_file.display().to_string(),
             ),

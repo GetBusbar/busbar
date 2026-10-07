@@ -600,7 +600,8 @@ struct Probe {
 
 /// OPEN `plugin` at generation 1 over `settings` (JSON; empty = absent), its `owned` sections (one
 /// JSON object keyed by section name; empty = none) and `public_url`, as the composition root opens
-/// a door plane: the first generation's snapshot, or why it did not open.
+/// a door plane, with no provider's dialect facts: the first generation's snapshot, or why it did
+/// not open.
 ///
 /// # Errors
 ///
@@ -652,6 +653,8 @@ pub fn open_door(
                 len: url.len(),
             },
             owned: blob(owned),
+            providers: std::ptr::null(),
+            providers_len: 0,
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -812,6 +815,10 @@ fn facing(
                         flags: 0,
                     }
                 },
+                // The probe states claims and an audience only: the providers' dialect facts are
+                // the served instance's (`busbar::root::serve`).
+                providers: std::ptr::null(),
+                providers_len: 0,
             },
             PlaneOpenOut {
                 open: OpenOut {

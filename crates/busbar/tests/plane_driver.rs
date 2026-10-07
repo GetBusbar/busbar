@@ -149,6 +149,8 @@ fn load_open(
                 len: 0,
             },
             owned: NO_BLOB,
+            providers: std::ptr::null(),
+            providers_len: 0,
         },
         PlaneOpenOut {
             open: OpenOut {

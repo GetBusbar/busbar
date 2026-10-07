@@ -561,6 +561,39 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
         let Some(wake) = host.wake else {
             return say(out, Outcome::Refused);
         };
+        // THE PROVIDERS' DIALECT FACTS this open was handed, echoed as the snapshot's resource
+        // facts (`[[name, protocol, error_map or null], ..]`; absent when none), so a test reads what
+        // crossed. Read only where the host's `in` reaches them (the append rule).
+        let handed = i.open.head.size as usize >= std::mem::size_of::<PlaneOpenIn>()
+            && !i.providers.is_null()
+            && i.providers_len > 0;
+        let resource_facts = if handed {
+            let facts: Vec<serde_json::Value> =
+                std::slice::from_raw_parts(i.providers, i.providers_len)
+                    .iter()
+                    .map(|p| {
+                        let map = bytes(p.error_map);
+                        serde_json::json!([
+                            String::from_utf8_lossy(text(p.name)),
+                            String::from_utf8_lossy(text(p.protocol)),
+                            serde_json::from_slice::<serde_json::Value>(map).ok(),
+                        ])
+                    })
+                    .collect();
+            let json: &'static [u8] = Box::leak(
+                serde_json::to_vec(&facts)
+                    .unwrap_or_default()
+                    .into_boxed_slice(),
+            );
+            Blob {
+                ptr: json.as_ptr(),
+                len: json.len(),
+                fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
+                flags: 0,
+            }
+        } else {
+            NO_BLOB
+        };
         let snapshot = Box::new(PlaneSnapshot {
             size: std::mem::size_of::<PlaneSnapshot>() as u32,
             _reserved: 0,
@@ -572,7 +605,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             openapi: NO_BLOB,
             audience: NO_STR,
             resource_metadata: NO_STR,
-            resource_facts: NO_BLOB,
+            resource_facts,
             listed: std::ptr::null(),
             listed_len: 0,
         });
