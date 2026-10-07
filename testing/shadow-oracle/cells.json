@@ -35767,6 +35767,7 @@
         "plugins": [
           "store-sqlite"
         ],
+        "plugins_line": "1.5",
         "boot": {
           "expect": "exit",
           "secs": 15
