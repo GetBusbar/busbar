@@ -1128,7 +1128,7 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     let legacy = &native("seam-l-shared")[0];
     let other = &native("seam-l-other")[0];
     let door = &native("seam-l-shared")[0];
-    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]);
+    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]).expect("the fold");
     assert_eq!(rows.len(), 2, "the legacy row yields the shared key");
     assert!(
         std::ptr::eq(rows[0], other),
@@ -1170,7 +1170,7 @@ fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
         },
         ..*base
     }));
-    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]);
+    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]).expect("the fold");
     assert_eq!(rows.len(), 1, "one row serves the key");
     let row = rows[0];
     assert!(!std::ptr::eq(row, legacy), "the door serves the plane");
@@ -1198,8 +1198,46 @@ fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
     // A legacy row with no engine leaves the door's row untouched (the shared-key case above).
     let plain = &native("seam-l-plain")[0];
     let plain_door = &native("seam-l-plain")[0];
-    let rows = doors_own_their_plane_keys(vec![plain, plain_door], &[plain_door]);
+    let rows =
+        doors_own_their_plane_keys(vec![plain, plain_door], &[plain_door]).expect("the fold");
     assert!(std::ptr::eq(rows[0], plain_door), "nothing to carry");
+}
+
+/// SEAM-L(s), A FULL CARRY TABLE REFUSES BY NAME: a door taking an engine when every slot already
+/// carries another key's row is a boot refusal naming the door, never a row served without the
+/// engine. Driven on a one-slot table of its own, so the process's table is untouched. RED: the carry
+/// answered "nothing to carry" and the door served its key with no fallback runtime.
+#[test]
+fn a_door_carried_past_the_last_slot_refuses_by_name() {
+    static ONE: [std::sync::OnceLock<PlaneDecl>; 1] = [const { std::sync::OnceLock::new() }; 1];
+    let engine = |key: &'static str| -> (&'static PlaneDecl, &'static PlaneDecl) {
+        let base = &native(key)[0];
+        let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+            declaration: PlaneDeclaration {
+                fallback: true,
+                ..base.declaration
+            },
+            viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
+            ..*base
+        }));
+        (legacy, &native(key)[0])
+    };
+    let (legacy, door) = engine("seam-l-full-a");
+    let first = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
+        .expect("the one slot carries the first door");
+    assert!(first[0].fallback, "the first door carries its engine");
+    let again = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
+        .expect("the same key answers its row again");
+    assert!(std::ptr::eq(first[0], again[0]), "one row per key");
+    let (legacy, door) = engine("seam-l-full-b");
+    let Err(refusal) = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
+    else {
+        panic!("no slot is left for a second key, and the fold answered rows");
+    };
+    assert!(
+        refusal.contains("seam-l-full-b") && refusal.contains("1 door planes"),
+        "{refusal}"
+    );
 }
 
 /// SEAM-L(s): a key two door rows both register on the same axis is a boot refusal naming both.
