@@ -11,7 +11,7 @@
 //! none, never a guess.
 
 use busbar_contract::abi::transport::{
-    FramePiece, FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT,
+    FramePiece, FAULT_CALLER, FAULT_HARD, FAULT_HEALTHY, FAULT_NONE, FAULT_TRANSIENT,
 };
 use busbar_contract::transport::wire::WireFault;
 
@@ -32,6 +32,10 @@ fn every_stated_reading_round_trips_and_an_unknown_byte_is_none() {
         Some(WireFault::Transient)
     );
     assert_eq!(WireFault::from_code(FAULT_HARD), Some(WireFault::Hard));
-    assert_eq!(WireFault::from_code(FAULT_HARD + 1), None);
+    assert_eq!(
+        WireFault::from_code(FAULT_HEALTHY),
+        Some(WireFault::Healthy)
+    );
+    assert_eq!(WireFault::from_code(FAULT_HEALTHY + 1), None);
     assert_eq!(WireFault::from_code(u8::MAX), None);
 }
