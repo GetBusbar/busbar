@@ -440,6 +440,12 @@ fn scan_roots(cx: &Ctx) -> Result<(Vec<crate::ctx::SourceFile>, Vec<String>), Ve
     }
 }
 
+/// A file's text as an overlay would show it (the overlay's own plant first), for stacking edits.
+fn ov_read(cx: &Ctx, ov: &Overlay, rel: &str) -> Option<String> {
+    let planted = cx.with_overlay(ov.clone());
+    planted.read(rel).ok()
+}
+
 pub struct PlaneAbiNeutralityGate;
 
 impl Gate for PlaneAbiNeutralityGate {
@@ -827,6 +833,79 @@ impl Gate for PlaneAbiNeutralityGate {
             }
             Err(e) => report.note_infra_failure(format!(
                 "plane-abi-neutrality selftest: the hot lane is unreadable ({e})"
+            )),
+        }
+
+        // THE MATCHER AND ITS WRITTEN EXEMPTIONS (coordinator rulings on X5 finding 4). Each case
+        // appends declarations to live plane-ABI files; `None` is a file that could not be read.
+        let plant = |edits: &[(String, &str)]| -> Option<Overlay> {
+            let mut ov = Overlay::new();
+            for (rel, text) in edits {
+                let base = ov_read(cx, &ov, rel)?;
+                ov.set(rel, format!("{base}\n{text}\n"));
+            }
+            Some(ov)
+        };
+        let plane_mod = format!("{ABI_DIR}/plane/mod.rs");
+        let plane_check = format!("{ABI_DIR}/plane/check.rs");
+        let host_hook = format!("{ABI_DIR}/host/hook.rs");
+        let host_service = format!("{ABI_DIR}/host/service.rs");
+        let red_cases: Vec<(&str, Vec<(String, &str)>, Vec<&str>)> = vec![
+            (
+                "a whole-word protocol noun (ToolSlot) is still a finding, once per name across \
+                 its sites",
+                vec![
+                    (plane_mod.clone(), "pub struct ToolSlot;"),
+                    (host_service.clone(), "pub fn take_slot(slot: ToolSlot) {}"),
+                ],
+                vec!["ToolSlot (2 site(s)"],
+            ),
+            (
+                "a name that is not one of the three hook names does not ride the exemption \
+                 (prompt_slot)",
+                vec![(plane_mod.clone(), "    pub prompt_slot: u32,")],
+                vec!["prompt_slot"],
+            ),
+            (
+                "a name that is not one of the three hook names does not ride the exemption \
+                 (PromptCache)",
+                vec![(plane_mod.clone(), "pub struct PromptCache;")],
+                vec!["PromptCache"],
+            ),
+            (
+                "prompt: PromptView outside the rider sites is a finding",
+                vec![(plane_check.clone(), "    pub prompt: PromptView,")],
+                vec!["abi/plane/check.rs"],
+            ),
+            (
+                "a member naming PromptView but carrying another noun (tool_view) is a finding",
+                vec![(host_hook.clone(), "pub fn tool_view() -> PromptView {}")],
+                vec!["tool_view"],
+            ),
+            (
+                "the TaskLost collision excuses that identifier and no other task name",
+                vec![(plane_mod.clone(), "pub struct TaskQueue;")],
+                vec!["TaskQueue"],
+            ),
+        ];
+        for (name, edits, naming) in red_cases {
+            match plant(&edits) {
+                Some(ov) => report.push(prove_red(cx, self, name, &[ROW_EXPORTED], ov, &naming)),
+                None => report.note_infra_failure(format!(
+                    "plane-abi-neutrality selftest: a file of `{name}` could not be read"
+                )),
+            }
+        }
+        match plant(&[(plane_mod.clone(), "pub struct BodyTooLargeNote;")]) {
+            Some(ov) => report.push(crate::gates::prove_rows_green(
+                cx,
+                self,
+                "a noun that is only letters inside another word (BodyTooLarge) is not a finding",
+                &[ROW_EXPORTED],
+                ov,
+            )),
+            None => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: {plane_mod} could not be read"
             )),
         }
 
