@@ -412,7 +412,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_eight() {
+fn the_services_that_never_pend_are_exactly_the_stated_nine() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -424,7 +424,8 @@ fn the_services_that_never_pend_are_exactly_the_stated_eight() {
             op::ENTITLEMENT_CHECK,
             op::RANDOM_FILL,
             op::NEED_ADMIT,
-            op::TRUST_VERIFY
+            op::TRUST_VERIFY,
+            op::SNAPSHOT_READ
         ]
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
@@ -486,6 +487,7 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, trust_verify), op::TRUST_VERIFY),
         (offset_of!(HostSlots, records_secret), op::RECORDS_SECRET),
         (offset_of!(HostSlots, disk_append), op::DISK_APPEND),
+        (offset_of!(HostSlots, snapshot_read), op::SNAPSHOT_READ),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -932,4 +934,20 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     assert!(check(written(0, 0, 0), &pending, TICKET).is_ok());
     assert!(check(written(0, 0, 0), &pending, Ticket::NONE).is_err());
     assert!(may_pend(op::DISK_APPEND));
+}
+
+/// `snapshot.read`'s buffer alignment is the scrape layout's: every record the host lays out in
+/// it (family, sample, label) is aligned at it and is a whole multiple of it.
+#[test]
+fn the_snapshot_alignment_is_the_scrape_layouts() {
+    use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
+    use core::mem::{align_of, size_of};
+    for (align, size) in [
+        (align_of::<ScrapeFamily>(), size_of::<ScrapeFamily>()),
+        (align_of::<ScrapeSample>(), size_of::<ScrapeSample>()),
+        (align_of::<ScrapeLabel>(), size_of::<ScrapeLabel>()),
+    ] {
+        assert!(align <= SNAPSHOT_ALIGN && SNAPSHOT_ALIGN.is_multiple_of(align));
+        assert_eq!(size % SNAPSHOT_ALIGN, 0);
+    }
 }

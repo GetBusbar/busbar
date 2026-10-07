@@ -433,7 +433,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
                 fire_stage_taps(
                     host.tap_hooks_response(),
                     &shape,
-                    busbar_kernel::hooks::wire::HookStageProjection {
+                    busbar_contract::hook_wire::HookStageProjection {
                         at: "response",
                         model: None,
                         attempt_number: None,

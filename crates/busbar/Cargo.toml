@@ -100,20 +100,12 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 # `claims` axis), so the root names none of them. The streaming plane's edge stays for the root's own
 # streaming unit, which builds its node over the pure plane.
 busbar-plane-streaming = { path = "../busbar-plane-streaming" }
-# THE DECISIONS PLANE (jev), #48's fifth — and the one plane crate that is BOTH halves at once. Its
-# four siblings above are PURE planes whose registry declaration is carried by a separate impure
-# host crate (`busbar-llm`/`busbar-mcp`/`busbar-a2a`/`busbar-voice`, the optional protocol crates
-# declared further up); jev has no host, by the signed design, so this single crate is the plane AND
-# the section. That is why this line is OPTIONAL when the four above are not: it follows the
-# convention of the thing it is — the crate whose `PLANE_DECL` is installed — and `plane-decisions`
-# below is the ONE switch for the plane and its crate edge together, exactly as `plane-a2a` and
-# `plane-streaming` are. `--no-default-features` therefore still installs no plane at all, which is the
+# THE DECISIONS PLANE (jev), #48's fifth: the edge the `plane-decisions` switch's `plane-door` row
+# names. The plane is served through its memory-ABI door (`busbar_plane_decisions::plane_door::door`),
+# loaded through the loader's one load like every dropped-in plane door (FLIP-DECISIONS), so its
+# registry row is the door's own Statement folded by the kernel and the composition root writes no
+# declaration of its own. Optional, so `--no-default-features` installs no plane at all, which is the
 # property the strong-form deletion test is written about.
-#
-# The declaration itself is NOT in this crate and cannot be: a pure plane's manifest may name
-# `busbar-contract` and nothing else (DECISIONS #40), and `PlaneDecl` is a `busbar-kernel` type. The
-# composition root writes it, in `src/root/plane_decisions.rs`, which is the one place entitled to
-# name a kernel type and a plane in the same file.
 busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 # THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
@@ -263,32 +255,16 @@ transport-ws = ["dep:busbar-transport-ws"]
 # through it (`root::registry::BootRegistry::dropped_door`). The crate edge stays — the row is what
 # the switch gates, as `export-file`'s is.
 transport-tcp = []
-# THE DECISIONS PLANE (jev), #48's fifth, DEFAULT ON. The analogue of `plane-a2a` above: one switch
-# for the plane and the crate edge that carries it, never two. It forwards to NO kernel feature, and
-# that is the whole difference between this plane and its four siblings — `busbar-kernel` holds no
-# `decisions:` grammar, no decision runtime and no decision seam to gate, because this plane is
-# post-1.5.5 and nothing of it was ever built into the engine. What the switch turns on is a
-# declaration and a dependency edge; what it turns off is both, so the plane is strong-form
-# deletable on the day it lands rather than as a later cleanup.
-#
-# It carries ONE config key and nothing on the wire. With the switch on, the declaration owns the
-# `decisions:` section and wires its parse/default hooks (see `src/root/plane_decisions.rs`), so a
-# malformed `decisions:` block fails `--validate` and boot, naming the key; with it off, the key is
-# the untyped raw capture every unowned section falls through to. That is the one place a
-# deployment can tell the two builds apart, and only with a malformed block. The declaration
-# claims no path, binds no audience and builds no runtime slot, so no request is answered
-# differently either way — which is what keeps the neutrality cells answering the same on both
-# legs, and is why this ships on rather than waiting for a golden it could never move.
+# THE DECISIONS PLANE, through its memory-ABI door (FLIP-DECISIONS; BUSBAR-1.6.0.md Part 3 section 12,
+# "The switch": the fold's development-only switch is deleted when the fold completes, and the plane's
+# one switch carries its door; #17: one feature per plane). IN `default`; `--no-default-features`
+# compiles it out. On, the plane's door (`busbar_plane_decisions::plane_door::door`) is a `plane-door`
+# row: the root hands it to the loader beside every dropped-in plane door and binds it through the one
+# load on the one dispatcher, so the compiled-in plane is called through the same table as its
+# dropped-in cdylib (`decisions_door`; #2, #30; THE DESIGN section 11.4), its Statement folds into the
+# plane's registry row (the `decisions:` section judged by the door's own `validate`), and the serve
+# path hands it its arrivals through the plane driver.
 plane-decisions = ["dep:busbar-plane-decisions"]
-# THE DECISIONS PLANE THROUGH ITS DOOR, the plane's development-only switch (BUSBAR-1.6.0.md Part 3
-# section 12, "The switch": a development-only cargo feature flips a plane onto the driver during its
-# fold and is deleted when the fold completes). Never in `default`. On, the plane's memory-ABI door
-# (`busbar_plane_decisions::plane_door::door`) is a `plane-door` row: the root hands it to the loader
-# beside every dropped-in plane door and binds it through the one load on the one dispatcher, so the
-# compiled-in plane is called through the same table as its dropped-in cdylib (#2, #30; THE DESIGN
-# section 11.4). It carries `plane-decisions`, which keeps the crate edge and the `decisions:` key's
-# owner.
-plane-decisions-door = ["plane-decisions"]
 # THE LLM PLANE THROUGH ITS DOOR, the llm fold's development-only switch (BUSBAR-1.6.0.md Part 3
 # section 12, "The switch"; deleted when the llm fold completes). Never in `default`. On, the plane's
 # memory-ABI door (`busbar_plane_llm::plane_door::door`) is a `plane-door` row, bound through the
@@ -361,7 +337,6 @@ proto-llm = "busbar-llm"
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
 plane-streaming = "busbar-voice"
-plane-decisions = "busbar-plane-decisions"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
@@ -388,7 +363,7 @@ transport-grpc = "busbar-transport-grpc"
 transport-stdio = "busbar-transport-stdio"
 # THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
 # loader's one load beside the dropped-in plane doors.
-plane-decisions-door = "busbar-plane-decisions"
+plane-decisions = "busbar-plane-decisions"
 llm-on-driver = "busbar-plane-llm"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
@@ -411,7 +386,6 @@ proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams dia
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
-plane-decisions = "plane claims"
 export-file = "export-doors"
 export-webhook = "export-doors"
 export-prometheus = "export-doors"
@@ -430,14 +404,11 @@ transport-sse = "transport"
 transport-ws = "transport"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
-plane-decisions-door = "plane-door"
+plane-decisions = "plane-door"
 llm-on-driver = "plane-door"
 
-# A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
-# crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
-# written in the composition root and its entry module is that root module.
+# A linked crate whose entry module is not `<crate>::linked`.
 [package.metadata.busbar.linked-entry]
-busbar-plane-decisions = "crate::root::plane_decisions"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
 # A secret plugin's door is its `door` module's.
@@ -447,7 +418,7 @@ busbar-secret-file = "busbar_secret_file::door"
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
 busbar-auth-header = "busbar_auth_header::compiled_in"
 # A plane door row's entry is the module that exports its `door`.
-plane-decisions-door = "busbar_plane_decisions::plane_door"
+plane-decisions = "busbar_plane_decisions::plane_door"
 llm-on-driver = "busbar_plane_llm::plane_door"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
 busbar-export-prometheus = "busbar_export_prometheus::door"
@@ -479,7 +450,6 @@ plane-a2a = "busbar-a2a"
 plane-streaming = "busbar-voice"
 
 [package.metadata.busbar.root-units]
-plane-decisions = "plane_decisions"
 proto-llm = "plane_node"
 
 [dev-dependencies]
@@ -492,6 +462,10 @@ rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }
+# tests/tls_listener_h2.rs drives the TLS listener as an HTTP/2 client (OWNER RULING Q137).
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http = { workspace = true }
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
 # `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
 # is `#[async_trait]`, so its test impl needs the macro.
@@ -630,11 +604,21 @@ required-features = ["auth-admin-tokens"]
 name = "root_listeners_are_the_connectors"
 path = "tests/root_listeners_are_the_connectors.rs"
 required-features = ["auth-admin-tokens"]
+
+[[test]]
+name = "metrics_routes_across_export_reload"
+path = "tests/metrics_routes_across_export_reload.rs"
+required-features = ["auth-admin-tokens"]
 [package.metadata.busbar.legacy]
 # THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each
 # entry's `retired:` and `former_names:`); src/root/tests/legacy.rs is red on an edit and prints the
 # render to paste.
 # build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.
+"export_module_streams" = "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
+"export_modules" = "prometheus | request-log-webhook | request-log-file | otlp"
+"export_trace_instance" = "traces"
+"export_trace_module" = "otlp"
+"export_type_keys" = "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
 "gov14_busy_timeout_key" = "sqlite_busy_timeout_ms"
 "gov14_change" = "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
 "gov14_db_path" = "busbar-governance.db"

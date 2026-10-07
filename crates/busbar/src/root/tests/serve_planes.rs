@@ -152,7 +152,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
         .collect();
     assert_eq!(
         claims,
-        [("POST", "/call"), ("POST", "/open")],
+        [("POST", "/call"), ("POST", "/open"), ("POST", "/framed")],
         "its open published its claims"
     );
     assert_eq!(

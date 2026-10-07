@@ -21,7 +21,7 @@ use busbar_kernel::test_support::{oversized_413_body, TestApp};
 /// `plane_integration::oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect`.
 #[tokio::test]
 async fn an_unmounted_plane_claims_no_path_by_url_shape() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let mounting: Vec<_> = linked::planes()
         .iter()
         .copied()

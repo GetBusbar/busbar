@@ -11,11 +11,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use busbar_core_admin::v1::contract::UsageBreakdown;
 use busbar_core_admin::v1::service::{
     derive_spend_micros_row, derive_spend_micros_row_at_card, derive_spend_micros_row_classes,
     derive_spend_micros_row_classes_at_card, UsageRateHistory,
 };
-use busbar_kernel::admin::v1::contract::UsageBreakdown;
 use busbar_kernel::cost::{self, CostModel};
 
 /// The dated-history seam's one method answers the facade's `History`.
