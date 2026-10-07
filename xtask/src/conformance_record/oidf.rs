@@ -531,14 +531,17 @@ pub struct Plan {
 
 /// The FAPI 2.0 Security Profile OP posture for an authorization server that is not an OpenID
 /// provider: plain OAuth, private_key_jwt client authentication, DPoP sender-constraining, the
-/// plain profile, unsigned requests, plain responses.
+/// plain profile, simple authorization requests. Unsigned requests and plain responses are the
+/// posture too, but the PLAN sets those two itself: release-v5.3.1's
+/// `FAPI2SPFinalTestPlan.testModulesWithVariants` fixes `fapi_request_method=unsigned` and
+/// `fapi_response_mode=plain_response` as its baseline variants, and the suite refuses to create
+/// the plan when the caller sets either one too ("Variant 'fapi_request_method' has been set by
+/// user, but test plan already sets this variant"), so naming them here ran zero modules.
 const FAPI2SP_PLAIN_OAUTH: &[(&str, &str)] = &[
     ("openid", "plain_oauth"),
     ("client_auth_type", "private_key_jwt"),
     ("sender_constrain", "dpop"),
     ("fapi_profile", "plain_fapi"),
-    ("fapi_request_method", "unsigned"),
-    ("fapi_response_mode", "plain_response"),
     ("authorization_request_type", "simple"),
 ];
 
@@ -899,7 +902,12 @@ impl Runner {
                             let venv_py = self.cache.join("oidf/venv/bin/python");
                             let py = venv_py.to_string_lossy().into_owned();
                             let cfg = config.to_string_lossy().into_owned();
-                            let export = pdir.join("export").to_string_lossy().into_owned();
+                            // The runner writes the plan export INTO this directory and does not
+                            // create it: with it absent, every module ran and the script then died
+                            // on the export (FileNotFoundError) before printing one result.
+                            let export_dir = pdir.join("export");
+                            let _ = std::fs::create_dir_all(&export_dir);
+                            let export = export_dir.to_string_lossy().into_owned();
                             let leg = format!("run-{}", plan.suite);
                             run.exit = self.leg(
                                 rig,
@@ -936,18 +944,40 @@ impl Runner {
         out
     }
 
-    /// The dropped-in `oidc` auth module: its cdylib (GetBusbar/busbar-auth-oidc at the workspace's
-    /// pinned rev) and busbar's own `busbar-plugin-pack`, built in this checkout, then packed
-    /// UNSIGNED into `<pdir>/plugins/oidc.tar.gz`. The plugins directory, or busbar's `Err`.
+    /// The dropped-in `oidc` auth module: its cdylib, built FROM ITS OWN REPO at the rev this
+    /// workspace's lock pins (GetBusbar/busbar-auth-oidc), and busbar's own `busbar-plugin-pack`,
+    /// built in this checkout; the cdylib is then packed UNSIGNED into `<pdir>/plugins/oidc.tar.gz`.
+    /// The plugins directory, or busbar's `Err`.
+    ///
+    /// NOT `cargo build -p busbar-auth-oidc-plugin` in this workspace: the plugin is only a DEV edge
+    /// of the root here, and `cargo build -p` of a dev-only dependency panics cargo 1.98's feature
+    /// resolver (exit 101 before anything builds), so the rig never reached the suite. The repo is
+    /// found the way the release turnstile's dropped-in cdylibs are: `cargo metadata` names the
+    /// pinned checkout's manifest, and the build runs over that repo's own workspace into this
+    /// checkout's target dir, so the library lands where the pack step reads it.
     fn oidc_plugin(&self, pdir: &Path) -> Result<std::path::PathBuf, String> {
         let rig = Rig::Oidf;
         let plugins = pdir.join("plugins");
         std::fs::create_dir_all(&plugins).map_err(|e| format!("{}: {e}", plugins.display()))?;
         let root = Some(self.root.as_path());
+        let repo = pinned_repo_manifest(&self.root, OIDC_PLUGIN)?;
+        let (repo, target) = (
+            repo.to_string_lossy().into_owned(),
+            self.target.to_string_lossy().into_owned(),
+        );
         for (leg, argv) in [
             (
                 "oidc-plugin-build",
-                &["cargo", "build", "-p", "busbar-auth-oidc-plugin"][..],
+                &[
+                    "cargo",
+                    "build",
+                    "--manifest-path",
+                    repo.as_str(),
+                    "-p",
+                    OIDC_PLUGIN,
+                    "--target-dir",
+                    target.as_str(),
+                ][..],
             ),
             (
                 "plugin-pack-build",
@@ -1096,4 +1126,46 @@ impl Runner {
         .map_err(|e| format!("{}: {e}", path.display()))?;
         Ok((booted, stub, path))
     }
+}
+
+/// The oidc plugin's crate, as this workspace's lock names it.
+const OIDC_PLUGIN: &str = "busbar-auth-oidc-plugin";
+
+/// The manifest of the WORKSPACE that holds `package` at the rev this checkout's lock pins: the
+/// package's own manifest, as `cargo metadata` resolves it in the pinned git checkout, and then the
+/// nearest `Cargo.toml` above it that declares `[workspace]` (a fleet repo is a two-crate workspace).
+/// `Err` when the lock names no such package or the checkout has no workspace manifest.
+pub fn pinned_repo_manifest(root: &Path, package: &str) -> Result<std::path::PathBuf, String> {
+    let out = std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(["metadata", "--format-version", "1", "--locked"])
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| format!("`cargo metadata` could not start: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("`cargo metadata --locked` exited {}", out.status));
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("`cargo metadata` printed no JSON: {e}"))?;
+    let manifest = meta["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["name"].as_str() == Some(package))
+        .and_then(|p| p["manifest_path"].as_str())
+        .ok_or_else(|| format!("this checkout's lock pins no `{package}`"))?;
+    workspace_above(Path::new(manifest))
+        .ok_or_else(|| format!("no `[workspace]` manifest above {manifest}"))
+}
+
+/// The nearest `Cargo.toml` at or above `manifest`'s directory that declares `[workspace]`.
+pub fn workspace_above(manifest: &Path) -> Option<std::path::PathBuf> {
+    manifest.ancestors().skip(1).find_map(|dir| {
+        let m = dir.join("Cargo.toml");
+        std::fs::read_to_string(&m)
+            .ok()
+            .filter(|t| t.lines().any(|l| l.trim() == "[workspace]"))
+            .map(|_| m)
+    })
 }

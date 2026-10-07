@@ -384,7 +384,9 @@ pub(crate) fn linked_source(
         if !is_door {
             continue;
         }
-        if let Some(path) = metadata_value(manifest, "package.metadata.busbar.linked-declares", feature) {
+        if let Some(path) =
+            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
+        {
             out.push_str(&format!("({krate:?}, {entry}::door, {path}), "));
         }
     }
@@ -466,7 +468,10 @@ pub(crate) fn linked_source(
         .iter()
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
     {
-        if axes.iter().any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS) {
+        if axes
+            .iter()
+            .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
+        {
             out.push_str(&format!("({e}::KEY, {e}::door), "));
         }
     }

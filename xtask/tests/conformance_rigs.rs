@@ -782,3 +782,65 @@ fn the_plain_subject_config_names_its_store() {
     assert_eq!(doc["store"]["module"].as_str(), Some("memory"));
     assert_eq!(doc["listen"].as_str(), Some("127.0.0.1:41000"));
 }
+
+/// The oidf rig builds the dropped-in oidc plugin over ITS OWN REPO's workspace (the pinned git
+/// checkout), never `cargo build -p` in this one, where the plugin is a dev-only edge and cargo's
+/// feature resolver panics. The workspace is the nearest manifest above the crate that declares
+/// `[workspace]`, so a two-crate fleet repo resolves to its root, not to the plugin crate.
+#[test]
+fn the_oidc_plugin_is_built_over_its_own_repo_workspace() {
+    let d = std::env::temp_dir().join(format!("xtask-ws-above-{}", std::process::id()));
+    let crate_dir = d.join("auth-oidc-plugin");
+    std::fs::create_dir_all(&crate_dir).unwrap();
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"auth-oidc-plugin\"]\n",
+    )
+    .unwrap();
+    std::fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"p\"\n").unwrap();
+    assert_eq!(
+        xtask::conformance_record::workspace_above(&crate_dir.join("Cargo.toml")),
+        Some(d.join("Cargo.toml"))
+    );
+    // A crate with no workspace above it within the tree resolves to nothing rather than to itself.
+    let lone = d.join("lone");
+    std::fs::create_dir_all(&lone).unwrap();
+    std::fs::remove_file(d.join("Cargo.toml")).unwrap();
+    std::fs::write(lone.join("Cargo.toml"), "[package]\nname = \"l\"\n").unwrap();
+    assert!(
+        xtask::conformance_record::workspace_above(&lone.join("Cargo.toml"))
+            .is_none_or(|m| !m.starts_with(&d))
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The mcp rig runs on a PINNED node, never the runner's: the control peer's bundler ships its native
+/// binding as an optional dependency gated on node `^20.19.0 || >=22.12.0`, which pnpm skips silently
+/// outside that range, and the official suite needs node 22. Every runner platform has a digest, and
+/// the pin is inside both ranges.
+#[test]
+fn the_mcp_rig_pins_a_node_its_toolchain_accepts_on_every_runner_platform() {
+    use xtask::conformance_record::{mcp_node_platform, MCP_NODE_VERSION};
+    for (os, arch) in [
+        ("linux", "x86_64"),
+        ("linux", "aarch64"),
+        ("macos", "x86_64"),
+        ("macos", "aarch64"),
+    ] {
+        let (_, digest) = mcp_node_platform(os, arch).expect("a pinned tarball for this runner");
+        assert!(
+            digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{os}/{arch}: {digest}"
+        );
+    }
+    assert!(mcp_node_platform("windows", "x86_64").is_none());
+    let v: Vec<u32> = MCP_NODE_VERSION
+        .trim_start_matches('v')
+        .split('.')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    assert!(
+        v[0] == 22 && v[1] >= 12,
+        "{MCP_NODE_VERSION} is outside >=22.12 <23"
+    );
+}

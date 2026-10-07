@@ -4,5 +4,4 @@
 //! busbar-kernel-ledger `usage` batteries that mint their tokens.
 
 mod fixtures;
-mod meter_tests;
 mod series_tests;

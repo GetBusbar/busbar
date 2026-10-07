@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The fold: the closed sources, the variance rule, and the floor that is a tripwire and never a
-//! charge.
+//! The closed sources: what each one converts a raw measurement to, and which of them the kernel
+//! derived itself.
 
 use crate::usage::{Direction, LocatorPtr, QuantitySource};
 
