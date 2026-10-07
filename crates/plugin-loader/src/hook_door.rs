@@ -355,7 +355,19 @@ impl Inner {
                 // as the ops holding them return — and fails `TimedOut` on that budget, never at
                 // once and never past it. A refusal with a unit free (one came back since) is tried
                 // again once at once; any other refusal is the plugin's answer.
-                if done.outcome == Outcome::Refused && !plugin.is_faulted() {
+                #[cfg(test)]
+                if done.outcome == Outcome::Refused {
+                    hold_refused_until_faulted_for_tests(&self.settings, &plugin, deadline).await;
+                }
+                // REFUSED, AND THE INSTANCE FAULTED SINCE (the watchdog quarantined it between the
+                // refusal and this look): a refusal is never a crossing, so this call was never
+                // made; like one that met the fault before it was submitted (above), it waits for
+                // the trial window within its own budget (R2), never answering the refusal.
+                if done.outcome == Outcome::Refused && plugin.is_faulted() {
+                    guard.answered = true;
+                    continue 'route;
+                }
+                if done.outcome == Outcome::Refused {
                     if plugin.inflight() < plugin.max_inflight() {
                         if !retried_free {
                             retried_free = true;
@@ -408,6 +420,29 @@ impl Inner {
                 };
             }
         }
+    }
+}
+
+/// A mark in the settings of the instances whose refused calls wait, before they are judged, until the
+/// instance is faulted (bounded by the call's deadline): the order a loaded host gives by chance
+/// (a call refused at the cap, the watchdog faulting the wedged instance before the refusal is
+/// looked at), held so a test meets it every time.
+#[cfg(test)]
+pub(crate) static HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+#[cfg(test)]
+async fn hold_refused_until_faulted_for_tests(
+    settings: &[u8],
+    plugin: &Plugin<Hook>,
+    deadline: Instant,
+) {
+    let held = HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_deref()
+        .is_some_and(|mark| settings.windows(mark.len()).any(|w| w == mark));
+    while held && !plugin.is_faulted() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
