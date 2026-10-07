@@ -87,6 +87,13 @@ const HOT_LANE_DECL_SITE: &str = "crates/busbar-contract/src/abi/hot/mod.rs";
 /// in writing, instead of the ban list being loosened or a correct primitive being renamed to dodge
 /// a grep. This is the same trade the `PLANE_DECL` exemption above makes.
 ///
+/// `TaskLost` IS THE SAME COLLISION AT THE IDENTIFIER (coordinator ruling, X5 finding 4): the wire
+/// refusal code `RefusalCode::TaskLost` (`abi/plane/mod.rs`) and the kernel reason it maps to are
+/// named for the RUNTIME task that ran a unit and vanished, not the a2a `task` noun, and the reason
+/// persists as the durable string `task_lost` (`caps/seat_verdict.rs`) in journals and disputes —
+/// renaming it would change stored bytes. Exempt as this exact identifier and nothing wider: any
+/// other declaration whose words carry `task` is still a finding.
+///
 /// NOT a licence: a genuine leak of THIS plane into a neutral crate is caught by `plane-purity` and
 /// by the `law0-neutral-instance` class in `kind_isolation::matrix`, which key on the crate edge
 /// rather than on a noun and so are immune to the collision.
@@ -94,11 +101,40 @@ const HOT_LANE_DECL_SITE: &str = "crates/busbar-contract/src/abi/hot/mod.rs";
 /// Two spellings of the ONE plane, because the key is read two ways (see [`declared_plane_keys`]):
 /// `plane-decisions` from the declaration the composition root writes for it, `decisions` from its
 /// crate directory `busbar-plane-decisions`. Same plane, same collision, same exemption.
-const PRIMITIVE_COLLISION_KEYS: &[&str] = &["plane-decisions", "decisions"];
+const PRIMITIVE_COLLISION_KEYS: &[&str] = &["plane-decisions", "decisions", "TaskLost"];
 
-/// The banned protocol/role nouns. Matched case-insensitively as SUBSTRINGS of identifiers on
-/// declaration lines: a banned noun concatenated into a name — `McpTransport`, `server_stream` — is
-/// exactly the leak to catch, and a word-boundary match would miss it.
+/// THE HOOK KIND'S OWN VOCABULARY, A CLOSED LIST (coordinator ruling, X5 finding 4). These are the
+/// spec-approved names of the hook kind's ABI, whose 1.5.5 behaviour is frozen: `hook.call` op 17
+/// is a gate or a rewrite over the hook kind's `PromptView` (`BUSBAR-1.6.0.md` :1617, K5 owns the
+/// ABI and the host side), and the plane's `project` op writes the plane-flattened `PromptView`
+/// (:4709, K5 approved). They are declared in `abi/hook` and appear in the plane ABI where it
+/// carries the hook's view: `abi/host/hook.rs`, `abi/host/service.rs` (`HookCallIn.prompt`),
+/// `ProjectOut.prompt` and `abi/plane/check.rs`. Exactly these three names; nothing else rides it.
+///
+/// THE RIDER, BOUNDED TO THE SITES ABOVE: at a [`RIDER_SITES`] site only, a declaration that names
+/// one of the three may carry that name's own banned word in its own name and nothing more —
+/// `prompt: PromptView`, `fn empty_prompt() -> PromptView`: the member or accessor that holds the
+/// hook's view, named for it. A declaration whose words carry any OTHER banned noun, that names
+/// none of these three, or that sits anywhere else (the same `prompt: PromptView` line in any other
+/// file) is a finding.
+const HOOK_VOCABULARY: &[&str] = &["PromptView", "VIEW_HAS_PROMPT", "REQUEST_HAS_TOOLS"];
+
+/// Where the [`HOOK_VOCABULARY`] rider is allowed: the file, and — where the file is wider than the
+/// hook's view — the one struct whose fields carry it.
+const RIDER_SITES: &[(&str, Option<&str>)] = &[
+    ("crates/busbar-contract/src/abi/host/hook.rs", None),
+    ("crates/busbar-contract/src/abi/host/service.rs", None),
+    (
+        "crates/busbar-contract/src/abi/plane/mod.rs",
+        Some("ProjectOut"),
+    ),
+];
+
+/// The banned protocol/role nouns. Matched against the WORDS of every identifier on a declaration
+/// line (see [`banned_hits`]): a banned noun concatenated into a name — `McpTransport`,
+/// `server_stream` — is a word of that name and is exactly the leak to catch, while a noun that is
+/// only a run of letters inside another word — `BodyTooLarge` reads `body`/`too`/`large`, never
+/// `tool` — is not one (coordinator ruling, X5 finding 4).
 const BANNED: &[&str] = &[
     "llm",
     "mcp",
@@ -142,10 +178,6 @@ const TEST_PATH_RATCHET: usize = 0;
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a neutral ABI";
 
-fn finding(rel: &str, line: usize, code: &str) -> String {
-    format!("{rel}:{line}:{code}")
-}
-
 fn row_exported(offenders: &[String]) -> Row {
     if offenders.is_empty() {
         return Row::pass(
@@ -158,7 +190,7 @@ fn row_exported(offenders: &[String]) -> Row {
         ROW_EXPORTED,
         "a banned protocol/role noun is in a plane-ABI declaration",
         format!(
-            "{} finding(s): {} — the plane ABI must be DERIVED from the primitive taxonomy, never \
+            "{} name(s): {} — the plane ABI must be DERIVED from the primitive taxonomy, never \
              named after one protocol",
             offenders.len(),
             offenders.join(" | ")
@@ -178,27 +210,58 @@ fn row_ratchet(offenders: &[String]) -> Row {
         ROW_TEST_RATCHET,
         "test-path declarations carrying a banned noun are over their ratchet",
         format!(
-            "{} finding(s) against a ratchet of {TEST_PATH_RATCHET}, which may only go down: {}",
+            "{} name(s) against a ratchet of {TEST_PATH_RATCHET}, which may only go down: {}",
             offenders.len(),
             offenders.join(" | ")
         ),
     )
 }
 
-/// A DECLARATION-ish line: one that introduces a Rust identifier, or a `pub` field / enum variant.
-/// The pre-filter is what keeps prose in `///` doc comments — which legitimately discusses
-/// neutrality — out of scope, so only the names the ABI actually exports are scanned.
+/// A DECLARATION line: one that introduces a Rust identifier, or a field / parameter / enum
+/// variant. The pre-filter is what keeps prose in `///` doc comments — which legitimately discusses
+/// neutrality — out of scope, so only the names the ABI actually declares are scanned.
+///
+/// NOT a declaration (X5 finding 4, ruling 4: a name counts once, where it is declared): a match
+/// arm (`=>`), a path (`RefusalCode::TaskLost,`), a `use` list (handled by [`scan`]), and a
+/// lower-case `ident(` / `ident=` / `ident,` — a call, an assignment or a struct-literal shorthand,
+/// since a variant is upper-case and a field or parameter is `ident:`.
 fn is_declaration(line: &str) -> bool {
     let t = line.trim_start();
-    let t = t.strip_prefix("pub ").map(str::trim_start).unwrap_or(t);
-    for kw in ["struct", "enum", "fn", "type", "const", "trait", "mod"] {
+    if t.contains("=>") {
+        return false;
+    }
+    let t = match t.strip_prefix("pub(") {
+        Some(rest) => rest.split_once(')').map_or(t, |(_, r)| r.trim_start()),
+        None => t.strip_prefix("pub ").map(str::trim_start).unwrap_or(t),
+    };
+    let mut t = t;
+    loop {
+        let before = t;
+        for q in ["unsafe ", "async ", "extern "] {
+            if let Some(rest) = t.strip_prefix(q) {
+                t = rest.trim_start();
+            }
+        }
+        if t.starts_with('"') {
+            // `extern "C-unwind" fn`: the ABI string.
+            if let Some((_, rest)) = t[1..].split_once('"') {
+                t = rest.trim_start();
+            }
+        }
+        if t == before {
+            break;
+        }
+    }
+    for kw in [
+        "struct", "enum", "fn", "type", "const", "trait", "mod", "static", "union",
+    ] {
         if let Some(rest) = t.strip_prefix(kw) {
             if rest.starts_with(|c: char| c.is_whitespace()) {
                 return true;
             }
         }
     }
-    // `Ident:` / `Ident(` / `Ident=` / `Ident,` — a field or an enum variant.
+    // `Ident:` / `Ident(` / `Ident=` / `Ident,` — a field, a parameter or an enum variant.
     let mut chars = t.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -209,40 +272,168 @@ fn is_declaration(line: &str) -> bool {
     let ident_len = t
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .unwrap_or(t.len());
+    let ident = &t[..ident_len];
+    if matches!(ident, "Some" | "None" | "Ok" | "Err" | "Self") {
+        return false;
+    }
     let rest = t[ident_len..].trim_start();
-    rest.starts_with([':', '(', '=', ','])
+    if rest.starts_with("::") {
+        return false;
+    }
+    if rest.starts_with(':') {
+        return true;
+    }
+    first.is_ascii_uppercase()
+        && (rest.starts_with(['(', ',']) || (rest.starts_with('=') && !rest.starts_with("==")))
+}
+
+/// The identifiers of a line, in order (a token of ASCII alphanumerics and `_` that does not start
+/// with a digit). String and comment text on a declaration line is read too: the false-fail side.
+fn idents(line: &str) -> Vec<&str> {
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| w.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
+        .collect()
+}
+
+/// The WORDS of an identifier, lower-cased: its `snake_case` segments, each split at its CamelCase
+/// boundaries (`McpTransport` → mcp, transport; `MCPServer` → mcp, server; `A2aClient` → a2a,
+/// client).
+fn words(ident: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for seg in ident.split('_').filter(|s| !s.is_empty()) {
+        let cs: Vec<char> = seg.chars().collect();
+        let mut cur = String::new();
+        for (i, &c) in cs.iter().enumerate() {
+            if i > 0 && c.is_ascii_uppercase() {
+                let prev = cs[i - 1];
+                let next_lower = cs.get(i + 1).is_some_and(char::is_ascii_lowercase);
+                if prev.is_ascii_lowercase()
+                    || prev.is_ascii_digit()
+                    || (prev.is_ascii_uppercase() && next_lower)
+                {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            cur.push(c.to_ascii_lowercase());
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+    }
+    out
+}
+
+/// The banned nouns an identifier carries AS WHOLE WORDS: a word, or a run of adjacent words read
+/// together (`RealTime`, `A2A` split as `a2`/`a`), equal to a banned noun or its plural. Never a run
+/// of letters inside a word: `BodyTooLarge` carries no `tool`.
+fn banned_hits(ident: &str) -> Vec<&'static str> {
+    let ws = words(ident);
+    let mut hits = Vec::new();
+    for i in 0..ws.len() {
+        let mut joined = String::new();
+        for w in &ws[i..] {
+            joined.push_str(w);
+            for b in BANNED {
+                let plural = joined
+                    .strip_suffix("es")
+                    .or_else(|| joined.strip_suffix('s'));
+                if (joined == *b || plural == Some(*b)) && !hits.contains(b) {
+                    hits.push(*b);
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// Is the banned identifier `ident` (carrying `hits`) excused? Only by name: a written collision
+/// ([`PRIMITIVE_COLLISION_KEYS`]), one of the three [`HOOK_VOCABULARY`] names, or — at a rider site
+/// only — a member of a declaration line that names one of those three whose every banned word is
+/// a word of that name.
+fn excused(ident: &str, hits: &[&str], line_idents: &[&str], rider_site: bool) -> bool {
+    if PRIMITIVE_COLLISION_KEYS.contains(&ident) || HOOK_VOCABULARY.contains(&ident) {
+        return true;
+    }
+    rider_site
+        && line_idents
+            .iter()
+            .filter(|e| HOOK_VOCABULARY.contains(e))
+            .any(|e| {
+                let carried = banned_hits(e);
+                hits.iter().all(|h| carried.contains(h))
+            })
 }
 
 /// The scan. MATCHES THE CODE, NOT THE PATH: the shell greps an ABSOLUTE root, so under a checkout
 /// directory that happens to contain a banned noun — a git worktree is literally named
 /// `agent-<hash>`, and `agent` is banned — a naive match over the prefixed line matched the PATH on
 /// every declaration and the witness failed everywhere, spuriously. Only the source line is judged.
+///
+/// ONE FINDING PER NAME (ruling 4): a banned name is reported once with every site it is declared
+/// at, so the count is of names, not of the lines that mention them.
 fn scan(files: &[crate::ctx::SourceFile]) -> (Vec<String>, Vec<String>) {
-    let mut prod = Vec::new();
-    let mut test = Vec::new();
+    use std::collections::BTreeMap;
+    let mut prod: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut test: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for f in files {
         let rel = f.rel_str();
         let is_test_path =
             rel.contains("/tests/") || rel.ends_with("_test.rs") || rel.ends_with("_tests.rs");
+        let mut in_use = false;
+        // The struct whose body this line is in, for a rider site bounded to one struct.
+        let mut in_struct: Option<String> = None;
         for (i, line) in f.text.lines().enumerate() {
+            if line.starts_with('}') {
+                in_struct = None;
+            }
+            if let Some(after) = line
+                .trim_start()
+                .strip_prefix("pub struct ")
+                .or_else(|| line.trim_start().strip_prefix("struct "))
+            {
+                in_struct = after
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .map(str::to_string);
+            }
+            let rider_site = RIDER_SITES.iter().any(|(file, within)| {
+                *file == rel && within.is_none_or(|w| in_struct.as_deref() == Some(w))
+            });
+            let t = line.trim_start();
+            let t = t.strip_prefix("pub ").unwrap_or(t);
+            if t.starts_with("use ") {
+                // An import declares nothing here; the name is judged where it is declared.
+                in_use = !t.contains(';');
+                continue;
+            }
+            if in_use {
+                in_use = !line.contains(';');
+                continue;
+            }
             if !is_declaration(line) {
                 continue;
             }
-            let lower = line.to_lowercase();
-            if !BANNED.iter().any(|b| lower.contains(b)) {
-                continue;
-            }
-            let hit = finding(&rel, i + 1, line);
-            if is_test_path {
-                test.push(hit);
-            } else {
-                prod.push(hit);
+            let ids = idents(line);
+            for id in &ids {
+                let hits = banned_hits(id);
+                if hits.is_empty() || excused(id, &hits, &ids, rider_site) {
+                    continue;
+                }
+                let site = format!("{rel}:{}", i + 1);
+                let map = if is_test_path { &mut test } else { &mut prod };
+                let sites = map.entry((*id).to_string()).or_default();
+                if sites.last() != Some(&site) {
+                    sites.push(site);
+                }
             }
         }
     }
-    prod.sort();
-    test.sort();
-    (prod, test)
+    let render = |m: BTreeMap<String, Vec<String>>| -> Vec<String> {
+        m.into_iter()
+            .map(|(name, sites)| format!("{name} ({} site(s): {})", sites.len(), sites.join(", ")))
+            .collect()
+    };
+    (render(prod), render(test))
 }
 
 /// The plane keys THIS TREE DECLARES, read off the crates that carry a plane declaration.
