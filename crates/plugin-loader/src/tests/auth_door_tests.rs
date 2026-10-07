@@ -311,7 +311,7 @@ fn two_instances_of_one_plugin_are_two_callers() {
             max_inflight_cap: 8,
             sink: sink.bind(),
             dispatcher: d.adopter(),
-            conns: None,
+            conns: crate::dispatch::ConnTable::NoNeeds,
         };
         let row = LinkedRow::of(judge::door).unwrap();
         let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
@@ -384,7 +384,7 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
         max_inflight_cap: 1,
         sink: sink.bind(),
         dispatcher: d.adopter(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
     };
     let row = LinkedRow::of(judge::door).unwrap();
     let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
@@ -621,4 +621,42 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
             "{word}: {refused}"
         );
     }
+}
+
+// ── THE AUTH AXIS'S CONNECTION TABLE (Q-P4-3): a networked auth door opened to serve ──
+
+crate::needs_restated::tcp_restated!(networked_judge, judge::door);
+
+/// The judge restated with a `tcp` need (a directory it dials), linked as `judge`.
+fn networked_rows() -> AuthRows {
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door("judge", networked_judge)])
+        .expect("the linked door registers");
+    AuthRows::new(Arc::new(registry), dispatcher())
+}
+
+static SERVING_TABLE: std::sync::OnceLock<Arc<crate::tcp_conns::TcpConns>> =
+    std::sync::OnceLock::new();
+
+fn serving_table() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
+    SERVING_TABLE
+        .get_or_init(|| Arc::new(crate::tcp_conns::TcpConns::new(Arc::new(|_| {}))))
+        .clone()
+}
+
+/// An auth instance OPENED TO SERVE declares its needs on the host's table the axis was handed
+/// (`AuthRows::with_conns`, the process's one connector in the root): its `tcp` need reaches it.
+#[test]
+fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() {
+    let rows = networked_rows().with_conns(serving_table);
+    rows.open("judge", "judge-served", &serde_json::json!("ok"))
+        .expect("the networked door opens over the host's table");
+    assert_eq!(
+        SERVING_TABLE
+            .get()
+            .expect("the table was read")
+            .declarations(),
+        1,
+        "its one tcp need is declared on the host's table"
+    );
 }

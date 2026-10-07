@@ -35,8 +35,8 @@ use busbar_contract::secret_ref::SecretRef;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, Dispatcher, Frame, NoSink,
-    Plugin, NO_BLOB,
+    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher, Frame,
+    NoSink, Plugin, NO_BLOB,
 };
 
 /// How long a `resolve` may pend before the dispatcher cancels it (the Call budget).
@@ -382,7 +382,8 @@ impl SecretRows {
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink: Arc::new(NoSink),
             dispatcher: (self.dispatcher)().adopter(),
-            conns: (self.conns)(),
+            // Opened to resolve: the host's table, or a door that declares no need.
+            conns: ConnTable::serving((self.conns)()),
         };
         match &c.origin {
             Origin::Linked(row) => load_linked::<Secret>(row, bind),
@@ -449,9 +450,10 @@ impl SecretAxis for SecretRows {
             let material = match settings.get(&key) {
                 None => Vec::new(),
                 Some(v) => {
-                    let r = serde_json::from_value::<SecretRef>(v.clone()).map_err(|e| {
-                        format!("secrets.{module}.settings.{key}: not a secret reference: {e}")
-                    })?;
+                    // The decoder's own text is withheld: the value may be the secret itself.
+                    let r = serde_json::from_value::<SecretRef>(v.clone()).map_err(
+                        crate::boot::not_a_reference(format!("secrets.{module}.settings.{key}")),
+                    )?;
                     resolve(&r).map_err(|e| format!("secrets.{module}.settings.{key}: {e}"))?
                 }
             };
