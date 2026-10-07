@@ -256,16 +256,16 @@ fn close_and_remove(id: u64) -> bool {
 
 /// The observed peer identity: the SubjectPublicKeyInfo PIN of the leaf certificate the
 /// (already-verified) TLS handshake produced, in the ONE canonical spelling
-/// (`sha256/<base64>` — [`super::spki::pin`]). Empty on a plaintext hop (nothing was proved) and
+/// (`sha256/<base64>`, the connector's `tls::spki::pin`). Empty on a plaintext hop (nothing was proved) and
 /// empty where the certificate cannot be walked — reported honestly as absent rather than softened
 /// into a pass, exactly as `a2a::transport::peer_spki_of` reports `None`.
 ///
 /// This is the SAME pin the plane would compute itself: the host and the plane share one DER walk
-/// (lifted to [`super::spki`]), so a governed hop hands back the string the plane's own spelling
+/// (the connector's `tls::spki`), so a governed hop hands back the string the plane's own spelling
 /// yields, byte for byte — and it survives a certificate renewal because it pins the KEY, not the
 /// leaf bytes.
 fn observed_identity(resp: &http::Response<hyper::body::Incoming>) -> Vec<u8> {
-    // The ENGINE computed the pin once at connect time (`KeyPinObserve`, the same `spki::pin` walk)
+    // The ENGINE computed the pin once at connect time (`KeyPinObserve`, the connector's `spki::pin` walk)
     // and the pool replayed it onto this response's extensions — per-connection-correctly, so a
     // pooled response is attributed to ITS connection's certificate. Absent on a plaintext hop
     // and on an unwalkable certificate: honestly absent, never a pass.
@@ -1504,7 +1504,7 @@ pub(crate) struct OpenedHead {
     /// The observed status/response code.
     pub status: u16,
     /// The observed peer SPKI pin (`sha256/…`), or `None` on a plaintext hop / an unwalkable cert.
-    /// Decoded from the SAME bytes `crate::plane_host::spki::pin` produced, so it is byte-identical to
+    /// Decoded from the SAME bytes `busbar_core_connector::tls::spki::pin` produced, so it is byte-identical to
     /// the pin a plane's own `peer_spki_of` would compute (they share that one function).
     pub peer_spki: Option<String>,
     /// The response `Location`, verbatim, when the head surfaced one (a redirect).

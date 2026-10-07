@@ -12,7 +12,7 @@
 //! compiling unchanged: a `Deref` to a slot holder is itself a slot holder, forwarding both reads to
 //! the target. It adds no behaviour; the borrow it hands back is the target's own.
 
-use super::PlaneSlots;
+use super::host::PlaneSlots;
 use std::ops::Deref;
 use std::sync::Arc;
 

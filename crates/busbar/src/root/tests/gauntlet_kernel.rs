@@ -15,7 +15,7 @@ use std::time::Instant;
 use axum::body::{to_bytes, Body};
 use axum::http::StatusCode;
 use axum::response::Response;
-use busbar_kernel::plane_host::{
+use busbar_kernel::plane::host::{
     register_gauntlet_runner, register_session_runner, run_gauntlet, run_gauntlet_session,
     Admitted, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
@@ -300,7 +300,7 @@ fn install_flips_every_linked_gauntlet_row_onto_the_runner_its_axis_names() {
             "`{key}` is on the gauntlet-one-shot axis and is no linked plane"
         );
         assert!(
-            busbar_kernel::plane_host::gauntlet_runner_registered(key),
+            busbar_kernel::plane::host::gauntlet_runner_registered(key),
             "install() must flip the linked plane `{key}` onto the unified kernel loop's one-shot runner"
         );
     }
@@ -310,7 +310,7 @@ fn install_flips_every_linked_gauntlet_row_onto_the_runner_its_axis_names() {
             "`{key}` is on the gauntlet-session axis and is no linked plane"
         );
         assert!(
-            busbar_kernel::plane_host::session_runner_registered(key),
+            busbar_kernel::plane::host::session_runner_registered(key),
             "install() must flip the linked plane `{key}` onto the unified kernel loop's session runner"
         );
     }
@@ -363,8 +363,8 @@ fn every_linked_plane_the_teller_ledger_runs_rides_the_kernel_loop() {
              gauntlet axis: install() never flips it onto the unified kernel loop"
         );
         assert!(
-            busbar_kernel::plane_host::gauntlet_runner_registered(plane)
-                || busbar_kernel::plane_host::session_runner_registered(plane),
+            busbar_kernel::plane::host::gauntlet_runner_registered(plane)
+                || busbar_kernel::plane::host::session_runner_registered(plane),
             "the linked plane `{plane}` has no kernel-loop runner registered after install()"
         );
     }

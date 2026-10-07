@@ -421,7 +421,7 @@ struct JournalQuery {
 /// The example plane's audit rows, read back through the host's own `journal_read` slot — verified
 /// chain, then `seq · prev_hash · hash · content` per row — as hex.
 fn audit_rows(app: &busbar_kernel::state::App) -> String {
-    let scope = busbar_kernel::plane_host::DispatchScope::new();
+    let scope = busbar_kernel::plane::dispatch_scope::DispatchScope::new();
     busbar_kernel::plane_host::with_borrowed_host(app, &scope, |host, vt| {
         let query = JournalQuery {
             size: core::mem::size_of::<JournalQuery>() as u32,

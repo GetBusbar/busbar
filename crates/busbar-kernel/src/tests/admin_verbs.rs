@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::{connect_reply, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError};
-use crate::plane_host::EngineHost;
+use crate::plane::host::EngineHost;
 use crate::test_support::TestApp;
 use std::collections::BTreeMap;
 use std::sync::Arc;

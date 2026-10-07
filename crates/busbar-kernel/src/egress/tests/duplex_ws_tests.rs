@@ -61,26 +61,26 @@ struct GatePlane {
 }
 
 #[async_trait::async_trait]
-impl crate::plane_host::GauntletPlane for GatePlane {
+impl crate::plane::host::GauntletPlane for GatePlane {
     fn verify_destination(
         &self,
-        _req: &crate::plane_host::GauntletRequest<'_>,
-    ) -> crate::plane_host::VerifyOutcome {
+        _req: &crate::plane::host::GauntletRequest<'_>,
+    ) -> crate::plane::host::VerifyOutcome {
         if self.refuse {
-            crate::plane_host::VerifyOutcome::Refuse(
+            crate::plane::host::VerifyOutcome::Refuse(
                 axum::response::Response::builder()
                     .status(axum::http::StatusCode::FORBIDDEN)
                     .body(axum::body::Body::from("destination refused"))
                     .expect("refusal response builds"),
             )
         } else {
-            crate::plane_host::VerifyOutcome::Proceed
+            crate::plane::host::VerifyOutcome::Proceed
         }
     }
 
     async fn drive(
         self: Box<Self>,
-        _req: crate::plane_host::GauntletRequest<'_>,
+        _req: crate::plane::host::GauntletRequest<'_>,
     ) -> axum::response::Response {
         axum::response::Response::builder()
             .status(500)
@@ -98,7 +98,7 @@ async fn spawn_gauntlet_ws_server(refuse: bool) -> SocketAddr {
         upgrade: axum::extract::ws::WebSocketUpgrade,
     ) -> axum::response::Response {
         let gov = busbar_contract::records::PlaneRequestCtx::default();
-        let req = crate::plane_host::GauntletRequest {
+        let req = crate::plane::host::GauntletRequest {
             gov: &gov,
             destination: "model-x",
             correlation_id: 1,
@@ -596,7 +596,7 @@ async fn spawn_accept_gauntlet_ws_server(refuse: bool) -> SocketAddr {
         upgrade: axum::extract::ws::WebSocketUpgrade,
     ) -> axum::response::Response {
         let gov = busbar_contract::records::PlaneRequestCtx::default();
-        let req = crate::plane_host::GauntletRequest {
+        let req = crate::plane::host::GauntletRequest {
             gov: &gov,
             destination: "model-x",
             correlation_id: 1,

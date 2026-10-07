@@ -57,6 +57,9 @@ webpki = { workspace = true }
 zeroize = { workspace = true }
 # STUN FINGERPRINT (CRC-32) on the dtls engine's consent probes.
 crc32fast = { workspace = true }
+# THE PEER'S SPKI PIN (`tls::spki`): the connector owns pinning (spec Part 3), and the pin's one
+# spelling is `sha256/<standard base64>` of the leaf's SubjectPublicKeyInfo (the digest is ring's).
+base64 = { workspace = true }
 
 # THE HOST'S SOCKETS AND THEIR READINESS (`io`, `socket`, `compose`, `wire`): the connector owns every
 # OS socket (BUSBAR-1.6.0.md THE DESIGN, §5). `tokio` is asked for its reactor registration

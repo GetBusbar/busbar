@@ -1,36 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C) — the single-compiled DTO
-//! `busbar-core`'s `appbuild` populates from the already-resolved `RootCfg` and hands to the LLM
-//! plane's `build_runtime` seam (`PlaneDecl::build_runtime`, through `&dyn Any`), so the plane rebuilds
-//! its `Lane`/`WeightedLane`/`PoolRuntime`/`NativeRuntime` tables WITHOUT core naming a single plane
-//! type and WITHOUT a core type crossing the type-erased downcast.
+//! THE ROUTING-TABLE BUILD INPUT: the resolved configuration, flattened to the lanes, pools and
+//! failover settings the kernel's routing tables are built from ([`crate::route_tables::ConfigTables::of`]).
+//! Route is the kernel's (spec Part 3, the outbound table, step 1: "KERNEL | route (pool walk,
+//! member, breaker)"), so its input is kernel-owned and lives beside the tables it builds.
+//! `appbuild` populates it from the already-resolved `RootCfg`.
 //!
 //! ## Why every field is a NEUTRAL SCALAR
 //!
-//! The `build_runtime` fn-pointer is stored on the plane's `&'static PlaneDecl`, which — in
-//! `busbar-core`'s own `cfg(test)` binary — is registered through the neutral substrate test seam
-//! against a SECOND, independently-compiled copy of `busbar-core` (the plane crate's normal-dep core,
-//! distinct from the `cfg(test)` core under test). A `busbar_kernel::` type erased to `&dyn Any` in one
-//! and downcast in the other carries a DIFFERENT `TypeId`, so the downcast silently returns `None` —
-//! the dual-compile hazard. This carrier therefore holds NO `busbar_kernel::` type: only owned `String`s,
-//! numbers, `bool`s, `Vec`/`HashMap` of those, and the neutral `busbar_contract::config::UpstreamCreds`. It lives in
-//! `busbar-substrate` (compiled ONCE for the whole workspace) so its own `TypeId` is stable across the
-//! dual compile, and so a zero-plane binary that `git-rm`'d `busbar-llm` (the `plane-delete-test --all`
-//! posture) still compiles `appbuild` — which populates this — without naming the plane crate.
+//! A plane's `build_runtime` hook receives this input through `&dyn Any`. Only owned `String`s,
+//! numbers, `bool`s, `Vec`/`HashMap` of those, and contract types cross that downcast, so the input
+//! names no kernel runtime type (`Lane`, `EgressTarget`, `CredentialProvider`).
 //!
 //! ## What it does NOT carry
 //!
-//! Pre-RESOLVED secrets and the rate-card-derived costs ARE carried (fidelity: the plane cannot
+//! Pre-RESOLVED secrets and the rate-card-derived costs ARE carried (fidelity: a consumer cannot
 //! re-resolve a secret ref — it has no `SecretResolver` — nor re-price without the rate card). A
-//! resolved secret is carried in `busbar_contract::redacted::Redacted`, never as a bare `String`: this carrier is
+//! resolved secret is carried in `busbar_contract::redacted::Redacted`, never as a bare `String`: this input is
 //! formatted on the build path, so the wrapper is what keeps the credential out of a trace line.
-//! Pool-hook ROUTING POLICIES are NOT: their resolved value is the core-owned
+//! Pool-hook ROUTING POLICIES are NOT: their resolved value is the kernel-owned
 //! `busbar_kernel::hooks::ResolvedPolicy` (an `Arc<dyn RoutingPolicy>` over a dlopen plugin), which
-//! cannot be named here and must not cross the downcast — so, exactly as the container-plane gate
-//! rebuild does (`ContainerGateSink`), pool policies stay resolved-and-read core-side behind the
-//! `App::resolve_pool_*` down-facade and never enter this carrier.
+//! must not cross the downcast — so pool policies stay resolved-and-read kernel-side behind the
+//! `App::resolve_pool_*` facade and never enter this input.
 
 use std::collections::HashMap;
 
@@ -343,5 +335,5 @@ pub struct PlaneBuildInput {
 }
 
 #[cfg(test)]
-#[path = "tests/build_input_tests.rs"]
+#[path = "tests/route_input_tests.rs"]
 mod tests;

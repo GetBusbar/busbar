@@ -10,7 +10,7 @@
 //!
 //! - [`PlaneTrust`] + [`PlaneVerbError`] + [`registered`] are the RESOLVE/LOOK half (ADMIN-2): a plane
 //!   states only WHERE a registration is resolved from and what LOOKING at one means; the neutral host
-//!   ([`crate::plane_host::EngineHost`]) is the one snapshot handle both steps read through. A plane's
+//!   ([`crate::plane::host::EngineHost`]) is the one snapshot handle both steps read through. A plane's
 //!   resolve/look never produce a `Forbidden`/`Scope` answer — authorization is enforced by the admin
 //!   auth middleware BEFORE the handler runs — so the three shapes here (`NotFound`, `Validation`,
 //!   `Internal`) are the whole of what a verb can refuse with. Core maps them back onto its own frozen
@@ -34,7 +34,7 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use busbar_contract::abi::mechanism::route::RouteMethod;
 
-use crate::plane_host::EngineHost;
+use crate::plane::host::EngineHost;
 
 /// THE NEUTRAL PLANE-VERB ERROR — the three, and only three, shapes a plane's `resolve`/`look` ever
 /// produce (a validation refusal with or without its named condition). A plane never produces a

@@ -639,7 +639,7 @@ fn billing_plane_session_legs() -> &'static [SessionLeg] {
 const SESSION_ACCOUNT_CALL: &str = "account.report_turn(";
 /// Where the kernel's session account lives, relative to `crates/`, and the step of it that must
 /// reach the host's ledger seam.
-const SESSION_ACCOUNT_FILE: &str = "busbar-kernel/src/plane_host/session_meter.rs";
+const SESSION_ACCOUNT_FILE: &str = "busbar-kernel/src/governance/session_meter.rs";
 const SESSION_ACCOUNT_STEP: &str = "fn report_turn(";
 
 /// What is wrong with one session leg, or nothing: the plane's step lines, the lines of the file

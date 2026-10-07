@@ -8,7 +8,7 @@
 //!
 //! A plane opens a [`SessionAccount`] for the presenting key and reports each turn's raw counts per
 //! class. The kernel appends them through the ONE metering path every plane ledgers through
-//! ([`BudgetHost::meter_ledger`](super::BudgetHost::meter_ledger)), unconditionally, and answers
+//! ([`BudgetHost::meter_ledger`](crate::plane::host::BudgetHost::meter_ledger)), unconditionally, and answers
 //! [`TurnVerdict::Live`] or [`TurnVerdict::MustClose`] — never a figure. No price is computed or
 //! stored here: the money is the read-time view over those counts and the plane's own card.
 //!
@@ -23,8 +23,8 @@
 //! model closed at once). This check reads the live view instead: nothing is priced at write, nothing
 //! is stored but counts, and spend the chain takes from other traffic counts too.
 
-use super::{EngineHost, MeterPin};
 use crate::billing::Usage;
+use crate::plane::host::{EngineHost, MeterPin};
 use busbar_contract::records::VirtualKey;
 use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, PER_SESSION};
 use std::sync::atomic::{AtomicBool, Ordering};

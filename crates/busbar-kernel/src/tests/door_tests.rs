@@ -4,7 +4,7 @@
 //! The door's ADMIT verdict: what a grant, a grantless admission and a refusal each answer.
 
 use super::*;
-use crate::plane_host::AdmitHandle;
+use crate::plane::host::AdmitHandle;
 use std::sync::Arc;
 
 fn grant() -> AdmitHandle {

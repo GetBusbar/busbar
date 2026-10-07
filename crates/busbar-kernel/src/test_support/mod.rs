@@ -685,14 +685,14 @@ impl LaneSpec {
     /// reconstructs a `Lane` from (money-path Phase 3-4 C). The fixture hands `PlaneBuildInput` to the
     /// registered `build_runtime` fn-pointer exactly as production `appbuild` does, so core's test
     /// fixture names no `Lane`/`NativeRuntime` — plane-agnostic, like the MCP/A2A test-kits.
-    fn to_lane_input(&self) -> busbar_kernel::plane_host::LaneInput {
+    fn to_lane_input(&self) -> busbar_kernel::route_input::LaneInput {
         let auth_style = match self.auth.as_deref() {
-            None => busbar_kernel::plane_host::AuthStyleInput::Default,
-            Some("api-key") => busbar_kernel::plane_host::AuthStyleInput::ApiKey,
-            Some("bearer") => busbar_kernel::plane_host::AuthStyleInput::Bearer,
+            None => busbar_kernel::route_input::AuthStyleInput::Default,
+            Some("api-key") => busbar_kernel::route_input::AuthStyleInput::ApiKey,
+            Some("bearer") => busbar_kernel::route_input::AuthStyleInput::Bearer,
             Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
         };
-        busbar_kernel::plane_host::LaneInput {
+        busbar_kernel::route_input::LaneInput {
             model: self.model.clone(),
             provider: self.provider.clone(),
             protocol: self.protocol.to_string(),
@@ -711,16 +711,16 @@ impl LaneSpec {
             health: self
                 .health
                 .as_ref()
-                .map(|h| busbar_kernel::plane_host::HealthInput {
+                .map(|h| busbar_kernel::route_input::HealthInput {
                     mode: match h.mode {
                         crate::config::HealthMode::None => {
-                            busbar_kernel::plane_host::HealthModeInput::None
+                            busbar_kernel::route_input::HealthModeInput::None
                         }
                         crate::config::HealthMode::Dead => {
-                            busbar_kernel::plane_host::HealthModeInput::Dead
+                            busbar_kernel::route_input::HealthModeInput::Dead
                         }
                         crate::config::HealthMode::Active => {
-                            busbar_kernel::plane_host::HealthModeInput::Active
+                            busbar_kernel::route_input::HealthModeInput::Active
                         }
                     },
                     interval_secs: h.interval_secs,
@@ -867,7 +867,7 @@ pub struct TestApp {
     /// (which named the plane's `PoolRuntime`) is replaced by the granular setters that fill these.
     pool_failover: std::collections::HashMap<String, crate::config::FailoverCfg>,
     pool_affinity: std::collections::HashMap<String, crate::config::AffinityCfg>,
-    pool_breaker: std::collections::HashMap<String, busbar_kernel::plane_host::BreakerInput>,
+    pool_breaker: std::collections::HashMap<String, busbar_kernel::route_input::BreakerInput>,
     pool_upstream_creds: std::collections::HashMap<String, crate::auth::UpstreamCreds>,
     #[allow(clippy::type_complexity)]
     pool_member_meta: std::collections::HashMap<
@@ -1715,7 +1715,7 @@ impl TestApp {
             // lowering production runs (egress targets, credentials, upstream client, probe schedule).
             let member_input = |pool: &str, idx: usize, weight: u32| {
                 let meta = self.pool_member_meta.get(pool).and_then(|m| m.get(&idx));
-                busbar_kernel::plane_host::PoolMemberInput {
+                busbar_kernel::route_input::PoolMemberInput {
                     model: lane_inputs
                         .get(idx)
                         .map(|l| l.model.clone())
@@ -1736,36 +1736,36 @@ impl TestApp {
             for (name, members) in self.fallback_pools.iter().chain(self.pools.iter()) {
                 pool_map.insert(name.clone(), members.clone());
             }
-            let pool_inputs: Vec<busbar_kernel::plane_host::PoolInput> = pool_map
+            let pool_inputs: Vec<busbar_kernel::route_input::PoolInput> = pool_map
                 .into_iter()
-                .map(|(name, members)| busbar_kernel::plane_host::PoolInput {
+                .map(|(name, members)| busbar_kernel::route_input::PoolInput {
                     members: members
                         .iter()
                         .map(|(idx, w)| member_input(&name, *idx, *w))
                         .collect(),
                     failover: self.pool_failover.get(&name).map(|f| {
-                        busbar_kernel::plane_host::FailoverInput {
+                        busbar_kernel::route_input::FailoverInput {
                             timeout_secs: f.timeout_secs,
                             exclusions: f.exclusions.clone(),
                             max_hops: f.max_hops,
                         }
                     }),
                     affinity: self.pool_affinity.get(&name).map(|a| {
-                        busbar_kernel::plane_host::AffinityInput {
+                        busbar_kernel::route_input::AffinityInput {
                             header_name: a.header_name.clone(),
                         }
                     }),
                     on_exhausted: match self.on_exhausted_cfgs.get(&name) {
                         Some(crate::config::OnExhausted::FallbackPool(p)) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::FallbackPool(p.clone())
+                            busbar_kernel::route_input::OnExhaustedInput::FallbackPool(p.clone())
                         }
                         Some(crate::config::OnExhausted::LeastBad) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::LeastBad
+                            busbar_kernel::route_input::OnExhaustedInput::LeastBad
                         }
                         Some(crate::config::OnExhausted::Queue { max_ms }) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::Queue { max_ms: *max_ms }
+                            busbar_kernel::route_input::OnExhaustedInput::Queue { max_ms: *max_ms }
                         }
-                        _ => busbar_kernel::plane_host::OnExhaustedInput::Status503,
+                        _ => busbar_kernel::route_input::OnExhaustedInput::Status503,
                     },
                     upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
                     breaker: self.pool_breaker.get(&name).cloned(),
@@ -1781,24 +1781,24 @@ impl TestApp {
             let default_failover = self
                 .failover_cfg
                 .as_ref()
-                .map(|f| busbar_kernel::plane_host::FailoverInput {
+                .map(|f| busbar_kernel::route_input::FailoverInput {
                     timeout_secs: f.timeout_secs,
                     exclusions: f.exclusions.clone(),
                     max_hops: f.max_hops,
                 })
-                .unwrap_or(busbar_kernel::plane_host::FailoverInput {
+                .unwrap_or(busbar_kernel::route_input::FailoverInput {
                     timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
                     exclusions: None,
                     max_hops: crate::config::DEFAULT_FAILOVER_CAP,
                 });
-            let build_input = busbar_kernel::plane_host::PlaneBuildInput {
+            let build_input = busbar_kernel::route_input::PlaneBuildInput {
                 lanes: lane_inputs,
                 pools: pool_inputs,
                 upstream_credentials: self.upstream_credentials,
                 allow_metadata_hosts: Vec::new(),
                 allow_all_metadata: false,
                 blocked_metadata_hosts: Vec::new(),
-                client_settings: busbar_kernel::plane_host::ClientSettingsInput {
+                client_settings: busbar_kernel::route_input::ClientSettingsInput {
                     upstream_request_timeout_secs: self.upstream_request_timeout_secs,
                     pool_max_idle_per_host: 4,
                     pool_idle_timeout_secs: 300,

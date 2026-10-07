@@ -26,13 +26,13 @@ use std::future::Future;
 use std::pin::Pin;
 
 use axum::response::Response;
-use busbar_kernel::plane_host::{
+use busbar_kernel::plane::host::{
     register_gauntlet_runner, register_session_runner, GauntletPlane, GauntletRequest,
 };
 
 use crate::root::gauntlet_kernel::{open_gauntlet_via_kernel, run_gauntlet_via_kernel};
 
-/// The kernel-loop one-shot runner as a `busbar_kernel::plane_host::GauntletRunner` fn-pointer:
+/// The kernel-loop one-shot runner as a `busbar_kernel::plane::host::GauntletRunner` fn-pointer:
 /// the async runner boxed into the erased future the neutral seam holds.
 fn kernel_one_shot<'a>(
     req: GauntletRequest<'a>,

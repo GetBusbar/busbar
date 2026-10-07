@@ -115,7 +115,7 @@ pub struct PlaneReqCtx {
     /// by calling typed methods on it rather than naming `busbar_kernel::plane_host::*_over`. Carried
     /// alongside `engine` during the transition: `engine` is the residual downcast the per-subsystem
     /// App-sever removes, `host` is the durable seam that replaces it.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane::host::EngineHost>,
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` fn
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,

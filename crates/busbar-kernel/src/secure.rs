@@ -8,24 +8,28 @@
 //! engine's https arm, the duplex dial's `wss` arm and the client-identity PEM parse each ask this
 //! seam, and `busbar-core-connector` (which depends on this crate, never the other way) answers it.
 //!
-//! The answer arrives through the egress-trust capability the composition root already installs
-//! once, at boot, before anything dials ([`crate::plane_host::egress_trust::EgressTrustHost::secure_layer`]):
-//! the outbound trust a dial is secured with is that capability's business, so no second
-//! process-wide seam is opened for it.
+//! The answer arrives through the egress-trust capability the composition root installs once, at
+//! boot, before anything dials ([`EgressTrustHost::secure_layer`]): the outbound trust a dial is
+//! secured with is that capability's business, so no second process-wide seam is opened for it.
 //!
 //! What crosses is the posture a client is built for (trust anchors, a client identity, the ALPN
 //! offer — plain DER and bytes) and, per dial, a connected TCP stream going in and a secured stream
 //! coming out. The secured stream answers the two facts the engine reads off a handshake: the
-//! protocol ALPN agreed and the peer's leaf certificate. No key type, no config type and no
-//! certificate type of the TLS library is named on this side.
+//! protocol ALPN agreed and the SPKI pin of the peer's leaf. The connector owns pinning, SPKI and
+//! mTLS (spec Part 3), so the pin arrives computed: this crate never walks a certificate. No key
+//! type, no config type and no certificate type of the TLS library is named on this side.
 //!
 //! A process whose capability carries no wrap (a tool, another crate's test binary) builds its
 //! clients all the same; only an https or `wss` dial fails, after the TCP connect, naming the
 //! missing wrap.
 
 use std::future::Future;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+
+use crate::config::Destinations;
+use crate::host_services::DestRefusal;
 
 use tokio::net::TcpStream;
 
@@ -74,8 +78,11 @@ pub struct ClientTlsSpec<'a> {
 pub trait SecuredIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {
     /// The protocol ALPN agreed; `None` when none was.
     fn alpn(&self) -> Option<&[u8]>;
-    /// The peer's leaf certificate, DER, from the verified handshake.
-    fn peer_leaf(&self) -> Option<&[u8]>;
+    /// The `sha256/<base64>` SubjectPublicKeyInfo pin of the peer's leaf certificate from the
+    /// verified handshake, computed once by the wrap at handshake time. `None` when the handshake
+    /// produced no leaf or the leaf does not walk as DER: "we could not look" is absence, never a
+    /// pin.
+    fn peer_spki(&self) -> Option<&str>;
     /// The TCP stream under the session (what a connection reports itself connected over).
     fn tcp(&self) -> &TcpStream;
 }
@@ -112,7 +119,7 @@ pub trait SecureLayer: Send + Sync {
 /// client a TLS double of its own (`EngineSpec::tls`), or, in a test binary no composition root
 /// boots, installs a capability carrying one ([`install_test_tls`]).
 pub fn layer() -> Option<Arc<dyn SecureLayer>> {
-    crate::plane_host::egress_trust::egress_trust_host().and_then(|host| host.secure_layer())
+    egress_trust_host().and_then(|host| host.secure_layer())
 }
 
 /// TEST SEAM: carry `layer` in the egress-trust capability of a test binary no composition root
@@ -124,3 +131,72 @@ pub use crate::egress::fixtures::install_test_tls;
 /// TLS wrap.
 pub const NO_LAYER: &str =
     "no TLS layer is installed (the composition root installs busbar-core-connector's)";
+
+/// THE COMPOSITION-ROOT-OWNED EGRESS-TRUST CAPABILITY (HOST-CAPS S3, DECISIONS #26): the outbound
+/// trust every kernel dial is subject to, installed once at boot ([`install_egress_trust_host`]) and
+/// read back through [`egress_trust_host`]. It carries the deployment's one destination guard and the
+/// connector's TLS wrap; the root installs the connector's implementation
+/// (`busbar_core_connector::tls::trust::GuardedEgressTrust`). `Send + Sync` so the installed capability
+/// is a process-wide `&'static dyn`.
+pub trait EgressTrustHost: Send + Sync {
+    /// An answer the kernel's own pooled client resolved for `host`, judged whole under `class` by
+    /// the deployment's destination guard (OWNER DESTINATION GUARD; the connector decides). INTERIM
+    /// for the eight pooled-client builders; struck when D1-D6 move onto `conns` (Phase B).
+    ///
+    /// # Errors
+    ///
+    /// The refusal of the first refused address; with no guard behind the capability (the
+    /// pass-through) every answer: FAIL CLOSED, never allowed.
+    fn judge_answer(&self, host: &str, _: &[IpAddr], _: u32) -> Result<(), DestRefusal> {
+        Err(DestRefusal {
+            verdict: busbar_contract::abi::host::service::DEST_NO_HOST,
+            reason: format!("host `{host}` was not dialled: no destination guard is installed"),
+        })
+    }
+    /// A config commit: the deployment's destinations are now `d`, raised to the guard behind the
+    /// capability ([`crate::host_services::DestJudge::destinations_applied`]); the pass-through has none and keeps nothing.
+    fn destinations_applied(&self, _: &Destinations) {}
+
+    /// THE TLS AN OUTBOUND CONNECTION IS SECURED WITH: the connector's wrap, the one TLS path (THE
+    /// DESIGN: TLS stays in the connector; this crate names no TLS library). `None` on the
+    /// pass-through, which has no TLS behind it: an https dial then fails, naming the missing wrap.
+    fn secure_layer(&self) -> Option<Arc<dyn SecureLayer>> {
+        None
+    }
+}
+
+/// The capability with nothing behind it: no guard (every answer refused) and no TLS wrap. What a
+/// dial is judged by when no capability was installed.
+pub struct PassThroughEgressTrust;
+
+impl EgressTrustHost for PassThroughEgressTrust {}
+
+/// THE PROCESS-WIDE egress-trust capability, installed once by the composition root
+/// ([`install_egress_trust_host`]). Read back through [`egress_trust_host`]; `None` in a build that
+/// installed none.
+static EGRESS_TRUST: std::sync::OnceLock<Arc<dyn EgressTrustHost>> = std::sync::OnceLock::new();
+
+/// Install the process egress-trust capability — the composition root's one write, at boot, before any
+/// hop opens. Idempotent by `OnceLock`: a second install is a no-op (the first wins).
+pub fn install_egress_trust_host(host: Arc<dyn EgressTrustHost>) {
+    let _ = EGRESS_TRUST.set(host);
+}
+
+/// Raise a config commit to the installed capability, so the deployment's one destination guard
+/// re-reads its metadata lists. Called at the commit (`InstalledLimits::keep`), so a rejected apply
+/// leaves the lists in force; with no capability installed there is no guard to hear it.
+pub(crate) fn destinations_applied(d: &Destinations) {
+    if let Some(host) = egress_trust_host() {
+        host.destinations_applied(d);
+    }
+}
+
+/// The installed egress-trust capability, or `None` when none was installed.
+#[must_use]
+pub fn egress_trust_host() -> Option<&'static dyn EgressTrustHost> {
+    EGRESS_TRUST.get().map(AsRef::as_ref)
+}
+
+#[cfg(test)]
+#[path = "tests/secure_tests.rs"]
+mod tests;

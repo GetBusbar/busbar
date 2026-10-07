@@ -16,7 +16,8 @@
 //! The pooled-reuse propagation is pinned by this module's spike test (two sequential requests on
 //! ONE connection both carry [`PeerKeyPin`]) — the keystone the whole design stands on.
 //!
-//! The pin is computed ONCE at connect time (`spki::pin` over the leaf), never per request. An
+//! The pin is computed ONCE at connect time, by the connector's wrap over the leaf its handshake
+//! verified (`SecuredIo::peer_spki`; the connector owns pinning), never per request. An
 //! unwalkable certificate yields absence, never a pass — "we could not look" and "it matched" are
 //! the two answers a pin exists to keep apart, and absence is the refusing arm application-side.
 
@@ -33,7 +34,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// The observed transport-layer identity of the peer: the `sha256/<b64>` pin of the leaf
 /// certificate's SubjectPublicKeyInfo, in the one canonical spelling
-/// (`crate::plane_host::spki::pin`). Cloneable and cheap: the pool clones it into every
+/// (`busbar_core_connector::tls::spki::pin`). Cloneable and cheap: the pool clones it into every
 /// response's extensions.
 #[derive(Clone, Debug)]
 pub struct PeerKeyPin(pub Arc<str>);
@@ -171,8 +172,7 @@ where
             // observes NOTHING — honestly absent, matching the empty TlsInfo of old.
             let key_pin = if observe {
                 io.secured()
-                    .and_then(|tls| tls.peer_leaf())
-                    .and_then(|leaf| crate::plane_host::spki::pin(leaf).ok())
+                    .and_then(|tls| tls.peer_spki())
                     .map(|pin| PeerKeyPin(pin.into()))
             } else {
                 None

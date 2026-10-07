@@ -231,14 +231,35 @@ impl Pending {
     ///
     /// The handshake failed; the error is the TLS stack's, unwrapped.
     pub async fn run(self, tcp: TcpStream) -> io::Result<Secured> {
-        self.connector.connect(self.name, tcp).await.map(Secured)
+        self.connector
+            .connect(self.name, tcp)
+            .await
+            .map(Secured::over)
     }
 }
 
-/// A secured client stream.
-pub struct Secured(tokio_rustls::client::TlsStream<TcpStream>);
+/// A secured client stream, and the SPKI pin of the leaf its verified handshake produced.
+pub struct Secured(tokio_rustls::client::TlsStream<TcpStream>, Option<String>);
 
 impl Secured {
+    /// The secured stream over `tls`, its peer pin computed ONCE, now: a leaf the DER walk refuses
+    /// (or no leaf) leaves the pin absent, never a pass.
+    fn over(tls: tokio_rustls::client::TlsStream<TcpStream>) -> Self {
+        let pin = tls
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|certs| certs.first())
+            .and_then(|leaf| super::spki::pin(leaf.as_ref()).ok());
+        Self(tls, pin)
+    }
+
+    /// The `sha256/<base64>` SPKI pin of the peer's leaf ([`super::spki::pin`]), or `None`.
+    #[must_use]
+    pub fn peer_spki(&self) -> Option<&str> {
+        self.1.as_deref()
+    }
+
     /// The protocol ALPN agreed.
     #[must_use]
     pub fn alpn(&self) -> Option<&[u8]> {
@@ -368,8 +389,8 @@ impl seam::SecuredIo for Secured {
     fn alpn(&self) -> Option<&[u8]> {
         Secured::alpn(self)
     }
-    fn peer_leaf(&self) -> Option<&[u8]> {
-        Secured::peer_leaf(self)
+    fn peer_spki(&self) -> Option<&str> {
+        Secured::peer_spki(self)
     }
     fn tcp(&self) -> &TcpStream {
         Secured::tcp(self)

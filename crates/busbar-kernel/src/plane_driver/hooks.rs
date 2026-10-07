@@ -281,7 +281,7 @@ pub struct EngineCaller {
 /// The CURRENT generation's engine host, read where it is needed: a config apply replaces the
 /// generation (its hook registry, its group tree, its card), and a unit bound after the apply binds
 /// the new one, as 1.5.5's request read the snapshot it arrived on.
-pub type HostSource = Arc<dyn Fn() -> Arc<dyn crate::plane_host::EngineHost> + Send + Sync>;
+pub type HostSource = Arc<dyn Fn() -> Arc<dyn crate::plane::host::EngineHost> + Send + Sync>;
 
 /// A governance key lookup by principal id.
 pub type KeyLookup =

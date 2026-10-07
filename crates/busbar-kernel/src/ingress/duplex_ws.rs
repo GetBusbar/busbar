@@ -27,7 +27,7 @@ use futures::channel::mpsc::{channel as bounded, unbounded, Receiver, UnboundedS
 use futures::{SinkExt, StreamExt};
 
 use crate::ingress::byte_duplex::{serve_messages, DuplexPlane};
-use crate::plane_host::{run_gauntlet_session, GauntletPlane, GauntletRequest};
+use crate::plane::host::{run_gauntlet_session, GauntletPlane, GauntletRequest};
 
 /// How many inbound frames one accepted socket may hold for a reader that has not taken them yet. The
 /// queue is what stands between a client's write rate and this node's memory: unbounded, every frame a
@@ -293,7 +293,7 @@ pub struct WsArrival {
     /// Any path-template captures (`{name}` → value), in match order.
     pub path_params: Vec<(String, String)>,
     /// The neutral engine host, minted core-side over the request's live engine snapshot.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane::host::EngineHost>,
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` produced),
     /// captured by the core mount from the router's `plane_slots` and cloned into every arrival.
     pub slot: Arc<dyn std::any::Any + Send + Sync>,

@@ -8,11 +8,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::plane_host::HealthModeInput as HealthMode;
 use crate::probe::{
     advance_owned_deadline, due, probe_deadline, spawn_probers, ProbeCfg, ProbeMember,
     ProbeSchedule, ProbeTarget, NEVER_PROBE_DEADLINE,
 };
+use crate::route_input::HealthModeInput as HealthMode;
 
 #[derive(Default)]
 struct Double {

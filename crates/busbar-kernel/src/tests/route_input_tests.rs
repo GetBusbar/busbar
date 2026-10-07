@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-substrate/src/plane_host/build_input.rs` — chiefly that the resolved
+//! Tests for `crates/busbar-kernel/src/route_input.rs` — chiefly that the resolved
 //! provider credential the carrier holds cannot be printed out of it.
 
 use super::*;

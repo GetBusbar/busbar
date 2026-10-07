@@ -164,13 +164,13 @@ impl ModelPools {
                     busbar_kernel::probe::ProbeCfg::resolve(
                         match health.mode {
                             busbar_kernel::config::HealthMode::None => {
-                                busbar_kernel::plane_host::HealthModeInput::None
+                                busbar_kernel::route_input::HealthModeInput::None
                             }
                             busbar_kernel::config::HealthMode::Dead => {
-                                busbar_kernel::plane_host::HealthModeInput::Dead
+                                busbar_kernel::route_input::HealthModeInput::Dead
                             }
                             busbar_kernel::config::HealthMode::Active => {
-                                busbar_kernel::plane_host::HealthModeInput::Active
+                                busbar_kernel::route_input::HealthModeInput::Active
                             }
                         },
                         health.interval_secs,

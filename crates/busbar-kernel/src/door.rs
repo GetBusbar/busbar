@@ -105,7 +105,7 @@ pub struct AdmitVerdict {
 /// `Retry-After`, in whole seconds, as the door rendered it. A refusal here is always a budget in
 /// the chain without headroom: the door refuses for no other reason.
 pub fn admit_verdict(
-    outcome: Result<(Option<&crate::plane_host::AdmitHandle>, Option<String>), Option<u32>>,
+    outcome: Result<(Option<&crate::plane::host::AdmitHandle>, Option<String>), Option<u32>>,
 ) -> AdmitVerdict {
     match outcome {
         Ok((grant, effective_pool)) => AdmitVerdict {

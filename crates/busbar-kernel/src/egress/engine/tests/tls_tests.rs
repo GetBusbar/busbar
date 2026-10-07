@@ -184,11 +184,7 @@ async fn the_pinned_posture_presents_its_identity_and_a_demanding_peer_refuses_w
     assert_eq!(resp.status(), 200);
     assert_eq!(
         peer_key_pin(&resp),
-        Some(
-            crate::plane_host::spki::pin(&server.leaf_der)
-                .expect("server leaf")
-                .as_str()
-        ),
+        Some(crate::egress::fixtures::double_pin(&server.leaf_der).as_str()),
         "the pinned posture observes the peer by construction"
     );
     let body = resp.into_body().collect().await.expect("body").to_bytes();

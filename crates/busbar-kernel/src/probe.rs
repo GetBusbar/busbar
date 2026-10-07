@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use crate::plane_host::HealthModeInput as HealthMode;
+use crate::route_input::HealthModeInput as HealthMode;
 
 /// The probe deadline used when `now + timeout` is unrepresentable: 30 years, tokio's own
 /// `far_future` horizon and the config-validation ceiling on every duration (item 147).

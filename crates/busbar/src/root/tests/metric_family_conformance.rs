@@ -48,7 +48,7 @@ fn row(linked_door: bool, dropped_in: Vec<DynPlane>) -> &'static PlaneDecl {
 fn add(row: &'static PlaneDecl, family: &str, values: &[&'static str]) -> StatusClass {
     let _registry = TestRegistryIsolation::seeded(&[row]);
     let app = busbar_kernel::test_support::TestApp::new().build();
-    let scope = busbar_kernel::plane_host::DispatchScope::new();
+    let scope = busbar_kernel::plane::dispatch_scope::DispatchScope::new();
     let values: Vec<DeclStr> = values.iter().map(|v| DeclStr::new(v)).collect();
     busbar_kernel::plane_host::with_borrowed_host_as(row.key, &app, &scope, |host, vt| {
         let add = vt.counter_add.expect("the host wires counter_add");

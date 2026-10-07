@@ -85,7 +85,7 @@ impl<'a> StageShape<'a> {
 /// WEDGE 2e: the neutral, host-taking twin of core's `proxy_vocab::fire_stage_taps`. The caller passes
 /// the stage's tap slice (in wedge 3, one of `host.tap_hooks_response()`/`_routing()`/`_candidate()`)
 /// and the `host`; each tap's `groups:` scope is honored via
-/// [`host.caller_in_hook_groups`](crate::plane_host::EngineHost::caller_in_hook_groups) — the neutral
+/// [`host.caller_in_hook_groups`](crate::plane::host::EngineHost::caller_in_hook_groups) — the neutral
 /// fold of the `&App::groups_registry` self+ancestors walk — so this is byte-behavior-identical to
 /// core's raw-tree-walk version.
 pub fn fire_stage_taps(
@@ -99,7 +99,7 @@ pub fn fire_stage_taps(
     // (empty = every caller). Resolved against this deployment's group registry through the host seam
     // (self + ancestors), never a raw `&App::groups_registry` tree.
     caller_group: Option<&str>,
-    host: &dyn crate::plane_host::EngineHost,
+    host: &dyn crate::plane::host::EngineHost,
 ) {
     fire_stage_taps_where(taps, shape, stage, signals, &|groups: &[String]| {
         host.caller_in_hook_groups(caller_group, groups)

@@ -29,7 +29,7 @@ use crate::{
     ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation, plane,
     plugin_routes, profile, proto, ratelimit, state, store, telemetry, tls, transport, trust,
 };
-use busbar_kernel::plane_host::{
+use busbar_kernel::route_input::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
     HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
 };
@@ -533,7 +533,7 @@ impl InstalledLimits {
             destinations,
         } = self;
         guard.commit();
-        crate::plane_host::egress_trust::destinations_applied(&destinations);
+        crate::secure::destinations_applied(&destinations);
         staged.armed = false;
         crate::rate_apply::rates_applied(&rates.raw());
     }
@@ -1583,7 +1583,7 @@ pub fn build_app_from_config(
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same
                     // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
-                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                    prior: prior.map(|p| p as &dyn busbar_kernel::plane::host::PlaneSlots),
                 };
                 (decl.build)(&ctx).map(|obj| (decl.key, obj))
             })
@@ -1615,7 +1615,7 @@ pub fn build_app_from_config(
             slot_key,
             f(
                 cfg.tool_defs.as_any(),
-                prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                prior.map(|p| p as &dyn busbar_kernel::plane::host::PlaneSlots),
             ),
         )
     }) {
@@ -1683,7 +1683,7 @@ pub fn build_app_from_config(
         // The FIXED global-default failover (production has no operator knob for it) — carried so the
         // plane's `build_runtime` sets its own runtime object's failover config identically to the
         // pre-pivot inline lowering, and so the test fixture can override the whole-App deadline.
-        default_failover: Some(busbar_kernel::plane_host::FailoverInput {
+        default_failover: Some(busbar_kernel::route_input::FailoverInput {
             timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
             exclusions: None,
             max_hops: crate::config::DEFAULT_FAILOVER_CAP,
@@ -1707,7 +1707,7 @@ pub fn build_app_from_config(
         {
             let slot = f(
                 &fallback_build_input as &dyn std::any::Any,
-                prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                prior.map(|p| p as &dyn busbar_kernel::plane::host::PlaneSlots),
             );
             plane_slots.insert(fallback_runtime_key, slot);
         }

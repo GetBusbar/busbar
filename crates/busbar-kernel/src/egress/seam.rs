@@ -19,7 +19,7 @@
 //! The wire bytes are the host's `build_pinned_client` reqwest codec — the SAME one a plane's own
 //! transport used — so status/body/headers/ALPN are unchanged by moving the hop host-side. The peer
 //! SPKI pin is decoded from the same observed-identity bytes the neutral
-//! `busbar_kernel::plane_host::spki` pin walk produces, which a plane's own transport calls to
+//! `busbar_core_connector::tls::spki` pin walk produces, which a plane's own transport calls to
 //! compute its pin, so the pin string is byte-identical. The body cap / `ReadEnd` classification is
 //! re-expressed over the poll seam to match
 //! [`crate::egress::upstream::read_capped`] exactly (Ok-0 = Complete, Fault = TransportError, an over-cap probe =
@@ -37,10 +37,10 @@
 use busbar_contract::abi::hot::{EgressDesc, EgressKind, StatusClass, POD_VERSION};
 
 use crate::egress::upstream::ReadEnd;
+use crate::plane::dispatch_scope::DispatchScope;
 use crate::plane_host::egress::{
     borrowed_range, drive_close, drive_open, drive_poll, scope_bits, OpenOutcome, OpenedHead,
 };
-use crate::plane_host::scope::DispatchScope;
 
 // The neutral buffered/fault RETURN shapes and the [`HostlessEgress`] driver trait relocated to
 // `busbar_kernel::egress::seam` (field-neutral `std` data + the plugin `EgressFailClass`), so a

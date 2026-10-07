@@ -925,7 +925,7 @@ known_sites = [
   "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
   "crates/busbar-kernel/src/metrics/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
   "crates/busbar-kernel/src/metrics/money.rs :: model",
-  "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
+  "crates/busbar-kernel/src/route_input.rs :: model",
   "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
   "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
 ]
@@ -1238,11 +1238,14 @@ known_sites = [
   # enclosing function — the escape is at :858, the fn opens at :820.
   "crates/busbar-kernel/src/plane/handle_engine.rs::sweep",
   # was crates/busbar-substrate/src/plane_host/mod.rs — MERGED into the core-descended kernel file
-  # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's.
-  "crates/busbar-kernel/src/plane_host/mod.rs",
-  # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
-  # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
-  "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
+  # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's: the
+  # `runtime_slot_key` interner, which moved verbatim with the host vocabulary to `plane/host.rs`
+  # (D2 step 3). Now named BY FUNCTION, so the rest of that file is held to the rule.
+  "crates/busbar-kernel/src/plane/host.rs::runtime_slot_key",
+  # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596),
+  # then moved verbatim with `DispatchScope` to `plane/dispatch_scope.rs` (D2 step 3). Still named BY
+  # FUNCTION, so the rest of the file is still held to the rule.
+  "crates/busbar-kernel/src/plane/dispatch_scope.rs::reclaim_all",
   # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
   # verbatim (#83a SD-8).
   "crates/busbar-kernel/src/proto/installed.rs",

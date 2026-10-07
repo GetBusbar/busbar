@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL-LOOP RUNNER behind `busbar_kernel::plane_host::run_gauntlet` — LIVE.
+//! THE KERNEL-LOOP RUNNER behind `busbar_kernel::plane::host::run_gauntlet` — LIVE.
 //!
 //! [`run_gauntlet_via_kernel`] drives the SAME [`GauntletPlane`] the substrate gauntlet drives, but
 //! through `busbar_kernel::teller::run_unit_async` (the ONE unified loop) instead of the substrate
@@ -31,7 +31,7 @@ use busbar_contract::caps::{
     VerifiedDestination, Verify,
 };
 use busbar_contract::{AuditFacts, FinishClass, RoutePlan, ScopeFacts, UnitKey};
-use busbar_kernel::plane_host::{
+use busbar_kernel::plane::host::{
     Admitted, GauntletPlane, GauntletRequest, PlaneAnswer, PlaneInFlight, VerifyOutcome,
 };
 use busbar_kernel::slice::GroupLeaseSlip;
@@ -317,7 +317,7 @@ fn principal_of(gov: &busbar_contract::records::PlaneRequestCtx) -> PrincipalId 
 
 /// Run one gauntlet request through the UNIFIED kernel loop and return the plane's response verbatim.
 ///
-/// The kernel-loop twin of [`busbar_kernel::plane_host::run_gauntlet`]: same plane, same
+/// The kernel-loop twin of [`busbar_kernel::plane::host::run_gauntlet`]: same plane, same
 /// verify-before-charge order, same bytes out — driven through `busbar_kernel::teller::run_unit_async`
 /// over an ephemeral per-request kernel harness (uncapped in-flight table, node-wide gauge, canary).
 /// The loop's `Ended` is discarded: this rider binds no book and settles nothing (see the module
@@ -405,7 +405,7 @@ pub async fn run_gauntlet_via_kernel(
 }
 
 /// OPEN A SESSION through the UNIFIED kernel loop and return at the door — the kernel-loop twin of
-/// `busbar_kernel::plane_host::run_gauntlet_session` (its `admit_open` seat).
+/// `busbar_kernel::plane::host::run_gauntlet_session` (its `admit_open` seat).
 ///
 /// Runs the SAME plane's `verify_destination` in its verify-STRICTLY-before-charge position through
 /// `busbar_kernel::teller::open_unit` (governance-to-door, no Route, no settling exit), over an

@@ -19,7 +19,7 @@
 //! The pooled posture's arm is [`EgressResolver::Judged`]: the name is resolved once per new
 //! connection and EVERY address it answered with is judged by the deployment's one destination
 //! guard (OWNER ruling DESTINATION GUARD: the connector's, installed by the root and asked through
-//! `plane_host::egress_trust::egress_trust_host`, the root-installed egress-trust seam) before `HttpConnector` sees any of them. A refused answer is a resolver error, so the dial fails as a connect failure and nothing
+//! `secure::egress_trust_host`, the root-installed egress-trust seam) before `HttpConnector` sees any of them. A refused answer is a resolver error, so the dial fails as a connect failure and nothing
 //! is connected; an admitted answer is handed on whole, and the `Uri` keeps the name for SNI, the
 //! certificate check and `Host`. A pooled connection was therefore dialled to an address this arm
 //! judged, which is what makes reusing it safe.
@@ -35,7 +35,7 @@ use hyper_util::client::legacy::connect::dns::{GaiAddrs, GaiFuture, GaiResolver,
 use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
 
 use crate::host_services::DestJudge;
-use crate::plane_host::egress_trust::{egress_trust_host, EgressTrustHost, PassThroughEgressTrust};
+use crate::secure::{egress_trust_host, EgressTrustHost, PassThroughEgressTrust};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 

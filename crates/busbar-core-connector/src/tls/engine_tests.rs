@@ -217,7 +217,7 @@ async fn the_mtls_fixture_accepts_the_engine_identity_and_records_its_leaf() {
     assert_eq!(
         peer_key_pin(&resp),
         Some(
-            busbar_kernel::plane_host::spki::pin(&server.leaf_der)
+            crate::tls::spki::pin(&server.leaf_der)
                 .expect("server leaf")
                 .as_str()
         ),
@@ -584,7 +584,7 @@ async fn stack_b(
                 .extensions()
                 .get::<reqwest::tls::TlsInfo>()
                 .and_then(|t| t.peer_certificate())
-                .map(|der| busbar_kernel::plane_host::spki::pin(der).expect("walkable leaf"));
+                .map(|der| crate::tls::spki::pin(der).expect("walkable leaf"));
             let body = resp.bytes().await.expect("body");
             (
                 Outcome::Answered {
@@ -636,8 +636,7 @@ async fn known_leaf_tls_pin_and_sni_are_observed_and_webpki_refuses_the_private_
             body: "over tls".to_string()
         }
     );
-    let expected_pin =
-        busbar_kernel::plane_host::spki::pin(&material.leaf_der).expect("fixture leaf");
+    let expected_pin = crate::tls::spki::pin(&material.leaf_der).expect("fixture leaf");
     assert_eq!(
         leaf_pin.as_deref(),
         Some(expected_pin.as_str()),
@@ -869,13 +868,20 @@ async fn the_pin_off_a_real_handshake_is_the_serving_leafs_key_and_not_a_look_al
         .await
         .expect("the rooted hop answers");
     assert_eq!(resp.status(), 200);
-    let expected = busbar_kernel::plane_host::spki::pin(&serving.leaf_der).expect("serving leaf");
-    let other = busbar_kernel::plane_host::spki::pin(&look_alike.leaf_der).expect("look-alike");
+    let expected = crate::tls::spki::pin(&serving.leaf_der).expect("serving leaf");
+    let other = crate::tls::spki::pin(&look_alike.leaf_der).expect("look-alike");
     assert_ne!(expected, other, "two keys, two pins");
     assert_eq!(
         peer_key_pin(&resp),
         Some(expected.as_str()),
         "the pin is read off the handshake that served, so it is the serving leaf's key"
+    );
+    // RED ARM: a look-alike's pin (same name, another key) is not what this hop observed, so a
+    // registration pinned to it is refused.
+    assert_ne!(
+        peer_key_pin(&resp),
+        Some(other.as_str()),
+        "a look-alike key's pin never matches the observed one"
     );
 }
 

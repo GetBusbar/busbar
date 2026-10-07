@@ -13,7 +13,7 @@
 //! so a self-signed test CA cannot be reached through the seam — the same reason `egress_tests` uses
 //! plaintext). The peer-SPKI dimension is therefore `None == None` here; its byte-identity over TLS is
 //! by CONSTRUCTION — the host and the plane decode the pin through the one shared
-//! `busbar_kernel::plane_host::spki::pin` (`a2a::key_info::pin_hash` re-exports it), so there is no second spelling
+//! connector `tls::spki::pin`, so there is no second spelling
 //! to diverge. `client_identity_offered` is asserted directly (both compute `is_some()`).
 
 use std::io::{Read, Write};

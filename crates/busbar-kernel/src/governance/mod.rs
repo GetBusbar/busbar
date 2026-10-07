@@ -774,6 +774,9 @@ pub struct RotatedCredential {
 // public spelling is the substrate's own, and nothing outside busbar-core reaches this path.
 
 pub mod revocation;
+// THE KERNEL-OWNED SESSION METER: a live carrier's turns ledgered as raw counts and judged by the
+// key's budget view (D2 step 3, from plane_host).
+pub mod session_meter;
 // The RESOLVED runtime mint policy (`auth.policy:`) — de-aliased out of `admin` (1.6.0, stage 2a):
 // core governance/config infrastructure read on the hot mint path, not admin-API surface.
 pub mod mint_policy;

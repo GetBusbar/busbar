@@ -35,10 +35,10 @@ use busbar_contract::abi::hot::StatusClass;
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_contract::ids::OpClassId;
 use busbar_contract::plane::{MetricFamily, ServedOpClass};
+use busbar_kernel::plane::host::LiveHostFactory;
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
 use busbar_kernel::plane::PlaneAdmission;
-use busbar_kernel::plane_host::LiveHostFactory;
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
@@ -967,7 +967,7 @@ fn hot_dispatch(
         };
     };
     let app = handle.load();
-    let scope = busbar_kernel::plane_host::DispatchScope::new();
+    let scope = busbar_kernel::plane::dispatch_scope::DispatchScope::new();
     busbar_kernel::plane_host::with_plane_door(
         slot.served.plane().name(),
         ctx.gov.as_ref(),

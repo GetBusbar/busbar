@@ -1341,7 +1341,7 @@ fn plane_named_def_list(
     busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
-            f(app as &dyn busbar_kernel::plane_host::PlaneSlots)
+            f(app as &dyn busbar_kernel::plane::host::PlaneSlots)
         })
 }
 
@@ -1354,7 +1354,7 @@ fn plane_named_def_get(
 ) -> Option<NamedDefView> {
     busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
-        .and_then(|f| f(app as &dyn busbar_kernel::plane_host::PlaneSlots, name))
+        .and_then(|f| f(app as &dyn busbar_kernel::plane::host::PlaneSlots, name))
 }
 
 #[cfg(test)]

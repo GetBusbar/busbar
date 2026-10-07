@@ -518,7 +518,7 @@ impl CostModel {
     ///
     /// `pub` (was crate-private): the first of the two questions the pre-admission pricing guard
     /// asks, answered for a plane through the
-    /// [`BudgetHost::cost_pricing_enabled`](busbar_kernel::plane_host::BudgetHost::cost_pricing_enabled)
+    /// [`BudgetHost::cost_pricing_enabled`](busbar_kernel::plane::host::BudgetHost::cost_pricing_enabled)
     /// seam, which downcasts the opaque cost handle and drives this same read.
     pub fn pricing_enabled(&self) -> bool {
         self.card.pricing_enabled()
@@ -582,7 +582,7 @@ impl CostModel {
     }
 
     /// PRICE a neutral [`busbar_contract::billing::Usage`] for `model` into nano-units — the
-    /// host-side entry point the [`MeteringHost::price_usage`](busbar_kernel::plane_host::MeteringHost::price_usage)
+    /// host-side entry point the [`MeteringHost::price_usage`](busbar_kernel::plane::host::MeteringHost::price_usage)
     /// seam a live carrier drives folds through.
     ///
     /// **THE ONE FUNCTION** over one row at this card: `None` is every refusal it can give — a
@@ -634,7 +634,7 @@ impl CostModel {
     ///
     /// `pub` (was crate-private): the second of the pricing guard's two questions, answered for a
     /// plane through the
-    /// [`BudgetHost::cost_model_unpriced`](busbar_kernel::plane_host::BudgetHost::cost_model_unpriced)
+    /// [`BudgetHost::cost_model_unpriced`](busbar_kernel::plane::host::BudgetHost::cost_model_unpriced)
     /// seam over the same opaque handle.
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {

@@ -251,7 +251,7 @@ pub(crate) fn parse(card: &Value) -> Result<AgentCard, CardError> {
 /// THE ONE DIGEST RENDERING THIS PLANE USES: `sha256/<standard base64>`.
 ///
 /// Over BYTES rather than over `&str`, because the transport-layer pin
-/// ([`super::key_info::pin_hash`]) hashes a DER structure and a second rendering written for it would
+/// (the connector's `tls::spki::pin`) hashes a DER structure and a second rendering written for it would
 /// be a second spelling of one operator-facing value. An operator comparing a configured pin
 /// against an audit row, and comparing either against what `openssl dgst -sha256 -binary | base64`
 /// printed, has to be comparing one spelling.

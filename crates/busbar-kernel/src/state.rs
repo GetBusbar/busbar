@@ -35,7 +35,7 @@ pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 /// key would change the bare key's presence semantics, and with it the dispatch table
 /// `build_dispatch` derives from it). Composed into `plane_slots` by `appbuild` and read back by the
 /// owning plane, each passing its decl key — so this crate names no plane runtime type or token.
-pub use busbar_kernel::plane_host::runtime_slot_key;
+pub use busbar_kernel::plane::host::runtime_slot_key;
 
 /// One plane's per-container resolved submission-gate map: container name → resolved
 /// `(hook_id, ResolvedPolicy)` gate list. The value half of [`App::plane_gates`].
@@ -111,7 +111,7 @@ pub struct App {
     /// member keeps its degenerate single-member cell and no reroute exists to be had.
     pub tool_pools: std::collections::BTreeMap<String, crate::route::CandidatePoolCfg>,
     /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
-    /// ([`busbar_kernel::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
+    /// ([`busbar_kernel::plane::host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
     /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its own resolved pool-member set (member selection derives lanes from member position).
@@ -185,7 +185,7 @@ pub struct App {
     /// field names. Each plane's entry maps container → resolved `(hook_id, ResolvedPolicy)` gate list
     /// (`<section>.hooks:` ∪ `<section>.<container>.hooks:`), same combine rule and zero-cost absence
     /// as before. Composed at config apply by `appbuild` (and re-resolved on swap through
-    /// [`busbar_kernel::plane_host::ContainerGateSink`]); read on the dispatch path by
+    /// [`busbar_kernel::plane::host::ContainerGateSink`]); read on the dispatch path by
     /// [`App::plane_gates`]. Empty for a plane that attaches nothing — the lookup costs one probe.
     // Read on the plane dispatch/admission gate paths; with BOTH planes compiled out nothing fires a
     // gate, so the map goes unread in that config alone.
@@ -195,7 +195,7 @@ pub struct App {
     /// the TAP/observe-transform twin of [`Self::plane_gates`]. Each plane's entry maps container →
     /// resolved `(deadline, transport)` rewrite list (`<section>.hooks:` ∪ `<section>.<container>.hooks:`,
     /// the `prompt: rw` members only). Composed at config apply by `appbuild` and re-resolved on swap
-    /// through the same [`busbar_kernel::plane_host::ContainerGateSink`] callback the gates use. Empty
+    /// through the same [`busbar_kernel::plane::host::ContainerGateSink`] callback the gates use. Empty
     /// for a plane that attaches no rewrite hook — the tap firing site's lookup costs one probe and the
     /// path stays byte-identical.
     // Read on the plane transform/tap paths only; with BOTH planes compiled out nothing fires a tap, so
@@ -711,10 +711,10 @@ impl App {
 }
 
 /// THE NEUTRAL SLOT-READ SEAM the plane `PlaneDecl` callbacks name instead of `&App`. A thin delegate
-/// to the inherent [`App::plane_slot`]; [`as_any`](busbar_kernel::plane_host::PlaneSlots::as_any)
+/// to the inherent [`App::plane_slot`]; [`as_any`](busbar_kernel::plane::host::PlaneSlots::as_any)
 /// hands the concrete snapshot back to the owning plane's own reader for the field (`agent_defs`)
 /// that is not a `plane_slots` entry.
-impl busbar_kernel::plane_host::PlaneSlots for App {
+impl busbar_kernel::plane::host::PlaneSlots for App {
     fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         App::plane_slot(self, key)
     }
@@ -728,7 +728,7 @@ impl busbar_kernel::plane_host::PlaneSlots for App {
 /// [`App::resolve_container_gates`]) and stores them in the generic [`App::plane_gates`] map under the
 /// opaque registry `plane_key` — byte-identical to the old inline
 /// `next.plane_gates.insert(plane_key, next.resolve_container_gates(...))`.
-impl busbar_kernel::plane_host::ContainerGateSink for App {
+impl busbar_kernel::plane::host::ContainerGateSink for App {
     fn reresolve_container_gates(
         &mut self,
         plane_key: &str,
@@ -867,8 +867,8 @@ impl AppHandle {
         for decl in crate::plane::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
-                    &*prior as &dyn busbar_kernel::plane_host::PlaneSlots,
-                    &*next as &dyn busbar_kernel::plane_host::PlaneSlots,
+                    &*prior as &dyn busbar_kernel::plane::host::PlaneSlots,
+                    &*next as &dyn busbar_kernel::plane::host::PlaneSlots,
                 );
             }
         }

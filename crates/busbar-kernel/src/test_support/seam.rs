@@ -18,9 +18,9 @@
 //! plane can drive the handle as `&mut dyn TestAppSeam`): the generic scratch accessors live on the
 //! blanket [`TestAppSeamExt`] rather than on the object-safe base.
 
+use crate::plane::host::{EngineHost, PlaneSlots};
 use crate::plane::registry::CardIssuer;
 use crate::plane::PlaneAdmission;
-use crate::plane_host::{EngineHost, PlaneSlots};
 use std::any::Any;
 use std::sync::Arc;
 

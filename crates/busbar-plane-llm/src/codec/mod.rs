@@ -230,7 +230,7 @@ pub fn write_error_envelope(
 }
 
 /// THE REGISTRY KEY THE LLM PLANE IS KNOWN BY — the string the composition root flips onto the
-/// unified kernel loop ([`busbar_kernel::plane_host::register_gauntlet_runner`]) and the same
+/// unified kernel loop ([`busbar_kernel::plane::host::register_gauntlet_runner`]) and the same
 /// string the LLM native plane reports from its `GauntletPlane::capability_key`.
 ///
 /// Named ONCE, here, on the pure side of the split, because the plane's `capability_key` and the

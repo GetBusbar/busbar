@@ -68,7 +68,7 @@ pub struct GatedHooks {
 }
 
 /// The CURRENT generation's engine host, read per unit (a config apply replaces it).
-pub type GenerationHost = Arc<dyn Fn() -> Arc<dyn crate::plane_host::EngineHost> + Send + Sync>;
+pub type GenerationHost = Arc<dyn Fn() -> Arc<dyn crate::plane::host::EngineHost> + Send + Sync>;
 
 /// A governance key lookup by the principal the kernel verified.
 pub type PrincipalKeys =

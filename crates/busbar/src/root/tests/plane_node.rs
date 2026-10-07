@@ -139,7 +139,7 @@ impl Rig {
         }
     }
 
-    fn host(&self) -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
+    fn host(&self) -> Arc<dyn busbar_kernel::plane::host::EngineHost> {
         busbar_kernel::plane_host::engine_host(&self.app)
     }
 }

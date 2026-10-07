@@ -164,7 +164,7 @@ fn configured(mut app: TestApp, cfg: &RootCfg, runtime: &Arc<dyn Any + Send + Sy
         app.install_plane_runtime(decl.key, obj);
     }
     app.install_plane_runtime(
-        busbar_kernel::plane_host::runtime_slot_key(door().key),
+        busbar_kernel::plane::host::runtime_slot_key(door().key),
         Arc::clone(runtime),
     );
     app

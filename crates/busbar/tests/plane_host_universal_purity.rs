@@ -60,7 +60,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// The host-seam trait definition file. Its slice supertraits + `EngineHost` are the universe scanned.
-const HOST_TRAIT_FILE: &str = "crates/busbar-kernel/src/plane_host/mod.rs";
+const HOST_TRAIT_FILE: &str = "crates/busbar-kernel/src/plane/host.rs";
 
 /// The capability-slice supertraits of `EngineHost`, plus `EngineHost` itself (its provided
 /// `run_gauntlet`). A slice added/removed on the universal sum is ONE edit here — and the enumeration
@@ -414,7 +414,7 @@ struct Scan {
 fn run_scan() -> Scan {
     let root = repo_root();
     let host_src = std::fs::read_to_string(root.join(HOST_TRAIT_FILE))
-        .expect("the plane_host trait file must be readable");
+        .expect("the host trait file must be readable");
     let host_stripped = strip_source(&host_src);
     let methods = universal_methods(&host_stripped);
     let sources = plane_sources(&root);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-kernel/src/plane_host/session_meter.rs`.
+//! Tests for `crates/busbar-kernel/src/governance/session_meter.rs`.
 
 use super::SessionAccount;
 use crate::plane_host::{EngineHost, EngineHostImpl};

@@ -300,6 +300,7 @@ pub mod residual_log;
 // breaker, one refusal (spec Part 3, the outbound table, step 1: "KERNEL | route (pool walk, member,
 // breaker)").
 pub mod route;
+pub mod route_input;
 pub mod route_tables;
 /// THE CONNECTOR'S TLS WRAP, as the kernel reaches it: this crate names no TLS library (THE DESIGN:
 /// TLS stays in the connector); the egress engine's https arm, the duplex `wss` dial and the

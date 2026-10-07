@@ -575,6 +575,7 @@ name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
  "busbar-plugin-loader",

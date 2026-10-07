@@ -20,10 +20,11 @@ use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::FramerDoor;
 use busbar_core_connector::pool::PoolPosture;
 use busbar_core_connector::registry::Entry;
+use busbar_core_connector::tls::trust::GuardedEgressTrust;
 use busbar_core_connector::{process, Connector};
 use busbar_kernel::config::{Destinations, RootCfg};
 use busbar_kernel::host_services::DestJudge;
-use busbar_kernel::plane_host::egress_trust::{install_egress_trust_host, GuardedEgressTrust};
+use busbar_kernel::secure::install_egress_trust_host;
 
 use crate::root::loader::dispatch::{
     kinds::transport::Transport as TransportKind, load_linked, LinkedRow,

@@ -8,7 +8,7 @@
 //! nothing. This one proves the other half of the thin-verbatim-rider claim (DECISIONS #28/#29):
 //! a plane whose ONE flat per-call charge fires INSIDE `drive` (the shape of the A2A invoke plane's
 //! `meter_request`, `busbar-a2a`'s `receive.rs`) is driven through BOTH loops — `leg_legacy` =
-//! `busbar_kernel::plane_host::run_gauntlet` (the shipped authority), `leg_loop` =
+//! `busbar_kernel::plane::host::run_gauntlet` (the shipped authority), `leg_loop` =
 //! `run_gauntlet_via_kernel` (the plane-neutral bridge `gauntlet_install::install()` registers as
 //! the runner) — on the same input, and the test asserts (1) byte-identical status/headers/body AND
 //! (2) identical `meter_charge` rows. Any difference is a divergence (STOP + report).
@@ -30,7 +30,7 @@ use std::time::Instant;
 use axum::body::{to_bytes, Body};
 use axum::http::StatusCode;
 use axum::response::Response;
-use busbar_kernel::plane_host::{run_gauntlet, GauntletPlane, GauntletRequest, VerifyOutcome};
+use busbar_kernel::plane::host::{run_gauntlet, GauntletPlane, GauntletRequest, VerifyOutcome};
 
 use crate::root::gauntlet_kernel::run_gauntlet_via_kernel;
 

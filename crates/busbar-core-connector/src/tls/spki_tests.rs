@@ -11,7 +11,6 @@
 //! when those two agree.
 
 use super::*;
-use base64::Engine as _;
 use rcgen::{CertificateParams, KeyPair, PublicKeyData};
 use sha2::{Digest, Sha256};
 
@@ -37,9 +36,9 @@ fn the_walk_lands_on_the_subject_public_key_info_and_not_on_the_member_beside_it
 }
 
 #[test]
-fn the_pin_is_the_sha256_of_those_bytes_in_the_planes_one_digest_spelling() {
+fn the_pin_is_the_sha256_of_those_bytes_in_the_one_digest_spelling() {
     let (cert_der, expected_key_pin) = cert_and_its_key_pin();
-    let pin = pin_hash(&cert_der).expect("a pin");
+    let pin = pin(&cert_der).expect("a pin");
     assert_eq!(
         pin,
         format!(
@@ -48,12 +47,6 @@ fn the_pin_is_the_sha256_of_those_bytes_in_the_planes_one_digest_spelling() {
         ),
         "the pin is the operator-facing value; it must be exactly what `openssl … | openssl dgst \
          -sha256 -binary | base64` prints, or nobody can obtain it out of band"
-    );
-    assert_eq!(
-        pin,
-        crate::a2a::card::sha256_tagged(&expected_key_pin),
-        "ONE digest rendering on this plane. A second spelling here is a second value an operator \
-         has to know is the same one."
     );
 }
 
@@ -80,15 +73,15 @@ fn two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not() {
         "the two certificates must genuinely differ, or this test proves nothing"
     );
     assert_eq!(
-        pin_hash(first.der()).expect("pin"),
-        pin_hash(second.der()).expect("pin"),
+        pin(first.der()).expect("pin"),
+        pin(second.der()).expect("pin"),
         "a renewal keeps the key, so it must keep the pin"
     );
 
     let (other_cert, _) = cert_and_its_key_pin();
     assert_ne!(
-        pin_hash(first.der()).expect("pin"),
-        pin_hash(&other_cert).expect("pin"),
+        pin(first.der()).expect("pin"),
+        pin(&other_cert).expect("pin"),
         "a different key must be a different pin, or the pin distinguishes nothing"
     );
 }
@@ -100,8 +93,8 @@ fn a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached() {
     let (cert_der, _) = cert_and_its_key_pin();
     for cut in [1usize, 2, 8, cert_der.len() / 2, cert_der.len() - 1] {
         assert_eq!(
-            pin_hash(&cert_der[..cut]),
-            Err(KeyInfoError::Truncated),
+            pin(&cert_der[..cut]),
+            Err(SpkiError::Truncated),
             "{cut} bytes of a certificate is not a certificate"
         );
     }
@@ -112,8 +105,8 @@ fn a_document_that_is_not_a_certificate_refuses_by_tag() {
     // An OCTET STRING where a SEQUENCE belongs. Refused by NAME rather than by falling off the end,
     // so an operator reading the log learns the peer sent something that is not a certificate.
     assert_eq!(
-        pin_hash(&[0x04, 0x02, 0xAA, 0xBB]),
-        Err(KeyInfoError::UnexpectedTag {
+        pin(&[0x04, 0x02, 0xAA, 0xBB]),
+        Err(SpkiError::UnexpectedTag {
             want: 0x30,
             got: 0x04
         })
@@ -142,8 +135,8 @@ fn every_ber_length_form_that_gives_one_certificate_a_second_encoding_is_refused
         ),
     ] {
         assert_eq!(
-            pin_hash(&bytes),
-            Err(KeyInfoError::NotDer(why)),
+            pin(&bytes),
+            Err(SpkiError::NotDer(why)),
             "{why} must be refused, not tolerated"
         );
     }
@@ -180,22 +173,5 @@ fn a_version_one_certificate_with_no_version_member_is_walked_correctly() {
         key_pin.as_slice(),
         "a v1 certificate carries no version member, and the walk must not skip a member that is \
          not there"
-    );
-}
-
-/// FAITHFULNESS: the HOST spelling of the pin (the neutral [`busbar_kernel::plane_host::spki::pin`] the egress
-/// seam hands back in the observed head) is the SAME string as the a2a plane's own [`pin_hash`], byte
-/// for byte, over the same certificate DER. This is the whole reason the walk was lifted to one place:
-/// a governed hop must be able to return the pin the plane would have computed itself, so the plane's
-/// SPKI classification is unchanged whether the hop went through the seam or the plane's own transport.
-#[test]
-fn the_host_pin_equals_the_plane_pin_byte_for_byte() {
-    let (cert_der, _) = cert_and_its_key_pin();
-    let plane = pin_hash(&cert_der).expect("the plane pin");
-    let host = busbar_kernel::plane_host::spki::pin(&cert_der).expect("the host pin");
-    assert_eq!(
-        host.as_bytes(),
-        plane.as_bytes(),
-        "the host-computed pin must equal the plane-computed pin byte for byte"
     );
 }

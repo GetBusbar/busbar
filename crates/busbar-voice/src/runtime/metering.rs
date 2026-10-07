@@ -17,7 +17,7 @@
 //! under `~/Downloads/busbar-1.6.0-snapshots/P2-voice/`.
 
 use busbar_contract::billing::Usage;
-pub use busbar_kernel::plane_host::session_meter::{BudgetRefused, SessionAccount, TurnVerdict};
+pub use busbar_kernel::governance::session_meter::{BudgetRefused, SessionAccount, TurnVerdict};
 use busbar_kernel::plane_host::EngineHost;
 use busbar_plane_streaming::session::{class_counts, TurnCounters};
 use std::sync::Arc;

@@ -649,8 +649,9 @@ impl crate::secure::ClientTls for DoubleClient {
                     Some("OK") => {
                         let alpn = from_hex_or_dash(words.next().unwrap_or("-"));
                         let leaf = from_hex_or_dash(words.next().unwrap_or("-"));
+                        let pin = leaf.as_deref().map(double_pin);
                         let secured: Box<dyn crate::secure::SecuredIo> =
-                            Box::new(DoubleSecured { tcp, alpn, leaf });
+                            Box::new(DoubleSecured { tcp, alpn, pin });
                         Ok(secured)
                     }
                     Some("REFUSE") => Err(std::io::Error::new(
@@ -667,18 +668,31 @@ impl crate::secure::ClientTls for DoubleClient {
     }
 }
 
+/// THE PIN THE [`TlsDouble`] REPORTS for a peer that presented `leaf`: a FIXED test spelling, one
+/// per leaf, not an SPKI pin. The connector owns pinning (spec Part 3), so this crate never walks a
+/// certificate; what a kernel test proves with it is that the engine carries the pin its secured
+/// stream reported onto every response served over that connection. The real pin of a real
+/// handshake is proven where TLS lives (the connector's `tls/engine_tests.rs`).
+#[must_use]
+pub fn double_pin(leaf: &[u8]) -> String {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    leaf.hash(&mut h);
+    format!("double/{:016x}", h.finish())
+}
+
 struct DoubleSecured {
     tcp: tokio::net::TcpStream,
     alpn: Option<Vec<u8>>,
-    leaf: Option<Vec<u8>>,
+    pin: Option<String>,
 }
 
 impl crate::secure::SecuredIo for DoubleSecured {
     fn alpn(&self) -> Option<&[u8]> {
         self.alpn.as_deref()
     }
-    fn peer_leaf(&self) -> Option<&[u8]> {
-        self.leaf.as_deref()
+    fn peer_spki(&self) -> Option<&str> {
+        self.pin.as_deref()
     }
     fn tcp(&self) -> &tokio::net::TcpStream {
         &self.tcp
@@ -909,10 +923,10 @@ pub fn spawn_double(
 // ── the TLS wrap of a test binary no composition root boots ────────────────────────────────────
 
 /// The egress-trust capability a test binary with no composition root installs to carry a TLS wrap:
-/// the pass-through primitives (so every other answer is the one no capability gives), and `layer`.
+/// `layer`, and every other answer the one no capability gives.
 pub struct TlsEgressTrust(pub Arc<dyn crate::secure::SecureLayer>);
 
-impl crate::plane_host::egress_trust::EgressTrustHost for TlsEgressTrust {
+impl crate::secure::EgressTrustHost for TlsEgressTrust {
     fn secure_layer(&self) -> Option<Arc<dyn crate::secure::SecureLayer>> {
         Some(Arc::clone(&self.0))
     }
@@ -922,5 +936,5 @@ impl crate::plane_host::egress_trust::EgressTrustHost for TlsEgressTrust {
 /// egress-trust capability the composition root installs at boot in a shipped process (first
 /// install wins).
 pub fn install_test_tls(layer: Arc<dyn crate::secure::SecureLayer>) {
-    crate::plane_host::egress_trust::install_egress_trust_host(Arc::new(TlsEgressTrust(layer)));
+    crate::secure::install_egress_trust_host(Arc::new(TlsEgressTrust(layer)));
 }

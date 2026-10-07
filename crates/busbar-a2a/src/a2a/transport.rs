@@ -36,7 +36,7 @@
 //!
 //! An unsigned agent card has no JWS root, and the only authenticity root left for it is the
 //! certificate the endpoint proved it held the key for. So this transport records the leaf
-//! certificate's SubjectPublicKeyInfo pin ([`super::key_info::pin_hash`]) on every TLS hop.
+//! certificate's SubjectPublicKeyInfo pin (the connector's `tls::spki::pin`) on every TLS hop.
 //!
 //! **The certificate is read AFTER the ordinary verification, off a handshake that already
 //! succeeded.** `reqwest`'s `tls_info` hands back the leaf of a connection the chain-and-name check
@@ -158,8 +158,8 @@ impl Resolver for TokioResolver {
 //
 // The hop no longer runs behind a `reqwest::Response` this plane holds — the host owns the socket and
 // the verified handshake, and hands back the `sha256/…` pin on the seam's `seam::Buffered`, decoded
-// from the SAME bytes `busbar_kernel::plane_host::spki::pin` produces (which `super::key_info::pin_hash`
-// re-exports), so the pin string is byte-identical to the one this file used to compute. `None` on a
+// from the SAME bytes the connector's `tls::spki::pin` produces, so the pin string is
+// byte-identical to the one this file used to compute. `None` on a
 // plaintext hop and `None` where the certificate cannot be read, unchanged: `super::verify` refuses
 // a transport-pinned registration whose fetch produced no observed pin, because "we could not look"
 // and "it matched" are the two answers a pin exists to keep apart.
@@ -394,7 +394,7 @@ impl ReqwestTransport {
 
         // THE HOP, over the HOSTLESS egress seam. The host owns the socket, the pinned client (its own
         // refusing resolver), the verified handshake and the capped read; it hands back the status, the
-        // `Location`, the peer SPKI pin (decoded from the same bytes `super::key_info::pin_hash` produces)
+        // `Location`, the peer SPKI pin (decoded from the same bytes the connector's `tls::spki::pin` produces)
         // and whether busbar's own client identity was carried into the handshake. The deadline rides
         // the desc (`timeout_ms`), the identity/trust anchors ride their opaque refs.
         let buffered =

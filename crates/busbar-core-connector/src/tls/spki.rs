@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TRANSPORT-LAYER IDENTITY, computed HOST-SIDE: a peer certificate's SubjectPublicKeyInfo,
-//! hashed and rendered in the ONE canonical spelling the whole tree shares.
+//! THE TRANSPORT-LAYER IDENTITY: a peer certificate's SubjectPublicKeyInfo, hashed and rendered in
+//! the ONE canonical spelling the whole tree shares.
 //!
-//! This is the NEUTRAL host home of the DER walk that used to live only inside the a2a plane. It was
-//! lifted here — not duplicated — for the egress seam: when the host owns the outbound hop it also
-//! owns the certificate the handshake produced, and the host must be able to hand the plane the SAME
-//! pin string the plane would have computed itself, byte for byte. A second copy of the walk would be
-//! a second answer to "what is this key's pin", which is exactly the divergence a pin exists to
-//! prevent. So there is ONE walk, here, and the a2a plane's `spki` module re-exports it.
+//! The connector owns pinning, SPKI and mTLS (spec Part 3), so the one DER walk lives here, beside
+//! the TLS wrap ([`super::engine::Layer`]) that computes each secured stream's pin at handshake time
+//! and hands it to the kernel computed (`busbar_kernel::secure::SecuredIo::peer_spki`). A second copy
+//! of the walk would be a second answer to "what is this key's pin", which is exactly the divergence
+//! a pin exists to prevent.
 //!
 //! ## WHERE THE CERTIFICATE COMES FROM, and why this does not weaken anything
 //!
 //! The DER handed to [`pin`] is the leaf certificate of a handshake that ALREADY COMPLETED under the
-//! ordinary chain-and-name check (the host egress chokepoint's pinned client, or the a2a transport). This
+//! ordinary chain-and-name check (the wrap's own verified handshake). This
 //! module is therefore an OBSERVATION of a connection somebody else already verified, never a
 //! substitute for verifying one: a handshake that was not verified produces no response to read a
 //! certificate off.
@@ -57,7 +56,12 @@ pub enum SpkiError {
     /// The bytes ran out mid-element.
     Truncated,
     /// A tag that is not what RFC 5280 puts at this position.
-    UnexpectedTag { want: u8, got: u8 },
+    UnexpectedTag {
+        /// The tag RFC 5280 puts here.
+        want: u8,
+        /// The tag the bytes carry.
+        got: u8,
+    },
     /// An indefinite length, a non-minimal length, or a length wider than any certificate needs. All
     /// three are legal BER and none of them is DER, and each gives one certificate a second encoding —
     /// which is a second pin for one key.
@@ -190,3 +194,7 @@ pub fn pin(cert_der: &[u8]) -> Result<String, SpkiError> {
     let digest = ring::digest::digest(&ring::digest::SHA256, key_info);
     Ok(format!("sha256/{}", B64.encode(digest.as_ref())))
 }
+
+#[cfg(test)]
+#[path = "spki_tests.rs"]
+mod tests;

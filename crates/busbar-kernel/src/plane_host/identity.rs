@@ -17,7 +17,7 @@
 //!
 //! ## Bounded retention
 //!
-//! [`register`]'s signature is the ABI [`super::egress_trust::PassThroughEgressTrust`] calls through —
+//! [`register`]'s signature is the one the HOT egress calls through —
 //! it carries no config-generation tag — so this module cannot tell a fresh hot-reload's registrations
 //! apart from an old one's by identity alone. What it CAN do, and what it does, is refuse to grow
 //! without bound: the registry retains only the [`MAX_RETAINED_IDENTITIES`] most-recently-registered

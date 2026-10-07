@@ -50,6 +50,8 @@ use std::sync::Arc;
 
 pub mod client;
 pub mod engine;
+pub mod spki;
+pub mod trust;
 
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
 use busbar_kernel::config::secret::SecretResolver;

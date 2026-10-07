@@ -164,7 +164,7 @@ item = "PLANE_SECTIONS"
 # destination guard through this seam; no new static.)
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/plane_host/egress_trust.rs"
+file = "crates/busbar-kernel/src/secure.rs"
 item = "EGRESS_TRUST"
 
 [[finding]]

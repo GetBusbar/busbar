@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use super::{ConfigTables, EngineTablesView};
-use crate::plane_host::{AuthStyleInput, LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput};
+use crate::route_input::{AuthStyleInput, LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput};
 
 fn lane(model: &str, provider: &str) -> LaneInput {
     LaneInput {
