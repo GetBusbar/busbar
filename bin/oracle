@@ -110,6 +110,12 @@ if hits:
 PY
 }
 if [ "${1:-}" = "premise-filter" ]; then widen_filter "${2:?premise-filter <filter>}"; exit 0; fi
+# `--filter` is record's flag; replay and diff select with `--id-filter`. Refused by name, before
+# anything runs (2026-10-07: a replay handed it judged nothing and printed only its fence rows).
+refuse_filter_flag() {  # refuse_filter_flag <subcommand>
+  echo "oracle: $1 takes --id-filter <regex>; --filter is record's flag. Refusing: nothing was judged." >&2
+  exit 2
+}
 
 # ── A RECORDING OWNS ITS TEMP DIRECTORY ─────────────────────────────────────────────────────────
 # Every busbar the recorder boots sweeps `<TMPDIR>` at startup for plugin staging dirs a dead pid
@@ -163,6 +169,55 @@ E
   [ -d "$st/host/busbar-plugins-$dead-x" ] || { echo "  [FAILED] the host's own temp entries were touched"; fail=1; }
   [ "$fail" = 0 ] && { echo "oracle private-tmp-selftest: each recording runs in its own private TMPDIR"; exit 0; }
   echo "oracle private-tmp-selftest: FAILED"; exit 1
+fi
+if [ "${1:-}" = "replay-refusal-selftest" ]; then
+  # A replay that judged nothing is refused, never read as a verdict: `--filter` (record's flag) is
+  # refused by name before the engine runs; an engine argument refusal stops the replay there; a
+  # report that compared zero owed cells is refused (3); a report that compared some passes the
+  # engine's exit through. Driven against a copy of this shim with a stub engine. An optional
+  # argument names the shim under test (a parent revision's, for the red proof).
+  under="${2:-$here/bin/oracle}"
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
+  mkdir -p "$st/repo/bin" "$st/repo/testing/shadow-oracle" "$st/out"
+  cp "$under" "$st/repo/bin/oracle"
+  cp "$here/testing/shadow-oracle/oracle-rust.pin" "$st/repo/testing/shadow-oracle/"
+  printf '{"cells": [{"id": "fam|a"}]}\n' >"$st/repo/testing/shadow-oracle/cells.json"
+  printf '{"accepted": []}\n' >"$st/repo/testing/shadow-oracle/accepted-differences.json"
+  cat >"$st/engine" <<'E'
+#!/usr/bin/env bash
+[ "$1" = diff ] || exit 0
+echo diff >>"$(dirname "$0")/calls"
+out=""; prev=""; for a in "$@"; do [ "$prev" = --out ] && out="$a"; prev="$a"; done
+case "${STUB:-}" in
+  usage) echo "error: unexpected argument found" >&2; exit 2 ;;
+  zero) mkdir -p "$out"; echo '{"totals": {"owed": 0}}' >"$out/report.json"; exit 0 ;;
+  some) mkdir -p "$out"; echo '{"totals": {"owed": 3}}' >"$out/report.json"; exit 1 ;;
+esac
+E
+  chmod +x "$st/engine"
+  run() {  # run <stub mode> <replay args...> -> "<rc>" ; stderr to $st/err
+    : >"$st/calls"
+    env -u BUSBAR_ORACLE_DATA STUB="$1" BUSBAR_ORACLE_RUST_BIN="$st/engine" "$st/repo/bin/oracle" \
+      replay "${@:2}" >/dev/null 2>"$st/err"; echo $?
+  }
+  fail=0
+  rc="$(run some --candidate c --out "$st/out/f" --filter 'fam')"
+  if [ "$rc" = 2 ] && grep -q -- "--id-filter" "$st/err" && [ ! -s "$st/calls" ]; then
+    echo "  [ok]     replay --filter is refused by name before the engine runs"
+  else echo "  [FAILED] replay --filter: rc=$rc, engine calls $(wc -l <"$st/calls"), $(head -c 200 "$st/err")"; fail=1; fi
+  rc="$(run usage --candidate c --out "$st/out/u")"
+  if [ "$rc" = 2 ] && grep -q "nothing was judged" "$st/err" && [ "$(wc -l <"$st/calls" | tr -d ' ')" = 1 ]; then
+    echo "  [ok]     an engine argument refusal stops the replay; no other section runs"
+  else echo "  [FAILED] engine refusal: rc=$rc, engine calls $(wc -l <"$st/calls"), $(head -c 200 "$st/err")"; fail=1; fi
+  rc="$(run zero --candidate c --out "$st/out/z")"
+  if [ "$rc" = 3 ] && grep -q "ZERO owed cells" "$st/err"; then
+    echo "  [ok]     a replay that compared zero owed cells is refused"
+  else echo "  [FAILED] zero judged: rc=$rc, $(head -c 200 "$st/err")"; fail=1; fi
+  rc="$(run some --candidate c --out "$st/out/s")"
+  if [ "$rc" = 1 ]; then echo "  [ok]     a replay that judged cells answers the engine's verdict"
+  else echo "  [FAILED] judged: rc=$rc, $(head -c 200 "$st/err")"; fail=1; fi
+  [ "$fail" = 0 ] && { echo "oracle replay-refusal-selftest: a replay that judged nothing is refused, never read as a verdict"; exit 0; }
+  echo "oracle replay-refusal-selftest: FAILED"; exit 1
 fi
 if [ "${1:-}" = "premise-selftest" ]; then
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -501,6 +556,29 @@ PY
       done < <(family_baseline_rows)
       return "$worst"
     }
+    # A REPLAY THAT JUDGED NOTHING IS NOT A VERDICT (2026-10-07, ORACLE-BURN: a filtered replay
+    # handed `--filter`, which is record's flag, exited 2 from the engine's argument parser; the
+    # fence and dated-baseline sections then ran and printed their own rows, which read like a
+    # verdict over the selected cells). The 1.5.5 section answers first and alone: an argument
+    # refusal (2) stops the replay there, and a report that compared no owed cell is a refusal (3).
+    judged_or_refuse() {  # judged_or_refuse <1.5.5 rc> <diff args...>
+      local rc="$1" out="" a prev=""; shift
+      if [ "$rc" -ge 2 ]; then
+        echo "oracle: the 1.5.5 replay refused (exit $rc, above); nothing was judged, so no other section runs." >&2
+        exit "$rc"
+      fi
+      for a in "$@"; do [ "$prev" = --out ] && out="$a"; prev="$a"; done
+      [ -n "$out" ] || return 0
+      python3 -c '
+import json, sys
+try:
+    owed = json.load(open(sys.argv[1]))["totals"]["owed"]
+except Exception as e:
+    sys.exit("oracle: the 1.5.5 replay wrote no readable report (%s: %s); nothing was judged. Refusing." % (sys.argv[1], e))
+if not owed:
+    sys.exit("oracle: the 1.5.5 replay compared ZERO owed cells (%s); a replay that judged nothing is not a verdict. Refusing." % sys.argv[1])
+' "$out/report.json" || exit 3
+    }
     # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).
     #
     # NO HARNESS-REVISION FLAG EXISTS ANY MORE (ORACLE-STABLE). The differ judges cell by cell; the
@@ -512,10 +590,12 @@ PY
     IDF="" args=()
     while [ $# -gt 0 ]; do case "$1" in
       --id-filter) IDF="$2"; shift 2;;
+      --filter|--filter=*) refuse_filter_flag replay ;;
       *) args+=("$1"); shift;;
     esac; done
     if [ -z "$IDF" ]; then
       set +e; "$RUST_BIN" diff "${args[@]}" --cells "$DATA/cells.json"; rc=$?; set -e
+      judged_or_refuse "$rc" "${args[@]}"
       frc=0; replay_fences "$rc" "" "${args[@]}" || frc=$?
       brc=0; replay_family_baselines "$frc" "" "${args[@]}" || brc=$?
       exit "$brc" ; fi
@@ -529,6 +609,7 @@ PY
     log="$(mktemp)"; set +e
     "$RUST_BIN" diff "${args[@]}" --id-filter "$WIDE" --cells "$DATA/cells.json" 2>&1 | tee "$log"
     rc=${PIPESTATUS[0]}; set -e
+    judged_or_refuse "$rc" "${args[@]}"
     withheld_selected "$log" "$IDF" || { rm -f "$log"; exit 3; }
     rm -f "$log"; frc=0; replay_fences "$rc" "$IDF" "${args[@]}" || frc=$?
     brc=0; replay_family_baselines "$frc" "$IDF" "${args[@]}" || brc=$?; exit "$brc" ;;
@@ -538,6 +619,7 @@ PY
     IDF="" args=()
     while [ $# -gt 0 ]; do case "$1" in
       --id-filter) IDF="$2"; shift 2;;
+      --filter|--filter=*) refuse_filter_flag diff ;;
       *) args+=("$1"); shift;;
     esac; done
     if [ -z "$IDF" ]; then exec "$RUST_BIN" diff "${args[@]}"; fi
