@@ -1116,16 +1116,37 @@
    "paths": [
     "crates/busbar-transport-stdio/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "6699e15269902b6d0e9ebccb658906ae98d31c568d2066fda023edabf7d75f76",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 3,
+    "LOW": 3,
+    "NIT": 0
+   },
+   "report": "In the shipped build, the stdio transport is a line framer, not a carrier. Its door refuses dial, accept, read and write, and spawning, environment handling and kill-on-close live in core. The linked and dropped-in doors differ. The linked row is the memory-ABI framer. The dropped-in image exports a separate carrier that spawns children itself and runs its own runtime thread. Lines over 64 KiB fail the framing. No Peer auth point is offered. Framing allocates on every line. Read fully.",
+   "auditor": "opus-ledger-transport-stdio",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-stdio/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-transport-stdio",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "6699e15269902b6d0e9ebccb658906ae98d31c568d2066fda023edabf7d75f76",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 3,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "In the shipped build, the stdio transport is a line framer, not a carrier. Its door refuses dial, accept, read and write, and spawning, environment handling and kill-on-close live in core. The linked and dropped-in doors differ. The linked row is the memory-ABI framer. The dropped-in image exports a separate carrier that spawns children itself and runs its own runtime thread. Lines over 64 KiB fail the framing. No Peer auth point is offered. Framing allocates on every line. Read fully."
+    }
    ]
   },
   {
@@ -1241,15 +1262,15 @@
    ],
    "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
    "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "round": 2,
    "result": "findings",
    "counts": {
     "HIGH": 0,
     "MEDIUM": 3,
-    "LOW": 4,
+    "LOW": 6,
     "NIT": 0
    },
-   "report": "draft",
+   "report": "The memory store's money slots follow the store rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops for a day. Records are never evicted by age, and a forked append is refused. Three defects remain. The dedupe log holds the full text of every write for a day, and every production write mints an op id, so memory grows with traffic. Fully spent slices, window counters and journal rows are never freed. The plane-record purge keeps live rows only for one hard-coded record kind. Read fully.",
    "auditor": "opus-ledger-store-memory",
    "fixed_at": null,
    "exclude": [
@@ -1269,6 +1290,20 @@
       "NIT": 0
      },
      "report": "draft"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-store-memory",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 3,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The memory store's money slots follow the store rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops for a day. Records are never evicted by age, and a forked append is refused. Three defects remain. The dedupe log holds the full text of every write for a day, and every production write mints an op id, so memory grows with traffic. Fully spent slices, window counters and journal rows are never freed. The plane-record purge keeps live rows only for one hard-coded record kind. Read fully."
     }
    ]
   },
