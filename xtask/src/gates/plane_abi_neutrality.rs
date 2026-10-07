@@ -46,6 +46,7 @@ pub const ROW_EXPORTED: &str = "plane-abi-neutrality:exported-declarations";
 pub const ROW_TEST_RATCHET: &str = "plane-abi-neutrality:test-path-ratchet";
 
 const HOT_LANE: &str = "crates/busbar-contract/src/abi/hot";
+const ABI_DIR: &str = "crates/busbar-contract/src/abi";
 const TAXONOMY_DOC: &str = "docs/design/BUSBAR-1.6.0.md";
 
 /// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: `crates/busbar-contract/src/abi/hot/mod.rs` declares
@@ -620,6 +621,139 @@ impl Gate for PlaneAbiNeutralityGate {
                     &[ROW_HOT_LANE],
                     ov,
                     &["reads exactly like a neutral ABI"],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: the hot lane is unreadable ({e})"
+            )),
+        }
+
+        // THE LIVE PLANE ABI IS SCANNED (X5 finding 4). The per-kind plane ABI (`abi/plane`) and the
+        // host tables every kind calls (`abi/host`) are the plane ABI the planes speak; a protocol
+        // noun planted in a declaration in either is a finding, not a file this witness never opens.
+        let plane_mod = format!("{ABI_DIR}/plane/mod.rs");
+        let mut ov = Overlay::new();
+        match Edit::Append(format!("\npub struct {}PlantedSlot;\n", "Mcp"))
+            .apply(cx, &plane_mod, &mut ov)
+        {
+            Ok(()) => report.push(prove_red(
+                cx,
+                self,
+                "a protocol noun in a declaration in abi/plane/mod.rs is a finding",
+                &[ROW_EXPORTED],
+                ov,
+                &["abi/plane/mod.rs", "McpPlantedSlot"],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: {plane_mod} could not be planted ({e})"
+            )),
+        }
+        let host_root = format!("{ABI_DIR}/host");
+        let host_files = cx.walk(&WalkSpec::new([host_root.clone()]).ext("rs"));
+        match host_files
+            .as_ref()
+            .ok()
+            .and_then(|fs| fs.iter().find(|f| !f.rel_str().ends_with("/mod.rs")))
+        {
+            Some(f) => {
+                let rel = f.rel_str();
+                let mut ov = Overlay::new();
+                ov.set(
+                    &rel,
+                    format!("{}\npub struct {}PlantedTable;\n", f.text, "Tool"),
+                );
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a protocol noun in a declaration in an abi/host file is a finding",
+                    &[ROW_EXPORTED],
+                    ov,
+                    &[rel.as_str(), "ToolPlantedTable"],
+                ));
+            }
+            None => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: no non-mod.rs file under {host_root} to plant"
+            )),
+        }
+
+        // AN EMPTIED LIVE ROOT IS RED. `abi/plane` drained of Rust scans zero files, and zero
+        // banned nouns over zero files is the passing answer this row exists to refuse.
+        match cx.walk(&WalkSpec::new([format!("{ABI_DIR}/plane")]).ext("rs")) {
+            Ok(files) => {
+                let mut ov = Overlay::new();
+                for f in &files {
+                    ov.remove(&f.rel);
+                }
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "an emptied abi/plane root is refused, not scanned as zero banned nouns",
+                    &[ROW_HOT_LANE],
+                    ov,
+                    &["abi/plane"],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: abi/plane is unreadable ({e})"
+            )),
+        }
+
+        // A LIVE ROOT BELOW ITS MEASURED FLOOR IS RED: one abi/host file gone is a narrower scan,
+        // not a cleaner ABI.
+        if let Some(f) = host_files.as_ref().ok().and_then(|fs| fs.first()) {
+            let mut ov = Overlay::new();
+            ov.remove(&f.rel);
+            report.push(prove_red(
+                cx,
+                self,
+                "an abi/host root one file under its measured floor is refused",
+                &[ROW_HOT_LANE],
+                ov,
+                &["abi/host", "floor"],
+            ));
+        }
+
+        // A LIVE ROOT abi/mod.rs NO LONGER DECLARES IS RED: the roots are read off the abi
+        // module's own `pub mod` lines, and a plane ABI the module does not declare is not one
+        // this witness may silently stop scanning.
+        let abi_mod = format!("{ABI_DIR}/mod.rs");
+        match cx.read(&abi_mod) {
+            Ok(text) if text.lines().any(|l| l.trim() == "pub mod plane;") => {
+                let planted: String = text
+                    .lines()
+                    .filter(|l| l.trim() != "pub mod plane;")
+                    .map(|l| format!("{l}\n"))
+                    .collect();
+                let mut ov = Overlay::new();
+                ov.set(&abi_mod, planted);
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a live root abi/mod.rs does not declare is refused",
+                    &[ROW_HOT_LANE],
+                    ov,
+                    &["pub mod plane;"],
+                ));
+            }
+            _ => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: {abi_mod} declares no `pub mod plane;` to plant over"
+            )),
+        }
+
+        // ...AND THE RETIRING HOT LANE GOING IS NOT RED: it is scanned while it exists, and its
+        // deletion (M6-HOT-PLANE) is the plan, not a blind scan, once the live roots are read.
+        match cx.walk(&WalkSpec::new([format!("{ABI_DIR}/hot")]).ext("rs")) {
+            Ok(files) => {
+                let mut ov = Overlay::new();
+                for f in &files {
+                    ov.remove(&f.rel);
+                }
+                report.push(crate::gates::prove_rows_green(
+                    cx,
+                    self,
+                    "the retiring hot lane deleted does not red the scan roots",
+                    &[ROW_HOT_LANE],
+                    ov,
                 ));
             }
             Err(e) => report.note_infra_failure(format!(
