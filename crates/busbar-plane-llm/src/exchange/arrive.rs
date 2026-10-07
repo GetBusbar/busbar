@@ -268,6 +268,60 @@ fn convenience(path: &str) -> Option<Convenience> {
     }
 }
 
+/// Where an arrival was addressed: its path and its query (without the `?`).
+#[derive(Clone, Copy)]
+struct Target<'a> {
+    path: &'a str,
+    query: Option<&'a str>,
+}
+
+/// `/{name}/v1/messages`: a pool or a model named in the path, read in the residual dialect of
+/// `/v1/messages`, under the span the previous release opened for this route, with the name it
+/// carried (v1.5.5 `crates/busbar/src/ingress/mod.rs:1161`).
+#[tracing::instrument(level = "debug", name = "named", skip_all, fields(pool = %name))]
+fn named(
+    at: Target<'_>,
+    fields: HeadFields<'_>,
+    body: &[u8],
+    name: String,
+) -> Result<Arrived, Declined> {
+    let proto = residual("/v1/messages").unwrap_or("");
+    body_arrival(proto, at.path, at.query, fields, body, Some(name))
+}
+
+/// `/{provider}/{model}/v1/messages`: an ad-hoc route, read in the residual dialect of
+/// `/v1/messages`, under the span the previous release opened for this route, with the provider and
+/// the model it carried (v1.5.5 `crates/busbar/src/ingress/mod.rs:1292`). A model the catalogue
+/// says another provider serves is refused.
+#[tracing::instrument(
+    level = "debug",
+    name = "adhoc",
+    skip_all,
+    fields(provider = %provider, model = %model)
+)]
+fn adhoc(
+    at: Target<'_>,
+    fields: HeadFields<'_>,
+    body: &[u8],
+    catalogue: &dyn Catalogue,
+    provider: &str,
+    model: String,
+) -> Result<Arrived, Declined> {
+    let proto = residual("/v1/messages").unwrap_or("");
+    if let Some(serving) = catalogue.provider_of(&model) {
+        if serving != provider {
+            return Err(declined(
+                Decline::ProviderMismatch,
+                400,
+                proto,
+                KIND_INVALID_REQUEST,
+                super::refuse::model_not_found(&model, None),
+            ));
+        }
+    }
+    body_arrival(proto, at.path, at.query, fields, body, Some(model))
+}
+
 /// READ ONE ARRIVAL. `method` is the request method, `target` the request target (path and query),
 /// `fields` its head fields, `body` the whole body. Every dialect path takes POST only.
 ///
@@ -290,25 +344,13 @@ pub fn arrive(
         if method != "POST" {
             return Err(method_not_allowed(path));
         }
-        let proto = residual("/v1/messages").unwrap_or("");
-        let hint = match c {
-            Convenience::Named(name) => name,
+        let at = Target { path, query };
+        return match c {
+            Convenience::Named(name) => named(at, fields, body, name),
             Convenience::Adhoc(provider, model) => {
-                if let Some(serving) = catalogue.provider_of(&model) {
-                    if serving != provider {
-                        return Err(declined(
-                            Decline::ProviderMismatch,
-                            400,
-                            proto,
-                            KIND_INVALID_REQUEST,
-                            super::refuse::model_not_found(&model, None),
-                        ));
-                    }
-                }
-                model
+                adhoc(at, fields, body, catalogue, &provider, model)
             }
         };
-        return body_arrival(proto, path, query, fields, body, Some(hint));
     }
     let Some(proto) = detect(path, fields) else {
         return Err(no_resource(path));
@@ -462,7 +504,9 @@ fn path_not_found(path: &str, native: impl FnOnce() -> String) -> Declined {
     }
 }
 
-/// GEMINI: `…/models/{model}:{action}`.
+/// GEMINI: `…/models/{model}:{action}`, under the span the previous release opened for this
+/// dialect's arrivals (v1.5.5 `crates/busbar/src/ingress/mod.rs:788`).
+#[tracing::instrument(level = "debug", name = "gemini_ingress", skip_all)]
 fn gemini_arrival(
     path: &str,
     query: Option<&str>,
@@ -524,41 +568,12 @@ fn bedrock_arrival(
         .and_then(|rh| rh.path_model(path))
         .map(|m| percent_decode(&m))
         .unwrap_or_default();
-    let unsupported = || {
-        declined(
-            Decline::UnsupportedOperation,
-            404,
-            PROTO_BEDROCK,
-            KIND_NOT_FOUND,
-            ENDPOINT_UNSUPPORTED,
-        )
-    };
-    let converse = |suffix: &str, stream: bool| {
-        let op =
-            rh.and_then(|rh| rh.resolve_operation(&format!("/model/{model_id}/{suffix}"), body));
-        match op {
-            Some(op) => path_model_arrival(
-                PROTO_BEDROCK,
-                path,
-                query,
-                fields,
-                body,
-                model_id.clone(),
-                op,
-                PathModel {
-                    stream,
-                    json_array: false,
-                    model_not_found_message: None,
-                },
-            ),
-            None => Err(unsupported()),
-        }
-    };
+    let at = Target { path, query };
     if path.ends_with("/converse") {
-        return converse("converse", false);
+        return bedrock_converse(at, fields, body, model_id);
     }
     if path.ends_with("/converse-stream") {
-        return converse("converse-stream", true);
+        return bedrock_converse_stream(at, fields, body, model_id);
     }
     if path.ends_with("/invoke") {
         let Some(_operation) = rh.and_then(|rh| rh.resolve_operation(path, body)) else {
@@ -573,6 +588,72 @@ fn bedrock_arrival(
         return body_arrival(PROTO_BEDROCK, path, query, fields, body, Some(model_id));
     }
     Err(no_resource(path))
+}
+
+/// BEDROCK `/model/{id}/converse`, under the span the previous release opened for it (v1.5.5
+/// `crates/busbar/src/ingress/mod.rs:1043`).
+#[tracing::instrument(level = "debug", name = "bedrock_converse", skip_all)]
+fn bedrock_converse(
+    at: Target<'_>,
+    fields: HeadFields<'_>,
+    body: &[u8],
+    model_id: String,
+) -> Result<Arrived, Declined> {
+    converse_arrival(at, fields, body, model_id, false)
+}
+
+/// BEDROCK `/model/{id}/converse-stream`, under the span the previous release opened for it
+/// (v1.5.5 `crates/busbar/src/ingress/mod.rs:1070`).
+#[tracing::instrument(level = "debug", name = "bedrock_converse_stream", skip_all)]
+fn bedrock_converse_stream(
+    at: Target<'_>,
+    fields: HeadFields<'_>,
+    body: &[u8],
+    model_id: String,
+) -> Result<Arrived, Declined> {
+    converse_arrival(at, fields, body, model_id, true)
+}
+
+/// A converse arrival (`stream` = the `-stream` endpoint): the operation the endpoint names, as a
+/// path-model arrival.
+fn converse_arrival(
+    at: Target<'_>,
+    fields: HeadFields<'_>,
+    body: &[u8],
+    model_id: String,
+    stream: bool,
+) -> Result<Arrived, Declined> {
+    let suffix = if stream {
+        "converse-stream"
+    } else {
+        "converse"
+    };
+    let op = decl(PROTO_BEDROCK)
+        .and_then(|d| d.handler)
+        .and_then(|rh| rh.resolve_operation(&format!("/model/{model_id}/{suffix}"), body));
+    let Some(op) = op else {
+        return Err(declined(
+            Decline::UnsupportedOperation,
+            404,
+            PROTO_BEDROCK,
+            KIND_NOT_FOUND,
+            ENDPOINT_UNSUPPORTED,
+        ));
+    };
+    path_model_arrival(
+        PROTO_BEDROCK,
+        at.path,
+        at.query,
+        fields,
+        body,
+        model_id,
+        op,
+        PathModel {
+            stream,
+            json_array: false,
+            model_not_found_message: None,
+        },
+    )
 }
 
 /// THE PATH-MODEL CARRY: the URL's facts (the `model`, the `stream` flag and, when asked, the

@@ -92,3 +92,47 @@ fn a_traces_record_is_built_to_the_sinks_projection() {
     let ungranted = record(logs_only, &facts);
     assert_eq!(*ungranted, serde_json::json!({}));
 }
+
+static RECORDED: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn capture_recorded(facts: &[(ExportField, Value)]) {
+    RECORDED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(facts.to_vec());
+}
+
+/// A field the span records AFTER it opened is in its record, at the value it held when it closed:
+/// the request span declares `pool`, `ingress` and `op` empty and records them once the request is
+/// read. RED: a producer that read the fields only as the span opened sent the request span with
+/// none of them.
+#[test]
+fn a_field_recorded_after_the_span_opened_is_in_its_record() {
+    let subscriber = tracing_subscriber::registry().with(Producer(capture_recorded));
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::debug_span!(
+            "forward",
+            pool = "first",
+            ingress = tracing::field::Empty,
+            op = tracing::field::Empty
+        );
+        span.record("ingress", "dialect-a");
+        span.record("op", "chat");
+        span.record("pool", "second");
+    });
+    let seen = std::mem::take(&mut *RECORDED.lock().unwrap_or_else(|e| e.into_inner()));
+    assert_eq!(seen.len(), 1, "one record per closed span: {seen:?}");
+    let rec = &seen[0];
+    assert_eq!(
+        field(rec, ExportField::Ingress),
+        Some(&Value::from("dialect-a"))
+    );
+    assert_eq!(field(rec, ExportField::Op), Some(&Value::from("chat")));
+    assert_eq!(field(rec, ExportField::Pool), Some(&Value::from("second")));
+    assert_eq!(
+        rec.iter().filter(|(f, _)| *f == ExportField::Pool).count(),
+        1,
+        "a field recorded twice is one fact: {rec:?}"
+    );
+}

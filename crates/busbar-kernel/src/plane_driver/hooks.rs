@@ -99,6 +99,24 @@ pub trait HookBinder: Send + Sync {
         let _ = dialect;
         String::new()
     }
+
+    /// THE CORRELATION ID OF A UNIT NO HOOK BINDS: one id off the binder's counter, so every unit
+    /// of the hook stage carries one on its request span, hooked or not, as the previous release
+    /// stamped one on every forwarded request (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:144`,
+    /// `:152`). A bound unit's id is the one [`Self::bind`] handed it; `None` = the binder keeps no
+    /// counter.
+    fn request_id(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// Record the unit's correlation id on the span the unit is driven under: the request span the
+/// composition root opens around the whole unit, as the previous release recorded its id on the
+/// span its forward ran under (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:152`,
+/// `tracing::Span::current().record`). A native `u64`, never a formatted string; a no-op when the
+/// span is off.
+pub(crate) fn record_request_id(request_id: u64) {
+    tracing::Span::current().record("request_id", request_id);
 }
 
 /// What a binder is told of one unit.
@@ -457,6 +475,10 @@ impl HookBinder for BoundHooks {
             (dialect, status),
         );
     }
+
+    fn request_id(&self) -> Option<u64> {
+        Some((self.next_request_id)())
+    }
 }
 
 /// THE BINDER OVER THE DEPLOYMENT'S OWN HOOK CONFIGURATION: the engine host the composition root
@@ -511,6 +533,10 @@ impl HookBinder for HostHooks {
             &self.dialects,
             (dialect, status),
         );
+    }
+
+    fn request_id(&self) -> Option<u64> {
+        Some((self.host)().next_request_id())
     }
 }
 
@@ -1358,14 +1384,17 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             principal: principal.as_deref(),
             dialect,
         }) else {
+            // No hook binds the unit: its request span still carries a correlation id.
+            if let Some(request_id) = binder.request_id() {
+                record_request_id(request_id);
+            }
             return Ok(());
         };
         let facts = self.far.candidates(token);
         self.lock().hooked_pool.clone_from(&walk_pool);
-        // The unit's correlation id, a native `u64` on its span (never a formatted string), the
-        // same value every hook payload and tap of the unit carries.
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
-        span.record("request_id", hooks.request_id);
+        // The unit's correlation id on its request span, the same value every hook payload and tap
+        // of the unit carries.
+        record_request_id(hooks.request_id);
         let mut view = match self.project(None) {
             Ok(view) => view,
             // A request the plane cannot read is the request's failure where a hook must judge

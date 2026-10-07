@@ -127,8 +127,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let Some(hooks) = binder.bind_gated(&view.pool, principal.as_deref()) else {
             return Ok(());
         };
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
-        span.record("request_id", hooks.request_id);
+        // The unit's correlation id on its request span, the same value every hook payload of the
+        // unit carries.
+        super::record_request_id(hooks.request_id);
 
         // 1. THE DECISION GATES, over the projected invocation, keyed on the view's session.
         if !hooks.gates.is_empty() {

@@ -23,7 +23,7 @@ use busbar_contract::abi::export::{ExportField as F, ExportStream::Traces};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Instant, UNIX_EPOCH};
-use tracing::span::{Attributes, Id};
+use tracing::span::{Attributes, Id, Record};
 use tracing::Subscriber;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer};
@@ -78,7 +78,11 @@ impl tracing::field::Visit for Fields {
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         let traced = F::from_token(field.name()).filter(|f| Traces.default_fields().contains(f));
-        self.0.extend(traced.map(|f| (f, Value::from(value))));
+        if let Some(f) = traced {
+            // A field recorded again after the span opened replaces its earlier value.
+            self.0.retain(|(g, _)| *g != f);
+            self.0.push((f, Value::from(value)));
+        }
     }
 }
 
@@ -94,6 +98,19 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
         let own = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         span.extensions_mut()
             .insert(Opened(Instant::now(), epoch, fields, own));
+    }
+
+    /// A field the span recorded AFTER it opened (`Span::record` on a field declared `Empty`): the
+    /// request span learns its pool, its ingress dialect and its operation only once the request
+    /// has been read, as the previous release's `forward` span learned its `request_id` (v1.5.5
+    /// `crates/busbar/src/proxy/engine/mod.rs:152`), and the record carries what the span carried
+    /// when it closed.
+    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else { return };
+        let mut extensions = span.extensions_mut();
+        if let Some(Opened(_, _, fields, _)) = extensions.get_mut::<Opened>() {
+            values.record(fields);
+        }
     }
 
     /// The span's record: its facts, its parent's id, its ROOT's id as the trace id (a root is its
