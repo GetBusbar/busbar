@@ -146,12 +146,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   task's durable provenance chain. Both planes now ask one predicate of one fact — is this token's
   task still non-terminal — at mint time and at present time.
 
-  The task TTL behind it is now enforced on **presentation**, not only on submission. The retention
-  sweep that ends a task idle past the 24h abandonment ceiling ran only as a side effect of a new
-  task being submitted, so on a deployment that had stopped submitting the ceiling was not a
-  deadline at all and a silent task's token stayed live indefinitely. The callback endpoint runs the
-  sweep itself, after the MAC verifies and before it reads the task; the sweep is claimed once per
-  second, so a busy backend pays an atomic load rather than a scan.
+  A token retires when its task ends, and at no idle deadline: the retention sweep touches only
+  settled tasks, so an idle ACTIVE task is never cancelled or evicted and keeps its token until it
+  ends. The 24h abandonment ceiling is gone (THE DESIGN §1, "an active work handle is never
+  evicted").
 
 - **An A2A hop refusal no longer names the backend to the caller.** Nine refusal arms rendered
   operator-facing detail into the JSON-RPC error body a client reads: the backend's URL, the address
