@@ -254,14 +254,25 @@ pub fn linked_exports(
             former_names: Vec::new(),
         })
     };
-    doors
+    let mut rows = doors
         .iter()
         .map(|d| {
             manifest(d.name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
                 .map(busbar_kernel::preflight::answering_former_names)
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
+    // built-in exporters in), so the kernel's unknown-exporter refusal, which lists the linked rows
+    // in registration order, reads as 1.5.5's did. A row the table does not name follows, in place.
+    let order = crate::root::legacy::export_order();
+    rows.sort_by_key(|p| {
+        order
+            .iter()
+            .position(|m| *m == p.manifest.alias)
+            .unwrap_or(usize::MAX)
+    });
+    Ok(rows)
 }
 
 /// What the composition root wires for one of its own unit modules — the kernel-loop half of a plane
@@ -1241,37 +1252,37 @@ pub(crate) fn logs() -> &'static crate::root::loader::dispatch::PluginLogConfig 
 /// the host's writes). The composition root is the one place that names it; the root's tests hold
 /// it to every `busbar_*` series constant the kernel's metric modules define, so it cannot drift.
 pub const HOST_SERIES: &[&str] = &[
-    busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
-    busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
-    busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL,
-    busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL,
-    busbar_kernel::metrics::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
-    busbar_kernel::metrics::JOURNAL_QUARANTINED_TOTAL,
-    busbar_kernel::metrics::REQUESTS_TOTAL,
-    busbar_kernel::metrics::BREAKER_TRIPS_TOTAL,
-    busbar_kernel::metrics::FAILOVERS_TOTAL,
-    busbar_kernel::metrics::REQUEST_DURATION_SECONDS,
-    busbar_kernel::metrics::TRANSLATIONS_TOTAL,
-    busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
-    busbar_kernel::metrics::PLANE_REQUEST_DURATION_SECONDS,
-    busbar_kernel::metrics::ADMISSION_DENIED_TOTAL,
-    busbar_kernel::metrics::METERING_PENDING_COALESCED_TOTAL,
-    busbar_kernel::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
-    busbar_kernel::metrics::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
-    busbar_kernel::metrics::KEY_SPEND_CENTS,
-    busbar_kernel::metrics::KEY_TOKENS_TOTAL,
-    busbar_kernel::metrics::BUCKET_TOKENS,
-    busbar_kernel::metrics::BUCKET_SPEND_CENTS,
-    busbar_kernel::metrics::BUCKET_BUDGET_REMAINING_CENTS,
-    busbar_kernel::metrics::LANE_STATE,
-    busbar_kernel::metrics::LANE_AVAILABLE,
-    busbar_kernel::metrics::LANE_RECOVERY_HINT_MS,
-    busbar_kernel::metrics::LANE_INFLIGHT,
-    busbar_kernel::metrics::LANE_AVAILABLE_PERMITS,
-    busbar_kernel::metrics::POOL_QUEUED,
+    busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
+    busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
+    busbar_kernel::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL,
+    busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
+    busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
+    busbar_kernel::snapshot::REQUESTS_TOTAL,
+    busbar_kernel::snapshot::BREAKER_TRIPS_TOTAL,
+    busbar_kernel::snapshot::FAILOVERS_TOTAL,
+    busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
+    busbar_kernel::snapshot::TRANSLATIONS_TOTAL,
+    busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
+    busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
+    busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL,
+    busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
+    busbar_kernel::snapshot::KEY_SPEND_CENTS,
+    busbar_kernel::snapshot::KEY_TOKENS_TOTAL,
+    busbar_kernel::snapshot::BUCKET_TOKENS,
+    busbar_kernel::snapshot::BUCKET_SPEND_CENTS,
+    busbar_kernel::snapshot::BUCKET_BUDGET_REMAINING_CENTS,
+    busbar_kernel::snapshot::LANE_STATE,
+    busbar_kernel::snapshot::LANE_AVAILABLE,
+    busbar_kernel::snapshot::LANE_RECOVERY_HINT_MS,
+    busbar_kernel::snapshot::LANE_INFLIGHT,
+    busbar_kernel::snapshot::LANE_AVAILABLE_PERMITS,
+    busbar_kernel::snapshot::POOL_QUEUED,
     busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
-    busbar_kernel::metrics::BILLING_TAP_DECODE_FAIL_TOTAL,
+    busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL,
     // `proxy_vocab`'s crate-private constant, spelled here as it renders.
     "busbar_tap_notifications_dropped_total",
 ];
@@ -1381,10 +1392,11 @@ pub fn register_ws_arrivals(linked: &Linked) {
 
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
 /// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
-/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host, the parse-time section
-/// list a cross-plane hook refusal reads, and the envelope a self-enveloping admin verb replies
-/// through. Each backing is a ZST unit struct, so it promotes to `'static`. The egress-trust host
-/// is installed by `run` once the configuration loads, over the destination guard.
+/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host and the parse-time section
+/// list a cross-plane hook refusal reads. The envelope a self-enveloping admin verb replies through
+/// is the admin crate's, bound by its `install()`. Each backing is a ZST unit struct, so it promotes
+/// to `'static`. The egress-trust host is installed by `run` once the configuration loads, over the
+/// destination guard.
 pub fn register_seams() {
     #[cfg(linked_egress)]
     {
@@ -1396,10 +1408,8 @@ pub fn register_seams() {
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::config_sections,
     );
-    #[cfg(linked_admin_envelope)]
-    busbar_kernel::admin_verbs::install_plane_admin_envelope(
-        &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
-    );
+    // `admin-envelope`: the self-enveloping plane-verb backing is the admin crate's own, bound by
+    // its `install()` (main.rs), which the composition root calls unconditionally.
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a
