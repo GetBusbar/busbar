@@ -16,8 +16,8 @@ use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::redacted::Redacted;
 use busbar_contract::services::{
-    Caller, CredentialRead, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
-    Stored,
+    Caller, CredentialRead, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading,
+    RecordsList, Stored,
 };
 
 /// The App's swap handle, once it exists.
@@ -263,6 +263,28 @@ impl HostServices for CredentialServices {
 
     fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
         self.inner.disk_append(dest, bytes, later)
+    }
+
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        self.inner.verify_lookup(caller, key, later)
+    }
+
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        self.inner.verify_store(caller, key, entry, ttl_ms)
+    }
+
+    fn content_scan(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        content: &[u8],
+        later: Later,
+    ) -> Ran {
+        self.inner.content_scan(caller, unit, content, later)
+    }
+
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        self.inner.hook_call(caller, unit, ask, later)
     }
 }
 

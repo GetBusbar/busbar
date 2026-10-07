@@ -210,6 +210,45 @@ pub trait HostServices: Send + Sync {
     /// and hand the [`DiskReport`] (as [`DiskReport::stored`]) to `later`. The loader has already
     /// mapped the caller's destination key to `dest`. A host with no disk lane refuses.
     fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran;
+
+    // THE APPEND ORDER IS THE LANDING ORDER (ARCHITECT H9): a later lander carries every service
+    // above and appends its own below.
+
+    /// `verify.lookup`: `caller`'s own verify cache under `key`, single-flight. READY `VERIFY_HIT`
+    /// with span `0`'s value the stored entry; READY `VERIFY_LEAD` (the caller fetches, then
+    /// `verify.store`s); or, while another caller leads, the answer pends until the leader stores
+    /// and is READY `VERIFY_FOLLOW` with the leader's entry in span `0` (a leader that never
+    /// stores loses its lead, and a follower is handed it as `VERIFY_LEAD`).
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran;
+
+    /// `verify.store`: store `entry` under `key` in `caller`'s verify cache for `ttl_ms` (`0` = the
+    /// host's default), ending any lead on it and answering its followers. READY `0`. Never pends.
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored;
+
+    /// `content.scan`: pass `content` through the gates the unit `unit` (the unit the calling
+    /// crossing serves; `None` = it serves none, REFUSED) binds. READY `CONTENT_PASS` or
+    /// `CONTENT_BLOCK`; the bytes, when written, the content as a gate rewrote it.
+    fn content_scan(&self, caller: &Caller, unit: Option<u64>, content: &[u8], later: Later)
+        -> Ran;
+
+    /// `hook.call`: run `ask` over the hook stage the unit `unit` binds (`None` = the crossing
+    /// serves none, REFUSED), pinned to the generation it was bound under. READY with the stage's
+    /// `value` (`HookCallIn`'s), the bytes a rewrite or a stopping hook's words.
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran;
+}
+
+/// A `hook.call` request, as the host copied it out of the caller's `in` (validated:
+/// `check_hook_call_in` and the prompt view's own rules).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookAsk {
+    /// `HOOK_GATE` | `HOOK_REWRITE`.
+    pub stage: u32,
+    /// Where a rewrite chain resumes; `0` for a gate.
+    pub from: u32,
+    /// The prompt's system text; `None` = none.
+    pub system: Option<String>,
+    /// The prompt's messages, `(role, text)`, in order.
+    pub messages: Vec<(String, String)>,
 }
 
 /// A `unit.nest` request, as the host copied it out of the caller's `in`.
