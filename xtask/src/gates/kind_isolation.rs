@@ -1850,6 +1850,43 @@ pub fn plane_kind_src_roots(cx: &Ctx) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// One crate's `impl PlaneMeta for …` declarations, as the census reads them.
+pub struct PlaneMetaDecl {
+    /// The package name.
+    pub krate: String,
+    /// Whether the kind table resolves the crate to the `plane` kind (`busbar-plane-*`) — a PLANE
+    /// CRATE, as opposed to a crate of another kind that states a plane surface's grammar (the
+    /// admin surface in the `cleanliness` crate `busbar-core-admin`).
+    pub plane_kind: bool,
+    /// Every `const KEY` its `impl PlaneMeta for …` blocks state, sorted.
+    pub keys: Vec<String>,
+}
+
+/// THE PLANE KEYS THE TREE DECLARES, read off the declarations themselves: for every crate of the
+/// census, the `const KEY` of each `impl PlaneMeta for …` under its `src/` — the same reading
+/// [`CrateInfo::declared_keys`] gives a plane-kind crate. Every plane-kind crate is returned, even
+/// one that declares no key (a plane the caller cannot name is a finding, not a skip); a crate of
+/// any other kind is returned only when it declares a key.
+pub fn plane_meta_declarations(cx: &Ctx) -> Result<Vec<PlaneMetaDecl>, String> {
+    let mut out = Vec::new();
+    for c in census(cx)? {
+        let plane_kind = c.kind == Some("plane");
+        let keys = if plane_kind {
+            c.declared_keys
+        } else {
+            declared_meta_keys(cx, &c.dir, "PlaneMeta")
+        };
+        if plane_kind || !keys.is_empty() {
+            out.push(PlaneMetaDecl {
+                krate: c.name,
+                plane_kind,
+                keys,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// [`REGISTRY_FILE`], read and parsed. A read failure is fatal in [`Gate::run`], which is where it
 /// is reported; the census takes the empty registry so that one failure is reported once.
 fn load_registry(cx: &Ctx) -> Result<KindRegistry, String> {

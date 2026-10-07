@@ -12,6 +12,11 @@
 //! * **a claim may not outlive its evidence.** A named rig cell must be owned by something in the
 //!   tree, and a named loop cell must exist as an `fn` in the leg's own file — the two ways a
 //!   renamed test leaves a green row pointing at nothing.
+//! * **the roster is the tree's, not the file's** ([`check_roster`]). "Every plane carries every
+//!   declared step" is true of whatever lists the file wrote, so both lists are DERIVED: the steps
+//!   from the kernel's own `StepName::ALL` (set and order), the rows from the `PlaneMeta` KEY every
+//!   plane-kind crate states. A plane with no row, a kernel step the matrix lacks, and a matrix
+//!   step or row the tree does not declare are each red by name.
 //!
 //! Plus `MIN_ROOT_NOTE`: every root verdict, proven OR gap, owes a one-line argument of at least 60
 //! characters. A label is not an argument, and `"not yet"` was the shape that rule was written
@@ -24,7 +29,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, Edit, Overlay};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::gates::{kind_isolation, prove_green, prove_red, Gate, Report};
 use crate::json_lite::{self, Json};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
@@ -248,6 +253,174 @@ pub fn load(cx: &Ctx) -> Result<Matrix, String> {
     }
 
     Ok(Matrix { doc })
+}
+
+// -------------------------------------------------------------------------------------------
+// The roster: the matrix's steps and planes, held to what the tree declares
+// -------------------------------------------------------------------------------------------
+
+/// WHERE THE LOOP'S STEPS ARE DECLARED. The kernel's teller (`crates/busbar-kernel/src/teller.rs`)
+/// does not restate them: it imports the step markers and `StepName` from the contract, whose
+/// `StepName::ALL` (step.rs:67, the enum at step.rs:42) is "every step, in the order the loop runs
+/// them". The spec's list is THE DESIGN §1 (docs/design/BUSBAR-1.6.0.md:153-154) and its #72 row
+/// (:2266), which cites this file.
+pub const KERNEL_STEPS_REL: &str = "crates/busbar-contract/src/caps/step.rs";
+
+/// The Teller's steps IN LOOP ORDER, read off the kernel's own declaration: the variants of
+/// `StepName::ALL`, each spelled as its `as_str` arm spells it (`StepName::Arrival => "arrival"`).
+///
+/// A file that no longer carries either shape is an `Err`, never an empty roster: an empty roster
+/// is the passing answer to "does the matrix lack a step the kernel has".
+pub fn kernel_steps(cx: &Ctx) -> Result<Vec<String>, String> {
+    let text = cx
+        .read(KERNEL_STEPS_REL)
+        .map_err(|e| format!("{KERNEL_STEPS_REL}: {e}"))?;
+    // Comments are not declarations: strip every `//` tail before reading either shape.
+    let code: String = text
+        .lines()
+        .map(|l| l.split_once("//").map_or(l, |(c, _)| c))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let no_all = || {
+        format!(
+            "{KERNEL_STEPS_REL}: no `pub const ALL: [StepName; N] = [...];` -- the kernel's step \
+             order cannot be read, so the matrix's steps are held to nothing"
+        )
+    };
+    let at = code.find("pub const ALL: [StepName;").ok_or_else(no_all)?;
+    let rest = &code[at..];
+    let open = rest.find("= [").ok_or_else(no_all)? + "= [".len();
+    let close = rest[open..].find("];").ok_or_else(no_all)?;
+    let mut steps = Vec::new();
+    for item in rest[open..open + close]
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let variant = item.strip_prefix("StepName::").ok_or_else(|| {
+            format!("{KERNEL_STEPS_REL}: StepName::ALL carries {item:?}, which is not a StepName")
+        })?;
+        let arm = format!("StepName::{variant} => \"");
+        let name = code
+            .find(&arm)
+            .map(|i| &code[i + arm.len()..])
+            .and_then(|tail| tail.split_once('"'))
+            .map(|(name, _)| name.to_string())
+            .ok_or_else(|| {
+                format!(
+                    "{KERNEL_STEPS_REL}: StepName::{variant} has no `as_str` arm spelling it -- \
+                     the step's runtime name cannot be read"
+                )
+            })?;
+        steps.push(name);
+    }
+    if steps.is_empty() {
+        return Err(no_all());
+    }
+    Ok(steps)
+}
+
+/// THE MATRIX'S ROSTER, HELD TO THE TREE. The matrix used to be checked only against itself:
+/// "every plane carries every declared step" is true of whatever plane list and step list the file
+/// wrote. So both lists are now derived and compared, and every difference is named:
+///
+/// * the STEPS are the kernel's ([`kernel_steps`]) as a set AND in order. A step the kernel runs
+///   that the matrix lacks is a step no plane is measured on; a step the matrix carries that the
+///   kernel does not declare is a cell about nothing.
+/// * the ROWS are the planes the tree declares: every plane-kind crate (the kind census,
+///   [`kind_isolation::plane_meta_declarations`]) must state a `PlaneMeta` KEY, and every key it
+///   states must be a row. A row must in turn be a key SOME crate's `impl PlaneMeta` states — which
+///   is what keeps `admin` (declared by the cleanliness crate `busbar-core-admin`, served by the
+///   loop through its own root leg) and refuses a row for a plane nothing declares any more.
+pub fn check_roster(cx: &Ctx, m: &Matrix) -> Vec<String> {
+    let mut out = Vec::new();
+    let order = m.step_order();
+    match kernel_steps(cx) {
+        Err(e) => out.push(e),
+        Ok(kernel) => {
+            for s in kernel.iter().filter(|s| !order.contains(s)) {
+                out.push(format!(
+                    "{LEDGER_REL}: the kernel declares step {} ({KERNEL_STEPS_REL} \
+                     StepName::ALL), which the matrix's 'steps' lacks -- a step no plane is \
+                     measured on",
+                    json_lite::py_repr(s)
+                ));
+            }
+            for s in order.iter().filter(|s| !kernel.contains(s)) {
+                out.push(format!(
+                    "{LEDGER_REL}: steps.{s} is a step the kernel does not declare \
+                     ({KERNEL_STEPS_REL} StepName::ALL runs {}) -- a cell about no step",
+                    py_seq(&kernel)
+                ));
+            }
+            let same_set = kernel.len() == order.len() && kernel.iter().all(|s| order.contains(s));
+            if same_set && kernel != order {
+                out.push(format!(
+                    "{LEDGER_REL}: 'steps' runs {}, but the kernel's loop runs {} \
+                     ({KERNEL_STEPS_REL} StepName::ALL) -- the matrix's order is the render \
+                     sequence and must be the loop's",
+                    py_seq(&order),
+                    py_seq(&kernel)
+                ));
+            }
+        }
+    }
+
+    let rows: BTreeSet<String> = m.planes().into_iter().collect();
+    match kind_isolation::plane_meta_declarations(cx) {
+        Err(e) => out.push(format!(
+            "{LEDGER_REL}: the plane roster cannot be derived: {e}"
+        )),
+        Ok(decls) => {
+            if !decls.iter().any(|d| d.plane_kind) {
+                out.push(format!(
+                    "{LEDGER_REL}: the kind census finds NO plane-kind crate, so no row is held \
+                     to a plane -- an empty roster is the passing answer to every row check"
+                ));
+            }
+            let declared: BTreeSet<&str> = decls
+                .iter()
+                .flat_map(|d| d.keys.iter().map(String::as_str))
+                .collect();
+            for d in decls.iter().filter(|d| d.plane_kind) {
+                if d.keys.is_empty() {
+                    out.push(format!(
+                        "{LEDGER_REL}: plane crate {} states no `impl PlaneMeta` KEY, so the \
+                         matrix cannot be held to it",
+                        d.krate
+                    ));
+                }
+                for key in d.keys.iter().filter(|k| !rows.contains(*k)) {
+                    out.push(format!(
+                        "{LEDGER_REL}: plane crate {} declares plane {}, which carries no matrix \
+                         row -- a plane with no row is a plane no step is measured on",
+                        d.krate,
+                        json_lite::py_repr(key)
+                    ));
+                }
+            }
+            for row in rows.iter().filter(|r| !declared.contains(r.as_str())) {
+                out.push(format!(
+                    "{LEDGER_REL}: matrix.{row} is a plane no crate declares (no `impl \
+                     PlaneMeta` states KEY {}) -- a row for a plane the tree does not have",
+                    json_lite::py_repr(row)
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// A sequence in Python's list repr, IN ITS OWN ORDER (unlike [`py_list`], which sorts).
+fn py_seq(items: &[String]) -> String {
+    format!(
+        "[{}]",
+        items
+            .iter()
+            .map(|s| json_lite::py_repr(s))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Python's `sorted(list)` repr, which is what several of these messages interpolate.
@@ -677,9 +850,10 @@ pub fn default_features(text: &str) -> Result<BTreeSet<String>, String> {
 }
 
 /// The root legs the binary SHIPS: every leg whose feature is on the manifest's `default` line. A
-/// leg's feature is its `feature` member when it names one — the mcp, a2a and voice legs are the
+/// leg's feature is its `feature` member when it names one — the mcp, a2a and streaming legs are the
 /// kernel-loop rider those planes are served through, gated by the feature that links the plane (`plane-mcp`,
-/// `plane-a2a`, `plane-streaming`), and the llm leg is the root's node, compiled with the plane that rides
+/// `plane-a2a`, `plane-streaming`), the decision leg is the plane's door served by the root's serve path
+/// (`plane-decisions`), and the llm leg is the root's node, compiled with the plane that rides
 /// the `node` axis (`proto-llm`) — and otherwise the leg's own name (`root-admin`).
 pub fn shipped_legs(m: &Matrix, default: &BTreeSet<String>) -> BTreeSet<String> {
     let legs = m.root_legs();
@@ -731,6 +905,62 @@ pub fn gating_gaps(m: &Matrix) -> Vec<String> {
         }
     }
     out
+}
+
+/// The matrix's list of gating gaps OWED BY NAME: `"<plane>.<step>": "<owner>"`.
+pub const OWED_KEY: &str = "owed_gaps";
+
+/// The gating row's verdict: its problems, and the gaps it carries as owed (`plane.step (owner)`).
+#[derive(Default)]
+pub struct Gating {
+    pub problems: Vec<String>,
+    pub owed: Vec<String>,
+}
+
+/// THE GATING GAPS, HELD TO THE LIST THAT OWES THEM. A gating cell that is `"none"` is red unless
+/// the matrix's [`OWED_KEY`] names it with an owner, and the list must be EXACTLY the measured gaps:
+/// a gap nobody owes is red (a new gap is never absorbed), and an owed entry that is no longer a
+/// gap is red until it is struck (the list only shrinks, and a closed gap cannot keep a slot open
+/// for the next one). The owed gaps stay in the row's detail by name, so the floor is visible on
+/// every green run.
+pub fn check_gating(m: &Matrix) -> Gating {
+    let gaps = gating_gaps(m);
+    let owed_obj = m.doc.get(OWED_KEY);
+    let mut g = Gating::default();
+    let mut owed: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(o) = owed_obj.as_object() {
+        for (cell, owner) in o.iter() {
+            match owner.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(owner) => {
+                    owed.insert(cell.to_string(), owner.to_string());
+                }
+                None => g.problems.push(format!(
+                    "{LEDGER_REL}: {OWED_KEY}.{cell} names no owner -- a gap owed by nobody is \
+                     a gap hidden, not a gap owed"
+                )),
+            }
+        }
+    } else if !matches!(owed_obj, Json::Null) {
+        g.problems.push(format!(
+            "{LEDGER_REL}: '{OWED_KEY}' is not an object of \"<plane>.<step>\": \"<owner>\""
+        ));
+    }
+    for gap in &gaps {
+        match owed.get(gap) {
+            Some(owner) => g.owed.push(format!("{gap} ({owner})")),
+            None => g.problems.push(format!(
+                "{gap} is a gating gap no '{OWED_KEY}' entry owes -- a new gap is red, never \
+                 absorbed"
+            )),
+        }
+    }
+    for cell in owed.keys().filter(|c| !gaps.contains(c)) {
+        g.problems.push(format!(
+            "{LEDGER_REL}: {OWED_KEY}.{cell} is owed but is no longer a gating gap -- a closed \
+             gap must be struck from the list"
+        ));
+    }
+    g
 }
 
 /// The human matrix, byte-identical to the Python's — column widths 13 / 6 / 46 / 5, two-space
@@ -812,8 +1042,8 @@ pub fn root_line(m: &Matrix) -> String {
             .join(", ")
     ));
     lines.push(
-        "  (run them: cargo xtask teller-steps --root-legs -- builds the binary crate with all \
-         five legs on and executes every named loop cell)"
+        "  (run them: cargo xtask teller-steps --root-legs -- builds the binary crate with every \
+         leg on and executes every named loop cell)"
             .to_string(),
     );
     lines.join("\n")
@@ -823,11 +1053,14 @@ pub fn root_line(m: &Matrix) -> String {
 // The runner arms — `cargo xtask teller-steps [...]`
 // -------------------------------------------------------------------------------------------
 
-/// The features that compile the five root legs, which the `--root-legs` arm builds the binary crate
-/// with: the admin leg's own feature, for the mcp, a2a and voice legs (the kernel-loop rider those
-/// planes are served through) the feature that links the plane, and for the llm leg the feature that
-/// links the plane riding the `node` axis, which compiles the root's node (`root/plane_node.rs`).
-const ROOT_FEATURES: &str = "root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm";
+/// The features that compile the root legs, which the `--root-legs` arm builds the binary crate
+/// with: the admin leg's own feature, for the mcp, a2a and streaming legs (the kernel-loop rider those
+/// planes are served through) the feature that links the plane, for the decision leg the feature that
+/// links its door (`plane-decisions`; its cells are `root/serve.rs`'s `door_tests`), and for the llm
+/// leg the feature that links the plane riding the `node` axis, which compiles the root's node
+/// (`root/plane_node.rs`).
+const ROOT_FEATURES: &str =
+    "root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,proto-llm";
 
 const ARM_USAGE: &str = "\
 usage:
@@ -889,19 +1122,39 @@ pub fn run_arm(cx: &Ctx, args: &[String]) -> i32 {
     println!();
     println!("{}", root_line(&m));
     println!();
-    let gaps = gating_gaps(&m);
-    if gaps.is_empty() {
-        println!("GREEN: every gating plane x step cell in {LEDGER_REL} names a real scenario.");
+    // THE ROSTER, one `ROSTER:` line per difference between the matrix and what the tree
+    // declares. The legacy adapter ([`translate`]) reads these lines back into the matrix row, so
+    // the arm and the gate report the same finding.
+    let roster = check_roster(cx, &m);
+    for problem in &roster {
+        println!("{ROSTER_PREFIX}{problem}");
+    }
+    let gating = check_gating(&m);
+    for owed in &gating.owed {
+        println!("{OWED_PREFIX}{owed}");
+    }
+    let rc = if gating.problems.is_empty() {
+        println!(
+            "GREEN: every gating plane x step cell in {LEDGER_REL} names a real scenario or is a \
+             gap owed by name."
+        );
         0
     } else {
-        println!(
-            "RED: {} gating plane x step cell(s) are still \"none\": {}",
-            gaps.len(),
-            gaps.join(", ")
-        );
+        println!("RED: {}", gating.problems.join(" | "));
+        1
+    };
+    if roster.is_empty() {
+        rc
+    } else {
         1
     }
 }
+
+/// The prefix of the arm's roster lines, which [`translate`] reads back.
+const ROSTER_PREFIX: &str = "ROSTER: ";
+
+/// The prefix of the arm's owed-gap lines, which [`translate`] reads back.
+const OWED_PREFIX: &str = "OWED: ";
 
 /// The shipped-leg bar: a default leg is the shipped path for its plane, so a gating step nobody
 /// drives over it is a half-answer, not a queue entry.
@@ -962,7 +1215,7 @@ fn root_cells(m: &Matrix) -> Vec<(String, String, String)> {
     out
 }
 
-/// RUN every named loop cell, with all five legs compiled in.
+/// RUN every named loop cell, with every leg compiled in.
 ///
 /// Three floors, each of which the shell version needed: naming NO cell is a refusal, a build that
 /// does not carry a named cell is a refusal, and a run that executed a DIFFERENT NUMBER of cells
@@ -1001,7 +1254,7 @@ fn run_root_legs(cx: &Ctx) -> i32 {
     let listing = match cx.run_checked(&cargo, &list_argv) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("ROOT-STEPS: the five-leg build did not compile:");
+            eprintln!("ROOT-STEPS: the every-leg build did not compile:");
             eprintln!("{e}");
             return 1;
         }
@@ -1025,6 +1278,20 @@ fn run_root_legs(cx: &Ctx) -> i32 {
     let mut unknown: Vec<String> = Vec::new();
     let mut per_leg: BTreeMap<String, usize> = BTreeMap::new();
     for (leg, file, func) in &cells {
+        // The `#[path]` declaration that mounts the file names its module outright; the stem
+        // convention below is the fallback for a file no sibling mounts by name.
+        if let Some(module) = path_mounted_module(cx, file) {
+            let path = format!("{module}::{func}");
+            if known.contains(path.as_str()) {
+                if !wanted.contains(&path) {
+                    wanted.push(path);
+                }
+            } else {
+                unknown.push(format!("  {leg}: {file}::{func} (looked for {path})"));
+            }
+            *per_leg.entry(leg.clone()).or_default() += 1;
+            continue;
+        }
         let path = file
             .split("src/")
             .nth(1)
@@ -1060,7 +1327,7 @@ fn run_root_legs(cx: &Ctx) -> i32 {
     }
     if !unknown.is_empty() {
         eprintln!(
-            "ROOT-STEPS: the five-leg build does NOT carry these named loop cells -- the ledger \
+            "ROOT-STEPS: the every-leg build does NOT carry these named loop cells -- the ledger \
              claims a proof this binary cannot run:"
         );
         for u in &unknown {
@@ -1104,6 +1371,58 @@ fn run_root_legs(cx: &Ctx) -> i32 {
     0
 }
 
+/// THE MODULE A `#[path]`-MOUNTED TEST FILE IS COMPILED AS, read off the declaration that mounts
+/// it: a `.rs` file beside the file's `tests/` directory carrying `#[path = "tests/<file>"]` and,
+/// after any further attributes, `mod <name>;`. The module is that file's own module path plus
+/// `<name>` — `root/serve.rs` mounting `tests/serve_tests.rs` as `mod door_tests;` is
+/// `root::serve::door_tests`, which no reading of the file's stem can produce. `None` when no
+/// sibling mounts the file by name.
+fn path_mounted_module(cx: &Ctx, file: &str) -> Option<String> {
+    let (dir, fname) = file.rsplit_once("/tests/")?;
+    // The directory's module path under the crate's `src/` (`root` for `…/src/root`).
+    let rel_dir = match dir.split_once("/src/") {
+        Some((_, d)) => d.to_string(),
+        None if dir.ends_with("/src") => String::new(),
+        None => return None,
+    };
+    let attr = format!("#[path = \"tests/{fname}\"]");
+    let mut siblings: Vec<String> = std::fs::read_dir(cx.abs(dir))
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".rs"))
+        .collect();
+    siblings.sort();
+    for sib in siblings {
+        let text = cx.read(&format!("{dir}/{sib}")).unwrap_or_default();
+        let mut lines = text.lines().map(str::trim);
+        while let Some(line) = lines.next() {
+            if line != attr {
+                continue;
+            }
+            let Some(decl) = lines.find(|l| !l.starts_with("#[")) else {
+                break;
+            };
+            let Some(name) = decl
+                .split_whitespace()
+                .skip_while(|w| *w != "mod")
+                .nth(1)
+                .and_then(|n| n.strip_suffix(';'))
+            else {
+                continue;
+            };
+            let stem = sib.trim_end_matches(".rs");
+            let mut segs: Vec<&str> = rel_dir.split('/').filter(|s| !s.is_empty()).collect();
+            if !matches!(stem, "mod" | "lib" | "main") {
+                segs.push(stem);
+            }
+            segs.push(name);
+            return Some(segs.join("::"));
+        }
+    }
+    None
+}
+
 /// `N passed; M failed` out of a libtest summary line.
 fn parse_libtest_tally(text: &str) -> Option<(usize, usize)> {
     for line in text.lines() {
@@ -1141,6 +1460,8 @@ pub struct Findings {
     pub root_column: Vec<String>,
     pub root_legs: Vec<String>,
     pub gating: Vec<String>,
+    /// The gating gaps owed by name (`plane.step (owner)`), carried in the gating row's detail.
+    pub owed: Vec<String>,
 }
 
 /// THE MATRIX DID NOT PARSE, so no rule below it ran. Every rule carries the refusal — the one
@@ -1164,6 +1485,7 @@ pub fn did_not_load(detail: &str) -> Findings {
         root_column: pick(ROW_ROOT_COLUMN),
         root_legs: pick(ROW_ROOT_LEGS),
         gating: pick(ROW_GATING),
+        owed: Vec::new(),
     }
 }
 
@@ -1189,8 +1511,9 @@ pub fn rows_from(f: &Findings) -> Vec<Row> {
         one_row(
             &f.matrix,
             ROW_MATRIX,
-            "every plane carries every declared step, and no cell disagrees with itself",
-            "the Teller step matrix is not a valid matrix",
+            "the steps are the kernel's in loop order, the rows are the declared planes, every \
+             plane carries every step, and no cell disagrees with itself",
+            "the Teller step matrix is not a valid matrix, or its roster is not the tree's",
             format!("{cells} cell(s)"),
         ),
         one_row(
@@ -1217,9 +1540,17 @@ pub fn rows_from(f: &Findings) -> Vec<Row> {
         one_row(
             &f.gating,
             ROW_GATING,
-            "every gating plane x step cell names a real scenario",
-            "a gating plane x step cell is still \"none\"",
-            format!("0 of {cells} gating cell(s) are \"none\""),
+            "every gating plane x step cell names a real scenario, or is a gap owed by name",
+            "a gating plane x step cell is a gap nobody owes, or an owed gap was closed and not struck",
+            if f.owed.is_empty() {
+                format!("0 of {cells} gating cell(s) are \"none\"")
+            } else {
+                format!(
+                    "{} of {cells} gating cell(s) are \"none\", each owed by name: {}",
+                    f.owed.len(),
+                    f.owed.join(", ")
+                )
+            },
         ),
     ]
 }
@@ -1254,6 +1585,7 @@ impl Gate for TellerStepsGate {
             root_column: root.column,
             root_legs: root.legs,
             gating: gating_gaps(&m),
+            owed: Vec::new(),
         }))
     }
 
@@ -1470,7 +1802,34 @@ impl Gate for TellerStepsGate {
                 "a plane no root leg answers to",
                 ROW_ROOT_LEGS,
                 "answered by NO root leg",
-                Box::new(|p: &mut Plant| p.drop_leg("root-voice")),
+                Box::new(|p: &mut Plant| p.drop_leg("root-streaming")),
+            ),
+            (
+                "an owed gap that was closed and not struck",
+                ROW_GATING,
+                "owed_gaps.decision.verify is owed but is no longer a gating gap",
+                Box::new(|p: &mut Plant| {
+                    p.set_cell_field(
+                        "decision",
+                        "verify",
+                        "cell",
+                        Json::Str("concurrency|inbound-shed|n8".into()),
+                    );
+                    p.set_cell_field("decision", "verify", "status", Json::Str("mapped".into()));
+                }),
+            ),
+            // ── THE ROSTER WAS THE FILE'S OWN. These are the two lists checked against the tree. ──
+            (
+                "a kernel step missing from the matrix",
+                ROW_MATRIX,
+                "which the matrix's 'steps' lacks",
+                Box::new(|p: &mut Plant| p.drop_step_everywhere("meter")),
+            ),
+            (
+                "a matrix row for a plane no crate declares",
+                ROW_MATRIX,
+                "matrix.ghost is a plane no crate declares",
+                Box::new(|p: &mut Plant| p.copy_row("llm", "ghost")),
             ),
             (
                 "a gating cell that is still a gap",
@@ -1510,6 +1869,64 @@ impl Gate for TellerStepsGate {
                 self,
                 label,
                 &[covers],
+                base.layered(&ov),
+                &[naming],
+            ));
+        }
+
+        // THE TREE'S SIDE OF THE ROSTER: plants in the declarations the roster is derived from,
+        // with the committed matrix untouched. A gate that read its roster off the matrix again
+        // would stay green under every one of them.
+        let step_rs = cx.read(KERNEL_STEPS_REL).unwrap_or_default();
+        let tree_plants: Vec<(&str, &str, Vec<(&str, String)>)> = vec![
+            (
+                "a plane crate with no matrix row",
+                "busbar-plane-shadow declares plane 'shadow', which carries no matrix row",
+                vec![
+                    (
+                        "crates/busbar-plane-shadow/Cargo.toml",
+                        "[package]\nname = \"busbar-plane-shadow\"\nversion = \"0.0.0\"\n"
+                            .to_string(),
+                    ),
+                    (
+                        "crates/busbar-plane-shadow/src/meta.rs",
+                        "pub struct ShadowPlane;\n\nimpl PlaneMeta for ShadowPlane {\n    \
+                         const KEY: &'static str = \"shadow\";\n}\n"
+                            .to_string(),
+                    ),
+                ],
+            ),
+            (
+                "a matrix step the kernel does not declare",
+                "steps.meter is a step the kernel does not declare",
+                vec![(
+                    KERNEL_STEPS_REL,
+                    step_rs.replacen("        StepName::Meter,\n", "", 1),
+                )],
+            ),
+            (
+                "the kernel's steps in another order than the matrix's",
+                "but the kernel's loop runs",
+                vec![(
+                    KERNEL_STEPS_REL,
+                    step_rs.replacen(
+                        "        StepName::Route,\n        StepName::Meter,\n",
+                        "        StepName::Meter,\n        StepName::Route,\n",
+                        1,
+                    ),
+                )],
+            ),
+        ];
+        for (label, naming, files) in tree_plants {
+            let mut ov = Overlay::new();
+            for (rel, text) in files {
+                ov.set(rel, text);
+            }
+            report.push(prove_red(
+                &base_cx,
+                self,
+                label,
+                &[ROW_MATRIX],
                 base.layered(&ov),
                 &[naming],
             ));
@@ -1613,6 +2030,35 @@ impl Plant {
         }
     }
 
+    /// Drop `step` from the declared steps AND from every row, so the matrix is internally whole
+    /// and only the kernel's roster can see what it lost.
+    fn drop_step_everywhere(&mut self, step: &str) {
+        let Some(doc) = self.doc.as_object_mut() else {
+            return;
+        };
+        if let Some(Json::Object(steps)) = doc.get_mut("steps") {
+            steps.remove(step);
+        }
+        if let Some(Json::Object(rows)) = doc.get_mut("matrix") {
+            let planes: Vec<String> = rows.keys().map(str::to_string).collect();
+            for plane in planes {
+                if let Some(Json::Object(row)) = rows.get_mut(&plane) {
+                    row.remove(step);
+                }
+            }
+        }
+    }
+
+    /// Add a row `to` that is a copy of row `from`.
+    fn copy_row(&mut self, from: &str, to: &str) {
+        if let Some(Json::Object(rows)) = self.doc.as_object_mut().and_then(|d| d.get_mut("matrix"))
+        {
+            if let Some(row) = rows.get(from).cloned() {
+                rows.insert(to, row);
+            }
+        }
+    }
+
     fn drop_leg(&mut self, leg: &str) {
         if let Some(Json::Object(legs)) = self
             .doc
@@ -1666,8 +2112,23 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
         return Ok(rows_from(&did_not_load(&detail)));
     }
 
+    // The owed gaps are the gating row's detail, one line each.
+    f.owed = all
+        .iter()
+        .filter_map(|l| l.strip_prefix(OWED_PREFIX))
+        .map(str::to_string)
+        .collect();
+
+    // The roster's differences are the matrix row's findings, one line each.
+    f.matrix = all
+        .iter()
+        .filter_map(|l| l.strip_prefix(ROSTER_PREFIX))
+        .map(str::to_string)
+        .collect();
+
     if let Some(red) = all.iter().find(|l| l.starts_with("RED: ")) {
-        f.gating.push((*red).to_string());
+        f.gating
+            .push(red.strip_prefix("RED: ").unwrap_or(red).to_string());
         return Ok(rows_from(&f));
     }
 
