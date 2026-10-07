@@ -1893,23 +1893,66 @@ impl Gate for NoFloatMoneyGate {
             &[&float_ty],
         ));
 
-        // THE #44 EXEMPTION HOLDS. A float in the card-build boundary (cost/rate.rs) is PERMITTED —
-        // it is the one decimal-to-integer conversion — so the gate stays GREEN. A gate that flagged
-        // its own permitted boundary would force the float off the boundary, which #44 forbids.
-        let mut ov = Overlay::new();
-        match Edit::Append(format!(
-            "\npub fn extra_boundary_rate(m: {float_ty}) -> u64 {{ (m * 1000.0) as u64 }}\n"
-        ))
-        .apply(cx, CARD_BUILD_BOUNDARY_REL, &mut ov)
-        {
-            Ok(()) => report.push(Case {
-                name: "a float in the #44 card-build boundary stays green (exempt)".to_string(),
+        // ── THE CARD-BUILD FILE (`cost/rate.rs`, #44) IS SCANNED; ITS CONVERSION FNS ARE NOT ────
+        //
+        // The file used to be dropped from the ledger walk whole, as "the card build", while it
+        // also holds the u128 accumulation (`nanos_sum`), the card digest and the runtime price
+        // reads (`fee_of`, `fee_unit_price_nanos`, `nanos_per_unit`). A float in any of those read
+        // GREEN for any amount of float (audit xtask-X3 finding 1). Four cases: a float in the
+        // accumulation, a float in a price read and a new float fn beside the conversion are each
+        // RED; a float inside the named conversion fn stays green.
+        for (what, boundary, stmt) in [
+            (
+                "the u128 accumulation (`nanos_sum`)",
+                "nanos_sum",
+                format!("let _planted_sum = (q as {float_ty} * r as {float_ty}) as u128;"),
+            ),
+            (
+                "a runtime price read (`fee_of`)",
+                "fee_of",
+                format!("let _planted_fee = self.fee as {float_ty} * 1.5;"),
+            ),
+        ] {
+            match body_plant(cx, CARD_BUILD_FILE, boundary, &stmt) {
+                Ok(ov) => report.push(prove_red(
+                    cx,
+                    self,
+                    &format!("a float in the card-build file's {what} is flagged"),
+                    &[ROW_NO_FLOAT],
+                    ov,
+                    &[&float_ty, "cost/rate.rs"],
+                )),
+                Err(e) => report.note_infra_failure(format!(
+                    "no-float-money selftest: could not plant inside `fn {boundary}` ({e})"
+                )),
+            }
+        }
+        report.push(plant(
+            cx,
+            self,
+            "a new float fn beside the card-build conversion is flagged (the file is not exempt)",
+            &[ROW_NO_FLOAT],
+            CARD_BUILD_FILE,
+            Edit::Append(format!(
+                "\npub fn extra_boundary_rate(m: {float_ty}) -> u64 {{ (m * 1000.0) as u64 }}\n"
+            )),
+            &[&float_ty, "cost/rate.rs"],
+        ));
+        match body_plant(
+            cx,
+            CARD_BUILD_FILE,
+            "nano_rate",
+            &format!("let _planted_micro: {float_ty} = micro_per_unit * 1.0;"),
+        ) {
+            Ok(ov) => report.push(Case {
+                name: "a float INSIDE the named card-build conversion `nano_rate` stays green"
+                    .to_string(),
                 covers: vec![ROW_NO_FLOAT.to_string()],
                 expected: crate::gates::Expect::Green,
                 got: verdict_expect(self, &cx.with_overlay(ov)),
             }),
             Err(e) => report.note_infra_failure(format!(
-                "no-float-money selftest: could not plant into the card-build boundary ({e})"
+                "no-float-money selftest: could not plant inside `fn nano_rate` ({e})"
             )),
         }
 
@@ -2442,9 +2485,8 @@ impl Gate for NoFloatMoneyGate {
     }
 }
 
-/// The `/`-prefixed-substring boundary constant re-expressed as the actual repo-relative path an
-/// `Edit` writes to (the exclude fragment omits the leading `crates/`-less prefix nuance).
-const CARD_BUILD_BOUNDARY_REL: &str = "crates/busbar-kernel-ledger/src/cost/rate.rs";
+/// The ledger's card-build file (#44), where the selftest plants its rate.rs cases.
+const CARD_BUILD_FILE: &str = "crates/busbar-kernel-ledger/src/cost/rate.rs";
 
 /// An overlay that puts `stmt` INSIDE an intake boundary's measured body, on its own line just
 /// before the line the body closes on. Textual, like the scan it is planted for: the point is where
