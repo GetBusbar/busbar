@@ -317,6 +317,7 @@ impl Outbox {
             queue: std::collections::VecDeque::new(),
             messages: false,
             final_status: None,
+            fault: FAULT_NONE,
         })
     }
 
@@ -352,6 +353,7 @@ impl Outbox {
                     queue,
                     messages: emits,
                     final_status: terminal.map(Into::into),
+                    fault: FAULT_NONE,
                 })
             }
             other => Self::of(other),
@@ -372,6 +374,7 @@ impl Outbox {
             writes: Vec::new(),
             queue: std::collections::VecDeque::new(),
             final_status: None,
+            fault: FAULT_NONE,
         }
     }
 }

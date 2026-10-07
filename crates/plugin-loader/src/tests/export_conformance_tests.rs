@@ -567,6 +567,7 @@ impl Conns for Far {
             status_namespace: None,
             retry_after_secs: None,
             reason: None,
+            fault: None,
         })
     }
     fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
