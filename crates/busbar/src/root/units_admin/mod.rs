@@ -360,22 +360,31 @@ pub trait LedgerView: Send + Sync {
         None
     }
 
-    /// Does this node's book hold a counts row whose pricing REFUSED (#42/#71)?
+    /// The balances on this node's book that have NO FIGURE because a counts row on them REFUSED
+    /// to price (#42/#71), each named with its window, the lane that served the unit and the
+    /// refusal ([`Durability::refused_balances`]).
     ///
     /// A refused row moves no balance — [`Durability::post_counts`] is why one can exist at all
     /// without a figure behind it — so it is invisible to [`LedgerView::ledger_rows`], which only
     /// ever walks settled balances, and to a booked line the totals derivation prices. A served
-    /// totals or reconciliation figure that silently skipped such a row would be exactly the silent
-    /// zero #42 forbids, just moved from the pricing read to the admin read beside it. So the two
-    /// reads ask this FIRST and refuse the whole read (`GovernanceError::Store`, the same path
-    /// 69c58179a refuses an out-of-range figure through) rather than serve a table with a hole in it.
+    /// figure for the row such a balance folds into would be the priced remainder, which is exactly
+    /// the silent zero #42 forbids, just moved from the pricing read to the admin read beside it.
+    /// So the reads REFUSE THAT ROW, and only that row: the totals and reconciliation views withhold
+    /// it and name it under `refused`, and `GET /admin/verify` reports it as a finding. Every other
+    /// row is answered. A read refused whole over one row would hide every other figure and finding
+    /// for the life of the journal, because a refused row is rebuilt from the chain at every boot.
     ///
-    /// The default is `false`: [`UnopenedLedger`] and a view with no book behind it genuinely hold no
+    /// Each read asks this AFTER it has read its rows, so a row refused between the two reads is
+    /// still withheld: the race can only withhold a row whose figure did not yet miss anything,
+    /// never serve one that did.
+    ///
+    /// The default is empty: [`UnopenedLedger`] and a view with no book behind it genuinely hold no
     /// refused row, and saying so is the true and honest answer for them.
     ///
+    /// [`Durability::refused_balances`]: crate::root::durability::Durability::refused_balances
     /// [`Durability::post_counts`]: crate::root::durability::Durability::post_counts
-    fn has_refused_rows(&self) -> bool {
-        false
+    fn refused_balances(&self) -> Vec<crate::root::durability::RefusedCounts> {
+        Vec::new()
     }
 
     /// SEAM `recorded-counts` (item 404): what the book RECORDED for the entry whose journal digest
@@ -694,10 +703,9 @@ impl LedgerView for NodeLedger {
         Vec::new()
     }
 
-    /// Off the same lock every other read of this node's durability takes, so a row posted between
-    /// this check and the read it guards cannot slip through either side of the race.
-    fn has_refused_rows(&self) -> bool {
-        !self.lock().refused_rows().is_empty()
+    /// Off the same lock every other read of this node's durability takes.
+    fn refused_balances(&self) -> Vec<crate::root::durability::RefusedCounts> {
+        self.lock().refused_balances()
     }
 
     /// Read off this node's own journal, under the same lock every other read takes.
@@ -2087,9 +2095,10 @@ fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> 
 /// `NotFound` is reachable only if the closed table and this match ever disagree, which is a defect
 /// in this file rather than a request to forgive — so it is a refusal rather than a body invented
 /// for a verb nobody wrote one for. A money figure the view cannot project (item 28: past the range
-/// it is served in) fails the read as `Store` — refused, never served pinned at `i64::MAX`. The
-/// totals and reconciliation arms refuse the same way, for the same reason, where the book holds a
-/// counts row a present card refused to price (#42): see [`LedgerView::has_refused_rows`].
+/// it is served in) fails the read as `Store` — refused, never served pinned at `i64::MAX`. A row
+/// whose balance holds a counts row a present card refused to price (#42) is refused on its own,
+/// never the read: the totals and reconciliation arms withhold it and name it under `refused`
+/// ([`LedgerView::refused_balances`]).
 fn render_ledger_view(
     verb: KernelVerb,
     view: &dyn LedgerView,
@@ -2106,13 +2115,13 @@ fn render_ledger_view(
         KernelVerb::GetLedgerTotals => {
             // A refused counts row (#42) moves no balance, so it is invisible to both arms of
             // `totals_rows` — the derivation prices booked lines and the balance fallback walks
-            // settled cells, and a refused row is neither. Ask FIRST and refuse the whole read
-            // rather than serve a table quietly missing the row: the same `Store` path 69c58179a
-            // refuses an out-of-range figure through.
-            if view.has_refused_rows() {
-                return Err(busbar_core_admin::GovernanceError::Store);
-            }
-            render_totals(&totals_rows(view))
+            // settled cells, and a refused row is neither. The row its balance folds into is
+            // withheld and named rather than served as the priced remainder; every other row is
+            // answered. Asked AFTER the rows are read: see `LedgerView::refused_balances`.
+            let mut rows = totals_rows(view);
+            let withheld = view.refused_balances();
+            withhold_refused(&mut rows, &withheld);
+            render_totals(&rows, &withheld)
                 .map_err(refused)?
                 .into_bytes()
         }
@@ -2123,12 +2132,14 @@ fn render_ledger_view(
         .into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
             // As the totals arm above: a refused row is off the ledger side of the identity too,
-            // since `NodeLedger::rows_of` walks the same settled cells.
-            if view.has_refused_rows() {
-                return Err(busbar_core_admin::GovernanceError::Store);
-            }
-            let (ledger, legacy) = view.identity_snapshot().map_err(refused)?;
-            render_reconciliation(&ledger, &legacy)
+            // since `NodeLedger::rows_of` walks the same settled cells. Its row is withheld from
+            // BOTH sides — an identity measured over a balance with no figure is not a
+            // measurement — and named; every other row is measured.
+            let (mut ledger, mut legacy) = view.identity_snapshot().map_err(refused)?;
+            let withheld = view.refused_balances();
+            withhold_refused(&mut ledger, &withheld);
+            withhold_refused(&mut legacy, &withheld);
+            render_reconciliation(&ledger, &legacy, &withheld)
                 .map_err(refused)?
                 .into_bytes()
         }
@@ -2311,6 +2322,52 @@ fn derived_totals_rows(
     Some(rows)
 }
 
+/// Withhold every row a refused balance folds into (#42), at the width the ledger views read.
+///
+/// One bucket-day row sums every balance on that bucket and window — a dimension and a scope
+/// apiece — so a balance with no figure leaves the whole row without one: what is left is the
+/// priced remainder, the silent zero #42 forbids. The row is withheld and named by the caller;
+/// no other row moves.
+pub(crate) fn withhold_refused<V>(
+    rows: &mut std::collections::BTreeMap<crate::root::ledger_identity::RowKey, V>,
+    refused: &[crate::root::durability::RefusedCounts],
+) {
+    for balance in refused {
+        rows.remove(&crate::root::ledger_identity::RowKey::new(
+            balance.key.bucket.as_str(),
+            balance.window,
+            WIDTH_THE_NODE_KEEPS,
+            WIDTH_THE_NODE_KEEPS,
+        ));
+    }
+}
+
+/// The `refused` list the totals and reconciliation views serve: one entry per balance, window,
+/// lane and refusal, each naming the balance (`bucket`, `dimension`, `scope`), the window as the
+/// `day` its row is keyed by, the lane that served the unit, and the refusal in its own words.
+fn render_refused(refused: &[crate::root::durability::RefusedCounts], out: &mut String) {
+    out.push_str(",\"refused\":[");
+    for (i, balance) in refused.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"bucket\":");
+        json_string(balance.key.bucket.as_str(), out);
+        out.push_str(",\"dimension\":");
+        json_string(&balance.key.dimension.to_string(), out);
+        out.push_str(",\"scope\":");
+        json_string(&balance.key.scope.to_string(), out);
+        out.push_str(",\"day\":");
+        out.push_str(&balance.window.to_string());
+        out.push_str(",\"lane\":");
+        json_string(&balance.lane, out);
+        out.push_str(",\"refusal\":");
+        json_string(&balance.refusal, out);
+        out.push('}');
+    }
+    out.push(']');
+}
+
 /// `GET /api/v1/admin/ledger/totals` — what the ledger's lines come to, per bucket, day, lane and
 /// provider, priced through the dated history at each line's own arrival instant.
 ///
@@ -2325,6 +2382,7 @@ fn derived_totals_rows(
 /// release, and then there would be two answers and no way to tell which one was the money.
 fn render_totals(
     rows: &crate::root::ledger_identity::LedgerSnapshot,
+    refused: &[crate::root::durability::RefusedCounts],
 ) -> Result<String, MoneyError> {
     let mut out = String::from("{\"rows\":[");
     for (i, (row, figures)) in rows.iter().enumerate() {
@@ -2347,7 +2405,9 @@ fn render_totals(
         out.push_str(&figures.fee_count.to_string());
         out.push('}');
     }
-    out.push_str("]}");
+    out.push(']');
+    render_refused(refused, &mut out);
+    out.push('}');
     Ok(out)
 }
 
@@ -2486,10 +2546,12 @@ fn render_totals_cell(
 fn render_reconciliation(
     ledger: &crate::root::ledger_identity::LedgerSnapshot,
     legacy: &crate::root::ledger_identity::LegacySnapshot,
+    refused: &[crate::root::durability::RefusedCounts],
 ) -> Result<String, MoneyError> {
     let discrepancies = crate::root::ledger_identity::reconcile(ledger, legacy)?;
     let mut out = String::from("{\"holds\":");
-    out.push_str(if discrepancies.is_empty() {
+    // A withheld row is a row the identity was not measured over, so it cannot be said to hold.
+    out.push_str(if discrepancies.is_empty() && refused.is_empty() {
         "true"
     } else {
         "false"
@@ -2519,7 +2581,9 @@ fn render_reconciliation(
         out.push_str(&d.legacy_billable_requests.to_string());
         out.push('}');
     }
-    out.push_str("]}");
+    out.push(']');
+    render_refused(refused, &mut out);
+    out.push('}');
     Ok(out)
 }
 

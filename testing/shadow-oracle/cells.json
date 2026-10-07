@@ -7611,7 +7611,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 {rows:[{bucket,day,lane,provider,priced_nanos,priced_micros,fee_count}]}: money as decimal text, each line priced at the card in force at its own arrival. 5"
+      "why": "200 {rows:[{bucket,day,lane,provider,priced_nanos,priced_micros,fee_count}]}: money as decimal text, each line priced at the card in force at its own arrival. A"
     },
     {
       "id": "admin.ops|GetLedgerTotals|unauth",
