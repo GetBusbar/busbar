@@ -13,7 +13,6 @@ use super::split;
 /// `/`, so the dialled host ends at the first backslash; the signed host must end there too, never
 /// read past it to a later `@`.
 #[test]
-#[ignore = "DIVERGENCE: the far end's signing authority (`far_end::split`) reads past a backslash; 1.5.5 signed the host ending at the first `\\` and with its userinfo stripped (kernel change)"]
 fn the_signed_authority_ends_at_the_first_backslash_as_the_dialled_host_does() {
     // A backslash where a `/` would start the path: the dial reaches `evil.example.com`, so the
     // signed host is the same, not the host after the `@`.

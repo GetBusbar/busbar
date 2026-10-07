@@ -49,8 +49,6 @@ use crate::root::loader::dispatch::plane_calls::PlaneInstance;
 use crate::root::door_steps::{egress_pool, DoorCaller, DoorSteps};
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
 #[cfg(linked_axis_node)]
-use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
-#[cfg(linked_axis_node)]
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 #[cfg(linked_axis_node)]
 use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
@@ -60,7 +58,7 @@ use busbar_contract::auth::AuthPrincipal;
 use busbar_contract::caps::{Pass, PrincipalId, Route};
 #[cfg(linked_axis_node)]
 use busbar_kernel::plane_driver::{
-    Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
+    caller_head, Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
 };
 #[cfg(linked_axis_node)]
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
@@ -2189,11 +2187,7 @@ impl DataRoutes {
             credential,
             app,
         } = req;
-        let fields: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
+        let fields: HeadFields = caller_head(&headers);
         let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
         let arrival = Arrival {
             claim,
@@ -2342,11 +2336,7 @@ impl DataRoutes {
             credential,
             app,
         } = req;
-        let fields: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
+        let fields: HeadFields = caller_head(&headers);
         let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
         let arrival = Arrival {
             claim,

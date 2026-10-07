@@ -594,18 +594,32 @@ fn forbidden_in_host(c: char) -> bool {
         )
 }
 
-/// READ A URL OF ANY SCHEME, by its family's rules (see [`UrlFamily`]).
-///
-/// The authority ends at the first `/`, `?` or `#` (and, for [`UrlFamily::Web`], `\`), so
-/// `https://127.0.0.1?x`, `https://localhost#a` and `https://10.0.0.5\x/` read the host the
-/// dialling stack reads, and `ldap://evil.example#@127.0.0.1` reads `evil.example`. A userinfo is
-/// split at the LAST `@` of the authority and reported, never kept.
+/// A URL CUT AT ITS AUTHORITY, nothing in it judged: the cut [`parse_url`] reads every URL through
+/// before it reads the host and the port. A caller that needs the authority as written (a signer
+/// signing the host the dial reaches) reads it here, so its boundary is the host readers' own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UrlCut {
+    /// The scheme, lower-cased; empty for a bare target ([`cut_target`]).
+    pub scheme: String,
+    /// The rules it was read by.
+    pub family: UrlFamily,
+    /// The authority carried a userinfo (`…@`), which is never kept.
+    pub userinfo: bool,
+    /// The authority after any userinfo, as written: `host`, `host:port`, `[v6]` or `[v6]:port`.
+    pub host_port: String,
+    /// Everything after the authority, as [`UrlParts::path`] reads it.
+    pub path: String,
+}
+
+/// CUT A URL OF ANY SCHEME at its authority, by its family's rules (see [`UrlFamily`]): the
+/// authority ends at the first `/`, `?` or `#` (and, for [`UrlFamily::Web`], `\`), and a userinfo
+/// is split at its LAST `@`.
 ///
 /// # Errors
 ///
-/// [`UrlRefusal`] when the string has no scheme, no authority, no usable host, a malformed bracket
-/// or port, or a backslash inside a [`UrlFamily::Generic`] authority.
-pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
+/// [`UrlRefusal::NoScheme`], [`UrlRefusal::NoAuthority`] or [`UrlRefusal::Backslash`], as
+/// [`parse_url`] answers them.
+pub fn cut_url(url: &str) -> Result<UrlCut, UrlRefusal> {
     let cleaned = strip_whatwg_removed(url);
     let s = cleaned.as_ref();
     let (scheme, after) = s.split_once(':').ok_or(UrlRefusal::NoScheme)?;
@@ -620,18 +634,40 @@ pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
     let family = UrlFamily::of(&scheme);
     let rest: Cow<'_, str> = match family {
         // WHATWG: any run of `/` and `\` after a special scheme is skipped, and `\` reads as `/`.
-        UrlFamily::Web => {
-            let skipped = after.trim_start_matches(['/', '\\']);
-            if skipped.contains('\\') {
-                Cow::Owned(skipped.replace('\\', "/"))
-            } else {
-                Cow::Borrowed(skipped)
-            }
-        }
+        UrlFamily::Web => fold_backslashes(after.trim_start_matches(['/', '\\'])),
         UrlFamily::Generic => {
             Cow::Borrowed(after.strip_prefix("//").ok_or(UrlRefusal::NoAuthority)?)
         }
     };
+    cut_rest(scheme, family, &rest)
+}
+
+/// CUT A DIAL TARGET at its authority: a target [`target_host`] reads as a URL is cut by
+/// [`cut_url`]; a bare `host[:port][/path]` is cut by the web rules, its scheme empty.
+///
+/// # Errors
+///
+/// As [`cut_url`], for a target read as a URL; a bare target always cuts.
+pub fn cut_target(target: &str) -> Result<UrlCut, UrlRefusal> {
+    let trimmed = strip_whatwg_removed(target);
+    if reads_as_url(&trimmed) {
+        cut_url(&trimmed)
+    } else {
+        cut_rest(String::new(), UrlFamily::Web, &fold_backslashes(&trimmed))
+    }
+}
+
+/// `\` read as `/`, as the web rules read it; a string with none is handed back borrowed.
+fn fold_backslashes(s: &str) -> Cow<'_, str> {
+    if s.contains('\\') {
+        Cow::Owned(s.replace('\\', "/"))
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
+/// The cut itself, once the scheme and the slashes after it are out of the way.
+fn cut_rest(scheme: String, family: UrlFamily, rest: &str) -> Result<UrlCut, UrlRefusal> {
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(end);
     if authority.contains('\\') {
@@ -641,6 +677,40 @@ pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
         Some(at) => (true, &authority[at + 1..]),
         None => (false, authority),
     };
+    let path = match family {
+        UrlFamily::Web if tail.starts_with('/') => tail.to_string(),
+        UrlFamily::Web => format!("/{tail}"),
+        UrlFamily::Generic => tail.to_string(),
+    };
+    Ok(UrlCut {
+        scheme,
+        family,
+        userinfo,
+        host_port: host_port.to_string(),
+        path,
+    })
+}
+
+/// READ A URL OF ANY SCHEME, by its family's rules (see [`UrlFamily`]).
+///
+/// The authority ends at the first `/`, `?` or `#` (and, for [`UrlFamily::Web`], `\`), so
+/// `https://127.0.0.1?x`, `https://localhost#a` and `https://10.0.0.5\x/` read the host the
+/// dialling stack reads, and `ldap://evil.example#@127.0.0.1` reads `evil.example`. A userinfo is
+/// split at the LAST `@` of the authority and reported, never kept. The cut is [`cut_url`]'s.
+///
+/// # Errors
+///
+/// [`UrlRefusal`] when the string has no scheme, no authority, no usable host, a malformed bracket
+/// or port, or a backslash inside a [`UrlFamily::Generic`] authority.
+pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
+    let UrlCut {
+        scheme,
+        family,
+        userinfo,
+        host_port,
+        path,
+    } = cut_url(url)?;
+    let host_port = host_port.as_str();
     let (host, port) = if let Some(inner) = host_port.strip_prefix('[') {
         let (literal, after) = inner.split_once(']').ok_or(UrlRefusal::Bracket)?;
         if literal.parse::<Ipv6Addr>().is_err() {
@@ -670,11 +740,6 @@ pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
         }
         Some(_) => return Err(UrlRefusal::Port),
     };
-    let path = match family {
-        UrlFamily::Web if tail.starts_with('/') => tail.to_string(),
-        UrlFamily::Web => format!("/{tail}"),
-        UrlFamily::Generic => tail.to_string(),
-    };
     Ok(UrlParts {
         scheme,
         family,
@@ -698,14 +763,20 @@ pub fn url_host(url: &str) -> Option<String> {
 #[must_use]
 pub fn target_host(target: &str) -> Option<String> {
     let trimmed = strip_whatwg_removed(target);
-    let web_scheme = trimmed
-        .split_once(':')
-        .is_some_and(|(s, _)| UrlFamily::of(&s.to_ascii_lowercase()) == UrlFamily::Web);
-    if web_scheme || trimmed.contains("://") {
+    if reads_as_url(&trimmed) {
         url_host(&trimmed)
     } else {
         extract_normalized_authority_host(&trimmed)
     }
+}
+
+/// Whether a (WHATWG-trimmed) dial target is read as a URL: it carries `://`, or opens with a
+/// [`UrlFamily::Web`] scheme and `:`.
+fn reads_as_url(trimmed: &str) -> bool {
+    let web_scheme = trimmed
+        .split_once(':')
+        .is_some_and(|(s, _)| UrlFamily::of(&s.to_ascii_lowercase()) == UrlFamily::Web);
+    web_scheme || trimmed.contains("://")
 }
 
 #[cfg(test)]

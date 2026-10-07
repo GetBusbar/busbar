@@ -1753,7 +1753,6 @@ async fn the_auth_calls_authority_is_the_base_urls_host_and_port_alone() {
 /// `engine/tests/auth_style_tests.rs::test_host_from_base_strips_scheme_and_userinfo` (its
 /// userinfo arms).
 #[tokio::test]
-#[ignore = "DIVERGENCE: the kernel far end's split() keeps a base_url's userinfo in the authority handed to the auth call (1.5.5 host_from_base stripped it); the connector then refuses the dial"]
 async fn the_auth_calls_authority_drops_a_base_urls_userinfo() {
     for (base, want) in [
         ("https://user:pass@host.example.com", "host.example.com"),
