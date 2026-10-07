@@ -2702,12 +2702,15 @@ impl DataRoutes {
         served.money.settle_end(unit, status);
         // THE REQUEST FAMILIES of the plane serving the `pools` map (the flat card's plane), as the
         // previous release's `ingress::finish_inner` emitted them: for every request its dialect
-        // read (decoded, or refused for its body; a path it does not serve, or a verb it does not
-        // take, never reached a dialect), under the dialect it arrived in and the pool or model it
-        // named ("unresolved" when it named none the configuration holds).
+        // read (decoded, refused for its body, or refused by a dialect that read it and said so,
+        // abi/plane `ROUTE_COUNTED`, whatever its status: v1.5.5 `ingress/mod.rs:843`, `:864`,
+        // `:913`, `:931`; a path it does not serve, or a verb it does not take, never reached a
+        // dialect), under the dialect it arrived in and the pool or model it named ("unresolved"
+        // when it named none the configuration holds).
         if live.facts.plane.is_empty() {
             let decoded = units.decoded();
             let counted = decoded.is_some()
+                || units.declined_counted()
                 || units
                     .declined_status()
                     .is_some_and(|s| s != 404 && s != 405);

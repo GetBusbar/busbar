@@ -1300,7 +1300,10 @@ impl EgressFarEnd<'_> {
                 }
             }
         }
-        self.end(false)
+        FarPiece {
+            cut: true,
+            ..self.end(false)
+        }
     }
 
     /// The answer ended: `clean` keeps the budget unit its success spent, until the plane's
@@ -1472,6 +1475,7 @@ impl EgressFarEnd<'_> {
                 fields: false,
                 head: Vec::new(),
                 relayed: live.degraded,
+                cut: false,
             };
         }
         let classified = e.breaker.classify(destination, status);
@@ -1515,6 +1519,7 @@ impl EgressFarEnd<'_> {
                     fields: false,
                     head: Vec::new(),
                     relayed,
+                    cut: false,
                 },
             );
             if piece.last {

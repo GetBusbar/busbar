@@ -100,6 +100,7 @@ impl Far {
                 fields: false,
                 head: Vec::new(),
                 relayed: false,
+                cut: false,
             })
             .collect();
         Far {
@@ -198,6 +199,7 @@ impl FarEnd for Far {
                 fields: false,
                 head: Vec::new(),
                 relayed: false,
+                cut: false,
             }]
         } else if request.member.starts_with("trailers") {
             // The body, then the far end's trailers after it.

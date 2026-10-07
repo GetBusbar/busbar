@@ -112,6 +112,9 @@ pub(crate) struct Facts {
     pub(crate) relayed: bool,
     /// The last cumulative units the plane reported.
     pub(crate) units: Vec<UnitCount>,
+    /// The end the plane reported for a reply the far end cut (abi/plane `PIECE_CUT`): partial,
+    /// or an error; `None` when the reply's status decides.
+    pub(crate) finish: Option<busbar_contract::FinishClass>,
 }
 
 /// A cancelled unit's bill.

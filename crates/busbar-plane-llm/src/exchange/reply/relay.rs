@@ -282,7 +282,11 @@ impl Relay {
     /// FEED one far-end piece. The second value is `true` on the one piece that first pushed the
     /// retained copy of a same-dialect whole body over the cap (its head is dropped from then on).
     pub fn feed<'a>(&mut self, chunk: &'a [u8]) -> (Fed<'a>, bool) {
-        self.first_byte = true;
+        // A piece with no bytes (the far end's head alone) is no byte of the answer: 1.5.5 marked
+        // its first byte on the first body chunk it relayed (v1.5.5
+        // `crates/busbar/src/proxy/response_body.rs:191-194`), so a transfer that fails after its
+        // head and before a byte ends with no in-band error.
+        self.first_byte |= !chunk.is_empty();
         self.upstream_bytes = self.upstream_bytes.saturating_add(chunk.len());
         if let Some(t) = self.translate.as_mut() {
             let out = t.feed(chunk);

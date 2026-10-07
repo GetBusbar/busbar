@@ -56,6 +56,19 @@ impl Decline {
     }
 }
 
+impl Declined {
+    /// A dialect READ the request it refuses, so the refusal is counted among the requests its
+    /// dialect refused, whatever its status: a path-model dialect's URL that names no model and
+    /// action, or an action that dialect does not serve (v1.5.5 `crates/busbar/src/ingress/mod.rs`
+    /// `:843`, `:864`, `:913`, `:931`, each through `finish_rejected`). A path no dialect claims, a
+    /// verb a dialect path does not take and an operation with no handler never reached a dialect's
+    /// own reading, and are counted only as their status says.
+    #[must_use]
+    pub const fn counted(&self) -> bool {
+        matches!(self.why, Decline::PathNotFound)
+    }
+}
+
 /// A refused arrival: what the previous release answered, in the dialect envelope it answered in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declined {
