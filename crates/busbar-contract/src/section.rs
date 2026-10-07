@@ -223,15 +223,26 @@ where
     })
 }
 
-/// THE SENTENCE an operator reads when they name a registration with a reserved section word,
-/// written once for every plane and for both spellings that reach it.
+/// THE SENTENCE an operator reads when they name a registration with a reserved word, written once
+/// for every plane and for every spelling that reaches it.
 ///
-/// It is 1.5.5's sentence, to the byte, with the section and noun substituted in: a clause 1.5.5 did
-/// not carry changes the line a matcher matches, so it stays out.
-fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
-    format!(
-        "a {noun} may not be named `{name}`: that key is RESERVED at the \
-         `{section}:` section level (the all-{section} `hooks:` attach list and \
-         `upstream_credentials:` default). Rename the {noun}."
-    )
+/// For the two section words ([`RESERVED_SECTION_KEYS`]) it is 1.5.5's sentence, to the byte, with
+/// the section and noun substituted in: a clause 1.5.5 did not carry changes the line a matcher
+/// matches, so it stays out. For any other reserved core-owned sub-key (a spec :567 "plane entry
+/// named after a reserved key") it is the same sentence, its parenthesis naming that key as the
+/// core-owned setting it is.
+#[must_use]
+pub fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
+    if RESERVED_SECTION_KEYS.contains(&name) {
+        format!(
+            "a {noun} may not be named `{name}`: that key is RESERVED at the \
+             `{section}:` section level (the all-{section} `hooks:` attach list and \
+             `upstream_credentials:` default). Rename the {noun}."
+        )
+    } else {
+        format!(
+            "a {noun} may not be named `{name}`: that key is RESERVED at the \
+             `{section}:` section level (the core-owned `{name}:` setting). Rename the {noun}."
+        )
+    }
 }

@@ -384,3 +384,32 @@ fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
         Err("config.yaml: invalid YAML: tools: missing field `kind` at line 6 column 3".to_owned())
     );
 }
+
+/// RED (Q-STEP9-a, ARCHITECT 2026-10-07; base: a root pool named after a reserved sub-key was
+/// stripped from the dealt blob as if it were that knob): the plane whose verb is the root `pools:`
+/// section is dealt a pool named `tier` or `work` as the pool it is, its own knobs and its members'
+/// taken off; only 1.5.5's two section words leave at the section level.
+#[test]
+fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
+    let doc = Document::parse(
+        "pools:\n  hooks: [g]\n  tier:\n    members: [{model: m, tier: large}]\n    breaker: {trip: 1}\n  work:\n    members: [{model: m}]\n"
+            .to_owned(),
+    )
+    .expect("parses");
+    let pools = vec![busbar_contract::section::RESERVED_POOLS_KEY.to_owned()];
+    let seats = [("p-llm", Seat::of(Kind::Plane, &pools, "p-llm"))];
+    let mut seen = Vec::new();
+    validate_dealt(&doc, seats, |instance, blob| {
+        seen.push((instance, String::from_utf8(blob.to_vec()).unwrap()));
+        Ok(())
+    })
+    .expect("nothing refuses");
+    assert_eq!(
+        seen,
+        [(
+            "p-llm",
+            r#"{"pools":{"tier":{"members":[{"model":"m"}]},"work":{"members":[{"model":"m"}]}}}"#
+                .to_owned()
+        )]
+    );
+}

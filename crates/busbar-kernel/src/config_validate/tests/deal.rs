@@ -173,3 +173,205 @@ fn a_rewrite_keeps_the_operators_positions() {
     let tools = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
     assert_eq!(d.refuse(&tools, "bad"), "tools: bad at line 16 column 3");
 }
+
+// ── Q-STEP9-a (ARCHITECT 2026-10-07): the strip's exact depths and the generic refusal ──────────
+
+/// Every recorded path, joined and sorted.
+fn paths(s: &Section) -> Vec<String> {
+    let mut p: Vec<String> = s.reserved.iter().map(|(p, _)| p.join(".")).collect();
+    p.sort();
+    p
+}
+
+/// RED (base: `pools` was no reserved key, so `tools.pools` crossed whole, its pools' breakers and
+/// its members' tiers with it): under a declared verb `pools` is reserved and leaves the blob, and
+/// the reserved keys of each pool and each member are recorded at their exact paths besides.
+#[test]
+fn red_each_exact_depth_is_stripped_and_recorded_at_its_path() {
+    let d = doc("\
+tools:
+  work: {max_live: 4}
+  pools:
+    p1:
+      members: [{name: t1, tier: big, keep: 1}, t2]
+      breaker: {trip: 3}
+      repeatable: [read]
+      member_granted: true
+  t1:
+    url: a
+    tier: small
+");
+    let s = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
+    assert_eq!(s.settings, json!({"tools": {"t1": {"url": "a"}}}));
+    assert_eq!(
+        paths(&s),
+        [
+            "tools.pools",
+            "tools.pools.p1.breaker",
+            "tools.pools.p1.members.0.tier",
+            "tools.pools.p1.repeatable",
+            "tools.t1.tier",
+            "tools.work",
+        ]
+    );
+    // The kernel keeps what it read, at its path.
+    assert!(s.reserved.contains(&(
+        verbs(&["tools", "pools", "p1", "members", "0", "tier"]),
+        json!("big")
+    )));
+    assert!(s
+        .reserved
+        .iter()
+        .any(|(p, v)| p == &verbs(&["tools", "pools"])
+            && v.pointer("/p1/member_granted") == Some(&json!(true))));
+    assert!(is_reserved(busbar_contract::section::RESERVED_POOLS_KEY));
+}
+
+/// No recursion: a word spelled like a reserved key BELOW the four exact depths is the plane's own
+/// and crosses, and nothing is recorded for it. (RED on the base only through `pools`, which crossed
+/// there; the base strip did not recurse either, so the no-recursion half is a guard.)
+#[test]
+fn a_reserved_word_below_the_exact_depths_is_not_stripped() {
+    let d = doc("\
+tools:
+  t1:
+    url: a
+    opts: {tier: x, breaker: {trip: 1}}
+  pools:
+    p1:
+      members: [{name: t1, meta: {tier: deep}}]
+      shape: {work: 1}
+");
+    let s = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
+    assert_eq!(
+        s.settings,
+        json!({"tools": {"t1": {"url": "a", "opts": {"tier": "x", "breaker": {"trip": 1}}}}})
+    );
+    assert_eq!(paths(&s), ["tools.pools"]);
+}
+
+/// RED (base: a pool named after a knob was stripped from the root `pools:` section as if it were
+/// that knob): under the root `pools:` section every depth-1 key but 1.5.5's two section words is a
+/// POOL, and crosses; its own knobs and its members' are taken at their paths.
+#[test]
+fn red_root_pools_named_after_a_knob_are_pools_and_cross() {
+    let d = doc("\
+pools:
+  hooks: [g]
+  upstream_credentials: own
+  tier:
+    members: [{model: m, tier: large}]
+    breaker: {base_cooldown_secs: 3}
+  work:
+    members: [{model: m}]
+    affinity: {header_name: x-s}
+  breaker:
+    members: [{model: m}]
+  rate_card:
+    members: [{model: m}]
+    on_exhausted: reject
+");
+    let s = d.deal(Seat::Verbs(&verbs(&["pools"]))).expect("dealt");
+    assert_eq!(
+        s.settings,
+        json!({"pools": {
+            "tier": {"members": [{"model": "m"}]},
+            "work": {"members": [{"model": "m"}]},
+            "breaker": {"members": [{"model": "m"}]},
+            "rate_card": {"members": [{"model": "m"}]},
+        }})
+    );
+    assert_eq!(
+        paths(&s),
+        [
+            "pools.hooks",
+            "pools.rate_card.on_exhausted",
+            "pools.tier.breaker",
+            "pools.tier.members.0.tier",
+            "pools.upstream_credentials",
+            "pools.work.affinity",
+        ]
+    );
+}
+
+/// The one generic shape judge (spec :567): a map where the knob is a list or a scalar, a map
+/// holding a key the knob does not read, or a `pools`/`rate_card` map holding a non-map value, is an
+/// entry by that name; a well-shaped knob, a malformed knob of the right kind, and a non-reserved
+/// key are not.
+#[test]
+fn red_a_value_plainly_not_its_knob_names_an_entry() {
+    let y = |t: &str| serde_yaml::from_str::<serde_yaml::Value>(t).expect("yaml");
+    for (key, entry) in [
+        ("hooks", "{url: a}"),
+        ("upstream_credentials", "{url: a}"),
+        ("tier", "{url: a}"),
+        ("gates", "{url: a}"),
+        ("repeatable", "{url: a}"),
+        ("breaker", "{url: a}"),
+        ("on_exhausted", "{url: a}"),
+        ("affinity", "{url: a}"),
+        ("work", "{url: a}"),
+        ("fees", "{url: a}"),
+        ("pools", "{url: a}"),
+        ("rate_card", "{url: a}"),
+    ] {
+        assert!(names_an_entry(key, &y(entry)), "{key}: {entry}");
+    }
+    for (key, knob) in [
+        ("hooks", "[a]"),
+        ("upstream_credentials", "own"),
+        ("tier", "big"),
+        (
+            "breaker",
+            "{base_cooldown_secs: 1, max_cooldown_secs: 2, trip: {}}",
+        ),
+        ("on_exhausted", "reject"),
+        ("on_exhausted", "{queue: {max_ms: 1}}"),
+        ("affinity", "{mode: session, header_name: x}"),
+        ("work", "{max_live: 2, retain_s: 3}"),
+        ("fees", "{per_request: 1}"),
+        ("pools", "{p: {members: [a]}}"),
+        ("rate_card", "{lane: {input_utok: 1}}"),
+        // Malformed, but the knob's kind: its own reader says what is wrong.
+        ("hooks", "a"),
+        ("work", "5"),
+        // Not a reserved key.
+        ("url", "{url: a}"),
+    ] {
+        assert!(!names_an_entry(key, &y(knob)), "{key}: {knob}");
+    }
+}
+
+/// The field lists the shape judge reads are the kernel types' own: each type, handed a key it does
+/// not read, names exactly the fields the judge lists.
+#[test]
+fn the_knob_field_lists_are_the_kernel_types_own() {
+    fn expected<T: serde::de::DeserializeOwned + std::fmt::Debug>(knob: &str) -> String {
+        serde_yaml::from_str::<T>("zz: 1")
+            .expect_err(knob)
+            .to_string()
+    }
+    assert!(expected::<crate::config::pools::BreakerCfg>("breaker")
+        .contains("expected one of `base_cooldown_secs`, `max_cooldown_secs`, `trip`"));
+    assert!(expected::<crate::config::pools::AffinityCfg>("affinity")
+        .contains("expected `mode` or `header_name`"));
+    assert!(expected::<crate::config::PlaneFeesCfg>("fees")
+        .contains("expected `per_request` or `per_session`"));
+}
+
+/// The sentence: 1.5.5's, to the byte, for the two section words; the same form naming the
+/// core-owned setting for any other reserved key.
+#[test]
+fn the_reserved_name_sentence_is_1_5_5s() {
+    use busbar_contract::section::reserved_name_refusal;
+    assert_eq!(
+        reserved_name_refusal("pools", "pool", "hooks"),
+        "a pool may not be named `hooks`: that key is RESERVED at the `pools:` section level \
+         (the all-pools `hooks:` attach list and `upstream_credentials:` default). Rename the pool."
+    );
+    assert_eq!(
+        reserved_name_refusal("tools", "tool", "breaker"),
+        "a tool may not be named `breaker`: that key is RESERVED at the `tools:` section level \
+         (the core-owned `breaker:` setting). Rename the tool."
+    );
+}
