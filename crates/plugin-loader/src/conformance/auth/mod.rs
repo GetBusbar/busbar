@@ -90,7 +90,8 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::services::{
-    Caller, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored, UNSERVED,
+    Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    UNSERVED,
 };
 
 mod outbound;
@@ -594,6 +595,18 @@ impl HostServices for CredentialHost {
         unserved()
     }
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
+        unserved()
+    }
+    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn hook_call(&self, _: &Caller, _: Option<u64>, _: HookAsk, _: Later) -> Ran {
         unserved()
     }
     fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
