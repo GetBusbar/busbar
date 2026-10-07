@@ -20,9 +20,11 @@ use serde_json::{Map, Value};
 /// reserves (`busbar_contract::section::RESERVED_SECTION_KEYS`) and its card and fees
 /// (`crate::config::prepass`): §4 "Reserved core-owned sub-keys" and the OWNER-CONFIRMED (b) list
 /// (`breaker`, `on_exhausted`, the `gates` binding, `affinity`, `tier`, `repeatable`), POOLS-VERBS's
-/// `work`, and an entry's `timeout` (`busbar_contract::section::ENTRY_TIMEOUT_KEY`, its member's
-/// attempt bound; ARCHITECT timeout ruling, R2-G).
-pub const RESERVED_SUB_KEYS: [&str; 8] = [
+/// `work` and `pools` (#47: tool and agent pools sit under their plane's verb as a reserved `pools`
+/// sub-key; Q-STEP9-a, ARCHITECT 2026-10-07), and an entry's `timeout`
+/// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`, its member's attempt bound; ARCHITECT timeout
+/// ruling, R2-G).
+pub const RESERVED_SUB_KEYS: [&str; 9] = [
     "breaker",
     "on_exhausted",
     "gates",
@@ -30,6 +32,7 @@ pub const RESERVED_SUB_KEYS: [&str; 8] = [
     "tier",
     "repeatable",
     "work",
+    busbar_contract::section::RESERVED_POOLS_KEY,
     busbar_contract::section::ENTRY_TIMEOUT_KEY,
 ];
 
@@ -39,6 +42,214 @@ pub fn is_reserved(key: &str) -> bool {
     RESERVED_SUB_KEYS.contains(&key)
         || busbar_contract::section::RESERVED_SECTION_KEYS.contains(&key)
         || crate::config::prepass::PLANE_CARD_KEYS.contains(&key)
+}
+
+/// The shape a reserved knob's value has, as the kernel reads it.
+#[derive(Debug, Clone, Copy)]
+enum Shape {
+    /// A list (`hooks`, `gates`, `repeatable`).
+    List,
+    /// A scalar (`upstream_credentials`: `own`|`passthrough`; `tier`; an entry's `timeout`).
+    Scalar,
+    /// A map of these keys (`on_exhausted` may also be a word, `reject`; a word is never a map).
+    Fields(&'static [&'static str]),
+    /// A map whose every value is a map (`pools`: name → pool; `rate_card`: lane → entry).
+    MapOfMaps,
+}
+
+/// Each reserved knob's shape, read off the kernel type that reads it: `hooks`/`gates`/`repeatable`
+/// a list of names; `upstream_credentials` the `own`|`passthrough` scalar; `tier` a scalar; an
+/// entry's `timeout` a duration scalar (`busbar_contract::section::entry_timeout_ms`);
+/// `breaker` `config::pools::BreakerCfg`; `on_exhausted` `config::pools::OnExhaustedCfg` (a word, or
+/// `{fallback_pool}`/`{queue}`); `affinity` `config::pools::AffinityCfg`; `work`
+/// `host_work::WorkBounds::of_section`; `fees` `config::PlaneFeesCfg`; `pools` and `rate_card` maps
+/// of maps (a pool; a `RateEntryCfg`). The field lists are pinned against those types' own
+/// `expected one of` lists in the deal's tests.
+fn shape(key: &str) -> Option<Shape> {
+    use busbar_contract::section::{
+        ENTRY_TIMEOUT_KEY, RESERVED_POOLS_KEY, RESERVED_WORK_KEY, UPSTREAM_CREDENTIALS_KEY,
+        WORK_MAX_LIVE_KEY, WORK_RETAIN_S_KEY,
+    };
+    let [card, fees] = crate::config::prepass::PLANE_CARD_KEYS;
+    Some(match key {
+        "hooks" | "gates" | "repeatable" => Shape::List,
+        UPSTREAM_CREDENTIALS_KEY | "tier" | ENTRY_TIMEOUT_KEY => Shape::Scalar,
+        "breaker" => Shape::Fields(&["base_cooldown_secs", "max_cooldown_secs", "trip"]),
+        "on_exhausted" => Shape::Fields(&["fallback_pool", "queue"]),
+        "affinity" => Shape::Fields(&["mode", "header_name"]),
+        RESERVED_WORK_KEY => Shape::Fields(&[WORK_MAX_LIVE_KEY, WORK_RETAIN_S_KEY]),
+        k if k == fees => Shape::Fields(&["per_request", "per_session"]),
+        k if k == card || k == RESERVED_POOLS_KEY => Shape::MapOfMaps,
+        _ => return None,
+    })
+}
+
+/// THE GENERIC CHECK (spec :567, "a plane entry named after any reserved key is refused at
+/// validation with a clear message"): whether `value`, written at a declared-verb section's own
+/// level under the reserved key `key`, is plainly NOT that knob — an entry by that name. Only a
+/// clear mismatch counts, as `busbar_contract::section::split_section` judges `hooks`: a map where
+/// the knob is a list or a scalar; a map holding a key the knob does not read; a `pools`/`rate_card`
+/// map holding a value that is a list or a scalar. A knob that is the right kind of value but
+/// malformed is left to the knob's own reader, whose refusal says what is wrong with it.
+#[must_use]
+pub fn names_an_entry(key: &str, value: &serde_yaml::Value) -> bool {
+    use serde_yaml::Value as Y;
+    let Some(map) = value.as_mapping() else {
+        return false;
+    };
+    match shape(key) {
+        None => false,
+        Some(Shape::List | Shape::Scalar) => true,
+        Some(Shape::Fields(keys)) => map
+            .keys()
+            .any(|k| k.as_str().is_none_or(|k| !keys.contains(&k))),
+        Some(Shape::MapOfMaps) => map.values().any(|v| !matches!(v, Y::Mapping(_) | Y::Null)),
+    }
+}
+
+/// A declared-verb section read off the operator's document, each depth-1 entry named after a
+/// reserved key judged AS IT IS READ ([`names_an_entry`]), so the refusal carries that entry's own
+/// path and position: `<section>.<key>: <sentence> at line L column C`, the form
+/// [`Document::refusal`] prints. `noun` is what one registration of the section is called; the
+/// sentence is `busbar_contract::section::reserved_name_refusal`'s.
+///
+/// # Errors
+///
+/// The deserializer's own, or the reserved-name refusal.
+pub fn read_section<'de, D: Deserializer<'de>>(
+    de: D,
+    section: &str,
+    noun: &str,
+) -> Result<serde_yaml::Value, D::Error> {
+    Read::Section { section, noun }.deserialize(de)
+}
+
+/// How [`read_section`] reads a node: the section itself, entry by entry; or one depth-1 entry,
+/// named after a reserved key, judged once read.
+#[derive(Clone, Copy)]
+enum Read<'a> {
+    Section {
+        section: &'a str,
+        noun: &'a str,
+    },
+    Entry {
+        section: &'a str,
+        noun: &'a str,
+        name: &'a str,
+    },
+}
+
+impl Read<'_> {
+    /// The node read: an entry that is plainly not its knob is refused here, inside its own node,
+    /// so the library marks the refusal with the entry's path and position.
+    fn done<E: de::Error>(self, value: serde_yaml::Value) -> Result<serde_yaml::Value, E> {
+        match self {
+            Read::Entry {
+                section,
+                noun,
+                name,
+            } if names_an_entry(name, &value) => Err(E::custom(
+                busbar_contract::section::reserved_name_refusal(section, noun, name),
+            )),
+            _ => Ok(value),
+        }
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for Read<'_> {
+    type Value = serde_yaml::Value;
+    fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        de.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Read<'_> {
+    type Value = serde_yaml::Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("any YAML value")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        use serde::Deserialize as _;
+        let Read::Section { section, noun } = self else {
+            let read = serde_yaml::Value::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            return self.done(read);
+        };
+        // The library's own map read (duplicate keys refused in its words), each reserved-named
+        // entry read through its judge.
+        let mut out = serde_yaml::Mapping::new();
+        while let Some(key) = map.next_key::<serde_yaml::Value>()? {
+            if out.contains_key(&key) {
+                return Err(de::Error::custom(duplicate_entry(&key)));
+            }
+            let value = match key.as_str().filter(|k| is_reserved(k)) {
+                Some(name) => map.next_value_seed(Read::Entry {
+                    section,
+                    noun,
+                    name,
+                })?,
+                None => map.next_value()?,
+            };
+            out.insert(key, value);
+        }
+        Ok(serde_yaml::Value::Mapping(out))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+        use serde::Deserialize as _;
+        let read = serde_yaml::Value::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
+        self.done(read)
+    }
+
+    fn visit_enum<A: de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
+        use serde::Deserialize as _;
+        let read = serde_yaml::Value::deserialize(de::value::EnumAccessDeserializer::new(data))?;
+        self.done(read)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        use serde::Deserialize as _;
+        let read = serde_yaml::Value::deserialize(de)?;
+        self.done(read)
+    }
+
+    fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+        self.done(serde_yaml::Value::Bool(v))
+    }
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+        self.done(serde_yaml::Value::Number(v.into()))
+    }
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+        self.done(serde_yaml::Value::Number(v.into()))
+    }
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+        self.done(serde_yaml::Value::Number(v.into()))
+    }
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        self.done(serde_yaml::Value::String(v.to_owned()))
+    }
+    fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+        self.done(serde_yaml::Value::String(v))
+    }
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        self.done(serde_yaml::Value::Null)
+    }
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        self.done(serde_yaml::Value::Null)
+    }
+}
+
+/// The YAML library's own sentence for a key written twice in one map (its `Mapping` read's).
+fn duplicate_entry(key: &serde_yaml::Value) -> String {
+    use serde_yaml::Value as Y;
+    match key {
+        Y::Null => "duplicate entry with null key".to_owned(),
+        Y::Bool(b) => format!("duplicate entry with key `{b}`"),
+        Y::Number(n) => format!("duplicate entry with key {n}"),
+        Y::String(s) => format!("duplicate entry with key {s:?}"),
+        Y::Sequence(_) | Y::Mapping(_) | Y::Tagged(_) => "duplicate entry in YAML map".to_owned(),
+    }
 }
 
 /// The operator's document: its value and the text its positions are read off.
@@ -127,10 +338,9 @@ impl Document {
                     let Some(v) = self.value.get(verb).filter(|v| !v.is_null()) else {
                         continue;
                     };
-                    let path = vec![verb.clone()];
-                    let stripped = strip(v.clone(), &path, &mut section.reserved);
+                    let stripped = strip(verb, v.clone(), &mut section.reserved);
                     section.settings[verb.as_str()] = stripped;
-                    section.at.push(path);
+                    section.at.push(vec![verb.clone()]);
                 }
                 (!section.at.is_empty()).then_some(section)
             }
@@ -207,26 +417,100 @@ impl Document {
     }
 }
 
-/// `value` with the reserved sub-keys taken off its own level and off each of its registrations,
-/// each recorded at its path.
-fn strip(mut value: Value, at: &[String], reserved: &mut Vec<(Vec<String>, Value)>) -> Value {
-    let mut take = |map: &mut Map<String, Value>, at: &[String]| {
-        let keys: Vec<String> = map.keys().filter(|k| is_reserved(k)).cloned().collect();
-        for k in keys {
-            if let Some(v) = map.remove(&k) {
-                reserved.push(([at, std::slice::from_ref(&k)].concat(), v));
-            }
-        }
+/// THE STRIP (Q-STEP9-a, ARCHITECT 2026-10-07): `section`, the value the document writes under
+/// `verb`, with the reserved sub-keys taken off at EXACT depths and nowhere else — the section's own
+/// level, each registration's level, each pool (`pools.<p>`) and each pool member
+/// (`pools.<p>.members[i]`, when the members are maps) — each recorded in `reserved` at its path
+/// (`[verb, ...]`). No recursion: a word spelled like a reserved key deeper than those is the
+/// plane's own and crosses.
+///
+/// Under a declared verb, `pools` is itself reserved, so the whole subtree leaves the blob and is
+/// recorded at `[verb, "pools"]`; the reserved keys of each of its pools and members are recorded at
+/// their own paths as well. Under the root `pools:` section (the verb that IS
+/// `busbar_contract::section::RESERVED_POOLS_KEY`) every depth-1 key is a POOL, as in 1.5.5: only
+/// the two section words (`RESERVED_SECTION_KEYS`, 1.5.5's frozen pair) are taken at that level, so
+/// a pool named `tier`, `work`, `breaker`, `rate_card`, … is a pool and crosses.
+///
+/// The one strip every crossing of a section goes through (the deal; a door plane's `open` and
+/// `refresh`).
+pub fn strip(verb: &str, mut section: Value, reserved: &mut Vec<(Vec<String>, Value)>) -> Value {
+    use busbar_contract::section::{RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS};
+    let at = [verb.to_owned()];
+    let Some(map) = section.as_object_mut() else {
+        return section;
     };
-    if let Some(map) = value.as_object_mut() {
-        take(map, at);
-        for (name, entry) in map.iter_mut() {
-            if let Some(inner) = entry.as_object_mut() {
-                take(inner, &[at, std::slice::from_ref(name)].concat());
+    if verb == RESERVED_POOLS_KEY {
+        take(map, &at, |k| RESERVED_SECTION_KEYS.contains(&k), reserved);
+        for (name, pool) in map.iter_mut() {
+            strip_pool(
+                pool,
+                &[&at[..], std::slice::from_ref(name)].concat(),
+                reserved,
+            );
+        }
+        return section;
+    }
+    take(map, &at, is_reserved, reserved);
+    // The `pools` subtree has left whole; the kernel also has its pools' and members' reserved keys
+    // by path.
+    let pools_at = [verb.to_owned(), RESERVED_POOLS_KEY.to_owned()];
+    let lifted = reserved.iter().rev().find(|(p, _)| p[..] == pools_at[..]);
+    if let Some(Value::Object(mut pools)) = lifted.map(|(_, v)| v.clone()) {
+        for (name, pool) in &mut pools {
+            strip_pool(
+                pool,
+                &[&pools_at[..], std::slice::from_ref(name)].concat(),
+                reserved,
+            );
+        }
+    }
+    for (name, entry) in map.iter_mut() {
+        if let Some(inner) = entry.as_object_mut() {
+            take(
+                inner,
+                &[&at[..], std::slice::from_ref(name)].concat(),
+                is_reserved,
+                reserved,
+            );
+        }
+    }
+    section
+}
+
+/// One pool at `at`: its reserved keys, then each member's (a member written as a map).
+fn strip_pool(pool: &mut Value, at: &[String], reserved: &mut Vec<(Vec<String>, Value)>) {
+    let Some(map) = pool.as_object_mut() else {
+        return;
+    };
+    take(map, at, is_reserved, reserved);
+    let members_key = busbar_contract::section::POOL_MEMBERS_KEY;
+    if let Some(Value::Array(members)) = map.get_mut(members_key) {
+        for (i, member) in members.iter_mut().enumerate() {
+            if let Some(m) = member.as_object_mut() {
+                let path = [at, &[members_key.to_owned(), i.to_string()][..]].concat();
+                take(m, &path, is_reserved, reserved);
             }
         }
     }
-    value
+}
+
+/// The keys of `map` that `reserved_here` names, taken off and recorded at `at.<key>`.
+fn take(
+    map: &mut Map<String, Value>,
+    at: &[String],
+    reserved_here: impl Fn(&str) -> bool,
+    reserved: &mut Vec<(Vec<String>, Value)>,
+) {
+    let keys: Vec<String> = map
+        .keys()
+        .filter(|k| reserved_here(k.as_str()))
+        .cloned()
+        .collect();
+    for k in keys {
+        if let Some(v) = map.remove(&k) {
+            reserved.push(([at, std::slice::from_ref(&k)].concat(), v));
+        }
+    }
 }
 
 /// Walks the operator's text to the node a path names and raises `reason` there, so the library
