@@ -43,8 +43,8 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
-    check_fee_units, check_on_piece, check_pin_mechanisms, check_project, check_refusal,
-    check_refusal_records, check_refusal_statuses, check_sections, check_serve,
+    check_fee_units, check_on_piece, check_pin_mechanisms, check_project, check_record_chains,
+    check_refusal, check_refusal_records, check_refusal_statuses, check_sections, check_serve,
     check_serve_records, check_snapshot, check_tail, check_trust_keys, Bounds, Caps, ProjectHost,
     MAX_SESSIONS,
 };
@@ -223,6 +223,13 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
         .collect();
     check_refusal_statuses(&refusal_statuses, tail.dialects_len as u64)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    // The chained record kinds: the host frames and verifies each in the framing it declares, so
+    // one it cannot name, or a kind named twice, refuses the load.
+    check_record_chains(
+        &listed(tail.record_chains, tail.record_chains_len),
+        tail.record_kinds_len as u64,
+    )
+    .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
