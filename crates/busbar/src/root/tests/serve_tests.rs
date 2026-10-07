@@ -1083,6 +1083,10 @@ mod agent_door {
         // The generation's engine host the hook stage reads per unit, set once the App is built.
         let live: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::App>>> = Arc::default();
         let judge = crate::root::connector::guard_for(&destinations).expect("the guard");
+        // The door's own requests (a card fetch, a mirrored push config) are made on a dispatcher
+        // worker, off any runtime: their sockets register on the process's reactor, which the boot
+        // path installs (`root::connector::boot`) and this cell installs the same way.
+        crate::root::connector::install_io_reactor();
         // THE GOVERNANCE BOOK over a store opened through its door, so its record slots are the
         // kernel's record store (ARCHITECT Q-L3B-RECORDS): the door's task rows are kept there.
         let axis = crate::root::loader::store_v3::DoorStoreAxis {
