@@ -63,7 +63,7 @@ Naming an agent `hooks` or `upstream_credentials` is refused at parse (`crates/b
 | `allow_private` | bool | no | `false` | Permits a plaintext `http://` endpoint and a loopback / link-local / RFC1918 / CGNAT address for this one agent. **Never** permits a cloud-metadata address, whatever it says. |
 | `upstream_credentials` | `own` | no; **`passthrough` refused** | | |
 | `upstream_credential` | object | no | absent | Busbar's own credential for this agent, presented on every hop. See below. Absent ⇒ the agent is dialled with no credential. |
-| `egress_scopes` | list of strings | no | `[]` | Accepted and validated (an empty name is refused), and **read by nothing**: no relayed hop consults it. What gates a hop is the caller key's own `agent:<id>` grant for the agent it reaches, and the key being live. |
+| `egress_scopes` | list of strings | no | `[]` | Accepted and validated (an empty name is refused), and **never enforced**: no relayed hop consults it, and none ever did (the delegation check that would have read it had no caller). What gates a hop is the caller key's own `agent:<id>` grant for the agent it reaches, and the key being live. |
 | `hooks` | list of bare names | no | `[]` | Adds to `agents.hooks:`. |
 
 **`upstream_credential`** (`crates/busbar-plane-a2a/src/a2a/creds.rs`), `deny_unknown_fields`, three fields and no more:
