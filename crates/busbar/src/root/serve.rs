@@ -559,11 +559,7 @@ impl DoorApply {
     /// A plane that will not refresh keeps serving its current generation, logged.
     pub fn apply(&self, app: &busbar_kernel::state::App) {
         let now = self.current();
-        let section = app
-            .plane_slots
-            .get(self.facts.plane.as_str())
-            .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
-            .map_or_else(|| now.section.clone(), |s| s.section.value.clone());
+        let section = applied_section(app, &self.facts.plane, self.served_facts.section, &now);
         match self.refreshed(&section, now.generation + 1, &*app.secret_resolver) {
             Ok(next) => {
                 *self
@@ -594,7 +590,7 @@ impl DoorApply {
         let settings = if section.is_null() {
             Vec::new()
         } else {
-            serde_json::to_vec(section).map_err(|e| format!("its section: {e}"))?
+            serde_json::to_vec(&plane_settings(section)).map_err(|e| format!("its section: {e}"))?
         };
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
@@ -637,6 +633,34 @@ impl DoorApply {
             egress,
         })
     }
+}
+
+/// THE SECTION A CONFIG APPLY REFRESHES A DOOR PLANE ONTO: the plane's slot in the generation `app`
+/// installed (its section as written), carrying the unified pools that generation resolved for the
+/// plane's section `section_key` ([`pools_into`], read off the generic per-plane pool map
+/// `App::plane_pools` under the plane `plane`'s key), as the boot composition carries them
+/// ([`with_pools`]); a generation with no slot for the plane keeps the section it serves now.
+#[must_use]
+pub fn applied_section(
+    app: &busbar_kernel::state::App,
+    plane: &str,
+    section_key: &str,
+    now: &DoorLive,
+) -> serde_yaml::Value {
+    let Some(slot) = app
+        .plane_slots
+        .get(plane)
+        .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
+    else {
+        return now.section.clone();
+    };
+    let mut section = slot.section.value.clone();
+    let pools = busbar_kernel::plane::registry::plane_decl_for_config_section(section_key)
+        .and_then(|decl| app.plane_pools(decl.key));
+    if let Some(pools) = pools {
+        pools_into(&mut section, pools);
+    }
+    section
 }
 
 /// EVERY SERVED DOOR PLANE'S APPLY, kept when the planes move into the data routes, for the
@@ -827,40 +851,95 @@ pub fn with_pools(
         BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
     )],
 ) -> BTreeMap<&'static str, serde_yaml::Value> {
-    use busbar_contract::section::{
-        POOL_MEMBERS_KEY, POOL_MEMBER_GRANTED_KEY, POOL_REPEATABLE_KEY, RESERVED_POOLS_KEY,
-    };
     for (key, stated) in pools {
-        if stated.is_empty() {
-            continue;
+        if let Some(section) = sections.get_mut(key) {
+            pools_into(section, stated);
         }
-        let Some(serde_yaml::Value::Mapping(section)) = sections.get_mut(key) else {
-            continue;
-        };
-        let mut map = serde_yaml::Mapping::new();
-        for (name, pool) in stated {
-            let mut entry = serde_yaml::Mapping::new();
-            entry.insert(
-                POOL_MEMBERS_KEY.into(),
-                serde_yaml::Value::Sequence(
-                    pool.members.iter().map(|m| m.as_str().into()).collect(),
-                ),
-            );
-            entry.insert(
-                POOL_REPEATABLE_KEY.into(),
-                serde_yaml::Value::Sequence(
-                    pool.repeatable.iter().map(|m| m.as_str().into()).collect(),
-                ),
-            );
-            entry.insert(
-                POOL_MEMBER_GRANTED_KEY.into(),
-                serde_yaml::Value::Bool(true),
-            );
-            map.insert(name.as_str().into(), serde_yaml::Value::Mapping(entry));
-        }
-        section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
     }
     sections
+}
+
+/// `stated`, a named-definition section's unified pools, written into `section` at its reserved
+/// `pools` key (a section that is no mapping, or a set of none, is left as it is). Each member is
+/// written `{name, tier}`, its tier its index in the pool's `members` as declared: a named
+/// definition's pool is ORDERED, its first member the primary (`CandidatePoolCfg::members`), and the
+/// walk takes the lowest tier that can take the request (the core-owned per-member `tier`,
+/// `BUSBAR-1.6.0.md` l.4196 (b), l.4202, R2-G l.4285). The tier is core-owned: [`plane_settings`]
+/// hands a plane each member's bare name.
+pub fn pools_into(
+    section: &mut serde_yaml::Value,
+    stated: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+) {
+    use busbar_contract::section::{
+        POOL_MEMBERS_KEY, POOL_MEMBER_GRANTED_KEY, POOL_MEMBER_NAME_KEY, POOL_MEMBER_TIER_KEY,
+        POOL_REPEATABLE_KEY, RESERVED_POOLS_KEY,
+    };
+    if stated.is_empty() {
+        return;
+    }
+    let serde_yaml::Value::Mapping(section) = section else {
+        return;
+    };
+    let mut map = serde_yaml::Mapping::new();
+    for (name, pool) in stated {
+        let mut entry = serde_yaml::Mapping::new();
+        entry.insert(
+            POOL_MEMBERS_KEY.into(),
+            serde_yaml::Value::Sequence(
+                pool.members
+                    .iter()
+                    .zip(0u64..)
+                    .map(|(m, tier)| {
+                        let mut member = serde_yaml::Mapping::new();
+                        member.insert(POOL_MEMBER_NAME_KEY.into(), m.as_str().into());
+                        member.insert(POOL_MEMBER_TIER_KEY.into(), tier.into());
+                        serde_yaml::Value::Mapping(member)
+                    })
+                    .collect(),
+            ),
+        );
+        entry.insert(
+            POOL_REPEATABLE_KEY.into(),
+            serde_yaml::Value::Sequence(
+                pool.repeatable.iter().map(|m| m.as_str().into()).collect(),
+            ),
+        );
+        entry.insert(
+            POOL_MEMBER_GRANTED_KEY.into(),
+            serde_yaml::Value::Bool(true),
+        );
+        map.insert(name.as_str().into(), serde_yaml::Value::Mapping(entry));
+    }
+    section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
+}
+
+/// THE SETTINGS A DOOR PLANE IS HANDED for `section`: the section with each pool member written
+/// `{name, tier}` handed as its bare name (the tier is core-owned, [`pools_into`]); every other key
+/// as written.
+#[must_use]
+pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
+    use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
+    let mut section = section.clone();
+    let pools = section
+        .as_mapping_mut()
+        .and_then(|m| m.get_mut(RESERVED_POOLS_KEY))
+        .and_then(serde_yaml::Value::as_mapping_mut);
+    for (_, pool) in pools.into_iter().flat_map(|p| p.iter_mut()) {
+        let members = pool
+            .as_mapping_mut()
+            .and_then(|p| p.get_mut(POOL_MEMBERS_KEY))
+            .and_then(serde_yaml::Value::as_sequence_mut);
+        for member in members.into_iter().flat_map(|m| m.iter_mut()) {
+            if let Some(name) = member
+                .get(POOL_MEMBER_NAME_KEY)
+                .and_then(serde_yaml::Value::as_str)
+                .map(str::to_owned)
+            {
+                *member = serde_yaml::Value::String(name);
+            }
+        }
+    }
+    section
 }
 
 /// WHAT A DOOR PLANE'S EGRESS IS SEALED OVER: how its members are reached ([`DoorReach`]) and the
@@ -1157,7 +1236,7 @@ fn open(
     owned: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
-    let mut section = section.clone();
+    let mut section = plane_settings(section);
     if let Some(map) = section.as_mapping_mut() {
         map.remove(busbar_contract::section::RESERVED_WORK_KEY);
     }

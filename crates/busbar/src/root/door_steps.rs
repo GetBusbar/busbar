@@ -34,8 +34,9 @@ use busbar_contract::caps::{
 };
 use busbar_contract::records::VirtualKey;
 use busbar_contract::section::{
-    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, RESERVED_MODELS_KEY,
-    RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
+    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY,
+    POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
+    RESERVED_WORK_KEY,
 };
 use busbar_contract::MeterClassId;
 use busbar_kernel::config::groups::ExhaustionMode;
@@ -66,6 +67,8 @@ pub struct DoorPools {
     /// Each entry's reserved `timeout:`, in milliseconds, where it writes one
     /// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`): its member's attempt bound.
     timeouts: BTreeMap<String, u64>,
+    /// Each pool's members' tiers, in member order (`0` where a member states none).
+    tiers: BTreeMap<String, Vec<u32>>,
 }
 
 /// A resolved route: its pool label (empty for a direct route) and its member entries.
@@ -102,7 +105,27 @@ impl DoorPools {
             .map(|pools| {
                 pools
                     .iter()
-                    .filter_map(|(name, pool)| Some((key(name)?, members(pool))))
+                    .filter_map(|(name, pool)| {
+                        Some((
+                            key(name)?,
+                            members(pool).into_iter().map(|(m, _)| m).collect(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tiers = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| {
+                        Some((
+                            key(name)?,
+                            members(pool).into_iter().map(|(_, t)| t).collect(),
+                        ))
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -157,6 +180,7 @@ impl DoorPools {
             fallbacks,
             member_granted,
             timeouts,
+            tiers,
         }
     }
 
@@ -197,6 +221,17 @@ impl DoorPools {
     #[must_use]
     pub fn pools(&self) -> &BTreeMap<String, Vec<String>> {
         &self.pools
+    }
+
+    /// The tier of `pool`'s member at `index` (the core-owned per-member `tier`), `0` where it
+    /// states none.
+    #[must_use]
+    pub fn tier(&self, pool: &str, index: usize) -> u32 {
+        self.tiers
+            .get(pool)
+            .and_then(|t| t.get(index))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// The pool `pool` spills into when its members are spent, where its section names one.
@@ -248,16 +283,24 @@ impl DoorPools {
     }
 }
 
-/// A pool's member entries: its `members` list, each an entry name or a member naming one.
-fn members(pool: &serde_yaml::Value) -> Vec<String> {
+/// A pool's member entries: its `members` list, each an entry name or a member naming one, with the
+/// member's tier (`0` where it states none, or states one that is no unsigned integer).
+fn members(pool: &serde_yaml::Value) -> Vec<(String, u32)> {
     pool.get(POOL_MEMBERS_KEY)
         .and_then(serde_yaml::Value::as_sequence)
         .map(|list| {
             list.iter()
                 .filter_map(|m| {
-                    m.as_str()
-                        .or_else(|| m.get("name").and_then(serde_yaml::Value::as_str))
-                        .map(str::to_owned)
+                    let name = m.as_str().or_else(|| {
+                        m.get(POOL_MEMBER_NAME_KEY)
+                            .and_then(serde_yaml::Value::as_str)
+                    })?;
+                    let tier = m
+                        .get(POOL_MEMBER_TIER_KEY)
+                        .and_then(serde_yaml::Value::as_u64)
+                        .and_then(|t| u32::try_from(t).ok())
+                        .unwrap_or(0);
+                    Some((name.to_owned(), tier))
                 })
                 .collect()
         })
@@ -1039,12 +1082,15 @@ pub fn compose_egress(
     for (label, entries) in pools.pools() {
         let list = entries
             .iter()
-            .map(|e| {
-                members.get(e).cloned().ok_or_else(|| {
+            .enumerate()
+            .map(|(index, e)| {
+                let mut member = members.get(e).cloned().ok_or_else(|| {
                     format!("pool '{label}' names entry '{e}', which has no sealed route")
-                })
+                })?;
+                member.tier = pools.tier(label, index);
+                Ok(member)
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, String>>()?;
         let mut pool = Pool::new(label.clone(), list);
         if let Some(fallback) = pools.fallback(label) {
             pool.on_exhausted = OnExhausted::FallbackPool(fallback.to_string());
