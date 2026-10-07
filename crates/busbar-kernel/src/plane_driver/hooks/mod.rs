@@ -631,7 +631,7 @@ pub(crate) struct Veto {
     pub hook: Option<String>,
 }
 
-#[path = "gated.rs"]
+#[path = "../gated.rs"]
 pub mod gated;
 pub use gated::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 

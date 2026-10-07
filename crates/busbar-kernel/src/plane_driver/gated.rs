@@ -28,8 +28,8 @@ use busbar_contract::hooks::TransformOutcome;
 use super::super::{FarEnd, PlaneUnits};
 use super::{veto_by, HookBinder, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
-use crate::hooks::wire::{clamp_reject_status, sanitize_reject_message};
 use crate::hooks::ResolvedPolicy;
+use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 
 /// The order a plane's request-stage hooks run in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
