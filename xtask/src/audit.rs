@@ -43,6 +43,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use crate::audit_pinned::{Mount, Pin, PinStore};
 use crate::json_lite::{self, Json, Obj};
 use crate::sha256::Sha256;
 
@@ -217,15 +218,42 @@ pub struct Git {
     reachable: std::sync::OnceLock<BTreeSet<String>>,
     /// See [`Git::commits_between`]. One answer per DISTINCT commit pair, not per caller that asks.
     distances: std::sync::Mutex<BTreeMap<(String, String), Option<u64>>>,
+    /// See [`Git::tracked_at`]. Keyed by FULL commit ids only — a name like `HEAD` can move.
+    trees: std::sync::Mutex<BTreeMap<String, TrackedTree>>,
+    /// See [`Git::pins_at`]. Same key rule.
+    pins_memo: std::sync::Mutex<BTreeMap<String, Result<Vec<Pin>, String>>>,
+    /// Blob text by oid, for the manifests and lockfiles the pin rule reads.
+    blobs: std::sync::Mutex<BTreeMap<String, Option<String>>>,
+    /// Where pinned plugin checkouts are read from. See [`crate::audit_pinned`].
+    pins: PinStore,
+}
+
+pub type TrackedTree = Result<std::sync::Arc<BTreeMap<String, String>>, String>;
+
+/// A full 40- (or 64-) hex commit id: the only rev spelling whose tree cannot change under a memo.
+fn is_full_oid(rev: &str) -> bool {
+    matches!(rev.len(), 40 | 64) && rev.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 impl Git {
     pub fn new(repo: impl Into<std::path::PathBuf>) -> Git {
+        let repo: std::path::PathBuf = repo.into();
+        let cache = repo.join("target").join("ledger-pins");
         Git {
-            repo: repo.into(),
+            repo,
             reachable: std::sync::OnceLock::new(),
             distances: std::sync::Mutex::new(BTreeMap::new()),
+            trees: std::sync::Mutex::new(BTreeMap::new()),
+            pins_memo: std::sync::Mutex::new(BTreeMap::new()),
+            blobs: std::sync::Mutex::new(BTreeMap::new()),
+            pins: PinStore::new(crate::audit_pinned::default_cargo_home(), cache),
         }
+    }
+
+    /// Read pinned checkouts from `home`'s git dbs instead of `$CARGO_HOME`'s.
+    pub fn with_cargo_home(mut self, home: impl Into<std::path::PathBuf>) -> Git {
+        self.pins.set_cargo_home(home.into());
+        self
     }
 
     pub fn repo(&self) -> &Path {
@@ -240,9 +268,120 @@ impl Git {
         Ok(self.run(&["rev-parse", "HEAD"])?.trim().to_string())
     }
 
-    /// THE UNIVERSE: every tracked blob at `rev`, path -> blob oid. Blobs only — a submodule's
-    /// `commit` entry is not a file this repository's audit can read.
+    /// THE UNIVERSE: every tracked blob at `rev`, path -> blob oid, PLUS every pinned plugin crate
+    /// of `rev`'s default distribution mounted at `crates/<package>` where the tree holds no such
+    /// directory ([`crate::audit_pinned`]). A pin whose checkout cannot be produced is an `Err`
+    /// naming the package and the commit — the universe is never silently missing a crate.
     pub fn files_at(&self, rev: &str) -> Result<BTreeMap<String, String>, String> {
+        Ok(self.universe_at(rev)?.0)
+    }
+
+    /// [`Git::files_at`] and the mounts it laid, from one read of the tree.
+    pub fn universe_at(
+        &self,
+        rev: &str,
+    ) -> Result<(BTreeMap<String, String>, Vec<std::sync::Arc<Mount>>), String> {
+        let tracked = self.tracked_at(rev)?;
+        let mut all = (*tracked).clone();
+        let mut mounts = Vec::new();
+        for pin in self.pins_over(rev, &tracked)? {
+            let m = self.pins.mount(&pin)?;
+            let at = pin.mount_dir();
+            for (rel, oid) in &m.files {
+                all.insert(format!("{at}/{rel}"), oid.clone());
+            }
+            mounts.push(m);
+        }
+        Ok((all, mounts))
+    }
+
+    /// Only the MOUNTED (virtual) files of [`Git::files_at`].
+    pub fn mounted_at(&self, rev: &str) -> Result<BTreeMap<String, String>, String> {
+        let (all, mounts) = self.universe_at(rev)?;
+        Ok(all
+            .into_iter()
+            .filter(|(p, _)| mounts.iter().any(|m| under(p, &m.pin.mount_dir())))
+            .collect())
+    }
+
+    /// The pins [`Git::files_at`] mounts at `rev` — which packages, at which commits — without
+    /// reading any checkout.
+    pub fn pins_at(&self, rev: &str) -> Result<Vec<Pin>, String> {
+        let tracked = self.tracked_at(rev)?;
+        self.pins_over(rev, &tracked)
+    }
+
+    fn pins_over(&self, rev: &str, tracked: &BTreeMap<String, String>) -> Result<Vec<Pin>, String> {
+        let memo_key = is_full_oid(rev).then(|| rev.to_string());
+        if let Some(k) = &memo_key {
+            if let Some(hit) = self.pins_memo.lock().ok().and_then(|m| m.get(k).cloned()) {
+                return hit;
+            }
+        }
+        let read = |rel: &str| tracked.get(rel).and_then(|oid| self.blob_text(oid));
+        let answer =
+            crate::audit_pinned::pins_for(tracked, &read).map_err(|e| format!("at {rev}: {e}"));
+        if let Some(k) = memo_key {
+            if let Ok(mut m) = self.pins_memo.lock() {
+                m.insert(k, answer.clone());
+            }
+        }
+        answer
+    }
+
+    fn blob_text(&self, oid: &str) -> Option<String> {
+        if let Some(hit) = self.blobs.lock().ok().and_then(|m| m.get(oid).cloned()) {
+            return hit;
+        }
+        let text = self.run(&["cat-file", "blob", oid]).ok();
+        if let Ok(mut m) = self.blobs.lock() {
+            m.insert(oid.to_string(), text.clone());
+        }
+        text
+    }
+
+    /// The files scope `sc` owns at `rev`, mounting ONLY the pins its paths reach. This is what the
+    /// anti-forgery rule reads at every recorded commit: a record about one crate does not need,
+    /// and must not be made to depend on, a checkout of every other pin that commit carried — but a
+    /// record about a pinned crate fails closed exactly as [`Git::files_at`] does.
+    pub fn scope_files_at(&self, sc: &Json, rev: &str) -> Result<BTreeMap<String, String>, String> {
+        let tracked = self.tracked_at(rev)?;
+        let mut files = scope_files(sc, &tracked);
+        let paths = str_list(sc.get("paths"));
+        for pin in self.pins_over(rev, &tracked)? {
+            let at = pin.mount_dir();
+            if !paths.iter().any(|p| under(p, &at) || under(&at, p)) {
+                continue;
+            }
+            let m = self.pins.mount(&pin)?;
+            for (rel, oid) in &m.files {
+                let path = format!("{at}/{rel}");
+                if scope_owns(sc, &path) {
+                    files.insert(path, oid.clone());
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    /// The TRACKED blobs at `rev` alone — no pinned mount. Memoised per full commit id.
+    pub fn tracked_at(&self, rev: &str) -> TrackedTree {
+        let memo_key = is_full_oid(rev).then(|| rev.to_string());
+        if let Some(k) = &memo_key {
+            if let Some(hit) = self.trees.lock().ok().and_then(|m| m.get(k).cloned()) {
+                return hit;
+            }
+        }
+        let answer = self.ls_tree(rev).map(std::sync::Arc::new);
+        if let Some(k) = memo_key {
+            if let Ok(mut m) = self.trees.lock() {
+                m.insert(k, answer.clone());
+            }
+        }
+        answer
+    }
+
+    fn ls_tree(&self, rev: &str) -> Result<BTreeMap<String, String>, String> {
         let out = self.run(&["ls-tree", "-r", rev, "--full-tree"])?;
         let mut table = BTreeMap::new();
         for line in out.lines() {
@@ -499,61 +638,77 @@ fn scope(id: &str, kind: &str, exclude: &[String]) -> Json {
 ///
 /// The order is production, then tests, then instruments — and within a crate, `src` before
 /// `build.rs`. It is the committed file's order and a diff is only readable if it stays.
-pub fn derive_scopes(root: &Path) -> Vec<Json> {
+///
+/// `mounted` is the PINNED plugin crates' virtual files ([`Git::mounted_at`]): a crate that left
+/// this tree for its own repo and is pinned back is derived exactly as it was when it lived here, at
+/// the same `crates/<package>` ids, so `sync --write` keeps its scopes and their records.
+pub fn derive_scopes(root: &Path, mounted: &BTreeMap<String, String>) -> Vec<Json> {
     let mut prod = Vec::new();
     let mut tests = Vec::new();
     let mut inst = Vec::new();
 
+    let virtual_dir = |rel: &str| {
+        let dir = format!("{rel}/");
+        mounted
+            .range(dir.clone()..)
+            .next()
+            .is_some_and(|(k, _)| k.starts_with(&dir))
+    };
+    let is_dir = |rel: &str| root.join(rel).is_dir() || virtual_dir(rel);
+    let exists =
+        |rel: &str| root.join(rel).exists() || mounted.contains_key(rel) || virtual_dir(rel);
+
     let crates_dir = root.join("crates");
-    if crates_dir.is_dir() {
-        let mut entries: Vec<String> = std::fs::read_dir(&crates_dir)
-            .map(|rd| {
-                rd.filter_map(Result::ok)
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .collect()
-            })
-            .unwrap_or_default();
-        entries.sort();
-        for name in entries {
-            let base = format!("crates/{name}");
-            if !root.join(&base).join("Cargo.toml").exists() {
-                continue;
+    let mut entries: BTreeSet<String> = std::fs::read_dir(&crates_dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.extend(mounted.keys().filter_map(|k| {
+        let rest = k.strip_prefix("crates/")?;
+        rest.split_once('/').map(|(name, _)| name.to_string())
+    }));
+    for name in entries {
+        let base = format!("crates/{name}");
+        if !exists(&format!("{base}/Cargo.toml")) {
+            continue;
+        }
+        if is_dir(&format!("{base}/src")) {
+            if name == SPLIT_CRATE {
+                // The binary crate's production code is two very different things — the
+                // composition root and the entry point — and one scope over both would let a
+                // clean read of one stand in for the other. The entry point's scope is the REST
+                // of `src/`, not the one file `main.rs`: the build-stamp derivation and the
+                // linked-table generator that `build.rs` `include!`s sit beside it, and a scope
+                // addressed at a single file left both of them, and any file added next to
+                // them, in no scope at all.
+                prod.push(scope(&format!("{base}/src/root"), "production", &[]));
+                prod.push(scope(
+                    &format!("{base}/src"),
+                    "production",
+                    &[format!("{base}/src/root"), format!("{base}/src/tests")],
+                ));
+            } else {
+                prod.push(scope(
+                    &format!("{base}/src"),
+                    "production",
+                    &[format!("{base}/src/tests")],
+                ));
             }
-            if root.join(&base).join("src").is_dir() {
-                if name == SPLIT_CRATE {
-                    // The binary crate's production code is two very different things — the
-                    // composition root and the entry point — and one scope over both would let a
-                    // clean read of one stand in for the other. The entry point's scope is the REST
-                    // of `src/`, not the one file `main.rs`: the build-stamp derivation and the
-                    // linked-table generator that `build.rs` `include!`s sit beside it, and a scope
-                    // addressed at a single file left both of them, and any file added next to
-                    // them, in no scope at all.
-                    prod.push(scope(&format!("{base}/src/root"), "production", &[]));
-                    prod.push(scope(
-                        &format!("{base}/src"),
-                        "production",
-                        &[format!("{base}/src/root"), format!("{base}/src/tests")],
-                    ));
-                } else {
-                    prod.push(scope(
-                        &format!("{base}/src"),
-                        "production",
-                        &[format!("{base}/src/tests")],
-                    ));
-                }
-                if root.join(&base).join("src/tests").is_dir() {
-                    tests.push(scope(&format!("{base}/src/tests"), "test", &[]));
-                }
+            if is_dir(&format!("{base}/src/tests")) {
+                tests.push(scope(&format!("{base}/src/tests"), "test", &[]));
             }
-            if root.join(&base).join("build.rs").exists() {
-                prod.push(scope(&format!("{base}/build.rs"), "production", &[]));
-            }
-            // `examples/` is code cargo builds (`cargo test` compiles every example) and ships in no
-            // binary: the same footing as a bench.
-            for sub in CRATE_TEST_DIRS {
-                if root.join(&base).join(sub).is_dir() {
-                    tests.push(scope(&format!("{base}/{sub}"), "test", &[]));
-                }
+        }
+        if exists(&format!("{base}/build.rs")) {
+            prod.push(scope(&format!("{base}/build.rs"), "production", &[]));
+        }
+        // `examples/` is code cargo builds (`cargo test` compiles every example) and ships in no
+        // binary: the same footing as a bench.
+        for sub in CRATE_TEST_DIRS {
+            if is_dir(&format!("{base}/{sub}")) {
+                tests.push(scope(&format!("{base}/{sub}"), "test", &[]));
             }
         }
     }
@@ -637,7 +792,9 @@ pub fn derive_scopes(root: &Path) -> Vec<Json> {
             .any(|s| scope_owns(s, f))
     };
     let mut remainder: BTreeSet<String> = BTreeSet::new();
-    for f in tracked_files(root) {
+    let mut universe: BTreeSet<String> = tracked_files(root).into_iter().collect();
+    universe.extend(mounted.keys().cloned());
+    for f in universe {
         if UNCOVERED_BY_DESIGN.iter().any(|(g, _)| glob_match(&f, g)) || owned(&f) {
             continue;
         }
@@ -851,8 +1008,9 @@ pub fn audited_tree_hash(sc: &Json, git: &Git) -> Result<Option<String>, String>
     let Some(at) = record_at(sc) else {
         return Err("the record names no audited_at commit".to_string());
     };
-    let files = git.files_at(at)?;
-    Ok(tree_hash(hashed_scope(sc, sc), &files))
+    let under = hashed_scope(sc, sc);
+    let files = git.scope_files_at(under, at)?;
+    Ok(tree_hash(under, &files))
 }
 
 /// The commit a record — a scope's top-level record or one of its rounds — claims to have read.
@@ -1440,6 +1598,9 @@ pub struct RowView {
     pub current_hash: Option<String>,
     pub age: Option<u64>,
     pub loc: usize,
+    /// `Some("pinned: <repo>@<short sha>")` when the scope is read from a pinned plugin checkout
+    /// rather than this tree ([`crate::audit_pinned`]); `None` for every scope of the tree itself.
+    pub pin: Option<String>,
 }
 
 /// Every scope with its derived status, age and LOC. One pass over git, because 144 scopes times a
@@ -1452,10 +1613,21 @@ pub struct RowView {
 /// [`Git::commits_between`] for the measurement and for why the memo cannot hand a self-test plant
 /// somebody else's answer.
 pub fn rows(doc: &Json, git: &Git) -> Result<Vec<RowView>, String> {
-    let all = git.files_at("HEAD")?;
+    let (all, mounts) = git.universe_at("HEAD")?;
     let head = git.head()?;
     let oids: BTreeSet<String> = all.values().cloned().collect();
-    let loc_by_oid = git.line_counts(&oids);
+    let mut loc_by_oid = git.line_counts(&oids);
+    // A pinned crate's blobs live in its checkout's repository, not this one, so they are counted
+    // there.
+    for m in &mounts {
+        let theirs: BTreeSet<String> = m
+            .files
+            .values()
+            .filter(|o| !loc_by_oid.contains_key(*o))
+            .cloned()
+            .collect();
+        loc_by_oid.extend(Git::new(&m.db).line_counts(&theirs));
+    }
 
     let mut out = Vec::new();
     for sc in doc.get("scopes").as_array().unwrap_or(&[]) {
@@ -1469,7 +1641,16 @@ pub fn rows(doc: &Json, git: &Git) -> Result<Vec<RowView>, String> {
             .values()
             .map(|oid| loc_by_oid.get(oid).copied().unwrap_or(0))
             .sum();
+        let pin = mounts
+            .iter()
+            .find(|m| {
+                str_list(sc.get("paths"))
+                    .iter()
+                    .any(|p| under(p, &m.pin.mount_dir()))
+            })
+            .map(|m| m.pin.note());
         out.push(RowView {
+            pin,
             id: sc.get("id").as_str().unwrap_or("<no id>").to_string(),
             kind: sc.get("kind").as_str().unwrap_or("").to_string(),
             scope: sc.clone(),
