@@ -431,6 +431,87 @@ impl Gate for PlaneTransportNeutralityGate {
             &[ROW_NO_NOUN],
         ));
 
+        // A NEUTRAL CRATE NOBODY LISTED. The census classes `busbar-kernel-*` neutral by its name,
+        // so a crate created today is scanned today: the transport noun in it is a finding on the
+        // day it lands, not on the day somebody remembers to enrol its root.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-kernel-planted/Cargo.toml",
+            "[package]\nname = \"busbar-kernel-planted\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        ov.set(
+            "crates/busbar-kernel-planted/src/lib.rs",
+            "pub fn f() -> u16 { let rtp_port = 1; rtp_port }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a new census-neutral crate carrying a transport noun is scanned and flagged",
+            &[ROW_NO_NOUN],
+            ov,
+            &["rtp", "crates/busbar-kernel-planted/src/lib.rs"],
+        ));
+
+        // A CRATE THE CENSUS CANNOT CLASSIFY. Its name resolves to no kind, so it is neither a
+        // neutral crate the scan reads nor a plane or transport its family names: it is in no
+        // population at all, and that is the census row's finding.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/widget-planted/Cargo.toml",
+            "[package]\nname = \"widget-planted\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        ov.set(
+            "crates/widget-planted/src/lib.rs",
+            "pub fn f() -> u16 { let rtp_port = 1; rtp_port }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a crates/*/src the census cannot classify is refused on the census row",
+            &[ROW_ROOTS],
+            ov,
+            &["crates/widget-planted", "cannot classify"],
+        ));
+
+        // A CENSUS-NEUTRAL CRATE WITH NO SOURCE ON DISK. The manifest says the crate is there and
+        // neutral; its `src/` is not. That root would be scanned as zero files.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-kernel-ghost/Cargo.toml",
+            "[package]\nname = \"busbar-kernel-ghost\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a census-neutral crate whose src/ is not on disk is refused, not scanned as zero files",
+            &[ROW_ROOTS],
+            ov,
+            &["crates/busbar-kernel-ghost/src", "not present on disk"],
+        ));
+
+        // ONE FILE UNDER THE FLOOR. `files.is_empty()` passed a scan set that had collapsed to a
+        // single surviving file; the floor is the count measured on predev, so losing any one file
+        // of the neutral sources is refused rather than read as a cleaner tree.
+        match cx.walk(&WalkSpec::new(neutral.clone()).ext("rs")) {
+            Ok(files) => {
+                let mut ov = Overlay::new();
+                if let Some(f) = files.iter().rev().find(|f| f.rel_str() != TWIN_FILE) {
+                    ov.remove(&f.rel);
+                }
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a neutral scan set one file under the measured floor is refused",
+                    &[ROW_ZERO_FILES],
+                    ov,
+                    &["under the floor"],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "plane-transport-neutrality selftest: the neutral roots are unreadable ({e})"
+            )),
+        }
+
         // THE BLIND SCANS: the gate must not be able to pass by looking at nothing. A root that is
         // not there, and a root that is there and holds no source, are two different facts and each
         // gets its own case.
