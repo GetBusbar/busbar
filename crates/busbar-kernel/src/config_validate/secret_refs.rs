@@ -402,7 +402,15 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     ("BrowserLoginCfg", SecretBearing::Walked),
     // `tools.<name>.token_exchange.subject_token` — busbar's OWN token, the SUBJECT of an RFC 8693
     // exchange, never the caller's.
-    ("TokenExchangeCfg", SecretBearing::Walked),
+    (
+        "TokenExchangeCfg",
+        SecretBearing::DoorDeclared(
+            "the `tools:` door's section: its Statement declares \
+             `settings.*.token_exchange.subject_token` (and `settings.*.env.*` for a stdio child's \
+             referenced environment), and the folded row's section enumerates every reference at \
+             those paths",
+        ),
+    ),
     // That plane's LEASED outbound delegation credential. Reached from `RootCfg` through
     // `agent_defs -> agents.<name>.upstream_credential`.
     ("OutboundCredential", SecretBearing::Walked),
@@ -414,6 +422,15 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // through `oauth_as`, which is the VALIDATED identity, which is why that type carries the
     // reference verbatim rather than consuming it at `resolve` time.
     ("CheckedAsBlock", SecretBearing::Walked),
+    // A door plane's section as the kernel carries it: the references read at its door's declared
+    // paths, answered through `PlaneCfg::secret_refs` on the plane loop.
+    (
+        "DoorSection",
+        SecretBearing::DoorDeclared(
+            "the folded door row's section: it holds the references read at its door's declared \
+             `settings.` paths and answers them through `PlaneCfg::secret_refs`",
+        ),
+    ),
     (
         "AsIdentity",
         SecretBearing::NotInResolvedConfig(
@@ -470,6 +487,11 @@ pub(crate) enum SecretBearing {
     /// checks; each entry's reason says which shape it is and why the references it touches are
     /// covered elsewhere.
     NotInResolvedConfig(&'static str),
+    /// A DOOR PLANE'S configuration type: the kernel holds no typed copy of a door's section, so it
+    /// never destructures the type; it reads every reference the section holds at the door's
+    /// declared secret-reference paths (`PlaneRegistration::secret_refs`), walking the section as
+    /// written. The reason names those paths.
+    DoorDeclared(&'static str),
 }
 
 #[cfg(test)]

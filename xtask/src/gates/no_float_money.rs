@@ -483,9 +483,13 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     // plugin-path row drains"). The destination needs no third home added: it is the same directory
     // as `crates/busbar-plane-mcp/src`, already a home below, so the moved file was never out of this
     // group's count for a single scan.
+    //
+    // `crates/busbar-mcp/src/codec` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine and
+    // its registry row are deleted, and the mcp plane is its door crate alone — the home already
+    // listed. The floor does not move.
     CountRoot {
         area: "the tool codec, its records and the plane",
-        homes: &["crates/busbar-mcp/src/codec", "crates/busbar-plane-mcp/src"],
+        homes: &["crates/busbar-plane-mcp/src"],
         floor: 12,
     },
     CountRoot {

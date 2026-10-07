@@ -60,18 +60,18 @@ BUSBAR_VERSION=$("$BUSBAR" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head 
 echo "gate: busbar $BUSBAR_VERSION built with embedded ephemeral key"
 
 # ── 2. Pack the four artifacts ───────────────────────────────────────────────────────────────────
-# Version must be >= the binary's version: a verified first-party plugin below the binary version is
-# hard-rejected by the AUTOMATIC first-party anti-downgrade floor (plugin-sign evaluate()).
+# No --version: the packer stamps the version the plugin's own Statement states, as a release must
+# (busbar-plugin-pack refuses a --version the Statement does not state: one version per plugin).
 pack() { # $1=signing key ("" = unsigned) $2=out $3...=extra flags
   local key=$1 out=$2; shift 2
   # env -u guards the unsigned case even when the CI environment carries a real BUSBAR_SIGN_KEY.
   if [ -n "$key" ]; then
     BUSBAR_SIGN_KEY="$key" "$PACK" pack --lib "$LIB" --name "$PLUGIN_CRATE" \
-      --alias "$PLUGIN_ALIAS" --kind "$PLUGIN_KIND" --version "$BUSBAR_VERSION" \
+      --alias "$PLUGIN_ALIAS" --kind "$PLUGIN_KIND" \
       --publisher busbar --license Apache-2.0 --out "$out" "$@"
   else
     env -u BUSBAR_SIGN_KEY "$PACK" pack --lib "$LIB" --name "$PLUGIN_CRATE" \
-      --alias "$PLUGIN_ALIAS" --kind "$PLUGIN_KIND" --version "$BUSBAR_VERSION" \
+      --alias "$PLUGIN_ALIAS" --kind "$PLUGIN_KIND" \
       --publisher busbar --license Apache-2.0 --out "$out" "$@"
   fi
 }
