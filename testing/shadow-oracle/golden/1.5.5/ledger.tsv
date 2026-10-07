@@ -2414,3 +2414,4 @@ boot.refusal|BOOT-102|validate	PASS	exit 1;
 boot.refusal|BOOT-103|validate	PASS	exit 1; 	
 ops.scrape|reload|sink-removed	PASS	script scrape-after-reload.sh: status 200	
 plugins.abi|json-contract|store-sqlite@1.5-line	PASS	capture	
+neutrality|models-empty|surface	PASS	capture	
