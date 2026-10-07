@@ -5751,6 +5751,16 @@ fn witness_file(kind: Option<&str>) -> Option<&'static str> {
 /// it always was, and a dev-edge any other file uses (a unit test, a second integration test, a
 /// bench) is a plugin testing against the host, not a witness of its doors.
 fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+    conformance_witness_edges_with(cx, crates, true)
+}
+
+/// [`conformance_witness_edges`], each file's code read through [`code_only_memo`] when `memo`,
+/// else afresh (the full walk the matrix memo is held equal to).
+fn conformance_witness_edges_with(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    memo: bool,
+) -> BTreeSet<(String, String)> {
     let loader_is_tooling = crates
         .iter()
         .any(|c| c.name == CONFORMANCE_LOADER && c.kind == Some(WIRE_FIXTURE_KIND));
@@ -5774,7 +5784,13 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
         let witness = format!("{}/{file}", c.dir);
         let users: Vec<String> = files
             .iter()
-            .filter(|f| code_only(&f.text).contains(path.as_str()))
+            .filter(|f| {
+                if memo {
+                    code_only_memo(&f.text).contains(path.as_str())
+                } else {
+                    code_only(&f.text).contains(path.as_str())
+                }
+            })
             .map(|f| f.rel_str())
             .collect();
         if users.is_empty() || users.iter().any(|u| *u != witness) {
@@ -5788,6 +5804,14 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
     out
 }
 
+/// Whether [`is_witness_hit`] can say yes to a hit of `kind` in `krate` at all: it is a
+/// `plugin-tooling` hit in a crate [`conformance_witness_edges`] grants. Every other hit is counted
+/// without reading its line.
+fn witness_may_apply(granted: &BTreeSet<(String, String)>, krate: &CrateInfo, kind: &str) -> bool {
+    kind == WIRE_FIXTURE_KIND
+        && granted.contains(&(krate.name.clone(), CONFORMANCE_LOADER.to_string()))
+}
+
 /// Whether a vocabulary hit is the granted witness naming its loader: a `plugin-tooling` hit in a
 /// crate [`conformance_witness_edges`] grants, in its witness file ([`witness_file`]), or on the
 /// manifest line that declares the loader. Every other column is still counted in both files.
@@ -5798,9 +5822,7 @@ fn is_witness_hit(
     rel: &str,
     line: &str,
 ) -> bool {
-    if kind != WIRE_FIXTURE_KIND
-        || !granted.contains(&(krate.name.clone(), CONFORMANCE_LOADER.to_string()))
-    {
+    if !witness_may_apply(granted, krate, kind) {
         return false;
     }
     if witness_file(krate.kind).is_some_and(|file| rel == format!("{}/{file}", krate.dir)) {
@@ -5827,6 +5849,32 @@ fn code_only(text: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// [`code_only`], memoised on the text: it is a pure function of it, and the witness reading runs it
+/// over every source file of every plugin crate on every measurement of every planted case.
+fn code_only_memo(text: &str) -> std::sync::Arc<String> {
+    type Memo = std::sync::Mutex<BTreeMap<u64, std::sync::Arc<String>>>;
+    static MEMO: std::sync::OnceLock<Memo> = std::sync::OnceLock::new();
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        h.finish()
+    };
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the code-only memo mutex is never poisoned")
+        .get(&key)
+    {
+        return std::sync::Arc::clone(found);
+    }
+    let code = std::sync::Arc::new(code_only(text));
+    memo.lock()
+        .expect("the code-only memo mutex is never poisoned")
+        .insert(key, std::sync::Arc::clone(&code));
+    code
 }
 
 /// Whether `text` names `ident` as a whole identifier (`use …::hook_fixture as fixture` counts;
