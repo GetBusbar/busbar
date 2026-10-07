@@ -475,6 +475,16 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
              was walked; it is never part of `RootCfg`.",
         ),
     ),
+    (
+        "PerHop",
+        SecretBearing::NotInResolvedConfig(
+            "the composition root's per-hop binding of a registration's own outbound credential \
+             (`root::door_steps::upstream_credential_binding`): a runtime CARRIER built from the \
+             reference a door section declares at its `settings.*.upstream_credential.secret` path, \
+             which the door section's walk (`DoorSection`) already reported; it is never part of \
+             `RootCfg`.",
+        ),
+    ),
 ];
 
 /// How [`secret_refs`] accounts for one secret-bearing type. See [`SECRET_BEARING_TYPES`].
