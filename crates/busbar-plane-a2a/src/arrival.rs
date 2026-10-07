@@ -442,6 +442,23 @@ pub fn render(dialect: Dialect, refusal: &Refusal, own_status: bool) -> Rendered
     }
 }
 
+/// Render `refusal` in `dialect`, NAMING THE TASK it is about (`task_id`) as the engine's
+/// `rpcerror::about_task` did: its `ResourceInfo` after the `ErrorInfo` in `error.data`, which the
+/// HTTP+JSON line carries as `details`.
+#[must_use]
+pub fn render_about_task(dialect: Dialect, refusal: &Refusal, task_id: &str) -> Rendered {
+    let doc = crate::identity::about_task(refusal, task_id);
+    let doc = match dialect {
+        Dialect::JsonRpc | Dialect::Framed => doc,
+        Dialect::RestJson => aip193(refusal.status, &doc["error"]),
+    };
+    Rendered {
+        status: refusal.status,
+        body: serde_json::to_vec(&doc).unwrap_or_default(),
+        content_type: JSON_MEDIA_TYPE,
+    }
+}
+
 /// The engine's words for a call its caller's governance refused (a spent budget, a request limit):
 /// `receive`'s `govern_admit_reason` refusal, `429`, `-32004`.
 pub const BUDGET_SPENT: &str = "this key's budget is spent";

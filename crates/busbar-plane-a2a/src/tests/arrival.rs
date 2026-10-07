@@ -406,6 +406,38 @@ fn an_open_breaker_refusal_names_the_agent_and_the_seconds_to_wait() {
     assert_eq!(doc["error"]["code"], -32004);
 }
 
+/// A BREAKER REFUSAL NAMING ITS REJECTED TASK is the plain refusal plus the task's `ResourceInfo`
+/// (`a2a.busbar/task`) after its `ErrorInfo`: in `error.data` on the JSON-RPC and gRPC lines, in
+/// `error.details` on the HTTP+JSON line, at the plain refusal's status (predev
+/// `rpcerror::about_task`, R-REJECTED). RED arm: the plain render names no task.
+#[test]
+fn a_breaker_refusal_names_the_task_it_rejected_on_every_line() {
+    let refusal = breaker_refusal("probe", Some(serde_json::json!(7)), 12);
+    let named = |doc: &serde_json::Value, at: &str| {
+        doc.pointer(at)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|e| e["resourceType"] == "a2a.busbar/task" && e["resourceName"] == "task-1")
+    };
+    for (dialect, at) in [
+        (Dialect::JsonRpc, "/error/data"),
+        (Dialect::Framed, "/error/data"),
+        (Dialect::RestJson, "/error/details"),
+    ] {
+        let plain: serde_json::Value =
+            serde_json::from_slice(&render(dialect, &refusal, true).body).expect("json");
+        assert!(
+            !named(&plain, at),
+            "{dialect:?}: the plain render names no task"
+        );
+        let rendered = render_about_task(dialect, &refusal, "task-1");
+        assert_eq!(rendered.status, 503, "{dialect:?}");
+        let doc: serde_json::Value = serde_json::from_slice(&rendered.body).expect("json");
+        assert!(named(&doc, at), "{dialect:?}: {doc}");
+    }
+}
+
 /// THE UNGRANTED CALLER is told the scope its grant does not reach, in 1.5.5's words.
 #[test]
 fn an_ungranted_caller_is_told_the_scope_it_does_not_hold() {

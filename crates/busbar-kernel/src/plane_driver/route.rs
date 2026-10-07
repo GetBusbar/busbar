@@ -872,9 +872,6 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         let mut attempt_no = 0;
         // Why the previous attempt failed over, for the next attempt's `routing` stage tap.
         let mut failed: Option<&'static str> = None;
-        // An attempt's request went out toward its far end: a walk that then ends with no member
-        // left ended a unit whose hop left and heard nothing back.
-        let mut left = false;
         'attempt: loop {
             attempt_no += 1;
             if let Some(t) = turn {
@@ -906,12 +903,11 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     status,
                     retry_after,
                 }) => {
-                    if left {
-                        // The walk's exhaustion terminal is refused as `BreakerOpen` (the route
-                        // step's `End::Exhausted`): the refused piece names that reason.
-                        if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
-                            return end;
-                        }
+                    // The walk's exhaustion terminal is refused as `BreakerOpen` (the route
+                    // step's `End::Exhausted`): the refused piece names that reason, whether or
+                    // not a request went out (R-REJECTED).
+                    if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
+                        return end;
                     }
                     return End::Exhausted(status, retry_after);
                 }
@@ -991,11 +987,18 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             if !far_bound {
                 return match terminal {
-                    Some((status, retry_after)) => End::Exhausted(status, retry_after),
+                    Some((status, retry_after)) => {
+                        // THE WALK EXHAUSTED WITH NOTHING SENT (the first attempt found no member):
+                        // the refused piece names `BreakerOpen` here too (R-REJECTED, coordinator
+                        // 2026-10-07, extends gap-2), so a plane that opens a hop's task can end it.
+                        if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
+                            return end;
+                        }
+                        End::Exhausted(status, retry_after)
+                    }
                     None => End::Failed(ReasonCode::DestinationUnreachable),
                 };
             }
-            left = true;
             match turn_wait(run, turn, self.far.send(run.token, request)).await {
                 Ok(true) => {}
                 // Not sent, so nothing reached the caller: fail over.
@@ -1067,7 +1070,8 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
 
     /// THE REFUSED PIECE, for a plane whose tail states `TAIL_REFUSED_PIECE`: before the unit is
     /// refused for `reason` (its member's credential unavailable before anything was dialled, or
-    /// the walk ending with no member left after its request went out), the plane is handed the
+    /// the walk ending with no member left, whether or not a request went out: R-REJECTED, coordinator
+    /// 2026-10-07, extends gap-2), the plane is handed the
     /// refusal as a piece first, on the unit's own ticket (`PIECE_REFUSED`, the reason in
     /// `OnPieceIn::reason`): its record writes are written, so the plane changes what it holds
     /// through the host's records as any piece does (a ticketless `refusal` reads none), and

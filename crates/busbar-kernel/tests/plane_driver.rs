@@ -2373,9 +2373,10 @@ async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_ta
 
 /// A UNIT WHOSE REQUEST WENT OUT AND WHOSE WALK THEN ENDED WITH NO MEMBER LEFT (its connection
 /// failed, or closed unanswered) is handed to a plane whose tail takes it as a refused piece first,
-/// naming the reason it is refused for (`breaker_open`, the walk's exhaustion terminal); a walk
-/// that exhausted before any request went out hands none. RED arm: a plane without the bit is sent
-/// no such piece and its unit ends exactly as the bit's does.
+/// naming the reason it is refused for (`breaker_open`, the walk's exhaustion terminal); so is a
+/// walk that exhausted before any request went out (R-REJECTED, coordinator 2026-10-07, extends
+/// gap-2: the plane opens the unit's task and settles it `rejected`). RED arm: a plane without the
+/// bit is sent no such piece, in either case, and its unit ends exactly as the bit's does.
 #[tokio::test]
 async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() {
     use busbar_contract::caps::ReasonCode;
@@ -2415,6 +2416,8 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     assert!(!taken.leaked && !without.leaked);
     assert!(without.refused.is_empty(), "no bit, no refused piece");
     assert_eq!(without.written.value, svc::ABSENT);
+    // A walk that exhausted before any request went out: the bit's plane is handed the piece
+    // (R-REJECTED, coordinator 2026-10-07, extends gap-2); a plane without the bit is sent nothing.
     let unsent = came(
         Gone {
             sends: false,
@@ -2423,11 +2426,35 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
         true,
     )
     .await;
-    assert!(
-        unsent.refused.is_empty(),
-        "a walk that exhausted before any request went out hands no refused piece"
+    assert_eq!(
+        unsent.refused,
+        vec![code],
+        "a walk that exhausted before any request went out is handed the refused piece"
     );
-    assert_eq!(unsent.written.value, svc::ABSENT);
+    assert_eq!(
+        (unsent.written.value, unsent.written.bytes),
+        (svc::FOUND, code.to_string().into_bytes()),
+        "the refused piece's record write is written"
+    );
+    assert!(!unsent.leaked);
+    let unsent_without = came(
+        Gone {
+            sends: false,
+            then: exhausted(),
+        },
+        false,
+    )
+    .await;
+    assert!(
+        unsent_without.refused.is_empty(),
+        "RED arm: a plane without the bit is handed nothing, sent or not"
+    );
+    assert_eq!(unsent_without.written.value, svc::ABSENT);
+    assert_eq!(
+        format!("{:?}", unsent.outcome),
+        format!("{:?}", unsent_without.outcome),
+        "the unit ends the same with the bit and without it"
+    );
 }
 
 /// R-PUSH (spec :2603-2606, :3470): `next_tick_ns = 0` names no tick until the next wake of the

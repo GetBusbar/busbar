@@ -332,8 +332,8 @@ pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 /// [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop
 /// may hold state the plane must end: when the walk refuses the unit
 /// [`crate::caps::ReasonCode::CredentialUnavailable`] (the member's credential, re-resolved for the
-/// attempt, no longer resolves, and nothing was dialled), or ends it with no member left after an
-/// attempt's request went out (the walk's exhaustion terminal, refused
+/// attempt, no longer resolves, and nothing was dialled), or ends it with no member left, whether or
+/// not an attempt's request went out (the walk's exhaustion terminal, refused
 /// [`crate::caps::ReasonCode::BreakerOpen`]), the kernel hands `on_piece` a [`FROM_KERNEL`] piece
 /// flagged [`PIECE_REFUSED`] and [`PIECE_LAST`], carrying that reason in [`OnPieceIn::reason`], on
 /// the unit's own ticket: the plane's record writes on that answer are written, as any piece's are,

@@ -1097,6 +1097,8 @@ fn an_opening_states_the_engines_answer_should_the_store_refuse_its_writes() {
         Opened::Hop { unrecorded, .. } => unrecorded,
         Opened::Refused(reply) => panic!("refused: {reply:?}"),
     };
+    // Each stage opens on a fresh desk: the constructor is kept under its own name, since the
+    // desks below shadow `desk`.
     let mut desk = desk();
     let fresh = unrecorded(opened(
         &mut desk,
