@@ -3,8 +3,12 @@
 
 //! THE EXPORT AXIS a test binary resolves `export:` against. The kernel names no export plugin, so
 //! the axis here is a plugin registry scanned out of a temp `plugins/` directory holding NEUTRAL
-//! `kind: export` rows whose library bytes are not a library.
+//! `kind: export` rows whose library bytes are not a library, and THE SCRAPE DOUBLE
+//! ([`ScrapeDouble`]): an in-process sink answering the frozen scrape module word (R-FIX3: the
+//! kernel's own tests use in-crate doubles; the real scrape sink's proofs live with the composition
+//! root, which links it).
 
+use busbar_contract::abi::export::ExportStream;
 use busbar_plugin_loader::{
     dispatch::{DispatchConfig, Dispatcher},
     export_axis::ExportRows,
@@ -93,7 +97,11 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
         instance: &str,
         settings: &serde_json::Value,
     ) -> Option<busbar_contract::export_calls::Probed> {
-        rows()?.probe(module, instance, settings)
+        let rows = rows()?;
+        match by_double(&rows, module) {
+            Some(_) => Some(ScrapeDouble::probed()),
+            None => rows.probe(module, instance, settings),
+        }
     }
 
     fn check(
@@ -102,7 +110,11 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
         phase: u32,
         instances: &[(String, serde_json::Value)],
     ) -> Option<Vec<String>> {
-        rows()?.check(module, phase, instances)
+        let rows = rows()?;
+        match by_double(&rows, module) {
+            Some(_) => Some(ScrapeDouble::check(phase, instances)),
+            None => rows.check(module, phase, instances),
+        }
     }
 
     fn open(
@@ -113,27 +125,152 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
     ) -> Result<std::sync::Arc<dyn busbar_contract::export_calls::ExportCalls>, String> {
         let rows =
             rows().ok_or_else(|| format!("no `kind: export` plugin answers to '{module}'"))?;
-        rows.open(module, label, settings)
+        match by_double(&rows, module) {
+            Some(double) => Ok(std::sync::Arc::new(double)),
+            None => rows.open(module, label, settings),
+        }
     }
 
     fn linked(&self, module: &str) -> bool {
-        rows().is_some_and(|r| r.linked(module))
+        rows().is_some_and(|r| by_double(&r, module).is_some() || r.linked(module))
     }
 
     fn first_party(&self, module: &str) -> bool {
-        rows().is_some_and(|r| r.first_party(module))
+        rows().is_some_and(|r| by_double(&r, module).is_some() || r.first_party(module))
     }
 
     fn one_instance(&self, module: &str) -> bool {
-        rows().is_some_and(|r| r.one_instance(module))
+        rows().is_some_and(|r| by_double(&r, module).is_some() || r.one_instance(module))
     }
 
     fn linked_modules(&self) -> Vec<String> {
-        rows().map(|r| r.linked_modules()).unwrap_or_default()
+        rows()
+            .map(|r| {
+                let mut linked = r.linked_modules();
+                if by_double(&r, scrape_module()).is_some() {
+                    // Linked ahead of the neutral rows, as the root links its scrape sink.
+                    linked.insert(0, scrape_module().to_string());
+                }
+                linked
+            })
+            .unwrap_or_default()
     }
 
     fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
-        rows().map(|r| r.routes(module)).unwrap_or_default()
+        rows()
+            .map(|r| match by_double(&r, module) {
+                Some(_) => lines_routes().to_vec(),
+                None => r.routes(module),
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// THE FROZEN SCRAPE MODULE WORD: the `module:` the root legacy table's `export_module_streams` row
+/// maps onto the `metrics` stream (1.5.5's spelling of the scrape sink, which `--migrate-config`
+/// writes). The double answers to it; the kernel spells no export module.
+#[must_use]
+pub fn scrape_module() -> &'static str {
+    crate::config::legacy::text("export_module_streams")
+        .split('|')
+        .filter_map(|pair| pair.trim().split_once(':'))
+        .find(|(_, stream)| *stream == ExportStream::Metrics.as_token())
+        .map_or("", |(module, _)| module)
+}
+
+/// The scrape double, when `module` is the word it answers to and no row of the installed registry
+/// answers to it (a test binary that links a real sink under that word is answered by the sink).
+fn by_double(rows: &ExportRows<'static>, module: &str) -> Option<ScrapeDouble> {
+    let word = scrape_module();
+    (!word.is_empty()
+        && module == word
+        && rows
+            .probe(module, module, &serde_json::Value::Null)
+            .is_none())
+    .then_some(ScrapeDouble)
+}
+
+/// THE SCRAPE DOUBLE (R-FIX3): the stand-in axis's answer for [`scrape_module`] when no row of the
+/// installed registry answers to it — a FIRST-PARTY, `one_instance` sink carrying exactly the
+/// `metrics` stream and declaring the two well-known scrape routes. It is not a plugin and not a
+/// door: it answers in process, its words are its own, and it validates nothing (the recorder's
+/// settings are the kernel's to read off the scrape instance). Opened, it renders a snapshot as the
+/// test view ([`lines`]) and serves `/metrics` and `/metrics/hooks` from the host snapshot service
+/// under content types of its own ([`SCRAPE_DOUBLE_CONTENT_TYPE`],
+/// [`SCRAPE_DOUBLE_HOOKS_CONTENT_TYPE`]), so a test can see the kernel passes an answer through
+/// verbatim. What the REAL scrape sink renders and words is proven where it is linked
+/// (`crates/busbar/tests/export_scrape_linked_sink.rs`).
+#[derive(Debug, Clone, Copy)]
+pub struct ScrapeDouble;
+
+/// The content type the double answers `/metrics` with.
+pub const SCRAPE_DOUBLE_CONTENT_TYPE: &str = "text/plain; scrape-double=metrics";
+
+/// The content type the double answers `/metrics/hooks` with.
+pub const SCRAPE_DOUBLE_HOOKS_CONTENT_TYPE: &str = "text/plain; scrape-double=hooks";
+
+/// The streams the double carries: `metrics`, alone.
+const SCRAPE_DOUBLE_STREAMS: &[u8] = &[ExportStream::Metrics as u8];
+
+impl ScrapeDouble {
+    /// What the axis's `probe` states for the double: the `metrics` stream, and no refusal.
+    fn probed() -> busbar_contract::export_calls::Probed {
+        (Some(SCRAPE_DOUBLE_STREAMS.to_vec()), Vec::new())
+    }
+
+    /// The double's own LIMITS check across `instances` (configuration order): one line per
+    /// instance after the first, naming the first, in the double's words. Any other phase finds
+    /// nothing.
+    #[must_use]
+    pub fn check(phase: u32, instances: &[(String, serde_json::Value)]) -> Vec<String> {
+        if phase != busbar_contract::abi::export::CHECK_PHASE_LIMITS {
+            return Vec::new();
+        }
+        let Some(((first, _), rest)) = instances.split_first() else {
+            return Vec::new();
+        };
+        rest.iter()
+            .map(|(name, _)| {
+                format!("export.{name}: the scrape double takes one instance, and '{first}' is it")
+            })
+            .collect()
+    }
+}
+
+impl busbar_contract::export_calls::ExportCalls for ScrapeDouble {
+    fn streams(&self) -> &[u8] {
+        SCRAPE_DOUBLE_STREAMS
+    }
+    fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
+        lines_routes()
+    }
+    fn deliver(
+        &self,
+        _: u8,
+        _: Vec<u8>,
+        _: Box<dyn Send>,
+    ) -> busbar_contract::export_calls::Delivered {
+        busbar_contract::export_calls::Delivered::Shed
+    }
+    fn scrape(
+        &self,
+        families: &[busbar_contract::export_calls::Family],
+    ) -> Result<Vec<u8>, String> {
+        Ok(lines(families).into_bytes())
+    }
+    fn status(&self) -> Option<Vec<u8>> {
+        None
+    }
+    fn serve(
+        &self,
+        req: &busbar_contract::export_calls::ServeRequest<'_>,
+    ) -> Result<busbar_contract::export_calls::Served, String> {
+        let content_type = match req.path {
+            "/metrics" => SCRAPE_DOUBLE_CONTENT_TYPE,
+            "/metrics/hooks" => SCRAPE_DOUBLE_HOOKS_CONTENT_TYPE,
+            other => return Err(format!("the scrape double serves no {other}")),
+        };
+        serve_snapshot(req.path, content_type)
     }
 }
 
@@ -143,7 +280,8 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
 /// `request-log-webhook`, K9c; `otlp`, K9e-2): a linked build resolves that module on its axis, so a
 /// test configuration naming it resolves here too. The rows' bytes are not a library, so each sink
 /// validates nothing and opens nothing — enough for the configuration layer, which is all a kernel
-/// test drives.
+/// test drives. The scrape module word ([`scrape_module`]) is answered by the [`ScrapeDouble`],
+/// linked ahead of the rows.
 pub fn install_export_axis() {
     install_export_axis_with(Vec::new());
 }
@@ -261,32 +399,42 @@ impl busbar_contract::export_calls::ExportCalls for LinesSink {
         &self,
         req: &busbar_contract::export_calls::ServeRequest<'_>,
     ) -> Result<busbar_contract::export_calls::Served, String> {
-        use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
-        use busbar_contract::services::Snapshot;
-        let scope = match req.path {
-            "/metrics" => SNAPSHOT_SCOPE_WHOLE,
-            "/metrics/hooks" => SNAPSHOT_SCOPE_HOOKS,
-            other => return Err(format!("the test scrape sink serves no {other}")),
-        };
-        let served = |status, headers: Vec<(&str, &str)>, body| {
-            Ok(busbar_contract::export_calls::Served {
-                status,
-                headers: headers
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect(),
-                body,
-            })
-        };
-        match crate::export::scrape::read(scope) {
-            Snapshot::Families(f) => served(
-                200,
-                vec![("content-type", "text/plain; version=0.0.4")],
-                lines(&f).into_bytes(),
-            ),
-            Snapshot::NotReady => served(503, vec![("retry-after", "1")], Vec::new()),
-            Snapshot::Refused(why) => Err(why.to_string()),
-        }
+        serve_snapshot(req.path, "text/plain; version=0.0.4")
+    }
+}
+
+/// `/metrics` or `/metrics/hooks` answered from the host snapshot service, rendered as [`lines`]
+/// under `content_type`: `503` with `retry-after` while the recorder is not installed; a read the
+/// host refuses (no grant, an unknown scope) is the sink's failure.
+fn serve_snapshot(
+    path: &str,
+    content_type: &str,
+) -> Result<busbar_contract::export_calls::Served, String> {
+    use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
+    use busbar_contract::services::Snapshot;
+    let scope = match path {
+        "/metrics" => SNAPSHOT_SCOPE_WHOLE,
+        "/metrics/hooks" => SNAPSHOT_SCOPE_HOOKS,
+        other => return Err(format!("the test scrape sink serves no {other}")),
+    };
+    let served = |status, headers: Vec<(&str, &str)>, body| {
+        Ok(busbar_contract::export_calls::Served {
+            status,
+            headers: headers
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body,
+        })
+    };
+    match crate::export::scrape::read(scope) {
+        Snapshot::Families(f) => served(
+            200,
+            vec![("content-type", content_type)],
+            lines(&f).into_bytes(),
+        ),
+        Snapshot::NotReady => served(503, vec![("retry-after", "1")], Vec::new()),
+        Snapshot::Refused(why) => Err(why.to_string()),
     }
 }
 
