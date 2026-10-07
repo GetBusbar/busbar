@@ -1632,9 +1632,9 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the N
 # Every core-neutral crate (BUSBAR-1.6.0.md:1994-1999: the kernel and its workflow crates, the
 # contract, the loader, the cleanliness crates, the composition root) names ZERO plugin-instance
 # vocabulary at DEV-GREEN. `kind-isolation:law0` holds each crate and axis to the count below,
-# measured on predev f830faa691: a rise or a new cell is RED on both twins, a fall must lower the
+# measured on predev f830faa691, re-armed at 41f2dc1f78 for the five cells predev grew meanwhile: a rise or a new cell is RED on both twins, a fall must lower the
 # row in the same commit. scripts/verify-1.6.0-done.sh reads these rows: DONE is every count at 0.
-# Sum today: 4455 hit(s) over 62 cell(s).
+# Sum today: 4464 hit(s) over 62 cell(s).
 
 [[law0]]
 crate = "busbar"
@@ -1657,7 +1657,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "instance:auth"
-count = "20"
+count = "22"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
@@ -1753,7 +1753,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "auth"
-count = "7"
+count = "8"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
@@ -1771,7 +1771,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:auth"
-count = "13"
+count = "15"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
@@ -1801,7 +1801,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "plane"
-count = "50"
+count = "51"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
@@ -1987,7 +1987,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
-count = "109"
+count = "111"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
