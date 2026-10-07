@@ -663,6 +663,70 @@ fn a_task_ended_without_the_host_is_written_as_the_host_would_end_it() {
         (Vec::new(), None)
     );
 }
+// ── a refused hop's task end, racing another writer of the task ───────────────────────────────
+
+/// End the refused hop's `task` failed, as the door ends it: over the row its opening `read`.
+fn ended_on_refusal(d: &mut Desk, task: &TaskHop, read: &Write) -> Vec<Write> {
+    let _ = &d;
+    fail_unhosted(task, std::slice::from_ref(read), ALICE, 300).0
+}
+
+/// A HOP REFUSED FOR AN UNAVAILABLE CREDENTIAL ENDS ITS TASK WITHOUT LOSING ANOTHER WRITER'S
+/// CHANGE (the engine's `end_task`, origin/predev `crates/busbar-a2a/src/a2a/receive.rs:3485-3500`:
+/// `TASKS.transition` under the task's own lock, `crates/busbar-kernel/src/plane/handle_engine.rs:
+/// 711-736`). Another unit moves the addressed task between the hop's opening and its refusal; the
+/// end is chained after that move: the other writer's event stands, the failure is the next one,
+/// and the task as held is failed with the chain's tail on the failure.
+#[test]
+fn a_refused_hops_task_end_keeps_a_concurrent_writers_change() {
+    let mut d = desk();
+    let get_task =
+        json!({ "jsonrpc": "2.0", "id": 7, "method": "GetTask", "params": { "id": "t1" } });
+    let (addressed, _) = opened_writing(&mut d, &get_task);
+    let Opened::Hop { task, read, .. } = addressed else {
+        panic!("refused");
+    };
+    let read = read.expect("the addressed task's row, as read");
+    let next = get(&mut d.book, ALICE, "t1", 300)
+        .unwrap()
+        .unwrap()
+        .next_seq;
+
+    // ANOTHER UNIT moves the task while the refused hop is handled: it wins the next sequence.
+    let mut theirs = Vec::new();
+    let other = Step {
+        caller: ALICE,
+        request_id: "another-unit",
+        now: 300,
+    };
+    crate::tasks::transition(&mut d.book, &other, "t1", TaskState::Working, &mut theirs)
+        .unwrap()
+        .expect("it moved");
+    d.book.apply(&theirs);
+    let their_event = d
+        .book
+        .value(KIND_TASK_EVENT, &event_key(ALICE, "t1", next))
+        .cloned()
+        .expect("their event");
+
+    let ours = ended_on_refusal(&mut d, &task, &read);
+    d.book.apply(&ours);
+
+    assert_eq!(
+        d.book
+            .value(KIND_TASK_EVENT, &event_key(ALICE, "t1", next))
+            .cloned(),
+        Some(their_event),
+        "the other writer's event stands"
+    );
+    let failed = event(&d, "t1", next + 1);
+    assert_eq!(failed.state, "failed", "the failure is the next event");
+    let held = get(&mut d.book, ALICE, "t1", 300).unwrap().unwrap();
+    assert_eq!(held.row.state, "failed");
+    assert_eq!(held.next_seq, next + 2);
+    assert_eq!(held.tail_hash, failed.hash);
+}
+
 // ── ported from the engine's `relay_stream_tests` ──────────────────────────────────────────────
 
 /// Put `caller`'s `task` on [`MEMBER`] and walk it through `states` at 150.
