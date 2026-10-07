@@ -2127,10 +2127,6 @@ fn piece(
     }
     if !hop.settle.is_empty() {
         if let Err(outcome) = settle_task(reach, hop, pass, caller) {
-            // The opening's writes ride with the answer once the settle resumes.
-            if matches!(outcome, Outcome::Pending) {
-                hop.held_writes = std::mem::take(&mut hop.outbox.writes);
-            }
             return (outcome, false);
         }
     }
