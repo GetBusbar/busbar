@@ -135,12 +135,13 @@
     {
       "capability": "breaker-trip",
       "plane": "decisions",
-      "state": "missing",
-      "note": "the decisions door routes ROUTE_DIRECT to its one model's provider; no test takes that provider down and watches the core breaker cell open for it",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_failing_decisions_provider_records_into_its_breaker_cell_until_the_cell_opens",
+      "note": "the decisions door's one model is served through the kernel's egress walk, whose breaker port records each answer into the member's cell (the core breaker unit, keyed by the model's pool and member). A provider that keeps answering 503 is recorded failure by failure until the cell opens: it then takes no request, carries a cooldown, and the trip is counted once on the scrape under the model's lane. The door states no bench below the trip threshold, so the failures below it open nothing and the run reaches the threshold itself. Watched red: a breaker port whose observe records no failure (root/adapters.rs BreakerAdapter::observe returning before the unit) leaves the cell closed through every failure.",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-decisions",
-        "reason": "the leg's far end answers every request it is sent, so no run over the driver takes the provider down and records a failure into its breaker cell"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_failing_decisions_provider_records_into_its_breaker_cell_until_the_cell_opens"
       }
     },
     {
@@ -199,12 +200,13 @@
     {
       "capability": "breaker-fastfail",
       "plane": "decisions",
-      "state": "missing",
-      "note": "no test trips the decisions provider's breaker cell and watches the next unit refused before dispatch",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_tripped_decisions_provider_is_refused_before_the_dial_at_once",
+      "note": "once the member's cell has opened, the next decisions unit is refused before its dial: the far end, which from then on holds every connection open unanswered, is never dialled, and the refusal comes back in under a second. Watched red: a breaker port that admits an open cell (root/adapters.rs BreakerAdapter::try_admit and ready admitting everything) dials the held far end and the unit is not answered within the test's five-second bound.",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-decisions",
-        "reason": "nothing on the leg opens a breaker cell, so no unit reaches the route step with a tripped target to be refused before its dial"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_tripped_decisions_provider_is_refused_before_the_dial_at_once"
       }
     },
     {
@@ -326,12 +328,11 @@
     {
       "capability": "hooks-tap",
       "plane": "decisions",
-      "state": "missing",
-      "note": "the door refuses `project` (it binds no hook view and never reads the decision content, the PII witness), so no observe or transform hook runs over this plane's payloads; whether a decisions.hooks attach is owed a view is open",
+      "state": "not-applicable",
+      "reason": "Law 11 (BUSBAR-1.6.0.md: busbar does not interpret or act on the data it carries; coordinator ruling 2026-10-07): the decisions door declares no hook seat (busbar-plane-decisions lib.rs) and binds no hook view: its `project` is refused because the plane never reads the decision content, the PII witness (plane_door.rs, the `project` slot). Its tail states flags 0, never TAIL_HOOKS_GATED (plane_door.rs TAIL), and the serve path binds a plane's hook stage only for a tail that states it (root/serve.rs compose_planes_over). With no projection there is no payload for a tap to observe or transform. `decisions.hooks` stays accepted exactly as today: 1.5.5 (a71b21e9fa) had no decisions section at all (its DeployCfg is deny_unknown_fields and names none), so there is no 1.5.5 behaviour to keep or refuse.",
       "root": {
-        "state": "none",
-        "leg": "root-decisions",
-        "reason": "no leg cell attaches a hook to decisions.hooks, and the door binds no hook view, so nothing runs a tap over a decisions unit through the driver"
+        "state": "not-applicable",
+        "leg": "root-decisions"
       }
     },
     {
@@ -394,12 +395,11 @@
     {
       "capability": "hooks-gate",
       "plane": "decisions",
-      "state": "missing",
-      "note": "no test attaches a gate hook to decisions.hooks and watches the kernel's gate refuse a decisions unit before dispatch; the door binds no hook view (`project` is refused)",
+      "state": "not-applicable",
+      "reason": "Law 11 (BUSBAR-1.6.0.md: busbar does not interpret or act on the data it carries; coordinator ruling 2026-10-07): the decisions door declares no hook seat (busbar-plane-decisions lib.rs) and binds no hook view (`project` refused, plane_door.rs), and its tail never states TAIL_HOOKS_GATED (plane_door.rs TAIL, flags 0), so the serve path binds no gate stage for it (root/serve.rs compose_planes_over binds a plane's gates and rewrites only for a tail that states the gate-first order). A gate decides over the projected request and this plane projects none, so there is nothing for hooks::gate to decide on. `decisions.hooks` stays accepted exactly as today: 1.5.5 (a71b21e9fa) had no decisions section at all (its DeployCfg is deny_unknown_fields and names none), so there is no 1.5.5 behaviour to keep or refuse.",
       "root": {
-        "state": "none",
-        "leg": "root-decisions",
-        "reason": "no leg cell attaches a gate hook, so the driver's hook stage is never asked to refuse a decisions unit before its dial"
+        "state": "not-applicable",
+        "leg": "root-decisions"
       }
     },
     {
@@ -448,8 +448,9 @@
     {
       "capability": "audit-chain",
       "plane": "llm",
-      "state": "missing",
-      "note": "reopened by the P2 ruling (2026-09-30, proxy/reqlog DELETE): the per-principal request chain proxy/reqlog.rs kept was an in-memory window nothing read, and it is deleted with its tests. No llm per-request hash chain exists until a durable one is built on the store door. The one-terminal-per-unit witness that chain carried lives in crates/busbar-kernel/src/ingress/tests/terminal_tests.rs. ARCHITECT-PENDING: escalate.q DEL-REQLOG Q1.",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/plane_node.rs::every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain",
+      "note": "the llm plane is served through the root's node (Node::answer, proto-llm on the node axis): every unit it answers, served (a dispatched completion) or refused (a body the arrival step cannot read), seals ONE record on the node's audit chain (busbar-kernel-audit, journalled as audit.v4 on the node's book), the second the first's successor; the chain walks clean, and a record altered after its seal breaks the walk. This is the node's per-unit chain, not the per-principal request chain proxy/reqlog.rs kept (deleted by the P2 ruling, escalate.q DEL-REQLOG Q1). Watched red: a node whose Driven::audited drops the audit door's pass (root/plane_node.rs) seals nothing.",
       "root": {
         "state": "proven",
         "leg": "root-llm",
@@ -459,12 +460,13 @@
     {
       "capability": "audit-chain",
       "plane": "decisions",
-      "state": "missing",
-      "note": "the decisions plane declares no record kinds and writes no audit row; no test shows a decisions dispatch or refusal landing in the tamper-evident chain",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain",
+      "note": "every decisions unit, served (a dispatch) or refused inside the loop (the caller's group allows one request an hour), seals ONE record on the node's audit chain (crate::root::durability, busbar-kernel-audit) under the plane's operation class: the second record is the first's successor, the chain walks clean under AuditChain::verify_window and the node's own verify, and a record altered after its seal (the served unit re-told as refused) breaks the walk. The plane itself still declares no record kinds; the record is the kernel's audit step. Watched red: a loop whose audit door's pass is never handed to the node (root/plane_node.rs Borrowed::audited dropping it) seals nothing.",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-decisions",
-        "reason": "the leg reads the money books (the governance ledger and the node's book) and no audit chain, so a decisions unit's audit row is unwitnessed over the driver"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain"
       }
     },
     {
@@ -527,12 +529,13 @@
     {
       "capability": "governance-budget",
       "plane": "decisions",
-      "state": "missing",
-      "note": "the plane's own battery proves the metering surface (units reported on success, none on error: tests/jev.rs::billable_success_metering_surface_reports_usage_on_success_and_nothing_on_error), not the budget; the spend is the kernel's, proven on the door path (root)",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_past_its_budget_is_refused_with_a_retry_after",
+      "note": "a decisions unit's spend (the plane's own fees.per_request, #47) is charged to the presenting key on the governance book, and the key's group budget refuses the unit past it before its dial, 429, with Retry-After naming the seconds until the window rolls; a per: total budget names none, as 1.5.5's governance refusal named none (v1.5.5 ingress/mod.rs: 'total never rolls: no header'). The wait is the kernel's own refusal's (door_steps refusal_for), which the plane driver keeps from audit_refused and hands to the plane beside the reason as RefusalIn.retry_after_s (ARCHITECT Q5); the decisions renderer spells it as Retry-After, as the llm door's does. With billing off (no card, no fee) neither this plane nor llm prices a spend, so neither refuses on a budget. Watched red: a driver that drops the refusal's wait (plane_driver/mod.rs render_as) and, separately, a decisions renderer that does not render it (plane_door.rs refusal slot) each answer the refusal with no Retry-After.",
       "root": {
         "state": "proven",
         "leg": "root-decisions",
-        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_claimed_request_is_served_through_the_door_and_its_money_posted"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_past_its_budget_is_refused_with_a_retry_after"
       }
     },
     {
@@ -596,12 +599,13 @@
     {
       "capability": "disposition",
       "plane": "decisions",
-      "state": "missing",
-      "note": "no test hands the decisions door a far-end failure and watches it normalized and classified into a Disposition; the door relays the far end's status and bytes unchanged",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_providers_answers_are_classified_before_the_plane_relays_them",
+      "note": "the provider's status is normalized off the connector's frame and classified by the breaker port before the plane sees it: a 400 (ClientFault) is relayed to the caller as the far end said it, records nothing and counts no upstream failure, so the next call reaches the member again; a 503 (transient) is counted under the model's lane, benches the member and is failed over, so the caller is answered by the walk's terminal and never with the far end's bytes. Watched red: a classifier that reads every status as 503 (root/adapters.rs BreakerAdapter::classify) fails the caller fault over.",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-decisions",
-        "reason": "the leg's far end answers 200, so no far-end failure reaches the driver's classification on a decisions unit"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_providers_answers_are_classified_before_the_plane_relays_them"
       }
     },
     {
@@ -661,12 +665,13 @@
     {
       "capability": "metrics",
       "plane": "decisions",
-      "state": "missing",
-      "note": "no test scrapes /metrics after decisions traffic and finds its series under the plane's own label",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_served_decisions_unit_counts_its_upstream_attempt_under_the_planes_lane",
+      "note": "a served decisions unit's upstream attempt is counted once on the real /metrics scrape (the data router's scrape route, as the keyed caller) as busbar_upstream_attempts_total with pool and lane `<plane key><sep><model>`, the plane's own lane. Watched red: an egress telemetry that counts no attempt (root/egress_ports.rs WalkTelemetry::upstream_attempt) leaves the scrape where it was.",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-decisions",
-        "reason": "the leg reads the response bytes and the money books; neither scrapes /metrics, so the plane label on a real scrape is unwitnessed over the driver"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_served_decisions_unit_counts_its_upstream_attempt_under_the_planes_lane"
       }
     },
     {
@@ -856,8 +861,9 @@
     {
       "capability": "egress-auth",
       "plane": "decisions",
-      "state": "missing",
-      "note": "the plane names its need's style (the dialect's default) and never holds the credential, so its own battery has nothing to inject; the injection is the egress mechanism's, proven on the door path (root)",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_provider_is_handed_the_planned_credential_and_never_the_callers",
+      "note": "the provider is handed exactly one credential, the one the egress mechanism planned for its style (the dialect's default, bearer, bound by the linked auth plugin serving it), and nothing the caller sent as a credential: not its bearer, not a key it put in an api-key or x-api-key header. Watched red: an egress walk that drops the auth binding's fields (busbar-kernel plane_driver/far_end.rs) sends the provider no credential.",
       "root": {
         "state": "proven",
         "leg": "root-decisions",
