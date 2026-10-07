@@ -45,10 +45,14 @@ use busbar_contract::abi::plane::{
     ROUTE_DIRECT, ROUTE_SCOPE, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::conn::Host;
+// THE ONE SHARED FAULT READING (ARCHITECT row 68): the breaker's vocabulary, stated on `OnPieceOut`.
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{Generations, Keyed};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot, Services};
+use busbar_contract::abi::transport::{
+    FAULT_CALLER, FAULT_HARD, FAULT_HEALTHY, FAULT_NONE, FAULT_TRANSIENT,
+};
 
 use std::sync::Arc;
 use std::task::Poll;
@@ -252,6 +256,9 @@ struct Outbox {
     /// On the gRPC line: the status a stream that already sent messages ends with, stated on its
     /// closing answer (`EMIT_FINAL_STATUS`).
     final_status: Option<crate::framed::Reply>,
+    /// The breaker's reading of the far end's answer this piece read (`FAULT_NONE` = none yet),
+    /// stated on the answer that writes it ([`relay::Reading`]).
+    fault: u8,
 }
 
 /// The head an answer starts with.
@@ -1536,6 +1543,10 @@ fn piece(
         };
         hop.outbox = outbox;
         hop.outbox.writes = writes;
+        // THE BREAKER'S READING (ARCHITECT ruling, FAULT_HEALTHY): the far end's answer read where
+        // its structure still exists — on the piece holding the whole answer, or on a stream's
+        // first event — the engine's `classify_hop` table; none stated, the kernel's table reads it.
+        hop.outbox.fault = hop.relay.take_reading().map_or(FAULT_NONE, fault_of);
         hop.settle.extend(hop.relay.take_settled());
         // Until it is written, a re-call of this piece is served from what is owed.
         hop.outbox.recall = true;
@@ -1713,7 +1724,19 @@ fn piece(
     out.set(|o| &o.more, u32::from(more));
     out.set(|o| &o.flags, flags);
     out.set(|o| &o.reply_status, status);
+    // Stated once, on the READY answer that writes it (a short answer's re-call states it then).
+    out.set(|o| &o.fault, std::mem::replace(&mut ob.fault, FAULT_NONE));
     (Outcome::Ready, done)
+}
+
+/// The shared fault reading a [`relay::Reading`] is.
+fn fault_of(reading: relay::Reading) -> u8 {
+    match reading {
+        relay::Reading::Healthy => FAULT_HEALTHY,
+        relay::Reading::Caller => FAULT_CALLER,
+        relay::Reading::Transient => FAULT_TRANSIENT,
+        relay::Reading::Hard => FAULT_HARD,
+    }
 }
 
 slot!(

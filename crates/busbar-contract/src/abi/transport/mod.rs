@@ -88,6 +88,7 @@
 //! | `composes_over` | [`TransportTail::composes_over`]; [`TransportTail::role`] states the role outright |
 //! | `selector_forms`, `egress_selector_forms`, `transport_facts`, `status_namespace`, `session`, `session_bound`, `unit0_trigger`, `status_at` | per claim, [`Claim`] |
 //! | `handoff_*`, `upgrades_to`, `handshake_frame_kind`, `handshake_max_steps` | [`TransportTail`] |
+//! | (none: new here) | [`TransportTail::fault_rows`], each claim's breaker reading of its numbering; [`FramePiece::fault`] |
 //! | `framing`, `decodes_payload` | [`TransportTail::framing`], [`FACT_DECODES_PAYLOAD`] |
 //! | `claims` | the Statement's `claims` (the names) and [`TransportTail::claim_rows`] (each name's row, by index) |
 //! | `init` + `WireSettings` + `WireWaker` | lifecycle `open` (settings blob, host tables with `wake`); the settings a transport reads are declared in [`TransportTail::settings`] |
@@ -344,9 +345,11 @@ pub const STATUS_FAR_END_FAULT: u8 = 3;
 /// Status class: other.
 pub const STATUS_OTHER: u8 = 4;
 
-/// Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's
-/// (it records nothing against the destination): a framer that states no fault table never trips
-/// anything.
+/// Fault reading: none stated — no reading, the status table decides. On a frame piece that table
+/// is the framer's own fault table, and an answer it covers with no reading is read as the
+/// caller's (nothing is recorded against the destination): a framer that states no fault table
+/// never trips anything. On a plane's `OnPieceOut::fault` it is the transport's reading of the
+/// same answer that stands.
 pub const FAULT_NONE: u8 = 0;
 /// Fault reading: the caller's own fault. The destination is healthy and nothing is recorded.
 pub const FAULT_CALLER: u8 = 1;
@@ -356,6 +359,10 @@ pub const FAULT_TRANSIENT: u8 = 2;
 /// Fault reading: the destination itself is down for every caller (its credential or its account
 /// was refused), so every pool's cell for it trips at once.
 pub const FAULT_HARD: u8 = 3;
+/// Fault reading: the destination is HEALTHY. It answered; the breaker records a SUCCESS against
+/// it whatever the answer's status (a well-formed protocol error from a reachable destination, as
+/// 1.5.5 counted it: "the backend was reachable and answered"). The answer is relayed as it came.
+pub const FAULT_HEALTHY: u8 = 4;
 
 /// [`Claim::status_at`]: no status.
 pub const STATUS_AT_NONE: u8 = 0;
@@ -474,6 +481,26 @@ pub struct StatusRow {
     pub class: u32,
 }
 
+/// One fault-table row: a code range of a claim's numbering and the fault reading it means to the
+/// breaker (`FAULT_*`). The framer reads its own table to fill [`FramePiece::fault`]; the host reads
+/// the piece's reading and never a code band. A separate table from the status rows on purpose: the
+/// status class is the fee decision's leg and is never bent to serve the breaker.
+///
+/// A claim that states status rows states fault rows too, or the load is refused
+/// ([`check::check_fault_cover`]): an answer the framer can class it can also read for the breaker.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FaultRow {
+    /// Index into [`TransportTail::claim_rows`] (and so into the Statement's `claims`).
+    pub claim: u32,
+    /// The lowest code, inclusive.
+    pub lo: u32,
+    /// The highest code, inclusive.
+    pub hi: u32,
+    /// The fault reading (`FAULT_CALLER` | `FAULT_TRANSIENT` | `FAULT_HARD` | `FAULT_HEALTHY`).
+    pub fault: u32,
+}
+
 /// One customer setting the transport reads, at its 1.5.5 path (the connector deals the value to
 /// the plugin's `validate`/`open`).
 #[repr(C)]
@@ -533,6 +560,10 @@ pub struct TransportTail {
     pub settings: *const SettingDecl,
     /// How many.
     pub settings_len: usize,
+    /// The fault table (appended: a tail that predates it reads NULL/`0`, no fault table).
+    pub fault_rows: *const FaultRow,
+    /// How many.
+    pub fault_rows_len: usize,
 }
 
 // ── shared shapes ────────────────────────────────────────────────────────────────────────────────
@@ -597,8 +628,10 @@ pub struct FramePiece {
     pub code: u32,
     /// `STATUS_*`.
     pub status_class: u8,
-    /// Alignment padding.
-    pub _reserved: u8,
+    /// `FAULT_*`: the framer's fault reading of `code`, from its own fault table
+    /// ([`TransportTail::fault_rows`]); [`FAULT_NONE`] where it states none. Lives in what was
+    /// alignment padding, so the piece did not grow.
+    pub fault: u8,
     /// `PIECE_*` bits (a `u16`: room past the first eight).
     pub flags: u16,
     /// How long the far side asked to be left alone, in seconds.
@@ -619,6 +652,7 @@ pub struct FrameSpan {
 // The piece's size and its flags' place are fixed: a framer built against another layout is refused
 // at compile time, never read wrong at run time.
 const _: () = assert!(core::mem::size_of::<FramePiece>() == 40);
+const _: () = assert!(core::mem::offset_of!(FramePiece, fault) == 29);
 const _: () = assert!(core::mem::offset_of!(FramePiece, flags) == 30);
 
 /// The HOST buffers every framer op writes into, and the host's clock at the call.

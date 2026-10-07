@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_contract::WireStatus;
+use busbar_contract::{WireFault, WireStatusClass};
 use busbar_kernel_egress::ports::Disposition;
 
 /// A fresh `Pass<Route>` for one `observe`/`ready`/`cooldown_remaining` call — test-only,
@@ -15,16 +15,11 @@ fn route_token() -> Pass<Route> {
     busbar_kernel::test_support::tokens::pass()
 }
 
-/// A gRPC upstream's trailers-only `UNAVAILABLE`, at the production adapter's own width: the
-/// status leg the egress unit reads off that frame (the transport's coarse `FarEndFault` plus
-/// gRPC's own `14`), classified, recorded, and the lane suppressed as a result.
-///
-/// This is the money defect. The number used to cross bare, get matched against HTTP's bands,
-/// match none of them, and come back `ClientFault` — so nothing was recorded, the lane stayed
-/// open, and the walk relayed a dead upstream's refusal instead of failing over. The coarse
-/// class had said `FarEndFault` the whole time.
+/// A transport's transient fault reading (its own fault table read the far end's answer as the
+/// destination's transient failure), classified, recorded, and the lane suppressed as a result.
+/// The number behind it never reaches this port: which numbering spelled it is the transport's.
 #[test]
-fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lane() {
+fn a_transient_fault_reading_is_recorded_against_the_destination_and_suppresses_the_lane() {
     let breaker = adapter_for("pool");
     let dest = DestinationId::new(14);
 
@@ -32,10 +27,7 @@ fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lan
         dest,
         UpstreamStatus {
             class: Some(WireStatusClass::FarEndFault),
-            code: Some(WireStatus::new(
-                busbar_contract::transport::status_ns::GRPC,
-                14,
-            )),
+            fault: Some(WireFault::Transient),
             retry_after: None,
         },
     );
@@ -56,48 +48,43 @@ fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lan
     );
     assert!(
         !breaker.ready("pool", dest, 0, &route_token()),
-        "one UNAVAILABLE on this ladder takes the lane down"
+        "one transient fault on this ladder takes the lane down"
     );
 }
 
-/// The same digits under HTTP's numbering are not a status at all, and the adapter must keep
-/// the two readings apart rather than letting either stand in for the other.
+/// The breaker reads the FAULT reading and never the class: the class is the fee decision's leg,
+/// and the two disagree where the money and the destination's health do. A caller-fault class with
+/// a hard reading is a refused credential (the destination is down for everyone); a far-end class
+/// with no reading at all is an answer nobody read for the breaker, and is the caller's.
 #[test]
-fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
-    use busbar_kernel_breaker::port::UpstreamCode;
-    let grpc = UpstreamStatus {
-        class: Some(WireStatusClass::FarEndFault),
-        code: Some(WireStatus::new(
-            busbar_contract::transport::status_ns::GRPC,
-            14,
-        )),
-        retry_after: None,
-    };
-    let http = UpstreamStatus {
-        class: Some(WireStatusClass::FarEndFault),
-        code: Some(WireStatus::new(
-            busbar_contract::transport::status_ns::HTTP,
-            14,
-        )),
-        retry_after: None,
-    };
-    let classless = UpstreamStatus {
-        class: Some(WireStatusClass::FarEndFault),
-        code: None,
-        retry_after: None,
+fn the_adapter_reads_the_fault_reading_and_never_the_class() {
+    let read = |class, fault| {
+        BreakerAdapter::reading(UpstreamStatus {
+            class,
+            fault,
+            retry_after: None,
+        })
     };
     assert_eq!(
-        BreakerAdapter::narrow_code(grpc),
-        Some(UpstreamCode::Grpc(14))
+        read(Some(WireStatusClass::CallerFault), Some(WireFault::Hard)),
+        Reading::Answered(Some(WireFault::Hard))
     );
     assert_eq!(
-        BreakerAdapter::narrow_code(http),
-        Some(UpstreamCode::Http(14))
+        read(
+            Some(WireStatusClass::CallerFault),
+            Some(WireFault::Transient)
+        ),
+        Reading::Answered(Some(WireFault::Transient))
     );
     assert_eq!(
-        BreakerAdapter::narrow_code(classless),
-        Some(UpstreamCode::Http(500)),
-        "the class fold is the fallback, and only for an answer that carried no number"
+        read(Some(WireStatusClass::FarEndFault), None),
+        Reading::Answered(None),
+        "a framer with no fault table states no reading, and the breaker reads the caller's"
+    );
+    assert_eq!(
+        read(None, None),
+        Reading::NoAnswer,
+        "neither a class nor a reading: no answer came"
     );
 }
 
@@ -221,24 +208,18 @@ fn the_default_cell_takes_its_own_declared_ladder() {
     assert!(breaker.cooldown_remaining("", dest, 0, &route_token()) > 0);
 }
 
-/// The port classifies on the status alone: the breaker holds no operator `error_map`, so a
-/// provider code an operator could map (`1113` -> `billing` is the stock example) reaches this
-/// port as the bare number it is and classifies by HTTP's bands. Mapping an error body is the
-/// plane's classifier's work; the unit only takes that classifier's verdict, and there is no
-/// second map here for a deployment to fill that the plane would never read.
+/// No number crosses the port, so no operator map can be filled here that the plane would never
+/// read: an answer the transport read as the caller's fault records nothing, whatever its code was.
 #[test]
-fn the_port_classifies_on_the_status_alone() {
+fn a_callers_fault_reading_records_nothing() {
     let breaker = adapter_for("pool");
     let dest = DestinationId::new(9);
 
     let out = breaker.classify(
         dest,
         UpstreamStatus {
-            class: None,
-            code: Some(WireStatus::new(
-                busbar_contract::transport::status_ns::HTTP,
-                1113,
-            )),
+            class: Some(WireStatusClass::CallerFault),
+            fault: Some(WireFault::Caller),
             retry_after: None,
         },
     );
@@ -251,16 +232,15 @@ fn the_port_classifies_on_the_status_alone() {
     assert!(breaker.ready("pool", dest, 0, &route_token()));
 }
 
-/// The one fold the adapter performs: with no numeric status reported, the transport's coarse
-/// reading stands in. This is the shape the walk actually builds today.
+/// The wait the answer's frame stated rides a transient reading through as the cooldown floor.
 #[test]
-fn a_coarse_transport_reading_stands_in_for_a_missing_status() {
+fn a_transient_reading_carries_the_stated_wait() {
     let breaker = adapter_for("pool");
     let out = breaker.classify(
         DestinationId::new(1),
         UpstreamStatus {
-            class: Some(WireStatusClass::FarEndFault),
-            code: None,
+            class: Some(WireStatusClass::CallerFault),
+            fault: Some(WireFault::Transient),
             retry_after: Some(5),
         },
     );
@@ -273,27 +253,20 @@ fn a_coarse_transport_reading_stands_in_for_a_missing_status() {
     );
 }
 
-/// A success reaching the error path folds to nothing, which is what the previous release did
-/// with the same case: there is no non-arbitrary number to invent for it.
+/// A hard reading takes the destination down: the disposition every pool's cell trips on.
 #[test]
-fn a_success_folds_to_no_status_at_all() {
-    assert_eq!(
-        BreakerAdapter::fold_class(Some(WireStatusClass::Success)),
-        None
+fn a_hard_reading_is_hard_down() {
+    let breaker = adapter_for("pool");
+    let out = breaker.classify(
+        DestinationId::new(2),
+        UpstreamStatus {
+            class: Some(WireStatusClass::CallerFault),
+            fault: Some(WireFault::Hard),
+            retry_after: Some(5),
+        },
     );
-    assert_eq!(
-        BreakerAdapter::fold_class(Some(WireStatusClass::Other)),
-        None
-    );
-    assert_eq!(BreakerAdapter::fold_class(None), None);
-    assert_eq!(
-        BreakerAdapter::fold_class(Some(WireStatusClass::CallerFault)),
-        Some(400)
-    );
-    assert_eq!(
-        BreakerAdapter::fold_class(Some(WireStatusClass::FarEndFault)),
-        Some(500)
-    );
+    assert_eq!(out.disposition, Disposition::HardDown);
+    assert_eq!(out.outcome, Outcome::HardDown);
 }
 
 /// The lane map is a correspondence, and it round-trips in both directions.

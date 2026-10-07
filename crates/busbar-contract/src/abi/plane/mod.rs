@@ -1567,10 +1567,12 @@ pub struct OnPieceOut {
     pub need: u32,
     /// THE PLANE'S BREAKER FAULT READING of a far-end answer (ARCHITECT 2026-10-05): the
     /// destination's health as the plane reads the answer, in the transport kind's ONE fault
-    /// vocabulary (`abi::transport::FAULT_*`: none, caller, transient, hard), which the breaker
-    /// records against the destination. Separate from [`OnPieceOut::verdict`] (the walk's routing
+    /// vocabulary (`abi::transport::FAULT_*`: none, caller, transient, hard, healthy), which the
+    /// breaker records against the destination (healthy: a success, whatever the status). Separate from [`OnPieceOut::verdict`] (the walk's routing
     /// reading): an answer the walk retries elsewhere may be the caller's fault, and one it keeps
-    /// may still be the destination's. `FAULT_NONE` = no reading. Laid in the padding after
+    /// may still be the destination's. `FAULT_NONE` = no reading: the kernel keeps waiting for the
+    /// plane's reading of that answer until its last piece, then the transport's stands. Laid in
+    /// the padding after
     /// `need` (pre-tag v1).
     pub fault: u8,
     /// Alignment padding.

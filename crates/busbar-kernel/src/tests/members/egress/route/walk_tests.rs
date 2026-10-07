@@ -14,8 +14,8 @@
 use busbar_contract::abi::transport::STATUS_CALLER_FAULT;
 use busbar_contract::conn::ConnError;
 use busbar_contract::transport::registry::status_ns;
-use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::WireStatusClass;
+use busbar_contract::transport::wire::{WireFault, WireStatus};
 
 use super::harness::{frame, frame_with_upstream, ok_frames, Health, Script};
 use super::{member, Node, Routed};
@@ -372,17 +372,16 @@ fn a_member_that_answers_with_a_server_error_is_failed_over_from() {
     );
 }
 
-/// A withdrawn credential answers 403, and 403 is a 4xx — so the coarse class alone says
-/// `CallerFault`, which is the caller's own fault and penalises nothing. The exact number is the
-/// only thing that tells the two apart, and it has to reach the classifier for the destination to
-/// go down. The verdict here is stated against the NUMBER: a walk that hands the classifier no
-/// number falls through to the coarse-class default, which records nothing, so the destination is
-/// never recorded hard-down.
+/// A withdrawn credential is a caller-fault CLASS (the fee leg), which alone would penalise
+/// nothing. The transport's fault reading is what says the credential was refused, and it has to
+/// reach the classifier for the destination to go down. The verdict here is stated against the
+/// READING: a walk that hands the classifier no reading falls through to the caller's answer, which
+/// records nothing, so the destination is never recorded hard-down.
 #[test]
-fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
+fn a_hard_reading_reaches_the_classifier_and_the_destination_goes_hard_down() {
     let node = two_lane_pool();
     node.breaker.set_verdict(
-        WireStatus::new(status_ns::HTTP, 403),
+        Some(WireFault::Hard),
         busbar_kernel_egress::ports::Classified {
             disposition: busbar_kernel_egress::ports::Disposition::HardDown,
             outcome: Outcome::HardDown,
@@ -394,6 +393,7 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
         Script::Frames(vec![frame_with_upstream(
             Some(WireStatusClass::CallerFault),
             Some(WireStatus::new(status_ns::HTTP, 403)),
+            Some(WireFault::Hard),
             None,
             "forbidden",
         )]),
@@ -407,9 +407,9 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
             .lock()
             .unwrap()
             .first()
-            .map(|s| s.code),
-        Some(Some(WireStatus::new(status_ns::HTTP, 403))),
-        "the far end's own number crossed the seam, not just the 4xx class"
+            .map(|s| s.fault),
+        Some(Some(WireFault::Hard)),
+        "the transport's reading crossed the seam, not just the caller-fault class"
     );
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
@@ -430,13 +430,14 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
 /// is the connector that read the response head. It has to arrive at the classifier or the
 /// cooldown is computed from the ladder alone and the far end's floor is silently dropped.
 #[test]
-fn a_429_carries_the_upstreams_own_retry_after_through_to_the_breaker() {
+fn a_transient_reading_carries_the_upstreams_own_wait_through_to_the_breaker() {
     let node = two_lane_pool();
     node.conns.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
             Some(WireStatusClass::CallerFault),
-            Some(WireStatus::new(status_ns::HTTP, 429)),
+            None,
+            Some(WireFault::Transient),
             Some(7),
             "slow down",
         )]),
@@ -445,10 +446,7 @@ fn a_429_carries_the_upstreams_own_retry_after_through_to_the_breaker() {
 
     assert!(node.route("primary").is_delivered());
     let seen = node.breaker.classified.lock().unwrap().first().copied();
-    assert_eq!(
-        seen.map(|s| s.code),
-        Some(Some(WireStatus::new(status_ns::HTTP, 429)))
-    );
+    assert_eq!(seen.map(|s| s.fault), Some(Some(WireFault::Transient)));
     assert_eq!(
         seen.map(|s| s.retry_after),
         Some(Some(7)),
@@ -466,13 +464,14 @@ fn a_429_carries_the_upstreams_own_retry_after_through_to_the_breaker() {
 /// The other half of the same claim: a far end that asked for nothing must not have a wait
 /// invented for it. `None` here is what leaves the cooldown to the ladder.
 #[test]
-fn a_server_error_with_no_retry_after_leaves_the_cooldown_to_the_ladder() {
+fn a_transient_reading_with_no_wait_leaves_the_cooldown_to_the_ladder() {
     let node = two_lane_pool();
     node.conns.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
             Some(WireStatusClass::FarEndFault),
-            Some(WireStatus::new(status_ns::HTTP, 503)),
+            None,
+            Some(WireFault::Transient),
             None,
             "boom",
         )]),
@@ -481,10 +480,7 @@ fn a_server_error_with_no_retry_after_leaves_the_cooldown_to_the_ladder() {
 
     assert!(node.route("primary").is_delivered());
     let seen = node.breaker.classified.lock().unwrap().first().copied();
-    assert_eq!(
-        seen.map(|s| s.code),
-        Some(Some(WireStatus::new(status_ns::HTTP, 503)))
-    );
+    assert_eq!(seen.map(|s| s.fault), Some(Some(WireFault::Transient)));
     assert_eq!(seen.map(|s| s.retry_after), Some(None));
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
@@ -492,41 +488,33 @@ fn a_server_error_with_no_retry_after_leaves_the_cooldown_to_the_ladder() {
     );
 }
 
-/// A gRPC far end that refuses with a trailers-only `UNAVAILABLE`. The piece the connector hands
-/// up carries `14` in the `grpc` numbering — gRPC's number, named as gRPC's — and the walk must do
-/// with it exactly what it does with an HTTP 503: record a transient failure against the
-/// destination and fail over to the sibling.
-///
-/// The number alone did neither. `14` matched no HTTP band, classified as the caller's fault, and
-/// the walk relayed a dead far end's refusal without recording anything or trying the next member.
+/// THE RED ARM, AT THE WALK: a far end whose framer states no fault reading (it declares no fault
+/// table) is read as the caller's whatever its class says. The class is the fee leg and never
+/// stands in for the breaker's reading: nothing is recorded and the answer is relayed.
 #[test]
-fn a_grpc_unavailable_records_a_failure_and_fails_over() {
+fn an_answer_with_no_fault_reading_records_nothing_and_is_relayed() {
     let node = two_lane_pool();
     node.conns.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
             Some(WireStatusClass::FarEndFault),
-            Some(WireStatus::new(status_ns::GRPC, 14)),
             None,
-            "",
+            None,
+            None,
+            "boom",
         )]),
     );
     node.conns.script("b", Script::Frames(ok_frames()));
 
+    let outcome = node.route("primary");
     assert!(
-        node.route("primary").is_delivered(),
-        "the walk failed over to the sibling rather than relaying the refusal"
-    );
-    let seen = node.breaker.classified.lock().unwrap().first().copied();
-    assert_eq!(
-        seen.map(|s| s.code),
-        Some(Some(WireStatus::new(status_ns::GRPC, 14))),
-        "the number crossed the seam WITH the numbering that spelled it"
+        matches!(&outcome, Routed::Delivered(d) if d.destination == DestinationId::new(0)),
+        "relayed from the member that answered, not failed over: {outcome:?}"
     );
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
-        vec![Outcome::Transient { retry_after: None }],
-        "and the destination that said UNAVAILABLE was recorded against"
+        vec![Outcome::RecordNothing],
+        "and nothing is held against it"
     );
 }
 
@@ -544,7 +532,7 @@ fn a_request_too_large_excludes_every_member_with_the_same_or_a_smaller_window()
     node.pool("primary", members);
     // The classifier says this answer means the request was too big for the member's window.
     node.breaker.set_verdict(
-        WireStatus::new(status_ns::HTTP, 0),
+        Some(WireFault::Caller),
         busbar_kernel_egress::ports::Classified {
             disposition: busbar_kernel_egress::ports::Disposition::ContextLength,
             outcome: Outcome::RecordNothing,

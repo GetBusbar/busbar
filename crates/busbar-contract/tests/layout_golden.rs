@@ -1443,6 +1443,7 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, tkind::StatusRow, [claim, lo, hi, class]);
+    record!(s, tkind::FaultRow, [claim, lo, hi, fault]);
     record!(
         s,
         tkind::route::FieldPredicate,
@@ -1476,7 +1477,9 @@ fn compute_layout() -> String {
             status_rows,
             status_rows_len,
             settings,
-            settings_len
+            settings_len,
+            fault_rows,
+            fault_rows_len
         ]
     );
     record!(
@@ -1507,7 +1510,7 @@ fn compute_layout() -> String {
             len,
             code,
             status_class,
-            _reserved,
+            fault,
             flags,
             retry_after_secs
         ]

@@ -160,13 +160,13 @@ impl SafeSlot for FillSlot {
         OWES.with(|c| {
             let mut owes = c.borrow_mut();
             let owes = owes.as_mut().expect("a framing to fill from");
-            fill(owes, i.field(|x| &x.sink), &mut o, |c| {
-                if c == 0 {
-                    1
-                } else {
-                    3
-                }
-            });
+            fill(
+                owes,
+                i.field(|x| &x.sink),
+                &mut o,
+                |c| if c == 0 { 1 } else { 3 },
+                |c| if c == 0 { 0 } else { 2 },
+            );
         });
         Outcome::Ready
     }
@@ -260,6 +260,8 @@ fn fill_splits_what_does_not_fit_and_says_more() {
         PIECE_END_OF_FRAME | PIECE_STREAM_FAILED | PIECE_HAS_CODE
     );
     assert_eq!((pieces[1].code, pieces[1].status_class), (5, 3));
+    // The fault reading rides beside the class, from the framer's own fault table.
+    assert_eq!((pieces[0].fault, pieces[1].fault), (0, 2));
     assert_eq!(out.yielded.flags, YIELD_ENDED);
 }
 

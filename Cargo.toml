@@ -92,15 +92,15 @@ busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webh
 busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "6a10f17207cbd4545bb9a2d356151ab83cc96cc2" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
-busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "5607182ed5d28da20a6e1699aad512909d24142e" }
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "9c7bda86c06b0bdedc6952f07899c3455714fb98" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "1c6a67f010728c96fe9041e41817fb69c8e4fd05" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "77289f64bfdde1c012611e05361dc429aee267af" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "89d08ebcb91e5b2d4001b667fba151d9bc09d22d" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "89d08ebcb91e5b2d4001b667fba151d9bc09d22d" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "cd3fdccfacfb074f5869434c7bcb5c0678f5b707" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "cd3fdccfacfb074f5869434c7bcb5c0678f5b707" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"

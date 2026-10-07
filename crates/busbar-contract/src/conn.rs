@@ -22,7 +22,7 @@ use std::task::{Context, Poll};
 
 use crate::abi::mechanism::rendering::ReadNeed;
 use crate::ids::StreamId;
-use crate::transport::wire::WireStatusClass;
+use crate::transport::wire::{WireFault, WireStatusClass};
 use crate::transport::ConnFacts;
 
 /// A plugin instance, as the host numbers it. Never stated by a plugin: the host reads it off the
@@ -108,6 +108,9 @@ pub struct Piece {
     pub status_namespace: Option<String>,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: Option<u64>,
+    /// The transport's fault reading of the status, for the breaker (`None`: none stated, read as
+    /// the caller's).
+    pub fault: Option<WireFault>,
     /// On the far end's HEAD (a [`PieceKind::Fields`] that ends its frame): where in the caller's
     /// buffer its reason phrase is, exactly as sent, right after the field block's bytes. `None`
     /// where the wire has none (HTTP/2) or the caller's buffer could not also hold it.
