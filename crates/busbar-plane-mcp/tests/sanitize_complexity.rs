@@ -3,9 +3,11 @@
 
 //! THE SANITISER'S COMPLEXITY GUARDS — the half of markup-normalisation that is measured in time.
 //!
-//! Tool output and `resources/read` content are bytes an UPSTREAM chose. A scan that goes quadratic
-//! on a shape the sender picks is a denial of service the sender can spell in a 200 KB body, so the
-//! two adversarial shapes below carry a wall-clock bound as well as an output assertion.
+//! The strip reads bytes a sender chose: an upstream's error message carried in busbar's words on a
+//! failed leg, and a caller's arguments substituted into a prompt or resource template. A scan that
+//! goes quadratic on a shape the sender picks is a denial of service the sender can spell in a
+//! 200 KB body, so the two adversarial shapes below carry a wall-clock bound as well as an output
+//! assertion.
 //!
 //! WHY THESE TWO LIVE OUT HERE AND THE REST OF THE SUITE LIVES IN `src/tests/`. They read a clock,
 //! and this crate's purity oracle (`tests/purity.rs::the_plane_performs_no_input_or_output`) walks
@@ -18,9 +20,9 @@ use busbar_plane_mcp::sanitize::normalise;
 
 /// AN UNTERMINATED `<` MUST NOT COST MORE THAN THE BYTES IT ARRIVED IN.
 ///
-/// Tool output and `resources/read` content are bytes an upstream MCP server chose, and this is the
-/// module that exists because of that. Re-scanning the whole tail for every `<letter` turns a 200 KB
-/// body into billions of byte comparisons on a served request — cheap to send, expensive to receive.
+/// The strip reads bytes a sender chose. Re-scanning the whole tail for every `<letter` turns a
+/// 200 KB body into billions of byte comparisons on a served request — cheap to send, expensive to
+/// receive.
 /// The output assertion is the correctness half (nothing is dropped, nothing is rewritten); the
 /// wall-clock bound is the half that fails the moment the scan goes quadratic again.
 #[test]

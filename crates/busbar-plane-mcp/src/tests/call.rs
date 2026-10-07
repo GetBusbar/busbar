@@ -432,16 +432,28 @@ fn settle_far(far: &str) -> Settled {
     )
 }
 
+/// A result with no `resultType` gets the dialect's `complete` ahead of the upstream's own members,
+/// which follow as they came; an empty result is the stamp alone.
 #[test]
-fn a_result_is_normalised_stamped_and_dispatched() {
-    let (status, body, line) = answer_of(settle_far(
+fn a_result_is_stamped_and_dispatched() {
+    let settled = settle_far(
         r#"{"jsonrpc":"2.0","id":0,"result":{"content":[],"structuredContent":{"n":1}}}"#,
-    ));
+    );
+    let Settled::Answer { body: bytes, .. } = &settled else {
+        panic!("an answer: {settled:?}")
+    };
+    assert_eq!(
+        String::from_utf8_lossy(bytes),
+        r#"{"id":7,"jsonrpc":"2.0","result":{"resultType":"complete","content":[],"structuredContent":{"n":1}}}"#
+    );
+    let (status, body, line) = answer_of(settled);
     assert_eq!(status, 200);
     assert_eq!(body["id"], json!(7));
     assert_eq!(body["result"]["resultType"], json!("complete"));
     assert_eq!((line.outcome, line.reason.as_str()), ("dispatched", ""));
     assert_eq!(line.audit, Some(AuditRow::tool("fs_read_file", true)));
+    let (_, empty, _) = answer_of(settle_far(r#"{"jsonrpc":"2.0","id":0,"result":{ }}"#));
+    assert_eq!(empty["result"], json!({ "resultType": "complete" }));
 }
 
 /// The far end's answer carrying `result` as the upstream wrote it.

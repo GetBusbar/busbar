@@ -14,8 +14,8 @@
 //!    the kernel's auth binding adds it when it sends.
 //! 3. [`settle`]: the far end's answer read as the engine reads it — the last event of a streamed
 //!    answer, the JSON-RPC correlation, an upstream's ask judged against the operator's grants and
-//!    never forwarded, the published output schema, and the content normalised — into the
-//!    caller's answer and its call-log line.
+//!    never forwarded, and a result relayed as the upstream sent it (Law 11) — into the caller's
+//!    answer and its call-log line.
 //!
 //! What is not here is the kernel's: the trust lifecycle (pin, sightings, demotion), the hook gate
 //! and rewrite, the outbound credential, the breaker and the pool walk, the budget and the meter.
@@ -1174,7 +1174,7 @@ pub fn settle_call_as(
         ),
     };
     match wire::parse_response(&body, sent_id) {
-        RpcOutcome::Result(value) => completed(admitted, value),
+        RpcOutcome::Result(value) => completed(admitted, &value, &body),
         failure @ (RpcOutcome::Error { .. }
         | RpcOutcome::Malformed(_)
         | RpcOutcome::Uncorrelated(_)) => {
@@ -1329,12 +1329,12 @@ pub fn ask_refused(admitted: &AdmittedCall, refusal: &AskRefusal) -> Settled {
     }
 }
 
-/// A finished result: the terminal ask check, the published output schema, then the normalised
-/// content.
-fn completed(admitted: &AdmittedCall, value: Value) -> Settled {
+/// A finished result: the terminal ask check, then the upstream's result relayed as it came
+/// (Law 11). `value` is the result parsed, `body` the answer it was parsed from.
+fn completed(admitted: &AdmittedCall, value: &Value, body: &[u8]) -> Settled {
     let entry = &admitted.entry;
     let id = &admitted.id;
-    if let Some(field) = upstream_ask_field(&value) {
+    if let Some(field) = upstream_ask_field(value) {
         return Settled::Answer {
             status: STATUS_FORBIDDEN,
             body: catalogue_refusal(
@@ -1352,36 +1352,41 @@ fn completed(admitted: &AdmittedCall, value: Value) -> Settled {
             line: CallLine::resolved(entry, vocab::OUTCOME_REFUSED, REASON_ASK_NOT_PROXIED),
         };
     }
-    if let (Some(schema), Some(structured)) = (&entry.output_schema, value.get("structuredContent"))
-    {
-        if let Err(why) = crate::outputschema::check(structured, schema) {
-            return Settled::Answer {
-                status: STATUS_OK,
-                body: result(
-                    id,
-                    upstream_failure_result(
-                        &entry.server,
-                        &format!(
-                            "it returned structured output that violates the `outputSchema` this \
-                             tool is published with ({why}). The structured result was NOT served: \
-                             a result that does not conform to the schema busbar published for it \
-                             would make busbar's own answer unverifiable."
-                        ),
-                    ),
-                ),
-                line: CallLine::resolved(
-                    entry,
-                    vocab::OUTCOME_DISPATCHED,
-                    vocab::REASON_UPSTREAM_FAILED,
-                ),
-            };
-        }
-    }
     Settled::Answer {
         status: STATUS_OK,
-        body: result(id, crate::sanitize::normalise_json(&value)),
+        body: relayed(id, value, body),
         line: CallLine::resolved(entry, vocab::OUTCOME_DISPATCHED, ""),
     }
+}
+
+/// The caller's answer carrying the upstream's `result` as the upstream wrote it: its own bytes,
+/// under the caller's id. The one addition is the dialect's `resultType: complete` on a result
+/// object that carries no `resultType` at all; a `resultType` the upstream sent is its own.
+fn relayed(id: &Value, value: &Value, body: &[u8]) -> Vec<u8> {
+    #[derive(serde::Deserialize)]
+    struct Answer<'a> {
+        #[serde(borrow)]
+        result: &'a serde_json::value::RawValue,
+    }
+    let Ok(answer) = serde_json::from_slice::<Answer<'_>>(body) else {
+        return result(id, value.clone());
+    };
+    let sent = answer.result.get();
+    let mut out = format!("{{\"id\":{id},\"jsonrpc\":\"2.0\",\"result\":");
+    match sent.trim_start().strip_prefix('{') {
+        Some(members) if value.get("resultType").is_none() => {
+            out.push_str("{\"resultType\":\"");
+            out.push_str(RESULT_TYPE_COMPLETE);
+            out.push('"');
+            if !members.trim_start().starts_with('}') {
+                out.push(',');
+            }
+            out.push_str(members);
+        }
+        _ => out.push_str(sent),
+    }
+    out.push('}');
+    out.into_bytes()
 }
 
 #[cfg(test)]
