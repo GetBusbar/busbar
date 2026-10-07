@@ -403,8 +403,8 @@ fn an_inline_callback_on_an_addressed_task_is_registered_without_an_event() {
     let after = get(&mut desk.book, ALICE, "t1", 300).unwrap().unwrap();
     assert_eq!(after.row.push_callback, "https://hook.example/t1");
     assert_eq!(
-        (after.next_seq, &after.tail_hash),
-        (before.next_seq, &before.tail_hash)
+        after.next_seq, before.next_seq,
+        "no event was chained: the chain's position is kept"
     );
 }
 

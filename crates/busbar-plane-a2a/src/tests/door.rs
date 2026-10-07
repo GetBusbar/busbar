@@ -5,7 +5,9 @@
 //! section with the grammar's words.
 
 use super::*;
-use busbar_contract::abi::plane::check::{check_admin_routes, check_tail, check_trust_keys};
+use busbar_contract::abi::plane::check::{
+    check_admin_routes, check_record_chains, check_tail, check_trust_keys,
+};
 use busbar_contract::plane::TrustRole;
 
 /// A fixture endpoint: the secure scheme and a reserved example host, spelled once for every test.
@@ -62,6 +64,31 @@ fn known_bytes(a: AbiStr) -> &'static [u8] {
 fn the_tail_passes_the_dispatchers_check() {
     assert_eq!(check_tail(TAIL), Ok(()));
     assert_eq!(check_trust_keys(TRUST_KEYS), Ok(()));
+}
+
+/// RED before ruling B1: the door declared no chain, so the host framed none. The task-event kind
+/// is declared chained, pipe-separated with its scope digested, and passes the loader's check.
+#[test]
+fn the_tail_declares_the_task_chain() {
+    assert_eq!(TAIL.record_chains_len, 1);
+    assert_eq!(TAIL.record_chains, RECORD_CHAINS.as_ptr());
+    let chains = RECORD_CHAINS;
+    assert_eq!(
+        check_record_chains(chains, TAIL.record_kinds_len as u64),
+        Ok(())
+    );
+    let chain = chains[0];
+    assert_eq!(
+        crate::records::HELD_KINDS[chain.kind as usize],
+        crate::records::KIND_TASK_EVENT
+    );
+    assert_eq!(
+        (chain.framing, chain.flags),
+        (
+            busbar_contract::abi::plane::CHAIN_PIPE_SEPARATED,
+            busbar_contract::abi::plane::CHAIN_DIGESTS_SCOPE
+        )
+    );
 }
 
 #[test]

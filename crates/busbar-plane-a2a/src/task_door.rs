@@ -67,6 +67,8 @@ pub struct Pass {
     pub(crate) audit: Option<(String, bool)>,
     /// The agent the unit's ATTEMPT reached.
     member: String,
+    /// The instance's restore this unit ran was reported: a re-entry re-reads it, and says nothing.
+    restore_reported: bool,
 }
 
 /// A finished listing: the handle the piece's calls count on from after it, and its answer's status
@@ -82,10 +84,12 @@ pub(crate) struct Held {
     flight: Box<crate::mirror::Flight>,
 }
 
-/// One piece's stamp: its clock, and whether it runs the second's sweep.
+/// One piece's stamp: its clock, whether it runs the instance's restore, and whether it runs the
+/// second's sweep.
 #[derive(Debug, Clone, Copy)]
 struct Entry {
     now: u64,
+    restore: bool,
     sweep: bool,
 }
 
@@ -377,15 +381,65 @@ impl Reach for Via<'_> {
     }
 }
 
-/// The first caller of each second runs the sweep: `swept` holds the last second swept.
-fn claim_sweep(swept: &Keyed<(), u64>, now: u64) -> bool {
+/// The first caller of each second runs the sweep: `swept` holds the last second swept. The first
+/// caller of the instance's life (nothing swept yet) runs its restore ahead of it: `(restore,
+/// sweep)`.
+fn claim_sweep(swept: &Keyed<(), u64>, now: u64) -> (bool, bool) {
     swept.with_all(|m| {
+        let first = m.get(&()).is_none();
         let due = m.get(&()).is_none_or(|last| now > *last);
         if due {
             m.insert((), now);
         }
-        due
+        (first, due)
     })
+}
+
+/// SAY WHAT THE RESTORE FOUND, once per unit (the engine's boot hook's words): the counts, a row
+/// this build cannot read at WARN, each in-flight task's broken chain at ERROR as tamper evidence,
+/// and a restore that could not read the records at WARN.
+fn report_restore(plane: &A2aDoor, unit: u64, restored: Result<tasks::Restored, Halt>) {
+    let first = plane.units.with(&unit, |u| {
+        u.is_some_and(|u| !std::mem::replace(&mut u.pass.restore_reported, true))
+    });
+    if !first {
+        return;
+    }
+    let restored = match restored {
+        Ok(r) => r,
+        Err(e) => {
+            busbar_contract::diag_warn!(
+                crate::diagnostics::A2A_TASK_STATE_UNREAD,
+                error = ?e,
+                "could not read durable A2A task state; in-flight tasks are read as they are asked for"
+            );
+            return;
+        }
+    };
+    if restored != tasks::Restored::default() {
+        tracing::info!(
+            active = restored.active,
+            terminal = restored.terminal,
+            unreadable = restored.unreadable,
+            "A2A in-flight tasks rehydrated from the durable task records"
+        );
+    }
+    if restored.unreadable > 0 {
+        busbar_contract::diag_warn!(
+            crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
+            rows = restored.unreadable,
+            "persisted A2A task rows could not be read back and are NOT resumable; they were most \
+             likely written by a different engine version"
+        );
+    }
+    for (task, words) in &restored.chain_breaks {
+        busbar_contract::diag_error!(
+            crate::diagnostics::A2A_TASK_CHAIN_VERIFY_FAILED,
+            task_id = %task,
+            break_detail = %words,
+            "A2A per-task provenance CHAIN VERIFICATION FAILED on restore"
+        );
+    }
 }
 
 /// The answer a NOTIFICATION gets: received, never answered (JSON-RPC 2.0 section 4.1: the server
@@ -504,9 +558,13 @@ pub fn on_piece(
     let clock = reading.wall_ns / 1_000_000_000;
     let (base, entry) = plane.units.with(&unit, |u| {
         let u = u?;
-        let entry = *u.pass.entry.get_or_insert_with(|| Entry {
-            now: clock,
-            sweep: claim_sweep(&plane.swept, clock),
+        let entry = *u.pass.entry.get_or_insert_with(|| {
+            let (restore, sweep) = claim_sweep(&plane.swept, clock);
+            Entry {
+                now: clock,
+                restore,
+                sweep,
+            }
         });
         Some((u.pass.issued, entry))
     })?;
@@ -518,6 +576,14 @@ pub fn on_piece(
     let envelope: Value = serde_json::from_slice(raw).unwrap_or(Value::Null);
     let caller = input.field(|i| &i.caller_ref).as_str().unwrap_or_default();
     let mut writes = Vec::new();
+    if entry.restore {
+        // The instance's restore, ahead of its first sweep: it writes nothing, and one that fails
+        // does not fail the verb.
+        match tasks::restore(&mut via) {
+            Err(Halt::Pending) => return Some(Outcome::Pending),
+            restored => report_restore(plane, unit, restored),
+        }
+    }
     if entry.sweep {
         // A sweep that fails leaves nothing behind and does not fail the verb.
         match tasks::sweep(&mut via, entry.now, SWEEP_BUDGET, &mut writes) {

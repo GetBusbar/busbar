@@ -25,10 +25,11 @@ use busbar_contract::abi::host::conn::connector::{
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
 use busbar_contract::abi::plane::{
-    AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
-    CLAIM_PATTERN, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_PEER_KEY,
-    MECHANISM_ROOT, PIN_FINGERPRINT, SHAPE_PIECEWISE, TAIL_HOOKS_GATED, TRUST_PIN,
-    TRUST_PRIVATE_REACH, TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
+    AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, RecordChain, TrustKey,
+    CHAIN_DIGESTS_SCOPE, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_PEER_KEY, MECHANISM_ROOT,
+    PIN_FINGERPRINT, SHAPE_PIECEWISE, TAIL_HOOKS_GATED, TRUST_PIN, TRUST_PRIVATE_REACH,
+    TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
@@ -153,6 +154,18 @@ const RECORD_KINDS: &[AbiStr] = &[
     abi_str(crate::records::HELD_KINDS[2]),
     abi_str(crate::records::HELD_KINDS[3]),
 ];
+
+/// THE TASK CHAIN (ARCHITECT ruling B1, 2026-10-07; `BUSBAR-1.6.0.md` Part 3 §5 and THE DESIGN's
+/// route pump): the task-event kind is chained, pipe-separated with its scope in the digest, the
+/// framing the engine's per-task chain was sealed under (`prev|task|seq|ts|kind|context|principal|
+/// agent|state`). The host frames the prelude and keeps and verifies the chain; the plane writes
+/// only each event's own fields ([`crate::tasks::suffix`]).
+const RECORD_CHAINS: &[RecordChain] = &[RecordChain {
+    kind: crate::records::TASK_EVENT_INDEX,
+    framing: CHAIN_PIPE_SEPARATED,
+    flags: CHAIN_DIGESTS_SCOPE,
+    _reserved: 0,
+}];
 
 /// The pin's four mechanisms; three are authenticity roots and `unpinned` is not. `cert_spki` and
 /// `mtls` pin the agent's KEY: the host seals it into the agent's member route and the connector
@@ -379,8 +392,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     record_kinds_len: RECORD_KINDS.len(),
     egress_targets: std::ptr::null(),
     egress_targets_len: 0,
-    record_chains: std::ptr::null(),
-    record_chains_len: 0,
+    record_chains: RECORD_CHAINS.as_ptr(),
+    record_chains_len: RECORD_CHAINS.len(),
     trust_keys: TRUST_KEYS.as_ptr(),
     trust_keys_len: TRUST_KEYS.len(),
     refusal_statuses: std::ptr::null(),

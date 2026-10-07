@@ -15,9 +15,17 @@
 //! * A CHANGE IS RACE-SAFE: every write of a task consumes the next sequence of its chain, and the
 //!   sequence is won with `records.claim` on `<caller>/<task>/<seq>` before anything is written. A
 //!   writer that loses re-reads and tries the next one.
-//! * THE HASH CHAIN IS COMPUTED HERE, under the injective framing the engine seals new events with
-//!   ([`digest`]), and the task record carries the chain's tail so a change never lists its events.
-//! * A DELETE IS A TOMBSTONE: a put with an empty value, which the kernel's reads treat as absent.
+//! * THE HASH CHAIN IS THE HOST'S (ARCHITECT ruling B1, 2026-10-07; `BUSBAR-1.6.0.md` Part 3 §5):
+//!   the task-event kind is declared chained, pipe-separated with its scope digested
+//!   (`crate::door`'s `RECORD_CHAINS`). An event is an APPEND to the chain keyed `<caller>/<task>`
+//!   carrying only its own fields ([`suffix`]); the host frames `prev|scope|seq` ahead of them,
+//!   seals, keeps and verifies the chain. The task record carries the chain's next sequence, which
+//!   a change claims to stay race-safe.
+//! * RESTORE ([`restore`]) is the engine's boot rehydrate over the records: the tasks counted
+//!   active, terminal or unreadable, and every active task's chain read back verified by the host,
+//!   a break named so the door reports it.
+//! * A DELETE IS A TOMBSTONE: a put with an empty value, which the kernel's reads treat as absent;
+//!   on the chained kind it drops the whole chain.
 //! * RETENTION is the engine's `evict_terminal` policy with the same numbers ([`TERMINAL_TTL_SECS`],
 //!   [`ABANDON_SECS`], [`MAX_RETAINED`]): a read never answers a terminal task past its window, and
 //!   [`sweep`] tombstones it, cancels an abandoned active one, and holds the cap.
@@ -25,8 +33,8 @@
 use busbar_contract::vocab::{EV_ARTIFACT, EV_DELEGATED, EV_SUBMITTED};
 use serde::{Deserialize, Serialize};
 
-use crate::a2a::task::{plan_transition, TaskState};
-use crate::record::DIGEST_VERSION_LEN_PREFIXED;
+use crate::a2a::task::{plan_transition, readable_row, TaskState};
+use crate::record::DIGEST_VERSION_LEGACY_PIPE;
 use crate::records::{KIND_PUSH_CONFIG, KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
 
@@ -87,13 +95,19 @@ impl<'r> Staged<'r> {
     }
 }
 
+/// Whether `kind` is the chained kind: its writes are appends the host seals once the store took
+/// them, so a read never answers them from the piece's writes.
+fn chained(kind: &str) -> bool {
+    kind == KIND_TASK_EVENT
+}
+
 impl Records for Staged<'_> {
     fn get(&mut self, kind: &str, key: &str) -> Result<Option<Vec<u8>>, Halt> {
         match self
             .written
             .iter()
             .rev()
-            .find(|w| w.kind == kind && w.key == key)
+            .find(|w| !chained(w.kind) && w.kind == kind && w.key == key)
         {
             Some(w) if w.value.is_empty() => Ok(None),
             Some(w) => Ok(Some(w.value.clone())),
@@ -107,7 +121,7 @@ impl Records for Staged<'_> {
         for w in self
             .written
             .iter()
-            .filter(|w| w.kind == kind && w.key.starts_with(prefix))
+            .filter(|w| !chained(w.kind) && w.kind == kind && w.key.starts_with(prefix))
         {
             if w.value.is_empty() {
                 listed.remove(&w.key);
@@ -123,7 +137,8 @@ impl Records for Staged<'_> {
     }
 }
 
-/// One record write the answer carries out: a `RECORD_PUT`; an empty value is a tombstone.
+/// One record write the answer carries out: a `RECORD_PUT`; an empty value is a tombstone. On the
+/// chained kind it is an append to the chain `key` names (an empty value drops the chain).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Write {
     /// The record kind.
@@ -134,7 +149,8 @@ pub struct Write {
     pub value: Vec<u8>,
 }
 
-/// A TASK AS IT IS HELD: the row, and its chain's position (the next sequence and the tail digest).
+/// A TASK AS IT IS HELD: the row, and the sequence its chain's next event takes (the host holds the
+/// chain itself; the sequence is what a change claims).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Held {
     /// The row.
@@ -142,8 +158,6 @@ pub struct Held {
     pub row: TaskRow,
     /// The sequence the next event takes.
     pub next_seq: u64,
-    /// The last event's digest.
-    pub tail_hash: String,
 }
 
 /// The key prefix of everything `caller` holds.
@@ -157,7 +171,9 @@ pub fn task_key(caller: &str, task: &str) -> String {
     format!("{caller}/{task}")
 }
 
-/// The key of event `seq` of `caller`'s task `task`; zero-padded so key order is sequence order.
+/// The key of event `seq` of `caller`'s task `task`: the host's listed key of record `seq` of the
+/// chain `<caller>/<task>` (`busbar_contract::services::chain_key`), and the key a change claims
+/// the sequence under.
 #[must_use]
 pub fn event_key(caller: &str, task: &str, seq: u64) -> String {
     format!("{caller}/{task}/{seq:020}")
@@ -192,31 +208,24 @@ fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>, Halt> {
     serde_json::to_vec(v).map_err(|e| Halt::Failed(e.to_string()))
 }
 
-/// ONE EVENT'S DIGEST under the injective length-prefixed framing (v2): a domain tag, then each
-/// string field as `<u64-le len><bytes>` and each integer as 8 little-endian bytes, sha256. The
-/// field order is the engine's legacy pipe-join's, so the mapping stays legible.
+/// ONE EVENT'S OWN BYTES on its task's chain, in the declared pipe-separated framing: each field
+/// after a `|`, `ts`, `kind`, `context_id`, `principal`, `agent_id`, `state`. The host frames
+/// `prev_hash|scope|seq` ahead of them, so the digest input is the engine's pipe-join
+/// `prev|task|seq|ts|kind|context|principal|agent|state` with the chain's scope (`<caller>/<task>`)
+/// as the task. `request_id` is a join key and stays out.
 #[must_use]
-pub fn digest(ev: &TaskEventRow) -> String {
-    let mut buf: Vec<u8> = b"busbar.a2a.taskchain.v2\0".to_vec();
-    let text = |buf: &mut Vec<u8>, field: &str| {
-        buf.extend_from_slice(&(field.len() as u64).to_le_bytes());
-        buf.extend_from_slice(field.as_bytes());
-    };
-    text(&mut buf, &ev.prev_hash);
-    text(&mut buf, &ev.task_id);
-    buf.extend_from_slice(&ev.seq.to_le_bytes());
-    buf.extend_from_slice(&ev.ts.to_le_bytes());
-    text(&mut buf, &ev.kind);
-    text(&mut buf, &ev.context_id);
-    text(&mut buf, &ev.principal);
-    text(&mut buf, &ev.agent_id);
-    text(&mut buf, &ev.state);
-    busbar_contract::redacted::sha256_hex(&buf)
+pub fn suffix(ev: &TaskEventRow) -> Vec<u8> {
+    format!(
+        "|{}|{}|{}|{}|{}|{}",
+        ev.ts, ev.kind, ev.context_id, ev.principal, ev.agent_id, ev.state
+    )
+    .into_bytes()
 }
 
-/// Seal event `kind` over `row` at `held`'s chain position, stamped `ts`.
+/// Event `kind` over `row` at `held`'s chain position, stamped `ts`; its chain fields are the
+/// host's.
 fn seal(held: &Held, row: &TaskRow, kind: &str, request_id: &str, ts: u64) -> TaskEventRow {
-    let mut ev = TaskEventRow {
+    TaskEventRow {
         task_id: row.task_id.clone(),
         seq: held.next_seq,
         ts,
@@ -226,12 +235,10 @@ fn seal(held: &Held, row: &TaskRow, kind: &str, request_id: &str, ts: u64) -> Ta
         agent_id: row.agent_id.clone(),
         state: row.state.clone(),
         request_id: request_id.to_string(),
-        prev_hash: held.tail_hash.clone(),
+        prev_hash: String::new(),
         hash: String::new(),
-        digest_version: DIGEST_VERSION_LEN_PREFIXED,
-    };
-    ev.hash = digest(&ev);
-    ev
+        digest_version: DIGEST_VERSION_LEGACY_PIPE,
+    }
 }
 
 /// `held`, read for `caller`, AS THE RECORD WRITE THAT HOLDS IT: what a step that cannot read the
@@ -284,6 +291,57 @@ pub fn list(rec: &mut dyn Records, caller: &str, now: u64) -> Result<Vec<TaskRow
     Ok(rows)
 }
 
+/// What a [`restore`] found: the engine's boot rehydrate counts, over the records.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Restored {
+    /// Tasks in flight: their chains were read back verified.
+    pub active: usize,
+    /// Terminal tasks: counted, deliberately not read further (nothing resumes them, and their
+    /// rows stay for the provenance window).
+    pub terminal: usize,
+    /// Task rows this build cannot read back: counted, never skipped silently.
+    pub unreadable: usize,
+    /// The in-flight tasks whose chain the host reported broken: the chain's scope
+    /// (`<caller>/<task>`) and the break in the host's words. The task is still held: a break is
+    /// reported, never a deletion.
+    pub chain_breaks: Vec<(String, String)>,
+}
+
+/// THE RESTORE (the engine's `restore_from_store`, over host records): every task row read and
+/// counted active, terminal or unreadable; then every chain read back through the host, which
+/// verifies each, and a break the host announces on an in-flight task's chain is named. Nothing is
+/// written.
+///
+/// # Errors
+/// [`Halt`].
+pub fn restore(rec: &mut dyn Records) -> Result<Restored, Halt> {
+    let mut out = Restored::default();
+    let mut active = std::collections::BTreeSet::new();
+    for (key, bytes) in rec.list(KIND_TASK, "")? {
+        let Some(held) = decode(&bytes).filter(|h| readable_row(&h.row).is_ok()) else {
+            out.unreadable += 1;
+            continue;
+        };
+        if terminal(&held.row.state) {
+            out.terminal += 1;
+        } else {
+            out.active += 1;
+            active.insert(key);
+        }
+    }
+    for (key, words) in rec.list(KIND_TASK_EVENT, "")? {
+        // A record's key ends in its sequence; a span keyed by a bare scope announces that chain's
+        // break.
+        if busbar_contract::services::chain_key_parts(key.as_bytes()).is_none()
+            && active.contains(&key)
+        {
+            out.chain_breaks
+                .push((key, String::from_utf8_lossy(&words).into_owned()));
+        }
+    }
+    Ok(out)
+}
+
 /// Who writes, for which request, and when: what every change of a task is stamped with.
 #[derive(Debug, Clone, Copy)]
 pub struct Step<'a> {
@@ -312,7 +370,6 @@ fn commit(
     let ev = seal(held, &row, kind, at.request_id, at.now);
     let next = Held {
         next_seq: held.next_seq.saturating_add(1),
-        tail_hash: ev.hash.clone(),
         row,
     };
     out.push(Write {
@@ -322,8 +379,8 @@ fn commit(
     });
     out.push(Write {
         kind: KIND_TASK_EVENT,
-        key,
-        value: encode(&ev)?,
+        key: task_key(at.caller, &next.row.task_id),
+        value: suffix(&ev),
     });
     Ok(Some(next))
 }
@@ -346,7 +403,6 @@ pub fn submit(
     let genesis = Held {
         row: row.clone(),
         next_seq: 1,
-        tail_hash: String::new(),
     };
     let at = Step {
         now: row.created_at,
@@ -389,7 +445,6 @@ pub fn open(
     let genesis = Held {
         row: row.clone(),
         next_seq: 1,
-        tail_hash: String::new(),
     };
     let stamped = Step {
         now: row.created_at,
@@ -603,7 +658,7 @@ pub fn sweep(
     let mut kept = held.len();
     for (caller, row) in &held {
         if touched < budget && terminal(&row.state) && (kept >= MAX_RETAINED || expired(row, now)) {
-            forget(rec, caller, &row.task_id, out)?;
+            forget(caller, &row.task_id, out);
             kept -= 1;
             touched += 1;
         }
@@ -611,35 +666,15 @@ pub fn sweep(
     Ok(())
 }
 
-/// Tombstone `caller`'s task `task`, its events and its push config.
-fn forget(
-    rec: &mut dyn Records,
-    caller: &str,
-    task: &str,
-    out: &mut Vec<Write>,
-) -> Result<(), Halt> {
-    let events = format!("{}/", task_key(caller, task));
-    for (key, _) in rec.list(KIND_TASK_EVENT, &events)? {
-        // Only this task's own events: what follows the prefix is a sequence, all digits.
-        if key
-            .strip_prefix(&events)
-            .is_some_and(|seq| seq.bytes().all(|b| b.is_ascii_digit()))
-        {
-            out.push(Write {
-                kind: KIND_TASK_EVENT,
-                key,
-                value: Vec::new(),
-            });
-        }
-    }
-    for kind in [KIND_TASK, KIND_PUSH_CONFIG] {
+/// Tombstone `caller`'s task `task`, its push config, and its events (the chain dropped whole).
+fn forget(caller: &str, task: &str, out: &mut Vec<Write>) {
+    for kind in [KIND_TASK_EVENT, KIND_TASK, KIND_PUSH_CONFIG] {
         out.push(Write {
             kind,
             key: task_key(caller, task),
             value: Vec::new(),
         });
     }
-    Ok(())
 }
 
 #[cfg(test)]
