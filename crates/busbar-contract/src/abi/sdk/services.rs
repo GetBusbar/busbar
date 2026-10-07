@@ -21,15 +21,16 @@ use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
-    check_records_list, check_session_emit, check_session_emit_in, check_sign, check_trust_due,
-    check_trust_serves, check_trust_sight, check_trust_sight_item, check_trust_state,
-    check_trust_verify, check_unit_nest, check_work_find, check_work_open, check_work_resume,
-    check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots,
-    ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn,
-    ServiceHead, ServiceOut, SessionEmitIn, SignIn, TrustDueIn, TrustServesIn, TrustSightIn,
-    TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn,
-    WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
-    TRUST_REACHED, TRUST_UNREACHABLE,
+    check_records_list, check_session_emit, check_session_emit_in, check_sign, check_trust_decide,
+    check_trust_due, check_trust_serves, check_trust_sight, check_trust_sight_item,
+    check_trust_state, check_trust_verify, check_unit_nest, check_work_find, check_work_open,
+    check_work_resume, check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn,
+    EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn,
+    RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, SessionEmitIn, SignIn,
+    TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn,
+    TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT,
+    CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, TRUST_DECIDE_APPROVE,
+    TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -543,6 +544,45 @@ impl Services {
             |t| t.trust_serves,
             &input,
             check_trust_serves,
+        )?;
+        Ok(ready(crossed)?.value)
+    }
+
+    /// `trust.decide`: THE OPERATOR'S DECISION about one of this instance's trust keys
+    /// (`counterparty`, or `item` there), made through the plane's own administrative verb: the
+    /// same durable decision the core-admin `POST /api/v1/admin/trust/approve` and `/revoke` make.
+    /// An approval approves what the caller saw: `expected` (the catalogue hash or item digest),
+    /// when stated, must be the key's current sighting. Ready: the `TRUST_DECIDED_*` verdict after
+    /// it, or the `UNDECIDED_*` that refused it. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// As every service: unserved, declined, or broken.
+    pub fn trust_decide(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        item: Option<&str>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Result<u64, ServiceError> {
+        let input = TrustDecideIn {
+            head: head::<TrustDecideIn>(op::TRUST_DECIDE, handle),
+            counterparty: text(counterparty),
+            item: text(item.unwrap_or("")),
+            expected: text(expected.unwrap_or("")),
+            decision: if approve {
+                TRUST_DECIDE_APPROVE
+            } else {
+                TRUST_DECIDE_REVOKE
+            },
+            _reserved: 0,
+        };
+        let crossed = self.cross(
+            op::TRUST_DECIDE,
+            |t| t.trust_decide,
+            &input,
+            check_trust_decide,
         )?;
         Ok(ready(crossed)?.value)
     }

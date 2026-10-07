@@ -163,6 +163,7 @@ fn real_multi_mb_library_round_trips_byte_for_byte() {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     let manifest = sign(&key, manifest, &lib_bytes);
 

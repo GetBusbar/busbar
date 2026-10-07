@@ -249,6 +249,7 @@ fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Man
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 

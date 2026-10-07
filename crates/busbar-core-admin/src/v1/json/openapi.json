@@ -13700,7 +13700,7 @@
                 }
               }
             },
-            "description": "`conflict`: ``trust key `<key>` was never sighted`` — nothing to approve it at"
+            "description": "`conflict`: ``trust key `<key>` was never sighted`` — nothing to approve it at — or ``trust key `<key>` has no authenticity root`` — its registration declares none, and nothing at it is approvable"
           },
           "503": {
             "content": {

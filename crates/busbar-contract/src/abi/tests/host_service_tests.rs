@@ -414,7 +414,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_twelve() {
+fn the_services_that_never_pend_are_exactly_the_stated_thirteen() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -429,6 +429,7 @@ fn the_services_that_never_pend_are_exactly_the_stated_twelve() {
             op::TRUST_VERIFY,
             op::TRUST_SIGHT_ITEM,
             op::TRUST_SERVES,
+            op::TRUST_DECIDE,
             op::TRUST_STATE,
             op::SESSION_EMIT
         ]
@@ -497,6 +498,7 @@ fn every_service_field_sits_at_its_op_index() {
             op::TRUST_SIGHT_ITEM,
         ),
         (offset_of!(HostSlots, trust_serves), op::TRUST_SERVES),
+        (offset_of!(HostSlots, trust_decide), op::TRUST_DECIDE),
         (offset_of!(HostSlots, trust_state), op::TRUST_STATE),
         (offset_of!(HostSlots, session_emit), op::SESSION_EMIT),
     ];
@@ -739,6 +741,77 @@ fn a_work_record_past_its_cap_is_refused() {
     );
 }
 
+fn hook_in(stage: u32, from: u32, prompt: *const crate::abi::hook::PromptView) -> HookCallIn {
+    HookCallIn {
+        head: head(op::HOOK_CALL, TICKET, core::mem::size_of::<HookCallIn>()),
+        stage,
+        from,
+        prompt,
+        into: ServiceBufs {
+            buf: core::ptr::null_mut(),
+            cap: 0,
+            spans: core::ptr::null_mut(),
+            spans_cap: 0,
+        },
+    }
+}
+
+/// RED, one arm each: an unknown stage, a chain resumed past the cap, a resumed gate, no prompt.
+#[test]
+fn a_hook_call_in_that_breaks_a_rule_is_refused_by_its_arm() {
+    let view = crate::abi::hook::PromptView {
+        system: none(),
+        message_count: 0,
+        body: empty_blob(),
+        messages: core::ptr::null(),
+        messages_len: 0,
+    };
+    let p: *const crate::abi::hook::PromptView = &view;
+    assert!(check_hook_call_in(&hook_in(HOOK_GATE, 0, p)).is_ok());
+    assert!(check_hook_call_in(&hook_in(HOOK_REWRITE, HOOK_FROM_MAX, p)).is_ok());
+    assert_eq!(
+        check_hook_call_in(&hook_in(2, 0, p)).unwrap_err(),
+        fault(Rule::UnknownCode, "hook_call.stage")
+    );
+    assert_eq!(
+        check_hook_call_in(&hook_in(HOOK_REWRITE, HOOK_FROM_MAX + 1, p)).unwrap_err(),
+        fault(Rule::OverMax, "hook_call.from")
+    );
+    assert_eq!(
+        check_hook_call_in(&hook_in(HOOK_GATE, 1, p)).unwrap_err(),
+        fault(Rule::Contradiction, "hook_call.from")
+    );
+    assert_eq!(
+        check_hook_call_in(&hook_in(HOOK_GATE, 0, core::ptr::null())).unwrap_err(),
+        fault(Rule::Missing, "hook_call.prompt")
+    );
+}
+
+/// RED: `hook.call` answers `0`, a stopping status, or (a rewrite only) `1 + i` within the cap.
+#[test]
+fn a_hook_call_answer_outside_its_values_is_fault() {
+    let gate = hook_in(HOOK_GATE, 0, core::ptr::null());
+    let rewrite = hook_in(HOOK_REWRITE, 0, core::ptr::null());
+    let mut o = out(Outcome::Ready);
+    for (i, value, ok) in [
+        (&gate, 0, true),
+        (&gate, 403, true),
+        (&gate, 1, false),
+        (&rewrite, 1, true),
+        (&rewrite, u64::from(HOOK_FROM_MAX), true),
+        (&rewrite, u64::from(HOOK_FROM_MAX) + 1, false),
+        (&rewrite, 599, true),
+        (&rewrite, 600, false),
+    ] {
+        o.value = value;
+        let r = check_hook_call(i, ready(&o), &o);
+        assert_eq!(r.is_ok(), ok, "stage {} value {value}", i.stage);
+        if !ok {
+            assert_eq!(rule(r), Rule::UnknownCode);
+        }
+    }
+}
+
 /// A `disk.append` `in` appending `bytes` to `key`, its result into `result`.
 fn disk_in(
     ticket: Ticket,
@@ -874,4 +947,46 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     assert!(check(written(0, 0, 0), &pending, TICKET).is_ok());
     assert!(check(written(0, 0, 0), &pending, Ticket::NONE).is_err());
     assert!(may_pend(op::DISK_APPEND));
+}
+
+/// `trust.decide` (ARCHITECT 2026-10-06): it never pends, and its value is a `TRUST_DECIDED_*`
+/// verdict or an `UNDECIDED_*` refusal code; RED: a value past the vocabulary, and a PENDING
+/// answer even on a ticket, are FAULT.
+#[test]
+fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
+    let i = TrustDecideIn {
+        head: head(
+            op::TRUST_DECIDE,
+            TICKET,
+            core::mem::size_of::<TrustDecideIn>(),
+        ),
+        counterparty: none(),
+        item: none(),
+        expected: none(),
+        decision: TRUST_DECIDE_APPROVE,
+        _reserved: 0,
+    };
+    assert!(!may_pend(op::TRUST_DECIDE));
+    let mut o = out(Outcome::Ready);
+    for value in [
+        TRUST_DECIDED_SERVING,
+        TRUST_DECIDED_PENDING,
+        TRUST_DECIDED_QUARANTINED,
+        UNDECIDED_UNPINNED,
+        UNDECIDED_STALE,
+        UNDECIDED_UNKNOWN,
+        UNDECIDED_ROOTLESS,
+    ] {
+        o.value = value;
+        assert!(check_trust_decide(&i, ready(&o), &o).is_ok(), "{value}");
+    }
+    for value in [0, UNDECIDED_ROOTLESS + 1] {
+        o.value = value;
+        assert_eq!(
+            rule(check_trust_decide(&i, ready(&o), &o)),
+            Rule::UnknownCode
+        );
+    }
+    let pending = out(Outcome::Pending);
+    assert!(check_trust_decide(&i, ready(&pending), &pending).is_err());
 }

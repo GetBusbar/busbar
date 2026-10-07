@@ -33,6 +33,12 @@
 //!   demotion record.
 //! * `trust.verify` — a document's detached signatures judged against the root key the caller's
 //!   declared pin names ([`signed`]); the verdict and the refused name, never a fallback.
+//! * `verify.lookup` / `verify.store` — the caller's own verify cache with single-flight
+//!   leadership ([`crate::host_verify`]): hit, lead or follow; a lapsed lead passes on at the tick.
+//! * `content.scan` / `hook.call` — the hook stage the unit the crossing serves bound
+//!   ([`crate::host_units::UnitHookStage`]): its plane's and pool's gates and rewrite chain, at the
+//!   generation it was bound under; never anything the caller names. They run only when the plane
+//!   calls them: nothing here acts on carried content on its own (Law 11).
 //!
 //! EVERY CALLER-SCOPED SERVICE ANSWERS FROM WHAT [`KernelServices::admit`] REGISTERED for the
 //! caller's instance: its record kinds, its signing declaration and its trust entries. Every
@@ -58,7 +64,8 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
-    merge_list, Caller, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
+    Stored,
 };
 
 /// The refusal of a record write past the write queue's bound.
@@ -67,13 +74,14 @@ pub const QUEUE_FULL: &str = "the record write queue is full";
 use crate::host_records::{
     record_key, Acked, Owed as WriteOwed, PendingRecords, RecordRows, Write, WriteBehind,
 };
+use crate::host_units::StageAnswer;
 use crate::host_work::{
     owner_of, parse_reference, reference_text, refusal as work_refusal, work_key, Owner, Work,
     WorkBook, WorkBounds, WORK_SCHEMA,
 };
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{
-    Decision, Distrust, Effect, KeyRow, KeyState, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
+    Distrust, Effect, KeyRow, KeyState, Ruling, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
 };
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
@@ -565,6 +573,8 @@ pub struct KernelServices {
     /// THE OPEN CARRIER SESSIONS (`session.emit`), by number: the instance each serves, its
     /// verified principal and the writer its unsolicited output goes to.
     sessions: Mutex<HashMap<u64, CarrierSession>>,
+    /// The verify cache behind `verify.*`.
+    verify: crate::host_verify::VerifyBook,
 }
 
 /// ONE OPEN CARRIER SESSION: a carrier the root holds open for one caller (a process's own
@@ -640,6 +650,7 @@ impl KernelServices {
             )),
             disk: crate::host_disk::DiskLane::default(),
             sessions: Mutex::default(),
+            verify: crate::host_verify::VerifyBook::default(),
         }
     }
 
@@ -942,30 +953,52 @@ impl KernelServices {
     /// [`TrustRefused::NoSuchKey`] for a key no admitted instance has,
     /// [`TrustRefused::NothingSighted`] for an approval with nothing to approve at, and
     /// [`TrustRefused::Store`] (the store's words) when the decision could not be kept.
-    pub fn trust_decide(&self, key: &str, decision: Decision) -> Result<KeyRow, TrustRefused> {
+    pub fn trust_rule(&self, key: &str, ruling: Ruling) -> Result<KeyRow, TrustRefused> {
         let found = self
             .trust
             .rows()
             .into_iter()
             .find(|r| r.key() == key)
             .ok_or(TrustRefused::NoSuchKey)?;
+        self.decide_key(
+            &found.instance,
+            &found.counterparty,
+            found.item.as_deref(),
+            ruling,
+            None,
+        )
+    }
+
+    /// THE ONE DECIDE PATH, the core-admin verbs' ([`Self::trust_rule`]) and a plane's own
+    /// administrative verb's (`trust.decide`) alike: the trust book's decision
+    /// ([`TrustBook::decide`]), kept durably before it answers; approving a counterparty also
+    /// clears its durable demotion.
+    ///
+    /// # Errors
+    ///
+    /// The [`TrustRefused`] that refuses it.
+    pub fn decide_key(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: Option<&str>,
+        ruling: Ruling,
+        expected: Option<&str>,
+    ) -> Result<KeyRow, TrustRefused> {
         let (row, fact) = self
             .trust
-            .decide(
-                &found.instance,
-                &found.counterparty,
-                found.item.as_deref(),
-                decision,
-            )
+            .decide(instance, counterparty, item, ruling, expected)
             .map_err(|why| match why {
                 Undecided::NoSuchKey => TrustRefused::NoSuchKey,
                 Undecided::NothingSighted => TrustRefused::NothingSighted,
+                Undecided::Rootless => TrustRefused::Rootless,
+                Undecided::Stale => TrustRefused::Stale,
             })?;
         if let Some(d) = self.demotions.get() {
             d.record
                 .keep_decision(&fact, (self.wall_ms)() / 1000)
                 .map_err(TrustRefused::Store)?;
-            if fact.item.is_none() && decision == Decision::Approve {
+            if fact.item.is_none() && ruling == Ruling::Approve {
                 let cleared = |server: &str| {
                     crate::plane::quarantine::settle(
                         &d.record,
@@ -1212,7 +1245,14 @@ impl KernelServices {
         loop {
             at.tick().await;
             self.flush_tick();
+            self.verify_tick();
         }
+    }
+
+    /// The verify cache's tick, run beside [`Self::flush_tick`]: every lead that lapsed passes to
+    /// its first follower, so a leader that never stores wedges nobody past one interval.
+    pub fn verify_tick(&self) {
+        self.verify.expire((self.wall_ms)());
     }
 
     /// GRACEFUL SHUTDOWN: flush every queued record write before the store closes, waiting up to
@@ -1320,6 +1360,8 @@ pub const NO_POOL: &str = "no pool is bound";
 pub const POOL_REFUSED: &str = "the pool refused the store call";
 /// The FAILED answer of a store call that did not answer.
 pub const STORE_FAILED: &str = "the store did not answer";
+/// The FAILED answer of a `trust.decide` whose decision the store could not keep.
+pub const DECISION_UNKEPT: &str = "the trust decision could not be kept";
 /// The refusal of a `records.secret` read by services that hold no credential source (the root
 /// composes the credential source over these services).
 pub const NO_CREDENTIAL_SOURCE: &str = "no credential source";
@@ -1372,6 +1414,10 @@ pub enum TrustRefused {
     NoSuchKey,
     /// The key was never sighted (nor declared) at anything to approve.
     NothingSighted,
+    /// The counterparty declares no authenticity root: nothing at it can be approved.
+    Rootless,
+    /// The fingerprint the caller approves is not the key's current sighting.
+    Stale,
     /// The decision could not be kept; the store's words, for the node's log.
     Store(String),
 }
@@ -1681,6 +1727,39 @@ impl HostServices for KernelServices {
             Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
             Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
         }
+    }
+
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        if self.facts(caller).is_none() {
+            return Stored::refused(NOT_ADMITTED);
+        }
+        let ruling = if approve {
+            Ruling::Approve
+        } else {
+            Ruling::Revoke
+        };
+        Stored::ready(
+            match self.decide_key(
+                &caller.instance,
+                key.counterparty,
+                key.item,
+                ruling,
+                expected,
+            ) {
+                Ok(row) => decided_code(row.state),
+                Err(TrustRefused::NoSuchKey) => svc::UNDECIDED_UNKNOWN,
+                Err(TrustRefused::NothingSighted) => svc::UNDECIDED_UNPINNED,
+                Err(TrustRefused::Stale) => svc::UNDECIDED_STALE,
+                Err(TrustRefused::Rootless) => svc::UNDECIDED_ROOTLESS,
+                Err(TrustRefused::Store(_)) => return failed(DECISION_UNKEPT),
+            },
+        )
     }
 
     fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
@@ -2003,6 +2082,107 @@ impl HostServices for KernelServices {
             },
         )
     }
+
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        if self.facts(caller).is_none() {
+            return Ran::Now(Stored::refused(NOT_ADMITTED));
+        }
+        self.verify
+            .lookup(&caller.instance, key, (self.wall_ms)(), later)
+    }
+
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        if self.facts(caller).is_none() {
+            return Stored::refused(NOT_ADMITTED);
+        }
+        self.verify
+            .store(&caller.instance, key, entry, ttl_ms, (self.wall_ms)())
+    }
+
+    fn content_scan(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        content: &[u8],
+        later: Later,
+    ) -> Ran {
+        let stage = match self.stage_of(caller, unit) {
+            Ok(stage) => stage,
+            Err(refused) => return Ran::Now(refused),
+        };
+        stage.scan(
+            content.to_vec(),
+            Box::new(move |answer| {
+                later(match answer {
+                    StageAnswer::Pass => Stored::ready(svc::CONTENT_PASS),
+                    StageAnswer::Stop { .. } => Stored::ready(svc::CONTENT_BLOCK),
+                    // A gate never rewrites; a stage that could not run blocks nothing silently.
+                    StageAnswer::Rewrote { .. } => failed(STAGE_ANSWERED_AMISS),
+                    StageAnswer::Failed(why) => failed(why),
+                });
+            }),
+        );
+        Ran::Later
+    }
+
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        let stage = match self.stage_of(caller, unit) {
+            Ok(stage) => stage,
+            Err(refused) => return Ran::Now(refused),
+        };
+        stage.call(
+            ask,
+            Box::new(move |answer| {
+                later(match answer {
+                    StageAnswer::Pass => Stored::ready(0),
+                    StageAnswer::Rewrote { index, rewrite } => Stored {
+                        bytes: rewrite,
+                        ..Stored::ready(1 + u64::from(index))
+                    },
+                    StageAnswer::Stop { status, words } => Stored {
+                        bytes: words.into_bytes(),
+                        ..Stored::ready(u64::from(status))
+                    },
+                    StageAnswer::Failed(why) => failed(why),
+                });
+            }),
+        );
+        Ran::Later
+    }
+}
+
+/// The refusal of `content.scan` / `hook.call` from a crossing that serves no unit in flight.
+pub const STAGE_NO_UNIT: &str = "the crossing serves no unit in flight";
+/// The refusal of `content.scan` / `hook.call` before the unit's route leg stated its hook stage.
+pub const STAGE_NOT_BOUND: &str = "the unit's hook stage is not bound yet";
+/// The refusal of `content.scan` / `hook.call` for a unit another instance runs.
+pub const STAGE_NOT_YOURS: &str = "the unit runs on another instance";
+/// The FAILED answer of a stage that answered outside its service's shape.
+pub const STAGE_ANSWERED_AMISS: &str = "the hook stage answered outside the service's shape";
+
+impl KernelServices {
+    /// The hook stage of `unit` for `caller`: the unit in flight, its route leg's stage stated, and
+    /// run on the caller's own instance; or the refusal.
+    fn stage_of(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+    ) -> Result<Arc<dyn crate::host_units::UnitHookStage>, Stored> {
+        if self.facts(caller).is_none() {
+            return Err(Stored::refused(NOT_ADMITTED));
+        }
+        let Some(unit) = unit.filter(|u| self.units.get(*u).is_some()) else {
+            return Err(Stored::refused(STAGE_NO_UNIT));
+        };
+        let stage = self
+            .units
+            .stage(unit)
+            .ok_or_else(|| Stored::refused(STAGE_NOT_BOUND))?;
+        if stage.instance() != &*caller.instance {
+            return Err(Stored::refused(STAGE_NOT_YOURS));
+        }
+        Ok(stage)
+    }
 }
 
 /// Where a dial's judgement goes when it pended: the pinned address, or the `DEST_*` verdict that
@@ -2081,6 +2261,16 @@ mod trust_verify_tests;
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
 
+/// The `TRUST_DECIDED_*` verdict (`trust.decide`) a key's [`KeyState`] is answered as.
+#[must_use]
+pub fn decided_code(state: KeyState) -> u64 {
+    match state {
+        KeyState::Same | KeyState::Approved => svc::TRUST_DECIDED_SERVING,
+        KeyState::New => svc::TRUST_DECIDED_PENDING,
+        KeyState::Drifted | KeyState::Quarantined => svc::TRUST_DECIDED_QUARANTINED,
+    }
+}
+
 /// The `KEY_*` value (`trust.state`) a [`KeyState`] is answered as.
 #[must_use]
 pub fn key_code(state: KeyState) -> u64 {
@@ -2117,3 +2307,7 @@ pub fn distrust_code(why: Distrust) -> u64 {
         Distrust::UnknownItem => svc::DISTRUST_UNKNOWN_ITEM,
     }
 }
+
+#[cfg(test)]
+#[path = "tests/host_stage_tests.rs"]
+mod host_stage_tests;

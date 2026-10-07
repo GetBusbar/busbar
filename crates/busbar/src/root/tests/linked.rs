@@ -866,22 +866,36 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
 }
 
 /// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
-/// so the refusal of a row "spelling a built-in module" has nothing left to guard and is gone. What
-/// replaces it: every module is a row of the axis, and each LINKED export row answers its own
-/// module ahead of any row a plugins directory drops in under the same alias — a dropped-in row
-/// never takes a module from the sink this build links. RED: without the linked rows, the
-/// dropped-in one answers.
+/// so every module is a row of the axis. ARCHITECT Q-P4-12 (BUSBAR-1.6.0.md:106, "it refuses at boot
+/// when two plugins claim the same thing"): a LINKED export row and a DIFFERENT dropped-in plugin
+/// spelling its module refuse the boot, naming both plugins and the module. No door outranks the
+/// other (compiled in = dropped in), so the ambiguity is never resolved by picking a winner. This
+/// replaces the K9e-2-era rule that the linked row answered ahead. GREEN arm: the linked rows alone
+/// answer their modules, and the dropped-in row alone answers its own.
 #[test]
-fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
+fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_refuse_the_boot() {
     let release = test_plugins::key(7);
     let doors = crate::LINKED.export_doors.iter().map(|d| (d.name, d.alias));
     for (name, alias) in doors {
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
-        let rows = linked_exports(crate::LINKED.export_doors).expect("the linked export rows");
-        let both = scan().link(rows).expect("the linked door admits them");
+        let rows = || linked_exports(crate::LINKED.export_doors).expect("the linked export rows");
+        // RED ARM: both doors claim the module, as two different plugins.
+        let refused = scan()
+            .link(rows())
+            .expect_err("a linked row and a different dropped-in plugin claiming one module");
+        assert!(
+            refused.contains("claim conflict")
+                && refused.contains(&format!("'{alias}'"))
+                && refused.contains(name)
+                && refused.contains("k9e-dropped"),
+            "{alias}: {refused}"
+        );
+        // GREEN: each door alone answers.
         let answering = |r: &PluginRegistry| r.resolve(alias).map(|p| p.manifest.name.clone());
-        assert_eq!(answering(&both).as_deref(), Some(name), "{alias}");
-        // RED ARM: the dropped-in row alone answers.
+        let alone = PluginRegistry::empty()
+            .link(rows())
+            .expect("the linked rows alone");
+        assert_eq!(answering(&alone).as_deref(), Some(name), "{alias}");
         assert_eq!(
             answering(&scan()).as_deref(),
             Some("k9e-dropped"),

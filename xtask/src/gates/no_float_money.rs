@@ -506,10 +506,15 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
         homes: &["crates/busbar-kernel/src"],
         floor: 150,
     },
+    // The money book's floor moves 24 -> 21 for a DELETION, not a move (p6-ledger-fix, Q128 audit
+    // item 3): `usage/meter.rs`, `usage/evidence.rs` and `usage/lane.rs` were the kernel-side
+    // metering fold, which no production path constructed and the spec does not want (the plane
+    // reports, the kernel writes: `BUSBAR-1.6.0.md` §7). Their code went nowhere, so there is no new
+    // home to add; the floor is the measured count after the deletion.
     CountRoot {
         area: "the money book",
         homes: &["crates/busbar-kernel-ledger/src"],
-        floor: 24,
+        floor: 21,
     },
     CountRoot {
         area: "the contract",

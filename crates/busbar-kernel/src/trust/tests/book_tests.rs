@@ -67,7 +67,8 @@ fn the_first_sighting_with_no_declared_pin_is_new_until_approved() {
         "still unapproved"
     );
     assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
-    b.decide(&i, "cp", None, Decision::Approve).expect("a key");
+    b.decide(&i, "cp", None, Ruling::Approve, None)
+        .expect("a key");
     assert_eq!(b.judge(&i, &whole), Ok(()));
     assert_eq!(
         b.sight("inst", "cp", "h1", 3),
@@ -237,7 +238,8 @@ fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
     assert_eq!(b.judge(&i, &facts(None, None)), Err(Distrust::Unsighted));
     b.sight(&i, "cp", "h1", 1).expect("judged");
     assert_eq!(b.judge(&i, &facts(None, None)), Err(Distrust::NotApproved));
-    b.decide(&i, "cp", None, Decision::Approve).expect("a key");
+    b.decide(&i, "cp", None, Ruling::Approve, None)
+        .expect("a key");
     assert_eq!(
         b.judge(&i, &facts(None, None)),
         Ok(()),
@@ -250,7 +252,7 @@ fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
         Err(Distrust::UnknownItem)
     );
     assert_eq!(
-        b.decide(&i, "cp", Some("t"), Decision::Approve),
+        b.decide(&i, "cp", Some("t"), Ruling::Approve, None),
         Err(Undecided::NoSuchKey),
         "an item never sighted is no key"
     );
@@ -259,7 +261,7 @@ fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
         b.judge(&i, &facts(Some("t"), None)),
         Err(Distrust::NotApproved)
     );
-    b.decide(&i, "cp", Some("t"), Decision::Approve)
+    b.decide(&i, "cp", Some("t"), Ruling::Approve, None)
         .expect("a key");
     assert_eq!(
         b.judge(&i, &facts(Some("t"), None)),
@@ -276,13 +278,13 @@ fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
     assert_eq!(b.sight_item(&i, "cp", "t", "d2"), Ok(Sight::Same));
     assert_eq!(b.judge(&i, &facts(Some("t"), None)), Err(Distrust::Changed));
     // Revoked, it is refused; approved again, at its new digest.
-    b.decide(&i, "cp", Some("t"), Decision::Revoke)
+    b.decide(&i, "cp", Some("t"), Ruling::Revoke, None)
         .expect("a key");
     assert_eq!(
         b.judge(&i, &facts(Some("t"), None)),
         Err(Distrust::NotApproved)
     );
-    b.decide(&i, "cp", Some("t"), Decision::Approve)
+    b.decide(&i, "cp", Some("t"), Ruling::Approve, None)
         .expect("a key");
     assert_eq!(b.judge(&i, &facts(Some("t"), None)), Ok(()));
 
@@ -314,17 +316,18 @@ fn a_configured_item_approval_serves_until_the_operator_revokes_it() {
     };
     assert_eq!(b.judge(&i, &at(Some("d1"))), Ok(()), "first call, no pin");
     assert_eq!(b.judge(&i, &at(Some("d2"))), Err(Distrust::Changed));
-    b.decide(&i, "cp", Some("t"), Decision::Revoke)
+    b.decide(&i, "cp", Some("t"), Ruling::Revoke, None)
         .expect("a configured item is a key");
     assert_eq!(b.judge(&i, &at(Some("d1"))), Err(Distrust::NotApproved));
-    b.decide(&i, "cp", Some("t"), Decision::Approve)
+    b.decide(&i, "cp", Some("t"), Ruling::Approve, None)
         .expect("a key");
     assert_eq!(
         b.judge(&i, &at(Some("d1"))),
         Ok(()),
         "approved at its configured digest"
     );
-    b.decide(&i, "cp", None, Decision::Revoke).expect("a key");
+    b.decide(&i, "cp", None, Ruling::Revoke, None)
+        .expect("a key");
     assert_eq!(b.judge(&i, &at(Some("d1"))), Err(Distrust::NotApproved));
 }
 
@@ -342,12 +345,16 @@ fn the_keys_list_their_states_and_decisions_are_idempotent() {
     };
     assert_eq!(state("inst/cp"), Some(KeyState::New));
     assert_eq!(
-        b.decide(&i, "cp", None, Decision::Approve),
+        b.decide(&i, "cp", None, Ruling::Approve, None),
         Err(Undecided::NothingSighted)
     );
     b.sight(&i, "cp", "h1", 1).unwrap();
-    let first = b.decide(&i, "cp", None, Decision::Approve).expect("a key");
-    let again = b.decide(&i, "cp", None, Decision::Approve).expect("a key");
+    let first = b
+        .decide(&i, "cp", None, Ruling::Approve, None)
+        .expect("a key");
+    let again = b
+        .decide(&i, "cp", None, Ruling::Approve, None)
+        .expect("a key");
     assert_eq!(first, again, "idempotent");
     assert_eq!(first.0.state, KeyState::Approved);
     b.sight(&i, "cp", "h1", 2).unwrap();
@@ -358,13 +365,19 @@ fn the_keys_list_their_states_and_decisions_are_idempotent() {
     );
     assert_eq!(state("inst/cp"), Some(KeyState::Drifted));
     // Re-approved at what it now reports: served again, and the drift is the new pin.
-    let (row, fact) = b.decide(&i, "cp", None, Decision::Approve).expect("a key");
+    let (row, fact) = b
+        .decide(&i, "cp", None, Ruling::Approve, None)
+        .expect("a key");
     assert_eq!(row.approved.as_deref(), Some("h2"));
     assert_eq!(fact.approved.as_deref(), Some("h2"));
     assert_eq!(b.sight(&i, "cp", "h2", 4), Ok((Sight::Same, Effect::None)));
     // Revoked: new (refused) until approved again; the revoke is idempotent too.
-    let r1 = b.decide(&i, "cp", None, Decision::Revoke).expect("a key");
-    let r2 = b.decide(&i, "cp", None, Decision::Revoke).expect("a key");
+    let r1 = b
+        .decide(&i, "cp", None, Ruling::Revoke, None)
+        .expect("a key");
+    let r2 = b
+        .decide(&i, "cp", None, Ruling::Revoke, None)
+        .expect("a key");
     assert_eq!(r1, r2);
     assert_eq!(r1.0.state, KeyState::New);
     assert_eq!(r1.1.approved, None);
@@ -381,9 +394,11 @@ fn kept_decisions_replay_at_admit() {
     let (b, i) = book(entry(None, 0, 0));
     b.sight(&i, "cp", "h1", 1).unwrap();
     b.sight_item(&i, "cp", "t", "d1").unwrap();
-    let (_, whole) = b.decide(&i, "cp", None, Decision::Approve).unwrap();
-    let (_, item) = b.decide(&i, "cp", Some("t"), Decision::Approve).unwrap();
-    let gone = DecisionRow {
+    let (_, whole) = b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
+    let (_, item) = b
+        .decide(&i, "cp", Some("t"), Ruling::Approve, None)
+        .unwrap();
+    let gone = RulingRow {
         counterparty: "gone".into(),
         ..whole.clone()
     };
@@ -426,4 +441,69 @@ fn an_unreachable_sighting_answers_the_last_verdict_and_changes_nothing() {
     );
     let (unpinned, i) = book(entry(None, 0, 0));
     assert_eq!(unpinned.last_verdict(&i, "cp"), Ok(Sight::New));
+}
+
+/// A REGISTRATION WITH NO AUTHENTICITY ROOT (a declared pin of the plane's no-root spelling, no
+/// fingerprint) APPROVES NOTHING: the operator's approval is refused at the counterparty and at its
+/// items (a revoke still stands), so nothing at it is ever served.
+#[test]
+fn a_rootless_registration_approves_nothing() {
+    let mut e = entry(None, 0, 0);
+    e.pin = Some(DeclaredPin {
+        mechanism: "open".into(),
+        root: false,
+        peer_key: false,
+        key: None,
+        fingerprint: None,
+    });
+    assert!(e.rootless());
+    let (b, i) = book(e);
+    b.sight(&i, "cp", "h1", 1).unwrap();
+    b.sight_item(&i, "cp", "t", "d1").unwrap();
+    assert_eq!(
+        b.decide(&i, "cp", None, Ruling::Approve, None),
+        Err(Undecided::Rootless)
+    );
+    assert_eq!(
+        b.decide(&i, "cp", Some("t"), Ruling::Approve, None),
+        Err(Undecided::Rootless)
+    );
+    assert!(b.decide(&i, "cp", Some("t"), Ruling::Revoke, None).is_ok());
+    assert_eq!(
+        b.judge(
+            &i,
+            &TrustFacts {
+                counterparty: "cp",
+                item: Some("t"),
+                digest: Some("d1")
+            }
+        ),
+        Err(Distrust::NotApproved)
+    );
+}
+
+/// AN APPROVED ITEM NEVER SIGHTED IS PENDING (ARCHITECT 2026-10-06): a configured approval exists
+/// before the plane's first re-fetch, and has nothing to be compared against: unsighted, not
+/// changed and not serving. The first sighting compares: a match serves, a mismatch is changed
+/// (the item's quarantine, until re-approved).
+#[test]
+fn an_approved_item_never_sighted_is_pending_until_its_first_sighting_compares() {
+    let mut e = entry(None, 0, 0);
+    e.approved.insert("t".to_string(), "d1".to_string());
+    let at = |item| TrustFacts {
+        counterparty: "cp",
+        item: Some(item),
+        digest: None,
+    };
+    let (b, i) = book(e.clone());
+    assert_eq!(b.judge(&i, &at("t")), Err(Distrust::Unsighted));
+    b.sight_item(&i, "cp", "t", "d1").unwrap();
+    assert_eq!(b.judge(&i, &at("t")), Ok(()), "a matching sighting serves");
+    let (b, i) = book(e);
+    b.sight_item(&i, "cp", "t", "d9").unwrap();
+    assert_eq!(
+        b.judge(&i, &at("t")),
+        Err(Distrust::Changed),
+        "a mismatching first sighting is refused until re-approved"
+    );
 }

@@ -767,6 +767,19 @@ pub trait LegacyRowsRead: Send + Sync {
     }
 }
 
+/// THE PRODUCTION BINDING: the rows are running sums per cell, so a "posting" here is one cell's
+/// row. Every reader folds per bucket and window, which a cell's sum answers exactly as the
+/// postings that made it would.
+impl LegacyRowsRead for busbar_kernel_ledger::legacy::SummedRows {
+    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting> {
+        self.rows()
+    }
+
+    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_kernel_ledger::legacy::LegacyPosting)) {
+        self.fold_rows(take);
+    }
+}
+
 impl LegacyRowsRead for busbar_kernel_ledger::legacy::RecordingRows {
     fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting> {
         self.written()
@@ -1234,9 +1247,9 @@ impl busbar_core_admin::Governance for CoreGovernance {
             }
             KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
                 let decision = if verb == KernelVerb::TrustApprove {
-                    busbar_kernel::trust::book::Decision::Approve
+                    busbar_kernel::trust::book::Ruling::Approve
                 } else {
-                    busbar_kernel::trust::book::Decision::Revoke
+                    busbar_kernel::trust::book::Ruling::Revoke
                 };
                 return bound::trust_decide_effect(request, decision, &self.trust)
                     .map(|a| a.pack());

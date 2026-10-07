@@ -156,14 +156,16 @@ pub mod op {
     pub const TRUST_SIGHT_ITEM: u32 = 23;
     /// `trust.serves`.
     pub const TRUST_SERVES: u32 = 24;
+    /// `trust.decide`.
+    pub const TRUST_DECIDE: u32 = 25;
     /// `trust.state`.
-    pub const TRUST_STATE: u32 = 25;
+    pub const TRUST_STATE: u32 = 26;
     /// `session.emit`.
-    pub const SESSION_EMIT: u32 = 26;
+    pub const SESSION_EMIT: u32 = 27;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 27;
+pub const SERVICES: u32 = 28;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -181,6 +183,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::TRUST_VERIFY
             | op::TRUST_SIGHT_ITEM
             | op::TRUST_SERVES
+            | op::TRUST_DECIDE
             | op::TRUST_STATE
             | op::SESSION_EMIT
     ) && service < SERVICES
@@ -570,6 +573,51 @@ pub const DISTRUST_CHANGED: u64 = 5;
 /// The item was never sighted at this counterparty: an unknown item (a 404's case).
 pub const DISTRUST_UNKNOWN_ITEM: u64 = 6;
 
+/// [`op::TRUST_DECIDE`]'s `in`: THE OPERATOR'S DECISION about one of the calling instance's trust
+/// keys (the key `trust.sight_item` and `trust.serves` name: a counterparty, and optionally an item
+/// there), made through the plane's own administrative verb: the ONE decide path the core-admin
+/// `POST /api/v1/admin/trust/approve` and `/revoke` take, durable alike. An approval approves what
+/// the caller SAW: `expected`, when stated, must be the key's current sighting. `value` = the
+/// `TRUST_DECIDED_*` verdict after it, or the `UNDECIDED_*` that refused it. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustDecideIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// The item there; empty = the counterparty as a whole.
+    pub item: AbiStr,
+    /// The fingerprint (catalogue hash or item digest) the caller saw and approves; empty = none
+    /// stated. Unread by a revoke.
+    pub expected: AbiStr,
+    /// [`TRUST_DECIDE_APPROVE`] | [`TRUST_DECIDE_REVOKE`]; any other value is a fault.
+    pub decision: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
+/// [`TrustDecideIn::decision`]: approve the key at what it was last sighted at.
+pub const TRUST_DECIDE_APPROVE: u32 = 0;
+/// [`TrustDecideIn::decision`]: revoke the key: refused until approved again.
+pub const TRUST_DECIDE_REVOKE: u32 = 1;
+
+/// `trust.decide`'s verdict: the key serves.
+pub const TRUST_DECIDED_SERVING: u64 = 1;
+/// `trust.decide`'s verdict: the key is not approved (new, or revoked): refused.
+pub const TRUST_DECIDED_PENDING: u64 = 2;
+/// `trust.decide`'s verdict: the key's sighting moved from its approval: refused until re-approved.
+pub const TRUST_DECIDED_QUARANTINED: u64 = 3;
+/// `trust.decide` refused: the key was never sighted at anything to approve.
+pub const UNDECIDED_UNPINNED: u64 = 4;
+/// `trust.decide` refused: the fingerprint the caller expects is not the key's current sighting.
+pub const UNDECIDED_STALE: u64 = 5;
+/// `trust.decide` refused: the calling instance has no such key.
+pub const UNDECIDED_UNKNOWN: u64 = 6;
+/// `trust.decide` refused: the counterparty declares no authenticity root; nothing at it is
+/// approvable.
+pub const UNDECIDED_ROOTLESS: u64 = 7;
+
 /// [`op::TRUST_STATE`]'s `in`: the KERNEL'S TRUST STATE of one counterparty and its items, as the
 /// core-admin `GET /api/v1/admin/trust` lists it, for a plane's own administrative views. `value` =
 /// the counterparty's `KEY_*` state; one span per item, in item order: key = the item, value =
@@ -757,22 +805,69 @@ pub const CONTENT_BLOCK: u64 = 1;
 
 // ── hook ──────────────────────────────────────────────────────────────────────────────────────
 
-/// [`op::HOOK_CALL`]'s `in`: run a hook stage for an in-session sub-operation, over the hook kind's
-/// own [`RequestView`](crate::abi::hook::RequestView). `value` = the stage's decision, as the hook
-/// kind numbers it; the bytes and spans are its reply.
+/// [`op::HOOK_CALL`]'s `in` (THE DESIGN, host services; ARCHITECT H2 ruling: op 17): run the calling
+/// unit's hook stage for an in-session sub-operation, over the hook kind's own
+/// [`PromptView`](crate::abi::hook::PromptView). The hooks that run are the ones the CALLING UNIT
+/// binds (its kernel-recorded plane and pool, never a field of the view), at the configuration
+/// generation the unit was bound under, a resumed chain included. The host refuses an `in` that
+/// breaks [`check_hook_call_in`]. `value`:
+///
+/// * [`HOOK_GATE`]: `0` = every gate passed; `400..=599` = a gate stopped it, that status, the
+///   bytes its words;
+/// * [`HOOK_REWRITE`], the chain from hook `from`: `0` = no hook from there on rewrote it;
+///   `1 + i` = hook `i` rewrote it, the bytes the rewrite (`{"messages", "tools"}`, the document
+///   `project`'s `rewrite` takes) — the plugin applies it and resumes with `from = 1 + i`;
+///   `400..=599` = a hook stopped it, that status, the bytes its words.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HookCallIn {
     /// The head.
     pub head: ServiceHead,
-    /// The stage, as the hook kind numbers it.
+    /// [`HOOK_GATE`] | [`HOOK_REWRITE`].
     pub stage: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The view.
-    pub view: *const crate::abi::hook::RequestView,
+    /// Where the rewrite chain resumes: the `value` the last call answered (`0` = its start), at
+    /// most [`HOOK_FROM_MAX`]; `0` for a gate.
+    pub from: u32,
+    /// The view of the sub-operation's prompt.
+    pub prompt: *const crate::abi::hook::PromptView,
     /// Where the reply goes.
     pub into: ServiceBufs,
+}
+
+/// `hook.call` stage: the calling unit's decision gates.
+pub const HOOK_GATE: u32 = 0;
+/// `hook.call` stage: the calling unit's rewrite chain.
+pub const HOOK_REWRITE: u32 = 1;
+/// The furthest a rewrite chain resumes (`HookCallIn::from`), and the most hooks one chain runs.
+pub const HOOK_FROM_MAX: u32 = 255;
+/// The least status a stopping hook answers `hook.call` with.
+pub const HOOK_STOP_MIN: u64 = 400;
+/// The greatest status a stopping hook answers `hook.call` with.
+pub const HOOK_STOP_MAX: u64 = 599;
+
+/// A `hook.call` `in`, before any hook runs: a known stage, a chain resumed no further than
+/// [`HOOK_FROM_MAX`], a gate never resumed, and a prompt view. The host REFUSES an `in` that breaks
+/// this, a distinct message per arm.
+///
+/// # Errors
+///
+/// [`Rule::UnknownCode`] for a stage that is neither; [`Rule::OverMax`] for `from` past
+/// [`HOOK_FROM_MAX`]; [`Rule::Contradiction`] for a gate with a `from`; [`Rule::Missing`] for a NULL
+/// prompt.
+pub fn check_hook_call_in(i: &HookCallIn) -> Result<(), Fault> {
+    if i.stage != HOOK_GATE && i.stage != HOOK_REWRITE {
+        return Err(fault(Rule::UnknownCode, "hook_call.stage"));
+    }
+    if i.from > HOOK_FROM_MAX {
+        return Err(fault(Rule::OverMax, "hook_call.from"));
+    }
+    if i.stage == HOOK_GATE && i.from != 0 {
+        return Err(fault(Rule::Contradiction, "hook_call.from"));
+    }
+    if i.prompt.is_null() {
+        return Err(fault(Rule::Missing, "hook_call.prompt"));
+    }
+    Ok(())
 }
 
 // ── need ──────────────────────────────────────────────────────────────────────────────────────
@@ -958,6 +1053,8 @@ pub struct HostSlots {
     pub trust_sight_item: Option<ServiceFn>,
     /// [`op::TRUST_SERVES`], in [`TrustServesIn`]. A tail addition.
     pub trust_serves: Option<ServiceFn>,
+    /// [`op::TRUST_DECIDE`], in [`TrustDecideIn`]. A tail addition.
+    pub trust_decide: Option<ServiceFn>,
     /// [`op::TRUST_STATE`], in [`TrustStateIn`]. A tail addition.
     pub trust_state: Option<ServiceFn>,
     /// [`op::SESSION_EMIT`], in [`SessionEmitIn`].
@@ -1383,6 +1480,27 @@ pub fn check_trust_serves(
     )
 }
 
+/// `trust.decide`'s answer: a `TRUST_DECIDED_*` verdict or an `UNDECIDED_*`.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_decide(
+    i: &TrustDecideIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        bare(
+            op::TRUST_DECIDE,
+            (TRUST_DECIDED_SERVING, UNDECIDED_ROOTLESS),
+        ),
+    )
+}
+
 /// `trust.state`'s answer: a `KEY_*` state, and the items into the caller's buffers.
 ///
 /// # Errors
@@ -1494,13 +1612,28 @@ pub fn check_content_scan(
     )
 }
 
-/// `hook.call`'s answer.
+/// `hook.call`'s answer: the common rules, and on READY `0`, a stopping status
+/// ([`HOOK_STOP_MIN`]`..=`[`HOOK_STOP_MAX`]), or, for [`HOOK_REWRITE`] only, the `1 + i` of a
+/// rewriting hook within [`HOOK_FROM_MAX`].
 ///
 /// # Errors
 ///
 /// The rule the answer breaks.
 pub fn check_hook_call(i: &HookCallIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, into(op::HOOK_CALL, i.into, ANY))
+    let filled = answer(
+        ret,
+        &i.head,
+        out,
+        into(op::HOOK_CALL, i.into, (0, HOOK_STOP_MAX)),
+    )?;
+    // READY answers `0`, a stopping status, or (a rewrite chain only) `1 + i` within the cap.
+    if ret.outcome() == Outcome::Ready && out.value != 0 && out.value < HOOK_STOP_MIN {
+        let resumable = i.stage == HOOK_REWRITE && out.value <= u64::from(HOOK_FROM_MAX);
+        if !resumable {
+            return Err(fault(Rule::UnknownCode, "hook_call.out.value"));
+        }
+    }
+    Ok(filled)
 }
 
 /// `need.admit`'s answer: never pends; READY (`value` 0) = admitted, REFUSED = not, with the

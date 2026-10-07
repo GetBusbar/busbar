@@ -2131,13 +2131,18 @@ fn compute_layout() -> String {
         [head, counterparty, item, digest]
     );
     record!(s, hsvc::TrustServesIn, [head, counterparty, item, digest]);
+    record!(
+        s,
+        hsvc::TrustDecideIn,
+        [head, counterparty, item, expected, decision, _reserved]
+    );
     record!(s, hsvc::TrustStateIn, [head, counterparty, into]);
     record!(s, hsvc::TrustDueIn, [head, into]);
     record!(s, hsvc::VerifyLookupIn, [head, key, into]);
     record!(s, hsvc::VerifyStoreIn, [head, key, entry, ttl_ms]);
     record!(s, hsvc::EntitlementCheckIn, [head, target]);
     record!(s, hsvc::ContentScanIn, [head, content, into]);
-    record!(s, hsvc::HookCallIn, [head, stage, _reserved, view, into]);
+    record!(s, hsvc::HookCallIn, [head, stage, from, prompt, into]);
     record!(s, hsvc::RandomFillIn, [head, len, into]);
     record!(
         s,
@@ -2170,6 +2175,7 @@ fn compute_layout() -> String {
             disk_append,
             trust_sight_item,
             trust_serves,
+            trust_decide,
             trust_state,
             session_emit
         ]

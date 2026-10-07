@@ -9,8 +9,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
-    check_clock_now, check_dest_judge, check_random_fill, ContentScanIn, EntitlementCheckIn,
-    ItemSpan, RandomFillIn, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
+    check_clock_now, check_content_scan, check_dest_judge, check_hook_call, check_random_fill,
+    check_verify_lookup, check_verify_store, ContentScanIn, EntitlementCheckIn, HookCallIn,
+    ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn, DEST_ALLOWED, DEST_INTERNAL,
+    DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
@@ -137,6 +139,29 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
+    /// Records `<counterparty>/<item>@<expected> <approve>`; answers serving. No counterparty
+    /// named: refused.
+    fn trust_decide(
+        &self,
+        c: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        // The ticketless sweep's zeroed `in` names no counterparty: refused, as an unserved slot.
+        if key.counterparty.is_empty() {
+            return Stored::refused(UNIMPLEMENTED);
+        }
+        let arg = format!(
+            "{}/{}@{} {approve}",
+            key.counterparty,
+            key.item.unwrap_or("-"),
+            expected.unwrap_or("-")
+        );
+        self.saw(c, "trust.decide", arg.as_bytes());
+        Stored::ready(svc::TRUST_DECIDED_SERVING)
+    }
+
     /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same.
     fn trust_state(&self, c: &Caller, counterparty: &str) -> Stored {
         self.saw(c, "trust.state", counterparty.as_bytes());
@@ -259,6 +284,50 @@ impl HostServices for Provider {
     fn work_resume(&self, c: &Caller, unit: Option<u64>, handle: u64, _: Later) -> Ran {
         self.saw(c, "work.resume", format!("{unit:?} {handle}").as_bytes());
         Ran::Now(Stored::ready(0))
+    }
+
+    /// Records the key; answers a hit whose entry is `entry`, in span 0, through `later`.
+    fn verify_lookup(&self, c: &Caller, key: &[u8], later: Later) -> Ran {
+        self.saw(c, "verify.lookup", key);
+        let mut stored = Stored::ready(svc::VERIFY_HIT);
+        stored.bytes = b"entry".to_vec();
+        stored.spans = vec![ItemSpan {
+            key: Span {
+                offset: check::SPAN_ABSENT,
+                len: 0,
+            },
+            value: Span { offset: 0, len: 5 },
+        }];
+        later(stored);
+        Ran::Later
+    }
+
+    /// Records `<key> <entry> <ttl>`.
+    fn verify_store(&self, c: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        let arg = [key, b" ", entry, format!(" {ttl_ms}").as_bytes()].concat();
+        self.saw(c, "verify.store", &arg);
+        Stored::ready(0)
+    }
+
+    /// Records `<unit> <content>`; blocks it.
+    fn content_scan(&self, c: &Caller, unit: Option<u64>, content: &[u8], _: Later) -> Ran {
+        let arg = [format!("{unit:?} ").as_bytes(), content].concat();
+        self.saw(c, "content.scan", &arg);
+        Ran::Now(Stored::ready(svc::CONTENT_BLOCK))
+    }
+
+    /// Records `<unit> <stage> <from> <system> <role>=<text>...`; answers `1 + from`, the bytes
+    /// `rw`.
+    fn hook_call(&self, c: &Caller, unit: Option<u64>, ask: HookAsk, _: Later) -> Ran {
+        let mut arg = format!("{unit:?} {} {} {:?}", ask.stage, ask.from, ask.system);
+        for (role, text) in &ask.messages {
+            arg.push_str(&format!(" {role}={text}"));
+        }
+        self.saw(c, "hook.call", arg.as_bytes());
+        Ran::Now(Stored {
+            bytes: b"rw".to_vec(),
+            ..Stored::ready(1 + u64::from(ask.from))
+        })
     }
 
     /// The disk-lane double: records the append and answers through `later` — READY with the
@@ -472,16 +541,35 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.disk_append,
         HOST_SLOTS.trust_sight_item,
         HOST_SLOTS.trust_serves,
+        HOST_SLOTS.trust_decide,
         HOST_SLOTS.trust_state,
         HOST_SLOTS.session_emit,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
+    // The room a READ service is handed, so its well-formed call can be answered whole.
+    let (mut read_buf, mut read_spans) = ([0u8; 64], [NO_SPAN; 4]);
     for (service, f) in (0..SERVICES).zip(slots) {
         // The largest `in` in the table, all zero past its head: every `in` fits it.
         let mut raw = [0u64; 32];
         let h = head(service, Ticket::NONE, 0, size_of_val(&raw));
         // SAFETY: the head fits the buffer's start.
         unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
+        // A read that answers into the caller's buffers is handed a WELL-FORMED `in` (a named
+        // counterparty, room for its items): the slot is served as any other is. Its all-zero
+        // `in` is a short answer of its own (`an_all_zero_trust_state_in_is_a_short_answer`).
+        if service == op::TRUST_STATE {
+            let well_formed = svc::TrustStateIn {
+                head: h,
+                counterparty: text("peer"),
+                into: bufs(&mut read_buf, &mut read_spans),
+            };
+            // SAFETY: a `TrustStateIn` fits the buffer's start.
+            unsafe {
+                raw.as_mut_ptr()
+                    .cast::<svc::TrustStateIn>()
+                    .write_unaligned(well_formed)
+            };
+        }
         let mut o = blank();
         let ret = f.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
         if may_pend(service) {
@@ -496,45 +584,281 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 "service {service}"
             );
         } else if service == op::TRUST_STATE {
-            // A read names its buffers: an all-zero `in` names none, which the host faults before
-            // the provider.
-            assert_eq!(ret.outcome(), Outcome::Failed, "service {service}");
+            // Its well-formed call, answered whole into the room it named.
+            assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
         } else if service == op::SESSION_EMIT {
             // An emit naming no session and nothing to write is refused before the provider.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), EMIT_NOTHING, "service {service}");
-        } else if !matches!(
-            service,
-            op::CLOCK_NOW
-                | op::SIGN
-                | op::TRUST_DUE
-                | op::ENTITLEMENT_CHECK
-                | op::RANDOM_FILL
-                | op::TRUST_VERIFY
-        ) {
+        } else if service == op::VERIFY_STORE {
+            // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
-            assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
+            assert_eq!(error(&o), NO_VERIFY_KEY, "service {service}");
+        } else {
+            assert!(
+                matches!(
+                    service,
+                    op::CLOCK_NOW
+                        | op::SIGN
+                        | op::TRUST_DUE
+                        | op::ENTITLEMENT_CHECK
+                        | op::RANDOM_FILL
+                        | op::TRUST_VERIFY
+                ),
+                "service {service}"
+            );
+        }
+        // No slot of the table is left unserved.
+        if !o.error.ptr.is_null() {
+            assert_ne!(error(&o), UNIMPLEMENTED, "service {service}");
         }
     }
 }
 
+fn no_bufs() -> ServiceBufs {
+    ServiceBufs {
+        buf: std::ptr::null_mut(),
+        cap: 0,
+        spans: std::ptr::null_mut(),
+        spans_cap: 0,
+    }
+}
+
+fn over(b: &[u8]) -> AbiStr {
+    AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    }
+}
+
+fn blob_over(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
+    busbar_contract::abi::mechanism::call::Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        fmt: 0,
+        flags: 0,
+    }
+}
+
+/// `verify.lookup` reaches the kernel with the caller and the key, and the entry it answers is
+/// written into the caller's buffers; a lookup that names no key is REFUSED before the cache is
+/// read (RED arm).
 #[test]
-fn every_other_slot_answers_unimplemented_on_a_ticket() {
+fn verify_lookup_answers_the_callers_cache_and_refuses_an_empty_key() {
     let d = double();
-    let i = ContentScanIn {
-        head: head(op::CONTENT_SCAN, TICKET, 0, size_of::<ContentScanIn>()),
-        content: busbar_contract::abi::mechanism::call::Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: 0,
-            flags: 0,
-        },
-        into: bufs(&mut [], &mut []),
+    let (mut buf, mut spans) = ([0u8; 8], [NO_SPAN; 1]);
+    let mut i = VerifyLookupIn {
+        head: head(op::VERIFY_LOOKUP, TICKET, 0, size_of::<VerifyLookupIn>()),
+        key: over(b"card:a"),
+        into: bufs(&mut buf, &mut spans),
     };
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::VERIFY_HIT);
+    assert_eq!(&buf[..o.len as usize], b"entry");
+    assert!(check_verify_lookup(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some(("double".to_string(), "verify.lookup", b"card:a".to_vec()))
+    );
+
+    i.key = over(b"");
+    i.head = head(op::VERIFY_LOOKUP, TICKET, 1, size_of::<VerifyLookupIn>());
+    let before = d.route.provider.scoped.lock().unwrap().len();
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_VERIFY_KEY);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
+}
+
+/// `verify.store` never pends: it is served with no ticket, with the caller, key, entry and ttl;
+/// an empty key is REFUSED before the cache is written (RED arm).
+#[test]
+fn verify_store_is_served_without_a_ticket_and_refuses_an_empty_key() {
+    let d = double();
+    let mut i = VerifyStoreIn {
+        head: head(
+            op::VERIFY_STORE,
+            Ticket::NONE,
+            0,
+            size_of::<VerifyStoreIn>(),
+        ),
+        key: over(b"k"),
+        entry: blob_over(b"e"),
+        ttl_ms: 9,
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert!(check_verify_store(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some(("double".to_string(), "verify.store", b"k e 9".to_vec()))
+    );
+    i.key = over(b"");
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_VERIFY_KEY);
+}
+
+/// `content.scan` reaches the kernel with the unit the crossing serves and the content; called
+/// with no ticket it is REFUSED (it may pend) and never runs (RED arm).
+#[test]
+fn content_scan_scans_for_the_unit_the_crossing_serves() {
+    let d = double();
+    let content = b"tool result";
+    let mut i = ContentScanIn {
+        head: head(op::CONTENT_SCAN, TICKET, 0, size_of::<ContentScanIn>()),
+        content: blob_over(content),
+        into: no_bufs(),
+    };
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(7));
+        HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+    };
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::CONTENT_BLOCK);
+    assert!(check_content_scan(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some((
+            "double".to_string(),
+            "content.scan",
+            b"Some(7) tool result".to_vec()
+        ))
+    );
+    i.head = head(
+        op::CONTENT_SCAN,
+        Ticket::NONE,
+        0,
+        size_of::<ContentScanIn>(),
+    );
+    let before = d.route.provider.scoped.lock().unwrap().len();
     let mut o = blank();
     let ret = HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
     assert_eq!(ret.outcome(), Outcome::Refused);
-    assert_eq!(error(&o), UNIMPLEMENTED);
+    assert_eq!(error(&o), UNTICKETED);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
+}
+
+fn hook_in(
+    stage: u32,
+    from: u32,
+    prompt: *const busbar_contract::abi::hook::PromptView,
+    seq: u32,
+    into: ServiceBufs,
+) -> HookCallIn {
+    HookCallIn {
+        head: head(op::HOOK_CALL, TICKET, seq, size_of::<HookCallIn>()),
+        stage,
+        from,
+        prompt,
+        into,
+    }
+}
+
+/// `hook.call` copies the caller's prompt view and runs the stage for the unit the crossing
+/// serves; the rewrite it answers is written into the caller's buffers.
+#[test]
+fn hook_call_runs_the_stage_over_the_copied_prompt() {
+    use busbar_contract::abi::hook::{MessageView, PromptView};
+    let d = double();
+    let messages = [MessageView {
+        role: over(b"user"),
+        text: over(b"hi"),
+    }];
+    let view = PromptView {
+        system: over(b"sys"),
+        message_count: 1,
+        body: busbar_contract::abi::mechanism::call::Blob::ABSENT,
+        messages: messages.as_ptr(),
+        messages_len: 1,
+    };
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
+    let i = hook_in(svc::HOOK_REWRITE, 2, &view, 0, bufs(&mut buf, &mut spans));
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(4));
+        HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+    };
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!((o.value, &buf[..o.len as usize]), (3, &b"rw"[..]));
+    assert!(check_hook_call(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some((
+            "double".to_string(),
+            "hook.call",
+            b"Some(4) 1 2 Some(\"sys\") user=hi".to_vec()
+        ))
+    );
+}
+
+/// RED, one arm each: an unknown stage, a chain resumed past the cap, a resumed gate and a missing
+/// prompt are each REFUSED in their own words before any hook runs; a prompt view that breaks its
+/// own rules is FAULT.
+#[test]
+fn hook_call_refuses_each_malformed_in_before_any_hook_runs() {
+    use busbar_contract::abi::hook::PromptView;
+    let d = double();
+    let view = PromptView {
+        system: over(b""),
+        message_count: 0,
+        body: busbar_contract::abi::mechanism::call::Blob::ABSENT,
+        messages: std::ptr::null(),
+        messages_len: 0,
+    };
+    let broken = PromptView {
+        message_count: 2,
+        messages_len: 2,
+        ..view
+    };
+    let cases: [(HookCallIn, Outcome, &str); 5] = [
+        (
+            hook_in(7, 0, &view, 0, no_bufs()),
+            Outcome::Refused,
+            HOOK_UNKNOWN_STAGE,
+        ),
+        (
+            hook_in(
+                svc::HOOK_REWRITE,
+                svc::HOOK_FROM_MAX + 1,
+                &view,
+                1,
+                no_bufs(),
+            ),
+            Outcome::Refused,
+            HOOK_FROM_PAST_CAP,
+        ),
+        (
+            hook_in(svc::HOOK_GATE, 1, &view, 2, no_bufs()),
+            Outcome::Refused,
+            HOOK_GATE_RESUMED,
+        ),
+        (
+            hook_in(svc::HOOK_GATE, 0, std::ptr::null(), 3, no_bufs()),
+            Outcome::Refused,
+            HOOK_NO_PROMPT,
+        ),
+        (
+            hook_in(svc::HOOK_GATE, 0, &broken, 4, no_bufs()),
+            Outcome::Fault,
+            "",
+        ),
+    ];
+    for (i, outcome, why) in cases {
+        let mut o = blank();
+        let ret = HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        assert_eq!(ret.outcome(), outcome, "{why}");
+        if outcome == Outcome::Refused {
+            assert_eq!(error(&o), why);
+        }
+    }
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -1505,6 +1829,64 @@ fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fa
     );
 }
 
+/// The handle of an unticketed op's `seq`th service call.
+const fn unticketed(seq: u32) -> CompletionHandle {
+    CompletionHandle {
+        ticket: Ticket::NONE,
+        seq,
+        _reserved: 0,
+    }
+}
+
+/// `trust.decide` OVER THE SDK (ARCHITECT 2026-10-06): the key, the expected fingerprint and the
+/// decision reach the kernel as the caller's, with no ticket; RED: a decision the vocabulary does
+/// not hold is FAULT and reaches nothing.
+#[test]
+fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
+    let d = double();
+    let s = sdk(&d);
+    assert_eq!(
+        s.trust_decide(unticketed(0), "peer", Some("t"), Some("d1"), true),
+        Ok(svc::TRUST_DECIDED_SERVING)
+    );
+    assert_eq!(
+        s.trust_decide(unticketed(1), "peer", None, None, false),
+        Ok(svc::TRUST_DECIDED_SERVING)
+    );
+    let bad = svc::TrustDecideIn {
+        head: head(
+            op::TRUST_DECIDE,
+            Ticket::NONE,
+            0,
+            size_of::<svc::TrustDecideIn>(),
+        ),
+        counterparty: text("peer"),
+        item: text(""),
+        expected: text(""),
+        decision: svc::TRUST_DECIDE_REVOKE + 1,
+        _reserved: 0,
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_decide.unwrap()(d.ctx, std::ptr::from_ref(&bad).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "double".to_string(),
+                "trust.decide",
+                b"peer/t@d1 true".to_vec()
+            ),
+            (
+                "double".to_string(),
+                "trust.decide",
+                b"peer/-@- false".to_vec()
+            ),
+        ]
+    );
+}
+
 /// `trust.state` OVER THE SDK: the counterparty's state and its items, read through the
 /// caller's buffers under the short-buffer rule (a short buffer is `Short`, the re-call on the same
 /// handle reads the stored answer), and the kernel was asked once.
@@ -1536,5 +1918,23 @@ fn the_sdk_trust_state_reads_the_kernels_items_under_the_short_buffer_rule() {
     assert_eq!(
         seen,
         vec![("double".to_string(), "trust.state", b"peer".to_vec())]
+    );
+}
+
+/// `trust.state` WITH AN ALL-ZERO `in`: it names no room, so the item the kernel answers is a
+/// SHORT answer, FAILED with the full size named (the short-buffer rule), never READY.
+#[test]
+fn an_all_zero_trust_state_in_is_a_short_answer() {
+    let d = double();
+    let mut raw = [0u64; 32];
+    let h = head(op::TRUST_STATE, Ticket::NONE, 0, size_of_val(&raw));
+    // SAFETY: the head fits the buffer's start.
+    unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_state.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert!(
+        o.needed_bytes > 0 && o.needed_items == 1,
+        "the full size is named"
     );
 }
