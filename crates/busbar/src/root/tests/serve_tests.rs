@@ -8967,7 +8967,7 @@ mod agent_door {
                     after.fees - before.0.fees,
                     after.bytes - before.0.bytes,
                     after.spend - before.0.spend,
-                    counted(&line, busbar_contract::plane::PER_REQUEST),
+                    line.fee_count,
                     counted(&line, surface("bytes_class")),
                 )
             }
