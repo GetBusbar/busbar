@@ -42,10 +42,11 @@ use busbar_contract::abi::sdk::door::{abi_str, statement, Slot};
 use busbar_contract::abi::sdk::transport::form_codes;
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
-    EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, StatusRow,
-    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_FRAMER,
-    SIDE_ACCEPT_STREAM, STATUS_OTHER, STATUS_SUCCESS, UNIT0_FIRST_BYTES, YIELD_ENDED, YIELD_MORE,
+    EmitIn, EncodeIn, FaultRow, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn,
+    IoOut, ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, StatusRow,
+    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FAULT_CALLER, FRAMING_STREAM, PIECE_END_OF_FRAME,
+    ROLE_FRAMER, SIDE_ACCEPT_STREAM, STATUS_OTHER, STATUS_SUCCESS, UNIT0_FIRST_BYTES, YIELD_ENDED,
+    YIELD_MORE,
 };
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
@@ -102,6 +103,16 @@ const STATUS_ROWS: &[StatusRow] = &[
     },
 ];
 
+/// What the numbering means to the breaker: a classed claim states a fault table
+/// (`check_fault_cover`). Every end but the whole one is the caller's, so this neutral door trips
+/// nothing, as it read before the table was appended.
+const FAULT_ROWS: &[FaultRow] = &[FaultRow {
+    claim: 0,
+    lo: 1,
+    hi: 9,
+    fault: FAULT_CALLER as u32,
+}];
+
 const TAIL: TransportTail = TransportTail {
     head: KindTailHead {
         size: std::mem::size_of::<TransportTail>() as u32,
@@ -128,8 +139,8 @@ const TAIL: TransportTail = TransportTail {
     status_rows_len: STATUS_ROWS.len(),
     settings: std::ptr::null(),
     settings_len: 0,
-    fault_rows: std::ptr::null(),
-    fault_rows_len: 0,
+    fault_rows: FAULT_ROWS.as_ptr(),
+    fault_rows_len: FAULT_ROWS.len(),
 };
 
 /// The door's Statement: the identity framer.
