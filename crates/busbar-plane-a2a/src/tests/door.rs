@@ -420,6 +420,41 @@ fn the_callers_credential_has_no_path_to_a_delegate() {
     .expect_err("blank");
     assert!(err.contains("placement.header"), "{err}");
 }
+/// RED: the grammar's object spelling of a named-header placement, `placement: {header: <name>}`
+/// (`busbar_contract::section`'s `placement:` key), reads through the section split as the header
+/// it names, as `bearer` reads as the authorization header; a derived enum read off the section's
+/// YAML value took only a tag and refused the object, so the door would not open over it.
+#[test]
+fn a_named_header_placement_reads_through_the_section() {
+    use crate::a2a::creds::CredentialPlacement;
+    let placed = |placement: serde_json::Value| {
+        let section = serde_json::json!({ "planner": {
+            "url": "https://a2a.vendor/planner",
+            "pin": { "mechanism": "unpinned" },
+            "upstream_credential": {
+                "secret": { "env": "PLANNER_KEY" }, "placement": placement, "lease_ttl_ms": 1000
+            },
+        } });
+        crate::door::read_settings(&serde_json::to_vec(&section).unwrap()).map(|cfg| {
+            cfg.agents["planner"]
+                .upstream_credential
+                .clone()
+                .unwrap()
+                .placement
+        })
+    };
+    assert_eq!(
+        placed(serde_json::json!({ "header": "X-API-Key" })),
+        Ok(CredentialPlacement::Header("X-API-Key".to_string()))
+    );
+    assert_eq!(
+        placed(serde_json::json!("bearer")),
+        Ok(CredentialPlacement::AuthorizationHeader)
+    );
+    assert!(placed(serde_json::json!("cookie")).is_err());
+    assert!(placed(serde_json::json!({ "header": "a", "bearer": null })).is_err());
+}
+
 /// Ported from busbar-a2a a2a/tests/plane_tests.rs::the_registry_follows_config_order_rather_than_hash_order.
 #[test]
 fn the_registry_follows_config_order_rather_than_hash_order() {
