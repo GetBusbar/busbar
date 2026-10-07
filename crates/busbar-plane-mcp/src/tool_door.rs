@@ -1193,12 +1193,15 @@ impl DoorSeal<'_> {
             .map(|s| s.signature.to_vec())
     }
 
-    /// The kernel's wall clock, in Unix seconds.
-    fn now(&mut self) -> u64 {
+    /// The kernel's wall clock, in Unix seconds; `None` when the host's clock cannot be read. A
+    /// sealed state's window is judged against this, so a failed read is never a time (the state
+    /// would be judged at the epoch and every lapsed one would stand): the caller refuses.
+    fn now(&mut self) -> Option<u64> {
         let handle = self.handle();
         self.services
             .clock_now(handle)
-            .map_or(0, |r| r.wall_ns / 1_000_000_000)
+            .ok()
+            .map(|r| r.wall_ns / 1_000_000_000)
     }
 }
 
@@ -2062,7 +2065,13 @@ pub fn decide_ask(
     if !site.rounds.is_empty() && seal.as_deref_mut().is_some_and(|s| s.sign(b"").is_none()) {
         seal = None;
     }
-    let now = seal.as_deref_mut().map_or(0, DoorSeal::now);
+    // No clock, no sealer: a state's window cannot be judged (or stamped) at a time that was not
+    // read, so a host whose clock fails refuses as one with no signing key does.
+    let now = seal.as_deref_mut().and_then(DoorSeal::now);
+    if now.is_none() {
+        seal = None;
+    }
+    let now = now.unwrap_or_default();
     let bind = crate::ask::Bind {
         principal: site.principal,
         method: site.method,
@@ -2204,7 +2213,9 @@ fn relay_ask(
         spent: &plane.spent,
         pending: false,
     };
-    let now = seal.now();
+    let Some(now) = seal.now() else {
+        return refused(child, no_sealer);
+    };
     let bind = crate::ask::Bind {
         principal,
         method: crate::codec::METHOD_TOOLS_CALL,

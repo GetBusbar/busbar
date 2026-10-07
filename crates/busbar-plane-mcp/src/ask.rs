@@ -576,15 +576,7 @@ pub fn decide(
             cap,
         });
     }
-    let Some(this_round) = rounds.get(next_round as usize) else {
-        let (Some((nonce, expires_at)), Some(seal)) = (presented, seal.as_deref_mut()) else {
-            return AskDecision::Refuse(AskRefusal::StateRejected(Rejected::AlreadySpent));
-        };
-        if !seal.redeem(&nonce, expires_at, bind.now) {
-            return AskDecision::Refuse(AskRefusal::StateRejected(Rejected::AlreadySpent));
-        }
-        return AskDecision::Proceed;
-    };
+    let this_round = rounds.get(next_round as usize);
     if next_round > 0 {
         let answered = retry
             .responses
@@ -601,6 +593,15 @@ pub fn decide(
             });
         }
     }
+    let Some(this_round) = this_round else {
+        let (Some((nonce, expires_at)), Some(seal)) = (presented, seal.as_deref_mut()) else {
+            return AskDecision::Refuse(AskRefusal::StateRejected(Rejected::AlreadySpent));
+        };
+        if !seal.redeem(&nonce, expires_at, bind.now) {
+            return AskDecision::Refuse(AskRefusal::StateRejected(Rejected::AlreadySpent));
+        }
+        return AskDecision::Proceed;
+    };
     let asks: Vec<CallerAsk> = this_round
         .iter()
         .map(|(key, cfg)| CallerAsk::from_config(key, cfg))
