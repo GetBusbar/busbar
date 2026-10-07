@@ -704,7 +704,7 @@ impl std::error::Error for Rejected {}
 
 /// Lowercase-hex SHA-256 of `bytes` - the library digest stored in the manifest.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    busbar_kernel_ledger::digest::sha256_hex(bytes)
+    busbar_contract::redacted::sha256_hex(bytes)
 }
 
 /// The canonical byte string that is signed/verified: the whole manifest MINUS its `signature`, as

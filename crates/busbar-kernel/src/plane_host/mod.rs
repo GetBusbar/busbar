@@ -355,7 +355,7 @@ pub fn govern_admit_reason_over(
 /// exactly as a chain that could not run denies.
 // Only the inbound stdio admission path consumes this seam today; a build whose planes resolve
 // identity on their own door leaves it with no caller, hence the unconditional dead-code allow (the
-// fn is always compiled — it backs the always-present `EngineHost::identity_admit` impl).
+// fn is always compiled).
 #[allow(dead_code)]
 pub async fn identity_admit_over(
     app: Arc<App>,
@@ -449,69 +449,6 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
     }) / 1_000_000
 }
 
-/// Synthesize ONE non-streaming chat completion by driving `body` through the ENTIRE resolved ingress
-/// pipeline over the live `app`, returning the raw wire outcome — the core-resident veneer behind
-/// [`EngineHost::synthesize_completion`](busbar_kernel::plane_host::EngineHost::synthesize_completion).
-/// This is the ONLY place the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
-/// reaches now live: an extracted plane hands a NEUTRAL request (gov + model + body bytes) and gets a
-/// NEUTRAL [`HostCompletion`](busbar_kernel::plane_host::HostCompletion) (status + body bytes) back,
-/// never naming a core type.
-///
-/// A line-for-line lift of the former `mcp::sampling::complete`'s pre-response body: the argument
-/// tuple handed to `operation_resolved` is preserved BYTE-IDENTICALLY — the chat `proto` is the
-/// registry's residual-default dialect (read by NAME, so this neutral core spells none),
-/// [`Transport::Http`](crate::transport::Transport), the `handlers::chat(proto, Http)` op,
-/// `caller_token = None`, `model_not_found_message = None`, `charged_at = busbar_kernel::store::now()` (whole
-/// SECONDS, the same source [`clock_now_secs_over`] scales to), and `LazyBody::parse` over the SAME
-/// bytes — so governance attribution and metering are unchanged. The async future stays `Send`: it
-/// only `.await`s the native core async fn; no `HostCtx` is minted here, and any minted inside
-/// `operation_resolved`'s own frames is consumed there, never crossing this `.await`.
-pub async fn synthesize_completion_over(
-    app: Arc<App>,
-    gov: &crate::governance::PlaneRequestCtx,
-    model: &str,
-    body: bytes::Bytes,
-    max_body_bytes: usize,
-) -> Result<busbar_kernel::plane_host::HostCompletion, busbar_kernel::plane_host::CompletionRefusal>
-{
-    // FRESH headers, not the inbound request's: the caller's own headers carry affinity keys and
-    // per-request parameters addressed to the caller's request, and replaying them onto a leg the
-    // caller did not compose would let one exchange steer another.
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/json"),
-    );
-    // The resolved-completion synthesizer (`operation_resolved` over the residual-default chat
-    // dialect, `LazyBody::parse` over these bytes, `model` explicit, `caller_token = None`) reads the
-    // LLM routing tables and RELOCATED into the LLM plane; core reaches it through the neutral
-    // resolved-completion seam, threading `App`/`GovCtx` back opaquely as [`ArrivalCtx`]. `None` is
-    // the all-planes-off deletion configuration: with no LLM plane installed there is no chat dialect
-    // to drive, and the caller gets that as a neutral refusal it words in its own vocabulary.
-    let Some(synth) = busbar_kernel::ingress::arrival::completion_ingress() else {
-        return Err(busbar_kernel::plane_host::CompletionRefusal::NotInstalled);
-    };
-    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
-        crate::ingress::arrival_host::ArrivalPayload {
-            host: engine_host(&app),
-            gov: gov.clone(),
-            caller_token: None,
-        },
-    );
-    let response = synth(busbar_kernel::ingress::arrival::CompletionArrival {
-        ctx,
-        model: model.to_string(),
-        headers,
-        body,
-    })
-    .await;
-    let status = response.status().as_u16();
-    let body = axum::body::to_bytes(response.into_body(), max_body_bytes)
-        .await
-        .map_err(|e| busbar_kernel::plane_host::CompletionRefusal::BodyUnread(e.to_string()))?;
-    Ok(busbar_kernel::plane_host::HostCompletion { status, body })
-}
-
 /// Core's implementation of the neutral [`EngineHost`](busbar_kernel::plane_host::EngineHost)
 /// seam over the live [`App`]. A plane holds this behind an
 /// `Arc<dyn busbar_kernel::plane_host::EngineHost>` and calls typed, safe methods on it INSTEAD of
@@ -525,32 +462,23 @@ pub async fn synthesize_completion_over(
 /// and returns an owned value — the raw host pointer never escapes the call.
 #[derive(Clone)]
 pub struct EngineHostImpl {
-    /// The BOUND engine snapshot the host reaches run against — loaded once at mint. Serves
-    /// `plane_slot` and every existing method, byte-identically to the pre-`handle` host.
+    /// The BOUND engine snapshot the host reaches run against — loaded once at mint. Serves every
+    /// method.
     app: Arc<App>,
-    /// The LIVE handle, retained so `plane_slot_live` re-reads the CURRENT snapshot after a config
-    /// swap. `None` for a snapshot-only mint (the `Fn(&Arc<App>)` factory / [`new`](Self::new)), where
-    /// the bound snapshot is the only snapshot the host was ever handed.
-    handle: Option<Arc<crate::state::AppHandle>>,
 }
 
 impl EngineHostImpl {
-    /// Build the host implementation over the live `app` — a SNAPSHOT-ONLY mint (no live handle, so
-    /// `plane_slot_live` degrades to the bound snapshot).
+    /// Build the host implementation over the live `app`.
     #[must_use]
     pub fn new(app: Arc<App>) -> Self {
-        EngineHostImpl { app, handle: None }
+        EngineHostImpl { app }
     }
 
     /// Build the host over a live [`AppHandle`](crate::state::AppHandle): the bound snapshot is the
-    /// handle's CURRENT load (keeping frozen-snapshot semantics byte-identical to `new(handle.load())`),
-    /// and the handle is retained so `plane_slot_live` sees a later config swap.
+    /// handle's CURRENT load, byte-identical to `new(handle.load())`.
     #[must_use]
     pub fn from_handle(handle: Arc<crate::state::AppHandle>) -> Self {
-        EngineHostImpl {
-            app: handle.load(),
-            handle: Some(handle),
-        }
+        EngineHostImpl { app: handle.load() }
     }
 }
 
@@ -621,14 +549,6 @@ impl busbar_kernel::plane_host::LanePoolHost for EngineHostImpl {
         crate::limits::default_probe_timeout_secs()
     }
 
-    fn pool_members_repeatable(&self, member: &str) -> Option<(String, Vec<String>, Vec<String>)> {
-        self.app
-            .tool_pools
-            .iter()
-            .find(|(_, cfg)| cfg.members.iter().any(|m| m == member))
-            .map(|(name, cfg)| (name.clone(), cfg.members.clone(), cfg.repeatable.clone()))
-    }
-
     fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)> {
         // Scan the plane's failover pool map for the pool `member` belongs to and return its name +
         // members (the walk derives lanes from member position). A pure snapshot read over the generic
@@ -652,11 +572,11 @@ impl busbar_kernel::plane_host::MeteringHost for EngineHostImpl {
     }
 }
 
-// M4 (god-trait split): the single `EngineHostImpl` implements each capability slice `EngineHost` now
-// sums. Every method body is byte-identical to the pre-split flat `impl EngineHost` — only the impl
-// block it lives in changed. `EngineHost` itself declares no method of its own (beyond the provided
-// `run_gauntlet`), so the blanket `impl EngineHost for EngineHostImpl` below is empty: the sum is
-// satisfied entirely through the slice impls.
+// M4 (god-trait split): the single `EngineHostImpl` implements each capability slice `EngineHost`
+// now sums. Every method body is byte-identical to the pre-split flat `impl EngineHost` — only the
+// impl block it lives in changed. `EngineHost` itself declares no method of its own, so the blanket
+// `impl EngineHost for EngineHostImpl` below is empty: the sum is satisfied entirely through the
+// slice impls.
 
 impl busbar_kernel::plane_host::ClockHost for EngineHostImpl {
     fn clock_now_secs(&self) -> u64 {
@@ -730,25 +650,6 @@ impl busbar_kernel::plane_host::JournalHost for EngineHostImpl {
         // lands here byte-identically to the pre-flip `AUDIT.record_by(...)` reach.
         crate::audit_ring::AUDIT.record_by(action, resource, outcome, principal);
     }
-
-    fn call_log_emit(&self, principal: &str, input: busbar_kernel::plane::calllog::CallInput) {
-        // Mint a fresh per-call arena over the live engine and drive the chain seam SYNCHRONOUSLY — the
-        // `HostCtx` never escapes the call. The plane's former `Some(scope)`/`None` selection (reuse the
-        // request arena vs open a fresh one) was a no-op distinction for THIS write: a chain append
-        // registers no host handle, so which arena reclaims is immaterial. Same dispatch as the plane's
-        // in-place `with_dispatch_scope` leg.
-        with_dispatch_scope(&self.app, |host, _| {
-            crate::calllog::emit(host, principal, input)
-        });
-    }
-
-    fn call_log_emit_hostless(
-        &self,
-        principal: &str,
-        input: busbar_kernel::plane::calllog::CallInput,
-    ) {
-        crate::calllog::emit_hostless(principal, input);
-    }
 }
 
 impl busbar_kernel::plane_host::MountHost for EngineHostImpl {
@@ -779,15 +680,6 @@ impl busbar_kernel::plane_host::RegistryHost for EngineHostImpl {
     fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         // Pure map read + Arc clone, mirroring next_request_id: no HostCtx, no vtable slot.
         self.app.plane_slot(key).cloned()
-    }
-
-    fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-        match &self.handle {
-            // Re-read the CURRENT snapshot so a swap after mint is seen.
-            Some(h) => h.load().plane_slot(key).cloned(),
-            // Snapshot-only mint: the bound snapshot is the only snapshot this host was handed.
-            None => self.app.plane_slot(key).cloned(),
-        }
     }
 
     fn secret_resolver(&self) -> Arc<dyn busbar_contract::secret::SecretResolve> {
@@ -1046,104 +938,13 @@ fn pin_models(
     Some((pin.gov.0.clone().downcast().ok()?, cost_model(&pin.cost)?))
 }
 
-#[async_trait::async_trait]
 impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
-    fn quarantine_settle(&self, subject: &str, state: crate::trust::TrustState) -> bool {
-        trust::quarantine_settle_over(&self.app, subject, state)
-    }
-
-    fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool {
-        // A fresh per-call arena backs the borrow; the redemption registers no host handle, so which
-        // arena reclaims is immaterial. The `ApprovalQuery` is built HERE so the plane passes only the
-        // nonce/expiry/now — it never names the `#[repr(C)]` POD or the `SpentTokenLedger`.
-        let scope = DispatchScope::new();
-        with_borrowed_host(&self.app, &scope, |host, _vt| {
-            let query = busbar_contract::abi::hot::ApprovalQuery {
-                size: core::mem::size_of::<busbar_contract::abi::hot::ApprovalQuery>() as u32,
-                version: busbar_contract::abi::hot::POD_VERSION,
-                _reserved: 0,
-                scope: 0,
-                _reserved2: 0,
-                expires_at,
-                now,
-                key_ptr: nonce.as_ptr(),
-                key_len: nonce.len(),
-            };
-            trust::approval_redeem_q(
-                host,
-                &query as *const busbar_contract::abi::hot::ApprovalQuery,
-            ) == busbar_contract::abi::hot::StatusClass::Ok
-        })
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
         self.app
             .governance
             .as_ref()
             .and_then(|g| g.verify_token(token, busbar_kernel::store::now(), None))
-    }
-
-    fn identity_audience_binding(
-        &self,
-        token: &str,
-        expected_aud: &str,
-    ) -> busbar_kernel::plane_host::AudienceBinding {
-        // A pure judgement — no `HostCtx`, no engine state. `inspect_bearer` returns the enum this
-        // trait method's type re-exports, so this is a direct forward to the UNCHANGED core seam.
-        crate::auth::audience::inspect_bearer(token, expected_aud)
-    }
-
-    async fn identity_admit(
-        &self,
-        token: Option<String>,
-        audience: String,
-        resource: String,
-    ) -> Result<
-        (
-            busbar_contract::auth::AuthPrincipal,
-            busbar_contract::records::PlaneRequestCtx,
-        ),
-        busbar_contract::auth::IdentityRefusal,
-    > {
-        // The veneer already spawns a blocking closure that mints + consumes the `HostCtx` on a
-        // blocking thread; this only awaits the join, so no `HostCtx` crosses the `.await` and the
-        // future stays `Send`.
-        identity_admit_over(Arc::clone(&self.app), token, audience, resource).await
-    }
-
-    fn principal_standing(
-        &self,
-        standing: &busbar_kernel::trust::validate::Standing,
-        live_gen: u64,
-        now: u64,
-    ) -> Result<
-        Option<Arc<busbar_contract::records::VirtualKey>>,
-        busbar_kernel::trust::validate::Lapsed,
-    > {
-        // Inject the host's live `GovState` AND the live `role_bindings` through the `GovResolve` seam
-        // so the plane holds only the `Standing`. The bindings are per-snapshot (rebuilt on every
-        // config apply), so they are read off the CURRENT snapshot when the host retains the live
-        // handle: a role-bound principal is re-checked against the bindings in force now, never the
-        // ones it was admitted under. A registry key re-resolves exactly as before.
-        let live = self.handle.as_ref().map(|h| h.load());
-        let app = live.as_ref().unwrap_or(&self.app);
-        let resolve = crate::governance::LiveResolve {
-            governance: app.governance.as_deref(),
-            role_bindings: &app.role_bindings,
-        };
-        standing.still_permitted(
-            Some(&resolve as &dyn busbar_kernel::trust::validate::GovResolve),
-            live_gen,
-            now,
-        )
-    }
-
-    fn ask_state_sealer(&self) -> Option<busbar_kernel::plane::approvals::Sealer> {
-        self.app
-            .governance
-            .as_ref()
-            .and_then(|g| crate::plane::approvals::ask_state_sealer(g))
     }
 }
 
@@ -1330,29 +1131,9 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
     }
 }
 
-#[async_trait::async_trait]
-impl busbar_kernel::plane_host::CompletionHost for EngineHostImpl {
-    async fn synthesize_completion(
-        &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        model: &str,
-        body: bytes::Bytes,
-        max_body_bytes: usize,
-    ) -> Result<
-        busbar_kernel::plane_host::HostCompletion,
-        busbar_kernel::plane_host::CompletionRefusal,
-    > {
-        // The veneer keeps the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
-        // reaches in core; it only `.await`s the native async fn, so no `HostCtx` crosses the
-        // `.await` and the future stays `Send`.
-        synthesize_completion_over(Arc::clone(&self.app), gov, model, body, max_body_bytes).await
-    }
-}
-
-// `EngineHost` declares no method of its own beyond the provided `run_gauntlet`; it is purely the SUM
-// of the capability slices above. This blanket impl is therefore empty — the sum is satisfied through
-// the slice impls, and the substrate-side compile-time witness enforces that equality.
-#[async_trait::async_trait]
+// `EngineHost` declares no method of its own; it is purely the SUM of the capability slices above.
+// This blanket impl is therefore empty — the sum is satisfied through the slice impls, and the
+// substrate-side compile-time witness enforces that equality.
 impl busbar_kernel::plane_host::EngineHost for EngineHostImpl {}
 
 /// Mint an `Arc<dyn EngineHost>` over the live `app` — the constructor core hands a plane so the
@@ -1368,9 +1149,7 @@ pub fn engine_host(app: &Arc<App>) -> Arc<dyn busbar_kernel::plane_host::EngineH
 /// per-request `Arc::new` heap allocation [`engine_host`] pays. The whole cost is one `Arc::clone` of
 /// the snapshot (an atomic refcount bump — NOT a heap allocation, so it never touches the engine's
 /// alloc-gate count), and the `&dyn` coercion of the stack value allocates nothing. Returned opaque
-/// (`impl EngineHost`) so the plane names no core type. The two async seam methods
-/// (`identity_admit`/`synthesize_completion`) still work — they `Arc::clone` internally — but the
-/// engine hot path calls only the SYNC methods, so this borrowed carrier is the right one there.
+/// (`impl EngineHost`) so the plane names no core type.
 #[must_use]
 pub fn engine_host_value(app: &Arc<App>) -> impl busbar_kernel::plane_host::EngineHost + 'static {
     EngineHostImpl::new(Arc::clone(app))
@@ -1384,17 +1163,14 @@ pub fn engine_host_value(app: &Arc<App>) -> impl busbar_kernel::plane_host::Engi
 pub fn engine_host_from_handle(
     handle: &Arc<crate::state::AppHandle>,
 ) -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
-    // `from_handle` (not `engine_host(&handle.load())`): retains the live handle so `plane_slot_live`
-    // re-reads the CURRENT snapshot on the route/detached-runner/stdio paths, which must see a config
-    // swap that lands after admission. The bound snapshot stays `handle.load()` — byte-identical.
     Arc::new(EngineHostImpl::from_handle(Arc::clone(handle)))
 }
 
-/// Mint a NEUTRAL [`LiveHostFactory`](busbar_kernel::plane_host::LiveHostFactory) closing over a live
-/// [`AppHandle`](crate::state::AppHandle): each call returns a fresh `from_handle` host whose BOUND
-/// snapshot is the handle's CURRENT load and whose `plane_slot_live` re-reads the live handle — so a
-/// transport that re-mints per frame sees a config swap that lands between calls. Byte-identical to
-/// calling [`engine_host_from_handle`] on each frame, handed to a plane that must not name the handle.
+/// Mint a NEUTRAL [`LiveHostFactory`](busbar_kernel::plane_host::LiveHostFactory) closing over a
+/// live [`AppHandle`](crate::state::AppHandle): each call returns a fresh `from_handle` host whose
+/// BOUND snapshot is the handle's CURRENT load — so a transport that re-mints per frame sees a
+/// config swap that lands between calls. Byte-identical to calling [`engine_host_from_handle`] on
+/// each frame, handed to a plane that must not name the handle.
 #[must_use]
 pub fn live_host_factory(
     handle: std::sync::Arc<crate::state::AppHandle>,
@@ -1407,9 +1183,9 @@ pub fn live_host_factory(
 
 /// THE LIVE RE-RESOLUTION a door unit's entitlement asks through (`entitlement.check`, ARCHITECT
 /// round 4 Q-L3B-SURFACES (a)): an admitted principal re-resolved against the CURRENT snapshot's
-/// governance registry (a registry key, by id) and `role_bindings` (a role-bound key), exactly as
-/// [`EngineHost::principal_standing`] judges a long-lived response's frame. `None` when it no longer
-/// stands; a deployment with governance off stands as admitted.
+/// governance registry (a registry key, by id) and `role_bindings` (a role-bound key), through
+/// [`Standing::still_permitted`](busbar_kernel::trust::validate::Standing::still_permitted). `None`
+/// when it no longer stands; a deployment with governance off stands as admitted.
 #[must_use]
 pub fn live_standing(
     handle: std::sync::Arc<crate::state::AppHandle>,
@@ -1904,8 +1680,6 @@ pub mod spki;
 pub mod trust_anchor;
 
 use crate::breaker::CanonicalSignal;
-use crate::plane::approvals::Sealer;
-use crate::plane::calllog::CallInput;
 pub use crate::plane_host::build_input::{
     AffinityInput, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput, HealthInput,
     HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
@@ -1915,11 +1689,8 @@ pub use crate::plane_host::engine_view::{
     EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
 };
 use crate::store::Unavailable;
-use crate::trust::validate::{Lapsed, Standing};
-use crate::trust::TrustState;
 use busbar_contract::abi::hot::{AdmissionId, Signal, StatusClass};
-use busbar_contract::auth::{AuthPrincipal, IdentityRefusal};
-use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
+use busbar_contract::records::PlaneRequestCtx;
 
 /// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
 #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
@@ -1987,12 +1758,9 @@ pub enum TransformVerdict {
 }
 
 /// What could be established about a presented bearer's RFC 8707 audience binding — the outcome of
-/// the host `identity_audience_binding` pre-filter, for credentials busbar did not mint.
-///
-/// Relocated here from `busbar_kernel::auth::audience` so a plane reads the pre-filter verdict without
-/// naming the core auth module; the binding JUDGEMENT (which reaches core's governance token prefix)
-/// stays core behind [`EngineHost::identity_audience_binding`]. Core re-exports this at
-/// `crate::auth::audience::Binding`, so its own callers and the enum's variants are unchanged.
+/// the audience pre-filter (`crate::auth::audience::inspect_bearer`), for credentials busbar did
+/// not mint. Core re-exports this at `crate::auth::audience::Binding`, so its own callers and the
+/// enum's variants are unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudienceBinding {
     /// A busbar-signed token. The real audience check happens in the verifier, which has the
@@ -2005,27 +1773,6 @@ pub enum AudienceBinding {
     Mismatch,
     /// Not a JWT and not a busbar token: nothing to read. Refused.
     Opaque,
-}
-
-/// The raw wire outcome of a host-driven completion: the pipeline's HTTP status and body bytes,
-/// for the plane to shape into its protocol's own result. Neutral — no axum `Response`, no `App`.
-#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-pub struct HostCompletion {
-    /// The pipeline's HTTP status.
-    pub status: u16,
-    /// The pipeline's response body bytes (bounded by the `max_body_bytes` the caller passed).
-    pub body: bytes::Bytes,
-}
-
-/// Why the host produced no completion. NEUTRAL: the kernel names the fact, and the plane that asked
-/// words the refusal in its own vocabulary (lean-core: no plane word is a kernel literal).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CompletionRefusal {
-    /// No plane installed the resolved-completion ingress, so there is no dialect to drive.
-    NotInstalled,
-    /// The pipeline answered, but its body could not be read within `max_body_bytes`; carries the
-    /// read error's text.
-    BodyUnread(String),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -2504,15 +2251,15 @@ pub trait BreakerHost: Send + Sync {
     fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64;
 }
 
-/// BRAKE (audit D): the LANE/POOL-family slice of the host seam, split off `EngineHost` as a supertrait
-/// so the lane-runtime + pool-membership + probe-default cluster stays a cohesive, bounded ABI. Groups
-/// the five seams a plane's routing/health machinery reads: the neutral breaker/lane store view
-/// ([`lane_store`](Self::lane_store)), the two process-wide active-probe fallbacks
-/// ([`default_probe_interval_secs`](Self::default_probe_interval_secs) /
-/// [`default_probe_timeout_secs`](Self::default_probe_timeout_secs)), and the failover-pool membership
-/// resolvers ([`pool_members_repeatable`](Self::pool_members_repeatable) /
-/// [`plane_pool_members`](Self::plane_pool_members)). PURE STRUCTURAL: signatures and bodies are
-/// unchanged; a plane that names `EngineHost` reaches these through the inherited supertrait bound.
+/// BRAKE (audit D): the LANE/POOL-family slice of the host seam, split off `EngineHost` as a
+/// supertrait so the lane-runtime + pool-membership + probe-default cluster stays a cohesive,
+/// bounded ABI. Groups the four seams a plane's routing/health machinery reads: the neutral
+/// breaker/lane store view ([`lane_store`](Self::lane_store)), the two process-wide active-probe
+/// fallbacks ([`default_probe_interval_secs`](Self::default_probe_interval_secs) /
+/// [`default_probe_timeout_secs`](Self::default_probe_timeout_secs)), and the failover-pool
+/// membership resolver ([`plane_pool_members`](Self::plane_pool_members)). PURE STRUCTURAL:
+/// signatures and bodies are unchanged; a plane that names `EngineHost` reaches these through the
+/// inherited supertrait bound.
 pub trait LanePoolHost: Send + Sync {
     /// The breaker/lane store this deployment routes through, as the NEUTRAL
     /// [`busbar_kernel::store::LaneRuntime`](crate::store::LaneRuntime) view — the seam the engine's
@@ -2537,13 +2284,6 @@ pub trait LanePoolHost: Send + Sync {
     /// inherits — the host-read twin of [`default_probe_interval_secs`](Self::default_probe_interval_secs).
     /// Byte-identical to `busbar_kernel::limits::default_probe_timeout_secs`.
     fn default_probe_timeout_secs(&self) -> u64;
-
-    /// The `(pool_name, members, repeatable)` of the failover pool `member` belongs to, off the BOUND
-    /// snapshot; `None` when `member` is un-pooled. `repeatable` is the pool's `repeatable:` operation
-    /// list (what `CandidatePoolCfg::repeatability` consults) — the extra tuple element that
-    /// distinguishes this seam from the 2-tuple [`plane_pool_members`](Self::plane_pool_members).
-    /// Identical to scanning the deployment's repeatable-carrying pool map.
-    fn pool_members_repeatable(&self, member: &str) -> Option<(String, Vec<String>, Vec<String>)>;
 
     /// The `(pool_name, members)` of the failover pool `member` belongs to on the plane identified by
     /// the opaque registry `plane_key`, off the BOUND snapshot; `None` when `member` is un-pooled. The
@@ -2576,8 +2316,8 @@ pub trait MeteringHost: Send + Sync {
 // CAPABILITY SLICES (M4 god-trait split) — the residual flat host seam, cut into cohesive capability
 // supertraits so a plane depends ONLY on the slices it uses. `EngineHost` is the SUM (a supertrait of
 // every slice), so an existing `Arc<dyn EngineHost>` caller is unaffected — it still reaches every
-// method through the inherited bound — while a plane that needs a narrower capability (a voice/bytes
-// port that must NOT name LLM-only `synthesize_completion`) can take `&dyn SliceX` instead. PURELY
+// method through the inherited bound — while a plane that needs a narrower capability can take
+// `&dyn SliceX` instead. PURELY
 // STRUCTURAL: every method keeps its exact signature, doc and same-dispatch body; nothing moves in the
 // wire/ABI/money plane. The single `EngineHostImpl` (busbar-core) implements each slice.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -2692,17 +2432,6 @@ pub trait JournalHost: Send + Sync {
     ) {
         crate::residual_log::emit(residual, plane, dialect, lane, request_id, principal);
     }
-
-    /// Emit ONE per-call record through the durable MCP call-log engine. The transient `HostCtx` the
-    /// chain seam needs is minted INTERNALLY (a fresh per-call arena over the live engine — the append
-    /// registers no host handle, so the arena choice is immaterial). Identical to
-    /// `busbar_kernel::calllog::emit`.
-    fn call_log_emit(&self, principal: &str, input: CallInput);
-
-    /// The DEFERRED-SITE twin of [`call_log_emit`](Self::call_log_emit): emit through the
-    /// HOSTLESS call-log path, for a client-leg site that has no `HostCtx` to open. Identical to
-    /// `busbar_kernel::calllog::emit_hostless`.
-    fn call_log_emit_hostless(&self, principal: &str, input: CallInput);
 }
 
 /// The MOUNT slice: the pure mount-table reads that shape an arrival's dialect and its pre-collapse
@@ -2746,12 +2475,6 @@ pub trait RegistryHost: Send + Sync {
     ///
     /// [`next_request_id`]: RegistryHost::next_request_id
     fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
-
-    /// The plane's slot off the CURRENT snapshot — re-reads the LIVE handle so a config swap AFTER
-    /// this host was minted is seen (the dispatch-time re-validation / per-round revocation / watch
-    /// loops depend on this). Falls back to the bound snapshot for a snapshot-only mint (one built
-    /// without a live handle). A pure map read, no `HostCtx`.
-    fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
 
     /// The deployment's NEUTRAL secret resolver, behind the `busbar_contract::secret::SecretResolve` seam, so a
     /// plane mints a delegation credential (and loads its outbound TLS PEM) WITHOUT naming the
@@ -3012,25 +2735,8 @@ pub trait BudgetHost: Send + Sync {
     );
 }
 
-/// The IDENTITY/TRUST slice: inbound identity resolution + the trust/approval seams around it — the
-/// audience pre-filter, the auth-chain admit, the standing re-ask, the ask-state sealer derivation, the
-/// drift quarantine settle, the one-time approval redeem, and the test-only token verifier. Split off
-/// `EngineHost` as a supertrait. `#[async_trait]` because [`identity_admit`](Self::identity_admit) is
-/// the one async method (it awaits a `spawn_blocking` join over the host auth chain).
-#[async_trait::async_trait]
+/// The IDENTITY slice: the test-only token verifier. Split off `EngineHost` as a supertrait.
 pub trait IdentityHost: Send + Sync {
-    /// Settle a drift disposition for `subject` through the host `drift_quarantine` seam, pulling the
-    /// demotion store host-side. Returns whether the slot answered `Ok`; the settle is
-    /// fire-and-forget, so a non-`Ok` is a durability miss, not a refusal. Identical to
-    /// `busbar_kernel::plane_host::trust::quarantine_settle_over`.
-    fn quarantine_settle(&self, subject: &str, state: TrustState) -> bool;
-
-    /// Redeem a one-time approval against the shared spent-approval ledger the host pulls, spending
-    /// against the seal's own `expires_at` and the caller's `now`. `true` iff this is the FIRST
-    /// redemption; `false` when already spent OR the durable ledger could not answer (fail-closed).
-    /// Identical to `busbar_kernel::plane_host::trust::approval_redeem_q`.
-    fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool;
-
     /// TEST-ONLY raw-token → resolved `VirtualKey` resolution over this deployment's governance state
     /// (the data-plane boundary: no audience). The host-driven form of
     /// `App::governance.and_then(|g| g.verify_token(token, now, None))`, for the test paths that
@@ -3047,44 +2753,6 @@ pub trait IdentityHost: Send + Sync {
         let _ = token;
         None
     }
-
-    /// Establish what can be established about a presented bearer's RFC 8707 audience binding against
-    /// `expected_aud` — the fail-closed pre-filter a plane runs BEFORE the auth chain, for credentials
-    /// busbar did not mint. A pure judgement (it reaches only core's governance token prefix, no live
-    /// engine state), so it needs no `HostCtx`. Identical to `busbar_kernel::auth::audience::inspect_bearer`.
-    fn identity_audience_binding(&self, token: &str, expected_aud: &str) -> AudienceBinding;
-
-    /// Resolve INBOUND data-plane identity: run the configured auth chain + the ONE verdict resolution
-    /// over the caller's OWN wire credential and the live governance state, returning the resolved
-    /// `(AuthPrincipal, PlaneRequestCtx)` or the specific [`IdentityRefusal`]. Identical to
-    /// `busbar_kernel::plane_host::identity_admit_over`.
-    ///
-    /// The ONE async method: the core impl awaits a `spawn_blocking` that mints AND consumes the
-    /// `HostCtx` INSIDE the blocking closure, so the `!Send` pointer never crosses this `.await` and
-    /// the future stays `Send`. Fail-closed: a join panic maps to [`IdentityRefusal::Denied`].
-    async fn identity_admit(
-        &self,
-        token: Option<String>,
-        audience: String,
-        resource: String,
-    ) -> Result<(AuthPrincipal, PlaneRequestCtx), IdentityRefusal>;
-
-    /// RE-ASK a [`Standing`] permission against the LIVE governance registry: hand back the principal
-    /// AS IT IS NOW, or the [`Lapsed`] reason it no longer stands. Injects the host's `GovState`
-    /// (through the `GovResolve` seam) INTERNALLY, so the plane holds only the `Standing`. Identical to
-    /// `Standing::still_permitted(app.governance, live, now)`.
-    fn principal_standing(
-        &self,
-        standing: &Standing,
-        live_gen: u64,
-        now: u64,
-    ) -> Result<Option<Arc<VirtualKey>>, Lapsed>;
-
-    /// Derive this deployment's ask-state [`Sealer`] from governance's fleet-shared signing secret,
-    /// WITHOUT the raw secret crossing to the plane. `None` when governance is disabled. Identical to
-    /// `busbar_kernel::plane::approvals::ask_state_sealer(app.governance)` — the derivation stays core
-    /// behind this seam.
-    fn ask_state_sealer(&self) -> Option<Sealer>;
 }
 
 /// The ADMISSION slice: the request-admission gauntlet seams — the gate decision + presence pre-filter,
@@ -3254,33 +2922,6 @@ pub trait AdmissionHost: Send + Sync {
     fn plane_audience_bound(&self, plane_key: &str) -> bool;
 }
 
-/// The COMPLETION slice — LLM-ONLY. The single seam that drives a non-streaming chat completion through
-/// the resolved ingress pipeline. Split off `EngineHost` as a supertrait SPECIFICALLY so a non-LLM plane
-/// (a voice/bytes port) is NOT forced to name it: such a plane takes the slices it uses and never sees
-/// this one. `#[async_trait]` because [`synthesize_completion`](Self::synthesize_completion) is async.
-#[async_trait::async_trait]
-pub trait CompletionHost: Send + Sync {
-    /// Synthesize ONE non-streaming chat completion by driving `body` through the ENTIRE resolved
-    /// ingress pipeline (governance → pools → breaker/failover → metering → request log) under `gov`,
-    /// on the operator's declared `model`, and return the raw wire outcome. The dialect the request is
-    /// driven as is NEUTRAL to this seam: the host resolves it from the registry's residual-default
-    /// chat protocol (`None` — no chat dialect installed — surfaces as
-    /// [`CompletionRefusal::NotInstalled`], not a hard-coded identity), so MCP's `sampling/complete`
-    /// bridge names no LLM dialect to reach a completion, and words the refusal itself.
-    ///
-    /// The ONE async method beside [`IdentityHost::identity_admit`] — but simpler:
-    /// the host drives a NATIVE core async fn (no C-ABI slot, no `spawn_blocking`), so this only
-    /// `.await`s it. No `HostCtx` crosses the `.await`; the future is `Send`. `max_body_bytes`
-    /// bounds the response body read.
-    async fn synthesize_completion(
-        &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        model: &str,
-        body: bytes::Bytes,
-        max_body_bytes: usize,
-    ) -> Result<HostCompletion, CompletionRefusal>;
-}
-
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
@@ -3294,21 +2935,15 @@ pub trait CompletionHost: Send + Sync {
 ///
 /// ## M4 — `EngineHost` is the SUM of the capability slices
 ///
-/// The residual flat method set has been cut into cohesive capability SUPERTRAITS
-/// ([`ClockHost`], [`TelemetryHost`], [`JournalHost`], [`MountHost`], [`RegistryHost`],
-/// [`HookConfigHost`], [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`], [`CompletionHost`]),
-/// alongside the earlier braking slices ([`BreakerHost`], [`LanePoolHost`]). Every slice is
-/// PLANE-FACING and pricing-blind; the kernel's pricing ([`MeteringHost`]) is deliberately NOT one of
-/// them, so a plane-side host implements the whole sum without naming a cost or price type (#43).
-/// `EngineHost` now declares NO methods of its own beyond the provided [`run_gauntlet`](Self::run_gauntlet)
-/// ergonomic entry — it is the SUM (a supertrait bound of every slice). An existing
-/// `Arc<dyn EngineHost>` caller is unaffected (it still reaches every method through the inherited
-/// bound); a plane that needs a narrower capability takes `&dyn SliceX` and depends only on what it
-/// uses — a voice/bytes port never names LLM-only [`CompletionHost::synthesize_completion`].
-///
-/// `#[async_trait]` is inherited via the async slices; `EngineHost` itself carries only the provided
-/// `run_gauntlet` future, so the attribute leaves it a thin sum.
-#[async_trait::async_trait]
+/// The residual flat method set has been cut into cohesive capability SUPERTRAITS ([`ClockHost`],
+/// [`TelemetryHost`], [`JournalHost`], [`MountHost`], [`RegistryHost`], [`HookConfigHost`],
+/// [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`]), alongside the earlier braking slices
+/// ([`BreakerHost`], [`LanePoolHost`]). Every slice is PLANE-FACING and pricing-blind; the kernel's
+/// pricing ([`MeteringHost`]) is deliberately NOT one of them, so a plane-side host implements the
+/// whole sum without naming a cost or price type (#43). `EngineHost` declares NO methods of its own
+/// — it is the SUM (a supertrait bound of every slice). An existing `Arc<dyn EngineHost>` caller is
+/// unaffected (it still reaches every method through the inherited bound); a plane that needs a
+/// narrower capability takes `&dyn SliceX` and depends only on what it uses.
 pub trait EngineHost:
     BreakerHost
     + LanePoolHost
@@ -3321,7 +2956,6 @@ pub trait EngineHost:
     + BudgetHost
     + IdentityHost
     + AdmissionHost
-    + CompletionHost
     + Send
     + Sync
 {
@@ -3329,18 +2963,6 @@ pub trait EngineHost:
     // reads are GONE from this neutral host trait: they are LLM-plane vocabulary, so the engine now
     // reads them off the LLM plane's own per-generation runtime (`NativeRuntime`) rather than through a
     // neutral `PlaneHost` method over `App`. See busbar-llm `engine/wire.rs`.
-
-    /// Run one request through THE shared gauntlet sequence ([`run_gauntlet`]) — the ergonomic entry
-    /// for a plane that already holds an `Arc<dyn EngineHost>`. A PROVIDED method: it delegates to the
-    /// free [`run_gauntlet`] (which needs no host — the sequence is verify→drive over the plane), so
-    /// every host impl shares one body and core's own callers can use the free fn directly.
-    async fn run_gauntlet<'a>(
-        &self,
-        req: GauntletRequest<'a>,
-        plane: Box<dyn GauntletPlane + 'a>,
-    ) -> axum::response::Response {
-        run_gauntlet(req, plane).await
-    }
 }
 
 /// Compile-time witness for the M4 god-trait split: any `EngineHost` implementor IS every capability
@@ -3360,7 +2982,6 @@ const _: () = {
         fn _needs_budget<U: BudgetHost + ?Sized>() {}
         fn _needs_identity<U: IdentityHost + ?Sized>() {}
         fn _needs_admission<U: AdmissionHost + ?Sized>() {}
-        fn _needs_completion<U: CompletionHost + ?Sized>() {}
         _needs_breaker::<T>();
         _needs_lane_pool::<T>();
         _needs_clock::<T>();
@@ -3372,7 +2993,6 @@ const _: () = {
         _needs_budget::<T>();
         _needs_identity::<T>();
         _needs_admission::<T>();
-        _needs_completion::<T>();
     }
 };
 

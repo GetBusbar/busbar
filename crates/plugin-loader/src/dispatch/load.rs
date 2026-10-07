@@ -589,7 +589,10 @@ const READY_AT: usize = std::mem::offset_of!(Door, ready);
 /// The door's head checks, in the mechanism's order: not NULL, the magic, the mechanism version, a
 /// size that reaches `ops` (the append-only `ready` tail is optional), a kind the host has, the kind `want` asks for (any, for `None`), and
 /// that kind's ABI version.
-fn read_door(p: *const Door, want: Option<KindCode>) -> Result<(Door, KindCode), LoadError> {
+pub(crate) fn read_door(
+    p: *const Door,
+    want: Option<KindCode>,
+) -> Result<(Door, KindCode), LoadError> {
     if p.is_null() {
         return Err(LoadError::NullDoor);
     }
@@ -701,7 +704,7 @@ fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
         .collect()
 }
 
-fn statement(door: &Door) -> Result<Statement, LoadError> {
+pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
     let p = door.statement;
     if p.is_null() {
         return Err(LoadError::NullStatement);

@@ -46,6 +46,7 @@ busbar-contract = { path = "../busbar-contract" }
 # The `Mcp-Name` header's `=?base64?…?=` sentinel for a name a header value cannot carry
 # (owner PLUGIN LIBRARIES ruling, 2026-09-28).
 base64 = { workspace = true }
+indexmap = { workspace = true }
 # The notification codec writes its envelope as bytes, the same type the frame cursor hands in.
 bytes = { workspace = true }
 # The two wire parameter objects the notification codec reads and writes derive their shapes.
@@ -59,3 +60,13 @@ serde_json = { workspace = true }
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
 # forge their own. Dev-only and feature-gated, so it is absent from every release build.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+# The one loader both of the door's forms are admitted through (`tests/conformance.rs`, the
+# `both_ways` rig): the compiled-in door by `load_linked`, the dropped-in `mcp_door` example by
+# `load_dropped`, on one dispatcher. Dev-only, and named by that one file alone (the gate's
+# conformance-witness grant).
+busbar-plugin-loader = { path = "../plugin-loader" }
+
+# The door, dropped in: `export_door!` over the same `plane_door::door` the linked row holds.
+[[example]]
+name = "mcp_door"
+crate-type = ["cdylib"]

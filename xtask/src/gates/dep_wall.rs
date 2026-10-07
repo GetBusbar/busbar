@@ -54,9 +54,12 @@ const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
 /// carries the same ruling). `busbar-plane-llm` and `busbar-plane-streaming` are already
 /// `gate.plugin_kinds.plane`'s own rows, so the folded-in `codec` module scans as part of them; there
 /// is no second source root for THIS wall to add either.
+///
+/// `busbar-mcp` is not here either (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted, and the
+/// mcp plane is its door crate `busbar-plane-mcp`, a `gate.plugin_kinds.plane` row this wall already
+/// scans. Its eight pins in the ledger drained with it and are struck there.
 const LEGACY: &[&str] = &[
     "crates/busbar-llm",
-    "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",
 ];
@@ -492,7 +495,7 @@ impl Gate for DepWallGate {
         // A NEW OFFENDER: a plugin's own source names a socket path the ledger never pinned.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/hooks-ranking/src/planted_socket.rs",
+            "crates/busbar-plane-decisions/src/planted_socket.rs",
             "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
         );
         report.push(prove_red(
@@ -501,14 +504,14 @@ impl Gate for DepWallGate {
             "a plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
-            &["new-offender", "busbar-hooks-ranking", "std::net"],
+            &["new-offender", "busbar-plane-decisions", "std::net"],
         ));
         // A DRAINED PIN: a pin for an offence the tree does not have must be struck.
         let mut ov = Overlay::new();
         ov.set(
             LEDGER,
             format!(
-                "{}\nbusbar-hooks-ranking\treqwest\n",
+                "{}\nbusbar-plane-decisions\treqwest\n",
                 cx.read(LEDGER).unwrap_or_default().trim_end()
             ),
         );
@@ -518,14 +521,14 @@ impl Gate for DepWallGate {
             "a pin the tree no longer measures is struck, never kept as slack",
             &[ROW_DRAINED],
             ov,
-            &["drained", "busbar-hooks-ranking", "reqwest"],
+            &["drained", "busbar-plane-decisions", "reqwest"],
         ));
         // A CARRIER EXEMPTION ON A CRATE THAT IS NOT A TRANSPORT is refused.
         let mut ov = Overlay::new();
         ov.set(
             LEDGER,
             format!(
-                "{}\ncarrier\tbusbar-hooks-ranking\n",
+                "{}\ncarrier\tbusbar-plane-decisions\n",
                 cx.read(LEDGER).unwrap_or_default().trim_end()
             ),
         );
@@ -535,7 +538,7 @@ impl Gate for DepWallGate {
             "only a transport crate may be exempted as a carrier",
             &[ROW_SCOPE],
             ov,
-            &["busbar-hooks-ranking", "not a transport crate"],
+            &["busbar-plane-decisions", "not a transport crate"],
         ));
         report
     }
