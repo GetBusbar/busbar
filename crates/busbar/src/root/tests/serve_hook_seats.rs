@@ -426,6 +426,8 @@ pub(super) struct RigOpts<'a> {
     pub reject_at_gate: bool,
     /// The key's group holds this many cents a day (a flat 1-cent fee per request).
     pub budget_cents: Option<u64>,
+    /// The key's group holds this many tokens a minute.
+    pub tokens_per_minute: Option<u64>,
     /// How many of the members (the first ones) pool `p` holds; the rest are models no pool
     /// names. `None`: all of them.
     pub pooled: Option<usize>,
@@ -741,25 +743,42 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
             .expect("governance"),
     );
-    let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = opts
+    let limit = |metric, amount, per| busbar_kernel::config::groups::LimitCfg {
+        metric,
+        amount,
+        per: Some(per),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    };
+    let limits: Vec<busbar_kernel::config::groups::LimitCfg> = opts
         .budget_cents
         .map(|amount| {
-            let limit = busbar_kernel::config::groups::LimitCfg {
-                metric: busbar_kernel::config::groups::LimitMetric::Budget,
+            limit(
+                busbar_kernel::config::groups::LimitMetric::Budget,
                 amount,
-                per: Some(busbar_kernel::config::groups::LimitWindow::Day),
-                scope: None,
-                on_exhaust: None,
-                downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
-            };
+                busbar_kernel::config::groups::LimitWindow::Day,
+            )
+        })
+        .into_iter()
+        .chain(opts.tokens_per_minute.map(|amount| {
+            limit(
+                busbar_kernel::config::groups::LimitMetric::Tokens,
+                amount,
+                busbar_kernel::config::groups::LimitWindow::Minute,
+            )
+        }))
+        .collect();
+    let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = (!limits.is_empty())
+        .then(|| {
             (
                 format!("{instance}-group"),
                 busbar_kernel::config::GroupCfg {
                     parent: None,
                     enabled: true,
-                    limits: vec![limit],
+                    limits,
                     ..Default::default()
                 },
             )
