@@ -27,8 +27,7 @@
 //!   the operator approves the key on the generic core-admin `/admin/trust`; a changed card is
 //!   quarantined. The plane holds no approval of its own.
 //! * **The state** an operator reads off `connect` is the kernel's verdict in words ([`state_of`]);
-//!   an anomaly suspension, the one thing the plane still takes out of service on its own
-//!   observations, is `suspended`; a failed contact is `error`.
+//!   a suspension the standing carries is `suspended`; a failed contact is `error`.
 
 use std::collections::BTreeMap;
 
@@ -144,7 +143,7 @@ pub enum State {
     Approved,
     /// The last sighting differs from the lock.
     Quarantined,
-    /// Taken out of service whatever its card (the anomaly breaker).
+    /// Taken out of service whatever its card (the standing's suspension).
     Suspended,
     /// The last contact failed.
     Error,
@@ -165,7 +164,7 @@ impl State {
 }
 
 /// ONE REGISTRATION'S TRUST, as the plane holds it in memory: the last sighting, the
-/// re-verification ledger verify-on-call keeps, and the anomaly breaker's window and suspension.
+/// re-verification ledger verify-on-call keeps, and its suspension.
 /// What the registration is trusted to SERVE is not here: it is the kernel's trust book.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Standing {
@@ -173,11 +172,7 @@ pub struct Standing {
     pub sighting: Sighting,
     /// When verify-on-call last looked.
     pub ledger: Ledger,
-    /// The anomaly breaker's observation window.
-    pub window: crate::a2a::anomaly::Window,
-    /// The anomaly breaker's trip points; none configured trips nothing.
-    pub thresholds: crate::a2a::anomaly::Thresholds,
-    /// Why the anomaly breaker took it out of service, when it did; resuming is an operator's act.
+    /// Why it was taken out of service, when it was; resuming is an operator's act.
     pub suspension: Option<String>,
 }
 
@@ -232,21 +227,6 @@ impl Cadence {
     }
 }
 
-impl Standing {
-    /// EVALUATE THE ANOMALY BREAKER AND ACT ON IT (the served engine's
-    /// `AgentRegistration::apply_anomaly_breaker`, run after each re-verification): a trip suspends
-    /// the registration with the trip's reason. It never lifts a suspension: resuming is an
-    /// operator's act. The trip applied, if any.
-    pub fn apply_anomaly_breaker(&mut self) -> Option<crate::a2a::anomaly::Trip> {
-        if self.suspension.is_some() {
-            return None;
-        }
-        let trip = crate::a2a::anomaly::evaluate(&self.window, &self.thresholds)?;
-        self.suspension = Some(trip.reason());
-        Some(trip)
-    }
-}
-
 /// THE KERNEL'S VERDICT IN THE ADMISSION'S WORDS: a `trust.serves` answer (`DISTRUST_*`, the one
 /// trust vocabulary, also `RefusalIn.trust`) as the state an operator and a refused caller read.
 /// Serving is `approved`; a key never sighted or never approved is `pending`; a quarantined key,
@@ -264,7 +244,7 @@ pub fn state_of(distrust: u64) -> State {
 /// addressed to the agent (`addressed`), its admission refusal (`-32004`, `fronted agent `<id>` is
 /// not serving (<state>)[: <suspension>]`); routed by the caller's scope, the catalogue's (an agent
 /// that is not serving is in no caller's catalogue, so none reaches: `400`, `-32004`). The kernel's
-/// trust refusal is [`UNTRUSTED_STATUS`]; the plane's own anomaly suspension is
+/// trust refusal is [`UNTRUSTED_STATUS`]; the standing's own suspension is
 /// [`NOT_SERVING_STATUS`].
 #[must_use]
 pub fn not_serving(

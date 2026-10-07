@@ -2526,8 +2526,6 @@ fn verify_on_call(
     if let Some(card) = looked.card {
         plane.cards.hold(member, generation, card);
     }
-    // The breaker is evaluated on the same pass, as the engine's re-verification did.
-    standing.apply_anomaly_breaker();
     let serving = serves(&standing);
     plane.trust.insert(key.clone(), standing);
     // THE FLIGHT LANDS: every unit that waited on it is woken to take its verdict.

@@ -63,7 +63,7 @@ Naming an agent `hooks` or `upstream_credentials` is refused at parse (`crates/b
 | `allow_private` | bool | no | `false` | Permits a plaintext `http://` endpoint and a loopback / link-local / RFC1918 / CGNAT address for this one agent. **Never** permits a cloud-metadata address, whatever it says. |
 | `upstream_credentials` | `own` | no; **`passthrough` refused** | | |
 | `upstream_credential` | object | no | absent | The leased outbound credential Busbar presents. See below. |
-| `egress_scopes` | list of strings | no | `[]` | **Which fronted agents may delegate here.** Absent or empty ⇒ NONE may — reading an empty list as "everyone" would be a registration granting egress nobody wrote down. |
+| `egress_scopes` | list of strings | no | `[]` | Accepted and validated (an empty name is refused), and **read by nothing**: no relayed hop consults it. What gates a hop is the caller key's own `agent:<id>` grant for the agent it reaches, and the key being live. |
 | `hooks` | list of bare names | no | `[]` | Adds to `agents.hooks:`. |
 
 **`upstream_credential`** (`crates/busbar-a2a/src/a2a/creds.rs:238-250`), `deny_unknown_fields`, three fields and no more:
@@ -91,7 +91,7 @@ agents:
       secret: { env: PLANNER_API_KEY }
       placement: { header: X-API-Key }
       lease_ttl_ms: 30000
-    egress_scopes: [triage]                 # only the fronted agent `triage` may delegate here
+    egress_scopes: [triage]                 # accepted and validated; no hop reads it
     hooks: [planner-audit]
 ```
 
@@ -481,9 +481,9 @@ The relay is this plane's Stage-1 normalizer; Stage 2 is the one core classifier
 
 **A tripped agent that is a member of a `pools:` failover pool is not what produces the `rejected` task above.** For a FRESH submission the walk runs at admission, before any refusal is composed, and tries the next member whose approved card fingerprint matches the primary's (`crates/busbar-a2a/src/a2a/route.rs:82-219`); the caller gets that member's answer. Only an *exhausted* pool yields the `rejected` task, and then it names the **pool**, because the pool is the unit with nothing left (`crates/busbar-a2a/src/a2a/receive.rs:1497-1501`). A verb naming an **existing** task is unaffected either way: that task is pinned to the member that accepted it, so a tripped backend refuses the verb and the row keeps its last-known state.
 
-### Anomaly-driven suspension
+### No anomaly-driven suspension
 
-Separately from the breaker, a registration can be suspended on operator-configured thresholds over four signals (`crates/busbar-a2a/src/a2a/anomaly.rs:42-112`): `error_rate`, `terminal_failure_rate`, `latency_p95_ms`, `egress_budget_ratio`, each gated by a `min_observations` floor. **Every threshold is optional, and `None` means not configured and can never trip** — reading an absent threshold as zero would suspend every agent in the deployment on the day the feature shipped. A trip carries the signal, the observed value, the threshold and the observation window, for the audit row.
+There is no anomaly breaker on this plane. No `agents:` key configures one and nothing accumulates the observations one would judge, so a registration is taken out of service by the breaker above and by its trust state, and by nothing else.
 
 ---
 
@@ -500,7 +500,7 @@ That per-binding label is what makes a per-binding number readable from Busbar's
 
 A handled response is stamped so the plane's mount-level boundary does not count it a second time (`receive.rs:705-712`). **A refusal that reached no handler is still counted** — the audience-bound `401`, a `413`, a `404` — and on the gRPC binding, which has a door of its own, it is counted with the `grpc` label off the claim without any handler running (`crates/busbar-core/src/plane/observe.rs:51-70`).
 
-**No metric family is defined inside the A2A tree.** There are no A2A-specific counters, histograms or gauges: the plane's only emission is the mounted-plane request pair above. Anomaly evaluation and provenance produce audit rows, chain events and log lines, not metrics.
+**No metric family is defined inside the A2A tree.** There are no A2A-specific counters, histograms or gauges: the plane's only emission is the mounted-plane request pair above. Provenance produces audit rows, chain events and log lines, not metrics.
 
 **There is no `operation` metric label**, on this plane or any other. `invoke` / `catalogue` / `fetch` / `task` / `subscribe` / `control` are `OpShape::as_str()` values — a closed internal vocabulary for the *shape* of an exchange (`crates/busbar-core/src/operation.rs:174-183`). No metric family carries them (`crates/busbar-core/src/metrics.rs:147-153`).
 
@@ -532,7 +532,7 @@ The **per-task provenance chain** is one hash chain per task, over the core chai
 
 The claim is **tamper-evidence, not tamper-prevention**, and the boot verifier reports breaks while still restoring the rows.
 
-**Egress is gated.** The delegating direction runs through the shared egress gate, whose grant is the only thing that can produce a credential lease (`crates/busbar-a2a/src/a2a/creds.rs:201-208`). Which fronted agents may delegate to a given registration is `egress_scopes:`, fail-closed on absent or empty.
+**Egress is gated by the caller's grant.** A hop reaches an agent only when the caller's key is live and holds the `agent:<id>` grant for that agent; busbar does not spend its own credential on behalf of a caller that is not itself authorised for the backend agent. `egress_scopes:` is accepted and validated but no hop reads it.
 
 ---
 

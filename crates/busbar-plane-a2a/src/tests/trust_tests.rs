@@ -3,7 +3,7 @@
 
 //! The trust surface, plane side, against the served engine's words: the card fetch's refusals,
 //! the verification per mechanism, the kernel's verdict in the admission's words, the `connect`
-//! view, the cadence and the anomaly suspension. The DECISION (approval, quarantine) is the
+//! view, the cadence and the suspension. The DECISION (approval, quarantine) is the
 //! kernel's trust book's, tested there and end to end on the root's agent door.
 
 use serde_json::json;
@@ -369,37 +369,6 @@ fn a_suspension_refuses_in_the_admission_s_words_naming_its_reason() {
         refusal.envelope()["error"]["message"],
         "fronted agent `planner` is not serving (Suspended): vendor breach notice"
     );
-}
-
-#[test]
-fn the_anomaly_breaker_trips_only_on_configured_thresholds_and_never_lifts() {
-    use crate::a2a::anomaly::{Thresholds, Window};
-    let mut standing = Standing {
-        sighting: seen(&card("plans")),
-        ..Standing::default()
-    };
-    standing.window = Window {
-        observations: 10,
-        errors: 9,
-        ..Window::default()
-    };
-    assert_eq!(
-        standing.apply_anomaly_breaker(),
-        None,
-        "nothing configured trips nothing"
-    );
-    standing.thresholds = Thresholds {
-        min_observations: 5,
-        error_rate: Some(0.5),
-        ..Thresholds::default()
-    };
-    let trip = standing
-        .apply_anomaly_breaker()
-        .expect("a configured threshold trips");
-    assert_eq!(standing.suspension.as_deref(), Some(trip.reason().as_str()));
-    standing.window = Window::default();
-    assert_eq!(standing.apply_anomaly_breaker(), None);
-    assert!(standing.suspension.is_some(), "the breaker never lifts it");
 }
 
 #[test]
