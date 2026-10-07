@@ -583,12 +583,18 @@ fn join(base: &str, target: &[u8]) -> String {
     )
 }
 
-/// The authority (`host[:port]`) and the path of a joined target.
-fn split(url: &str) -> (&str, &str) {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    match rest.find('/') {
-        Some(at) => (&rest[..at], &rest[at..]),
-        None => (rest, "/"),
+/// The authority (`host[:port]`, as written) and the path of a joined target, cut by the
+/// contract's one dial-target reader (`busbar_contract::net::cut_target`), the cut the connector's
+/// endpoint check reads the same target's host through. The authority a member's auth binding signs
+/// is the one the dial reaches: it ends where the dialled host ends (a `\` is a `/`, so
+/// `https://a.example\@b.example/` names `a.example`) and it never carries a userinfo, as 1.5.5's
+/// signing host did (v1.5.5 `crates/busbar/src/proxy/egress.rs:18-52`). Empty when the target cuts
+/// to no authority, which the connector refuses to dial.
+fn split(url: &str) -> (String, String) {
+    match busbar_contract::net::cut_target(url) {
+        Ok(cut) if !cut.path.is_empty() => (cut.host_port, cut.path),
+        Ok(cut) => (cut.host_port, "/".to_owned()),
+        Err(_) => (String::new(), "/".to_owned()),
     }
 }
 
@@ -852,10 +858,9 @@ impl EgressFarEnd<'_> {
         &self,
         binding: &AuthBinding,
         request: &OutboundRequest,
-        url: &str,
+        (authority, path_query): (&str, &str),
         extensions: Vec<u8>,
     ) -> Option<Vec<AuthField>> {
-        let (authority, path_query) = split(url);
         let (path, query) = match path_query.split_once('?') {
             Some((p, q)) => (p, Some(q.as_bytes().to_vec())),
             None => (path_query, None),
@@ -978,10 +983,21 @@ impl EgressFarEnd<'_> {
             return false;
         }
         let url = join(&base_url, &request.target);
+        // ONE CUT of the target: the authority the auth call signs and the path the head carries
+        // are the dial's own. A target that cuts to no authority names no host the connector would
+        // dial: refused as its open refuses it, before any auth call.
+        let (authority, path) = split(&url);
+        if authority.is_empty() {
+            let _ = self.no_answer(token, NoAnswer::Connect);
+            return false;
+        }
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = &route.auth {
-            match self.auth_fields(binding, &request, &url, extensions).await {
+            match self
+                .auth_fields(binding, &request, (&authority, &path), extensions)
+                .await
+            {
                 Some(fields) => auth = fields,
                 None => {
                     // Not the destination's fault: nothing recorded against it; the next member.
@@ -994,7 +1010,6 @@ impl EgressFarEnd<'_> {
         // The method and the path (with its query) are the request's head words
         // (`OpenDesc::method`, `OpenDesc::head_target`), never fields: the framer writes its own
         // wire head from them.
-        let (_, path) = split(&url);
         // The head's fields the framer encodes: the auth fields, then the plane's. It holds the
         // auth values, so it wipes itself when the open has taken it.
         let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len()));

@@ -290,6 +290,42 @@ fn a_dial_target_never_reads_its_scheme_as_the_host() {
     }
 }
 
+/// A dial target's cut keeps its authority as written, past no `\` and without its userinfo: the
+/// authority whose host [`target_host`] reads, and the path after it.
+#[test]
+fn a_dial_targets_cut_is_the_authority_the_host_readers_read() {
+    for (target, host_port, path) in [
+        (
+            "https://evil.example.com\\@victim.example/path",
+            "evil.example.com",
+            "/@victim.example/path",
+        ),
+        (
+            "https://user:pass@host.example.com:443/v1?x=1",
+            "host.example.com:443",
+            "/v1?x=1",
+        ),
+        (
+            "https://host.example.com:8443\\v1\\foo",
+            "host.example.com:8443",
+            "/v1/foo",
+        ),
+        ("http://[::1]:8080", "[::1]:8080", "/"),
+        ("https://Host.Example.com./x@y", "Host.Example.com.", "/x@y"),
+        ("example.com", "example.com", "/"),
+        ("localhost:8080/v1", "localhost:8080", "/v1"),
+    ] {
+        let cut = cut_target(target).unwrap_or_else(|e| panic!("{target:?}: {e}"));
+        assert_eq!(
+            (cut.host_port.as_str(), cut.path.as_str()),
+            (host_port, path),
+            "{target:?}"
+        );
+    }
+    assert!(cut_target("https://user:pass@host.example.com").is_ok_and(|c| c.userinfo));
+    assert_eq!(cut_target("ldap://a\\b/"), Err(UrlRefusal::Backslash));
+}
+
 /// The literal spellings the resolver accepts all name one address; a DNS name names none.
 #[test]
 fn every_literal_spelling_names_its_address() {
