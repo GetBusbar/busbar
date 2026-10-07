@@ -1144,38 +1144,72 @@ pub(crate) fn build_secret_resolver(
     // A dropped-in plugin that states a door opens through the root's secret axis, once per
     // resolver, over its settings as written: the keys its Statement names as secret references are
     // resolved through the linked plugins and lent to `open`, never substituted into the settings.
-    let opened: std::sync::Mutex<
-        std::collections::BTreeMap<String, Arc<dyn busbar_contract::secret::SecretCalls>>,
-    > = Default::default();
+    let opened = OpenedSecrets::default();
     Ok(config::secret::SecretResolver::with_plugin(Box::new(
         move |module: &str, settings: &str| -> Result<Vec<u8>, String> {
             if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
-                let mut opened = opened.lock().unwrap_or_else(|e| e.into_inner());
-                let calls = match opened.get(module) {
-                    Some(c) => c.clone(),
-                    None => {
-                        let raw = registry
-                            .resolve(module)
-                            .and_then(|p| raw_config.get(&p.manifest.name));
-                        let linked = config::secret::SecretResolver::builtins_only();
-                        let c =
-                            axis.open(module, raw.unwrap_or(&serde_json::Value::Null), &|r| {
-                                linked.resolve(r)
-                            })?;
-                        opened.insert(module.to_string(), c.clone());
-                        c
-                    }
-                };
-                return calls
-                    .resolve(settings.as_bytes())
-                    .map(|m| m.expose_secret().clone())
-                    .map_err(|r| r.text);
+                // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
+                // open the plugin once.
+                let canonical = registry.resolve(module).map(|p| p.manifest.name.clone());
+                let key = canonical.as_deref().unwrap_or(module);
+                return opened.resolve(key, settings, || {
+                    let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
+                    let linked = config::secret::SecretResolver::builtins_only();
+                    axis.open(module, raw.unwrap_or(&serde_json::Value::Null), &|r| {
+                        linked.resolve(r)
+                    })
+                });
             }
             // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
             // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
             Err(registry.secret_refusal(module))
         },
     )))
+}
+
+/// THE SECRET PLUGINS A RESOLVER OPENED, one handle per plugin (audit kernel-K1 #6).
+///
+/// The map's lock is held to find or open a plugin's handle and released before the plugin is asked
+/// to `resolve`: one slow or hung secret source (a remote vault) stalls only the resolutions it
+/// answers, never another module's, and never a second caller of its own that already holds the
+/// handle.
+#[derive(Default)]
+pub(crate) struct OpenedSecrets(
+    std::sync::Mutex<
+        std::collections::BTreeMap<String, Arc<dyn busbar_contract::secret::SecretCalls>>,
+    >,
+);
+
+impl OpenedSecrets {
+    /// The handle opened under `key`, opening it with `open` the first time.
+    fn calls(
+        &self,
+        key: &str,
+        open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
+    ) -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String> {
+        let mut opened = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(calls) = opened.get(key) {
+            return Ok(Arc::clone(calls));
+        }
+        let calls = open()?;
+        opened.insert(key.to_string(), Arc::clone(&calls));
+        Ok(calls)
+    }
+
+    /// Resolve `settings` through the plugin opened under `key`, with no lock held while the plugin
+    /// answers.
+    pub(crate) fn resolve(
+        &self,
+        key: &str,
+        settings: &str,
+        open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
+    ) -> Result<Vec<u8>, String> {
+        let calls = self.calls(key, open)?;
+        calls
+            .resolve(settings.as_bytes())
+            .map(|m| m.expose_secret().clone())
+            .map_err(|r| r.text)
+    }
 }
 
 /// The `plugins.fetch` download closure the engine hands to the root's fetch ([`PluginsFetch`]).
@@ -1309,3 +1343,7 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
         })
     }
 }
+
+#[cfg(test)]
+#[path = "tests/opened_secrets_tests.rs"]
+mod opened_secrets_tests;
