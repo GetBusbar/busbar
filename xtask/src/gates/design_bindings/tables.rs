@@ -230,6 +230,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key", "a non-Bearer Authorization falls through to x-api-key"),
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key", "a non-Bearer Authorization falls through to x-goog-api-key"),
         ("test", "test_admin_v1_credential_cache_and_flush_endpoint", "POST /auth/cache/flush returns a real flushed count"),
+        ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict", "the kernel caches no verdict: one door verify per request, the second verdict the door's own"),
     ]),
     ("PB-36", &[
         ("test", "admin_scope_resolution", "admin_auth [] grants Scope::Full when no principal"),

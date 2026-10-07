@@ -2689,3 +2689,98 @@ async fn an_external_admin_door_is_lent_the_candidate_and_an_unjudged_verify_is_
         );
     }
 }
+
+/// A door that counts its verifies and answers from a script: `script[n]` for the n-th verify, the
+/// last answer thereafter. It states `FACT_CACHEABLE`, so a kernel that cached a cacheable door's
+/// verdict would answer the second request from the cache.
+struct ScriptedDoor {
+    script: Vec<busbar_contract::auth_calls::Verified>,
+    verifies: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedDoor {
+    fn answer(&self) -> busbar_contract::auth_calls::VerifyAnswer {
+        let n = self
+            .verifies
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.script[n.min(self.script.len() - 1)].clone().into()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for ScriptedDoor {
+    fn name(&self) -> &str {
+        "scripted-door"
+    }
+    fn facts(&self) -> u32 {
+        busbar_contract::abi::auth::FACT_CACHEABLE
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.answer())
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(OperatorAnswer(Some(self.answer())))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// THE KERNEL HOLDS NO VERDICT CACHE (Q1: the kernel's verdict cache is deleted; a door caches
+/// inside itself, THE DESIGN §11 R3). The same credential presented twice is verified twice, one
+/// door call per request, even though the door states `FACT_CACHEABLE` — and the second verdict is
+/// the door's second answer: a door that identified the credential and then revoked it denies the
+/// second request. Before Q1 the kernel's `CredentialCache` answered a COLD module's repeated
+/// credential from its cache (one module call, the first verdict); any kernel cache that answered
+/// a door's credential the same way turns both assertions RED (one verify, `Identified` again).
+#[tokio::test]
+async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    let door = std::sync::Arc::new(ScriptedDoor {
+        script: vec![
+            Verified::Identity(VerifiedIdentity {
+                subject: "ext:who".into(),
+                groups: vec!["ops".into()],
+                ..VerifiedIdentity::default()
+            }),
+            Verified::Reject,
+        ],
+        verifies: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["ext-door".to_string()])
+        .build();
+    let mut modules = std::collections::HashMap::new();
+    modules.insert(
+        "ext-door".to_string(),
+        AdminModule {
+            calls: door.clone(),
+        },
+    );
+    std::sync::Arc::get_mut(&mut app)
+        .expect("freshly built App Arc is unshared")
+        .admin_modules = std::sync::Arc::new(AdminAuthChain {
+        modules,
+        operator: Operator::new(crate::config::operator_provider()),
+    });
+    let headers = admin_headers(Some("tok"), None);
+    assert!(matches!(
+        run_admin_chain(&app, "GET", "/", &headers, false).await,
+        (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
+    ));
+    assert_eq!(
+        run_admin_chain(&app, "GET", "/", &headers, false).await,
+        (ChainVerdict::Denied, None),
+        "the second request is the door's second answer, never a cached Identified"
+    );
+    assert_eq!(
+        door.verifies.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "one door verify per request"
+    );
+}

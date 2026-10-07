@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 443
+   "test": 444
   }
  },
  "dropped_since_last_write": [],
@@ -1782,10 +1782,17 @@
      "proves": "POST /auth/cache/flush returns a real flushed count",
      "source": "curated",
      "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-kernel/src/auth/tests/tests.rs::every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict",
+     "proves": "the kernel caches no verdict: one door verify per request, the second verdict the door's own",
+     "source": "curated",
+     "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:test_admin_v1_credential_cache_and_flush_endpoint"
+   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:test_admin_v1_credential_cache_and_flush_endpoint, test:crates/busbar-kernel/src/auth/tests/tests.rs::every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict"
   },
   {
    "id": "PB-36",
