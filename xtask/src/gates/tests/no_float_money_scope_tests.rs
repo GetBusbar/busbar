@@ -136,7 +136,7 @@ fn test_scope_is_decided_by_the_declaring_mod() {
         ("c/src/tree/mod.rs", "mod leaf;\n"),
         ("c/src/tree/leaf.rs", ""),
     ];
-    let test = scan::cfg_test_module_files(files.iter().map(|(r, t)| ((*r).to_string(), *t)));
+    let test = scan::cfg_test_module_files(files.iter().map(|(r, t)| ((*r).to_string(), *t, None)));
     for want in [
         "c/src/fixture.rs",
         "c/src/tests/x.rs",
@@ -164,7 +164,7 @@ fn the_persisted_record_census_clears_its_floor() {
     let all = cx
         .walk(&WalkSpec::new([PERSISTED_CENSUS_ROOT]).ext("rs"))
         .expect("the census walk");
-    let homes = persisted_record_homes(all);
+    let homes = persisted_record_homes(&cx, all);
     let rels: Vec<String> = homes.iter().map(|f| f.rel_str()).collect();
     eprintln!("persisted-record census: {} home(s)", rels.len());
     assert!(
@@ -178,5 +178,5 @@ fn the_persisted_record_census_clears_its_floor() {
     ] {
         assert!(rels.iter().any(|r| r == want), "{want} is not a home");
     }
-    assert!(persisted_record_homes(Vec::new()).is_empty());
+    assert!(persisted_record_homes(&cx, Vec::new()).is_empty());
 }

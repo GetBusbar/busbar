@@ -598,20 +598,28 @@ pub fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
 /// file's directory, or to `<base>/name.rs` and `<base>/name/mod.rs`, where `<base>` is the
 /// declaring file's directory for `mod.rs`/`lib.rs`/`main.rs` and `<dir>/<stem>` otherwise.
 ///
+/// Each item is (repo-relative path, text, STABLE KEY). A stable key (the file's absolute path, say)
+/// is a promise that those bytes are the same for the life of the process — true of a file read from
+/// disk and not of a planted overlay — and lets the declarations be read once per process instead of
+/// once per call; `None` reads them fresh.
+///
 /// The answer is only as wide as `files`: a file whose declaring parent is not in the set is NOT
 /// marked, so it reads as production — the direction that reds rather than the direction that
 /// passes. A crate's top-level `tests/` directory (separate test targets, declared by nobody) is
 /// the caller's to leave out of `files`.
 pub fn cfg_test_module_files<'a, I>(files: I) -> std::collections::BTreeSet<String>
 where
-    I: IntoIterator<Item = (String, &'a str)>,
+    I: IntoIterator<Item = (String, &'a str, Option<String>)>,
 {
     use std::collections::{BTreeMap, BTreeSet};
     // parent -> [(child, gated)]
     let edges: BTreeMap<String, std::sync::Arc<Vec<(String, bool)>>> = files
         .into_iter()
-        .map(|(rel, text)| {
-            let e = module_edges(&rel, text);
+        .map(|(rel, text, stable)| {
+            let e = match stable {
+                Some(key) => module_edges_stable(key, &rel, text),
+                None => std::sync::Arc::new(module_edges(&rel, text)),
+            };
             (rel, e)
         })
         .collect();
@@ -637,21 +645,25 @@ where
     test
 }
 
-/// The `mod` declarations of one file as (child path, gated) — MEMOISED on the path and the bytes.
-/// A gate re-asks for the same unchanged files once per selftest case; the answer is a pure function
-/// of the two.
-fn module_edges(rel: &str, text: &str) -> std::sync::Arc<Vec<(String, bool)>> {
-    use std::hash::{Hash, Hasher};
-    type Memo = std::collections::BTreeMap<u64, std::sync::Arc<Vec<(String, bool)>>>;
+/// [`module_edges`] MEMOISED on a stable key (see [`cfg_test_module_files`]). A gate re-asks for the
+/// same unchanged disk files once per selftest case; keying on the bytes would hash the whole tree
+/// every time, which is the cost the memo exists to avoid.
+fn module_edges_stable(key: String, rel: &str, text: &str) -> std::sync::Arc<Vec<(String, bool)>> {
+    type Memo = std::collections::BTreeMap<String, std::sync::Arc<Vec<(String, bool)>>>;
     static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    rel.hash(&mut h);
-    text.hash(&mut h);
-    let key = h.finish();
     let memo = MEMO.get_or_init(Default::default);
     if let Some(found) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return std::sync::Arc::clone(found);
     }
+    let out = std::sync::Arc::new(module_edges(rel, text));
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, std::sync::Arc::clone(&out));
+    out
+}
+
+/// The `mod` declarations of one file as (child path, gated).
+fn module_edges(rel: &str, text: &str) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     if let Some((dir, name)) = rel.rsplit_once('/') {
         let stem = name.strip_suffix(".rs").unwrap_or(name);
@@ -685,10 +697,6 @@ fn module_edges(rel: &str, text: &str) -> std::sync::Arc<Vec<(String, bool)>> {
             }
         }
     }
-    let out = std::sync::Arc::new(out);
-    memo.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, std::sync::Arc::clone(&out));
     out
 }
 

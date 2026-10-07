@@ -259,7 +259,7 @@ fn walk_production(
     spec: &WalkSpec,
     floor: usize,
 ) -> Result<Vec<crate::ctx::SourceFile>, crate::ctx::WalkError> {
-    let kept = production_only(cx.walk(spec)?);
+    let kept = production_only(cx, cx.walk(spec)?);
     if kept.len() < floor {
         return Err(crate::ctx::WalkError::BelowFloor {
             found: kept.len(),
@@ -270,9 +270,19 @@ fn walk_production(
     Ok(kept)
 }
 
-/// `files` less every file [`scan::cfg_test_module_files`] puts in test scope.
-fn production_only(files: Vec<crate::ctx::SourceFile>) -> Vec<crate::ctx::SourceFile> {
-    let test = scan::cfg_test_module_files(files.iter().map(|f| (f.rel_str(), f.text.as_str())));
+/// `files` less every file [`scan::cfg_test_module_files`] puts in test scope. A file the overlay
+/// does not touch is read from disk, so its declarations are keyed stably (its absolute path) and
+/// read once per process; a planted file is read fresh.
+fn production_only(cx: &Ctx, files: Vec<crate::ctx::SourceFile>) -> Vec<crate::ctx::SourceFile> {
+    let planted: std::collections::BTreeSet<&std::path::Path> = cx
+        .overlay()
+        .map(|ov| ov.paths().map(std::path::PathBuf::as_path).collect())
+        .unwrap_or_default();
+    let test = scan::cfg_test_module_files(files.iter().map(|f| {
+        let stable =
+            (!planted.contains(f.rel.as_path())).then(|| f.abs.to_string_lossy().into_owned());
+        (f.rel_str(), f.text.as_str(), stable)
+    }));
     files
         .into_iter()
         .filter(|f| !test.contains(&f.rel_str()))
@@ -867,8 +877,12 @@ const PERSISTED_CENSUS_FLOOR: usize = 60;
 
 /// Every persisted-record home among `files`: production files under a crate's `src/` that name
 /// `Serialize` in code.
-fn persisted_record_homes(files: Vec<crate::ctx::SourceFile>) -> Vec<crate::ctx::SourceFile> {
+fn persisted_record_homes(
+    cx: &Ctx,
+    files: Vec<crate::ctx::SourceFile>,
+) -> Vec<crate::ctx::SourceFile> {
     production_only(
+        cx,
         files
             .into_iter()
             .filter(|f| f.rel_str().contains("/src/"))
@@ -1664,7 +1678,7 @@ fn walk_area(cx: &Ctx, area: &CountRoot) -> Result<Vec<crate::ctx::SourceFile>, 
         }
     }
     // Test scope over the UNION, so a module declared in one home and living in another resolves.
-    let files = production_only(files);
+    let files = production_only(cx, files);
     if files.len() < area.floor {
         return Err(format!(
             "{}: {} distinct production file(s) across {}, below the floor of {}",
@@ -2037,8 +2051,29 @@ impl Gate for NoFloatMoneyGate {
 
         // THE PERSISTED-COUNT DISCRIMINATOR (#81a), over the DERIVED homes.
         let mut scale_offenders = Vec::new();
-        let homes = match cx.walk(&WalkSpec::new([PERSISTED_CENSUS_ROOT]).ext("rs")) {
-            Ok(all) => persisted_record_homes(all),
+        // LISTED, THEN READ ONLY UNDER `src/`: a crate's integration tests, benches and fixtures
+        // are never a home, so they are never read.
+        let homes = match cx.list(&WalkSpec::new([PERSISTED_CENSUS_ROOT]).ext("rs")) {
+            Ok(rels) => {
+                let mut files = Vec::new();
+                for rel in rels
+                    .into_iter()
+                    .filter(|r| r.to_string_lossy().contains("/src/"))
+                {
+                    match cx.read(&rel) {
+                        Ok(text) => files.push(crate::ctx::SourceFile {
+                            abs: cx.abs(&rel),
+                            rel,
+                            text,
+                        }),
+                        Err(e) => set_problems.push(format!(
+                            "the persisted-record census could not read {}: {e}",
+                            rel.display()
+                        )),
+                    }
+                }
+                persisted_record_homes(cx, files)
+            }
             Err(e) => {
                 set_problems.push(format!("the persisted-record census could not walk: {e}"));
                 Vec::new()
