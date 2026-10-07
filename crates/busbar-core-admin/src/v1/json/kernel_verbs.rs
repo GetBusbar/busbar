@@ -1255,7 +1255,7 @@ pub(crate) fn operations(
             "delete" => axum::http::Method::DELETE,
             _ => continue,
         };
-        let scope = busbar_kernel::admin::v1::contract::required_scope(&http_method, &path);
+        let scope = crate::v1::contract::required_scope(&http_method, &path);
         let mut op = json!({
             "summary": doc.summary,
             "description": doc.description,

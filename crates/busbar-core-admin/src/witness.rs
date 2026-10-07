@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
-use busbar_kernel::admin::v1::contract::taxonomy::{observed::Tag, MethodTag};
+use crate::v1::contract::taxonomy::{observed::Tag, MethodTag};
 
 /// One witnessed emission as neutral strings: `(rel, method, kind, cond)`.
 pub type Witness = (String, String, String, Option<String>);

@@ -2348,7 +2348,8 @@ fn measured_row(
             .spawn_scoped(scope, || measure(cx, crates))
             .expect("spawn the matrix measurement thread");
         let rest = scan_set(cx).map(|(files, _)| {
-            let ivocab = instances::vocabulary(crates, &files, &reg.core_names);
+            let registry = cx.read(instances::REGISTRY).unwrap_or_default();
+            let ivocab = instances::vocabulary(crates, &files, &reg.core_names, &registry);
             let (inst, vendor) = std::thread::scope(|scope| {
                 let vendor = std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)

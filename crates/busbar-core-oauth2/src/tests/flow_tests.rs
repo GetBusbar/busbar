@@ -253,7 +253,7 @@ async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
 async fn serve_with_admin_chain(
     admin_chain: Vec<String>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");

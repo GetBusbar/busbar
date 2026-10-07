@@ -1348,7 +1348,7 @@ pub fn accrue_pending(
         key.4,
     );
     pending.entry(sentinel).or_default().merge(add);
-    metrics::counter!(crate::metrics::METERING_PENDING_COALESCED_TOTAL).increment(1);
+    metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);
     // Per-event detail at debug; the metric above is the aggregate, human-cadence signal an operator
     // alerts on. Kept off `warn!` so a sustained outage does not spam one line per coalesced cell.
     crate::diagnostics::diag_debug!(

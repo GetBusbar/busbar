@@ -212,7 +212,7 @@ fn usage_view_serializes_currency_from_const() {
 fn a_usage_rows_classes_serialize_keyed_by_class_each_count_and_cost() {
     let row = ModelUsageView {
         model: "probe".to_string(),
-        provider: "agents".to_string(),
+        upstream: "agents".to_string(),
         usage: UsageBreakdown {
             requests: 1,
             spend_micros: 70_000,

@@ -28,7 +28,7 @@
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 use super::{AdminError, Scope};
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
-use crate::config::named_map::{NamedMapSection, NamedMapShape};
+use busbar_kernel::config::named_map::{NamedMapSection, NamedMapShape};
 
 // ── ERROR TAXONOMY → OpenAPI PROJECTION ──────────────────────────────────────────────────────────
 //
@@ -249,7 +249,7 @@ impl Cond {
                 static PROSE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
                     format!(
                         "unknown overlay section (expected one of {})",
-                        crate::config::overlay::OverlaySection::valid_names()
+                        busbar_kernel::config::overlay::OverlaySection::valid_names()
                     )
                 });
                 PROSE.as_str()

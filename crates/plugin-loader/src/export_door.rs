@@ -32,10 +32,10 @@ use futures::stream::{FuturesUnordered, StreamExt as _};
 
 use busbar_contract::abi::export::{
     slot, CheckIn, CheckInstance, CheckOut, DeliverIn, ScrapeFamily, ScrapeIn, ScrapeLabel,
-    ScrapeOut, ScrapeSample, ServeIn, ServeOut, StatusOut,
+    ScrapeOut, ScrapeSample, ServeIn, ServeOut, StatusOut, SCRAPE_FLAG_HOOK_FAMILIES,
 };
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
+    AbiStr, Blob, DeadlineClass, InHead, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as lc, OpenIn, OpenOut, ReleaseIn, ValidateIn,
@@ -483,6 +483,49 @@ struct Lowered {
     families: Vec<ScrapeFamily>,
 }
 
+/// One `scrape` call over `families`, with `flags` (a kind bit such as
+/// [`SCRAPE_FLAG_HOOK_FAMILIES`]) on its head; a short answer earns its one re-call.
+fn scrape_with(
+    plugin: &Plugin<Export>,
+    families: &[Family],
+    flags: u32,
+) -> Result<Vec<u8>, String> {
+    let lowered = lower(families);
+    let mut buf = vec![0u8; SCRAPE_BUF];
+    let mut f = Frame::new(
+        ScrapeIn {
+            head: InHead { flags, ..in_head() },
+            families: lend_list(&lowered.families),
+            families_len: lowered.families.len(),
+            buf: buf.as_mut_ptr(),
+            cap: buf.len(),
+        },
+        ScrapeOut {
+            head: out_head(),
+            written: 0,
+            needed: 0,
+        },
+    );
+    let mut called = plugin.call(slot::SCRAPE, &mut f);
+    if let Some(token) = called.recall.take() {
+        // The one re-call a short answer earns, into a buffer of the size it named.
+        buf = vec![0u8; f.out.needed];
+        f.input.buf = buf.as_mut_ptr();
+        f.input.cap = buf.len();
+        f.out = ScrapeOut {
+            head: out_head(),
+            written: 0,
+            needed: 0,
+        };
+        called = plugin.recall(token, slot::SCRAPE, &mut f);
+    }
+    if called.outcome != Outcome::Ready {
+        return Err(why(called.outcome, called.error));
+    }
+    buf.truncate(f.out.written.min(buf.len()));
+    Ok(buf)
+}
+
 fn lower(families: &[Family]) -> Lowered {
     let labels: Vec<Vec<ScrapeLabel>> = families
         .iter()
@@ -563,41 +606,11 @@ impl ExportCalls for ExportInstance {
     }
 
     fn scrape(&self, families: &[Family]) -> Result<Vec<u8>, String> {
-        let plugin = &self.shared.plugin;
-        let lowered = lower(families);
-        let mut buf = vec![0u8; SCRAPE_BUF];
-        let mut f = Frame::new(
-            ScrapeIn {
-                head: in_head(),
-                families: lend_list(&lowered.families),
-                families_len: lowered.families.len(),
-                buf: buf.as_mut_ptr(),
-                cap: buf.len(),
-            },
-            ScrapeOut {
-                head: out_head(),
-                written: 0,
-                needed: 0,
-            },
-        );
-        let mut called = plugin.call(slot::SCRAPE, &mut f);
-        if let Some(token) = called.recall.take() {
-            // The one re-call a short answer earns, into a buffer of the size it named.
-            buf = vec![0u8; f.out.needed];
-            f.input.buf = buf.as_mut_ptr();
-            f.input.cap = buf.len();
-            f.out = ScrapeOut {
-                head: out_head(),
-                written: 0,
-                needed: 0,
-            };
-            called = plugin.recall(token, slot::SCRAPE, &mut f);
-        }
-        if called.outcome != Outcome::Ready {
-            return Err(why(called.outcome, called.error));
-        }
-        buf.truncate(f.out.written.min(buf.len()));
-        Ok(buf)
+        scrape_with(&self.shared.plugin, families, 0)
+    }
+
+    fn scrape_hooks(&self, families: &[Family]) -> Result<Vec<u8>, String> {
+        scrape_with(&self.shared.plugin, families, SCRAPE_FLAG_HOOK_FAMILIES)
     }
 
     fn status(&self) -> Option<Vec<u8>> {

@@ -229,13 +229,14 @@ pub fn signing_key(bin: &Path, dir: &Path) -> Result<PathBuf, String> {
     Ok(p)
 }
 
-/// Mint one data-plane key through the admin API the ordinary way, and return its token.
+/// Mint one data-plane key through the admin API the ordinary way: its token, and its id (the
+/// bucket its spend is ledgered under).
 pub fn mint_key(
     scratch: &Path,
     admin: u16,
     admin_token: &str,
     name: &str,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let bearer = format!("Bearer {admin_token}");
     let body = format!(
         "{{\"name\":{}}}",
@@ -252,17 +253,21 @@ pub fn mint_key(
         Some(body.as_bytes()),
         &[],
     )?;
-    serde_json::from_slice::<Value>(&r.body)
-        .ok()
-        .and_then(|v| v.get("token").and_then(Value::as_str).map(str::to_string))
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| {
-            format!(
-                "the admin API minted no key ({}: {})",
-                r.status,
-                String::from_utf8_lossy(&r.body)
-            )
-        })
+    let v: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+    let text = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    match (text("token"), text("id")) {
+        (Some(token), Some(id)) => Ok((token, id)),
+        _ => Err(format!(
+            "the admin API minted no key with a token and an id ({}: {})",
+            r.status,
+            String::from_utf8_lossy(&r.body)
+        )),
+    }
 }
 
 /// A throwaway certificate authority and one leaf for `sans`, written as PEM into `dir`:

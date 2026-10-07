@@ -19,8 +19,10 @@
 //!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise), `work.open` /
 //!   `work.find` / `work.settle` / `work.resume`, `unit.nest`, `content.scan` and `hook.call`
 //!   (for the unit the crossing serves), `verify.lookup` / `verify.store` (the caller's own
-//!   single-flight verify cache) and `disk.append` (to the destinations the caller was granted,
-//!   [`NO_DESTINATION`] otherwise). Every slot of the table is served.
+//!   single-flight verify cache), `disk.append` (to the destinations the caller was granted,
+//!   [`NO_DESTINATION`] otherwise) and `snapshot.read` (the host's metric families, laid out in the
+//!   caller's buffer by [`super::snapshot`], to the crossing the kernel granted them). Every slot of
+//!   the table is served.
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -39,16 +41,17 @@ use busbar_contract::abi::host::service::{
     check_random_fill_in, check_records_claim_in, check_work_record, may_pend, op, ClockNowIn,
     ClockReading, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten, EntitlementCheckIn,
     HookCallIn, HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn,
-    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SignIn, TrustDecideIn, TrustDueIn,
-    TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn,
-    VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
+    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SignIn, SnapshotReadIn, TrustDecideIn,
+    TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn, UnitNestIn,
+    VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 
 pub use busbar_contract::services::{
-    Caller, DiskReport, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, DiskReport, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
+    Stored,
 };
 
 use super::ticket::{decode, InstanceWake, WakeRoute};
@@ -71,6 +74,9 @@ pub const UNDECLARED_KIND: &str = "the caller does not declare that credential k
 /// The refusal of a `disk.append` to a key the calling instance was not granted (its manifest
 /// declares no such destination) or its settings leave unset, before anything is written.
 pub const NO_DESTINATION: &str = "the caller was granted no such destination";
+/// The error text of a `snapshot.read` before the host's recorder is installed: the caller answers
+/// "not ready, retry".
+pub const SNAPSHOT_NOT_READY: &str = "the snapshot is not ready";
 /// The error text of the second short answer on one handle.
 pub const SECOND_SHORT: &str = "a second short answer on one handle";
 
@@ -344,6 +350,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     trust_verify: Some(trust_verify),
     records_secret: Some(records_secret),
     disk_append: Some(disk_append),
+    snapshot_read: Some(snapshot_read),
     trust_sight_item: Some(trust_sight_item),
     trust_serves: Some(trust_serves),
     trust_decide: Some(trust_decide),
@@ -1492,3 +1499,48 @@ extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 #[cfg(test)]
 #[path = "../tests/host_services_tests.rs"]
 mod tests;
+
+extern "C" fn snapshot_read(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::SNAPSHOT_READ,
+        size_of::<SnapshotReadIn>(),
+        |served, _, _, caller| {
+            // SAFETY: the head covered a `SnapshotReadIn`.
+            let i = unsafe { input.cast::<SnapshotReadIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if svc::check_snapshot_read_in(&i).is_err() {
+                return Answered::fault();
+            }
+            match served.provider.snapshot_read(&caller, i.scope) {
+                Snapshot::Families(families) => {
+                    let needed = super::snapshot::size_of_layout(&families);
+                    if needed > i.into.cap {
+                        return Answered {
+                            needed_bytes: needed as u64,
+                            ..Answered::bare(Outcome::Failed, SHORT)
+                        };
+                    }
+                    // SAFETY: `into` was checked above (a capacity never behind NULL, the
+                    // alignment the layout needs), and the layout fits its capacity.
+                    let used = unsafe { super::snapshot::lay_out(&families, i.into.buf) };
+                    Answered {
+                        value: families.len() as u64,
+                        len: used as u64,
+                        ..Answered::bare(Outcome::Ready, "")
+                    }
+                }
+                Snapshot::NotReady => Answered::bare(Outcome::Failed, SNAPSHOT_NOT_READY),
+                Snapshot::Refused(why) => Answered::bare(Outcome::Refused, why),
+            }
+        },
+    )
+}

@@ -3,14 +3,18 @@
 
 //! Admin API **v1** — the frozen, additive-only surface, as a self-contained version unit.
 //!
-//! The typed views + stable error taxonomy (`contract`) and the JSON envelope PRIMITIVES
-//! (`err_json`/`ok_json`/`err_json_cond`) STAYED in busbar-core (`busbar_kernel::admin::v1`); the rest
-//! of the v1 surface lives here:
+//! The whole v1 surface lives here (the typed views, the stable error taxonomy and the JSON envelope
+//! primitives moved from the kernel in P2 D4; the kernel keeps only its admin gate's half,
+//! `busbar_kernel::admin::gate`):
 //!
+//! - [`contract`] — the typed views, the stable error taxonomy, the scope model.
 //! - [`service`] — the v1 application service: typed operations returning `contract` views/errors,
 //!   over the shared engine (`busbar_kernel::state::App`).
 //! - [`json`] — the JSON-REST wire adapter (`JsonV1`) mounting `/api/v1/admin/*`.
 
+/// THE v1 CONTRACT — the typed views, the stable error taxonomy and the scope model (moved here from
+/// the kernel's `admin::v1::contract`, P2 D4).
+pub mod contract;
 pub mod json;
 mod named_def_views;
 pub mod service;

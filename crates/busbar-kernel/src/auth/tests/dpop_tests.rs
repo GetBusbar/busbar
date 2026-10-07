@@ -48,7 +48,7 @@ fn only_a_token_carrying_cnf_jkt_is_dpop_bound() {
 /// `(status, body)` of `GET /stats` with `headers`, on a deployment whose chain identifies any
 /// credential and that runs NO authorization server.
 async fn stats(headers: &[(&str, String)]) -> (u16, String) {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = TestApp::new().idp_chain().build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -88,12 +88,13 @@ fn an_actionable_condition_keeps_the_reported_level() {
 /// scrape, not just the sample.
 #[test]
 fn the_provenance_label_cannot_be_shadowed() {
-    let m: crate::hooks::wire::HookMetric = serde_json::from_value(serde_json::json!({
-        "name": "x_total",
-        "type": "counter",
-        "labels": {"plugin": "somebody-else", "sink": "audit"}
-    }))
-    .expect("decode");
+    let m: busbar_contract::hook_wire::reply::HookMetric =
+        serde_json::from_value(serde_json::json!({
+            "name": "x_total",
+            "type": "counter",
+            "labels": {"plugin": "somebody-else", "sink": "audit"}
+        }))
+        .expect("decode");
     let labels = labels_for(Some("the-real-name"), &m);
     let plugin_labels: Vec<_> = labels
         .iter()
@@ -108,12 +109,13 @@ fn the_provenance_label_cannot_be_shadowed() {
 /// reports is not flattened away by the provenance label.
 #[test]
 fn a_plugins_own_labels_are_carried() {
-    let m: crate::hooks::wire::HookMetric = serde_json::from_value(serde_json::json!({
-        "name": "x_total",
-        "type": "counter",
-        "labels": {"sink": "audit", "reason": "full"}
-    }))
-    .expect("decode");
+    let m: busbar_contract::hook_wire::reply::HookMetric =
+        serde_json::from_value(serde_json::json!({
+            "name": "x_total",
+            "type": "counter",
+            "labels": {"sink": "audit", "reason": "full"}
+        }))
+        .expect("decode");
     let labels = labels_for(Some("p"), &m);
     assert_eq!(labels.len(), 3);
 }
@@ -241,7 +243,7 @@ fn the_fold_validates_through_the_one_hook_validator() {
         // exercised by its own tests; here the missing `type` stands for a structurally bad entry.
         serde_json::json!({"name": "no_type_total"}),
     ];
-    let kept = crate::hooks::wire::parse_status_metrics(&raw);
+    let kept = busbar_contract::hook_wire::reply::parse_status_metrics(&raw);
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].name, "good_total");
 }

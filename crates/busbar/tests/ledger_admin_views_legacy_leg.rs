@@ -75,7 +75,7 @@ async fn ask(addr: SocketAddr, path: &str) -> Answer {
 /// On the legacy leg, every ledger path answers exactly as a path that does not exist.
 #[tokio::test]
 async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     busbar_core_admin::install();
     // An OPEN admin posture, so that a path which DID exist would reach its handler rather than an
     // authentication refusal. Without this the test would pass on a surface that had grown all five
@@ -129,7 +129,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
 /// this leg's router answers them exactly as it answers a path it has never heard of.
 #[tokio::test]
 async fn the_served_document_describes_the_ledger_views_as_the_loops() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     busbar_core_admin::install();
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])

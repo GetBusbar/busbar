@@ -14,6 +14,16 @@ pub fn install() {
     busbar_kernel::config::legacy::install(LEGACY_ROWS);
 }
 
+/// The `module:` words of 1.5.5's built-in exporters, in the order 1.5.5 listed them (the table's
+/// `export_modules` row): the order the root registers its linked export rows in.
+pub fn export_order() -> Vec<&'static str> {
+    LEGACY_ROWS
+        .iter()
+        .find(|(k, _)| *k == "export_modules")
+        .map(|(_, v)| v.split(" | ").collect())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 #[path = "tests/legacy.rs"]
 mod tests;

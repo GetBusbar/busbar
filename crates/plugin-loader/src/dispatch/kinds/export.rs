@@ -28,6 +28,8 @@ pub struct ExportFacts {
     pub routes: Vec<Route>,
     /// Each declared metric family: its name, its `FAMILY_*` kind and its label keys.
     pub families: Vec<(String, u8, Vec<String>)>,
+    /// The Statement's `one_instance` mark: at most one instance of the plugin may be configured.
+    pub one_instance: bool,
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
@@ -119,6 +121,7 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
         streams: streams.to_vec(),
         routes,
         families,
+        one_instance: st.marks & busbar_contract::abi::mechanism::door::MARK_ONE_INSTANCE != 0,
     })
 }
 

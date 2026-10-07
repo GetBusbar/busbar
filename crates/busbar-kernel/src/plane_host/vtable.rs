@@ -181,7 +181,7 @@ extern "C-unwind" fn clock_now(host: HostCtx) -> u64 {
     .unwrap_or(0) // fail-closed: a panicked clock reads 0, never a wild value.
 }
 
-/// WIRED `metrics_emit` → the real `metrics` recorder (`crate::metrics`), through the SAME rule the
+/// WIRED `metrics_emit` → the real `metrics` recorder (`crate::snapshot`), through the SAME rule the
 /// COLD lane's envelope is folded by.
 ///
 /// A plane REPORTS a sample; the host decides whether it is allowed to have said it (DECISIONS #85).
@@ -192,7 +192,7 @@ extern "C-unwind" fn clock_now(host: HostCtx) -> u64 {
 /// whole exposition; nothing checked the value, so a `NaN` from `f64::from_bits` went straight to
 /// the recorder; and nothing stopped a plane shadowing a real `busbar_*` series.
 ///
-/// Now: the name goes through [`crate::metrics::observe::admits_metric_name`] — the one predicate both lanes
+/// Now: the name goes through [`crate::snapshot::observe::admits_metric_name`] — the one predicate both lanes
 /// ask — and a non-finite value is refused. A rejected sample is `Refused`, not `Ok`, because the
 /// plane is entitled to know its telemetry did not land; and it is `Refused` rather than a fault
 /// because a badly-named metric is bad DATA, not a broken peer.
@@ -203,7 +203,7 @@ extern "C-unwind" fn clock_now(host: HostCtx) -> u64 {
 /// act on.
 ///
 /// CARDINALITY is bounded on the same budget the cold lane uses
-/// ([`crate::metrics::observe::admits_cardinality`]): a cap on distinct series per plugin and on
+/// ([`crate::snapshot::observe::admits_cardinality`]): a cap on distinct series per plugin and on
 /// distinct label sets per series, refused rather than silently dropped. The labels stay opaque —
 /// this ABI says the host does not interpret them — and are fingerprinted instead, so the bound
 /// exists before the label encoding does.
@@ -242,7 +242,7 @@ extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) ->
         // SAFETY: `(name_ptr, name_len)` is a live borrowed range for the call (ABI discipline).
         let bytes = unsafe { std::slice::from_raw_parts(s.name_ptr, s.name_len) };
         let name = String::from_utf8_lossy(bytes);
-        if !crate::metrics::observe::admits_metric_name(&name) {
+        if !crate::snapshot::observe::admits_metric_name(&name) {
             return StatusClass::Refused;
         }
         // THE CARDINALITY BUDGET — the second question, and the same one the cold lane asks. The
@@ -256,18 +256,18 @@ extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) ->
             // SAFETY: `(labels_ptr, labels_len)` is a live borrowed range for the call (ABI).
             unsafe { std::slice::from_raw_parts(s.labels_ptr, s.labels_len) }
         };
-        if !crate::metrics::observe::admits_cardinality_opaque(emitter, &name, labels) {
+        if !crate::snapshot::observe::admits_cardinality_opaque(emitter, &name, labels) {
             return StatusClass::Refused;
         }
         // Routes to the process-wide `metrics-exporter-prometheus` recorder installed by
-        // `crate::metrics::init` (a no-op sink when the operator did not opt in). The host's
+        // `crate::snapshot::init` (a no-op sink when the operator did not opt in). The host's
         // provenance label is attached here, from the host's own knowledge — the same
         // `plugin="<name>"` the cold lane's fold attaches, so one plugin reporting on either lane
         // produces series an operator reads the same way.
         metrics::gauge!(
             name.into_owned(),
             vec![metrics::Label::new(
-                crate::metrics::observe::PLUGIN_LABEL,
+                crate::snapshot::observe::PLUGIN_LABEL,
                 emitter
             )]
         )
@@ -315,8 +315,13 @@ extern "C-unwind" fn counter_add(
         for (i, key) in family.label_keys.iter().enumerate() {
             // SAFETY: `values_ptr` addresses `values_len` live entries (ABI), each a live range.
             let v = unsafe { core::ptr::read_unaligned(values_ptr.add(i)) };
-            let bytes =
-                unsafe { borrowed(v.ptr, v.len, crate::hooks::wire::MAX_METRIC_LABEL_CHARS) };
+            let bytes = unsafe {
+                borrowed(
+                    v.ptr,
+                    v.len,
+                    busbar_contract::hook_wire::reply::MAX_METRIC_LABEL_CHARS,
+                )
+            };
             let Some(value) = bytes.and_then(|b| std::str::from_utf8(b).ok()) else {
                 return StatusClass::Refused;
             };
@@ -326,7 +331,7 @@ extern "C-unwind" fn counter_add(
             &std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default(),
             &labels,
         );
-        if !crate::metrics::observe::admits_cardinality(emitter, family.name, fingerprint) {
+        if !crate::snapshot::observe::admits_cardinality(emitter, family.name, fingerprint) {
             return StatusClass::Refused;
         }
         metrics::counter!(family.name, labels).increment(delta);

@@ -339,6 +339,10 @@ mod decisions_door {
             "the member's credential, presented by the auth plugin serving its style: {head}"
         );
         assert!(
+            !head.contains(token.expose_secret()),
+            "the caller's own credential never reaches the far end: {head}"
+        );
+        assert!(
             head.ends_with(r#"{"state":{"amount":7}}"#),
             "the caller's body: {head}"
         );

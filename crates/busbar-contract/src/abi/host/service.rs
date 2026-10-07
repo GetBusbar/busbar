@@ -152,16 +152,18 @@ pub mod op {
     pub const RECORDS_SECRET: u32 = 21;
     /// `disk.append`.
     pub const DISK_APPEND: u32 = 22;
+    /// `snapshot.read`.
+    pub const SNAPSHOT_READ: u32 = 23;
     /// `trust.sight_item`.
-    pub const TRUST_SIGHT_ITEM: u32 = 23;
+    pub const TRUST_SIGHT_ITEM: u32 = 24;
     /// `trust.serves`.
-    pub const TRUST_SERVES: u32 = 24;
+    pub const TRUST_SERVES: u32 = 25;
     /// `trust.decide`.
-    pub const TRUST_DECIDE: u32 = 25;
+    pub const TRUST_DECIDE: u32 = 26;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 26;
+pub const SERVICES: u32 = 27;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -177,6 +179,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::RANDOM_FILL
             | op::NEED_ADMIT
             | op::TRUST_VERIFY
+            | op::SNAPSHOT_READ
             | op::TRUST_SIGHT_ITEM
             | op::TRUST_SERVES
             | op::TRUST_DECIDE
@@ -837,6 +840,48 @@ pub fn check_hook_call_in(i: &HookCallIn) -> Result<(), Fault> {
     Ok(())
 }
 
+// ── snapshot ──────────────────────────────────────────────────────────────────────────────────
+
+/// [`op::SNAPSHOT_READ`]'s `in`: THE HOST SNAPSHOT SERVICE (kind-neutral; `BUSBAR-1.6.0.md` owner
+/// law 2026-09-27, "the data a plugin needs arrives through a kind-neutral host service, for example
+/// a metrics snapshot service"). The host's metric families of `scope` ([`SNAPSHOT_SCOPE_WHOLE`] |
+/// [`SNAPSHOT_SCOPE_HOOKS`]), laid out in the caller's `into.buf` in the export kind's scrape layout
+/// ([`ScrapeFamily`](crate::abi::export::ScrapeFamily), its samples and their labels, every pointer
+/// naming a range of that same buffer): READY with `value` = how many families, the
+/// `ScrapeFamily` array at offset `0`, `len` the bytes the layout used; no spans. `into.buf` holds
+/// [`SNAPSHOT_ALIGN`] alignment, or the call is FAULT.
+///
+/// FAILED with no `needed_*` = NOT READY (the host's recorder is not installed yet): the caller
+/// answers "not ready, retry", never an empty success. A short buffer is FAILED with
+/// `needed_bytes`, as every service. The scope is a kind-neutral argument, never a plugin's name.
+/// The host lends the snapshot only to the crossing it granted it (the instance that serves its
+/// well-known exposition routes); any other caller is REFUSED. Never pends: a ticketless re-call
+/// after a short answer reads the snapshot again.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotReadIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// [`SNAPSHOT_SCOPE_WHOLE`] | [`SNAPSHOT_SCOPE_HOOKS`].
+    pub scope: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+    /// Where the families are laid out (bytes only; `spans_cap` may be `0`).
+    pub into: ServiceBufs,
+}
+
+/// [`SnapshotReadIn::scope`]: the host recorder's WHOLE snapshot, in its order (kind, then name),
+/// read after the host refreshes its scrape-time gauges and folds every export instance's status.
+pub const SNAPSHOT_SCOPE_WHOLE: u32 = 0;
+/// [`SnapshotReadIn::scope`]: the families the configured hooks REPORT (each hook's own metrics,
+/// labelled with its name), folded from the host's cache (it never waits on a hook).
+pub const SNAPSHOT_SCOPE_HOOKS: u32 = 1;
+/// How many scopes there are; a scope at or past it is REFUSED.
+pub const SNAPSHOT_SCOPES: u32 = 2;
+/// The alignment [`SnapshotReadIn::into`]'s `buf` holds (the scrape layout's: every record of it
+/// is pointer-aligned).
+pub const SNAPSHOT_ALIGN: usize = 8;
+
 // ── need ──────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::NEED_ADMIT`]'s `in`: the host's verdict on the calling instance's declared need `need` (its
@@ -977,6 +1022,8 @@ pub struct HostSlots {
     pub records_secret: Option<ServiceFn>,
     /// [`op::DISK_APPEND`], in [`DiskAppendIn`].
     pub disk_append: Option<ServiceFn>,
+    /// [`op::SNAPSHOT_READ`], in [`SnapshotReadIn`].
+    pub snapshot_read: Option<ServiceFn>,
     /// [`op::TRUST_SIGHT_ITEM`], in [`TrustSightItemIn`]. A tail addition.
     pub trust_sight_item: Option<ServiceFn>,
     /// [`op::TRUST_SERVES`], in [`TrustServesIn`]. A tail addition.
@@ -1215,6 +1262,39 @@ pub fn check_records_secret(
         out,
         into(op::RECORDS_SECRET, i.into, (SECRET_NOT_LIVE, SECRET_LIVE)),
     )
+}
+
+/// `snapshot.read`'s answer: the common rules; READY writes no spans.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_snapshot_read(
+    i: &SnapshotReadIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let bytes_only = ServiceBufs {
+        spans: core::ptr::null_mut(),
+        spans_cap: 0,
+        ..i.into
+    };
+    answer(ret, &i.head, out, into(op::SNAPSHOT_READ, bytes_only, ANY))
+}
+
+/// A `snapshot.read` `in`: a known scope, and a buffer of the scrape layout's alignment.
+///
+/// # Errors
+///
+/// [`Rule::UnknownCode`] for an unknown scope; [`Rule::Foreign`] for a misaligned buffer.
+pub fn check_snapshot_read_in(i: &SnapshotReadIn) -> Result<(), Fault> {
+    if i.scope >= SNAPSHOT_SCOPES {
+        return Err(fault(Rule::UnknownCode, "snapshot_read.scope"));
+    }
+    if !i.into.buf.is_null() && !(i.into.buf as usize).is_multiple_of(SNAPSHOT_ALIGN) {
+        return Err(fault(Rule::Foreign, "snapshot_read.into.buf"));
+    }
+    Ok(())
 }
 
 /// `records.list`'s answer.

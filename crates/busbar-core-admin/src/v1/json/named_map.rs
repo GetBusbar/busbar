@@ -71,9 +71,9 @@ use super::{
     with_config_etag, Outcome,
 };
 use crate::admin_state::AppAdmin as _;
+use crate::v1::contract::taxonomy::Cond;
+use crate::v1::contract::AdminError;
 use crate::v1::named_def_views::SETTINGS_KEY;
-use busbar_kernel::admin::v1::contract::taxonomy::Cond;
-use busbar_kernel::admin::v1::contract::AdminError;
 use busbar_kernel::audit_ring as audit;
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::state::{App, AppHandle};
@@ -650,7 +650,7 @@ async fn apply(
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct MutatedDefView {
     #[serde(flatten)]
-    def: busbar_kernel::admin::v1::contract::NamedDefView,
+    def: crate::v1::contract::NamedDefView,
     /// The plugin-route PATHS this mutation declared that the process cannot serve until it restarts,
     /// because the axum router registers each path once, at boot, and a config apply swaps only
     /// `Arc<App>`. Empty (and omitted) for every mutation that adds no such path — including every
@@ -664,10 +664,7 @@ pub(crate) struct MutatedDefView {
 
 impl MutatedDefView {
     /// Wrap one stored definition with the restart signal, if any.
-    fn new(
-        def: busbar_kernel::admin::v1::contract::NamedDefView,
-        awaiting_restart: Vec<String>,
-    ) -> Self {
+    fn new(def: crate::v1::contract::NamedDefView, awaiting_restart: Vec<String>) -> Self {
         let note = (!awaiting_restart.is_empty()).then(|| {
             format!(
                 "stored and applied, EXCEPT the newly declared route(s) {} — each plugin route path \
@@ -782,7 +779,7 @@ fn check_trust_ceiling(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), Rejection> {
-    use busbar_kernel::admin::v1::contract::Scope;
+    use crate::v1::contract::Scope;
     if !section.has_trust_ceiling() {
         return Ok(());
     }

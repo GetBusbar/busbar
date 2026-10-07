@@ -198,7 +198,7 @@ struct Fleet {
 
 impl Fleet {
     fn new() -> Self {
-        busbar_kernel::metrics::init();
+        busbar_kernel::snapshot::init();
         let registry = Arc::new(MemoryStore::new());
         let signer = TokenSigner::from_secret_bytes(&KEY, DEFAULT_KID);
         let gov = GovState::new_with_signer(registry.clone(), None, Some(signer))

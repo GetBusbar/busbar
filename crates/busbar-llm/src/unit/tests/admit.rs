@@ -36,7 +36,7 @@ fn governed(
     std::sync::Arc<crate::test_support::BuiltApp>,
     std::sync::Arc<busbar_contract::records::VirtualKey>,
 ) {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     if let Some((bucket, requests)) = seed {
         store

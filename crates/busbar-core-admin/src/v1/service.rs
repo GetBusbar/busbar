@@ -22,7 +22,7 @@ use busbar_kernel::diagnostics::{
 };
 use busbar_kernel::state::App;
 
-use busbar_kernel::admin::v1::contract::{
+use crate::v1::contract::{
     AdminAuthView, AdminError, AuthView, BuildInfo, ClassUsage, ConfigValidateView,
     EffectiveConfigView, GroupView, HookHealthView, HookTransportView, HookView, InfoView,
     KeyUsageView, ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
@@ -453,6 +453,8 @@ pub mod read_path_money {
         derive_spend_micros_row, derive_spend_micros_row_at_card, derive_spend_micros_row_classes,
         derive_spend_micros_row_classes_at_card, row_lane, row_priced_at_ms,
     };
+    /// The usage row the derivations above read, through the same door.
+    pub use crate::v1::contract::UsageBreakdown;
 }
 /// Process start instant, for the `info` uptime read. Stamped ONCE at startup by `mark_start()`.
 /// A missing value (never stamped — e.g. a unit test that skips `main`) yields a `None` uptime
@@ -692,7 +694,7 @@ fn auth_modules_compiled_in() -> Vec<&'static str> {
 /// The removable hook plugins COMPILED INTO this binary (feature-gated). Excludes the always-present,
 /// non-removable weighted SWRR floor, which is reported separately (as `weighted_floor` / the
 /// `weighted` compiled-in entry).
-fn hook_plugins_compiled_in() -> Vec<&'static str> {
+pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
     [
         #[cfg(feature = "hooks-ranking")]
         "ranking",
@@ -734,7 +736,7 @@ fn validate_plugin_filename(file: &str) -> Result<String, AdminError> {
             ));
         }
     }
-    if !busbar_plugin_loader::tarball::is_plugin_tarball(file) {
+    if !busbar_kernel::plugin_admission::tarball::is_plugin_tarball(file) {
         return Err(AdminError::Validation(
             "plugin filename must be a `.tar.gz` (or `.tgz`) signed plugin tarball".into(),
         ));
@@ -1158,7 +1160,7 @@ fn manifest_schema_url_and_error(
     };
     let url = Some(format!(
         "{}/plugins/{name}/schema",
-        busbar_kernel::admin::v1::contract::ADMIN_PREFIX
+        crate::v1::contract::ADMIN_PREFIX
     ));
     match serde_json::from_str::<serde_json::Value>(s) {
         Ok(_) => (url, None),

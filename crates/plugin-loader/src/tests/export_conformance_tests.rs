@@ -368,6 +368,10 @@ impl HostServices for DiskHost {
     ) -> Ran {
         Ran::Now(Stored::refused("no hook stage here"))
     }
+
+    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
+        busbar_contract::services::Snapshot::Refused(NO_SERVICE)
+    }
 }
 
 /// A dispatcher whose host services are [`DiskHost`]'s.
@@ -1158,10 +1162,10 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
 /// // wherever a metrics recorder legitimately exists (the engine, not the loader):
 /// install_recorder();
 /// run_compiled_in();
-/// let a = busbar_kernel::metrics::render();
+/// let a = busbar_kernel::snapshot::render();
 /// reset_recorder();
 /// run_dropped_in();
-/// let b = busbar_kernel::metrics::render();
+/// let b = busbar_kernel::snapshot::render();
 /// assert_eq!(a, b);   // byte-identical exposition
 /// ```
 ///

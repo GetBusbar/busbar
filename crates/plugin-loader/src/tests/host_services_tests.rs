@@ -39,6 +39,8 @@ struct Provider {
     secrets: Mutex<Vec<String>>,
     /// Every `disk.append` that reached the provider: the destination and the bytes.
     appended: Mutex<Vec<(DiskDest, Vec<u8>)>>,
+    /// Whether `snapshot.read` answers NOT READY (the recorder is not installed).
+    snapshot_not_ready: std::sync::atomic::AtomicBool,
 }
 
 impl Provider {
@@ -353,6 +355,14 @@ impl HostServices for Provider {
         );
         Ran::Later
     }
+
+    fn snapshot_read(&self, c: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        self.saw(c, "snapshot.read", scope.to_string().as_bytes());
+        if self.snapshot_not_ready.load(Ordering::Relaxed) {
+            return busbar_contract::services::Snapshot::NotReady;
+        }
+        busbar_contract::services::Snapshot::Families(snapshot_families())
+    }
 }
 
 /// The records the double's `records.list` holds, in key order.
@@ -542,6 +552,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.trust_verify,
         HOST_SLOTS.records_secret,
         HOST_SLOTS.disk_append,
+        HOST_SLOTS.snapshot_read,
         HOST_SLOTS.trust_sight_item,
         HOST_SLOTS.trust_serves,
         HOST_SLOTS.trust_decide,
@@ -586,6 +597,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                         | op::ENTITLEMENT_CHECK
                         | op::RANDOM_FILL
                         | op::TRUST_VERIFY
+                        | op::SNAPSHOT_READ
                 ),
                 "service {service}"
             );
@@ -1866,5 +1878,145 @@ fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
                 b"peer/-@- false".to_vec()
             ),
         ]
+    );
+}
+
+/// The families the double's `snapshot.read` answers: every shape the scrape layout carries (a
+/// labelled histogram's legs, a family with help and unit, one with neither, one with no samples).
+fn snapshot_families() -> Vec<busbar_contract::export_calls::Family> {
+    use busbar_contract::abi::export::{
+        SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE, SCRAPE_KIND_HISTOGRAM,
+    };
+    use busbar_contract::export_calls::{Family, Sample};
+    let sample = |name: &str, labels: &[(&str, &str)], value: &str| Sample {
+        name: name.into(),
+        labels: labels
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+        value: value.into(),
+    };
+    vec![
+        Family {
+            name: "x_requests_total".into(),
+            help: None,
+            unit: None,
+            kind: SCRAPE_KIND_COUNTER,
+            samples: vec![sample(
+                "x_requests_total",
+                &[("hook", "a\\\"b"), ("ok", "1")],
+                "3",
+            )],
+        },
+        Family {
+            name: "x_depth".into(),
+            help: Some("queue depth".into()),
+            unit: Some("items".into()),
+            kind: SCRAPE_KIND_GAUGE,
+            samples: Vec::new(),
+        },
+        Family {
+            name: "x_seconds".into(),
+            help: Some(String::new()),
+            unit: None,
+            kind: SCRAPE_KIND_HISTOGRAM,
+            samples: vec![
+                sample("x_seconds_bucket", &[("le", "0.5")], "1"),
+                sample("x_seconds_bucket", &[("le", "+Inf")], "2"),
+                sample("x_seconds_sum", &[], "0.75"),
+                sample("x_seconds_count", &[], "2"),
+            ],
+        },
+    ]
+}
+
+/// THE HOST SNAPSHOT SERVICE through the SDK, ticketless as an export `serve` calls it: a short
+/// buffer earns the bytes the layout needs; the re-call reads every family back exactly as the
+/// kernel answered it, the scope reaching the kernel as the caller's; NOT READY is `None`, never an
+/// empty snapshot.
+#[test]
+fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
+    use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
+    use busbar_contract::abi::sdk::ServiceError;
+    let d = double();
+    let none = CompletionHandle {
+        ticket: Ticket::NONE,
+        seq: 0,
+        _reserved: 0,
+    };
+    let services = sdk(&d);
+    let mut small = [0u64; 4];
+    let needed = match services.snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut small) {
+        Err(ServiceError::Short { bytes, items: 0 }) => bytes,
+        other => panic!("a short buffer earns its size: {other:?}"),
+    };
+    let mut buf = vec![0u64; usize::try_from(needed).unwrap().div_ceil(8)];
+    let read = services
+        .snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut buf)
+        .expect("the re-call reads");
+    assert_eq!(read, Some(snapshot_families()), "read back exactly");
+    d.route
+        .provider
+        .snapshot_not_ready
+        .store(true, Ordering::Relaxed);
+    assert_eq!(
+        services.snapshot_read(none, SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        Ok(None),
+        "not ready is NONE, never an empty success"
+    );
+    let seen: Vec<_> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(i, w, a)| (i.clone(), *w, String::from_utf8_lossy(a).into_owned()))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("double".to_string(), "snapshot.read", "1".to_string()),
+            ("double".to_string(), "snapshot.read", "1".to_string()),
+            ("double".to_string(), "snapshot.read", "0".to_string()),
+        ]
+    );
+}
+
+/// RED: an unknown scope, or a buffer without the layout's alignment, is FAULT before the kernel
+/// is asked.
+#[test]
+fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
+    use busbar_contract::abi::host::service::{SnapshotReadIn, SNAPSHOT_SCOPES};
+    let d = double();
+    let mut words = [0u64; 512];
+    let at = words.as_mut_ptr().cast::<u8>();
+    let call = |scope: u32, buf: *mut u8, cap: usize| {
+        let i = SnapshotReadIn {
+            head: head(
+                op::SNAPSHOT_READ,
+                Ticket::NONE,
+                0,
+                size_of::<SnapshotReadIn>(),
+            ),
+            scope,
+            _reserved: 0,
+            into: ServiceBufs {
+                buf,
+                cap,
+                spans: std::ptr::null_mut(),
+                spans_cap: 0,
+            },
+        };
+        let mut o = blank();
+        HOST_SLOTS.snapshot_read.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o).outcome()
+    };
+    assert_eq!(call(SNAPSHOT_SCOPES, at, 4096), Outcome::Fault);
+    assert_eq!(call(0, at.wrapping_add(1), 4095), Outcome::Fault);
+    assert_eq!(call(0, at, 4096), Outcome::Ready);
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().len(),
+        1,
+        "only the well-formed call reached the kernel"
     );
 }

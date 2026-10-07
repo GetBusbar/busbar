@@ -88,7 +88,7 @@ fn openapi_doc_is_31_and_v1_prefixed() {
         "discovery doc is OpenAPI 3.1"
     );
     assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
-    let prefix = format!("{}/", busbar_kernel::admin::v1::contract::ADMIN_PREFIX);
+    let prefix = format!("{}/", crate::v1::contract::ADMIN_PREFIX);
     for path in doc["paths"].as_object().unwrap().keys() {
         assert!(
             path.starts_with(&prefix),
@@ -133,9 +133,7 @@ fn openapi_paths_annotate_required_scope() {
     // and enforces the auth middleware, so comparing the annotation against a call to that same
     // function is a tautology: editing the matrix moves both sides together and can never fail.
     fn expected_scope(method: &str, path: &str) -> &'static str {
-        use busbar_kernel::admin::v1::contract::{
-            ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT,
-        };
+        use crate::v1::contract::{ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
         if method == "get" || method == "head" {
             return "read-only";
         }
@@ -302,7 +300,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
         AdminError::not_found(""),
         AdminError::Unauthorized,
         AdminError::Forbidden {
-            needed: busbar_kernel::admin::v1::contract::Scope::Full,
+            needed: crate::v1::contract::Scope::Full,
         },
         AdminError::MethodNotAllowed,
         AdminError::Validation(String::new()),
@@ -568,7 +566,7 @@ fn openapi_every_operation_has_a_typed_response_schema() {
 /// enum can no longer be right while a per-endpoint response set is wrong.
 #[test]
 fn err_kind_bridges_every_admin_error_variant() {
-    use busbar_kernel::admin::v1::contract::taxonomy::{err_kind_of, ErrKind};
+    use crate::v1::contract::taxonomy::{err_kind_of, ErrKind};
     let declarable = [
         (AdminError::not_found(""), ErrKind::NotFound),
         (AdminError::Validation(String::new()), ErrKind::Validation),
@@ -579,7 +577,7 @@ fn err_kind_bridges_every_admin_error_variant() {
         (AdminError::Conflict(String::new()), ErrKind::Conflict),
         (
             AdminError::Forbidden {
-                needed: busbar_kernel::admin::v1::contract::Scope::Full,
+                needed: crate::v1::contract::Scope::Full,
             },
             ErrKind::Forbidden,
         ),
@@ -618,11 +616,9 @@ fn err_kind_bridges_every_admin_error_variant() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn declared_errors_is_total_and_well_formed() {
-    use busbar_kernel::admin::v1::contract::taxonomy::{
-        declared_errors, declared_responses, MethodTag,
-    };
+    use crate::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
     let doc = openapi_doc_seamed();
-    let prefix = busbar_kernel::admin::v1::contract::ADMIN_PREFIX;
+    let prefix = crate::v1::contract::ADMIN_PREFIX;
     for (path, methods) in doc["paths"].as_object().expect("paths") {
         let rel = path.strip_prefix(prefix).unwrap_or(path);
         for (key, op) in methods.as_object().expect("methods") {

@@ -40,7 +40,8 @@
 //! - `status` (1.5.5 blob), `check`, `serve`.
 //! - **Listener.** `/metrics` is served on the data listener through the export route exception,
 //!   confined to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap.
-//!   `/metrics/hooks` stays a core route. (Kernel routing; not a new shape here.)
+//!   `/metrics/hooks` is rendered by the same sink over the same `scrape`, the host setting
+//!   [`SCRAPE_FLAG_HOOK_FAMILIES`] on the head (P2 D4); no new op.
 //! - **Behaviour.** Webhook and otlp use driver tickets (the shared mechanism's
 //!   [`Ticket`](super::mechanism::ticket::Ticket) `drive`/`DriveIn` lifecycle slot, not a new
 //!   export op). The `Host` and `Started` 1.5.5 response variants are retired: `deliver` answers
@@ -624,6 +625,16 @@ pub const SCRAPE_KIND_SUMMARY: u8 = 3;
 /// [`ScrapeFamily::kind`]: untyped.
 pub const SCRAPE_KIND_UNTYPED: u8 = 4;
 
+/// [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families.
+///
+/// Set by the host for `/metrics/hooks`, 1.5.5's hook exposition (the hook-reported metrics the
+/// host validated, bounded and folded, a `hook` label on every sample), not for the recorder's
+/// snapshot. A sink renders them in the 1.5.5 hook layout: the families in the order handed (by
+/// name), each family's samples in the order handed, `# HELP` when present then `# TYPE`, and no
+/// blank line between families. The dispatcher owns only the mechanism's own bit (`FLAG_RESUME`);
+/// a kind's bit rides through the call untouched.
+pub const SCRAPE_FLAG_HOOK_FAMILIES: u32 = 2;
+
 /// One label on a [`ScrapeSample`]: a key AND its value, ARCHITECT review ruling (fresh-Opus
 /// M3-SHAPES review, parity item) — a value-only array cannot carry a histogram's `le` or a
 /// summary's `quantile` label, which is exactly what makes the 1.5.5 exposition losslessly
@@ -782,7 +793,8 @@ pub struct ServeIn {
     pub head: InHead,
     /// The HTTP method.
     pub method: AbiStr,
-    /// The path, confined to `/metrics` or `/exports/<name>/*`.
+    /// The path, confined to `/metrics`, `/metrics/hooks` (the scrape sink's alone) or
+    /// `/exports/<name>/*`.
     pub path: AbiStr,
     /// The raw query string; absent = none.
     pub query: AbiStr,
@@ -829,7 +841,8 @@ pub const ROUTE_AUTH_ADMIN: u32 = 2;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Route {
-    /// The path, confined to `/metrics` or `/exports/<name>/*`.
+    /// The path, confined to `/metrics`, `/metrics/hooks` (the scrape sink's alone) or
+    /// `/exports/<name>/*`.
     pub path: AbiStr,
     /// The HTTP method.
     pub method: AbiStr,

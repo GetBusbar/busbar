@@ -319,7 +319,7 @@ where
                     if truncated_now {
                         // Fires ONCE per response: an over-cap body is alertable even though the
                         // tail-anchored copy still recovers usage for every recognized dialect.
-                        metrics::counter!(busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL)
+                        metrics::counter!(busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL)
                             .increment(1);
                         diag_debug!(
                             USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,

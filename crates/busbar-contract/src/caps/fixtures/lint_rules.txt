@@ -21,6 +21,9 @@
 rule | hold-escape | banned | mem::forget | a forgotten hold is a unit that was admitted and never settled
 rule | hold-escape | banned | ManuallyDrop | the same as forgetting, spelled differently
 rule | hold-escape | banned | Box::leak | a leaked hold never reaches the exit path
+rule | hold-escape | banned | Vec::leak | the same as Box::leak, spelled differently
+rule | hold-escape | banned | String::leak | the same as Box::leak, spelled differently
+rule | hold-escape | banned | .leak() | the same as Box::leak, spelled differently
 rule | hold-escape | banned | process::abort | aborting skips every exit path at once; the node drains instead
 rule | hold-escape | confined:kernel/src/teller | AssertUnwindSafe | it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place and nothing else may use it
 rule | hold-escape | banned | JoinHandle::abort | an aborted task loses its unit's end; the sweep is the second exit, not abort
@@ -37,6 +40,9 @@ rule | seal-site | confined:kernel/src | take(&Grant::<Exit>::mint( | there are 
 expect | mem::forget
 expect | ManuallyDrop
 expect | Box::leak
+expect | Vec::leak
+expect | String::leak
+expect | .leak()
 expect | AssertUnwindSafe
 expect | KernelSeal::acquire_for_kernel
 expect | Grant::<Recover>::mint(

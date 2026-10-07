@@ -9,7 +9,7 @@
 //!
 //! - `GET /keys/{id}/usage` — `GovState::usage_for` (busbar-core-admin `keys.rs`);
 //! - `GET /groups/{name}/usage` — `GovState::derived_bucket_usage` (`service_operations.rs`);
-//! - the `/metrics` spend gauges — both of the above (`metrics/money.rs`);
+//! - the `/metrics` spend gauges — both of the above (`snapshot/money.rs`);
 //! - the hook seam's `budget_state`;
 //! - the budget gate — `GovState::try_admit`.
 //!

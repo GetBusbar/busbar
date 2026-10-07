@@ -52,13 +52,19 @@ use crate::diagnostics::{
     ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
     ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
-use crate::hooks::wire::{clamp_reject_status, sanitize_reject_message, HookStageProjection};
 use crate::hooks::{
     content_capped, failed_call_refuses, FallbackHook, RequestedSignals, ResolvedPolicy, TapEntry,
     REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS,
 };
-use crate::metrics::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOTAL};
 use crate::proxy::proxy_vocab::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
+use crate::snapshot::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOTAL};
+use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
+use busbar_contract::hook_wire::HookStageProjection;
+
+/// THE HOST'S 1.5.5 REPLY NORMALIZING over one opened hook instance (THE DESIGN §11.7) — host logic,
+/// not a plugin's, so it lives in the host hook stage (P2 D4, ARCHITECT Q-D4-HOOKS 2026-10-04; it was
+/// the kernel's `hooks::plugin`).
+pub(crate) mod policy;
 
 // ── what the composition root hands the driver ──────────────────────────────────────────────────
 
@@ -646,7 +652,7 @@ pub(crate) struct Veto {
     pub hook: Option<String>,
 }
 
-#[path = "gated.rs"]
+#[path = "../gated.rs"]
 pub mod gated;
 pub use gated::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 

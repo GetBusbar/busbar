@@ -50,6 +50,9 @@ pub mod admin_codec;
 pub mod governance;
 pub mod idempotency;
 pub mod mint;
+// THE PLANE TRUST VERB ENVELOPE (moved from the kernel's `admin::planeverbs`, P2 D4): the core-admin
+// backing [`install`] binds into the kernel's `admin_verbs` seam.
+pub mod planeverbs;
 pub mod posture;
 pub mod rate;
 pub mod refusal;
@@ -82,9 +85,10 @@ mod table_matches_openapi;
 pub use v1::service::mark_start;
 
 /// Register this crate's implementation of the admin-service mount seam
-/// (`busbar_kernel::admin::seam::AdminMountSeam`). Called EXACTLY ONCE, by the composition root
-/// (`crates/busbar`'s `main`), unconditionally — the admin API carries no feature flag at the
-/// composition root; it is always mounted.
+/// (`busbar_kernel::admin::seam::AdminMountSeam`: the mount and the boot record). Called by the
+/// composition root (`crates/busbar`'s `main`), unconditionally — the admin API carries no feature
+/// flag at the composition root; it is always mounted. The registration is first-wins, so a test
+/// binary that installs it more than once is unaffected.
 pub fn install() {
     busbar_kernel::admin::seam::install_admin_mount_seam(
         busbar_kernel::admin::seam::AdminMountSeam {

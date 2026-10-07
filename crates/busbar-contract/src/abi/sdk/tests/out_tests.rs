@@ -326,3 +326,22 @@ fn an_arrival_states_its_trust_facts_and_keeps_them() {
     Out::new(&mut bare).trust("peer", None, None);
     assert_eq!(bare.trust_counterparty.len, 0);
 }
+
+/// `keep` names a lease for an answer whose only material is program memory: the static header
+/// list a `serve` answers with is then under a lease the host releases, as the kind's check asks.
+#[test]
+fn keep_names_a_lease_for_static_material() {
+    const HEADERS: &[AbiStr] = &[AbiStr {
+        ptr: b"h".as_ptr(),
+        len: 1,
+    }];
+    let leases = Leases::default();
+    let mut o: ServeOut = zeroed();
+    let mut out = Out::new(&mut o);
+    out.list(|o| &o.headers_out, |o| &o.headers_out_len, HEADERS);
+    out.keep(&leases, ());
+    assert_ne!(o.head.lease, 0, "a lease is named");
+    assert_eq!(leases.held(), 1);
+    assert_eq!(leases.release(o.head.lease), Outcome::Ready);
+    assert_eq!(leases.held(), 0);
+}

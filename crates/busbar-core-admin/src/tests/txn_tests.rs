@@ -19,8 +19,8 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::json;
 
+use crate::v1::contract::AdminError;
 use crate::v1::json::{delete_group, install_plugin};
-use busbar_kernel::admin::v1::contract::AdminError;
 use busbar_kernel::config::transaction::{config_transaction, Outcome};
 use busbar_kernel::governance::{GovState, MemoryStore};
 use busbar_kernel::state::AppHandle;
@@ -198,7 +198,7 @@ async fn delete_team(handle: Arc<AppHandle>) -> StatusCode {
 /// blocking thread.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_store_read_does_not_stall_the_executor() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let delay = Duration::from_millis(400);
     let store = Arc::new(SlowStore::new(delay));
     let probe_store = store.clone();
@@ -277,7 +277,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
 /// the post-lock snapshot and there is no older one in scope, so the mint sees cap 1 and 409s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cap_is_read_from_the_post_lock_snapshot() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let mut app = crate::new_test_app()
         .governance(gov(store))
@@ -345,7 +345,7 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
 /// same `config_transaction` section for EVERY bind path, so a bind path added later inherits it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_mints_never_bind_a_deleted_group() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     for round in 0..10u32 {
         let store = Arc::new(MemoryStore::new());
         let g = gov(store);
@@ -395,7 +395,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
 /// the same class, closed for the same structural reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_rebinds_never_bind_a_deleted_group() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let g = gov(store);
     let app = crate::new_test_app()
@@ -467,7 +467,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
 /// releases, so no plugin write can appear inside another plugin op's validate→rebuild window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plugin_install_is_serialized_by_the_mutation_domain() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-txn-plugins-{}-{:?}",
         std::process::id(),
@@ -676,7 +676,7 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
 /// "gate absent"; the SECRET resolution happens first and is what this measures.
 fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::hooks::HookEnv::new(
-        Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+        Arc::new(busbar_kernel::plugin_admission::PluginRegistry::empty()),
         Arc::new(busbar_kernel::config::secret::SecretResolver::with_plugin(
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(delay);
@@ -720,7 +720,7 @@ async fn register_secret_hook(handle: Arc<AppHandle>) -> StatusCode {
 /// while ALSO holding the process-wide config-mutation lock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_secret_plugin_does_not_stall_the_executor() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let delay = Duration::from_millis(400);
     let app = crate::new_test_app()
         .hook_env(parking_secret_hook_env(delay))

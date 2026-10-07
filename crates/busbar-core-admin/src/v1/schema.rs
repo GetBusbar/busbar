@@ -17,7 +17,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use busbar_kernel::admin::v1::contract::{AdminError, HookView};
+use crate::v1::contract::{AdminError, HookView};
 
 /// Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
 /// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
@@ -445,7 +445,7 @@ pub struct ConfigDiffView {
 /// audit handler).
 #[derive(Serialize, JsonSchema)]
 pub struct AuditPageView {
-    pub items: Vec<busbar_kernel::audit_ring::AuditEntry>,
+    pub items: Vec<crate::v1::json::audit::AuditEntry>,
     pub next_cursor: Option<String>,
 }
 

@@ -682,6 +682,14 @@ impl busbar_contract::services::HostServices for ClockOnly {
     ) -> busbar_contract::services::Ran {
         busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
     }
+
+    fn snapshot_read(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: u32,
+    ) -> busbar_contract::services::Snapshot {
+        busbar_contract::services::Snapshot::Refused("no")
+    }
 }
 
 /// A store whose connect is bounded by 200 ms over the dial and the handshake.
