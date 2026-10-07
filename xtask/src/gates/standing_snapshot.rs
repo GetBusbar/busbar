@@ -10,6 +10,10 @@
 //! * a finding that is NOT in the snapshot turns the posture RED: a new edge, a new cell, a new
 //!   vendor name, anything the debt did not already hold;
 //! * a finding whose figure is ABOVE its snapshot figure turns the posture RED: the debt grew;
+//! * a listed row whose detail carries a chunk that does not read as a finding (no TAB, an empty
+//!   tag, an empty subject), or that is red and parses to no finding at all, turns the posture RED:
+//!   a red the snapshot cannot read is a red it never evaluated, and so is a listed row that
+//!   recorded no row, two disagreeing rows or a SKIP;
 //! * a finding that points toward the drain (a `dead-*` allowance, a `STALE SLACK` ceiling) is
 //!   never a new debt and is reported, not scored;
 //! * a snapshot entry that no finding matches any more is STALE, and reported, not scored:
@@ -36,57 +40,71 @@ pub struct SnapshotReds {
 pub type Key = String;
 
 /// Every finding of `row`, as `(key, figure, drains)`. `drains` is true for a finding that points
-/// toward the drain rather than at a debt.
+/// toward the drain rather than at a debt. A chunk that does not read as a finding is not here: it
+/// is in [`unparsed`], and [`judge`] blocks on it.
 pub fn findings(row: &Row) -> Vec<(Key, i64, bool)> {
-    let mut out = Vec::new();
-    for chunk in row.detail.split(" | ") {
-        let Some(tab) = chunk.find('\t') else {
-            continue;
-        };
-        let head = &chunk[..tab];
-        let tag = head
-            .rsplit([' ', ':'])
-            .next()
-            .unwrap_or(head)
-            .trim()
-            .to_string();
-        if tag.is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = chunk[tab + 1..].split('\t').collect();
-        let (mut subject, rest) = match fields.split_first() {
-            Some((s, r)) => (s.trim().to_string(), r.join("\t")),
-            None => continue,
-        };
-        let mut figure = None;
-        if let Some((s, n)) = subject.rsplit_once(" = ") {
-            if let Ok(n) = n.trim().parse::<i64>() {
-                figure = Some(n);
-                subject = s.trim().to_string();
-            }
-        }
-        if tag == "vendor-name" {
-            // `<crate>\t<file>:<line>\t...`: keyed by crate and file, never by line (a line moves
-            // with every edit above it), and the figure is how many such findings there are.
-            let file = fields
-                .get(1)
-                .map(|f| f.rsplit_once(':').map_or(*f, |(p, _)| p))
-                .unwrap_or("");
-            subject = format!("{subject} {file}");
-            figure = Some(1);
-        }
-        let figure = figure
-            .or_else(|| number_after(&rest, "they differ by "))
-            .or_else(|| number_after(&rest, "vs measured "))
-            .or_else(|| number_after(&rest, "scored count is the higher, "))
-            .or_else(|| number_before(&rest, " time(s)"))
-            .unwrap_or(1);
-        let drains = tag.starts_with("dead-")
-            || tag.starts_with("rule-granted-")
-            || rest.contains("STALE SLACK");
-        out.push((format!("{}\t{tag}\t{subject}", row.id), figure, drains));
+    row.detail
+        .split(" | ")
+        .filter_map(|chunk| finding(&row.id, chunk))
+        .collect()
+}
+
+/// Every chunk of `row`'s detail that does not read as a finding: no TAB, an empty tag, or an
+/// empty subject. A posture cannot excuse what it could not read, so a listed row carrying one is
+/// a NEW RED rather than a red the snapshot silently holds.
+pub fn unparsed(row: &Row) -> Vec<&str> {
+    row.detail
+        .split(" | ")
+        .filter(|chunk| finding(&row.id, chunk).is_none())
+        .collect()
+}
+
+/// One chunk of a detail, read as `<tag>\t<subject>\t<message...>`, or `None`.
+fn finding(row_id: &str, chunk: &str) -> Option<(Key, i64, bool)> {
+    let tab = chunk.find('\t')?;
+    let head = &chunk[..tab];
+    let tag = head
+        .rsplit([' ', ':'])
+        .next()
+        .unwrap_or(head)
+        .trim()
+        .to_string();
+    if tag.is_empty() {
+        return None;
     }
-    out
+    let fields: Vec<&str> = chunk[tab + 1..].split('\t').collect();
+    let (s, r) = fields.split_first()?;
+    let (mut subject, rest) = (s.trim().to_string(), r.join("\t"));
+    if subject.is_empty() {
+        return None;
+    }
+    let mut figure = None;
+    if let Some((s, n)) = subject.rsplit_once(" = ") {
+        if let Ok(n) = n.trim().parse::<i64>() {
+            figure = Some(n);
+            subject = s.trim().to_string();
+        }
+    }
+    if tag == "vendor-name" {
+        // `<crate>\t<file>:<line>\t...`: keyed by crate and file, never by line (a line moves
+        // with every edit above it), and the figure is how many such findings there are.
+        let file = fields
+            .get(1)
+            .map(|f| f.rsplit_once(':').map_or(*f, |(p, _)| p))
+            .unwrap_or("");
+        subject = format!("{subject} {file}");
+        figure = Some(1);
+    }
+    let figure = figure
+        .or_else(|| number_after(&rest, "they differ by "))
+        .or_else(|| number_after(&rest, "vs measured "))
+        .or_else(|| number_after(&rest, "scored count is the higher, "))
+        .or_else(|| number_before(&rest, " time(s)"))
+        .unwrap_or(1);
+    let drains = tag.starts_with("dead-")
+        || tag.starts_with("rule-granted-")
+        || rest.contains("STALE SLACK");
+    Some((format!("{row_id}\t{tag}\t{subject}"), figure, drains))
 }
 
 fn number_after(text: &str, needle: &str) -> Option<i64> {
@@ -173,13 +191,43 @@ pub fn judge(
         .filter(|r| r.status != Status::Pass && !sr.rows.contains(&r.id.as_str()))
         .map(|r| format!("NEW RED {} {}", r.id, r.detail))
         .collect();
+    // A reconciliation problem is excused only when it is a listed row's own `<id>: FAIL`, whose
+    // findings are judged below. Every other problem about a listed row (no row recorded, two rows
+    // that disagree, a SKIP) carries no finding the snapshot can read, so it blocks like any other.
     blocking.extend(
         verdict
             .problems
             .iter()
-            .filter(|t| !sr.rows.iter().any(|id| t.starts_with(&format!("{id}: "))))
+            .filter(|t| !sr.rows.iter().any(|id| t.as_str() == format!("{id}: FAIL")))
             .map(|t| format!("NEW RED {t}")),
     );
+    // A LISTED row is excused only for the findings the snapshot can read. A chunk it cannot read
+    // (a read error, a scan that stopped, a finding with no tag or subject) is a red the posture
+    // never evaluated, and so is a red row that parses to no finding at all.
+    for r in verdict
+        .rows
+        .iter()
+        .filter(|r| r.status != Status::Pass && sr.rows.contains(&r.id.as_str()))
+    {
+        let odd = unparsed(r);
+        if !odd.is_empty() {
+            blocking.push(format!(
+                "NEW RED {} carries {} detail chunk(s) the snapshot cannot read as \
+                 `<tag>\\t<subject>\\t<message>`, so no snapshot entry can excuse them: {}",
+                r.id,
+                odd.len(),
+                odd.iter()
+                    .map(|c| format!("`{c}`"))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
+        } else if findings(r).is_empty() {
+            blocking.push(format!(
+                "NEW RED {} is red and its detail parses to no finding: {}",
+                r.id, r.detail
+            ));
+        }
+    }
     let (debt, drains) = debt(sr, verdict);
     for (key, figure) in &debt {
         match snapshot.get(key) {
