@@ -74,12 +74,12 @@ pub const MAX_AUDIT_ENTRIES: usize = 1000;
 
 use std::marker::PhantomData;
 
-/// HOW A RECORD'S FIELDS ARE FRAMED, AND THE ONE CANONICALISER THAT FRAMES THEM — the audit
-/// unit's, not a copy of it. A framing is a WIRE FACT of chains already on disk (the store contract
-/// documents each formula: `busbar_contract::records::AuditRecord`/`TaskEventRow`), so it travels
-/// with the record type ([`ChainedRecord::framing`]) instead of being unified away; the builder that
-/// applies it is the one [`busbar_kernel_audit::digest::Digest`] the fixed audit record and the
-/// amendment chain hash through too, so no two chains in the node can frame or hash differently.
+// HOW A RECORD'S FIELDS ARE FRAMED, AND THE ONE CANONICALISER THAT FRAMES THEM — the audit
+// unit's, not a copy of it. A framing is a WIRE FACT of chains already on disk (the store contract
+// documents each formula: `busbar_contract::records::AuditRecord`/`TaskEventRow`), so it travels
+// with the record type ([`ChainedRecord::framing`]) instead of being unified away; the builder that
+// applies it is the one [`busbar_kernel_audit::digest::Digest`] the fixed audit record and the
+// amendment chain hash through too, so no two chains in the node can frame or hash differently.
 pub(crate) use busbar_kernel_audit::digest::{Digest, Framing};
 
 /// Frame a chain record's PRELUDE — `prev_hash`, then `scope` IFF `digests_scope` (some streams omit
