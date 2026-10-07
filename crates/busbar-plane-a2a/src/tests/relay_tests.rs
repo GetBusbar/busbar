@@ -854,7 +854,7 @@ fn every_hop_refusal_carries_its_own_stable_code() {
         );
         seen.push(code);
     }
-    assert_eq!(seen.len(), 7);
+    assert_eq!(seen.len(), 8);
 }
 
 /// A well-formed far-end answer of exactly `len` bytes.

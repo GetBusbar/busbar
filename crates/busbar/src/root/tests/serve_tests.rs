@@ -4951,9 +4951,10 @@ mod agent_door {
         agent.streams();
         let s = served(instance, &agent.entry("planner", "1h"), false, None);
         approve(&s, "planner").await;
-        // THE AGENT'S CARD IS FRESHLY VERIFIED, as the engine's cell held it (its registration
-        // approved over a cached card, no look due): one stream is served while the agent is up,
-        // so the call below meets no look and its HOP is what fails.
+        // THE AGENT'S CARD IS FRESHLY VERIFIED, as the engine's cell held it (predev
+        // tests/relay_harness.rs `approve_card`: approved over a cached card, no look due; predev
+        // verbs.rs `approve` stamps no look, so the first call looks): one stream is served while
+        // the agent is up, so the call below meets no look and its HOP is what fails.
         let (status, body) = answered(
             &s.router,
             rpc("planner", "message/stream", STREAM, Some(&s.token)),
@@ -6268,9 +6269,21 @@ mod agent_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-unreachable";
         let _published = Published(instance);
-        let agent = Agent::start(200, ANSWER).await;
+        let mut agent = Agent::start(200, ANSWER).await;
         let s = served(instance, &agent.entry("unreached", "1h"), false, None);
         approve(&s, "unreached").await;
+        // THE AGENT'S CARD IS FRESHLY VERIFIED before it goes down: an approval does not stamp the
+        // look (predev verbs.rs `approve`: the sighting and the cached card, no ledger stamp), so the
+        // first call looks (predev receive.rs:1947 `verify_agent_on_call`, before the hop). One call
+        // is served while the agent is up; the call below meets no look and its HOP is what fails,
+        // as predev's cell (whose harness held no card fetcher) drove it.
+        let (status, body) = answered(
+            &s.router,
+            rpc("unreached", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "served while it is up: {body}");
+        assert!(agent.relayed(), "the warm call reached the agent");
         agent.go_down();
         let family = busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL;
         let before = total(&series_on_lane(family, "unreached"));
