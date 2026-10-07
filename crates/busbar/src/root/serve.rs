@@ -2780,5 +2780,9 @@ mod door_tests;
 mod money_tests;
 
 #[cfg(all(test, linked_axis_node))]
+#[path = "tests/serve_door_far.rs"]
+mod door_far_tests;
+
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
