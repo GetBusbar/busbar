@@ -4,10 +4,10 @@
 
 use super::*;
 use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
+use busbar_kernel_ledger::migration::LegacyCapDimension;
 use busbar_kernel_ledger::migration::{
     LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords,
 };
-use busbar_kernel_ledger::totals::CapDimension;
 
 /// Rows a test seeded, counting the reads so "the second boot touched nothing" is an assertion
 /// about the previous release's rows rather than about a return value.
@@ -57,7 +57,7 @@ fn rows() -> SeededRows {
             window: 86_400,
             lane: "gpt-4".to_string(),
             provider: String::new(),
-            dimension: CapDimension::Class("input".to_string()),
+            dimension: LegacyCapDimension::Class("input".to_string()),
             amount: 6_000,
         }],
         reads: std::cell::Cell::new(0),

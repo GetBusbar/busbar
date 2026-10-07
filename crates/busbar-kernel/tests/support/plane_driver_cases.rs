@@ -1221,6 +1221,52 @@ async fn a_refusal_wears_the_status_the_plane_states_for_its_dialect() {
     }
 }
 
+/// ARCHITECT Q5: an admission refusal's Retry-After is the window reset the door computed, as
+/// 1.5.5 rendered it (`governance/state.rs`: `window_end(window, now) - now`, at least 1), on EVERY
+/// plane: the kernel hands the refusal's own wait to the plane's `refusal`, never `0`. A refusal
+/// that carries no wait (a `total` window, which never rolls) is rendered with none.
+#[tokio::test]
+async fn an_admission_refusal_carries_its_window_reset_to_the_plane() {
+    for way in ways() {
+        for (reason, wait, body) in [
+            (
+                ReasonCode::OverBudget,
+                Some(3_600),
+                "refused:429:over_budget:retry=3600",
+            ),
+            (
+                ReasonCode::RateLimited,
+                Some(42),
+                "refused:429:rate_limited:retry=42",
+            ),
+            (ReasonCode::OverBudget, None, "refused:429:over_budget"),
+        ] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let steps = TestUnits {
+                refuse_wait: wait,
+                ..TestUnits::refusing(StepName::Admit, reason)
+            };
+            let (far, caller) = (Far::new(&["ok"], CHUNKS), Caller::default());
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+            let outcome = drive(&units).await;
+            assert!(
+                matches!(outcome, Outcome::Refused(StepName::Admit, r) if r == reason),
+                "{way:?}: {outcome:?}"
+            );
+            assert!(far.sent().is_empty(), "{way:?}: nothing was dispatched");
+            let rendered = units.take_rendered().expect("the refusal is rendered");
+            assert_eq!(rendered.status, 429, "{way:?} {reason:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&rendered.body),
+                body,
+                "{way:?} {reason:?} {wait:?}: the plane renders the refusal's own Retry-After"
+            );
+        }
+    }
+}
+
 /// RED: a refusal the plane's own `arrive` decided wears the 4xx the plane stated, and the plane
 /// is told its own code and the unit when it renders it.
 #[tokio::test]

@@ -641,6 +641,15 @@ battery_subject() {
     export MCP_SUBJECT_ADMIN_URL="$SUBJECT_ADMIN_URL"
     export MCP_SUBJECT_ADMIN_TOKEN="$SUBJECT_ADMIN_TOKEN"
 
+    # THE SEAM'S VERIFICATION WINDOW, for the arm script to wait out. busbar re-verifies an upstream
+    # on the call path only once its last observation is `verify_ttl` old, and it fails closed for
+    # that window on a verification that failed. The CLI scenarios run back to back and each arms
+    # an attack on the one shared peer, so without the wait a scenario's call was judged on the
+    # verdict the PREVIOUS scenario's attack left behind: after `half-answer` broke a verification,
+    # the next five scenarios were refused inside one window without a byte reaching the peer, and
+    # scored VACUOUS. See client-arm.sh.
+    export MCP_SEAM_VERIFY_TTL_S="$SEAM_VERIFY_TTL_S"
+
     # THE ALWAYS-FAILING TOOL, named here for the same reason `run-control.sh` names
     # `always_fails` for the python control: the harness contains no knowledge of any subject, so the
     # ARMING script is the one place a subject's own tool name may be written. Without it

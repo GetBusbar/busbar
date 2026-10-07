@@ -201,6 +201,7 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
                 Arc::new(ADirectoryThatMintedIt),
@@ -262,6 +263,7 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
                 Arc::new(ADirectoryThatMintedIt),
@@ -595,12 +597,13 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,
             )));
             units.admin.posture = Arc::new(SealedPosture::new(Some([7u8; 32])));
-            units.store = Arc::new(AnApplyingStore);
+            units.store = Some(Arc::new(AnApplyingStore));
             units
         },
     );
@@ -658,6 +661,104 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
             "{path}: a read seals nothing"
         );
     }
+}
+
+/// ROW 113 (ruling (B)): A BOOTED NODE'S RECOVERY VERBS REACH ITS CONFIGURED STORE.
+///
+/// The book is the one `root::boot::book` opens over a real App with a governance store, and the
+/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). Under a sealed
+/// operator key each of the three verbs answers `204` and lands on that store. RED (the defect this
+/// replaced): the composition held a refusing stand-in, so each answered the store failure on a
+/// node whose store was right there; drop the book's store, or the units' binding of it, and this
+/// goes red. Then restore -> reseal -> replay over the SAME store: a replay slot committed before
+/// the restore survives it and the reseal, and answers its first bytes.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
+    busbar_kernel::snapshot::init();
+    busbar_core_admin::install();
+    // An App with a governance store: the in-tree memory store, as a config that names none gets.
+    let booted = busbar_kernel::test_support::TestApp::new()
+        .governance(Arc::new(
+            busbar_kernel::governance::GovState::new(
+                Arc::new(busbar_kernel::governance::MemoryStore::new()),
+                None,
+            )
+            .expect("a governance over the memory store"),
+        ))
+        .build();
+    let book = crate::root::boot::book(&booted).expect("the boot book opens");
+    let store = book
+        .verb_store
+        .clone()
+        .expect("a node with a configured store carries it on its book");
+
+    // A replay slot committed BEFORE the recovery sequence.
+    let key = (
+        "idem-row-113".to_string(),
+        "POST /api/v1/admin/keys".to_string(),
+    );
+    assert_eq!(store.replay_new_verb(&key).expect("the slot reads"), None);
+    store
+        .commit_new_verb_replay(&key, b"first answer")
+        .expect("the slot commits");
+
+    let app = busbar_kernel::test_support::TestApp::new()
+        .admin_chain(vec![])
+        .build();
+    let (_data, bare, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let mounted = mount(
+        bare,
+        crate::root::kernel::new_kernel(),
+        1 << 20,
+        move |dispatch| {
+            // Its OWN full-tier identity, not the operator's: the audit ring is process-wide and
+            // `every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none` counts the
+            // operator's rows on these same three paths.
+            let door: crate::root::units_admin::AdminDoorFn =
+                Arc::new(|_: &crate::root::units_admin::AdminRequest| {
+                    busbar_kernel::auth::AdminDoor::Identified(
+                        busbar_contract::auth::Principal::from_id("row-113-recovery-operator"),
+                        busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+                    )
+                });
+            let mut units =
+                crate::root::kernel::ProductionUnits::admin_over_book(dispatch, door, &book)
+                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                        ADirectoryThatMintedIt,
+                    )));
+            units.admin.posture = Arc::new(SealedPosture::new(Some([7u8; 32])));
+            units
+        },
+    );
+
+    for (path, body, verb) in [
+        ("/api/v1/admin/chain-break", "{}", "chain_break"),
+        (
+            "/api/v1/admin/store-restore",
+            r#"{"backup_ref":"nightly"}"#,
+            "store_restore",
+        ),
+        (
+            "/api/v1/admin/reseal-epoch-floor",
+            "{}",
+            "reseal_epoch_floor",
+        ),
+    ] {
+        let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
+        assert_eq!(
+            status, 204,
+            "{verb} reached the configured store and applied"
+        );
+    }
+
+    // The slot survived the restore and the reseal, and replays the first answer's bytes.
+    assert_eq!(
+        store.replay_new_verb(&key).expect("the slot reads"),
+        Some(b"first answer".to_vec()),
+        "a committed replay slot survives restore -> reseal"
+    );
 }
 
 /// The 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)`. Empty since owner answer
@@ -724,6 +825,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,
@@ -829,6 +931,7 @@ async fn the_amend_path_on_a_node_with_no_operator_key_is_1_5_5_s_404() {
                     crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                     held,
                     read,
+                    None,
                 )
                 .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                     ADirectoryThatMintedIt,
@@ -985,6 +1088,19 @@ fn a_q71_node(
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
 ) {
+    a_q71_node_trusting(door, operator_key, crate::root::units_admin::no_trust())
+}
+
+/// [`a_q71_node`], its trust verbs bound to `trust`.
+#[cfg(feature = "root-admin")]
+fn a_q71_node_trusting(
+    door: busbar_kernel_identity::AuthChain,
+    operator_key: Option<[u8; 32]>,
+    trust: crate::root::units_admin::TrustDesk,
+) -> (
+    axum::Router,
+    Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
+) {
     busbar_kernel::snapshot::init();
     busbar_core_admin::install();
     let app = busbar_kernel::test_support::TestApp::new()
@@ -1013,6 +1129,7 @@ fn a_q71_node(
                 crate::root::units_admin::door_of_chain(door),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,
@@ -1026,10 +1143,184 @@ fn a_q71_node(
                     Ok(())
                 },
             ));
+            units.admin.trust = trust;
             units
         },
     );
     (mounted, kept)
+}
+
+/// THE OPERATOR'S TRUST VERBS (ARCHITECT 2026-10-06): one generic core-admin verb set over the
+/// kernel's trust book, counterparty-phrased. Walked over the real mount behind the operator, each
+/// answer asserted by status AND body, against the trust book the kernel's Approve judges by:
+/// * unapproved (sighted, never approved) is refused at serve (the 403's case), and an approval
+///   with nothing sighted is a named `409`;
+/// * approved, it serves; the same approval twice answers the same row (idempotent);
+/// * a drift after the approval is quarantined again (refused) until re-approved;
+/// * revoked, it is refused again;
+/// * an unknown key is `404`, a body without one `400`; `GET /trust` lists every key's state;
+/// * each decision seals one audit row, and the read seals none.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
+    use busbar_contract::services::{Caller, HostServices, Later};
+    use busbar_kernel::host_services::{InstanceFacts, KernelServices};
+    use busbar_kernel::trust::book::{Distrust, TrustFacts};
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::TrustEntry;
+
+    let kernel = Arc::new(KernelServices::new());
+    kernel
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "peer".to_string(),
+                    TrustEntry {
+                        pin: None,
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
+                        approved: Default::default(),
+                    },
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .expect("admitted");
+    let desk = Arc::clone(&kernel);
+    let (node, _) = a_q71_node_trusting(
+        a_door_that_identifies_the_operator(),
+        Some([7u8; 32]),
+        Arc::new(move || Some(Arc::clone(&desk))),
+    );
+    let op = Some(THE_OPERATORS_CREDENTIAL);
+    let caller = Caller {
+        instance: Arc::from("inst"),
+        plugin: Arc::from("the-plane"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    let sight = |hash: &str| {
+        let later: Later = Box::new(|_| {});
+        let _ = kernel.trust_sight(&caller, "peer", hash, later);
+    };
+    let served = || {
+        kernel.trust_judge(
+            "inst",
+            &TrustFacts {
+                counterparty: "peer",
+                item: None,
+                digest: None,
+            },
+        )
+    };
+    let approve = |key: &'static str| {
+        let node = node.clone();
+        async move {
+            over_as(
+                &node,
+                "POST",
+                "/api/v1/admin/trust/approve",
+                &format!(r#"{{"key":"{key}"}}"#),
+                op,
+            )
+            .await
+        }
+    };
+    let row = |state: &str, approved: &str, seen: &str| {
+        format!(
+            r#"{{"approved":{approved},"counterparty":"peer","instance":"inst","item":null,"key":"inst/peer","seen":{seen},"state":"{state}"}}"#
+        )
+    };
+
+    // Declared, never sighted: listed `new`, and an approval has nothing to approve at.
+    assert_eq!(
+        over_as(&node, "GET", "/api/v1/admin/trust", "", op).await,
+        (
+            200,
+            format!(r#"{{"keys":[{}]}}"#, row("new", "null", "null"))
+        )
+    );
+    assert_eq!(
+        approve("inst/peer").await,
+        (
+            409,
+            r#"{"error":{"code":"conflict","message":"trust key `inst/peer` was never sighted"}}"#
+                .to_string()
+        )
+    );
+
+    // RED: sighted and unapproved, it is refused at serve.
+    sight("h1");
+    assert_eq!(served(), Err(Distrust::NotApproved));
+
+    // Approved: served. The same approval twice answers the same row.
+    let first = approve("inst/peer").await;
+    assert_eq!(first, (200, row("approved", r#""h1""#, r#""h1""#)));
+    assert_eq!(approve("inst/peer").await, first, "idempotent");
+    assert_eq!(served(), Ok(()));
+
+    // RED: a drift after the approval is quarantined again, refused until re-approved.
+    sight("h2");
+    assert_eq!(served(), Err(Distrust::Quarantined));
+    assert_eq!(
+        over_as(&node, "GET", "/api/v1/admin/trust", "", op).await,
+        (
+            200,
+            format!(r#"{{"keys":[{}]}}"#, row("drifted", r#""h1""#, r#""h2""#))
+        )
+    );
+    assert_eq!(
+        approve("inst/peer").await,
+        (200, row("approved", r#""h2""#, r#""h2""#))
+    );
+    assert_eq!(served(), Ok(()));
+
+    // RED: revoked, refused again.
+    assert_eq!(
+        over_as(
+            &node,
+            "POST",
+            "/api/v1/admin/trust/revoke",
+            r#"{"key":"inst/peer"}"#,
+            op
+        )
+        .await,
+        (200, row("new", r#""h2""#, r#""h2""#))
+    );
+    assert_eq!(served(), Err(Distrust::NotApproved));
+
+    // An unknown key is 404; a body naming none is 400.
+    assert_eq!(
+        approve("inst/stranger").await,
+        (
+            404,
+            r#"{"error":{"code":"not_found","message":"trust key `inst/stranger` not found"}}"#
+                .to_string()
+        )
+    );
+    assert_eq!(
+        over_as(&node, "POST", "/api/v1/admin/trust/revoke", "{}", op).await,
+        (
+            400,
+            r#"{"error":{"code":"invalid_request","message":"key is required"}}"#.to_string()
+        )
+    );
+
+    // Audited like every admin write: one row per decision; the read seals none.
+    let approvals = the_operators_rows_for(&node, "/api/v1/admin/trust/approve").await;
+    assert_eq!(
+        approvals.len(),
+        5,
+        "every approval call sealed one row: {approvals:?}"
+    );
+    assert!(approvals.iter().all(|(verb, _)| verb == "trust_approve"));
+    assert_eq!(
+        the_operators_rows_for(&node, "/api/v1/admin/trust").await,
+        Vec::<(String, String)>::new(),
+        "the read seals nothing"
+    );
 }
 
 /// One request over `router` presenting `credential` (or none).

@@ -157,6 +157,45 @@ impl HostServices for CredentialServices {
         self.inner.trust_due(caller)
     }
 
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        self.inner.trust_unreached(caller, counterparty)
+    }
+
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        self.inner.trust_decide(caller, key, expected, approve)
+    }
+
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        self.inner.trust_state(caller, counterparty)
+    }
+
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        self.inner
+            .trust_sight_item(caller, counterparty, item, digest)
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        self.inner.trust_serves(caller, counterparty, item, digest)
+    }
+
     fn trust_verify(
         &self,
         caller: &Caller,
@@ -174,6 +213,10 @@ impl HostServices for CredentialServices {
 
     fn random_fill(&self, len: u64) -> Stored {
         self.inner.random_fill(len)
+    }
+
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        self.inner.session_emit(caller, session, bytes)
     }
 
     fn records_secret(&self, kind: &str, id: &str, _later: Later) -> Ran {
