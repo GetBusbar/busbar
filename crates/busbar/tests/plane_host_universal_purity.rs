@@ -543,7 +543,7 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
 
     // (2) A KNOWN single-plane method: `pool_label`. Its ONLY host call site is the LLM plane's
     //     request path, so the caller-count classifies it single-plane — the case this whole gate
-    //     exists to pin. (It was `synthesize_completion` until FLIP-MCP deleted its one caller.)
+    //     exists to pin.
     let single = scan.callers.get("pool_label").expect("enumerated");
     assert_eq!(
         single.len(),
@@ -596,7 +596,7 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         "calls_method wrongly matched a `::path` form as a `.`-method call"
     );
     assert!(
-        calls_method("a.b .synthesize_completion (x)", "synthesize_completion"),
+        calls_method("a.b .pool_label (x)", "pool_label"),
         "calls_method missed a whitespace-before-paren call"
     );
 }

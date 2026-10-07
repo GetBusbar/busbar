@@ -2855,7 +2855,7 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
 //
 // `native_ingress::run` (native_ingress.rs:554) is the resolved-op funnel every native arrival
 // reaches with a model and an operation in hand — `operation_ingress` once the body's model is read,
-// `ingress_path_model` once the URL's is, `synthesize_completion` at the MCP-sampling re-entry — and
+// `ingress_path_model` once the URL's is — and
 // at native_ingress.rs:592 it calls `run_gauntlet`, the LIVE money authority and the exact site #29's
 // flip lands on. LEG 1 drives that funnel through its public door `operation_ingress` (→ `run` →
 // `run_gauntlet`). LEG 2 drives the DORMANT kernel-loop sibling `native_run_via_loop` (the process
@@ -2906,7 +2906,7 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
 /// The shell's resolved-op funnel (`native_ingress::run`, reached through its `operation_ingress`
 /// door) builds a `NativePlane`/`GauntletRequest` and settles per-token billing through
 /// `busbar_kernel::plane_host::run_gauntlet`, late-accruing against the admission-pinned `ROOT_CARD`
-/// snapshot; it stays the MCP-sampling re-entry's (`synthesize_completion`). This is that SAME
+/// snapshot. This is that SAME
 /// resolved-op arrival as a unit handed to the process's ONE node — `answer_arriving_at` →
 /// `busbar_kernel::teller::run_unit_async`, settling onto the same Durability money-book the
 /// composition root binds via [`bind_book`]. The resolved `model` is carried as the unit's routing
