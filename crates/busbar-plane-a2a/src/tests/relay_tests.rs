@@ -715,3 +715,44 @@ fn the_far_ends_whole_answer_states_the_breakers_reading() {
         assert_eq!(r.take_reading(), None, "stated once");
     }
 }
+
+/// A HOP THE KERNEL REFUSED FOR BUSBAR'S OWN CREDENTIAL (`credential_unavailable`: the agent's
+/// `upstream_credential` no longer resolves), in the engine's bytes (`receive.rs`, the `mint_from`
+/// arm): a task hop is `fail_task`'s answer, `502` `-32006` "the backend agent did not complete this
+/// task" naming the task, and the task ends `failed` — whether the hop opened it or addressed it, as
+/// `fail_task` ended either; the extended-card read opened no task, so it is refused in its own
+/// words and nothing is settled.
+#[test]
+fn a_hop_refused_for_busbars_own_credential_answers_in_the_engines_words() {
+    for addressed in [false, true] {
+        let mut r = task_sent(addressed);
+        let (reply, failed) = r.refuse_credential();
+        assert_eq!(reply.status, 502);
+        assert_eq!(reply.content_type, JSON_MEDIA_TYPE);
+        assert_eq!(
+            body(&reply),
+            about(
+                -32006,
+                "INVALID_AGENT_RESPONSE",
+                "the backend agent did not complete this task"
+            ),
+            "addressed: {addressed}"
+        );
+        assert!(failed, "the task ends failed (addressed: {addressed})");
+        assert!(r.answered());
+    }
+
+    let mut r = sent();
+    let (reply, failed) = r.refuse_credential();
+    assert_eq!(reply.status, 502);
+    assert_eq!(
+        body(&reply),
+        json!({ "jsonrpc": "2.0", "id": 7, "error": { "code": -32006,
+            "message": "the extended agent card could not be fetched",
+            "data": [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "domain": "a2a-protocol.org", "reason": "INVALID_AGENT_RESPONSE" }] } }),
+        "no task is named: the card read opened none"
+    );
+    assert!(!failed, "a card read settles nothing");
+    assert!(r.take_settled().is_empty());
+}

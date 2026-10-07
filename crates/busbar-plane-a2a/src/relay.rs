@@ -71,6 +71,13 @@ pub const STATUS_OK: u32 = 200;
 /// `InvalidAgentResponse`, the code every refused hop carries.
 pub const CODE_INVALID_AGENT_RESPONSE: i64 = -32006;
 
+/// The words a task hop that did not complete is refused with (the engine's `fail_task`).
+pub const TASK_UNCOMPLETED: &str = "the backend agent did not complete this task";
+
+/// The words an extended-card read through the relay that could not be made is refused with (the
+/// engine's `card_fetch` arm of `receive.rs`).
+pub const CARD_UNFETCHED: &str = "the extended agent card could not be fetched";
+
 /// Who pushed a piece.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum From<'a> {
@@ -555,6 +562,50 @@ impl Relay {
             self.settled.push(Settled::Failed);
         }
         Answer::ToCaller(reply)
+    }
+
+    /// REFUSED FOR BUSBAR'S OWN CREDENTIAL: the agent's `upstream_credential`, re-resolved for this
+    /// hop, was unavailable, so the kernel refused the unit before anything was dialled
+    /// (`credential_unavailable`). The engine minted the lease after it opened the task and
+    /// answered its failure with `fail_task` (`receive.rs`, the `mint_from` arm): `502`
+    /// `InvalidAgentResponse` "the backend agent did not complete this task" naming the task, which
+    /// ends `failed` whether the hop opened it or addressed it. The extended-card read opened no
+    /// task: its own words, nothing settled. The caller's whole answer, and whether the task ends
+    /// `failed`.
+    #[must_use]
+    pub fn refuse_credential(&mut self) -> (Reply, bool) {
+        self.answered = true;
+        let Some(task) = &self.task else {
+            let refusal = Refusal {
+                status: STATUS_BAD_GATEWAY,
+                id: Some(self.id.clone()),
+                code: CODE_INVALID_AGENT_RESPONSE,
+                message: CARD_UNFETCHED.to_string(),
+            };
+            return (
+                Reply {
+                    status: STATUS_BAD_GATEWAY,
+                    content_type: JSON_MEDIA_TYPE,
+                    body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
+                },
+                false,
+            );
+        };
+        let refusal = Refusal {
+            status: STATUS_BAD_GATEWAY,
+            id: Some(self.id.clone()),
+            code: CODE_INVALID_AGENT_RESPONSE,
+            message: TASK_UNCOMPLETED.to_string(),
+        };
+        (
+            Reply {
+                status: STATUS_BAD_GATEWAY,
+                content_type: JSON_MEDIA_TYPE,
+                body: serde_json::to_vec(&identity::about_task(&refusal, &task.task_id))
+                    .unwrap_or_default(),
+            },
+            true,
+        )
     }
 
     /// The early refusal of a request that cannot be carried over `word`.

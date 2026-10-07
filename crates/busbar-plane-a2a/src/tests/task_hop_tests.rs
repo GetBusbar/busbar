@@ -571,3 +571,95 @@ fn a_far_end_id_equal_to_busbars_needs_no_translation() {
     let (_, instead) = hop(opened_with(&mut desk, &get_task, ALICE, &same));
     assert_eq!(instead, None, "the caller's bytes go on unchanged");
 }
+// ── a hop the kernel refused before it dialled: the task ended without the host ────────────────
+
+/// Open `envelope` for Alice at 300: what opened, and the record writes the opening made (applied).
+fn opened_writing(desk: &mut Desk, envelope: &Value) -> (Opened, Vec<Write>) {
+    let mut out = Vec::new();
+    let req = Request {
+        envelope,
+        relayed: None,
+        caller: ALICE,
+        member: MEMBER,
+        now: 300,
+    };
+    let opened = open(desk, &req, &json!(7), &|_| None, &mut out).unwrap();
+    desk.book.apply(&out);
+    (opened, out)
+}
+
+/// RED-BEFORE-GREEN for the credential refusal (`credential_unavailable`): the door's `refusal` is
+/// ticketless, so it ends the task over the records the hop's opening left, never the host. Those
+/// writes are byte-for-byte the ones [`settle`] makes over the host itself on `Settled::Failed`
+/// (the engine's `fail_task`): for a task the hop minted (its opening's writes hold it), and for one
+/// a request addressed (the row the opening read holds it); a task already terminal stays as it is,
+/// nothing written, as the engine's illegal transition left it.
+#[test]
+fn a_task_ended_without_the_host_is_written_as_the_host_would_end_it() {
+    // MINTED: the opening wrote it.
+    let mut d = desk();
+    let (fresh, writes) = opened_writing(&mut d, &send(json!({})));
+    let Opened::Hop { task, read, .. } = fresh else {
+        panic!("refused");
+    };
+    assert_eq!(
+        read, None,
+        "a minted task is held by the opening's own writes"
+    );
+    let (unhosted, moved) = fail_unhosted(&task, &writes, ALICE, 300);
+    let mut hosted = Vec::new();
+    let row = settle(
+        &mut d.book,
+        &task,
+        &Settled::Failed,
+        ALICE,
+        300,
+        &mut hosted,
+    )
+    .unwrap()
+    .expect("it moved");
+    assert!(!unhosted.is_empty());
+    assert_eq!(
+        unhosted, hosted,
+        "the same writes the host's own settle makes"
+    );
+    assert_eq!(moved.as_ref(), Some(&row));
+    assert_eq!(row.state, "failed");
+
+    // ADDRESSED: the opening wrote nothing; the row it read holds the task.
+    let mut d = desk();
+    let get_task =
+        json!({ "jsonrpc": "2.0", "id": 7, "method": "GetTask", "params": { "id": "t1" } });
+    let (addressed, writes) = opened_writing(&mut d, &get_task);
+    let Opened::Hop { task, read, .. } = addressed else {
+        panic!("refused");
+    };
+    assert!(task.addressed);
+    assert!(writes.is_empty());
+    let read = read.expect("the addressed task's row, as read");
+    let (unhosted, moved) = fail_unhosted(&task, std::slice::from_ref(&read), ALICE, 300);
+    // RED: with nothing handed to it, the step cannot see the task and ends nothing.
+    assert_eq!(fail_unhosted(&task, &[], ALICE, 300), (Vec::new(), None));
+    let mut hosted = Vec::new();
+    settle(
+        &mut d.book,
+        &task,
+        &Settled::Failed,
+        ALICE,
+        300,
+        &mut hosted,
+    )
+    .unwrap();
+    assert_eq!(unhosted, hosted);
+    assert_eq!(moved.expect("it moved").state, "failed");
+
+    // TERMINAL: already ended, so nothing moves and nothing is written.
+    d.book.apply(&hosted);
+    let mut read_again = Vec::new();
+    let held = get(&mut d.book, ALICE, "t1", 300).unwrap().unwrap();
+    read_again.extend(crate::tasks::as_read(ALICE, &held));
+    assert_eq!(
+        fail_unhosted(&task, &read_again, ALICE, 301),
+        (Vec::new(), None)
+    );
+}

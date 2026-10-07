@@ -11,6 +11,8 @@ section = agents
 plane_key = a2a
 mount = /a2a
 task_resource_type = a2a.busbar/task
+# The domain of the ErrorInfo every A2A-defined error carries in its details.
+error_info_domain = a2a-protocol.org
 # The unit's audit row (door.rs AUDIT_ACTION, agent_resource): its action, and the kind its
 # resource names the agent under (`<resource_kind>:<agent id>`).
 audit_action = agent.call

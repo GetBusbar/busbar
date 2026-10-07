@@ -837,3 +837,397 @@ fn a_registration_member_is_reached_at_its_own_target() {
         .expect("nothing to resolve");
     assert!(none.is_empty());
 }
+
+// ── `upstream_credential:` — busbar's own credential for a registration, re-resolved per hop ────
+
+/// No provider: a registration is reached at its own target.
+static NO_PROVIDERS: std::collections::BTreeMap<String, super::ProviderRoute> =
+    std::collections::BTreeMap::new();
+
+/// The door's reach over the build's linked auth plugins (`busbar-auth-header` serves `bearer`
+/// and `api-key`) and the built-in secret modules.
+fn own_reach() -> super::DoorReach<'static> {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    super::DoorReach {
+        providers: &NO_PROVIDERS,
+        secrets: std::sync::Arc::new(
+            busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        ),
+        auths: std::sync::Arc::new(super::OutboundAuths::new(
+            dispatcher,
+            crate::LINKED.auths,
+            None,
+            crate::root::loader::dispatch::ConnTable::NoNeeds,
+        )),
+        conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
+        stream_ceiling_secs: 1,
+        upgrades: Vec::new(),
+    }
+}
+
+/// A secret file of this test's own (a file, not an env var: `set_var` is process-global and the
+/// cells run in parallel), holding `value`.
+fn own_secret(name: &str, value: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "busbar-door-steps-cred-{name}-{}",
+        std::process::id()
+    ));
+    std::fs::write(&path, value).expect("write the test secret");
+    path
+}
+
+/// ROTATE the secret at `path` to `value` the way an operator's secret store does: written aside,
+/// then renamed over it, so a reader sees the old value or the new one, whole.
+fn rotate(path: &std::path::Path, value: &str) {
+    let aside = path.with_extension("rotating");
+    std::fs::write(&aside, value).expect("write the rotated secret");
+    std::fs::rename(&aside, path).expect("swap it in");
+}
+
+/// The registration `planner` stating `upstream_credential: {secret: {file: <path>}<placement>,
+/// lease_ttl_ms: 60000}` (`placement` the YAML after the secret, or empty for none).
+fn registration(path: &std::path::Path, placement: &str) -> serde_yaml::Value {
+    serde_yaml::from_str(&format!(
+        "url: 'https://agent.vendor/planner'\nupstream_credential: {{secret: {{file: '{}'}}{placement}, \
+         lease_ttl_ms: 60000}}",
+        path.display()
+    ))
+    .expect("yaml")
+}
+
+/// What a binding's handle `handle` presents on one request: each field, its name lower-cased.
+fn presents(
+    auth: &dyn busbar_contract::auth_calls::OutboundAuth,
+    handle: u64,
+) -> Vec<(String, String)> {
+    match auth.fields_now(
+        handle,
+        &busbar_contract::auth_calls::FieldsRequest::default(),
+    ) {
+        Some(busbar_contract::auth_calls::Fields::Ready(fields)) => fields
+            .iter()
+            .map(|f| {
+                (
+                    String::from_utf8_lossy(&f.name).to_ascii_lowercase(),
+                    String::from_utf8_lossy(f.value.expose_secret()).into_owned(),
+                )
+            })
+            .collect(),
+        other => panic!("a header binding answers on the spot: {other:?}"),
+    }
+}
+
+/// Why the load was refused (a binding is not `Debug`: it holds an auth instance).
+fn refused(bound: Result<Option<busbar_kernel::plane_driver::AuthBinding>, String>) -> String {
+    match bound {
+        Err(why) => why,
+        Ok(_) => panic!("the load was not refused"),
+    }
+}
+
+/// Ported from `busbar-a2a` `creds_tests::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at`:
+/// `placement: bearer` (and no placement at all) binds the `bearer` style, so the secret is
+/// presented only as `authorization: Bearer <secret>`, the trailing newline a file secret picks up
+/// trimmed by the resolver (a header value with an embedded newline is a header-splitting bug).
+/// RED: a registration stating no `upstream_credential` binds nothing, so nothing is presented.
+#[test]
+fn a_bearer_placement_presents_the_secret_only_as_the_bearer() {
+    let path = own_secret("bearer", "s3cr3t-vendor-token\n");
+    let reach = own_reach();
+    for placement in [", placement: bearer", ""] {
+        let binding =
+            super::upstream_credential_binding("planner", &registration(&path, placement), &reach)
+                .expect("it binds")
+                .expect("an upstream credential is a binding");
+        assert!(
+            !binding.passthrough,
+            "busbar's own credential, never the caller's"
+        );
+        let handle = binding
+            .per_request
+            .as_ref()
+            .expect("re-resolved per hop")
+            .handle_now()
+            .expect("it resolves");
+        assert_eq!(
+            presents(&*binding.auth, handle),
+            vec![(
+                "authorization".to_string(),
+                "Bearer s3cr3t-vendor-token".to_string()
+            )],
+            "placement `{placement}`"
+        );
+    }
+    let bare: serde_yaml::Value =
+        serde_yaml::from_str("url: 'https://agent.vendor/planner'").expect("yaml");
+    assert!(
+        super::upstream_credential_binding("planner", &bare, &reach)
+            .expect("no block is no error")
+            .is_none(),
+        "no upstream_credential: nothing is bound, so nothing is presented"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Ported from `busbar-a2a` `creds_tests::a_named_header_placement_carries_the_value_verbatim`:
+/// `placement: {header: X-API-Key}` binds the `api-key` style over that header, the secret
+/// verbatim, and no `authorization`; a placement naming no header refuses the load.
+#[test]
+fn a_named_header_placement_presents_the_secret_verbatim_in_that_header() {
+    let path = own_secret("apikey", "abc123");
+    let reach = own_reach();
+    let binding = super::upstream_credential_binding(
+        "planner",
+        &registration(&path, ", placement: {header: X-API-Key}"),
+        &reach,
+    )
+    .expect("it binds")
+    .expect("a binding");
+    let handle = binding
+        .per_request
+        .as_ref()
+        .expect("re-resolved per hop")
+        .handle_now()
+        .expect("it resolves");
+    assert_eq!(
+        presents(&*binding.auth, handle),
+        vec![("x-api-key".to_string(), "abc123".to_string())]
+    );
+    let err = refused(super::upstream_credential_binding(
+        "planner",
+        &registration(&path, ", placement: {header: ''}"),
+        &reach,
+    ));
+    assert!(err.contains("member 'planner'"), "{err}");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Ported from `busbar-a2a` `creds_tests::an_unresolvable_handle_fails_closed_and_names_the_agent`:
+/// a secret that does not resolve when the generation is sealed refuses the load naming the member
+/// (fail closed); one that stops resolving after it is refused per hop: the handle answers none.
+#[test]
+fn an_unresolvable_credential_fails_closed_and_names_the_member() {
+    let reach = own_reach();
+    let missing = std::path::Path::new("/nonexistent/busbar/agent/secret");
+    let err = refused(super::upstream_credential_binding(
+        "planner",
+        &registration(missing, ""),
+        &reach,
+    ));
+    assert!(
+        err.contains("member 'planner'") && err.contains("cannot resolve"),
+        "{err}"
+    );
+
+    let path = own_secret("vanish", "tok");
+    let binding = super::upstream_credential_binding("planner", &registration(&path, ""), &reach)
+        .expect("it binds")
+        .expect("a binding");
+    let per = binding.per_request.as_ref().expect("re-resolved per hop");
+    assert!(
+        per.handle_now().is_some(),
+        "it resolves while the file is there"
+    );
+    std::fs::remove_file(&path).expect("remove it");
+    assert_eq!(per.handle_now(), None, "gone: nothing is presented");
+}
+
+/// An `OutboundAuth` counting its `open_outbound` calls over the real one.
+struct CountingOpens {
+    inner: std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+    opened: std::sync::atomic::AtomicUsize,
+}
+
+impl busbar_contract::auth_calls::OutboundAuth for CountingOpens {
+    fn open_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<u64, String> {
+        self.opened
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.open_outbound(style, credential, settings)
+    }
+
+    fn fields_now(
+        &self,
+        handle: u64,
+        request: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        self.inner.fields_now(handle, request)
+    }
+
+    fn fields(
+        &self,
+        handle: u64,
+        request: busbar_contract::auth_calls::FieldsRequest,
+        deadline_ns: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        self.inner.fields(handle, request, deadline_ns)
+    }
+}
+
+/// A `bearer` [`super::PerHop`] over the secret at `path`, opened by `auth` as the composition
+/// opens it.
+fn per_hop(path: &std::path::Path, auth: std::sync::Arc<CountingOpens>) -> super::PerHop {
+    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
+    let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
+    let value = secrets.resolve_string(&secret).expect("it resolves");
+    let settings = serde_json::json!({});
+    let handle = {
+        use busbar_contract::auth_calls::OutboundAuth as _;
+        auth.open_outbound("bearer", value.as_bytes(), &settings)
+            .expect("it opens")
+    };
+    super::PerHop {
+        secret,
+        secrets,
+        auth: auth as std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+        style: "bearer",
+        settings,
+        held: std::sync::Mutex::new((
+            busbar_contract::abi::sdk::digest::sha256(value.as_bytes()),
+            handle,
+        )),
+    }
+}
+
+/// The real `bearer` auth instance the build links.
+fn bearer_auth() -> std::sync::Arc<CountingOpens> {
+    let (inner, _) = own_reach()
+        .auths
+        .serving("bearer", &serde_json::json!({}))
+        .expect("a lookup")
+        .expect("the linked header plugin serves `bearer`");
+    std::sync::Arc::new(CountingOpens {
+        inner,
+        opened: std::sync::atomic::AtomicUsize::new(0),
+    })
+}
+
+/// RE-RESOLVED ON EVERY HOP (as the previous plane minted a lease from the secret per hop): a hop
+/// after the secret's source changed presents the NEW value, re-opening the binding exactly once
+/// for the rotation; an unchanged secret never re-opens it, however many hops ask (handles grow by
+/// rotations, never by hops).
+#[test]
+fn a_rotated_secret_is_presented_on_the_next_hop_and_an_unchanged_one_never_reopens() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("rotate", "old-token");
+    let auth = bearer_auth();
+    let per = per_hop(&path, std::sync::Arc::clone(&auth));
+    let opens = || auth.opened.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(opens(), 1, "the composition's one open");
+
+    let first = per.handle_now().expect("it resolves");
+    for _ in 0..16 {
+        assert_eq!(
+            per.handle_now(),
+            Some(first),
+            "the same handle hop after hop"
+        );
+    }
+    assert_eq!(opens(), 1, "an unchanged secret never re-opens the binding");
+    assert_eq!(
+        presents(&*auth, first),
+        vec![("authorization".to_string(), "Bearer old-token".to_string())]
+    );
+
+    rotate(&path, "new-token");
+    let next = per.handle_now().expect("it resolves");
+    assert_ne!(next, first, "the rotation re-opened the binding");
+    assert_eq!(opens(), 2, "one re-open for one rotation");
+    assert_eq!(
+        presents(&*auth, next),
+        vec![("authorization".to_string(), "Bearer new-token".to_string())],
+        "the very next hop presents the new value"
+    );
+    assert_eq!(per.handle_now(), Some(next));
+    assert_eq!(
+        opens(),
+        2,
+        "and the new value, unchanged, never re-opens it"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// HOPS RACING A ROTATION each present ONE COMPLETE VALUE, the old or the new, never a mix: the
+/// handle a hop is given was opened over one whole value, and it is swapped under one lock.
+#[test]
+fn hops_racing_a_rotation_each_present_one_whole_value() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("race", "value-old-0000000000");
+    let auth = bearer_auth();
+    let per = std::sync::Arc::new(per_hop(&path, std::sync::Arc::clone(&auth)));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hops: Vec<_> = (0..4)
+        .map(|_| {
+            let (per, auth, stop) = (
+                std::sync::Arc::clone(&per),
+                std::sync::Arc::clone(&auth),
+                std::sync::Arc::clone(&stop),
+            );
+            std::thread::spawn(move || {
+                let mut seen = std::collections::BTreeSet::new();
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    let Some(handle) = per.handle_now() else {
+                        continue;
+                    };
+                    for (_, value) in presents(&*auth, handle) {
+                        seen.insert(value);
+                    }
+                }
+                seen
+            })
+        })
+        .collect();
+    for i in 0..64 {
+        let value = if i % 2 == 0 {
+            "value-new-1111111111"
+        } else {
+            "value-old-0000000000"
+        };
+        rotate(&path, value);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let whole = [
+        "Bearer value-old-0000000000".to_string(),
+        "Bearer value-new-1111111111".to_string(),
+    ];
+    for hop in hops {
+        for value in hop.join().expect("a hop thread") {
+            assert!(whole.contains(&value), "a mixed or partial value: {value}");
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Ported from `busbar-a2a` `creds_tests::the_lease_never_renders_the_secret_in_a_debug_line`:
+/// the per-hop binding holds a reference and a digest, never the value, and its debug line shows
+/// neither the value nor the digest.
+#[test]
+fn the_per_hop_binding_never_renders_the_secret_in_a_debug_line() {
+    let path = own_secret("debug", "SUPER-SECRET-VALUE");
+    let per = per_hop(&path, bearer_auth());
+    let rendered = format!("{per:?}");
+    assert!(
+        !rendered.contains("SUPER-SECRET-VALUE"),
+        "the binding rendered its secret: {rendered}"
+    );
+    let digest = busbar_contract::abi::sdk::digest::sha256(b"SUPER-SECRET-VALUE");
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(
+        !rendered.contains(&hex) && !rendered.contains(&format!("{:?}", digest[0..4].to_vec())),
+        "the binding rendered its digest: {rendered}"
+    );
+    assert!(rendered.contains("<redacted"), "{rendered}");
+    assert!(
+        !rendered.contains(&path.display().to_string()),
+        "nor where the secret lives: {rendered}"
+    );
+    let _ = std::fs::remove_file(&path);
+}

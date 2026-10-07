@@ -169,6 +169,21 @@ pub struct Hop {
     /// The agent the latest ATTEMPT reached (its route entry): the unit's ledger lane and the
     /// resource its audit row names.
     member: String,
+    /// The task as its opening left it, kept for a refusal that must end it `failed`
+    /// ([`credential_refusal`]): `refusal` is ticketless and reads no host.
+    opened: Option<OpenedTask>,
+    /// The caller's answer and the record writes of a hop refused for busbar's own credential,
+    /// made once: a short `refusal` re-called renders the same again.
+    credential: Option<(relay::Reply, Vec<Write>)>,
+}
+
+/// A TASK AS A HOP'S OPENING LEFT IT: the caller it is held under, the second it was opened at,
+/// and the records that hold it (the writes the opening made, or the row it read).
+#[derive(Debug)]
+struct OpenedTask {
+    caller: String,
+    now: u64,
+    records: Vec<Write>,
 }
 
 impl Hop {
@@ -195,6 +210,8 @@ impl Hop {
             rewritten: None,
             mint_message_id: false,
             member: String::new(),
+            opened: None,
+            credential: None,
         }
     }
 
@@ -1168,7 +1185,14 @@ fn open_task(
             mut task,
             instead,
             callback,
+            read,
         } => {
+            // The task as this opening left it: what a refusal before the dial ends `failed`.
+            hop.opened = Some(OpenedTask {
+                caller: caller.to_string(),
+                now,
+                records: read.into_iter().chain(writes.iter().cloned()).collect(),
+            });
             // The credential an inline callback names is held in plane memory, as the engine's
             // delivery holds it: none clears one held.
             if let Some(callback) = callback {
@@ -1278,6 +1302,49 @@ fn settle_task(
     hop.outbox.writes.extend(writes);
     hop.now = None;
     Ok(())
+}
+
+/// A HOP THE KERNEL REFUSED FOR BUSBAR'S OWN CREDENTIAL (`credential_unavailable`: the agent's
+/// `upstream_credential`, re-resolved for this hop, no longer resolves, so nothing was dialled):
+/// logged as the engine logged a lease it could not mint (`A2A_OUTBOUND_CRED_UNLEASED`), the caller
+/// answered in the engine's words ([`Relay::refuse_credential`]), re-framed on the HTTP+JSON line,
+/// and a task the hop opened or addressed ended `failed` over the records its opening left
+/// ([`task_hop::fail_unhosted`]: `refusal` is ticketless and reads no host), its push notification
+/// queued as the engine's `end_task` sent one. Made once per unit: a short `refusal` re-called
+/// renders the same answer and writes. `None` for a unit with no hop.
+fn credential_refusal(plane: &A2aDoor, unit: &mut Unit) -> Option<(relay::Reply, Vec<Write>)> {
+    let target_line = unit.envelope.is_some() && unit.framed.is_none();
+    let addressed = unit.agent.clone();
+    let hop = unit.hop.as_mut()?;
+    if let Some(made) = &hop.credential {
+        return Some(made.clone());
+    }
+    let agent = if hop.member.is_empty() {
+        addressed.unwrap_or_default()
+    } else {
+        hop.member.clone()
+    };
+    busbar_contract::diag_warn!(
+        crate::diagnostics::A2A_OUTBOUND_CRED_UNLEASED,
+        agent = %agent,
+        "a2a: the outbound credential could not be leased"
+    );
+    let (mut reply, failed) = hop.relay.refuse_credential();
+    let mut writes = Vec::new();
+    if let (true, Some(task), Some(opened)) = (failed, hop.relay.task().cloned(), hop.opened.take())
+    {
+        let (made, moved) =
+            task_hop::fail_unhosted(&task, &opened.records, &opened.caller, opened.now);
+        writes = made;
+        if let Some(row) = moved {
+            crate::push_door::queue(&plane.deliveries, &row, None);
+        }
+    }
+    if target_line {
+        reply.body = crate::rest::reframe(reply.status, &reply.body);
+    }
+    hop.credential = Some((reply.clone(), writes.clone()));
+    Some((reply, writes))
 }
 
 /// THE KERNEL'S VERDICT ON `agent` (`trust.serves`: the kernel's Approve as a query, ARCHITECT
@@ -1911,8 +1978,26 @@ slot!(
                     Some(unreadable_rewrite(id))
                 })
             });
+        // A hop the kernel refused for busbar's own credential: the engine's answer to a lease it
+        // could not mint, and its task ended `failed` ([`credential_refusal`]).
+        let credential = (given.reason
+            == busbar_contract::abi::plane::RefusalCode::CredentialUnavailable.code())
+        .then(|| {
+            instance.get().and_then(|plane| {
+                plane
+                    .units
+                    .with(&given.unit, |u| u.and_then(|u| credential_refusal(plane, u)))
+            })
+        })
+        .flatten();
         let rendered = if let Some(refusal) = &unreadable {
             arrival::render(dialect, refusal, true)
+        } else if let Some((reply, _)) = &credential {
+            arrival::Rendered {
+                status: reply.status,
+                body: reply.body.clone(),
+                content_type: reply.content_type,
+            }
         } else if let Some(refusal) = &tripped {
             arrival::render(dialect, refusal, true)
         } else if let Some(refusal) = &untrusted {
@@ -1993,6 +2078,7 @@ slot!(
                 RefusalCode::GroupFrozen,
                 RefusalCode::OverdraftCeiling,
                 RefusalCode::BreakerOpen,
+                RefusalCode::CredentialUnavailable,
             ]
             .iter()
             .any(|c| c.code() == given.reason)
@@ -2026,6 +2112,15 @@ slot!(
             fields.push(OutField {
                 name: arena.span(name.as_bytes()),
                 value: arena.span(value.as_bytes()),
+            });
+        }
+        // The writes ending the task a credential refusal failed, before the unit's audit row.
+        for w in credential.iter().flat_map(|(_, writes)| writes) {
+            records.push(RecordWrite {
+                kind: kind_index(w.kind),
+                op: RECORD_PUT,
+                key: arena.span(w.key.as_bytes()),
+                value: arena.span(&w.value),
             });
         }
         if let Some(resource) = &audited {

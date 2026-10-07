@@ -62,19 +62,19 @@ Naming an agent `hooks` or `upstream_credentials` is refused at parse (`crates/b
 | `protocol_version` | string | no | the release default | Pinned per registration because the well-known card path moved between versions, and a registration that follows whatever the upstream now claims has no pin at all. |
 | `allow_private` | bool | no | `false` | Permits a plaintext `http://` endpoint and a loopback / link-local / RFC1918 / CGNAT address for this one agent. **Never** permits a cloud-metadata address, whatever it says. |
 | `upstream_credentials` | `own` | no; **`passthrough` refused** | | |
-| `upstream_credential` | object | no | absent | The leased outbound credential Busbar presents. See below. |
+| `upstream_credential` | object | no | absent | Busbar's own credential for this agent, presented on every hop. See below. Absent ⇒ the agent is dialled with no credential. |
 | `egress_scopes` | list of strings | no | `[]` | Accepted and validated (an empty name is refused), and **read by nothing**: no relayed hop consults it. What gates a hop is the caller key's own `agent:<id>` grant for the agent it reaches, and the key being live. |
 | `hooks` | list of bare names | no | `[]` | Adds to `agents.hooks:`. |
 
-**`upstream_credential`** (`crates/busbar-a2a/src/a2a/creds.rs:238-250`), `deny_unknown_fields`, three fields and no more:
+**`upstream_credential`** (`crates/busbar-plane-a2a/src/a2a/creds.rs`), `deny_unknown_fields`, three fields and no more:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `secret` | `SecretRef` | **yes** | — | A handle resolved at delegation time. Never the secret, never the caller's. |
-| `placement` | `bearer` \| `{ header: <name> }` | no | `bearer` | `bearer` sends `Authorization: Bearer <secret>`; `header:` sends the named header carrying the secret verbatim, which is several vendors' `APIKey` scheme. It is an enum precisely so a secret cannot be placed in a query string, which lands in every access log on the path (`creds.rs:211-214`). |
-| `lease_ttl_ms` | u64 milliseconds | **yes** | — | Must be > 0. |
+| `secret` | `SecretRef` | **yes** | — | A reference, re-resolved on every hop. Never the secret, never the caller's. |
+| `placement` | `bearer` \| `{ header: <name> }` | no | `bearer` | `bearer` sends `Authorization: Bearer <secret>`; `header:` sends the named header carrying the secret verbatim, which is several vendors' `APIKey` scheme. It is an enum precisely so a secret cannot be placed in a query string, which lands in every access log on the path. |
+| `lease_ttl_ms` | u64 milliseconds | **yes** | — | Must be > 0; it has no further effect. |
 
-`lease_ttl_ms` is enforced inside the lease type, not at call sites: the secret leaves a `Lease` by exactly one route, `header_for(agent_id, now_ms)`, which refuses `WrongAgent` if the lease was minted for a different agent and `Expired` if the TTL has elapsed (`crates/busbar-a2a/src/a2a/creds.rs:344-367`). A `Lease` prints `<redacted; present>` under `Debug`. Minting reads the agent id **off the egress grant** rather than as a sibling parameter, so "authorise against A, mint against B" is not expressible (`creds.rs:411-430`), and the grant type is producible only by the egress gate, so skipping the gate does not compile (`creds.rs:201-208`).
+The credential is **busbar's own**, never the caller's, and the plane never holds it. The composition root binds it to the auth kind that serves its placement (`bearer`, or `api-key` over the named header) and the kernel presents it through that auth kind's per-request call on every request to the agent: relayed hops, the extended card read through the relay, and busbar's own requests to it (the `ListTasks` refresh, the push-config mirror). The door's public and verification card fetches carry no credential. The `secret` reference is **re-resolved on every hop**: a rotated secret is presented on the very next hop, and the binding is re-opened only when the resolved value changed (`crates/busbar/src/root/door_steps.rs` `upstream_credential_binding`). A secret that does not resolve when the configuration is applied refuses the load, naming the agent. One that **stops resolving** afterwards refuses the hop with `502` and nothing is dialled: a relayed task hop answers `-32006` "the backend agent did not complete this task" naming the task, which ends `failed`; the extended card read answers `-32006` "the extended agent card could not be fetched"; busbar's own requests to the agent are not made. `lease_ttl_ms` must be greater than zero and has no further effect: the previous plane presented a lease the instant it minted it, so the TTL never elapsed between minting and use.
 
 ```yaml
 public_url: https://gateway.example.com     # REQUIRED for the receiving side
