@@ -79,6 +79,7 @@ fn suite(id: &str) -> Suite {
         verdict: format!("conformance-verdict-{id}"),
         public: true,
         not_run_reason: None,
+        plane: None,
     }
 }
 
@@ -572,6 +573,11 @@ fn the_verdicts_the_producer_writes_rebuild_the_manifest_in_process() {
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
     std::fs::copy(repo_root().join("conformance/registry.toml"), &registry)
         .expect("the tree's registry copies into the fixture");
+    // The registry's plane floor is derived from the planes the build ships.
+    let roster = repo.join("qa/construction.toml");
+    std::fs::create_dir_all(roster.parent().unwrap()).unwrap();
+    std::fs::copy(repo_root().join("qa/construction.toml"), &roster)
+        .expect("the tree's plane roster copies into the fixture");
     let suites = xtask::gates::conformance_sync::render::parse_registry(
         &xtask::ctx::Ctx::new(&repo).expect("a context over the fixture"),
     )
