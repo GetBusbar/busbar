@@ -395,7 +395,8 @@ pub fn link_secrets(
     let mut rows = crate::root::loader::secret_calls::SecretRows::new(
         crate::root::dispatch::dispatcher,
         conns,
-    );
+    )
+    .with_logs(|| crate::root::boot::plugin_logs().clone());
     for door in doors {
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
@@ -414,6 +415,7 @@ fn conns() -> Option<std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>> {
 pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
     SECRETS.get_or_init(|| {
         crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher, conns)
+            .with_logs(|| crate::root::boot::plugin_logs().clone())
     })
 }
 
