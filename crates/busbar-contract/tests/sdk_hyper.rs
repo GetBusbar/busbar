@@ -266,6 +266,37 @@ fn fill_splits_what_does_not_fit_and_says_more() {
     assert_eq!(out.yielded.flags, YIELD_ENDED);
 }
 
+/// A PIECE MAY STATE ITS OWN FAULT READING. A framer that maps an answer into its claim's numbering
+/// from something the numbering does not hold (a bare HTTP status on a gRPC call) reads the fault
+/// from that, and `fill` writes the piece's own reading over `fault_of(status)`; a piece that
+/// states none is read by the table as before. RED on a `fill` that ignores the piece's reading.
+#[test]
+fn fill_writes_a_pieces_own_fault_reading_over_the_tables() {
+    let mut o = Owes {
+        io: HostIo::new(0),
+        pieces: VecDeque::from([
+            Piece {
+                status: Some(5),
+                fault: Some(1),
+                ..Piece::fields(1, Bytes::from_static(b"a: b\r\n"))
+            },
+            Piece {
+                status: Some(5),
+                ..Piece::failure(1, "why")
+            },
+        ]),
+        ended: true,
+    };
+    let (_, _, _, pieces, _) = run_fill(&mut o, (8, 32, 4));
+    assert_eq!(pieces.len(), 2);
+    assert_eq!(
+        (pieces[0].code, pieces[0].status_class, pieces[0].fault),
+        (5, 3, 1),
+        "the piece's own reading, its class still the table's"
+    );
+    assert_eq!(pieces[1].fault, 2, "no reading of its own: the table's");
+}
+
 /// RED (the stream-end ruling): the SDK SAYS a stream's end (`Piece::end` -> `PIECE_END` on an
 /// empty END_OF_FRAME piece); an empty data piece is an empty frame and carries no end.
 #[test]
