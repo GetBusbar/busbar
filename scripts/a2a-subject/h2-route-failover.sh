@@ -114,6 +114,12 @@ if [ "${1:-}" = "--selftest" ]; then
   st_case "five 502s then a terminal 503 with an exact Retry-After is judged PASS" PASS \
     "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" \
     "503${T}115${T}$tb" "503${T}115${T}$tb" "503${T}114${T}$tb"
+  # Row 125: a trip on a streak of 5 answers the FSM's capped cooldown, 120 (min(15 x 2^5, 120)),
+  # which a "first-trip 15 s" judge refused ("Retry-After 120 is outside the first-trip cooldown
+  # 1..15", PROOF's rig on predev's judge, before ec3d7123f9). The FSM's own figure is PASS.
+  st_case "a streak-5 trip answering the FSM's capped 120 is judged PASS" PASS \
+    "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" \
+    "503${T}120${T}${tb/115s/120s}" "503${T}120${T}${tb/115s/120s}" "503${T}119${T}${tb/115s/119s}"
   st_case "503 from the first call (nothing ever dispatched) is RED" FAIL \
     "503${T}115${T}$tb" "503${T}115${T}$tb" "503${T}115${T}$tb"
   st_case "a pre-trip attempt that is not a 502 is RED" FAIL \
