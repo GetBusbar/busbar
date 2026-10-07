@@ -31,8 +31,10 @@
 //!   reset-on-return, a local socket for a local endpoint, connect attributes) is HOST config; the
 //!   reset itself is the plugin kind's own op. A write-behind op keeps its connection across reload.
 //! * **Cancel may need a second stream** to the same endpoint ([`service::SIDE_STREAM`]).
-//! * **Host services:** random bytes ([`service::RANDOM`]: nonces, key-exchange seeds) and the
-//!   process identity (OS user, pid, program name; [`service::IDENTITY`]).
+//! * **Host services:** the process identity (OS user, pid, program name; [`service::IDENTITY`]).
+//!   Random bytes (nonces, key-exchange seeds) come from the ONE random service, the host
+//!   service `random.fill` (`abi/host/service.rs`, `op::RANDOM_FILL`); the connector's
+//!   [`service::RANDOM`] slot is RETIRED: kept for its place in the table, served by no host.
 //! * **The far end's notices and warnings** travel as the metrics-and-diagnostics envelope's `Diag`s, severity `0`/`1`;
 //!   there is no other channel.
 //!
@@ -47,7 +49,7 @@
 
 // THE SHARED CALL SHAPE. In a connector answer, `ServiceOut::value` is the stream a service produced
 // (`ESTABLISH`, `REJECT_ENDPOINT`, `SIDE_STREAM`, `CHECKOUT`), `0` otherwise, and `ServiceOut::len`
-// the bytes moved (`READ`: `0` = the end; `WRITE`; `RANDOM`).
+// the bytes moved (`READ`: `0` = the end; `WRITE`).
 pub use crate::abi::host::service::{ServiceFn, ServiceHead, ServiceOut};
 use crate::abi::mechanism::call::{AbiStr, Blob};
 
@@ -203,7 +205,8 @@ pub mod service {
     pub const CHECKIN: u32 = 8;
     /// Close a stream.
     pub const CLOSE: u32 = 9;
-    /// Random bytes.
+    /// RETIRED: random bytes come from the one random service, the host service `random.fill`
+    /// (`op::RANDOM_FILL`). The number and its slot keep their place; no host serves it.
     pub const RANDOM: u32 = 10;
     /// The process identity.
     pub const IDENTITY: u32 = 11;
@@ -393,7 +396,7 @@ pub struct CheckinIn {
     pub _reserved: u32,
 }
 
-/// [`service::RANDOM`]'s `in`: fill the buffer. Never pends.
+/// [`service::RANDOM`]'s `in` (RETIRED with its slot: `random.fill` is the one random service).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RandomIn {
@@ -556,7 +559,8 @@ pub struct ConnectorSlots {
     pub checkin: Option<ServiceFn>,
     /// [`service::CLOSE`], in [`StreamIn`].
     pub close: Option<ServiceFn>,
-    /// [`service::RANDOM`], in [`RandomIn`].
+    /// [`service::RANDOM`], in [`RandomIn`]: RETIRED, always NULL (`random.fill` is the one random
+    /// service).
     pub random: Option<ServiceFn>,
     /// [`service::IDENTITY`], in [`IdentityIn`].
     pub identity: Option<ServiceFn>,

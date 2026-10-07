@@ -76,6 +76,10 @@ fn ticketless(pool: &Pool) {
         });
         if hung {
             inst.faulted.store(true, Ordering::Release);
+            // A faulted instance never crosses again: its connector streams go now.
+            if let Some((id, table)) = inst.wake.conn.get() {
+                super::conn_services::purge(*id, table);
+            }
         }
     }
 }
@@ -83,7 +87,7 @@ fn ticketless(pool: &Pool) {
 /// Replace worker `i` if it is STILL inside the crossing that began at `started`: re-checked under
 /// the state lock and the crossing lock, so a crossing that returned meanwhile is never faulted.
 fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
-    let (gone, gens) = {
+    let (gone, gens, faulted) = {
         let mut st = old.lock();
         if st.dead {
             return;
@@ -93,6 +97,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
             return;
         };
         record.instance.faulted.store(true, Ordering::Release);
+        let faulted = Arc::clone(&record.instance);
         drop(crossing);
         st.dead = true;
         let gens: Vec<u32> = st
@@ -100,8 +105,12 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
             .iter()
             .map(|e| recycled_generation(e.generation))
             .collect();
-        (Worker::fault_all(&mut st), gens)
+        (Worker::fault_all(&mut st), gens, faulted)
     };
+    // A faulted instance never crosses again: its connector streams go now, outside the locks.
+    if let Some((id, table)) = faulted.wake.conn.get() {
+        super::conn_services::purge(*id, table);
+    }
     pool.env.completions.forget_worker(old.index);
     pool.env.services.forget_worker(old.index);
     let conns: Vec<_> = gone.iter().flat_map(|e| e.conns.iter().copied()).collect();

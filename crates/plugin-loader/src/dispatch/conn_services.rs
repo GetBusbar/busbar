@@ -19,7 +19,9 @@
 //!   caller's ticket while the handshake runs. A framed stream refuses it.
 //! * `FACTS` writes the stream's facts: whether it is secure, the protocol agreed and the hash of
 //!   the far end's certificate (the channel-binding input), the strings held until it closes.
-//! * `RANDOM` fills the buffer from the OS; `IDENTITY` names the process.
+//! * `IDENTITY` names the process, written afresh on every call (a replayed handle included: it
+//!   writes the caller's memory, so its answer is never kept). `RANDOM` is RETIRED and served by
+//!   no host: `random.fill`, a host service, is the one random service.
 //! * `FACTS` answers what the stream's connection security established, as the connector observed
 //!   it: the agreed protocol, the far end's key pin and whether busbar presented its client identity
 //!   (the transport pin, ARCHITECT 2026-10-03) — a stream whose connection the connector refused for its
@@ -53,10 +55,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, RandomIn,
-    ReplyIn, ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, REPLY_ACK,
-    REPLY_BODY, REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES,
-    UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
+    service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, REPLY_ACK, REPLY_BODY,
+    REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
+    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -84,7 +86,8 @@ pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     checkout: None,
     checkin: None,
     close: Some(close),
-    random: Some(random),
+    // RETIRED: `random.fill` (the host services' table) is the one random service.
+    random: None,
     identity: Some(identity),
     read_reply: Some(read_reply),
     write_request: Some(write_request),
@@ -225,6 +228,9 @@ fn slot(
             return Answer::with(Outcome::Fault, "");
         }
         match armed(ctx) {
+            // A never-pend service that writes the caller's memory is run afresh on a replay: a
+            // kept answer would say the bytes were written into memory this call never touched.
+            Some((id, table)) if service == service::IDENTITY => body(*id, table, head),
             Some((id, table)) => kept(*id, head.handle, || body(*id, table, head)),
             None => Answer::of(ConnError::Unarmed),
         }
@@ -683,6 +689,27 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
 pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
     kept_answers()
         .retain(|(id, t), _| !(ids.contains(id) && super::ticket::decode(t.slot).0 == worker));
+}
+
+/// FORGET EVERYTHING instance `id` holds on the connector's process-wide maps — its held streams
+/// and their facts, its kept answers — and close on `table` every connection a held stream had open.
+/// Made when the instance can never cross again: the watchdog faulted it, or it is dropped (a
+/// close, a reload). The maps are let go before anything is closed or dropped: a held stream's
+/// pending auth call is the auth plugin's, and a close may cross into a transport door (THE DESIGN
+/// §11.13 M1).
+pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
+    held_facts().retain(|(i, _), _| *i != id);
+    kept_answers().retain(|(i, _), _| *i != id);
+    let gone: Vec<Stream> = {
+        let mut all = held_conns();
+        let keys: Vec<(InstanceId, u64)> = all.keys().filter(|(i, _)| *i == id).copied().collect();
+        keys.iter().filter_map(|k| all.remove(k)).collect()
+    };
+    for s in gone {
+        if let Conn::Open(c) = s.conn {
+            let _ = table.close(id, c);
+        }
+    }
 }
 
 // ── FRAMED REQUESTS AND REPLIES ──────────────────────────────────────────────────────────────────
@@ -1363,28 +1390,6 @@ fn reply(
             }
         };
     }
-}
-
-extern "C" fn random(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::RANDOM,
-        size_of::<RandomIn>(),
-        |_, _, _| {
-            // SAFETY: the head covered a `RandomIn`.
-            let i = unsafe { input.cast::<RandomIn>().read_unaligned() };
-            // SAFETY: the caller's buffer, live for the call.
-            let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
-                return Answer::with(Outcome::Fault, "");
-            };
-            match getrandom::fill(buf) {
-                Ok(()) => Answer::ready(0, i.len as u64),
-                Err(_) => Answer::with(Outcome::Failed, "the host has no randomness"),
-            }
-        },
-    )
 }
 
 /// The process's OS user and program name, read once and held for the process's life.

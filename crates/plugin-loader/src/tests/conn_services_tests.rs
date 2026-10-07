@@ -1960,3 +1960,67 @@ fn a_stream_closed_while_it_opens_leaves_nothing_open() {
         "nothing is held"
     );
 }
+
+/// RED (THE DESIGN §11.12 "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): `IDENTITY` writes the caller's memory and never pends, so a replayed handle is
+/// answered by writing the identity again into the memory this call hands, never by a kept READY
+/// over memory nothing touched.
+#[test]
+fn a_replayed_identity_writes_the_callers_memory_again() {
+    use busbar_contract::abi::host::conn::connector::{IdentityIn, ProcessIdentity};
+    let p = bound_over(&Arc::new(Scripted::default()));
+    let ask = |into: &mut ProcessIdentity| {
+        let i = IdentityIn {
+            head: head_of::<IdentityIn>(service::IDENTITY, 5),
+            identity: std::ptr::from_mut(into),
+        };
+        call(&p, CONN_SLOTS.identity, &i)
+    };
+    // SAFETY: an all-zero `ProcessIdentity` is a valid value the service overwrites.
+    let mut first: ProcessIdentity = unsafe { std::mem::zeroed() };
+    assert!(ready(&ask(&mut first)));
+    assert_eq!(first.pid, u64::from(std::process::id()));
+    // SAFETY: as above.
+    let mut replayed: ProcessIdentity = unsafe { std::mem::zeroed() };
+    assert!(ready(&ask(&mut replayed)), "the same handle, again");
+    assert_eq!(
+        replayed.pid,
+        u64::from(std::process::id()),
+        "a replay answered READY without writing the identity"
+    );
+}
+
+/// The connector's `RANDOM` slot is RETIRED and served by no host: `random.fill`, a host service,
+/// is the one random service.
+#[test]
+fn the_connector_serves_no_random_of_its_own() {
+    assert!(CONN_SLOTS.random.is_none());
+}
+
+/// RED (bounded memory): an instance that is dropped takes what it held on the connector's
+/// process-wide maps with it, and a connection one of its held streams had open is closed on the
+/// table.
+#[test]
+fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
+    let table = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let id = p.instance();
+    let stream = whole_request(&p, 0);
+    let conn = match super::held_conns().get(&(id, stream)).map(|s| &s.conn) {
+        Some(super::Conn::Open(c)) => *c,
+        other => panic!("the whole request is open on the table: {other:?}"),
+    };
+    assert!(table.slab.get(id, conn).is_ok());
+    drop(p);
+    assert!(
+        !super::held_conns().keys().any(|(i, _)| *i == id),
+        "a dropped instance's streams stayed on the connector's map"
+    );
+    assert!(
+        table.slab.get(id, conn).is_err(),
+        "a dropped instance's open connection stayed open"
+    );
+}
