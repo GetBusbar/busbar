@@ -59,7 +59,7 @@ impl AdmissionGate {
         match self.sem.clone().try_acquire_owned() {
             Ok(permit) => Some(permit),
             Err(_) => {
-                metrics::counter!(crate::metrics::ADMISSION_DENIED_TOTAL, "gate" => self.name.clone())
+                metrics::counter!(crate::snapshot::ADMISSION_DENIED_TOTAL, "gate" => self.name.clone())
                     .increment(1);
                 None
             }

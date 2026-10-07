@@ -36,7 +36,11 @@ fn the_tail_names_the_decision_class_at_its_index() {
     let (class, family) = tail::BILLABLE_CLASSES[tail::CLASS_DECISION_INDEX as usize];
     assert_eq!(class, CLASS_DECISION);
     assert_eq!(family, "decision");
-    assert!(tail::FEE_UNITS.is_empty());
+    // The request fee is the one fee unit, and it is a class at its own index.
+    assert_eq!(tail::FEE_UNITS, &[busbar_contract::plane::PER_REQUEST]);
+    let (fee, fee_family) = tail::BILLABLE_CLASSES[tail::CLASS_FEE_INDEX as usize];
+    assert_eq!(fee.as_str(), tail::FEE_PER_REQUEST);
+    assert_eq!(fee_family, tail::FEE_FAMILY);
     assert_eq!(tail::SECTION_DECLARING, crate::config::SECTION);
     assert_eq!(tail::NEEDS, &[(crate::claims::TRANSPORT, "bearer")]);
     assert_eq!(tail::DIALECT_AUTH, &[(0, "bearer")]);
@@ -163,4 +167,49 @@ fn only_exactly_one_model_mounts_the_claim() {
     assert_eq!(served_claims(1), tail::CLAIMS);
     assert!(served_claims(2).is_empty());
     assert!(served_claims(7).is_empty());
+}
+
+/// BILLABLE SUCCESS ONLY: the request fee is counted once for a far end's 2xx answer with no
+/// `/error` member, and never for an error answer, a non-2xx status or an answer with no status.
+#[test]
+fn the_request_fee_is_counted_on_a_success_alone() {
+    let mut ok = FarEndReading::new();
+    ok.piece(br#"{"usage":{"units":3}}"#);
+    let fee = ok.fee(Some(200)).expect("a success owes its fee");
+    assert_eq!(
+        (fee.class, fee.amount, fee.reported),
+        (tail::CLASS_FEE_INDEX, 1, true)
+    );
+    // RED ARMS.
+    assert_eq!(ok.fee(Some(422)), None, "a refused request owes none");
+    assert_eq!(ok.fee(Some(500)), None);
+    assert_eq!(ok.fee(None), None, "no status read, no fee");
+    let mut failed = FarEndReading::new();
+    failed.piece(br#"{"error":{"code":"x","message":"y"}}"#);
+    assert_eq!(failed.fee(Some(200)), None, "an error answer owes none");
+}
+
+/// THE CALLER'S FIELDS REACH THE FAR END (DEC-SERVE Q2, DIALECT-FIDELITY F2): every one, in order,
+/// a repeated name keeping each value, but the governed set (the document type the plane writes, the
+/// hop's `host`, the credential carriers), compared without case.
+#[test]
+fn every_caller_field_but_the_governed_set_is_relayed() {
+    let caller: [(&[u8], &[u8]); 7] = [
+        (b"X-Trace", b"a"),
+        (b"Authorization", b"Bearer caller-key"),
+        (b"content-type", b"text/plain"),
+        (b"Host", b"busbar.example"),
+        (b"x-trace", b"b"),
+        (b"Proxy-Authorization", b"Basic x"),
+        (b"accept-language", b"en"),
+    ];
+    assert_eq!(
+        relayed_fields(caller),
+        vec![
+            (b"x-trace".to_vec(), b"a".to_vec()),
+            (b"x-trace".to_vec(), b"b".to_vec()),
+            (b"accept-language".to_vec(), b"en".to_vec()),
+        ]
+    );
+    assert!(relayed_fields(std::iter::empty()).is_empty());
 }

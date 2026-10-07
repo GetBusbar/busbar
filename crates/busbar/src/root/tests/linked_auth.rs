@@ -176,7 +176,7 @@ fn the_info_auth_modules_are_the_inbound_rows_only() {
 /// wrong Bearer, and past a Bearer in another scheme's grammar).
 #[tokio::test]
 async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let cases: [(Option<&str>, Option<&str>, u16); 9] = [
@@ -205,7 +205,7 @@ async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
 /// an opaque candidate that IS addressed to it and wrong, so the arm behind it never admits that.
 #[tokio::test]
 async fn the_chain_reaches_the_arm_behind_the_operator_credential_only_on_a_foreign_grammar() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let chain = [op, "any-credential"];
@@ -235,7 +235,7 @@ async fn the_chain_reaches_the_arm_behind_the_operator_credential_only_on_a_fore
 /// to answer it.
 #[tokio::test]
 async fn without_the_root_row_the_operator_token_is_refused() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let op = op();
     let with_row = app(&[op], Vec::new());
     // What `busbar_kernel::auth::open_operator` answers when the registry holds no row under the operator
@@ -400,7 +400,7 @@ fn cfg_with_credentials(
 #[test]
 fn admin_token_secret_ref_re_resolves_on_apply() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-high7-token-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let token_path = dir.join("admin.token");
@@ -460,7 +460,7 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
 #[test]
 fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-high7-signing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let token_path = dir.join("admin.token");
@@ -539,7 +539,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
 #[test]
 fn blank_admin_token_refuses_to_start() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-blank-admin-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let key_path = dir.join("signing.key");
@@ -599,7 +599,7 @@ fn blank_admin_token_refuses_to_start() {
 #[tokio::test]
 async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_credential() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-op-by-module-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (token_path, key_path) = (dir.join("admin.token"), dir.join("signing.key"));
@@ -639,7 +639,7 @@ async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_creden
 /// the name ran the operator credential instead and never asked the configured module.
 #[tokio::test]
 async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let op = op();
     // `admin_auth: [<op>]` with `<op>: { module: any-credential }`, as the build resolves it: the
     // provider is recorded as backed by that module, and the module is opened under its name.
@@ -712,7 +712,7 @@ fn through_the_loop(
     bearer: Option<&str>,
     header: Option<&str>,
 ) -> (u16, String) {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(Answers200),
         crate::root::units_admin::live_admin_door(Arc::clone(handle)),
@@ -811,7 +811,7 @@ fn an_external_admin_module_is_consulted_by_the_loop() {
 #[test]
 fn a_swapped_admin_chain_is_the_loops_next_door() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-live-door-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (token_path, key_path) = (dir.join("admin.token"), dir.join("signing.key"));

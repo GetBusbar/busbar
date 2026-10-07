@@ -109,13 +109,6 @@ fn the_plane_is_a_parameter_and_never_a_branch() {
     }
 }
 
-// `the_not_found_names_the_plane_s_own_subject` MOVED to
-// `tests/admin_planeverbs_cross_plane.rs`: it renders `to_admin_error("mcp", ...)`/`("a2a", ...)`
-// and asserts the REAL subject-noun prose ("MCP server", "fronted agent") those plane decls carry —
-// naming that real vocabulary here (even via a synthetic `#[cfg(test)]` decl) is exactly what
-// `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) forbids in this crate. See
-// that file for the relocated test.
-
 /// A LOOKUP THAT RESOLVED IS PASSED STRAIGHT THROUGH. The shared rule decides the refusal and
 /// nothing else; it never inspects, rewrites or re-validates what the plane found.
 #[test]
@@ -125,8 +118,79 @@ fn a_resolved_lookup_is_returned_untouched() {
     assert_eq!(found, ("entry", "cfg"));
 }
 
-// `the_admin_route_table_method_path_scope_is_byte_identical` and
-// `the_audit_naming_is_derived_from_the_plane` also MOVED to `tests/admin_planeverbs_cross_plane.rs`
-// for the same reason as the test above them: both pin the REAL mcp/a2a admin route table and audit
-// vocabulary, which only `plane_decl("mcp")`/`plane_decl("a2a")` over the REAL registered roster can
-// answer — real plane behaviour, not "a plane merely needs to exist".
+// `the_admin_route_table_method_path_scope_is_byte_identical` stays with the kernel's admin gate
+// (`busbar-kernel/tests/admin_planeverbs_cross_plane.rs`): it pins the scope matrix the gate enforces.
+
+// THE CROSS-PLANE DERIVATIONS, moved here from the kernel's `tests/admin_planeverbs_cross_plane.rs`
+// with the envelope they drive (P2 D4): driven over every linked plane with admin verbs (this crate's
+// `test-linked` roster), addressed by what each declares, never by a plane key spelled here.
+
+/// Every linked plane that mounts admin trust verbs, read back from the registry.
+fn verb_planes() -> Vec<&'static busbar_kernel::plane::registry::PlaneDecl> {
+    crate::ensure_seam();
+    let planes: Vec<_> = busbar_kernel::plane::registry::plane_decls()
+        .iter()
+        .copied()
+        .filter(|d| d.admin_routes.is_some())
+        .collect();
+    assert!(
+        planes.len() >= 2,
+        "the test-linked roster carries at least two planes with admin trust verbs: {:?}",
+        planes.iter().map(|d| d.key).collect::<Vec<_>>()
+    );
+    planes
+}
+
+/// THE `404` IS DERIVED FROM THE PLANE, so the wording cannot drift apart between two planes and a
+/// third plane gets the same refusal for free. Driven for EVERY linked plane with admin verbs; each
+/// plane pins its own subject noun literal in its own suite (busbar-mcp `codec/tests/decl_tests.rs`,
+/// busbar-a2a `a2a/tests/serve_tests.rs`).
+#[test]
+fn the_not_found_names_the_plane_s_own_subject() {
+    // `registered` now returns the neutral, wordless `PlaneVerbError::NotFound`; the frozen wording is
+    // reconstructed at the CORE boundary (`to_admin_error`) from the plane decl. That each plane gets
+    // its own subject noun — and gets it for free from the one map — is what this asserts.
+    for decl in verb_planes() {
+        let refused = busbar_kernel::admin_verbs::registered(|| None::<()>)
+            .expect_err("a lookup that resolved nothing must refuse");
+        let rendered = to_admin_error(decl.key, "billing", refused).message();
+        assert!(
+            rendered.contains(&format!("{} `billing`", decl.subject_noun)),
+            "the `{}` refusal must name the plane's own subject noun: {rendered}",
+            decl.key
+        );
+    }
+}
+
+/// THE AUDIT ACTION AND RESOURCE are `<kind>.<verb>` on `<kind>:<name>`, with the kind coming off
+/// the spine. These strings are read back by audit queries and compliance exports, so the kernel's
+/// ONE recorder (`admin::planeverbs::audit`) is driven for every linked plane with admin verbs and
+/// the row it writes is read back off the audit ring. Each plane pins its own published literals
+/// (`<kind>`, `<kind>.connect`, `<kind>.approve`) in its own suite (busbar-mcp
+/// `codec/tests/decl_tests.rs`, busbar-a2a `a2a/tests/serve_tests.rs`).
+#[test]
+fn the_audit_naming_is_derived_from_the_plane() {
+    use crate::v1::json::audit::AUDIT;
+    let principal = busbar_contract::auth::AuthPrincipal(None);
+    for decl in verb_planes() {
+        assert_eq!(
+            busbar_kernel::plane::plane_decl(decl.key).audit_kind,
+            decl.audit_kind,
+            "the registry resolves `{}` to its own declaration",
+            decl.key
+        );
+        for verb in ["connect", "approve"] {
+            let name = format!("k3-audit-{}-{verb}", decl.key);
+            audit(decl.key, verb, &name, "applied", &principal);
+            let resource = format!("{}:{name}", decl.audit_kind);
+            let rows = AUDIT.list_filtered(0, 8, None, Some(&resource));
+            assert_eq!(rows.len(), 1, "one audit row on `{resource}`: {rows:?}");
+            assert_eq!(
+                rows[0].action,
+                format!("{}.{verb}", decl.audit_kind),
+                "the action word is `<kind>.<verb>` for `{}`",
+                decl.key
+            );
+        }
+    }
+}

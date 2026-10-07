@@ -1384,7 +1384,8 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 //
 // `providers.yaml`'s `protocol:` selects the WIRE dialect (`anthropic`/`openai`/…/`jev`); a `mock`
 // provider on `protocol: jev` is what a genuine decisions deployment configures — the decision
-// plane's own `PlaneCfg::known_dialects` (`root/plane_decisions.rs`) is unioned into the provider
+// plane's door states it as its one dialect and consumes `providers:`, so its folded section's
+// `PlaneCfg::known_dialects` (`busbar_kernel::plane::door`) is unioned into the provider
 // wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
 // is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
 
@@ -1562,6 +1563,40 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
         "the refusal names the dialect the plane speaks (`{dialect}`): {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE SECTION IS JUDGED BY THE PLANE'S OWN DOOR (FLIP-DECISIONS): the plane's registry row is its
+/// door's Statement, folded, and its section parses through the door's `validate`. A `decisions:`
+/// that is a scalar where a mapping belongs, or that carries a member the plane does not declare,
+/// fails `--validate` naming the block, rather than landing as an untyped capture that does
+/// nothing. The control is `validate_ok_on_a_good_decisions_config`.
+#[cfg(feature = "plane-decisions")]
+#[test]
+fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
+    for (case, block, member) in [
+        ("scalar", "decisions: \"hello\"\n", None),
+        (
+            "typo",
+            "decisions:\n  modles:\n    verdicts:\n      provider: mock\n",
+            Some("modles"),
+        ),
+    ] {
+        let dir = fixture_dir(&format!("decisions-door-{case}"));
+        write_decisions_configs(&dir, &decision_dialect(), block);
+        let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 1, "{case}: the door refuses the block: {stderr}");
+        assert!(
+            stderr.contains("decisions"),
+            "{case}: the refusal names the block: {stderr}"
+        );
+        if let Some(member) = member {
+            assert!(
+                stderr.contains(member),
+                "{case}: the refusal names the member: {stderr}"
+            );
+        }
+    }
 }
 
 // ── LAW 7: AN UNCONFIGURED PLANE CONTRIBUTES NO PROVIDER DIALECT (oracle cell BOOT-020) ───────────
