@@ -268,10 +268,12 @@ fn snapshot(families: &serde_json::Value) -> Snapshot {
 /// (`export_door`): on a ticket of `d`'s, write-behind, so a delivery that waits on the network
 /// answers PENDING and is RESUMED on its wake.
 fn deliver(p: &Plugin<Export>, d: &Dispatcher, stream: u8, batch: &[u8], n: u8) -> String {
+    // The batch rides with the op (THE DESIGN §2): the lending submit owns it.
+    let batch: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(batch.to_vec());
     let mut f: Frame<DeliverIn, OutHead> = Frame::new(input(), output());
     f.input.op_id = [n; 16];
     f.input.stream = stream;
-    f.input.batch = blob(batch, BLOB_JSONL);
+    f.input.batch = blob(&batch, BLOB_JSONL);
     called(&super::on_ticket(
         p,
         d,
@@ -279,6 +281,7 @@ fn deliver(p: &Plugin<Export>, d: &Dispatcher, stream: u8, batch: &[u8], n: u8) 
         f,
         busbar_contract::abi::mechanism::call::DeadlineClass::WriteBehind,
         0,
+        batch,
     ))
 }
 

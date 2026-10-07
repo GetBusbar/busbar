@@ -87,7 +87,9 @@ use super::{
     release, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::auth::Auth;
-use crate::dispatch::{now_ns, Dispatcher, Frame, Plugin};
+use std::sync::Arc;
+
+use crate::dispatch::{now_ns, Dispatcher, Frame, Lent, Plugin};
 
 /// How long a submitted `verify` is awaited: the host's call budget, generously.
 const SUBMIT_WAIT: Duration = Duration::from_secs(10);
@@ -188,6 +190,14 @@ fn secret(bytes: &[u8]) -> Blob {
     }
 }
 
+// SAFETY: the raw pointers in `carriers` point into `names` and `_values`, owned by the same
+// `Presented` (their heap buffers never move); nothing mutates a `Presented` lent to a submitted
+// op but the plugin's writes into `bytes`, `groups` and `strips`, which the host reads only after
+// the op completes.
+unsafe impl Send for Presented {}
+// SAFETY: as above.
+unsafe impl Sync for Presented {}
+
 impl Presented {
     fn new(case: &serde_json::Value) -> Self {
         let credential = match &case["credential"] {
@@ -195,8 +205,23 @@ impl Presented {
             v => Some(text(v)),
         };
         let lines = case["carriers"].as_object().cloned().unwrap_or_default();
-        let names: Vec<String> = lines.keys().cloned().collect();
-        let values: Vec<Vec<u8>> = lines.values().map(text).collect();
+        Self::of(
+            credential,
+            lines.keys().cloned().collect(),
+            lines.values().map(text).collect(),
+        )
+    }
+
+    /// The same case presented afresh, in memory of its own: what a SUBMITTED `verify` lends.
+    fn again(&self) -> Box<Self> {
+        Box::new(Self::of(
+            self.credential.clone(),
+            self.names.clone(),
+            self._values.clone(),
+        ))
+    }
+
+    fn of(credential: Option<Vec<u8>>, names: Vec<String>, values: Vec<Vec<u8>>) -> Self {
         let carriers = names
             .iter()
             .zip(&values)
@@ -292,38 +317,28 @@ fn verify_now(p: &Plugin<Auth>, case: &mut Presented) -> String {
     format!("{} {}", called(&c), case.verdict(c.outcome, &f.out))
 }
 
-/// `verify` SUBMITTED on a ticket, awaited, the ticket recycled.
-fn verify_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &mut Presented) -> String {
-    let ticket = d.mint(0).expect("a ticket is free");
+/// `verify` SUBMITTED on a ticket, awaited, the ticket recycled: through the suite's lending
+/// submit ([`super::on_ticket_frame`]), the case presented afresh in memory the op OWNS (THE
+/// DESIGN §2), so a `verify` the watchdog abandons never reads freed memory.
+fn verify_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &Presented) -> String {
+    let mut lend = case.again();
+    let f = lend.frame(true);
+    let lend: Arc<Presented> = Arc::from(lend);
     let deadline = now_ns().saturating_add(SUBMIT_WAIT.as_nanos() as u64);
-    let reply = d.submit(
+    let (c, f) = super::on_ticket_frame(
         p,
-        ticket,
+        d,
         slot::VERIFY,
-        case.frame(true),
+        f,
         DeadlineClass::Call,
         deadline,
+        Arc::clone(&lend) as Lent,
     );
-    let done = reply.wait(SUBMIT_WAIT);
-    drop(reply);
-    d.recycle(ticket);
-    let Some(done) = done else {
-        return "no answer".to_string();
-    };
-    let text = done
-        .error
-        .as_deref()
-        .map(String::from_utf8_lossy)
-        .unwrap_or_default();
-    let verdict = match &done.frame {
-        Some(f) => case.verdict(done.outcome, &f.out),
+    let verdict = match &f {
+        Some(f) => lend.verdict(c.outcome, &f.out),
         None => "frame=none".to_string(),
     };
-    format!(
-        "{:?} lease={} {text} {verdict}",
-        done.outcome,
-        done.lease != 0
-    )
+    format!("{} {verdict}", called(&c))
 }
 
 /// `verify` with NO buffer: the identity does not fit, the answer is short, and the host re-calls
@@ -444,21 +459,32 @@ fn secret_or_absent(v: &serde_json::Value, key: &str, bytes: &[u8]) -> Blob {
     }
 }
 
+/// THE MEMORY ONE `complete_login` LENDS THE PLUGIN: the callback's words, the submitted form
+/// fields and the host's identity buffer. Lent whole to the op (THE DESIGN §2), so its pointers
+/// stay valid however the call ends.
+struct LoginLend {
+    words: [Vec<u8>; 5],
+    _submitted: Vec<(String, Vec<u8>)>,
+    named: Vec<NamedValue>,
+    bytes: Vec<u8>,
+    groups: Vec<Span>,
+}
+
+// SAFETY: the raw pointers in `named` point into `_submitted`, owned by the same `LoginLend`;
+// nothing mutates it once its frame is built but the plugin's writes into `bytes` and `groups`,
+// which the host reads only after the op completes.
+unsafe impl Send for LoginLend {}
+// SAFETY: as above.
+unsafe impl Sync for LoginLend {}
+
 /// `complete_login` over `complete`'s inputs, SUBMITTED on a ticket and awaited (the plugin makes
 /// its own token exchange, or its directory bind, over its need): the answer and the verdict it
 /// names. The redirect flow's callback (`code`, `state`, `nonce`, `redirect_uri`,
 /// `code_verifier`), or the credential flow's `submitted` form fields (`{ "<name>": "<value>" }`),
-/// each value a secret blob as the host lends every submitted field.
+/// each value a secret blob as the host lends every submitted field. Through the suite's lending
+/// submit ([`super::on_ticket_frame`]): everything it names is in a [`LoginLend`] the op OWNS (THE
+/// DESIGN §2), so a login the watchdog abandons never reads freed memory.
 fn complete_submitted(p: &Plugin<Auth>, d: &Dispatcher, complete: &serde_json::Value) -> String {
-    let (code, state, nonce, redirect, verifier) = (
-        word(complete, "code"),
-        word(complete, "state"),
-        word(complete, "nonce"),
-        word(complete, "redirect_uri"),
-        word(complete, "code_verifier"),
-    );
-    let mut bytes = vec![0_u8; auth::IDENTITY_BUF_BYTES];
-    let mut groups = vec![Span { offset: 0, len: 0 }; auth::IDENTITY_GROUPS as usize];
     let submitted: Vec<(String, Vec<u8>)> = complete["submitted"]
         .as_object()
         .map(|o| {
@@ -479,48 +505,60 @@ fn complete_submitted(p: &Plugin<Auth>, d: &Dispatcher, complete: &serde_json::V
             value: secret(value),
         })
         .collect();
+    let mut lend = Box::new(LoginLend {
+        words: [
+            word(complete, "code"),
+            word(complete, "state"),
+            word(complete, "nonce"),
+            word(complete, "redirect_uri"),
+            word(complete, "code_verifier"),
+        ],
+        _submitted: submitted,
+        named,
+        bytes: vec![0_u8; auth::IDENTITY_BUF_BYTES],
+        groups: vec![Span { offset: 0, len: 0 }; auth::IDENTITY_GROUPS as usize],
+    });
+    let [code, state, nonce, redirect, verifier] = &lend.words;
     let mut f: Frame<CompleteLoginIn, IdentifyOut> = Frame::new(input(), output());
-    f.input.code = secret_or_absent(complete, "code", &code);
-    f.input.state = AbiStr::over(&state);
-    f.input.nonce = AbiStr::over(&nonce);
-    f.input.redirect_uri = AbiStr::over(&redirect);
-    f.input.code_verifier = secret_or_absent(complete, "code_verifier", &verifier);
-    if !named.is_empty() {
-        f.input.submitted = named.as_ptr();
-        f.input.submitted_len = named.len();
+    f.input.code = secret_or_absent(complete, "code", code);
+    f.input.state = AbiStr::over(state);
+    f.input.nonce = AbiStr::over(nonce);
+    f.input.redirect_uri = AbiStr::over(redirect);
+    f.input.code_verifier = secret_or_absent(complete, "code_verifier", verifier);
+    if !lend.named.is_empty() {
+        f.input.submitted = lend.named.as_ptr();
+        f.input.submitted_len = lend.named.len();
     }
     f.input.out_buf = IdentityBuf {
-        buf: bytes.as_mut_ptr(),
-        buf_cap: bytes.len(),
-        groups: groups.as_mut_ptr(),
-        groups_cap: groups.len() as u32,
+        buf: lend.bytes.as_mut_ptr(),
+        buf_cap: lend.bytes.len(),
+        groups: lend.groups.as_mut_ptr(),
+        groups_cap: lend.groups.len() as u32,
         _reserved: 0,
     };
-    let ticket = d.mint(0).expect("a ticket is free");
+    let lend: Arc<LoginLend> = Arc::from(lend);
     let deadline = now_ns().saturating_add(SUBMIT_WAIT.as_nanos() as u64);
-    let reply = d.submit(
+    let (c, f) = super::on_ticket_frame(
         p,
-        ticket,
+        d,
         slot::COMPLETE_LOGIN,
         f,
         DeadlineClass::Call,
         deadline,
+        Arc::clone(&lend) as Lent,
     );
-    let done = reply.wait(SUBMIT_WAIT);
-    drop(reply);
-    d.recycle(ticket);
-    let Some(done) = done else {
-        return "no answer".to_string();
-    };
-    let verdict = match &done.frame {
-        Some(f) if done.outcome == Outcome::Ready => match f.out.verdict {
+    let verdict = match &f {
+        Some(f) if c.outcome == Outcome::Ready => match f.out.verdict {
             LOGIN_IDENTITY => {
                 let s = f.out.identity.subject;
                 let subject = if s.offset == SPAN_ABSENT {
                     "<absent>".to_string()
                 } else {
                     let at = s.offset as usize;
-                    String::from_utf8_lossy(&bytes[at..at + s.len as usize]).into_owned()
+                    lend.bytes.get(at..at + s.len as usize).map_or_else(
+                        || "<OUTSIDE>".to_string(),
+                        |b| String::from_utf8_lossy(b).into_owned(),
+                    )
                 };
                 format!("verdict=Identity({subject})")
             }
@@ -531,7 +569,7 @@ fn complete_submitted(p: &Plugin<Auth>, d: &Dispatcher, complete: &serde_json::V
         },
         _ => "verdict=none".to_string(),
     };
-    format!("{:?} lease={} {verdict}", done.outcome, done.lease != 0)
+    format!("{:?} lease={} {verdict}", c.outcome, c.lease != 0)
 }
 
 /// A login's expected verdict, as the transcript spells it.
@@ -674,7 +712,7 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
         for (i, c) in cases.iter_mut().enumerate() {
             r.line(&format!("verify #{i}"), 1, || verify_now(&p, c));
         }
-        for (i, c) in cases.iter_mut().enumerate() {
+        for (i, c) in cases.iter().enumerate() {
             r.line(&format!("verify #{i} submitted"), 1, || {
                 verify_submitted(&p, &d, c)
             });

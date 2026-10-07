@@ -478,6 +478,11 @@ pub(crate) struct Current {
 pub(crate) struct Driven {
     names: Mutex<Vec<u64>>,
     told: tokio::sync::Notify,
+    /// How many `drive` crossings answered, and the last one's outcome: what a synchronous host
+    /// that woke the driver waits on ([`Driven::answered_after`]; the published conformance suite
+    /// drives `drive` this way, as a wake, THE DESIGN §11.4).
+    answers: Mutex<(u64, Option<Outcome>)>,
+    answered: Condvar,
 }
 
 impl Driven {
@@ -495,6 +500,45 @@ impl Driven {
         if !names.is_empty() {
             self.told.notify_one();
         }
+    }
+
+    /// A `drive` crossing answered `outcome`.
+    fn answer(&self, outcome: Outcome) {
+        let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
+        *a = (a.0 + 1, Some(outcome));
+        drop(a);
+        self.answered.notify_all();
+    }
+
+    /// How many `drive` crossings have answered so far.
+    #[cfg(feature = "conformance")]
+    pub(crate) fn answers(&self) -> u64 {
+        self.answers.lock().unwrap_or_else(|e| e.into_inner()).0
+    }
+
+    /// The first outcome other than PENDING a `drive` answered after the `seen`th answer, waited
+    /// for up to `timeout` (a synchronous caller; it blocks this thread). `None` past it.
+    #[cfg(feature = "conformance")]
+    pub(crate) fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
+        let until = Instant::now() + timeout;
+        let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if a.0 > seen && a.1 != Some(Outcome::Pending) {
+                return a.1;
+            }
+            let left = until.checked_duration_since(Instant::now())?;
+            a = self
+                .answered
+                .wait_timeout(a, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
+    /// Every name held now, taken (none when none is); never waits.
+    #[cfg(feature = "conformance")]
+    pub(crate) fn drain(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Every name held, once one is; never parks a thread.
@@ -1085,6 +1129,7 @@ impl Worker {
                 if c.outcome == Outcome::Ready {
                     inst.driven.name(frame.named());
                 }
+                inst.driven.answer(c.outcome);
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {

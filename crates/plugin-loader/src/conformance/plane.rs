@@ -65,12 +65,23 @@
 //! (`[[<class>, <amount>], ...]`, reported, exact), `route` (`{ "class", "entry" }`), `streams`
 //! (what `drive` names), `body_has` (substrings of the projected body) and `rewritten`.
 //!
-//! THE PINS. Every step is ONE ticket-less crossing (`Plugin::call`), but:
+//! THE CROSSINGS ARE THE KERNEL'S (THE DESIGN §11.4: one table, as production drives it). A unit's
+//! pieces (`on_piece`) are SUBMITTED on the unit's own ticket, every piece of the unit on that one
+//! ticket, as the kernel's plane driver submits them (`dispatch::plane_calls`); `serve` is submitted
+//! on a request ticket; `tick` on the instance's DRIVER ticket, and `drive` is crossed by a WAKE
+//! of that ticket, as every production `drive` is. So a piece that waits
+//! (a may-pend host service, or the plane's own upstream) answers PENDING and is RESUMED on its
+//! wake (§11.2; a may-pend service on a ticket-less op is REFUSED, §11.12), and every buffer a
+//! submitted op names is LENT to it through the dispatcher's lending submit (§2). The pure ops
+//! (`arrive`, `refusal`, `project`) and the lifecycle are ticket-less crossings (`Plugin::call`),
+//! as the kernel makes them. A resume is reported, never pinned (Q-P4-5).
+//!
+//! THE PINS. Every step is ONE first invocation, but:
 //! * `ready` ([`super::ready_step`]): 0 when the door states none;
 //! * `arrive unopened` and `open again`: 0, the host answers REFUSED without a crossing (no
 //!   instance yet; one `open` per instance);
-//! * `far_end short`, and a session piece met `short`: 2, the short answer and its ONE re-call
-//!   (`Plugin::recall`, the short-buffer rule on `OutHead`);
+//! * `far_end short`, and a session piece met `short`: 2, the short answer and its ONE re-call,
+//!   re-submitted on the unit's ticket with room (the short-buffer rule on `OutHead`);
 //! * `arrive after close`: 0, a closed instance answers FAULT without a crossing.
 //!
 //! The narrow answer's `more` re-calls are each their own step of one crossing, as many as the
@@ -78,27 +89,41 @@
 //! crosses more often than pinned and is refused. A session's `more` re-call is a piece step of
 //! its own (`from` the side, no bytes, no flags), pinned the same way.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use busbar_contract::abi::hook::{MessageView, SignalEntry};
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, OutHead, Span, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{
+    AbiStr, Blob, DeadlineClass, Field, OutHead, Span, BLOB_OCTETS,
+};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn, RefreshIn};
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut,
-    PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
-    RefusalOut, ServeIn, ServeOut, UnitCount, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED, REFUSAL_GATE,
-    ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE, SPAN_ABSENT, UNITS_REPORTED,
+    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
+    PlaneRefreshOut, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    UnitCount, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT, ROUTE_LOCAL,
+    ROUTE_POOL, ROUTE_SCOPE, SPAN_ABSENT, UNITS_REPORTED,
 };
 use serde_json::Value;
 
 use super::{
-    called, close, crossings, dispatcher, input, json, load, output, ready_step, release, tick,
-    validate, Fold, Leg, Recorder, Subject,
+    answered, called, close, crossings, dispatcher, input, json, load, on_ticket_frame, output,
+    ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
-use crate::dispatch::{Called, Frame, Plugin};
+use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
 
 /// The capacity of each of the host's per-piece lists (units, record writes, fields).
 const CAP: usize = 8;
+/// How long a submitted op may wait (PENDING) before its deadline cancels it: well past every wait
+/// a conforming plane makes, so a plane that never wakes fails the step instead of hanging the run.
+const OP_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The deadline of an op submitted now.
+fn deadline() -> u64 {
+    now_ns().saturating_add(u64::try_from(OP_DEADLINE.as_nanos()).unwrap_or(u64::MAX))
+}
 /// A session's reply buffer when its inputs name none.
 const SESSION_REPLY_CAP: usize = 1 << 16;
 
@@ -265,14 +290,29 @@ fn claims<'a>(c: impl Iterator<Item = (&'a str, &'a str)>) -> String {
         .join(", ")
 }
 
-/// The host's buffers for one unit's pieces.
+/// THE MEMORY ONE PIECE LENDS THE PLANE: the host's buffers (reply, units, record writes, fields,
+/// arena) and the piece's own bytes, head fields and carried names. Built in place in the `Arc`
+/// that is lent to the op (THE DESIGN §2), so its pointers stay valid however the op ends.
 struct Piece {
     reply: Vec<u8>,
     units: [UnitCount; CAP],
     records: [RecordWrite; CAP],
     fields: [OutField; CAP],
     arena: [u8; 1024],
+    bytes: Vec<u8>,
+    _head: Vec<(String, String)>,
+    head: Vec<Field>,
+    member: Vec<u8>,
+    pool: Option<Vec<u8>>,
+    caller_ref: Option<Vec<u8>>,
 }
+
+// SAFETY: the raw pointers in `head` point into `_head`, owned by the same `Piece`; nothing
+// mutates a lent `Piece` but the plane's writes into its buffers, which the host reads only after
+// the op completes.
+unsafe impl Send for Piece {}
+// SAFETY: as above.
+unsafe impl Sync for Piece {}
 
 /// One piece handed to the plane.
 #[derive(Clone, Copy)]
@@ -288,7 +328,7 @@ struct Given<'a> {
     attempt_no: u32,
     /// With `PIECE_HAS_STATUS`: the far end's status and kept head fields.
     status: u32,
-    head: &'a [Field],
+    head: &'a [(String, String)],
 }
 
 /// What every piece carries beside its own: the member (and pool) an ATTEMPT names, and the
@@ -340,42 +380,49 @@ impl Buffer {
 }
 
 impl Piece {
-    fn new(reply_cap: usize) -> Box<Self> {
-        Box::new(Self {
+    /// `g`'s piece, `reply_cap` bytes of reply buffer, its frame with the lists at `caps`: the
+    /// memory lent, and the frame over it.
+    fn lent(
+        reply_cap: usize,
+        g: Given<'_>,
+        (units_cap, fields_cap): (usize, usize),
+        c: &Carried,
+    ) -> (Arc<Self>, Frame<OnPieceIn, OnPieceOut>) {
+        let mut piece = Arc::new(Self {
             reply: vec![0; reply_cap],
             units: [z(); CAP],
             records: [z(); CAP],
             fields: [z(); CAP],
             arena: [0; 1024],
-        })
-    }
-
-    fn frame(
-        &mut self,
-        g: Given<'_>,
-        (units_cap, fields_cap): (usize, usize),
-        c: &Carried,
-    ) -> Frame<OnPieceIn, OnPieceOut> {
+            bytes: g.bytes.to_vec(),
+            _head: g.head.to_vec(),
+            head: Vec::new(),
+            member: c.member.clone(),
+            pool: c.pool.clone(),
+            caller_ref: c.caller_ref.clone(),
+        });
+        let me = Arc::get_mut(&mut piece).expect("a piece not yet lent is unshared");
+        me.head = field_list(&me._head);
         let mut i: OnPieceIn = input();
-        (i.unit, i.from, i.flags, i.bytes) = (g.unit, g.from, g.flags, octets(g.bytes));
+        (i.unit, i.from, i.flags, i.bytes) = (g.unit, g.from, g.flags, octets(&me.bytes));
         (i.stream, i.claim) = (g.stream, g.claim);
-        (i.attempt_no, i.member) = (g.attempt_no, abi(&c.member));
-        if let (Some(pool), true) = (&c.pool, g.from == FROM_KERNEL && g.attempt_no > 0) {
+        (i.attempt_no, i.member) = (g.attempt_no, abi(&me.member));
+        if let (Some(pool), true) = (&me.pool, g.from == FROM_KERNEL && g.attempt_no > 0) {
             i.pool = abi(pool);
         }
-        if let Some(r) = &c.caller_ref {
+        if let Some(r) = &me.caller_ref {
             i.caller_ref = abi(r);
         }
         if g.flags & PIECE_HAS_STATUS != 0 {
             i.status_code = g.status;
-            (i.head_fields, i.head_fields_len) = (g.head.as_ptr(), g.head.len());
+            (i.head_fields, i.head_fields_len) = (me.head.as_ptr(), me.head.len());
         }
-        (i.reply_buf, i.reply_cap) = (self.reply.as_mut_ptr(), self.reply.len());
-        (i.units_buf, i.units_cap) = (self.units.as_mut_ptr(), units_cap);
-        (i.records_buf, i.records_cap) = (self.records.as_mut_ptr(), self.records.len());
-        (i.fields_buf, i.fields_cap) = (self.fields.as_mut_ptr(), fields_cap);
-        (i.arena_buf, i.arena_cap) = (self.arena.as_mut_ptr(), self.arena.len());
-        Frame::new(i, output())
+        (i.reply_buf, i.reply_cap) = (me.reply.as_mut_ptr(), me.reply.len());
+        (i.units_buf, i.units_cap) = (me.units.as_mut_ptr(), units_cap);
+        (i.records_buf, i.records_cap) = (me.records.as_mut_ptr(), me.records.len());
+        (i.fields_buf, i.fields_cap) = (me.fields.as_mut_ptr(), fields_cap);
+        (i.arena_buf, i.arena_cap) = (me.arena.as_mut_ptr(), me.arena.len());
+        (piece, Frame::new(i, output()))
     }
 
     fn fields(&self, o: &OnPieceOut) -> Vec<String> {
@@ -435,42 +482,119 @@ impl Piece {
     }
 }
 
-/// `on_piece` of `g` over `piece`'s buffers, the lists at `caps`.
+/// ONE UNIT AS THE KERNEL DRIVES IT: its ticket, on which every piece of the unit (and the one
+/// re-call a short answer earns) is submitted, and its reply buffer's capacity.
+struct Unit {
+    ticket: Ticket,
+    reply_cap: usize,
+}
+
+impl Unit {
+    /// A unit on a fresh request ticket of `d`'s.
+    ///
+    /// # Panics
+    /// When no ticket is free.
+    fn mint(d: &Dispatcher, reply_cap: usize) -> Self {
+        Self {
+            ticket: d.mint(0).expect("a unit's ticket is minted"),
+            reply_cap,
+        }
+    }
+
+    /// The unit is over: its ticket recycled.
+    fn end(self, d: &Dispatcher) {
+        d.recycle(self.ticket);
+    }
+}
+
+/// One piece's answer: as the host reads it, whether it was SHORT, the memory it was lent and the
+/// frame back (`None` when the op was faulted mid-crossing).
+struct Pieced {
+    called: Called,
+    short: bool,
+    piece: Arc<Piece>,
+    frame: Option<Box<Frame<OnPieceIn, OnPieceOut>>>,
+}
+
+impl Pieced {
+    /// The plane's `out` (an all-zero one when no frame came back).
+    fn out(&self) -> OnPieceOut {
+        self.frame.as_ref().map_or_else(output, |f| f.out)
+    }
+
+    fn line(&self, line: fn(&Piece, &Called, &OnPieceOut) -> String) -> String {
+        line(&self.piece, &self.called, &self.out())
+    }
+}
+
+/// `on_piece` of `g`, the lists at `caps`, SUBMITTED ON THE UNIT'S TICKET as the kernel's plane
+/// driver submits it (Stream class, the piece's memory lent to the op): a piece that answers
+/// PENDING is resumed on its wake until it answers.
 fn on_piece(
     p: &Plugin<Plane>,
-    piece: &mut Piece,
+    d: &Dispatcher,
+    unit: &Unit,
     g: Given<'_>,
     caps: (usize, usize),
     c: &Carried,
-) -> (Called, Frame<OnPieceIn, OnPieceOut>) {
-    let mut f = piece.frame(g, caps, c);
-    let called = p.call(slot::ON_PIECE, &mut f);
-    (called, f)
+) -> Pieced {
+    let (piece, f) = Piece::lent(unit.reply_cap, g, caps, c);
+    let done = submit_on(
+        p,
+        d,
+        unit.ticket,
+        slot::ON_PIECE,
+        f,
+        (DeadlineClass::Stream, deadline()),
+        Arc::clone(&piece) as Lent,
+        Duration::ZERO,
+    );
+    Pieced {
+        called: answered(&done),
+        short: done.short,
+        piece,
+        frame: done.frame,
+    }
 }
 
-/// `g` met with `buffer` at capacity 0: SHORT, then its ONE re-call with room (two crossings).
+/// `g` met with `buffer` at capacity 0: SHORT, then its ONE re-call with room, re-submitted on the
+/// unit's ticket over the same memory (two crossings).
 fn short_then(
     p: &Plugin<Plane>,
-    piece: &mut Piece,
+    d: &Dispatcher,
+    unit: &Unit,
     g: Given<'_>,
     buffer: Buffer,
     c: &Carried,
     line: fn(&Piece, &Called, &OnPieceOut) -> String,
 ) -> String {
-    let (first, mut f) = on_piece(p, piece, g, buffer.caps(), c);
+    let first = on_piece(p, d, unit, g, buffer.caps(), c);
     let head = format!(
         "{} {}_needed={} recall={}",
-        called(&first),
+        called(&first.called),
         buffer.name(),
-        buffer.needed(&f.out),
-        first.recall.is_some()
+        buffer.needed(&first.out()),
+        first.short
     );
-    let Some(token) = first.recall else {
+    let (true, Some(mut f)) = (first.short, first.frame) else {
         return format!("{head} then=no-recall");
     };
     (f.input.units_cap, f.input.fields_cap) = (CAP, CAP);
-    let again = p.recall(token, slot::ON_PIECE, &mut f);
-    format!("{head} then={}", line(piece, &again, &f.out))
+    let again = submit_on(
+        p,
+        d,
+        unit.ticket,
+        slot::ON_PIECE,
+        *f,
+        (DeadlineClass::Stream, deadline()),
+        Arc::clone(&first.piece) as Lent,
+        Duration::ZERO,
+    );
+    let out = again.frame.as_ref().map_or_else(output, |f| f.out);
+    format!(
+        "{head} then={}",
+        line(&first.piece, &answered(&again), &out)
+    )
 }
 
 /// An arrival the inputs state: its unit, claim, request line and head.
@@ -696,17 +820,36 @@ impl Session {
     }
 }
 
-/// `drive`: the streams of the sessions with output of their own.
-fn drive(p: &Plugin<Plane>) -> String {
-    let mut sessions = [0_u64; CAP];
-    let mut f: Frame<PlaneDriveIn, PlaneDriveOut> = Frame::new(input(), output());
-    (f.input.sessions_buf, f.input.sessions_cap) = (sessions.as_mut_ptr(), sessions.len());
-    let c = p.call(life::DRIVE, &mut f);
-    format!(
-        "{} streams={:?}",
-        called(&c),
-        &sessions[..(f.out.sessions_written as usize).min(CAP)]
-    )
+/// `drive` AS THE KERNEL'S WAKES DRIVE IT (THE DESIGN §11.4): the instance's DRIVER ticket woken,
+/// as a host service's completion wakes it, so the dispatcher crosses `drive` on it in the kind's
+/// own frame (its head and its `driver` field name the driver, so a service that pends inside
+/// registers there, and a PENDING drive is RESUMED on its next wake). Its answer (the first that
+/// is not PENDING) and the streams it named, collected as the kernel collects them. `None` (no
+/// driver ticket: the instance is not open) answers REFUSED without a crossing.
+fn drive(p: &Plugin<Plane>, driver: Option<Ticket>) -> (Called, Vec<u64>) {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    let answer = |outcome, error: Option<&[u8]>| Called {
+        outcome,
+        error: error.map(<[u8]>::to_vec),
+        lease: 0,
+        recall: None,
+    };
+    let Some(driver) = driver else {
+        return (
+            answer(Outcome::Refused, Some(b"no driver ticket")),
+            Vec::new(),
+        );
+    };
+    let driven = &p.inner.driven;
+    let seen = driven.answers();
+    crate::dispatch::ticket::host_wake(p.inner.ctx(), driver);
+    match driven.answered_after(seen, OP_DEADLINE) {
+        Some(outcome) => (answer(outcome, None), driven.drain()),
+        None => (
+            answer(Outcome::Fault, Some(b"the woken driver never answered")),
+            Vec::new(),
+        ),
+    }
 }
 
 /// `project` of a session's unit: the view's signals, whether a rewrite was applied, and the
@@ -743,14 +886,22 @@ fn project(
 
 /// THE SESSIONS LEG: each session's steps, in order, each its own step of the fold
 /// (`<name> <label>`), pinned at one crossing (a piece met `short`: two).
-fn sessions(r: &mut Recorder<'_>, p: &Plugin<Plane>, all: &[Session], c: &Carried) {
+fn sessions(
+    r: &mut Recorder<'_>,
+    (p, d, driver): (&Plugin<Plane>, &Dispatcher, Option<Ticket>),
+    all: &[Session],
+    c: &Carried,
+) {
     for s in all {
-        let mut piece = Piece::new(s.reply_cap);
+        let unit = Unit::mint(d, s.reply_cap);
         for (label, act) in &s.steps {
             let label = format!("{} {label}", s.name);
             match act {
                 Act::Arrive(a, body) => r.line(&label, 1, || arrive(p, a, body)),
-                Act::Drive => r.line(&label, 1, || drive(p)),
+                Act::Drive => r.line(&label, 1, || {
+                    let (c, streams) = drive(p, driver);
+                    format!("{} streams={streams:?}", called(&c))
+                }),
                 Act::Project {
                     target,
                     body,
@@ -767,7 +918,6 @@ fn sessions(r: &mut Recorder<'_>, p: &Plugin<Plane>, all: &[Session], c: &Carrie
                     bytes,
                     short,
                 } => {
-                    let head = field_list(head);
                     let g = Given {
                         unit: s.unit,
                         stream: s.stream,
@@ -777,20 +927,20 @@ fn sessions(r: &mut Recorder<'_>, p: &Plugin<Plane>, all: &[Session], c: &Carrie
                         bytes,
                         attempt_no: *attempt_no,
                         status: *status,
-                        head: &head,
+                        head,
                     };
                     match short {
                         None => r.line(&label, 1, || {
-                            let (called, f) = on_piece(p, &mut piece, g, (CAP, CAP), c);
-                            piece.session_line(&called, &f.out)
+                            on_piece(p, d, &unit, g, (CAP, CAP), c).line(Piece::session_line)
                         }),
                         Some(b) => r.line(&label, 2, || {
-                            short_then(p, &mut piece, g, *b, c, Piece::session_line)
+                            short_then(p, d, &unit, g, *b, c, Piece::session_line)
                         }),
                     }
                 }
             }
         }
+        unit.end(d);
     }
 }
 
@@ -888,7 +1038,7 @@ fn far_end<'a>(
     claim: u32,
     flags: u32,
     bytes: &'a [u8],
-    (status, head): (u32, &'a [Field]),
+    (status, head): (u32, &'a [(String, String)]),
 ) -> Given<'a> {
     Given {
         unit,
@@ -923,8 +1073,7 @@ fn generation(p: &Plugin<Plane>, s: u32, generation: u64) -> String {
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = Inputs::of(s.kind_inputs("plane"));
     let settings = leg.settings(s);
-    let head = field_list(&k.head);
-    let answered = (k.status, head.as_slice());
+    let answer = (k.status, k.head.as_slice());
     let url = k.public_url.as_deref();
     let (c, claim) = (&k.carried, k.claimed.claim);
 
@@ -958,6 +1107,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     ready_step(&mut r, s, &p, &d);
     // One open per instance: the host refuses without a crossing.
     r.line("open again", 0, || open(&p, &settings, url));
+    // The instance's DRIVER ticket, as the kernel mints it once the instance is open: `drive` and
+    // `tick` are submitted on it.
+    let driver = d.driver(&p, 0);
     r.line("hydrate", 1, || generation(&p, slot::HYDRATE, 1));
     r.line("start", 1, || generation(&p, slot::START, 1));
     r.line("arrive claimed", 1, || arrive(&p, &k.claimed, &k.request));
@@ -969,7 +1121,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let whole = PIECE_HAS_STATUS | PIECE_LAST;
     let room = (CAP, CAP);
     // One unit: the ATTEMPT, the caller's body, the far end's whole answer.
-    let mut piece = Piece::new(1024);
+    let one = Unit::mint(&d, 1024);
     for (label, g) in [
         ("attempt", attempt(unit, claim)),
         (
@@ -982,49 +1134,48 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 ..attempt(unit, claim)
             },
         ),
-        ("far_end", far_end(unit, claim, whole, &k.answer, answered)),
+        ("far_end", far_end(unit, claim, whole, &k.answer, answer)),
     ] {
         r.line(label, 1, || {
-            let (called, f) = on_piece(&p, &mut piece, g, room, c);
-            piece.line(&called, &f.out)
+            on_piece(&p, &d, &one, g, room, c).line(Piece::line)
         });
     }
+    one.end(&d);
 
     // Another, whose answer is written `reply_cap` bytes at a time, then paid out by `more`.
     let (narrow_unit, cap, more) = k.narrow;
-    let mut narrow = Piece::new(cap);
+    let narrow = Unit::mint(&d, cap);
     r.line("narrow attempt", 1, || {
-        let (called, f) = on_piece(&p, &mut narrow, attempt(narrow_unit, claim), room, c);
-        narrow.line(&called, &f.out)
+        on_piece(&p, &d, &narrow, attempt(narrow_unit, claim), room, c).line(Piece::line)
     });
     r.line("narrow far_end", 1, || {
-        let g = far_end(narrow_unit, claim, whole, &k.answer, answered);
-        let (called, f) = on_piece(&p, &mut narrow, g, room, c);
-        narrow.line(&called, &f.out)
+        let g = far_end(narrow_unit, claim, whole, &k.answer, answer);
+        on_piece(&p, &d, &narrow, g, room, c).line(Piece::line)
     });
     for i in 0..more {
         r.line(&format!("narrow more #{i}"), 1, || {
-            let g = far_end(narrow_unit, claim, 0, b"", answered);
-            let (called, f) = on_piece(&p, &mut narrow, g, room, c);
-            narrow.line(&called, &f.out)
+            let g = far_end(narrow_unit, claim, 0, b"", answer);
+            on_piece(&p, &d, &narrow, g, room, c).line(Piece::line)
         });
     }
+    narrow.end(&d);
 
     // Another, whose answer meets a units (or fields) buffer of capacity 0: SHORT, then its one
     // re-call.
     let (short_unit, buffer) = k.short;
-    let mut short = Piece::new(1024);
+    let short = Unit::mint(&d, 1024);
     r.line("short attempt", 1, || {
-        let (called, f) = on_piece(&p, &mut short, attempt(short_unit, claim), room, c);
-        short.line(&called, &f.out)
+        on_piece(&p, &d, &short, attempt(short_unit, claim), room, c).line(Piece::line)
     });
     r.line("far_end short", 2, || {
-        let g = far_end(short_unit, claim, whole, &k.answer, answered);
-        short_then(&p, &mut short, g, buffer, c, Piece::line)
+        let g = far_end(short_unit, claim, whole, &k.answer, answer);
+        short_then(&p, &d, &short, g, buffer, c, Piece::line)
     });
+    short.end(&d);
 
     // A caller body that ended empty.
     if let Some(empty) = k.empty {
+        let unit = Unit::mint(&d, 1024);
         r.line("empty", 1, || {
             let g = Given {
                 from: FROM_CALLER,
@@ -1032,12 +1183,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 attempt_no: 0,
                 ..attempt(empty, claim)
             };
-            let (called, f) = on_piece(&p, &mut piece, g, room, c);
-            piece.line(&called, &f.out)
+            on_piece(&p, &d, &unit, g, room, c).line(Piece::line)
         });
+        unit.end(&d);
     }
 
-    sessions(&mut r, &p, &k.sessions, c);
+    sessions(&mut r, (&p, &d, driver), &k.sessions, c);
 
     r.line("refusal", 1, || {
         let (mut reply, mut arena) = ([0_u8; 512], [0_u8; 256]);
@@ -1061,18 +1212,32 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         )
     });
     r.line("serve", 1, || {
-        let (mut reply, mut arena) = ([0_u8; 512], [0_u8; 256]);
-        let mut fields = [z::<OutField>(); 2];
+        // On a request ticket, its buffers lent to the op, as the kernel serves an admin route.
+        let mut lend = Arc::new(ServeLend {
+            reply: [0; 512],
+            arena: [0; 256],
+            fields: [z(); 2],
+        });
+        let me = Arc::get_mut(&mut lend).expect("unshared");
         let mut f: Frame<ServeIn, ServeOut> = Frame::new(input(), output());
-        (f.input.reply_buf, f.input.reply_cap) = (reply.as_mut_ptr(), reply.len());
-        (f.input.fields_buf, f.input.fields_cap) = (fields.as_mut_ptr(), fields.len());
-        (f.input.arena_buf, f.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
-        let c = p.call(slot::SERVE, &mut f);
+        (f.input.reply_buf, f.input.reply_cap) = (me.reply.as_mut_ptr(), me.reply.len());
+        (f.input.fields_buf, f.input.fields_cap) = (me.fields.as_mut_ptr(), me.fields.len());
+        (f.input.arena_buf, f.input.arena_cap) = (me.arena.as_mut_ptr(), me.arena.len());
+        let (c, f) = on_ticket_frame(
+            &p,
+            &d,
+            slot::SERVE,
+            f,
+            DeadlineClass::Call,
+            deadline(),
+            lend as Lent,
+        );
+        let out = f.map_or_else(output, |f| f.out);
         format!(
             "{} status={} reply_written={}",
             called(&c),
-            f.out.status,
-            f.out.reply_written
+            out.status,
+            out.reply_written
         )
     });
     r.line("project", 1, || {
@@ -1087,17 +1252,18 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         format!("{} signals={}", called(&c), f.out.view.signals_len)
     });
     r.line("drive", 1, || {
-        let mut sessions = [0_u64; 4];
-        let mut f: Frame<PlaneDriveIn, PlaneDriveOut> = Frame::new(input(), output());
-        (f.input.sessions_buf, f.input.sessions_cap) = (sessions.as_mut_ptr(), sessions.len());
-        let c = p.call(life::DRIVE, &mut f);
-        format!("{} sessions={}", called(&c), f.out.sessions_written)
+        let (c, streams) = drive(&p, driver);
+        format!("{} sessions={}", called(&c), streams.len())
     });
     // A plane answers under no lease: the release of none.
     r.line("release none", 1, || called(&release(&p, 0)));
-    r.line("tick", 1, || {
-        let (c, next) = tick(&p, 1_000);
-        format!("{} next={next}", called(&c))
+    r.line("tick", 1, || match driver {
+        Some(driver) => {
+            let done = d.tick(&p, driver, 1_000).wait_done();
+            let next = done.frame.as_ref().map_or(0, |f| f.out.next_tick_ns);
+            format!("{} next={next}", called(&answered(&done)))
+        }
+        None => "Refused lease=false no driver ticket next=0".to_string(),
     });
     r.line("cancel", 1, || {
         let mut f: Frame<
@@ -1121,10 +1287,25 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("arrive after close", 0, || {
         arrive(&p, &k.claimed, &k.request)
     });
+    if let Some(driver) = driver {
+        d.recycle(driver);
+    }
     let fold = r.fold();
     contract(&fold, s.kind_inputs("plane"));
     fold
 }
+
+/// The memory a `serve` lends the plane: its reply, fields and arena buffers.
+struct ServeLend {
+    reply: [u8; 512],
+    arena: [u8; 256],
+    fields: [OutField; 2],
+}
+
+// SAFETY: plain buffers the plane writes and the host reads only after the op completes.
+unsafe impl Send for ServeLend {}
+// SAFETY: as above.
+unsafe impl Sync for ServeLend {}
 
 /// The step labelled `label`'s answer.
 fn answer<'f>(fold: &'f Fold, label: &str) -> &'f str {

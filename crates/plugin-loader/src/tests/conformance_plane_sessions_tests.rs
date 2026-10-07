@@ -72,7 +72,8 @@ fn fold_over(s: &Subject, leg: Leg, url: Option<&str>, all: &Value) -> Fold {
         pool: Some(b"p1".to_vec()),
         caller_ref: Some(b"c0ffee".to_vec()),
     };
-    sessions(&mut r, &p, &Session::all(all), &carried);
+    let driver = d.driver(&p, 0);
+    sessions(&mut r, (&p, &d, driver), &Session::all(all), &carried);
     r.fold()
 }
 
@@ -245,4 +246,103 @@ fn red_inputs_naming_a_step_twice_are_refused() {
         Session::all(&all);
     })
     .contains("share a label"));
+}
+
+/// THE PLANE SCRIPT DRIVES A UNIT'S PIECES AS THE KERNEL DOES (THE DESIGN §11.4, §11.12): every
+/// piece SUBMITTED on the unit's ticket, so a piece that waits answers PENDING and is RESUMED.
+mod pieces_on_tickets {
+    use std::sync::atomic::{AtomicPtr, Ordering};
+
+    use busbar_contract::abi::mechanism::call::{
+        InHead, OutHead, Outcome, RawOutcome, FLAG_RESUME,
+    };
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::plane::{OnPieceIn, Ops};
+
+    use super::{fold, sessions_contract, SESSIONS};
+    use crate::conformance::{exact, Leg, Subject};
+    use crate::dispatch::ticket::host_wake;
+
+    static REAL_ON_PIECE: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+    static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// An `on_piece` that WAITS before it answers (as on a may-pend host service, or its own
+    /// upstream): every first invocation wakes its own ticket and answers PENDING; RESUMED, it is
+    /// the real piece (entered afresh). Ticket-less, its PENDING is a FAULT.
+    extern "C" fn on_piece_pends(
+        instance: *mut std::ffi::c_void,
+        input: *const std::ffi::c_void,
+        out: *mut std::ffi::c_void,
+    ) -> RawOutcome {
+        // SAFETY: the host hands `on_piece` an `OnPieceIn` and an `OnPieceOut`.
+        unsafe {
+            let head = input.cast::<InHead>().read();
+            if head.flags & FLAG_RESUME == 0 {
+                if head.ticket.generation != 0 {
+                    host_wake(head.host, head.ticket);
+                }
+                (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Pending);
+                return RawOutcome::of(Outcome::Pending);
+            }
+            let mut fresh: OnPieceIn = input.cast::<OnPieceIn>().read();
+            fresh.head.flags &= !FLAG_RESUME;
+            let real: busbar_contract::abi::mechanism::call::Op =
+                std::mem::transmute(REAL_ON_PIECE.load(Ordering::SeqCst));
+            real(instance, std::ptr::from_ref(&fresh).cast(), out)
+        }
+    }
+
+    extern "C" fn pending_door() -> *const Door {
+        let have = SLOT.load(Ordering::SeqCst);
+        if !have.is_null() {
+            return have;
+        }
+        // SAFETY: the fixture's door and its plane table are `'static`.
+        let real: Door = unsafe { crate::plane_door_plugin::door().read_unaligned() };
+        let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+        REAL_ON_PIECE.store(
+            ops.on_piece.expect("the fixture answers pieces") as *mut (),
+            Ordering::SeqCst,
+        );
+        let ops: &'static Ops = Box::leak(Box::new(Ops {
+            on_piece: Some(on_piece_pends),
+            ..ops
+        }));
+        let door = Box::into_raw(Box::new(Door {
+            ops: std::ptr::from_ref(ops).cast(),
+            ..real
+        }));
+        SLOT.store(door, Ordering::SeqCst);
+        door
+    }
+
+    /// RED (audit loader-PL1 #9): a plane whose pieces wait passes the sessions leg at its pins,
+    /// every piece RESUMED on its unit's ticket and answering as wanted. Driven ticket-less, as
+    /// the script used to, every waiting piece is FAULT and the plane cannot pass.
+    #[test]
+    fn red_a_piece_that_waits_is_resumed_on_its_units_ticket_never_faulted_ticketless() {
+        let s = Subject::new(
+            pending_door,
+            "plane_door_plugin",
+            &format!(r#"{{ "plane": {{ "sessions": {SESSIONS} }} }}"#),
+        );
+        let f = fold(&s, Leg::Linked);
+        exact(&f).unwrap_or_else(|e| panic!("{e}"));
+        sessions_contract(&f, &s.kind_inputs("plane")["sessions"]);
+        for label in [
+            "live uplink",
+            "live collect",
+            "live answer head",
+            "live answer tail",
+            "live answer short",
+            "request attempt",
+            "request answer",
+        ] {
+            let st = f
+                .iter()
+                .find(|st| st.label == label)
+                .unwrap_or_else(|| panic!("the script ran no step '{label}'"));
+            assert!(st.resumes >= 1, "{label} was never resumed: {}", st.answer);
+        }
+    }
 }

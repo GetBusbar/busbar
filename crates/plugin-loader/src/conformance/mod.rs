@@ -101,10 +101,11 @@ use busbar_contract::conn::DeclaredConns;
 
 use crate::dispatch::{
     in_head, load_dropped, load_linked, out_head, rendering_of, rendering_of_library, Bind, Called,
-    ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink,
-    OutFrame, Plugin,
+    ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow, LoadError,
+    NoSink, OutFrame, Plugin,
 };
 use crate::tcp_conns::TcpConns;
+use busbar_contract::abi::mechanism::ticket::Ticket;
 
 mod auth;
 mod export;
@@ -905,30 +906,54 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 
 /// `open` over `settings` THE WAY THE KERNEL OPENS IT (Q-P4-6): submitted on a ticket of `d`'s, so
 /// an `open` that answers PENDING (a store connecting to its backend) is RESUMED on its wake until
-/// it answers; the frame [`open`]'s.
+/// it answers; the frame [`open`]'s. The settings and the secrets it lends ride with the op
+/// ([`OpenLend`]), never this call's stack.
 pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
     let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
     let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
     let blobs = secret_blobs(&secrets);
+    let lend = OpenLend {
+        settings,
+        _secrets: secrets,
+        blobs,
+    };
+    let (settings, blobs) = (
+        json(&lend.settings),
+        (lend.blobs.as_ptr(), lend.blobs.len()),
+    );
+    let lent: Lent = Arc::new(lend);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
-        f.input.open.settings = json(&settings);
-        f.input.open.secrets = blobs.as_ptr();
-        f.input.open.secrets_len = blobs.len();
+        f.input.open.settings = settings;
+        (f.input.open.secrets, f.input.open.secrets_len) = blobs;
         f.input.open.generation = 1;
-        return on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline);
+        return on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline, lent);
     }
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
-    f.input.settings = json(&settings);
-    f.input.secrets = blobs.as_ptr();
-    f.input.secrets_len = blobs.len();
+    f.input.settings = settings;
+    (f.input.secrets, f.input.secrets_len) = blobs;
     f.input.generation = 1;
-    on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline)
+    on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline, lent)
 }
+
+/// The memory a resumed `open` lends the plugin: its settings, the secret material and the blobs
+/// over it.
+struct OpenLend {
+    settings: Vec<u8>,
+    _secrets: Vec<Vec<u8>>,
+    blobs: Vec<Blob>,
+}
+
+// SAFETY: the raw pointers in `blobs` point into `_secrets`, owned by the same `OpenLend`; nothing
+// mutates it once its frame is built.
+unsafe impl Send for OpenLend {}
+// SAFETY: as above.
+unsafe impl Sync for OpenLend {}
 
 /// Op `s` over `f`, submitted AS THE KERNEL SUBMITS IT: on a ticket of `d`'s, in deadline class
 /// `class` (`deadline_ns` 0 = none), so an op that answers PENDING (it waits on the network) is
-/// RESUMED on its wake until it answers; its answer as the host reads it.
+/// RESUMED on its wake until it answers; its answer as the host reads it. `lent` OWNS every buffer
+/// `f`'s pointers name ([`submit_on`]).
 pub fn on_ticket<K: Kind, I: InFrame, O: OutFrame>(
     p: &Plugin<K>,
     d: &Dispatcher,
@@ -936,8 +961,9 @@ pub fn on_ticket<K: Kind, I: InFrame, O: OutFrame>(
     f: Frame<I, O>,
     class: DeadlineClass,
     deadline_ns: u64,
+    lent: Lent,
 ) -> Called {
-    on_ticket_frame(p, d, s, f, class, deadline_ns).0
+    on_ticket_frame(p, d, s, f, class, deadline_ns, lent).0
 }
 
 /// [`on_ticket`], and the frame back as the op left it (`None` when the op was faulted mid-crossing
@@ -949,6 +975,7 @@ pub fn on_ticket_frame<K: Kind, I: InFrame, O: OutFrame>(
     f: Frame<I, O>,
     class: DeadlineClass,
     deadline_ns: u64,
+    lent: Lent,
 ) -> (Called, Option<Box<Frame<I, O>>>) {
     let Some(ticket) = d.mint(0) else {
         let refused = Called {
@@ -959,15 +986,52 @@ pub fn on_ticket_frame<K: Kind, I: InFrame, O: OutFrame>(
         };
         return (refused, None);
     };
-    let done = d.submit(p, ticket, s, f, class, deadline_ns).wait_done();
+    let done = submit_on(
+        p,
+        d,
+        ticket,
+        s,
+        f,
+        (class, deadline_ns),
+        lent,
+        Duration::ZERO,
+    );
     d.recycle(ticket);
-    let called = Called {
+    (answered(&done), done.frame)
+}
+
+/// **THE ONE WAY THE SUITE SUBMITS AN OP** (THE DESIGN §2: "The memory a call lends a plugin lives
+/// until that call completes, abandoned or not (a submit that the watchdog can abandon uses the
+/// lending submit)"): op `s` over `f` on `ticket`, in deadline class and deadline `when` (0 = none),
+/// THROUGH THE DISPATCHER'S LENDING SUBMIT, `lent` the OWNER of every buffer `f`'s pointers name.
+/// The dispatcher holds it with the frame until the op's last crossing returned, so a crossing the
+/// watchdog answered FAULT (this wait then returns) still reads live memory until it returns.
+/// `watch` is the op's own watch budget (a hook's `timeout_ms`, §11.7); `ZERO` keeps its class's.
+/// Awaited until the dispatcher settles it (an answer, a deadline's `cancel`, a fault).
+#[allow(clippy::too_many_arguments)] // the dispatcher's lending submit's own eight
+pub(crate) fn submit_on<K: Kind, I: InFrame, O: OutFrame>(
+    p: &Plugin<K>,
+    d: &Dispatcher,
+    ticket: Ticket,
+    s: u32,
+    f: Frame<I, O>,
+    (class, deadline_ns): (DeadlineClass, u64),
+    lent: Lent,
+    watch: Duration,
+) -> Done<I, O> {
+    d.submit_watched(p, ticket, s, f, class, deadline_ns, lent, watch)
+        .wait_done()
+}
+
+/// A submitted op's answer as the host reads it (a ticketed op earns no re-call token: its short
+/// answer is [`Done::short`], re-submitted on its ticket).
+pub(crate) fn answered<I, O>(done: &Done<I, O>) -> Called {
+    Called {
         outcome: done.outcome,
-        error: done.error,
+        error: done.error.clone(),
         lease: done.lease,
         recall: None,
-    };
-    (called, done.frame)
+    }
 }
 
 /// How long the suite waits for one resumed `open`: the store bridge's call deadline.

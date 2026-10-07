@@ -791,3 +791,199 @@ fn regex_lite_meter(script: &str) -> Vec<String> {
         })
         .collect()
 }
+
+/// THE SUITE'S SUBMITTED OPS LEND THROUGH THE DISPATCHER (THE DESIGN §2: "The memory a call lends a
+/// plugin lives until that call completes, abandoned or not (a submit that the watchdog can abandon
+/// uses the lending submit)"). Every op the suite submits on a ticket (`open` resumed, `resolve`,
+/// `deliver`, `verify` and `complete_login` submitted, a plane's `serve`) goes through
+/// `on_ticket_frame`, which hands the dispatcher the OWNER of the memory the frame names.
+mod lent_ops {
+    use std::sync::{Arc, Weak};
+    use std::time::{Duration, Instant};
+
+    use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, Outcome, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
+
+    use super::super::{bind, on_ticket_frame, open};
+    use crate::dispatch::{
+        in_head, load_linked, now_ns, out_head, Budgets, DispatchConfig, Dispatcher, Frame,
+        LinkedRow,
+    };
+    use crate::dispatch_test_plugin as plug;
+    use crate::dispatch_tests::TestKind;
+
+    /// A `tick` frame whose extensions blob names the test plugin's op.
+    fn frame(mode: &'static [u8]) -> Frame<TickIn, TickOut> {
+        let mut head = in_head();
+        head.extensions = Blob {
+            ptr: mode.as_ptr(),
+            len: mode.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        Frame::new(
+            TickIn {
+                head,
+                now_ns: now_ns(),
+            },
+            TickOut {
+                head: out_head(),
+                next_tick_ns: 0,
+            },
+        )
+    }
+
+    /// RED (audit loader-PL1 #7): an op the watchdog abandons. Its crossing hangs past the Call
+    /// budget, the watchdog answers FAULT and the suite's wait returns; the memory the op was lent
+    /// is STILL ALIVE, held by the dispatcher with the hung crossing, and goes only when that
+    /// crossing returns. A non-lending submit frees it the moment the suite's call returns, while
+    /// the plugin may still read it.
+    #[test]
+    fn red_an_abandoned_op_keeps_the_memory_it_was_lent_until_its_crossing_returns() {
+        let d = Dispatcher::new(DispatchConfig {
+            workers: 2,
+            budgets: Budgets {
+                call: Duration::from_millis(300),
+                ..Budgets::default()
+            },
+            watchdog_period: Duration::from_millis(20),
+        });
+        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let p = load_linked::<TestKind>(&row, bind(&d, "abandoned")).expect("it loads");
+        assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
+        let lent: Arc<Vec<u8>> = Arc::new(b"the memory the op is lent".to_vec());
+        let held: Weak<Vec<u8>> = Arc::downgrade(&lent);
+        let (c, f) = on_ticket_frame(
+            &p,
+            &d,
+            slot::TICK,
+            frame(b"hang:conformance-lent"),
+            DeadlineClass::Call,
+            0,
+            lent,
+        );
+        assert_eq!(
+            c.outcome,
+            Outcome::Fault,
+            "the watchdog abandoned the hung op"
+        );
+        assert!(f.is_none(), "an abandoned op hands no frame back");
+        assert!(
+            held.upgrade().is_some(),
+            "the suite returned while the crossing still runs: the lent memory must still be alive"
+        );
+        // Release the hang through a second instance of the same image (the first is faulted).
+        let q = load_linked::<TestKind>(&row, bind(&d, "release")).expect("it loads");
+        assert_eq!(open(&q, b"{}").outcome, Outcome::Ready);
+        assert_eq!(
+            q.call(slot::TICK, &mut frame(b"unhang:conformance-lent"))
+                .outcome,
+            Outcome::Ready
+        );
+        let until = Instant::now() + Duration::from_secs(10);
+        while held.upgrade().is_some() {
+            assert!(
+                Instant::now() < until,
+                "the lent memory outlived the crossing that held it"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+/// THE HOOK SCRIPT DRIVES `decide`/`transform` AS THE HOST DOES (THE DESIGN §11.4, §11.12): watched
+/// on a ticket, so a gate that waits answers PENDING and is RESUMED, never FAULTed.
+mod hook_on_tickets {
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::Arc;
+
+    use busbar_contract::abi::hook::Ops;
+    use busbar_contract::abi::mechanism::call::{
+        InHead, OutHead, Outcome, RawOutcome, FLAG_RESUME,
+    };
+    use busbar_contract::abi::mechanism::door::Door;
+
+    use super::super::hook::{ask, Request};
+    use super::super::{bind, crossings, open};
+    use crate::dispatch::kinds::hook::Hook;
+    use crate::dispatch::ticket::host_wake;
+    use crate::dispatch::{load_linked, LinkedRow};
+    use crate::hook_door_conformance_tests::hook_door_plugin::conforming;
+
+    static REAL_DECIDE: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+    static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// A `decide` that WAITS before it answers (as on a may-pend host service): its first
+    /// invocation wakes its own ticket and answers PENDING; RESUMED, it answers as the real gate.
+    /// Ticket-less, its PENDING is a FAULT (a ticket-less op may not pend).
+    extern "C" fn decide_pends(
+        instance: *mut std::ffi::c_void,
+        input: *const std::ffi::c_void,
+        out: *mut std::ffi::c_void,
+    ) -> RawOutcome {
+        // SAFETY: every `in` leads with its `InHead`, every `out` with its `OutHead`.
+        unsafe {
+            let head = input.cast::<InHead>().read();
+            if head.flags & FLAG_RESUME == 0 {
+                if head.ticket.generation != 0 {
+                    host_wake(head.host, head.ticket);
+                }
+                (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Pending);
+                return RawOutcome::of(Outcome::Pending);
+            }
+            let real: busbar_contract::abi::mechanism::call::Op =
+                std::mem::transmute(REAL_DECIDE.load(Ordering::SeqCst));
+            real(instance, input, out)
+        }
+    }
+
+    extern "C" fn pending_door() -> *const Door {
+        let have = SLOT.load(Ordering::SeqCst);
+        if !have.is_null() {
+            return have;
+        }
+        // SAFETY: the fixture's door and its hook table are `'static`.
+        let real: Door = unsafe { conforming::door().read_unaligned() };
+        let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+        REAL_DECIDE.store(
+            ops.decide.expect("the fixture decides") as *mut (),
+            Ordering::SeqCst,
+        );
+        let ops: &'static Ops = Box::leak(Box::new(Ops {
+            decide: Some(decide_pends),
+            ..ops
+        }));
+        let door = Box::into_raw(Box::new(Door {
+            ops: std::ptr::from_ref(ops).cast(),
+            ..real
+        }));
+        SLOT.store(door, Ordering::SeqCst);
+        door
+    }
+
+    /// RED (audit loader-PL1 #9): a gate whose `decide` waits is driven on a ticket, as the host
+    /// drives it: one first invocation, RESUMED once, answering its verdict. Driven ticket-less,
+    /// as the script used to, its PENDING is FAULT and the request has no verdict.
+    #[test]
+    fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
+        let d = super::super::dispatcher();
+        let row = LinkedRow::of(pending_door).expect("the restated door states itself");
+        let p = load_linked::<Hook>(&row, bind(&d, "hook")).expect("it loads");
+        assert_eq!(
+            open(&p, br#"{"reject_over_messages": 5}"#).outcome,
+            Outcome::Ready
+        );
+        let r = Arc::new(Request::of(
+            &serde_json::json!({
+                "label": "waits", "op": "decide", "candidates": [{ "idx": 1 }],
+                "expect": { "verb": "abstain" }
+            }),
+            4,
+        ));
+        let (first, resumes) = crossings(&p).read();
+        let line = ask(&p, &d, &r, 4);
+        assert_eq!(line, "Ready lease=false | verb=abstain recalled=false");
+        let (first_after, resumes_after) = crossings(&p).read();
+        assert_eq!((first_after - first, resumes_after - resumes), (1, 1));
+    }
+}
