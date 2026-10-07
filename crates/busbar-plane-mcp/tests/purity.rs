@@ -1,17 +1,11 @@
 //! The plane is pure, and this is what says so.
 //!
-//! A plane is pure over its inputs and performs no input or output of its own. Those are two
-//! separate claims and they are checked two separate ways: the source is walked for the shapes that
-//! would make either false, and the methods are driven twice over the same inputs and their answers
-//! compared. A comment claiming purity is worth nothing; a scan and a repeat are worth something.
+//! A plane is pure over its inputs and performs no input or output of its own. The source is walked
+//! for the shapes that would make either claim false. A comment claiming purity is worth nothing; a
+//! scan is worth something. (The repeat-the-call determinism tests drove the unserved `Plane` impl
+//! and were retired with it, finding 12.)
 
-use busbar_contract::plane::{Ingress, Plane};
-use busbar_contract::wire::FrameCursor;
-use busbar_plane_mcp::McpPlane;
 use std::path::{Path, PathBuf};
-
-mod common;
-use common::{frame, Scaffold};
 
 /// The crate's own source directory.
 fn src_dir() -> PathBuf {
@@ -182,113 +176,6 @@ fn the_plane_names_no_kernel_side_crate() {
     assert!(
         offenders.is_empty(),
         "the plane names kernel-side crates: {offenders:?}"
-    );
-}
-
-/// The decode step gives the same answer every time it is asked the same question.
-#[test]
-fn the_decode_step_is_deterministic() {
-    let plane = McpPlane::EMPTY;
-    // Only the methods a CALLER sends. A method an upstream sends back is refused on the ingress
-    // side by design, and a test that fed one in would be asserting the refusal rather than the
-    // determinism.
-    let bodies: Vec<Vec<u8>> = busbar_plane_mcp::tool_ops::METHODS
-        .iter()
-        .filter(|r| r.sender == busbar_plane_mcp::tool_ops::Sender::Client)
-        .map(|row| {
-            format!(
-                r#"{{"jsonrpc":"2.0","id":5,"method":"{}","params":{{"id":"t1"}}}}"#,
-                row.method
-            )
-            .into_bytes()
-        })
-        .collect();
-    // The bodies are DERIVED — a filter over the declared method table — so a table that lost its
-    // caller-sent rows empties this vector and the loop below runs zero times. A determinism test
-    // that examined nothing would report `ok`, which is the shape this assertion exists to make
-    // impossible.
-    assert!(
-        !bodies.is_empty(),
-        "no request body was derived from the declared caller methods, so nothing was driven twice"
-    );
-    for body in &bodies {
-        let mut answers = Vec::new();
-        for _ in 0..8 {
-            let scaffold = Scaffold::new("http");
-            let ctx = scaffold.ctx();
-            let frames = vec![frame(body)];
-            let mut cursor = FrameCursor::new(&frames);
-            let ingress = plane
-                .decode_ingress(&mut cursor, None, &ctx)
-                .expect("a known method decodes");
-            let summary = match ingress {
-                Ingress::Open(d) | Ingress::OneShot(d) => {
-                    format!("{:?}/{:?}/{}", d.op, d.correlation_out, d.facts.len())
-                }
-                other => format!("{other:?}"),
-            };
-            answers.push(summary);
-        }
-        assert!(
-            answers.windows(2).all(|w| w[0] == w[1]),
-            "the decode step varied over one body: {answers:?}"
-        );
-    }
-}
-
-/// The encode step writes the same bytes every time it is asked the same question.
-#[test]
-fn the_encode_step_is_deterministic() {
-    let plane = McpPlane::EMPTY;
-    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"a":1,"b":2}}"#;
-    let mut written = Vec::new();
-    for _ in 0..8 {
-        let scaffold = Scaffold::new("http");
-        let ctx = scaffold.ctx();
-        let r = busbar_contract::plane::Response {
-            ir: busbar_contract::bounded::Ir::new(answer, &[]),
-            finish: busbar_contract::unit::FinishClass::Complete,
-            facts: busbar_contract::bounded::Facts::new(),
-        };
-        let out = plane
-            .encode_response(&r, None, &ctx)
-            .expect("it re-encodes");
-        written.push(out.as_slice().to_vec());
-    }
-    assert!(
-        written.windows(2).all(|w| w[0] == w[1]),
-        "the encode step varied over one answer"
-    );
-}
-
-/// The plane does not read the clock, so a call at a different time gives the same answer.
-///
-/// The two readings are DECADES apart and the second is the earlier one, so a plane that folded
-/// `ctx.clock` into what it decoded — a timestamp, an expiry, a monotonic tie-break — cannot land on
-/// the same answer by accident.
-#[test]
-fn the_answer_does_not_move_with_the_clock() {
-    let plane = McpPlane::EMPTY;
-    let body = br#"{"jsonrpc":"2.0","id":9,"method":"tasks/get","params":{"id":"t1"}}"#;
-    let mut answers = Vec::new();
-    for unix_secs in [2_000_000_000_u64, 1_000_000_000] {
-        let scaffold = Scaffold::new("http");
-        let ctx = scaffold.ctx_at(unix_secs);
-        assert_eq!(
-            ctx.clock().unix_secs,
-            unix_secs,
-            "the scaffold handed the plane the reading this test chose"
-        );
-        let frames = vec![frame(body)];
-        let mut cursor = FrameCursor::new(&frames);
-        let Ok(Ingress::OneShot(draft)) = plane.decode_ingress(&mut cursor, None, &ctx) else {
-            panic!("a single-answer method decodes as one shot");
-        };
-        answers.push(format!("{:?}{:?}", draft.op, draft.correlation_out));
-    }
-    assert_eq!(
-        answers[0], answers[1],
-        "the decoded answer moved with the clock: {answers:?}"
     );
 }
 
