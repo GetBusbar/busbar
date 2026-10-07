@@ -1829,10 +1829,11 @@ fn piece(
     // the walk's refusal): the member holding its task is read, so the open breaker's refusal
     // names the member it is pinned to (predev's pinned refusal), never the pool.
     if let (false, Some((_, members))) = (continues, pooled.as_ref()) {
-        if given.from == FROM_CALLER && given_member.is_empty() {
-            if read_holder(reach, hop, pass, caller, members).is_pending() {
-                return (Outcome::Pending, false);
-            }
+        if given.from == FROM_CALLER
+            && given_member.is_empty()
+            && read_holder(reach, hop, pass, caller, members).is_pending()
+        {
+            return (Outcome::Pending, false);
         }
     }
     if !continues {

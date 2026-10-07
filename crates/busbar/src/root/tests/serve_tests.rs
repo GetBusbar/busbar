@@ -5765,9 +5765,10 @@ mod agent_door {
             Self::serving(answer, status, 200, None).await
         }
 
-        /// [`GrpcAgent::ending`], each rpc answered at the HTTP status `http`, and its card the one
-        /// an agent on `card_port` serves (its own port's when `None`): two agents serving the
-        /// same card are one deployment registered twice.
+        /// [`GrpcAgent::ending`], each rpc answered at the HTTP status `http` (any other than `200`
+        /// a plain refusal, `denied`, no gRPC message or trailers), and its card the one an agent on
+        /// `card_port` serves (its own port's when `None`): two agents serving the same card are
+        /// one deployment registered twice.
         async fn serving(
             answer: Vec<u8>,
             status: &'static str,
@@ -5807,7 +5808,15 @@ mod agent_door {
                                         .await
                                         .map(|c| c.to_bytes().to_vec())
                                         .unwrap_or_default();
-                                    let (media, frames): (&str, Frames) = if get {
+                                    let (media, frames): (&str, Frames) = if !get && http != 200 {
+                                        let _ = sent.send((path, body));
+                                        (
+                                            "text/plain",
+                                            vec![Ok(http_body::Frame::data(
+                                                bytes::Bytes::from_static(b"denied"),
+                                            ))],
+                                        )
+                                    } else if get {
                                         (
                                             "application/json",
                                             vec![Ok(http_body::Frame::data(bytes::Bytes::from(
@@ -6786,14 +6795,13 @@ mod agent_door {
     /// The same battery on the gRPC binding (predev
     /// `a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding`): the selection sits
     /// above the binding axis. Two gRPC agents serving ONE card (one deployment registered twice),
-    /// the primary refusing busbar itself (`UNAUTHENTICATED`, predev's `401`).
+    /// the primary refusing busbar itself at the HTTP layer (`401`, as predev's harness answered it).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-pool-reroute-grpc";
         let _published = Published(instance);
-        // UNAUTHENTICATED (16): the gRPC binding's refusal of busbar itself, as a 401 is.
-        let mut primary = GrpcAgent::serving(Vec::new(), "16", 200, None).await;
+        let mut primary = GrpcAgent::serving(grpc_working_answer(), "0", 401, None).await;
         let mut twin =
             GrpcAgent::serving(grpc_working_answer(), "0", 200, Some(primary.port)).await;
         let entries = format!(
