@@ -53,7 +53,7 @@ use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
 use busbar_contract::auth::AuthPrincipal;
 use busbar_contract::caps::{Pass, PrincipalId, Route};
 use busbar_kernel::plane_driver::{
-    Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
+    Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, UnitRoute,
 };
 use busbar_kernel::plane_routes::{
     PlaneRefusalSpec, PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec,
@@ -800,7 +800,116 @@ pub struct HookStage {
     pub gov: Arc<busbar_kernel::governance::GovState>,
 }
 
+/// What the hooks may know of a verified caller (the principal is its key's id), over the
+/// generation a unit binds: its key, its group (a tap's `groups:` scope), its rate headroom and its
+/// budget chain (the generation's card, through its meter pin); a hook handed the prompt leaves its
+/// access amendment through the engine host.
+struct GovCaller {
+    host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    gov: Arc<busbar_kernel::governance::GovState>,
+}
+
+impl GovCaller {
+    fn key(&self, principal: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
+        self.gov.lookup_by_sub(principal)
+    }
+}
+
+impl busbar_kernel::plane_driver::CallerFacts for GovCaller {
+    fn key(&self, principal: &str) -> Option<busbar_kernel::plane_driver::CallerKey> {
+        self.key(principal)
+            .map(|k| busbar_kernel::plane_driver::CallerKey {
+                id: k.id.clone(),
+                name: k.name.clone(),
+            })
+    }
+
+    fn in_groups(&self, principal: Option<&str>, groups: &[String]) -> bool {
+        let group = principal
+            .and_then(|p| self.key(p))
+            .and_then(|k| k.group.clone());
+        self.host.caller_in_hook_groups(group.as_deref(), groups)
+    }
+
+    fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64> {
+        let key = self.key(principal)?;
+        let pin = self.host.meter_pin()?;
+        self.host
+            .rate_headroom(&pin, &key, Some(pool), busbar_kernel::store::now())
+    }
+
+    fn budget(&self, principal: &str) -> Vec<busbar_contract::hooks::BudgetBucketState> {
+        match (self.key(principal), self.host.meter_pin()) {
+            (Some(key), Some(pin)) => {
+                self.host
+                    .budget_state(&pin, &key, busbar_kernel::store::now())
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
+        self.host.hook_read(hook, principal, dialect, identity);
+    }
+}
+
+/// ONE ROUTED-ORDER DOOR PLANE'S BINDER: each bind reads the generation current at that moment
+/// ([`HookStage::host`]) and binds its hooks as [`busbar_kernel::plane_driver::HostHooks`] binds a
+/// fixed one, so a config apply reaches every unit that binds after it; a unit keeps the generation
+/// it bound (1.5.5 behaviour, frozen).
+struct LiveHooks {
+    host: busbar_kernel::plane_driver::GenerationHost,
+    gov: Arc<busbar_kernel::governance::GovState>,
+    dialects: Vec<String>,
+}
+
+impl LiveHooks {
+    /// The binder of the generation current now.
+    fn current(&self) -> busbar_kernel::plane_driver::HostHooks {
+        let host = (self.host)();
+        busbar_kernel::plane_driver::HostHooks {
+            host: Arc::clone(&host),
+            caller: Arc::new(GovCaller {
+                host,
+                gov: Arc::clone(&self.gov),
+            }),
+            dialects: self.dialects.clone(),
+        }
+    }
+}
+
+impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
+    fn bind(
+        &self,
+        bind: &busbar_kernel::plane_driver::Bind<'_>,
+    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
+        self.current().bind(bind)
+    }
+
+    fn denied(&self, dialect: u32, status: u16) {
+        self.current().denied(dialect, status);
+    }
+
+    fn dialect(&self, dialect: u32) -> String {
+        self.dialects
+            .get(dialect as usize)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 impl HookStage {
+    /// The ROUTED-ORDER binder of a plane whose dialects are `dialects`, in its tail's order: the
+    /// deployment's global and per-pool hooks, bound per unit off the current generation (U22,
+    /// ARCHITECT rulings 2026-10-05).
+    fn routed(&self, dialects: &[&str]) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
+        Arc::new(LiveHooks {
+            host: Arc::clone(&self.host),
+            gov: Arc::clone(&self.gov),
+            dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
+        })
+    }
+
     /// The GATE-FIRST binder of the plane registered under `plane_key` (its tail states
     /// `abi::plane::TAIL_HOOKS_GATED`): the gates and rewrites the deployment attached to the
     /// entry the plane's projection names, filed under the plane's registry key.
@@ -881,7 +990,10 @@ pub struct DoorEgress<'a> {
 /// routes published on the admin router's table (`plane_driver::serve`, K-SERVE). A plane whose
 /// section is absent stays bound and unopened, as before. With `egress`, each plane's egress is
 /// sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every walk is
-/// exhausted at once). The data routes are the data router's construction ([`data_routes`]).
+/// exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's hook
+/// configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
+/// hooks); without, no hook binds. The data routes are the data router's
+/// construction ([`data_routes`]).
 ///
 /// # Errors
 ///
@@ -1008,7 +1120,11 @@ pub(crate) fn compose_planes_over(
             {
                 driver.with_hooks(stage.gated(plugin.name()))
             }
-            _ => driver,
+            // Every other plane runs the routed order (U22): the deployment's global and per-pool
+            // hooks, bound per unit off the live generation, reach its request stage and its
+            // in-session stage (`hook.call`, `content.scan`).
+            Some(stage) => driver.with_hooks(stage.routed(&served_facts.dialects)),
+            None => driver,
         };
         let routes = snapshot
             .admin_routes
@@ -1294,9 +1410,21 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
             ));
             return;
         };
+        // THE PARENT IS BOUND HERE, on the parent's own crossing while it is in flight, never in the
+        // spawned child: a parent that answers without waiting for its child (a task's
+        // continuation, door_tasks) may end before the child is first polled, and a continuation
+        // runs as a child unit whose parent has exited (BUSBAR-1.6.0.md, `work.*` row note). The
+        // child holds the parent's frame and hold cell for its whole run; whether that cell is still
+        // live is read at the child's accrual and at its exit, never here.
+        let Some(bound) = routes.parent_of(&nest) else {
+            done(busbar_kernel::host_services::NestReply::Unserved(
+                NEST_PARENT_GONE,
+            ));
+            return;
+        };
         drop(
             self.runtime
-                .spawn(async move { done(routes.nested(nest).await) }),
+                .spawn(async move { done(routes.nested(nest, bound).await) }),
         );
     }
 }
@@ -1995,6 +2123,13 @@ impl DoorRequest {
     }
 }
 
+/// A nested unit's parent, bound on the parent's crossing ([`DataRoutes::parent_of`]): the
+/// generation it was served on and its in-flight slot.
+type BoundParent = (
+    Arc<busbar_kernel::state::App>,
+    crate::root::plane_node::Parent,
+);
+
 impl DataRoutes {
     /// ONE DUPLEX SESSION ARRIVAL (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, TRANSITIONAL with
     /// the session routes): the caller's head delivered once at `arrive`, as a request's is; the
@@ -2286,12 +2421,25 @@ impl DataRoutes {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// THE PARENT A NESTED UNIT RUNS UNDER, resolved while the parent's crossing is in flight: the
+    /// generation the parent was served on and its in-flight slot (its hold cell), each held by the
+    /// child for its whole run. `None` when the parent is no unit in flight.
+    fn parent_of(&self, nest: &busbar_kernel::host_services::Nest) -> Option<BoundParent> {
+        let app = self.frames_lock().get(&nest.parent).cloned()?;
+        let parent = self
+            .post
+            .node()
+            .parent(busbar_contract::UnitKey::new(nest.parent))?;
+        Some((app, parent))
+    }
+
     /// ONE NESTED UNIT (`unit.nest`): its claim matched on the guest list, driven as a door unit of
     /// the plane that claims it under the parent's principal and generation, a child of the
     /// parent's hold cell, one level deeper; its whole reply read and handed back.
     async fn nested(
         self: Arc<Self>,
         nest: busbar_kernel::host_services::Nest,
+        (app, parent): BoundParent,
     ) -> busbar_kernel::host_services::NestReply {
         use busbar_kernel::guest::{Claimant, Matched};
         use busbar_kernel::host_services::NestReply;
@@ -2308,13 +2456,6 @@ impl DataRoutes {
         };
         let Some((plane, claim)) = door else {
             return NestReply::Unserved(NEST_UNSERVED);
-        };
-        let parent_key = busbar_contract::UnitKey::new(nest.parent);
-        let (Some(app), Some(parent)) = (
-            self.frames_lock().get(&nest.parent).cloned(),
-            self.post.node().parent(parent_key),
-        ) else {
-            return NestReply::Unserved(NEST_PARENT_GONE);
         };
         let principal = match nest.principal.as_deref() {
             Some(key) => PrincipalId::new(key.id.as_str()),
@@ -2530,6 +2671,21 @@ fn spent() -> Pick {
 }
 
 impl FarEnd for DoorFar<'_, '_> {
+    /// The route the unit named, as its in-session hooks are scoped: the pool the walk is keyed by
+    /// (its label, or a direct route's lane) and the entry its hooks are filed under (the label, or
+    /// the direct route's member).
+    fn scope(&self, _token: &Pass<Route>) -> Option<RoutedScope> {
+        let routed = self.steps.routed()?;
+        let container = match &routed {
+            (label, _) if !label.is_empty() => label.clone(),
+            (_, members) => members.first().cloned().unwrap_or_default(),
+        };
+        Some(RoutedScope {
+            pool: egress_pool(self.steps.plane(), &routed),
+            container,
+        })
+    }
+
     async fn member(&self, token: &Pass<Route>, attempt_no: u32) -> Pick {
         match self.far() {
             Some(far) => far.member(token, attempt_no).await,

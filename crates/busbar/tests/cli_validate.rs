@@ -1793,40 +1793,42 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
     .unwrap();
 }
 
-/// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` names a dropped-in plugin's stated facts and whether the
-/// configuration selects it, read off its signed manifest — WITHOUT opening it: the library bytes
-/// are not a library, so a `dlopen` would refuse the run.
+/// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` reads a dropped-in plugin's stated facts off its
+/// signed manifest and selects it WITHOUT opening it (the library bytes are not a library, so a
+/// `dlopen` would refuse the run) — and its report is 1.5.5's bytes: the stage report is debug
+/// logging, never a `plugin: … — selected as …` line (ARCHITECT 2026-10-06; oracle
+/// `plugins.store-persist|store-sqlite`).
 #[cfg(linked_axis_body_ingress)]
 #[test]
-fn validate_names_a_dropped_plugins_stated_facts_without_opening_it() {
+fn validate_selects_a_dropped_plugin_without_opening_it_and_reports_in_1_5_5s_words() {
     use busbar_contract::abi::mechanism::KindCode;
     let dir = fixture_dir("stated");
     let abi = KindCode::Store.abi_version();
     write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
-    write_configs(
-        &dir,
-        &format!(
+    for config in [
+        format!(
             "{}store:\n  module: stated\n",
             plugins_block(&dir, true, true)
         ),
-    );
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(
-        stdout.contains(&format!(
-            "    plugin: busbar-store-stated (store, ABI {abi}) — selected as store"
-        )),
-        "got {stdout}"
-    );
-    // Not named by the configuration: listed, not selected.
-    write_configs(&dir, &plugins_block(&dir, true, true));
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(
-        stdout.contains("busbar-store-stated (store, ABI")
-            && stdout.contains("not used by this config"),
-        "got {stdout}"
-    );
+        // Not named by the configuration.
+        plugins_block(&dir, true, true),
+    ] {
+        write_configs(&dir, &config);
+        let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        assert_eq!(code, 0, "stderr={stderr}");
+        assert!(
+            stdout.contains("  plugins:   enabled — 1 validated, 0 skipped (untrusted) in '"),
+            "got {stdout}"
+        );
+        for out in [&stdout, &stderr] {
+            assert!(
+                !out.contains("plugin: busbar-store-stated")
+                    && !out.contains("selected as")
+                    && !out.contains("not used by this config"),
+                "--validate printed a line 1.5.5 never printed: {out}"
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

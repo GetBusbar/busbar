@@ -191,8 +191,21 @@ pub fn root_rows() -> RootInstall {
 /// credential's included — resolves through this axis by the key configuration names; the kernel
 /// names none of the rows it registers (DECISIONS #2 rule (1), #40; ARCHITECT 2026-09-27 AUTH-ROW).
 pub use busbar_kernel_identity::operator::{
-    install_linked as install_linked_auth, linked_names as linked_auth_names,
+    install_linked as install_linked_auth, linked as linked_auth_rows,
+    linked_names as linked_auth_names,
 };
+
+/// The names of the INBOUND auth-chain modules among `rows`: those whose Statement declares an
+/// inbound capability. `build.auth_modules` lists what an operator can name in `auth.chain` /
+/// `admin_auth`, by alias, as 1.5.5 did; a row that only presents an upstream credential (outbound
+/// styles) is not an auth-chain module. Decided from what the plugin declares, never from its name.
+#[must_use]
+pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
+    rows.iter()
+        .filter(|r| busbar_plugin_loader::dispatch::kinds::auth::declares_inbound(r.2))
+        .map(|r| r.0)
+        .collect()
+}
 
 /// Opens one build's AUTH AXIS over that build's registry, on the process's one dispatcher: the
 /// composition root's (it holds the dispatcher), installed once; the kernel names neither the
