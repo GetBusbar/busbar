@@ -517,7 +517,7 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
 // is foreign) to an inherent `to_runtime` method on the config type — the same shape `config`'s
 // `on_exhausted`/`OnExhausted` lowering already uses.
 // R5-store: a private import, not a re-export. `TripConfig`/`TripMode` never had a reader outside
-// this engine, and `BreakerCfg`'s two — `failover/mod.rs` and the test-support pool builder — name
+// this engine, and `BreakerCfg`'s two — `route.rs` and the test-support pool builder — name
 // `busbar_kernel::store::BreakerCfg` directly.
 use busbar_kernel::store::{BreakerCfg, TripConfig, TripMode};
 

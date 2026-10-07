@@ -9,7 +9,7 @@
 //! that deadline and busbar buffers all of it, per call: memory exhaustion from an untrusted party
 //! that only has to answer inside the timeout. The fix reads the body through the SAME capped-read
 //! primitive every other upstream body read in this crate already uses
-//! (`busbar_kernel::proxy::read_capped`, `busbar_kernel::proxy::max_upstream_buffered_bytes()`), and
+//! (`busbar_kernel::egress::upstream::read_capped`, `busbar_kernel::egress::upstream::max_upstream_buffered_bytes()`), and
 //! refuses to PARSE a truncated body as a token rather than silently minting a credential off a
 //! partial response.
 //!
@@ -60,7 +60,7 @@ fn request(token_url: &str) -> ExchangeRequest {
 /// "the response happens to error".
 #[tokio::test]
 async fn an_oversized_token_response_is_refused_not_buffered() {
-    let cap = busbar_kernel::proxy::max_upstream_buffered_bytes();
+    let cap = busbar_kernel::egress::upstream::max_upstream_buffered_bytes();
     let padding = "A".repeat(cap + 4096);
     let body = serde_json::json!({ "access_token": padding }).to_string();
     assert!(

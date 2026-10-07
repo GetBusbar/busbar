@@ -72,7 +72,7 @@ mod alloc_gate_instrument {
     impl CountingJemalloc {
         /// Allocations observed on THIS thread since process start (or last `reset`).
         // The alloc-count PERF gate that read these moved to the extracted engine plane's own crate
-        // (see `proxy/mod.rs`), so the read APIs are now unexercised in core's own test binary while
+        // (see `egress/upstream.rs`), so the read APIs are now unexercised in core's own test binary while
         // the `#[global_allocator]` counting seam stays wired for parity; keep the seam intact rather
         // than delete it.
         #[allow(dead_code)]
@@ -231,7 +231,6 @@ pub mod egress_auth;
 pub use busbar_kernel_scope::egress as egress_grant;
 pub mod endpoints;
 pub mod export;
-pub mod failover;
 pub mod governance;
 pub mod handlers;
 pub mod hooks;
@@ -289,7 +288,6 @@ pub mod plugin_routes;
 // kept as a re-export: one type, one home.
 pub mod profile;
 pub mod proto;
-pub mod proxy;
 // THE KERNEL'S ROUTING TABLES and their one neutral read view (spec Part 3: route is the kernel's).
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
@@ -298,6 +296,10 @@ pub mod ratelimit;
 /// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
 /// carried usage counts no billing class records (MONEY LAW). See the module header.
 pub mod residual_log;
+// THE ROUTE STEP'S SELECTION SEAM — one candidate set, one walk, one admission through the one
+// breaker, one refusal (spec Part 3, the outbound table, step 1: "KERNEL | route (pool walk, member,
+// breaker)").
+pub mod route;
 pub mod route_tables;
 /// THE CONNECTOR'S TLS WRAP, as the kernel reaches it: this crate names no TLS library (THE DESIGN:
 /// TLS stays in the connector); the egress engine's https arm, the duplex `wss` dial and the

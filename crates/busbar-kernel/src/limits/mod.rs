@@ -50,7 +50,7 @@ fn get() -> Option<LimitsResolved> {
 
 // THE EGRESS TRANSLATE-BODY CAP is READ AT ITS OWN HOME, not here. It was a `pub fn
 // translate_body_max_bytes()` on this page reading `installed().request_body_max_bytes` with a
-// 32 MiB uninstalled fallback -- and `busbar_kernel::proxy::max_translate_body_bytes()` is the
+// 32 MiB uninstalled fallback -- and `busbar_kernel::ingress::errors::max_translate_body_bytes()` is the
 // same number, mirrored out of the same slot by `mirror_derived_caps` on EVERY mutation (install,
 // reload, `InstallGuard` rollback, the raw `set_installed` poke) with the same fallback constant,
 // `TRANSLATE_BODY_MAX_BYTES_DEFAULT`. The codec crates already read it there. Two names for one

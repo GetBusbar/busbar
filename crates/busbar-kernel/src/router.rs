@@ -9,9 +9,9 @@ use axum::Router;
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
-    core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
+    core_routes, cost, durable, egress, egress_auth, endpoints, export, governance, handlers,
     hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, state, store, telemetry, tls, transport, trust,
+    plane, plugin_routes, profile, proto, state, store, telemetry, tls, transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -182,7 +182,7 @@ pub(crate) async fn request_activity_tick(
 /// reporting the latency Busbar itself added — total request wall-clock MINUS the upstream
 /// round-trip — so operators (and browser DevTools / APM tools) can see the gateway's own cost
 /// in-band on every response, without scraping `/metrics` or wiring traces. The upstream RTT is
-/// recorded by the forward path into the [`proxy::UPSTREAM_RTT_US`] task-local for the duration
+/// recorded by the forward path into the [`egress::upstream::UPSTREAM_RTT_US`] task-local for the duration
 /// of this scope; a request that never dispatched upstream (admin / health / early error) reports
 /// its full processing time. W3C `Server-Timing` `dur` is milliseconds; emitted at µs precision.
 ///
@@ -200,7 +200,7 @@ pub(crate) async fn server_timing(
     use std::sync::atomic::Ordering;
     let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT));
     let start = std::time::Instant::now();
-    let mut resp = proxy::UPSTREAM_RTT_US
+    let mut resp = egress::upstream::UPSTREAM_RTT_US
         .scope(slot.clone(), next.run(req))
         .await;
     let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -235,7 +235,7 @@ pub(crate) async fn reshape_oversized_413(
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok())
-        .is_some_and(|ct| ct.starts_with(crate::proxy::APPLICATION_JSON));
+        .is_some_and(|ct| ct.starts_with(crate::ingress::errors::APPLICATION_JSON));
     if is_json {
         return resp;
     }
@@ -263,7 +263,7 @@ pub(crate) async fn reshape_oversized_413(
         path,
         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
         // CANONICAL kind for an oversized payload across the protocol writers.
-        crate::proxy::KIND_REQUEST_TOO_LARGE,
+        crate::ingress::errors::KIND_REQUEST_TOO_LARGE,
         "request body exceeds the maximum allowed size",
     )
 }
@@ -281,7 +281,7 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     // through `build_split_routers_with_limits` with the operator-configured values.
     build_router_with_limits(
         app,
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel::ingress::errors::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     )
@@ -871,7 +871,7 @@ pub(crate) fn apply_common_layers(
         ))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
         // `limits.request_body_max_bytes` (default 32 MiB); COUPLED with the egress translate-body cap
-        // (`busbar_kernel::proxy::max_translate_body_bytes`) — both read the SAME knob so an accepted request is
+        // (`busbar_kernel::ingress::errors::max_translate_body_bytes`) — both read the SAME knob so an accepted request is
         // always buffer-translatable on the cross-protocol path.
         .layer(axum::extract::DefaultBodyLimit::max(request_body_max_bytes))
         // Outermost: reshape the body-limit layer's bare-text 413 into a protocol-native JSON
@@ -1088,7 +1088,7 @@ fn request_panicked(
         &handle.load().planes,
         uri.path(),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        crate::proxy::KIND_API_ERROR,
+        crate::ingress::errors::KIND_API_ERROR,
         "internal error",
     )
 }

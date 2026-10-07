@@ -68,7 +68,7 @@ pub(crate) fn native_error(
         // [`envelope_dialect`] for what is chosen then, and why that is a decision about the reply
         // rather than the fallthrough the old classifier smuggled into every site that read it.
         Ingress::Fallback(_) => {
-            crate::proxy::ingress_error(envelope_dialect(ingress), status, kind, message)
+            crate::ingress::errors::ingress_error(envelope_dialect(ingress), status, kind, message)
         }
     }
 }

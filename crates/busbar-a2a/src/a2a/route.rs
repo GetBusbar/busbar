@@ -8,7 +8,7 @@
 //! The rules, stated once here and inherited by `receive`:
 //!
 //! - A FRESH submission to a pooled agent goes through the ONE candidate loop
-//!   ([`busbar_kernel::failover::walk`] over the pool's members, pin-checked against the approved card
+//!   ([`busbar_kernel::route::walk`] over the pool's members, pin-checked against the approved card
 //!   fingerprints, admitted through the one breaker), so a tripped primary reroutes to its
 //!   verified twin BEFORE anything reaches a socket and the caller never learns.
 //! - An ADDRESSED or RESUMED task is PINNED to the member that accepted it — the task id names
@@ -40,7 +40,7 @@ struct AgentCandidate {
     eligible: bool,
 }
 
-impl busbar_kernel::failover::Candidate for AgentCandidate {
+impl busbar_kernel::route::Candidate for AgentCandidate {
     fn name(&self) -> &str {
         &self.name
     }
@@ -165,10 +165,10 @@ pub(super) fn select_member(
                 .filter(|c| !c.eligible)
                 .map(|c| c.lane)
                 .collect();
-            let attempt = busbar_kernel::failover::Attempt {
+            let attempt = busbar_kernel::route::Attempt {
                 tried: &tried,
-                stage: busbar_kernel::failover::Stage::BeforeFirstByte,
-                repeatable: busbar_kernel::failover::Repeatable::No,
+                stage: busbar_kernel::route::Stage::BeforeFirstByte,
+                repeatable: busbar_kernel::route::Repeatable::No,
                 operation: method,
             };
             // THE WALK, INVERTED onto the host `breaker_admit` seam (CLUSTER-1, mirroring the MCP
@@ -178,9 +178,9 @@ pub(super) fn select_member(
             // pin/repeatability/order still select (probe-win-last preserved: `walk_with` runs the pin
             // check BEFORE the admit closure). The hop's recorded outcome settles through the same
             // arena over that id; an abandoned hop releases the probe when the scope drops.
-            let mut order = busbar_kernel::failover::InOrder::new(&tried, candidates.len());
+            let mut order = busbar_kernel::route::InOrder::new(&tried, candidates.len());
             let mut passed_over = Vec::new();
-            match busbar_kernel::failover::walk_with(
+            match busbar_kernel::route::walk_with(
                 &pool_key,
                 &candidates,
                 &attempt,
@@ -216,7 +216,7 @@ pub(super) fn select_member(
                     // id to poll; the refusal fires after the row exists, through the same
                     // rendering the degenerate breaker refusal uses.
                     match &refusal {
-                        busbar_kernel::failover::Refusal::NotInterchangeable { .. } => {
+                        busbar_kernel::route::Refusal::NotInterchangeable { .. } => {
                             selected.pin_mismatch = Some(refusal.to_string());
                         }
                         _ => {

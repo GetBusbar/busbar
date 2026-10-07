@@ -16,7 +16,7 @@ mod linked;
 
 use busbar_kernel::config::{self, RootCfg};
 use busbar_kernel::config_validate::validate_unified_pool_names;
-use busbar_kernel::failover::CandidatePoolCfg;
+use busbar_kernel::route::CandidatePoolCfg;
 use std::collections::HashMap;
 
 /// Byte-identical to `src/config_validate/tests/tests.rs::make_root_cfg` (kept private/local there

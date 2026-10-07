@@ -56,7 +56,7 @@ pub mod oauth_client_credentials;
 /// The `Result` signature stands (both callers thread it) even though the engine's webpki build
 /// has no failing arm on this posture — the seam stays where a future posture could fail loudly.
 pub(crate) fn minter_client() -> Result<crate::egress::engine::EngineClient, String> {
-    Ok(crate::proxy::build_egress_client(
+    Ok(crate::egress::upstream::build_egress_client(
         &crate::egress::engine::EngineSpec::pooled_webpki(usize::MAX, 90, false, false),
     ))
 }
@@ -86,8 +86,8 @@ pub(crate) async fn read_capped_token_response(
     deadline: tokio::time::Instant,
 ) -> Result<String, String> {
     use http_body_util::BodyExt;
-    let cap = crate::proxy::max_upstream_buffered_bytes();
-    let read = crate::proxy::read_capped(resp.into_body().into_data_stream(), cap);
+    let cap = crate::egress::upstream::max_upstream_buffered_bytes();
+    let read = crate::egress::upstream::read_capped(resp.into_body().into_data_stream(), cap);
     // The mint's ONE deadline keeps ticking through the body — the span reqwest's client-level
     // total covered.
     let Ok((raw, read_end)) = tokio::time::timeout_at(deadline, read).await else {
@@ -98,11 +98,11 @@ pub(crate) async fn read_capped_token_response(
         );
     };
     match read_end {
-        crate::proxy::ReadEnd::Complete => Ok(String::from_utf8_lossy(&raw).into_owned()),
-        crate::proxy::ReadEnd::Truncated => Err(format!(
+        crate::egress::upstream::ReadEnd::Complete => Ok(String::from_utf8_lossy(&raw).into_owned()),
+        crate::egress::upstream::ReadEnd::Truncated => Err(format!(
             "token endpoint response exceeded the {cap}-byte cap; refusing to parse a truncated token response"
         )),
-        crate::proxy::ReadEnd::TransportError => Err(
+        crate::egress::upstream::ReadEnd::TransportError => Err(
             "token endpoint connection failed mid-response; refusing to parse a partial token response"
                 .to_string(),
         ),

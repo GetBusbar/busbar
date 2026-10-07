@@ -829,15 +829,13 @@ const HOP_TIMEOUT_SECS: u64 = 10;
 /// (an auto-followed 3xx could bounce the core-injected secret/bearer to an off-allowlist host);
 /// the [`HOP_TIMEOUT_SECS`] total the retired reqwest builder carried client-level rides each hop
 /// as an absolute deadline in [`execute_hop`].
-fn hop_client() -> &'static crate::proxy::EgressClient {
-    static CLIENT: std::sync::OnceLock<crate::proxy::EgressClient> = std::sync::OnceLock::new();
+fn hop_client() -> &'static crate::egress::upstream::EgressClient {
+    static CLIENT: std::sync::OnceLock<crate::egress::upstream::EgressClient> =
+        std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
-        crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::pooled_webpki(
-            usize::MAX,
-            90,
-            false,
-            false,
-        ))
+        crate::egress::upstream::build_egress_client(
+            &crate::egress::upstream::EgressClientSpec::pooled_webpki(usize::MAX, 90, false, false),
+        )
     })
 }
 
@@ -954,7 +952,7 @@ fn sanitize_hop_header(
 /// built (so the secret is never sent to an off-allowlist host), and the module's extra `headers` are
 /// SANITIZED (CR/LF/NUL + hop-control headers rejected).
 async fn execute_hop(
-    http: &crate::proxy::EgressClient,
+    http: &crate::egress::upstream::EgressClient,
     hop: &busbar_contract::auth::LoginHop,
     client_secret: Option<&str>,
     allowed: &std::collections::HashSet<String>,

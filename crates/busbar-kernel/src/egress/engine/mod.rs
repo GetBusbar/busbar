@@ -4,7 +4,7 @@
 //! THE EGRESS ENGINE — the OWNED connection pool with dial coalescing (`pool.rs`/`client.rs`)
 //! over the connector's TLS wrap: the ONE owned outbound HTTP stack (owner-ruled), relocated
 //! here from `busbar-core::proxy::egress_client` so every plane builds its clients from one
-//! neutral home. Core re-exports every name from its old `crate::proxy::` paths. The pool was
+//! neutral home. Core re-exports every name from `crate::egress::upstream`. The pool was
 //! `hyper_util::client::legacy::Client` until the owned-pool step: hyper (the protocol library)
 //! and the whole connector stack stay; only the legacy client's pool — whose checkout raced a
 //! fresh dial per request and dropped the losers post-SYN — went, replaced by the coalescing

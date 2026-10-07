@@ -527,8 +527,8 @@ enum Outcome {
 /// Drive ONE hop through stack A — the owned engine on the open-web posture (webpki trust, system
 /// DNS, no pin). `uri` must be dialable as written (an IP-literal host).
 async fn stack_a(uri: &str, body: &str) -> Outcome {
-    let client = busbar_kernel::proxy::build_egress_client(
-        &busbar_kernel::proxy::EgressClientSpec::pooled_webpki(4, 300, false, false),
+    let client = busbar_kernel::egress::upstream::build_egress_client(
+        &busbar_kernel::egress::upstream::EgressClientSpec::pooled_webpki(4, 300, false, false),
     );
     let req = egress_request(
         uri.parse().expect("fixture uri"),

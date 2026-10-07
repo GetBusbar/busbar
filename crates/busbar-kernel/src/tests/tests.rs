@@ -544,7 +544,7 @@ async fn test_reshape_oversized_413_passthrough() {
         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
         [(
             axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+            axum::http::HeaderValue::from_static(crate::ingress::errors::APPLICATION_JSON),
         )],
         r#"{"error":{"type":"request_too_large","message":"native"}}"#,
     )
@@ -1789,7 +1789,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
 /// after that is fallible (semantic validation, the plugin pre-flight, secret-ref resolution, the
 /// store open), and no error path used to put the previous values back. A `POST /config/apply` that
 /// returned 400 therefore mutated live, process-wide caps under the old `App` that kept serving:
-/// `busbar_kernel::proxy::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
+/// `busbar_kernel::ingress::errors::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
 /// cross-protocol translate buffer, so a rejected apply could silently start 401-ing larger Bedrock
 /// requests and failing larger cross-protocol completions.
 ///
@@ -1823,7 +1823,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
         "the build failed for the expected reason: {err}"
     );
     assert_ne!(
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel::ingress::errors::max_translate_body_bytes(),
         ILLEGAL,
         "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
          live signed-ingress and cross-protocol translate body caps"
@@ -2587,7 +2587,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
     let mut with_pool = planeless();
     with_pool.tool_pools.insert(
         "search".to_string(),
-        crate::failover::CandidatePoolCfg {
+        crate::route::CandidatePoolCfg {
             members: vec!["search-eu".to_string(), "search-us".to_string()],
             ..Default::default()
         },
@@ -2690,7 +2690,7 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
         &residual_planes(),
         "/api/v1/admin/info",
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        crate::proxy::KIND_API_ERROR,
+        crate::ingress::errors::KIND_API_ERROR,
         "internal error",
     );
     assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);

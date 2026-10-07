@@ -25,10 +25,9 @@ use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
-    core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, ratelimit, state, store, telemetry, tls,
-    transport, trust,
+    core_routes, cost, durable, egress_auth, endpoints, export, governance, handlers, hooks,
+    ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation, plane,
+    plugin_routes, profile, proto, ratelimit, state, store, telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -39,7 +38,7 @@ use busbar_kernel::plane_host::{
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
 // `request_body_max_bytes`), each defaulting to its historical value at the config layer. They are
 // threaded from `cfg.limits` into the client builder and router below; the egress translate-body cap
-// is COUPLED to `request_body_max_bytes` via `busbar_kernel::proxy::max_translate_body_bytes`.
+// is COUPLED to `request_body_max_bytes` via `busbar_kernel::ingress::errors::max_translate_body_bytes`.
 
 /// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
@@ -1775,7 +1774,7 @@ pub fn build_app_from_config(
     // The generation's hook CONTENT ceiling, installed once here and read on the hook seam with a
     // single relaxed load — never recomputed per request, and never consulted at all on a
     // deployment with no content-granted hook, because no content projection is built there.
-    crate::proxy::set_hook_content_max_bytes(cfg.limits.hook_content_max_bytes);
+    crate::hooks::taps::set_hook_content_max_bytes(cfg.limits.hook_content_max_bytes);
 
     let app = App {
         config_projection,

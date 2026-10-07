@@ -24,8 +24,8 @@ use crate::a2a::fetch::{FetchPolicy, Transport};
 use crate::a2a::relay::{ChunkFlow, RelayTransport};
 use crate::a2a::transport::ReqwestTransport;
 use busbar_kernel::egress::seam::{HopSpec, HostlessEgress};
+use busbar_kernel::egress::upstream::{read_capped, ReadEnd};
 use busbar_kernel::egress::{build_pinned_client, RefuseSecondLookup};
-use busbar_kernel::proxy::{read_capped, ReadEnd};
 
 /// The installed hostless-egress driver — the engine's, bound by the transport's own test boot
 /// (`test_egress_boot`, the same binding the composition root makes) and read back through the ONE

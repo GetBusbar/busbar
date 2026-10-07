@@ -249,17 +249,28 @@ fn test_engine_helpers_emit_premigration_series() {
         &[
             ("pool", "tel-eng-pool"),
             ("lane", "tel-eng-model"),
-            ("disposition", crate::proxy::DISPOSITION_TRANSIENT),
+            (
+                "disposition",
+                crate::egress::upstream::DISPOSITION_TRANSIENT,
+            ),
         ],
     );
-    upstream_failure(&app, "tel-eng-pool", 0, crate::proxy::DISPOSITION_TRANSIENT);
+    upstream_failure(
+        &app,
+        "tel-eng-pool",
+        0,
+        crate::egress::upstream::DISPOSITION_TRANSIENT,
+    );
     assert_eq!(
         (metric_sum(
             crate::metrics::UPSTREAM_FAILURES_TOTAL,
             &[
                 ("pool", "tel-eng-pool"),
                 ("lane", "tel-eng-model"),
-                ("disposition", crate::proxy::DISPOSITION_TRANSIENT),
+                (
+                    "disposition",
+                    crate::egress::upstream::DISPOSITION_TRANSIENT
+                ),
             ],
         ) - failures0)
             .round() as u64,
@@ -276,10 +287,14 @@ fn test_engine_helpers_emit_premigration_series() {
     // A failover with a transport-class reason (`timeout`, from the pre-response error arm).
     let fo_labels = [
         ("pool", "tel-eng-pool"),
-        ("reason", crate::proxy::ERR_NET_TIMEOUT),
+        ("reason", crate::egress::upstream::ERR_NET_TIMEOUT),
     ];
     let failovers0 = metric_sum(crate::metrics::FAILOVERS_TOTAL, &fo_labels);
-    failover(&app, "tel-eng-pool", crate::proxy::ERR_NET_TIMEOUT);
+    failover(
+        &app,
+        "tel-eng-pool",
+        crate::egress::upstream::ERR_NET_TIMEOUT,
+    );
     assert_eq!(
         (metric_sum(crate::metrics::FAILOVERS_TOTAL, &fo_labels) - failovers0).round() as u64,
         1

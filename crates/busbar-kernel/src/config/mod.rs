@@ -534,10 +534,10 @@ pub struct RootCfg {
     /// The `tool_pools:` failover pools for this section's owning plane, carried through `resolve`
     /// VERBATIM — operator intent, like `tool_defs` beside it, projected onto
     /// `state::App::tool_pools` at build. Empty ⇒ no failover on that plane.
-    pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub tool_pools: std::collections::BTreeMap<String, crate::route::CandidatePoolCfg>,
     /// The `agent_pools:` failover pools for this section's owning plane, carried through `resolve`
     /// VERBATIM onto `state::App::agent_pools`. Empty ⇒ no failover on that plane.
-    pub agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub agent_pools: std::collections::BTreeMap<String, crate::route::CandidatePoolCfg>,
     /// LAW 7 — the plane config sections this config writes content into (the deletion gate's
     /// `is_present()`). A linked plane whose section is absent hydrates, starts, builds and serves
     /// nothing; see `state::App::plane_configured`.
@@ -870,11 +870,21 @@ pub use busbar_kernel::config::pools::{
 };
 
 // The FAILOVER BUDGET numeric defaults/bounds are plain scalars with no config grammar attached, so
-// they live in the neutral `busbar_kernel::failover` (a plane names the per-request failover
+// they live in the neutral `busbar_kernel::route` (a plane names the per-request failover
 // budget without reaching into `busbar-core`); re-exported here at their historical
 // `crate::config::*` paths so every core call site (`appbuild`, `config_validate`, `test_support`,
 // the pools `default_failover_timeout`/`default_max_hops` serde defaults) resolves unchanged.
-pub use busbar_kernel::failover::{
+/// The CEILING on a plane consumer's pool member list, enforced at config validation
+/// (`check_failover_pool`) so an admission can never index past the plane store's fixed
+/// lane table. A constant rather than a config-derived size because the breaker store is
+/// PROCESS-LIFETIME (learned reliability survives every apply) while pool sizes are per-generation
+/// config — a table sized to one generation's pools would need rebuilding, and rebuilding is
+/// exactly the state loss the process-lifetime rule exists to prevent. Eight is generous for the
+/// canonical case (one deployment, registered a handful of times); raising it is a one-line change
+/// plus the validation message.
+pub const MAX_POOL_MEMBERS: usize = 8;
+
+pub use busbar_kernel::route::{
     DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS, MAX_FAILOVER_DEADLINE_SECS,
 };
 
@@ -910,7 +920,7 @@ fn check_failover_pool(
     errors: &mut Vec<String>,
     section: &str,
     pool: &str,
-    def: &crate::failover::CandidatePoolCfg,
+    def: &crate::route::CandidatePoolCfg,
     on_this_plane: impl Fn(&str) -> bool,
     on_other_plane: impl Fn(&str) -> bool,
     this_registry: &str,
@@ -924,16 +934,15 @@ fn check_failover_pool(
             def.members.len()
         ));
     }
-    // The plane breaker store's lane table is FIXED (process-lifetime, sized
-    // `store::MAX_POOL_MEMBERS`; see `store/planes.rs` for why it cannot track config), so a pool
-    // must fit it — refused here, where the operator can act, rather than indexed past at dispatch.
-    if def.members.len() > crate::store::MAX_POOL_MEMBERS {
+    // The breaker's per-member lane table is FIXED ([`MAX_POOL_MEMBERS`]), so a pool must fit it —
+    // refused here, where the operator can act, rather than indexed past at dispatch.
+    if def.members.len() > MAX_POOL_MEMBERS {
         errors.push(format!(
             "{section}.{pool}: {} members exceeds the supported maximum of {} per failover pool \
              (the breaker's per-member lane table is fixed at process start). Split the pool or \
              drop members.",
             def.members.len(),
-            crate::store::MAX_POOL_MEMBERS
+            MAX_POOL_MEMBERS
         ));
     }
     // A pool named after a REGISTRATION on its own plane would alias the registration's degenerate
@@ -2237,7 +2246,7 @@ pub fn resolve(
             };
             let members = pool.members.iter().map(|m| m.model.clone()).collect();
             let repeatable = pool.repeatable.clone();
-            let candidates = crate::failover::CandidatePoolCfg {
+            let candidates = crate::route::CandidatePoolCfg {
                 members,
                 repeatable,
             };

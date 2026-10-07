@@ -201,7 +201,7 @@ impl OpDispatch {
         // and hand it in; the trait picks it (streaming) or the universal `application/json`.
         let egress_stream_accept = crate::proto::decl_for(egress_protocol)
             .map(|d| d.egress_stream_accept)
-            .unwrap_or(crate::proxy::TEXT_EVENT_STREAM);
+            .unwrap_or(crate::ingress::errors::TEXT_EVENT_STREAM);
         self.op_handler
             .egress_accept(egress_stream_accept, wants_stream)
     }

@@ -153,7 +153,7 @@ pub(crate) async fn observe(
         // credential could mint a new time series per distinct target name, which is the
         // memory-exhaustion DoS `pool_label` exists to close. Narrowing this to the configured
         // target's own name is the next step and it belongs where the target is resolved.
-        crate::proxy::POOL_LABEL_UNRESOLVED,
+        crate::ingress::errors::POOL_LABEL_UNRESOLVED,
         crate::telemetry::outcome_of(resp.status().as_u16()),
         started.elapsed().as_secs_f64(),
     );

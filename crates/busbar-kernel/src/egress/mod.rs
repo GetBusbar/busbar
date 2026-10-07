@@ -27,8 +27,12 @@ pub mod seam;
 // THE EGRESS ENGINE — the one owned outbound HTTP stack (the owned dial-coalescing pool over
 // the connector's TLS wrap, with the boot-armed CONNECT tunnel), relocated from busbar-core's
 // `proxy::egress_client` per the one-egress-stack ruling. Core re-exports every name from its old
-// `crate::proxy::` paths.
+// `crate::egress::upstream` paths.
 pub mod engine;
+
+/// The upstream-exchange vocabulary the egress speaks: the engine's names, the egress unit, the capped
+/// body read and its caps, and the failure labels.
+pub mod upstream;
 
 // THE NEUTRAL FULL-DUPLEX WS EGRESS DIALER — dial an upstream `wss://` THROUGH `net_guard`
 // (resolve→pin→guard, then TCP to the pinned address, then TLS with the URL host for SNI, then the WS

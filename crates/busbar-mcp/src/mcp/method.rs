@@ -2837,7 +2837,7 @@ fn refuse_upstream_unavailable(
 /// un-pooled path's records are byte-identical to the breaker unit's).
 fn route_refusal_reason(refused: &super::reroute::RouteRefused) -> &'static str {
     match &refused.refusal {
-        busbar_kernel::failover::Refusal::NotInterchangeable { .. } => refused.refusal.reason(),
+        busbar_kernel::route::Refusal::NotInterchangeable { .. } => refused.refusal.reason(),
         _ => REASON_UPSTREAM_UNAVAILABLE,
     }
 }
@@ -2847,7 +2847,7 @@ fn refuse_route(
     route: &super::reroute::PoolRoute,
     refused: &super::reroute::RouteRefused,
 ) -> Response {
-    if let busbar_kernel::failover::Refusal::NotInterchangeable { .. } = &refused.refusal {
+    if let busbar_kernel::route::Refusal::NotInterchangeable { .. } = &refused.refusal {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
             id,

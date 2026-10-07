@@ -150,7 +150,7 @@ impl AppSlots {
         // Ingress pool labels: configured pools, model-routed labels, and the pre-routing sentinel.
         let mut ingress_labels: Vec<&str> = pools.iter().map(|(pool, _)| *pool).collect();
         ingress_labels.extend(by_model.iter().map(|(model, _)| *model));
-        ingress_labels.push(crate::proxy::POOL_LABEL_UNRESOLVED);
+        ingress_labels.push(crate::ingress::errors::POOL_LABEL_UNRESOLVED);
         ingress_labels.sort_unstable();
         ingress_labels.dedup();
 
@@ -501,7 +501,7 @@ pub fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
 ///
 /// THE EMIT for this family, on EVERY plane — see [`upstream_attempt_on`] for why there is no `&App`
 /// and why both labels are bounded. `disposition` is the model plane's own vocabulary (the
-/// `DISPOSITION_*` values in [`crate::proxy`]) and no plane gets one of its own.
+/// `DISPOSITION_*` values in [`crate::egress::upstream`]) and no plane gets one of its own.
 pub fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'static str) {
     metrics::counter!(
         UPSTREAM_FAILURES_TOTAL,
@@ -573,20 +573,20 @@ pub const OUTCOMES: [&str; 4] = ["ok", "exhausted", "client_error", "error"];
 
 /// `disposition` values on `busbar_upstream_failures_total` (see `proxy::DISPOSITION_*`).
 pub const DISPOSITIONS: [&str; 4] = [
-    crate::proxy::DISPOSITION_TRANSIENT,
-    crate::proxy::DISPOSITION_ATTEMPT_TIMEOUT,
-    crate::proxy::DISPOSITION_HARD_DOWN,
-    crate::proxy::DISPOSITION_CONTEXT_LENGTH,
+    crate::egress::upstream::DISPOSITION_TRANSIENT,
+    crate::egress::upstream::DISPOSITION_ATTEMPT_TIMEOUT,
+    crate::egress::upstream::DISPOSITION_HARD_DOWN,
+    crate::egress::upstream::DISPOSITION_CONTEXT_LENGTH,
 ];
 /// `reason` values on `busbar_failovers_total`: the dispositions plus the transport error classes
 /// the pre-response failure arm records (`proxy::ERR_NET_CONNECT` / `ERR_NET_TIMEOUT`).
 pub const REASONS: [&str; 6] = [
-    crate::proxy::DISPOSITION_TRANSIENT,
-    crate::proxy::DISPOSITION_ATTEMPT_TIMEOUT,
-    crate::proxy::DISPOSITION_HARD_DOWN,
-    crate::proxy::DISPOSITION_CONTEXT_LENGTH,
-    crate::proxy::ERR_NET_CONNECT,
-    crate::proxy::ERR_NET_TIMEOUT,
+    crate::egress::upstream::DISPOSITION_TRANSIENT,
+    crate::egress::upstream::DISPOSITION_ATTEMPT_TIMEOUT,
+    crate::egress::upstream::DISPOSITION_HARD_DOWN,
+    crate::egress::upstream::DISPOSITION_CONTEXT_LENGTH,
+    crate::egress::upstream::ERR_NET_CONNECT,
+    crate::egress::upstream::ERR_NET_TIMEOUT,
 ];
 
 // ── Slot handles ─────────────────────────────────────────────────────────────────────────────────

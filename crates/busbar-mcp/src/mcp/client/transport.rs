@@ -28,11 +28,11 @@
 //!
 //! ## The response body is CAPPED
 //!
-//! An upstream MCP server is not trusted. `busbar_kernel::proxy::read_capped` is the engine's existing
+//! An upstream MCP server is not trusted. `busbar_kernel::egress::upstream::read_capped` is the engine's existing
 //! primitive for exactly this and is reused rather than re-hand-rolled, so the cap, the truncation
 //! signal and the transport-error signal are the same three the rest of the engine reports.
 
-use busbar_kernel::{egress::seam, proxy::ReadEnd, store::now_ms};
+use busbar_kernel::{egress::seam, egress::upstream::ReadEnd, store::now_ms};
 
 use super::jsonrpc::OutboundRequest;
 use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
@@ -99,7 +99,7 @@ impl HttpTransport {
             .await
             .map_err(TransportError::Refused)?;
 
-        let cap = busbar_kernel::proxy::max_upstream_buffered_bytes();
+        let cap = busbar_kernel::egress::upstream::max_upstream_buffered_bytes();
         // OWNED inputs for the blocking hop — the seam's `HopSpec` borrows these, and `leg` (with its
         // pool triggers and the `UPSTREAM_PROGRESS` task-local) must NOT cross into `spawn_blocking`,
         // so the SSE frame handling stays async-side below where `leg` is live.

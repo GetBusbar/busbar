@@ -413,7 +413,7 @@ on A2A. Three identities, one state machine:
 the `trip:` condition) is accepted under `pools:` and nowhere else. There is no
 `breaker:` key under `tools:` or `agents:`, and both sections `deny_unknown_fields`, so
 a config that writes one fails at boot. On MCP and A2A the breaker therefore runs on
-built-in defaults, through `crate::failover`, which calls the same
+built-in defaults, through `crate::route`, which calls the same
 `try_admit_breaker` the LLM plane calls and adds no second state machine.
 
 **What generalises, and what it took to generalise it.** The state machine and the cause
@@ -424,7 +424,7 @@ a property of the protocols. It is not one. The case operators actually run is t
 server image deployed twice, or one agent registered twice, and busbar's inability to be
 told about it was a missing config vocabulary rather than a law. The one neutral top-level
 `pools:` map (1.6.0) is that vocabulary — an MCP or A2A failover pool is just a `pools:`
-entry whose kind is inferred from its `tools:`/`agents:` members — over one selection loop in `crate::failover`;
+entry whose kind is inferred from its `tools:`/`agents:` members — over one selection loop in `crate::route`;
 a candidate set of one remains exactly the degenerate case §4 already describes. Two
 rules keep it safe and both are core's, not a plane's: two candidates are interchangeable
 only when the pins busbar already computed AGREE, and a call that has already gone out is
@@ -434,7 +434,7 @@ repeated only when the operation is named in `repeatable:`. See
 **What the caller gets when a target is Open** is protocol-native on each plane, and
 the difference matters more than it looks. All three rows are live. On every plane a
 refusal is what the caller gets only once selection has run out of candidates: if the
-target sits in a pool, `crate::failover` walks to a verified twin first, and the caller
+target sits in a pool, `crate::route` walks to a verified twin first, and the caller
 sees the refusal only when no admissible candidate remains.
 
 | plane | refusal | live? |

@@ -263,7 +263,7 @@ pub(crate) async fn send(
         busbar_kernel::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),
-            busbar_kernel::proxy::DISPOSITION_TRANSIENT,
+            busbar_kernel::egress::upstream::DISPOSITION_TRANSIENT,
         );
     }
     out
@@ -286,7 +286,7 @@ pub(crate) async fn notify(
         busbar_kernel::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),
-            busbar_kernel::proxy::DISPOSITION_TRANSIENT,
+            busbar_kernel::egress::upstream::DISPOSITION_TRANSIENT,
         );
     }
     out

@@ -32,7 +32,7 @@ async fn parts(resp: Response) -> (StatusCode, String, serde_json::Value) {
 async fn err_json_uses_stable_envelope() {
     let (status, ct, body) = parts(err_json(&AdminError::not_found("hook"))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(ct, busbar_kernel::proxy::APPLICATION_JSON);
+    assert_eq!(ct, busbar_kernel::ingress::errors::APPLICATION_JSON);
     assert_eq!(body["error"]["code"], "not_found");
     assert!(
         body["error"]["message"]
@@ -57,7 +57,7 @@ async fn ok_json_serializes_view_with_given_status() {
     }
     let (status, ct, body) = parts(ok_json(StatusCode::CREATED, &View { name: "x", n: 7 })).await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(ct, busbar_kernel::proxy::APPLICATION_JSON);
+    assert_eq!(ct, busbar_kernel::ingress::errors::APPLICATION_JSON);
     assert_eq!(body, json!({"name": "x", "n": 7}));
 }
 

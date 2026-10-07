@@ -379,7 +379,7 @@ fn the_required_hook_refusal_says_the_words_that_shipped() {
 /// kind stated verbatim, and no dialect's response fields.
 #[test]
 fn an_unresolved_ingress_is_answered_in_the_kernels_own_envelope() {
-    let resp = crate::proxy::ingress_error(
+    let resp = crate::ingress::errors::ingress_error(
         "no-such-protocol",
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_kernel_egress::wire::KIND_OVERLOADED,

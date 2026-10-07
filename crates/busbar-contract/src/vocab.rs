@@ -104,7 +104,7 @@ pub const REASON_MALFORMED: &str = "malformed_params";
 
 // ── THE FAILOVER SEAM'S REASONS ─────────────────────────────────────────────────────────────────
 //
-// `crate::failover` asks one question before every hop on every plane — is there anywhere left, are
+// `crate::route` asks one question before every hop on every plane — is there anywhere left, are
 // these two the same deployment, and may this call be made twice. Its refusals are recorded, so its
 // words are audit words and they live here with the rest rather than in the module that decides.
 //
@@ -116,7 +116,7 @@ pub const REASON_MALFORMED: &str = "malformed_params";
 /// refused admission. ONE word for both, because they are one incident with one operator question
 /// ("what is up with that pool?") — the refusal itself carries the per-candidate reasons in the
 /// shared `Unavailable` taxonomy, so nothing is lost by not spelling them apart here.
-// Named by `crate::failover` (see its header for why that module is not on a dispatch path yet);
+// Named by `crate::route` (see its header for why that module is not on a dispatch path yet);
 // the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
 // later must find it rather than spell a fourth synonym.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -130,7 +130,7 @@ pub const REASON_NO_UPSTREAM_LEFT: &str = "no_upstream_left";
 /// says the CONFIGURATION claimed something checkable and the check failed. Distinct from
 /// [`REASON_ARTIFACT_DRIFTED`], which is one upstream changing under an approval; this is two
 /// upstreams that were never the same thing.
-// Named by `crate::failover` (see its header for why that module is not on a dispatch path yet);
+// Named by `crate::route` (see its header for why that module is not on a dispatch path yet);
 // the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
 // later must find it rather than spell a fourth synonym.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -143,7 +143,7 @@ pub const REASON_NOT_INTERCHANGEABLE: &str = "not_interchangeable";
 /// actually want to change, and the change is a deliberate one: declare the operation safe to repeat.
 /// A log that called this "upstream failed" would hide the fact that busbar had somewhere else to go
 /// and chose not to use it.
-// Named by `crate::failover` (see its header for why that module is not on a dispatch path yet);
+// Named by `crate::route` (see its header for why that module is not on a dispatch path yet);
 // the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
 // later must find it rather than spell a fourth synonym.
 #[cfg_attr(not(test), allow(dead_code))]

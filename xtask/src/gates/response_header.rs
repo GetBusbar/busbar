@@ -53,10 +53,10 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 // THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 
 /// The `x-busbar-route-*` NAME literals and their `HDR_ROUTE_*` consts live in the kernel's
-/// `proxy`; the ONE emission lives in the kernel plane driver's route leg, gated on the operator's
+/// `ingress::errors`; the ONE emission lives in the kernel plane driver's route leg, gated on the operator's
 /// opt-in (the engine wire that held it left with its crate); `server-timing` stayed in core's
 /// router. The table names where they ACTUALLY are, or its allow column stops describing reality.
-const HDR_ROUTE_POLICY_FILE: &str = "crates/busbar-kernel/src/proxy/mod.rs";
+const HDR_ROUTE_POLICY_FILE: &str = "crates/busbar-kernel/src/ingress/errors.rs";
 const HDR_ROUTE_WIRE_FILE: &str = "crates/busbar-kernel/src/plane_driver/route.rs";
 const HDR_SERVER_TIMING_FILE: &str = "crates/busbar-kernel/src/router.rs";
 

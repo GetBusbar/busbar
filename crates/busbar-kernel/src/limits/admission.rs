@@ -78,7 +78,7 @@ fn inbound_overloaded_response() -> axum::response::Response {
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         [(
             axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+            axum::http::HeaderValue::from_static(crate::ingress::errors::APPLICATION_JSON),
         )],
         r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#,
     )

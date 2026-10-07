@@ -406,7 +406,7 @@ impl ReqwestTransport {
             // url separate).
             // What arrived before the failure travels with it: those bytes crossed the hop's wire and
             // bill (Q35), exactly as the streaming leg counts the chunks it got before a cut.
-            busbar_kernel::proxy::ReadEnd::TransportError => Err(SendFailure {
+            busbar_kernel::egress::upstream::ReadEnd::TransportError => Err(SendFailure {
                 err: format!("`{url}`: the connection failed mid-body"),
                 received: Some(buffered.body.len()),
             }),

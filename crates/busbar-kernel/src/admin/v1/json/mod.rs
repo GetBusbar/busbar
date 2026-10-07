@@ -26,7 +26,7 @@ use super::contract::AdminError;
 pub fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
     (
         status,
-        [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
+        [(CONTENT_TYPE, crate::ingress::errors::APPLICATION_JSON)],
         serde_json::to_string(view).unwrap_or_else(|_| "{}".to_string()),
     )
         .into_response()
@@ -57,7 +57,7 @@ fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
     #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_mut))]
     let mut resp = (
         status,
-        [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
+        [(CONTENT_TYPE, crate::ingress::errors::APPLICATION_JSON)],
         json!({"error": {"code": e.code(), "message": e.message()}}).to_string(),
     )
         .into_response();

@@ -88,7 +88,7 @@ pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
 /// the neutral `proxy` module (which owns the process-global this seeds), so the serde default here
 /// and the accessor a plane reads can never drift apart.
 pub const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize =
-    crate::proxy::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
+    crate::egress::upstream::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
 /// Default cap on a single `plugins.fetch:` download (bytes). Mirrors the same defense the
 /// token-endpoint reads already apply (`egress_auth::read_capped_token_response`,
 /// `proxy::wire::read_capped`): a mistyped or compromised `plugins.fetch` URL serving a multi-GB
@@ -178,7 +178,7 @@ pub fn default_max_auto_provisioned_groups() -> usize {
     0
 }
 pub fn default_hook_content_max_bytes() -> usize {
-    crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES
+    crate::hooks::taps::DEFAULT_HOOK_CONTENT_MAX_BYTES
 }
 pub fn default_hard_down_cooldown_secs() -> u64 {
     DEFAULT_HARD_DOWN_COOLDOWN_SECS
@@ -648,11 +648,11 @@ fn mirror_derived_caps(slot: Option<&LimitsResolved>) {
     let cap = slot
         .map(|l| l.upstream_error_body_max_bytes)
         .unwrap_or(DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES);
-    crate::proxy::set_max_upstream_buffered_bytes(cap);
+    crate::egress::upstream::set_max_upstream_buffered_bytes(cap);
     // The egress translate-body cap is `request_body_max_bytes` (one knob feeds both ingress and this
     // egress cap); mirror it with the SAME uninstalled-fallback the accessor uses.
     let translate_cap = slot
         .map(|l| l.request_body_max_bytes)
         .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES);
-    crate::proxy::set_max_translate_body_bytes(translate_cap);
+    crate::ingress::errors::set_max_translate_body_bytes(translate_cap);
 }

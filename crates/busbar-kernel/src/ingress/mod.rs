@@ -30,7 +30,7 @@ pub fn pool_authorized(
             return Some(ingress_error(
                 proto,
                 StatusCode::FORBIDDEN,
-                crate::proxy::KIND_PERMISSION,
+                crate::ingress::errors::KIND_PERMISSION,
                 "Your API key does not have permission to access this resource.",
             ));
         }
@@ -248,7 +248,7 @@ pub fn limit_refusal(
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
+            crate::ingress::errors::KIND_RATE_LIMIT,
             format!(
                 "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
                      after the indicated time.",
@@ -263,7 +263,7 @@ pub fn limit_refusal(
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
+            crate::ingress::errors::KIND_RATE_LIMIT,
             format!(
                 "Too many concurrent requests (group '{group}' is at its in-flight \
                      limit). Please retry shortly."
@@ -284,7 +284,7 @@ pub fn limit_refusal(
             crate::proto::decl_for(proto)
                 .map(|d| d.quota_exceeded_status)
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
-            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            crate::ingress::errors::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "You have exceeded your current quota (group '{group}' budget per {}{} \
                      exhausted). Please check your plan and billing details.",
@@ -307,7 +307,7 @@ pub fn limit_refusal(
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
+            crate::ingress::errors::KIND_RATE_LIMIT,
             format!(
                 "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
                      after the indicated time.",
@@ -320,7 +320,7 @@ pub fn limit_refusal(
         // vendor-plausible shape is a permission denial.
         LimitBlocked::Disabled(group) => (
             StatusCode::FORBIDDEN,
-            crate::proxy::KIND_PERMISSION,
+            crate::ingress::errors::KIND_PERMISSION,
             format!(
                 "Your API key does not currently have access to this resource (group \
                      '{group}' is disabled)."
@@ -333,7 +333,7 @@ pub fn limit_refusal(
             crate::proto::decl_for(proto)
                 .map(|d| d.quota_exceeded_status)
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
-            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            crate::ingress::errors::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "Your quota configuration is incomplete (group '{group}' is not \
                      configured). Please contact your administrator."
@@ -436,7 +436,7 @@ pub fn destination_guard(
         let resp = ingress_error(
             proto,
             StatusCode::BAD_REQUEST,
-            crate::proxy::KIND_INVALID_REQUEST,
+            crate::ingress::errors::KIND_INVALID_REQUEST,
             &crate::door::VerifyRefusal::NoRate { name: pool.into() }.message(),
         );
         return Err(Box::new(finish_rejected(
@@ -490,7 +490,7 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
     if v.pools().iter().any(|(n, _)| *n == model) || v.model_index(model).is_some() {
         model
     } else {
-        crate::proxy::POOL_LABEL_UNRESOLVED
+        crate::ingress::errors::POOL_LABEL_UNRESOLVED
     }
 }
 
@@ -656,14 +656,14 @@ fn finish_inner(
 /// names the ingress protocol of the route that failed; `status` is the HTTP status; `kind` is a
 /// protocol-appropriate error category; `message` is the human-readable detail.
 ///
-/// Thin delegation to the CANONICAL `crate::proxy::ingress_error` (the single
+/// Thin delegation to the CANONICAL `crate::ingress::errors::ingress_error` (the single
 /// source of truth for native error shaping + per-protocol headers — Bedrock
 /// `x-amzn-RequestId`/`x-amzn-errortype` via the `ProtocolWriter::attach_error_response_headers` vtable method (BedrockWriter delegates to its private helper), the generic
 /// fallback envelope, etc.). Keeping ingress on this one function rather than a private copy means
 /// route/forward error shaping cannot drift. The route call sites (and the in-module tests) keep
 /// the short `proto`/`message` parameter names; the canonical fn names them `ingress`/`msg`.
 pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {
-    crate::proxy::ingress_error(proto, status, kind, message)
+    crate::ingress::errors::ingress_error(proto, status, kind, message)
 }
 
 // THE PLANE-NEUTRAL JSON-RPC ENVELOPE READER, shared by every JSON-RPC-fronted mounted plane. It
@@ -692,6 +692,10 @@ pub mod native;
 
 /// The protocol catch-all.
 pub mod dispatch;
+
+/// The ingress error vocabulary: the refusal envelope, the error kinds, the body caps and the
+/// route-policy response headers.
+pub mod errors;
 // `protocol_dispatch` is the axum catch-all fallback the core router mounts and nothing outside core
 // names, so it stays crate-private — keeping the confidential `CallerToken` it takes off the public
 // seam. (The universal resolved-op ingress it used to hold — `operation_resolved`/`operation_ingress`

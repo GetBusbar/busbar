@@ -935,7 +935,7 @@ pub(super) async fn invoke(
         // The same sentinel `plane::observe` stamps, and for the same reason it states there: the
         // routing target is client-supplied and an unbounded label value is a memory-exhaustion DoS
         // one valid credential can drive.
-        busbar_kernel::proxy::POOL_LABEL_UNRESOLVED,
+        busbar_kernel::ingress::errors::POOL_LABEL_UNRESOLVED,
         busbar_kernel::telemetry::outcome_of(answered.status().as_u16()),
         started.elapsed().as_secs_f64(),
     );

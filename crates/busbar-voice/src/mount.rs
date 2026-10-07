@@ -1186,7 +1186,7 @@ fn rtc_call_id_of(location: &str) -> Option<String> {
 /// The substrate egress client the one-shot HTTPS passes dial through (the same posture the concrete
 /// minter uses). Built per pass; the composition root pools one once the provider config is threaded.
 fn egress_client() -> EngineClient {
-    busbar_kernel::proxy::build_egress_client(
+    busbar_kernel::egress::upstream::build_egress_client(
         &busbar_kernel::egress::engine::EngineSpec::pooled_webpki(4, 300, false, false),
     )
 }

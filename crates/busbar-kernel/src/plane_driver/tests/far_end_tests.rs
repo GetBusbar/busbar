@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use crate::proxy::egress_unit::{
+use crate::egress::upstream::egress_unit::{
     ports::{
         Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
         Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,

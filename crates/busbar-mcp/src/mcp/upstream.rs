@@ -446,17 +446,17 @@ impl BreakerCell {
 #[derive(Debug)]
 pub(crate) struct LegFailure {
     pub(crate) message: String,
-    /// [`busbar_kernel::failover::Stage::BeforeFirstByte`] iff the wire itself says nothing was
+    /// [`busbar_kernel::route::Stage::BeforeFirstByte`] iff the wire itself says nothing was
     /// transmitted (a connect-class failure, or busbar's own pre-wire refusal). Everything
     /// ambiguous is `AfterDispatch`.
-    pub(crate) stage: busbar_kernel::failover::Stage,
+    pub(crate) stage: busbar_kernel::route::Stage,
 }
 
 impl LegFailure {
     fn dispatched(message: String) -> Self {
         LegFailure {
             message,
-            stage: busbar_kernel::failover::Stage::AfterDispatch,
+            stage: busbar_kernel::route::Stage::AfterDispatch,
         }
     }
 }
@@ -497,7 +497,7 @@ pub(crate) async fn call(
             message: "a `tools/call` needs the tool's bound identity and this leg was authorised \
                       for a server-scoped verb, which names none"
                 .to_string(),
-            stage: busbar_kernel::failover::Stage::BeforeFirstByte,
+            stage: busbar_kernel::route::Stage::BeforeFirstByte,
         }
     })?;
     let plan =
@@ -505,7 +505,7 @@ pub(crate) async fn call(
             // The grant/credential plan refused BEFORE any socket: nothing left busbar.
             LegFailure {
                 message: e.to_string(),
-                stage: busbar_kernel::failover::Stage::BeforeFirstByte,
+                stage: busbar_kernel::route::Stage::BeforeFirstByte,
             }
         })?;
     let access_token = match plan {
@@ -520,7 +520,7 @@ pub(crate) async fn call(
                 // server's cell for its AS being down.
                 .map_err(|message| LegFailure {
                     message,
-                    stage: busbar_kernel::failover::Stage::BeforeFirstByte,
+                    stage: busbar_kernel::route::Stage::BeforeFirstByte,
                 })?,
         ),
     };
@@ -634,7 +634,7 @@ pub(crate) async fn call(
 }
 
 /// The TRANSPORT half of this plane's Stage-1 normalizer: how one failed wire leg is CLASSIFIED (the
-/// caller settles it, CLUSTER-1), and (for the reroute loop) the [`busbar_kernel::failover::Stage`] the
+/// caller settles it, CLUSTER-1), and (for the reroute loop) the [`busbar_kernel::route::Stage`] the
 /// failure leaves the request at.
 ///
 /// - `Unreachable` — a connect-class failure: the destination never received a byte. Classified as
@@ -654,7 +654,7 @@ pub(crate) async fn call(
 /// - `Refused` — busbar's OWN dispatch-time refusal (SSRF, a malformed target): nothing left
 ///   busbar and the upstream answered nothing, so nothing is recorded against it.
 ///   `BeforeFirstByte` for the same reason.
-fn classify_wire_failure(err: &TransportError) -> (busbar_kernel::failover::Stage, LegOutcome) {
+fn classify_wire_failure(err: &TransportError) -> (busbar_kernel::route::Stage, LegOutcome) {
     let network = || {
         LegOutcome::Failure(busbar_contract::upstream::CanonicalSignal {
             class: busbar_contract::upstream::StatusClass::Network,
@@ -663,14 +663,12 @@ fn classify_wire_failure(err: &TransportError) -> (busbar_kernel::failover::Stag
         })
     };
     match err {
-        TransportError::Unreachable(_) => {
-            (busbar_kernel::failover::Stage::BeforeFirstByte, network())
-        }
-        TransportError::Io(_) => (busbar_kernel::failover::Stage::AfterDispatch, network()),
+        TransportError::Unreachable(_) => (busbar_kernel::route::Stage::BeforeFirstByte, network()),
+        TransportError::Io(_) => (busbar_kernel::route::Stage::AfterDispatch, network()),
         // Nothing left busbar (supervisor backoff / busbar's own dispatch refusal): `Nothing`, so no
         // fact is recorded against the target's cell. See the doc above for the double-accounting rule.
         TransportError::Supervision(_) | TransportError::Refused(_) => (
-            busbar_kernel::failover::Stage::BeforeFirstByte,
+            busbar_kernel::route::Stage::BeforeFirstByte,
             LegOutcome::Nothing,
         ),
     }
@@ -702,7 +700,7 @@ pub(crate) enum LegOutcome {
 /// registration whose operator said "this peer is slow" meant the whole round trip.
 ///
 /// The RESPONSE BODY is bounded on TWO axes, not one: the deadline above, and a BYTE CAP
-/// (`busbar_kernel::proxy::max_upstream_buffered_bytes`). The authorization server is not trusted
+/// (`busbar_kernel::egress::upstream::max_upstream_buffered_bytes`). The authorization server is not trusted
 /// any more than a registered MCP server's own upstream is, so its answer is read through the same
 /// capped primitive — see the read site for why a truncated body is refused rather than parsed.
 pub(super) async fn exchange(
@@ -747,16 +745,19 @@ pub(super) async fn exchange(
     // THE BODY IS CAPPED, not merely time-bounded. The prior code read this body with
     // `response.into_body().collect()` under only the deadline above — a compromised or hostile
     // authorization server can stream an arbitrarily large body inside that same deadline, and
-    // busbar buffered all of it, per call. `busbar_kernel::proxy::read_capped`, under
+    // busbar buffered all of it, per call. `busbar_kernel::egress::upstream::read_capped`, under
     // `max_upstream_buffered_bytes()`, is the SAME bounded-read primitive `HttpTransport::send`
     // already uses for an upstream MCP server's own response — reused here rather than a second
     // limit invented for this one caller. A body that overruns the cap is refused BEFORE it is
     // handed to `serde_json`: a truncated token response must never be parsed as a token, so
     // truncation is its own error arm rather than falling through to "not JSON".
-    let cap = busbar_kernel::proxy::max_upstream_buffered_bytes();
+    let cap = busbar_kernel::egress::upstream::max_upstream_buffered_bytes();
     let body = {
         use http_body_util::BodyExt;
-        let read = busbar_kernel::proxy::read_capped(response.into_body().into_data_stream(), cap);
+        let read = busbar_kernel::egress::upstream::read_capped(
+            response.into_body().into_data_stream(),
+            cap,
+        );
         let (raw, read_end) = tokio::time::timeout_at(deadline, read).await.map_err(|_| {
             format!(
                 "the RFC 8693 exchange body could not be read: {}",
@@ -764,14 +765,14 @@ pub(super) async fn exchange(
             )
         })?;
         match read_end {
-            busbar_kernel::proxy::ReadEnd::Complete => raw,
-            busbar_kernel::proxy::ReadEnd::Truncated => {
+            busbar_kernel::egress::upstream::ReadEnd::Complete => raw,
+            busbar_kernel::egress::upstream::ReadEnd::Truncated => {
                 return Err(format!(
                     "the RFC 8693 exchange response exceeded the {cap}-byte cap; refusing to parse \
                      a truncated token response"
                 ));
             }
-            busbar_kernel::proxy::ReadEnd::TransportError => {
+            busbar_kernel::egress::upstream::ReadEnd::TransportError => {
                 return Err(
                     "the RFC 8693 exchange connection failed mid-response; refusing to parse a \
                      partial token response"

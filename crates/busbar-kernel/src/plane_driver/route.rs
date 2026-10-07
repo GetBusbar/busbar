@@ -1199,14 +1199,15 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         // stamped them; nothing on the default path or when no hook chose.
                         let chosen = self.lock().route_policy;
                         if let Some(name) = chosen.filter(|_| {
-                            !bufs.member.is_empty() && crate::proxy::route_policy_headers_enabled()
+                            !bufs.member.is_empty()
+                                && crate::ingress::errors::route_policy_headers_enabled()
                         }) {
                             fields.push((
-                                crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(),
+                                crate::ingress::errors::HDR_ROUTE_POLICY.as_bytes().to_vec(),
                                 name.as_bytes().to_vec(),
                             ));
                             fields.push((
-                                crate::proxy::HDR_ROUTE_TARGET.as_bytes().to_vec(),
+                                crate::ingress::errors::HDR_ROUTE_TARGET.as_bytes().to_vec(),
                                 bufs.member.clone(),
                             ));
                         }

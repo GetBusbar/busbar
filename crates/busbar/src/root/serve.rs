@@ -922,7 +922,7 @@ pub fn with_pools(
     mut sections: BTreeMap<&'static str, serde_yaml::Value>,
     pools: &[(
         &'static str,
-        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+        BTreeMap<String, busbar_kernel::route::CandidatePoolCfg>,
     )],
 ) -> BTreeMap<&'static str, serde_yaml::Value> {
     use busbar_contract::section::{

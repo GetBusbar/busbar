@@ -128,7 +128,7 @@ mod in_memory;
 pub use in_memory::*;
 
 mod planes;
-pub use planes::{PlaneBreakers, MAX_POOL_MEMBERS};
+pub use planes::PlaneBreakers;
 // `PlaneAdmission` is the RAII admission token the plane dispatch paths hand around; with BOTH
 // planes compiled out nothing names it, so this re-export is unused in that config alone.
 #[allow(unused_imports)]

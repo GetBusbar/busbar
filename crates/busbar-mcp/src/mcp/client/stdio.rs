@@ -453,7 +453,7 @@ impl StdioChild {
         // `proxy::read_capped`; this is the same bound, from the same knob, on the other channel.
         let read = read_capped_line(
             &mut self.stdout,
-            busbar_kernel::proxy::max_upstream_buffered_bytes(),
+            busbar_kernel::egress::upstream::max_upstream_buffered_bytes(),
         );
         tokio::time::timeout_at(deadline, read)
             .await

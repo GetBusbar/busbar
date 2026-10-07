@@ -62,10 +62,10 @@ pub(crate) async fn protocol_dispatch(
     if let Some(rh) = crate::handlers::request_handler(proto) {
         if let Some(op) = rh.resolve_operation(&path, &body) {
             if rh.operation_handler(op).is_none() {
-                return crate::proxy::ingress_error(
+                return crate::ingress::errors::ingress_error(
                     proto,
                     StatusCode::NOT_FOUND,
-                    crate::proxy::KIND_NOT_FOUND,
+                    crate::ingress::errors::KIND_NOT_FOUND,
                     "This endpoint does not support that operation.",
                 );
             }

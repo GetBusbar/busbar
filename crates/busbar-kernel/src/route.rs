@@ -123,7 +123,7 @@
 use busbar_kernel::store::LaneRuntime;
 
 // Phase-B B1: the candidate/stage/refusal/admitted/attempt/order/walk_with FAMILY relocated to
-// `busbar-substrate`; this glob keeps `crate::failover::X` resolving for every in-core caller. The
+// `busbar-substrate`; this glob keeps `crate::route::X` resolving for every in-core caller. The
 // serde config type (`CandidatePoolCfg`) and the disposition halves a plugin's dispatch engine drives
 // (`walk`, `record_outcome`, `record_success`) stay here, over `busbar_kernel::store::LaneRuntime`
 // and `crate::breaker`. Glob, so the re-export is never an unused import when a plane consumer is out.
@@ -301,7 +301,7 @@ pub fn record_success<C: Candidate>(store: &dyn LaneRuntime, pool: &str, candida
 }
 
 #[cfg(test)]
-#[path = "tests/failover_tests.rs"]
+#[path = "tests/route_tests.rs"]
 mod failover_tests;
 
 // ==== merged from busbar-substrate failover.rs (W4.b P2) ====

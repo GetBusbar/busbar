@@ -1875,7 +1875,7 @@ routing:
 
 /// The body-size COUPLING: `limits.request_body_max_bytes` is the SINGLE knob; the resolved value
 /// the inbound `DefaultBodyLimit` uses IS the same value the egress translate-body cap reads
-/// (`busbar_kernel::proxy::max_translate_body_bytes` returns `request_body_max_bytes`). So an accepted
+/// (`busbar_kernel::ingress::errors::max_translate_body_bytes` returns `request_body_max_bytes`). So an accepted
 /// request is always buffer-translatable on egress.
 #[test]
 fn test_request_body_size_couples_ingress_and_translate() {
@@ -3575,22 +3575,22 @@ fn failover_pools_are_absent_by_default() {
 /// turned into the answer, and a default that drifted here would be invisible there.
 #[test]
 fn nothing_is_repeatable_unless_the_operator_names_it() {
-    let pool = crate::failover::CandidatePoolCfg {
+    let pool = crate::route::CandidatePoolCfg {
         members: vec!["a".into(), "b".into()],
         repeatable: vec!["search_code".into()],
     };
     assert_eq!(
         pool.repeatability("search_code"),
-        crate::failover::Repeatable::Yes
+        crate::route::Repeatable::Yes
     );
     assert_eq!(
         pool.repeatability("send_email"),
-        crate::failover::Repeatable::No,
+        crate::route::Repeatable::No,
         "an operation nobody spoke about is NEVER repeated"
     );
     assert_eq!(
-        crate::failover::CandidatePoolCfg::default().repeatability("search_code"),
-        crate::failover::Repeatable::No,
+        crate::route::CandidatePoolCfg::default().repeatability("search_code"),
+        crate::route::Repeatable::No,
         "and an empty declaration repeats nothing at all"
     );
 }

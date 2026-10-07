@@ -107,7 +107,7 @@ async fn a_saturated_gate_sheds_instead_of_parking_the_caller() {
         resp.headers()
             .get(axum::http::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok()),
-        Some(crate::proxy::APPLICATION_JSON)
+        Some(crate::ingress::errors::APPLICATION_JSON)
     );
     let body = http_body_util::BodyExt::collect(resp.into_body())
         .await

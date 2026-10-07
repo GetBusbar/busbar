@@ -27,7 +27,9 @@ mod policies;
 #[path = "../hook_parity_driver/rig.rs"]
 mod rig;
 
-use busbar_kernel::proxy::{route_policy_headers_enabled, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
+use busbar_kernel::ingress::errors::{
+    route_policy_headers_enabled, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET,
+};
 use policies::{canned_gate, Canned};
 use rig::{member, Answered, Hooks, Pool, Rig};
 

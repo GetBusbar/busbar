@@ -44,6 +44,8 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 pub mod gate;
 pub mod plugin;
 pub mod scrape;
+/// The hook stage taps and the hook content ceiling.
+pub mod taps;
 pub mod wire;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
@@ -1831,7 +1833,7 @@ pub enum ResolvedPolicy {
 /// prompt applies.
 #[must_use]
 pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
-    let cap = crate::proxy::hook_content_max_bytes();
+    let cap = crate::hooks::taps::hook_content_max_bytes();
     if cap == 0 {
         return p;
     }

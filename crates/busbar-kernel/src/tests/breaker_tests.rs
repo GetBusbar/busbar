@@ -48,7 +48,7 @@ fn test_builtin_context_length_on_real_400_classifies_context_length() {
     // healthy, fail over without penalizing the breaker.
     let raw = RawUpstreamError {
         http_status: 400,
-        provider_code: Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+        provider_code: Some(crate::egress::upstream::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
         structured_type: None,
         retry_after_secs: None,
     };
@@ -67,7 +67,7 @@ fn test_builtin_context_length_not_recognized_on_5xx() {
     // TransientUpstream) so the breaker is penalized — NOT ContextLength.
     let raw = RawUpstreamError {
         http_status: 503,
-        provider_code: Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+        provider_code: Some(crate::egress::upstream::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
         structured_type: None,
         retry_after_secs: None,
     };
@@ -81,11 +81,14 @@ fn test_operator_error_map_overrides_builtin_context_length() {
     // built-in context-length recognition even for the canonical code on a 400.
     let raw = RawUpstreamError {
         http_status: 400,
-        provider_code: Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+        provider_code: Some(crate::egress::upstream::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
         structured_type: None,
         retry_after_secs: None,
     };
-    let map = err_map(&[(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH, "client_error")]);
+    let map = err_map(&[(
+        crate::egress::upstream::PROVIDER_CODE_CONTEXT_LENGTH,
+        "client_error",
+    )]);
     let sig = normalize_raw_error(&raw, &map);
     assert_eq!(sig.class, StatusClass::ClientError);
 }
@@ -148,7 +151,7 @@ fn test_builtin_context_length_not_recognized_on_non_request_size_4xx() {
     // A guard of merely `!(500..600)` would wrongly accept any non-5xx.
     let raw = RawUpstreamError {
         http_status: 403,
-        provider_code: Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+        provider_code: Some(crate::egress::upstream::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
         structured_type: None,
         retry_after_secs: None,
     };
@@ -162,7 +165,7 @@ fn test_builtin_context_length_recognized_on_413() {
     // accepts for the built-in context_length code.
     let raw = RawUpstreamError {
         http_status: 413,
-        provider_code: Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+        provider_code: Some(crate::egress::upstream::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
         structured_type: None,
         retry_after_secs: None,
     };

@@ -909,7 +909,7 @@ fn the_host_series_catalog_holds_every_series_the_host_defines() {
     let sources = [
         "busbar-kernel/src/metrics/mod.rs",
         "busbar-kernel/src/telemetry.rs",
-        "busbar-kernel/src/proxy/proxy_vocab.rs",
+        "busbar-kernel/src/hooks/taps.rs",
     ];
     let mut defined = Vec::new();
     for file in sources {

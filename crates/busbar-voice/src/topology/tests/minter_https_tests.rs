@@ -15,7 +15,7 @@ use crate::ir::config::SessionConfig;
 use crate::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
 use crate::topology::webrtc::{MintError, TokenMinter};
 use busbar_kernel::egress::engine::EngineSpec;
-use busbar_kernel::proxy::build_egress_client;
+use busbar_kernel::egress::upstream::build_egress_client;
 use std::sync::Arc;
 
 const REAL_KEY: &str = "sk-real-secret-key-never-leaves-the-server";

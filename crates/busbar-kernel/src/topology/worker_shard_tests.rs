@@ -8,9 +8,9 @@
 #[test]
 fn worker_ids_index_distinct_shards_and_unset_falls_back() {
     let clients = super::UpstreamClients::build(3, || {
-        crate::proxy::build_egress_client(&crate::egress::engine::EngineSpec::pooled_webpki(
-            1, 1, false, false,
-        ))
+        crate::egress::upstream::build_egress_client(
+            &crate::egress::engine::EngineSpec::pooled_webpki(1, 1, false, false),
+        )
     });
     let addr_of = |c: &crate::egress::engine::EngineClient| c as *const _ as usize;
     let shard_for = |id: Option<usize>| {

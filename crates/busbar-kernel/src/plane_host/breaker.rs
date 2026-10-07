@@ -36,7 +36,8 @@
 use super::recover;
 use super::scope::SettleAdmission;
 use crate::breaker::{CanonicalSignal, StatusClass as BreakerClass};
-use crate::store::{PlaneAdmission, PlaneBreakers, MAX_POOL_MEMBERS};
+use crate::config::MAX_POOL_MEMBERS;
+use crate::store::{PlaneAdmission, PlaneBreakers};
 use busbar_contract::abi::hot::host::HostCtx;
 use busbar_contract::abi::hot::{
     AdmissionId, AdmitRefusal, FaultClass, Key, Signal, StatusClass, Unavailability,
@@ -88,7 +89,7 @@ impl SettleAdmission for BreakerAdmission {
 /// [`AdmissionId`]; it NEVER holds a [`PlaneAdmission`].
 ///
 /// On a refusal the returned [`AdmissionId`] is [`NONE`](AdmissionId::NONE), reconstructed into the
-/// store's own [`Unavailable`](busbar_kernel::store::Unavailable) taxonomy so [`crate::failover::walk_with`]'s
+/// store's own [`Unavailable`](busbar_kernel::store::Unavailable) taxonomy so [`crate::route::walk_with`]'s
 /// `admit` closure gets the SAME refusal shape `try_admit_breaker` handed it — the reconstruction is
 /// the inverse of [`classify_unavailable`] (coarse: the ABI carries a fine [`Unavailability`] + a
 /// second-rounded recovery floor, not the exact internal epoch; the sync sites render `Retry-After`
@@ -138,7 +139,7 @@ pub fn breaker_admit_over(
 /// from the ABI [`Unavailability`] reason + the second-rounded recovery floor a [`breaker_admit_over`]
 /// refusal carried back. Coarse by construction — the ABI does not carry the exact internal epoch, so
 /// the `BreakerOpen`/`AtCapacity` payloads are reconstituted from the floor. This feeds
-/// [`crate::failover::walk_with`]'s `passed_over` reasons (an operator-facing LOG on the sync sites),
+/// [`crate::route::walk_with`]'s `passed_over` reasons (an operator-facing LOG on the sync sites),
 /// never a caller-facing `Retry-After` (that is the store's own `retry_after_secs`).
 // Reached only through [`breaker_admit_over`], so it shares that fn's dual-plane liveness: dead only
 // when BOTH planes are compiled out.

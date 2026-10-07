@@ -5202,7 +5202,13 @@ pub(crate) async fn openapi(
     if let Some(filtered) = openapi_for_configured_planes(&openapi_json(), configured) {
         return (
             StatusCode::OK,
-            [(CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON), VARY],
+            [
+                (
+                    CONTENT_TYPE,
+                    busbar_kernel::ingress::errors::APPLICATION_JSON,
+                ),
+                VARY,
+            ],
             filtered,
         )
             .into_response();
@@ -5211,7 +5217,10 @@ pub(crate) async fn openapi(
         (
             StatusCode::OK,
             [
-                (CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON),
+                (
+                    CONTENT_TYPE,
+                    busbar_kernel::ingress::errors::APPLICATION_JSON,
+                ),
                 (axum::http::header::CONTENT_ENCODING, "gzip"),
                 VARY,
             ],
@@ -5221,7 +5230,13 @@ pub(crate) async fn openapi(
     } else {
         (
             StatusCode::OK,
-            [(CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON), VARY],
+            [
+                (
+                    CONTENT_TYPE,
+                    busbar_kernel::ingress::errors::APPLICATION_JSON,
+                ),
+                VARY,
+            ],
             openapi_json(),
         )
             .into_response()

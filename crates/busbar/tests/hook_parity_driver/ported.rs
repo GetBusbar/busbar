@@ -483,11 +483,11 @@ async fn hook_content_is_uncapped_by_default_and_omitted_whole_when_opted_in() {
     };
 
     // 1. DEFAULT (unlimited): the over-64KiB body is projected in FULL.
-    busbar_kernel::proxy::set_hook_content_max_bytes(
-        busbar_kernel::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+    busbar_kernel::hooks::taps::set_hook_content_max_bytes(
+        busbar_kernel::hooks::taps::DEFAULT_HOOK_CONTENT_MAX_BYTES,
     );
     assert_eq!(
-        busbar_kernel::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+        busbar_kernel::hooks::taps::DEFAULT_HOOK_CONTENT_MAX_BYTES,
         0,
         "the prompt projection default is UNLIMITED (0); anything else is fail-open regression"
     );
@@ -501,11 +501,11 @@ async fn hook_content_is_uncapped_by_default_and_omitted_whole_when_opted_in() {
     assert_eq!(messages[0].1.len(), 200_000, "content sent uncapped");
 
     // 2. OPT-IN ceiling: over-cap content is omitted WHOLE, grant stays visible (present-but-empty).
-    busbar_kernel::proxy::set_hook_content_max_bytes(64 * 1024);
+    busbar_kernel::hooks::taps::set_hook_content_max_bytes(64 * 1024);
     let c = shown().await;
     // Restore the unlimited default for other tests sharing the process-global ceiling.
-    busbar_kernel::proxy::set_hook_content_max_bytes(
-        busbar_kernel::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+    busbar_kernel::hooks::taps::set_hook_content_max_bytes(
+        busbar_kernel::hooks::taps::DEFAULT_HOOK_CONTENT_MAX_BYTES,
     );
     let (system, messages) = c.prompt.expect(
         "the grant is honoured: an over-cap projection is EMPTY, never absent — absence is what an \

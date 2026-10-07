@@ -48,7 +48,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::proxy::egress_unit::{
+use crate::egress::upstream::egress_unit::{
     attempt::attempt_cap_ms,
     ports::{
         disposition, net, Breaker, Capacity, Clock, DestinationId, Dispatched, Disposition,
@@ -950,7 +950,7 @@ impl EgressFarEnd<'_> {
     async fn send_attempt(&self, token: &Pass<Route>, mut request: OutboundRequest) -> bool {
         let e = self.egress;
         // Busbar is invisible to upstreams; the per-connection mechanics are the connection's own.
-        crate::proxy::strip_re_derived(&mut request.fields);
+        crate::egress::upstream::strip_re_derived(&mut request.fields);
         // THE PLANE'S PER-CALL SCOPE rides its request as the host's own field
         // (`abi::auth::SCOPE_REQUEST_FIELD`): taken out here, before anything is encoded, and lent
         // to the member's auth call in its extensions blob. No wire carries it.

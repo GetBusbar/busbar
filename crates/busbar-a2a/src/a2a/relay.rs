@@ -1737,7 +1737,7 @@ fn count_leg_failure(call: &RelayCall<'_>, refusal: RelayRefusal) -> RelayRefusa
         busbar_kernel::telemetry::upstream_failure_on(
             call.agent_id,
             framed_leg(call.framing),
-            busbar_kernel::proxy::DISPOSITION_TRANSIENT,
+            busbar_kernel::egress::upstream::DISPOSITION_TRANSIENT,
         );
     }
     refusal

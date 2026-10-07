@@ -264,7 +264,9 @@ fn arm_host_services() {
     busbar_contract::codec::install_usage_tap_fault_latch(
         crate::handlers::usage_tap_decode_fail_should_warn,
     );
-    busbar_contract::codec::install_translate_cap_reader(crate::proxy::max_translate_body_bytes);
+    busbar_contract::codec::install_translate_cap_reader(
+        crate::ingress::errors::max_translate_body_bytes,
+    );
     busbar_contract::codec::install_entropy_source(os_entropy);
     busbar_contract::codec::install_wall_clock(crate::store::now);
 }

@@ -59,7 +59,7 @@ const MAX_PLUGIN_HEADERS: usize = 64;
 /// Synthetic header name [`project_request_headers`] appends to an over-cap projection so the
 /// receiving plugin has an explicit, in-band signal that the header set it was handed is INCOMPLETE —
 /// the same "never let an omission look complete" discipline `enforce_content_cap` uses for hook
-/// content (see `crate::proxy::hooks::enforce_content_cap`).
+/// content (see `crate::egress::upstream::hooks::enforce_content_cap`).
 const PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER: &str = "x-busbar-headers-truncated";
 
 /// The core paths a plugin route may NEVER claim (exact match), independent of kind. `/metrics` is

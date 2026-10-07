@@ -15,9 +15,9 @@ use crate::diagnostics::{
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
-    core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, state, store, telemetry, tls, transport, trust,
+    core_routes, cost, durable, egress_auth, endpoints, export, governance, handlers, hooks,
+    ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation, plane,
+    plugin_routes, profile, proto, state, store, telemetry, tls, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -1222,8 +1222,8 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     // fetch to an internal/cloud-metadata target with no re-check — the same
                     // redirect-SSRF vector the OTLP exporter and provider clients already close.
                     // A redirect arrives as a 3xx status and falls into the non-success arm below.
-                    let client = crate::proxy::build_egress_client(
-                        &crate::proxy::EgressClientSpec::pooled_webpki(1, 4, false, false),
+                    let client = crate::egress::upstream::build_egress_client(
+                        &crate::egress::upstream::EgressClientSpec::pooled_webpki(1, 4, false, false),
                     );
                     let uri: http::Uri = url
                         .parse()
@@ -1278,14 +1278,14 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     // clear error instead of OOMing busbar on boot or `/plugins/reload`.
                     use http_body_util::BodyExt;
                     let (bytes, end) =
-                        crate::proxy::read_capped(resp.into_body().into_data_stream(), cap).await;
+                        crate::egress::upstream::read_capped(resp.into_body().into_data_stream(), cap).await;
                     match end {
-                        crate::proxy::ReadEnd::Complete => Ok(bytes.to_vec()),
-                        crate::proxy::ReadEnd::Truncated => Err(format!(
+                        crate::egress::upstream::ReadEnd::Complete => Ok(bytes.to_vec()),
+                        crate::egress::upstream::ReadEnd::Truncated => Err(format!(
                             "GET {url}: response exceeded the {cap}-byte plugins.fetch download cap; \
                              refusing to buffer a truncated download"
                         )),
-                        crate::proxy::ReadEnd::TransportError => {
+                        crate::egress::upstream::ReadEnd::TransportError => {
                             Err(format!("read body {url}: connection failed mid-download"))
                         }
                     }

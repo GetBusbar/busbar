@@ -165,7 +165,7 @@ async fn a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_fai
     assert!(
         failures.iter().any(|l| l.contains(&format!(
             "disposition=\"{}\"",
-            busbar_kernel::proxy::DISPOSITION_TRANSIENT
+            busbar_kernel::egress::upstream::DISPOSITION_TRANSIENT
         ))),
         "the failure must carry the MODEL PLANE'S disposition word, not one of this plane's own: \
          {failures:?}"

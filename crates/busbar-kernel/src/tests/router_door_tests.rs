@@ -34,7 +34,7 @@ fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
     crate::build_split_routers_serving(
         app,
         doors,
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel::ingress::errors::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     )

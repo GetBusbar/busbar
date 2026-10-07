@@ -446,7 +446,7 @@ pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::Pro
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
-    egress_user_agent: busbar_kernel::proxy::EGRESS_UA_DEFAULT,
+    egress_user_agent: busbar_kernel::egress::upstream::EGRESS_UA_DEFAULT,
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,
@@ -457,7 +457,7 @@ pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::Pro
     auth_failure_message: "authentication failed",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_kernel::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_kernel::ingress::errors::TEXT_EVENT_STREAM,
     models_list_envelope: None,
     // Identified by its EXPLICIT mount, never by a wire fingerprint — so it claims no router or
     // residual rung, contributes no vendor response metadata, and is not the residual default.

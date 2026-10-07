@@ -109,7 +109,7 @@ pub struct App {
     /// carried resolved-verbatim onto the snapshot so that plane's own dispatch route builder
     /// reads the SAME generation the request was admitted on. Empty ⇒ every
     /// member keeps its degenerate single-member cell and no reroute exists to be had.
-    pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub tool_pools: std::collections::BTreeMap<String, crate::route::CandidatePoolCfg>,
     /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
     /// ([`busbar_kernel::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
@@ -123,7 +123,7 @@ pub struct App {
     #[allow(dead_code)]
     pub plane_pools: std::collections::BTreeMap<
         &'static str,
-        std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+        std::collections::BTreeMap<String, crate::route::CandidatePoolCfg>,
     >,
     pub auth: Arc<crate::auth::AuthMiddleware>,
     /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
@@ -665,7 +665,7 @@ impl App {
     pub fn plane_pools(
         &self,
         plane_key: &str,
-    ) -> Option<&std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>> {
+    ) -> Option<&std::collections::BTreeMap<String, crate::route::CandidatePoolCfg>> {
         self.plane_pools.get(plane_key)
     }
 

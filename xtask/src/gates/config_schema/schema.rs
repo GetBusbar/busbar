@@ -322,7 +322,7 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         format!("{mcp}/config.rs"),
         // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY
         // declaration that decides whether an operation with effects may be performed twice.
-        core_file(cx, &core, "failover/mod.rs")?,
+        core_file(cx, &core, "route.rs")?,
         // `streams:` — the streaming plane's grammar, including the three plane-imposed session
         // CEILINGS that bound what a live-voice deployment may ever hold.
         "crates/busbar-plane-streaming/src/config.rs".to_string(),

@@ -22,7 +22,7 @@
 //! `busbar_kernel::plane_host::spki` pin walk produces, which a plane's own transport calls to
 //! compute its pin, so the pin string is byte-identical. The body cap / `ReadEnd` classification is
 //! re-expressed over the poll seam to match
-//! [`crate::proxy::read_capped`] exactly (Ok-0 = Complete, Fault = TransportError, an over-cap probe =
+//! [`crate::egress::upstream::read_capped`] exactly (Ok-0 = Complete, Fault = TransportError, an over-cap probe =
 //! Truncated). A byte-identity CONFORMANCE test drives this adapter and a direct reqwest hop against
 //! the same fixture and asserts the two agree.
 //!
@@ -36,11 +36,11 @@
 
 use busbar_contract::abi::hot::{EgressDesc, EgressKind, StatusClass, POD_VERSION};
 
+use crate::egress::upstream::ReadEnd;
 use crate::plane_host::egress::{
     borrowed_range, drive_close, drive_open, drive_poll, scope_bits, OpenOutcome, OpenedHead,
 };
 use crate::plane_host::scope::DispatchScope;
-use crate::proxy::ReadEnd;
 
 // The neutral buffered/fault RETURN shapes and the [`HostlessEgress`] driver trait relocated to
 // `busbar_kernel::egress::seam` (field-neutral `std` data + the plugin `EgressFailClass`), so a
@@ -134,11 +134,11 @@ fn build_desc<'a>(spec: &'a HopSpec<'a>, packed_headers: &'a [u8]) -> EgressDesc
 }
 
 /// How many body bytes the adapter reads per poll — bounded, and always clamped to the remaining cap
-/// so the accumulated body never overruns `cap` (matching [`crate::proxy::read_capped`]).
+/// so the accumulated body never overruns `cap` (matching [`crate::egress::upstream::read_capped`]).
 const READ_CHUNK: usize = 64 * 1024;
 
 /// Read a governed egress body into an owned buffer, applying `cap` EXACTLY as
-/// [`crate::proxy::read_capped`] does: accumulate up to `cap` bytes, and once `cap` is reached probe
+/// [`crate::egress::upstream::read_capped`] does: accumulate up to `cap` bytes, and once `cap` is reached probe
 /// one more byte to tell a body that ended at the cap (`Complete`) from one that overran it
 /// (`Truncated`). A mid-body [`StatusClass::Fault`] is [`ReadEnd::TransportError`]. The returned buffer
 /// holds at most `cap` bytes, byte-identical to `read_capped`'s prefix.
@@ -409,8 +409,8 @@ pub struct Buffered {
     pub peer_spki: Option<String>,
     pub client_identity_offered: bool,
     pub body: Vec<u8>,
-    /// How the capped read ended — the poll-seam re-expression of [`crate::proxy::ReadEnd`].
-    pub end: crate::proxy::ReadEnd,
+    /// How the capped read ended — the poll-seam re-expression of [`crate::egress::upstream::ReadEnd`].
+    pub end: crate::egress::upstream::ReadEnd,
 }
 
 /// A fully-decoded egress fault the seam composes its own operator string over — the class, the status,

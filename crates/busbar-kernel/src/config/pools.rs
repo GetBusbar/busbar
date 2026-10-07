@@ -10,7 +10,7 @@
 use serde::Deserialize;
 
 use super::hooks::ON_ERROR_WEIGHTED;
-use crate::failover::{DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS};
+use crate::route::{DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS};
 
 #[derive(Debug, Clone, Default)]
 pub struct PoolCfg {

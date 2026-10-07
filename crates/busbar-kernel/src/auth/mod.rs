@@ -1104,10 +1104,10 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 ///
 /// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_status_and_kind` so the
 /// per-protocol decision lives in the writer vtable, not in this agnostic function.
-// RELOCATED to `busbar_kernel::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
+// RELOCATED to `busbar_kernel::ingress::errors::auth_failure_status_and_kind` (registry-resolved, neutral).
 // Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
 // historical path are unchanged.
-pub use busbar_kernel::proxy::auth_failure_status_and_kind;
+pub use busbar_kernel::ingress::errors::auth_failure_status_and_kind;
 
 /// Build an unauthorized-request response carrying the inferred ingress protocol's NATIVE error envelope.
 /// Auth runs before routing, so the protocol is inferred from the request path. A native SDK
@@ -1822,7 +1822,7 @@ fn unauthorized_with_completion_taps(
         // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
         // `operation: None` capture to exactly this before any IR read), so core names no
         // plane reader here.
-        let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
+        let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = auth_failure_status_and_kind(proto).0.as_u16();
         // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
         // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
@@ -1832,7 +1832,7 @@ fn unauthorized_with_completion_taps(
         // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
         // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
         let host = crate::plane_host::engine_host_value(app);
-        busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
+        busbar_kernel::hooks::taps::fire_stage_taps(
             &app.tap_hooks_response,
             &shape,
             crate::hooks::wire::HookStageProjection {
@@ -2210,8 +2210,11 @@ pub(crate) async fn auth_middleware(
         // in-code cap means a never-terminating / oversized body cannot exhaust the heap even if
         // the layer is absent or misconfigured (defense-in-depth).
         let (parts, body) = req.into_parts();
-        let Ok(body_bytes) =
-            axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
+        let Ok(body_bytes) = axum::body::to_bytes(
+            body,
+            busbar_kernel::ingress::errors::max_translate_body_bytes(),
+        )
+        .await
         else {
             return Err(unauthorized_response(&app, &path));
         };

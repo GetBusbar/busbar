@@ -13,7 +13,7 @@
 //! onto the one cell store, and the FSM transitions all run in `store::in_memory`.
 //!
 //! This is deliberately NOT failover and NOT pools: nothing here SELECTS among candidates. The
-//! selection loop is [`crate::failover::walk`], which the reroute-parity unit mounts on every plane
+//! selection loop is [`crate::route::walk`], which the reroute-parity unit mounts on every plane
 //! consumer's dispatch path; it reaches these same cells through [`PlaneBreakers::runtime`] and this
 //! module stays what it was — a plane consumer's handle on the one cell store, plus the recording
 //! half of the disposition pipeline.
@@ -82,15 +82,7 @@ pub struct PlaneBreakers {
     provisioned: bool,
 }
 
-/// The CEILING on a plane consumer's pool member list, enforced at config validation
-/// (`config::check_failover_pool`) so an admission can never index past the plane store's fixed
-/// lane table. A constant rather than a config-derived size because [`PlaneBreakers`] is
-/// PROCESS-LIFETIME (learned reliability survives every apply) while pool sizes are per-generation
-/// config — a table sized to one generation's pools would need rebuilding, and rebuilding is
-/// exactly the state loss the process-lifetime rule exists to prevent. Eight is generous for the
-/// canonical case (one deployment, registered a handful of times); raising it is a one-line change
-/// plus the validation message.
-pub const MAX_POOL_MEMBERS: usize = 8;
+use crate::config::MAX_POOL_MEMBERS;
 
 impl PlaneBreakers {
     /// The INERT handle for a config with NO plane content (no plane consumer sections, no
