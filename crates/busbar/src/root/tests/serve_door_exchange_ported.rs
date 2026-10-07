@@ -757,18 +757,20 @@ async fn every_credential_carrier_is_admitted_and_a_bad_one_reads_the_native_401
 
 // ── the whole-path allocation gate ──────────────────────────────────────────────────────────────
 
-/// THE DOOR'S WHOLE-PATH ALLOCATION BOUND, A RATCHET: the 692 allocations measured on one warmed
+/// THE DOOR'S WHOLE-PATH ALLOCATION BOUND, A RATCHET: the 691 allocations measured on one warmed
 /// same-dialect request through the WHOLE door path (router, auth, money steps, plane driver, egress
 /// walk, connector, loopback far end, reply), minimum over four warmed requests on one thread. It
 /// may only go DOWN: when the measured number falls, lower this constant to it in the same commit;
 /// never raise it (a raise is the regression). The perf phase ("a zero-allocation hot path") owns
 /// cutting it (ARCHITECT RULING U11 Q5 2026-10-06: set at 694; lowered to 692 when the far end's
-/// target cut borrowed its words and a clean success's unread record kept its attempt's own).
+/// target cut borrowed its words and a clean success's unread record kept its attempt's own; to
+/// 691 when the route leg read its pool's name alone, not its members' facts, for a unit no hook
+/// binds to, and a session stage read its dialect's name only when a view is shown it).
 ///
 /// NOT COMPARABLE WITH THE LEGACY GATE'S 87 (bound 107): that gate measured only the retired
 /// engine's forward (`forward_with_pool`: its walk, attempt and relay over an in-process mock), never
 /// the router, the auth or the money steps this bound spans.
-const DOOR_WHOLE_PATH_MAX_ALLOCS: u64 = 692;
+const DOOR_WHOLE_PATH_MAX_ALLOCS: u64 = 691;
 
 /// One warmed same-dialect request through the whole door path allocates no more than the ratchet
 /// [`DOOR_WHOLE_PATH_MAX_ALLOCS`]. Measured deterministically, as the legacy gate measured: this

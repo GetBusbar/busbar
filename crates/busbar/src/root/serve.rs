@@ -2930,6 +2930,10 @@ impl FarEnd for DoorFar<'_, '_> {
         self.far().and_then(|far| far.candidates(token))
     }
 
+    fn pool(&self, token: &Pass<Route>) -> Option<String> {
+        self.far().and_then(|far| far.pool(token))
+    }
+
     fn constrain(&self, token: &Pass<Route>, constraint: busbar_kernel::plane_driver::Constraint) {
         if let Some(far) = self.far() {
             far.constrain(token, constraint);

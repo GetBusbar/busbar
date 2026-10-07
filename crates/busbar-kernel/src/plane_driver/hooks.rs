@@ -1308,22 +1308,17 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 arrived_in,
             )
         };
-        let dialect = arrived_in;
-        let (pool, dialect) = match &d.hooks {
-            Some(binder) => (
-                self.far
-                    .candidates(token)
-                    .map(|c| c.pool)
-                    .unwrap_or_default(),
-                binder.dialect(dialect),
-            ),
-            None => (String::new(), String::new()),
+        // The pool's name alone (not its members' facts), and the dialect's name read from the
+        // binder only when a sub-operation's view is shown it.
+        let pool = match &d.hooks {
+            Some(_) => self.far.pool(token).unwrap_or_default(),
+            None => String::new(),
         };
-        let stage = SessionStage::new(
+        let stage = SessionStage::of_binder(
             Arc::clone(&d.label),
             runtime,
             d.hooks.clone(),
-            (pool, principal, dialect),
+            (pool, principal),
             arrived_in,
         );
         let _held = d.services.units().staged(unit, Arc::new(stage));
@@ -1347,9 +1342,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             return self.gated_stage(&**binder).await;
         }
-        let facts = self.far.candidates(token);
-        let named = facts.is_some();
-        let walk_pool = facts.as_ref().map(|c| c.pool.clone()).unwrap_or_default();
+        // The pool's name binds the hooks; its members' facts are read only for a unit some hook
+        // binds to (below, before anything is awaited).
+        let walk = self.far.pool(token);
+        let named = walk.is_some();
+        let walk_pool = walk.unwrap_or_default();
         let principal = self
             .lock()
             .principal
@@ -1363,6 +1360,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         }) else {
             return Ok(());
         };
+        let facts = self.far.candidates(token);
         self.lock().hooked_pool.clone_from(&walk_pool);
         // The unit's correlation id, a native `u64` on its span (never a formatted string), the
         // same value every hook payload and tap of the unit carries.
@@ -1893,7 +1891,9 @@ pub struct SessionStage {
     binder: Option<Arc<dyn HookBinder>>,
     pool: String,
     principal: Option<String>,
-    dialect: String,
+    /// The dialect's name a sub-operation's hook is told; `None` = the binder's name for
+    /// `arrived_in`, read when a view is shown it (empty with no binder).
+    dialect: Option<String>,
     /// The dialect the unit arrived in, as the index into the plane's dialects (what its hooks
     /// are bound under).
     arrived_in: u32,
@@ -1947,9 +1947,42 @@ impl SessionStage {
             binder,
             pool,
             principal,
-            dialect,
+            dialect: Some(dialect),
             arrived_in,
             bound: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// [`Self::new`] for a unit whose dialect's name is the binder's own for `arrived_in` (empty
+    /// with no binder), read when a sub-operation's view is shown it rather than when the stage is
+    /// stated.
+    pub(crate) fn of_binder(
+        instance: Arc<str>,
+        runtime: tokio::runtime::Handle,
+        binder: Option<Arc<dyn HookBinder>>,
+        (pool, principal): (String, Option<String>),
+        arrived_in: u32,
+    ) -> Self {
+        Self {
+            instance,
+            runtime,
+            binder,
+            pool,
+            principal,
+            dialect: None,
+            arrived_in,
+            bound: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The dialect's name a sub-operation's hook is told.
+    fn dialect_name(&self) -> String {
+        match &self.dialect {
+            Some(name) => name.clone(),
+            None => self
+                .binder
+                .as_ref()
+                .map_or_else(String::new, |b| b.dialect(self.arrived_in)),
         }
     }
 
@@ -1974,7 +2007,7 @@ impl SessionStage {
             + system.as_deref().map_or(0, |s| s.chars().count());
         Projection {
             pool: self.pool.clone(),
-            dialect: self.dialect.clone(),
+            dialect: self.dialect_name(),
             message_count: turns.len(),
             total_chars,
             system,

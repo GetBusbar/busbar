@@ -1598,6 +1598,13 @@ impl FarEnd for EgressFarEnd<'_> {
         self.next_piece(token)
     }
 
+    fn pool(&self, _token: &Pass<Route>) -> Option<String> {
+        self.egress
+            .pools
+            .get(&self.route.pool)
+            .map(|pool| pool.name.clone())
+    }
+
     fn candidates(&self, _token: &Pass<Route>) -> Option<Candidates> {
         let pool = self.egress.pools.get(&self.route.pool)?;
         let members = pool.admissible_members();

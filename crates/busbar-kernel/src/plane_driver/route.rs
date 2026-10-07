@@ -194,6 +194,12 @@ pub trait FarEnd: Sync {
         None
     }
 
+    /// The name of the pool the walk routes the unit over, as [`Self::candidates`] names it, read
+    /// without reading its members; `None` when the walk names none.
+    fn pool(&self, token: &Pass<Route>) -> Option<String> {
+        self.candidates(token).map(|c| c.pool)
+    }
+
     /// The hooks' constraint on the walk: the members it may pick, the order it tries them in, and
     /// the restricts a fallback pool's members are held to. Called at most once, before the first
     /// attempt.
