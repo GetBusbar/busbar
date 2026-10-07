@@ -6204,11 +6204,12 @@ mod agent_door {
         );
     }
 
-    /// The exposition lines of `family` whose `lane` label is `lane`.
-    fn series_on_lane(family: &str, lane: &str) -> Vec<String> {
+    /// The exposition lines of `family` whose `pool` label is `pool` and `lane` label is `lane`.
+    fn series_of(family: &str, pool: &str, lane: &str) -> Vec<String> {
         busbar_kernel::snapshot::render()
             .lines()
             .filter(|l| l.starts_with(&format!("{family}{{")))
+            .filter(|l| l.contains(&format!("pool=\"{pool}\"")))
             .filter(|l| l.contains(&format!("lane=\"{lane}\"")))
             .map(str::to_string)
             .collect()
@@ -6223,8 +6224,10 @@ mod agent_door {
     }
 
     /// Ported from busbar-a2a a2a/tests/relay_leg_metrics_tests.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to.
-    /// A relayed agent unit counts `busbar_upstream_attempts_total{pool,lane}` for the agent it was
-    /// issued to (the lane is the registration's member name), in the model plane's series shape.
+    /// A relayed agent unit counts `busbar_upstream_attempts_total{pool,lane}` with the agent it was
+    /// issued to as its `pool` and the binding the hop went out on as its `lane`, as predev's cell
+    /// held it (predev relay_leg_metrics_tests.rs:107 `pool="planner"`, :122
+    /// `lane=WIRE_JSONRPC`), in the model plane's series shape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to() {
         busbar_kernel::snapshot::init();
@@ -6235,7 +6238,8 @@ mod agent_door {
         let s = served(instance, &agent.entry("metered", "1h"), false, None);
         approve(&s, "metered").await;
         let family = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
-        let before = total(&series_on_lane(family, "metered"));
+        let jsonrpc = surface("binding_document");
+        let before = total(&series_of(family, "metered", jsonrpc));
         let (status, body) = answered(
             &s.router,
             rpc("metered", "message/send", SEND, Some(&s.token)),
@@ -6243,10 +6247,12 @@ mod agent_door {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(agent.relayed(), "the unit reached the agent");
-        let lines = series_on_lane(family, "metered");
+        let lines = series_of(family, "metered", jsonrpc);
         assert!(
             !lines.is_empty(),
-            "a relayed unit left no `{family}` series naming the agent it was issued to"
+            "a relayed unit left no `{family}` series naming the agent it was issued to and its \
+             binding: {}",
+            busbar_kernel::snapshot::render()
         );
         assert!(
             total(&lines) > before,
@@ -6262,7 +6268,9 @@ mod agent_door {
 
     /// Ported from busbar-a2a a2a/tests/relay_leg_metrics_tests.rs::a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure.
     /// An agent that stops answering lands on `busbar_upstream_failures_total` under the model
-    /// plane's own `transient` disposition, so a dead agent is not 100% healthy on a rate panel.
+    /// plane's own `transient` disposition, so a dead agent is not 100% healthy on a rate panel;
+    /// its series names the agent as `pool` and the hop's binding as `lane` (predev
+    /// relay_leg_metrics_tests.rs:157 `pool="planner"`; relay.rs:1737-1741).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure() {
         busbar_kernel::snapshot::init();
@@ -6286,7 +6294,8 @@ mod agent_door {
         assert!(agent.relayed(), "the warm call reached the agent");
         agent.go_down();
         let family = busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL;
-        let before = total(&series_on_lane(family, "unreached"));
+        let jsonrpc = surface("binding_document");
+        let before = total(&series_of(family, "unreached", jsonrpc));
         let (status, body) = answered(
             &s.router,
             rpc("unreached", "message/send", SEND, Some(&s.token)),
@@ -6297,7 +6306,7 @@ mod agent_door {
             StatusCode::OK,
             "a hop that never reached the agent: {body}"
         );
-        let lines = series_on_lane(family, "unreached");
+        let lines = series_of(family, "unreached", jsonrpc);
         assert!(
             total(&lines) > before,
             "the backend was unreachable and left no `{family}` count for its lane: {lines:?}"

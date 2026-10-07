@@ -355,6 +355,9 @@ pub struct DoorFacts {
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
     pub bench_below_trip_threshold: Option<bool>,
+    /// Its declared counter lane words (`PlaneTail::metric_lanes`): beside its entry names, the
+    /// words its attempts may state as their `lane` label ([`label_bound`]).
+    pub metric_lanes: Vec<String>,
 }
 
 /// What one unit carries between its steps.
@@ -939,7 +942,37 @@ pub fn door_facts(
         audit_kind: OpClassId::new(audit_kind),
         keeps,
         bench_below_trip_threshold: None,
+        metric_lanes: Vec::new(),
     }
+}
+
+/// THE BOUND ON A PLANE'S STATED COUNTER LABELS over its section's `pools`
+/// ([`crate::root::egress_ports::LabelBound`]): for each pool the walk keys by name — a named
+/// pool's label, and each entry's own pool (`plane_lane(plane, entry)`, a direct route's) — the
+/// configured pool labels and entry names that walk can reach (a named pool's members, then its
+/// fallback pool's, and so on), and the plane's declared lane words `vocabulary`.
+#[must_use]
+pub fn label_bound(
+    plane: &str,
+    pools: &DoorPools,
+    vocabulary: &[String],
+) -> crate::root::egress_ports::LabelBound {
+    let mut bound = crate::root::egress_ports::LabelBound::new(vocabulary.iter().cloned());
+    for label in pools.pools().keys() {
+        let mut labels = Vec::new();
+        let mut entries = Vec::new();
+        let mut at = Some(label.as_str());
+        while let Some(pool) = at.filter(|p| !labels.iter().any(|l: &String| l == p)) {
+            labels.push(pool.to_string());
+            entries.extend(pools.pools().get(pool).into_iter().flatten().cloned());
+            at = pools.fallback(pool);
+        }
+        bound = bound.reaching(label, labels, entries);
+    }
+    for entry in pools.entries() {
+        bound = bound.reaching(&plane_lane(plane, entry), [], [entry.clone()]);
+    }
+    bound
 }
 
 // ── the egress ───────────────────────────────────────────────────────────────────────────────────
@@ -1057,7 +1090,13 @@ pub fn compose_egress(
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
         clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
         journal,
-        telemetry: Arc::new(crate::root::egress_ports::WalkTelemetry::new(names)),
+        telemetry: Arc::new(
+            crate::root::egress_ports::WalkTelemetry::new(names).bounded(label_bound(
+                &facts.plane,
+                pools,
+                &facts.metric_lanes,
+            )),
+        ),
         floor: busbar_kernel_egress::WeightedFloor::new(),
         pools: built,
         routes: sealed,

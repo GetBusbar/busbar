@@ -1084,6 +1084,12 @@ pub(crate) fn compose_planes_over(
         )
         .map_err(|e| format!("{instance}: {e}"))?
         .map(|b| b.bench_below_trip_threshold);
+        // THE PLANE'S DECLARED COUNTER LANE WORDS: what, beside its entries, its attempts may state.
+        facts.metric_lanes = served_facts
+            .metric_lanes
+            .iter()
+            .map(|w| (*w).to_string())
+            .collect();
         let pools = DoorPools::of(section);
         // THE EGRESS, SEALED (THE DESIGN §6 steps 2-3): each member's route resolved and its
         // credential bound by the auth plugin serving its style, over the connector its needs were
@@ -2559,6 +2565,14 @@ impl FarEnd for DoorFar<'_, '_> {
         match self.far() {
             Some(far) => far.write(token, request).await,
             None => false,
+        }
+    }
+
+    /// The plane's counter labels for the attempt, handed on to the walk, whose counters bound
+    /// them.
+    fn stated(&self, token: &Pass<Route>, labels: busbar_kernel_egress::ports::StatedLabels) {
+        if let Some(far) = self.far() {
+            far.stated(token, labels);
         }
     }
 }

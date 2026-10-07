@@ -394,6 +394,10 @@ pub const TAIL: &PlaneTail = &PlaneTail {
         fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
         flags: 0,
     },
+    // THE COUNTERS' LANE WORDS: the binding words a hop goes out on (predev's relay counted each
+    // attempt under its binding, relay.rs:1705), the same vocabulary as the dialects.
+    metric_lanes: DIALECTS.as_ptr(),
+    metric_lanes_len: DIALECTS.len(),
 };
 
 /// One path the plane answers on: the verb, the target, the transport claim it arrives over, and

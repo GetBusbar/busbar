@@ -460,6 +460,12 @@ pub fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
     .increment(1);
 }
 
+/// `busbar_plugin_label_refused_total`: a plugin stated a counter label outside the counters' bound,
+/// and its counters kept their own.
+pub fn plugin_label_refused() {
+    metrics::counter!(crate::snapshot::PLUGIN_LABEL_REFUSED_TOTAL).increment(1);
+}
+
 /// `busbar_upstream_failures_total` for one classified failure on `(pool label, lane label)`.
 ///
 /// THE EMIT for this family, on EVERY plane — see [`upstream_attempt_on`] for why there is no `&App`

@@ -94,3 +94,92 @@ fn the_counters_label_a_member_by_name_and_keep_each_pools_depth() {
     t.queued("p", -5);
     assert_eq!(t.depth("p"), 0, "a depth never reads below empty");
 }
+
+/// The value of the one exposition line of `family` whose labels hold every one of `labels`, `0`
+/// when there is none.
+fn scraped(family: &str, labels: &[&str]) -> f64 {
+    busbar_kernel::snapshot::render()
+        .lines()
+        .filter(|l| l.starts_with(family) && !l.starts_with('#'))
+        .filter(|l| labels.iter().all(|want| l.contains(want)))
+        .filter_map(|l| l.rsplit(' ').next()?.parse::<f64>().ok())
+        .sum()
+}
+
+/// RED (the counter-label bound, ARCHITECT ruling: one optional per-attempt tail, bounded): a lane
+/// word the plane never declared, and a pool its walk cannot reach, fall back to the walk's own
+/// labels and count on `busbar_plugin_label_refused_total`; a declared word and a reachable entry
+/// are taken. Without the bound the stated words would be emitted as given, and a plane could mint
+/// a series per distinct string.
+#[test]
+fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
+    use busbar_kernel_egress::ports::StatedLabels;
+    busbar_kernel::snapshot::init();
+    let attempts = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
+    let refused = busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL;
+    let bound = super::LabelBound::new(["declared-word".to_string()]).reaching(
+        "walked-red-arm",
+        Vec::<String>::new(),
+        ["entry-red-arm".to_string()],
+    );
+    let t = WalkTelemetry::new([(A, "own-red-arm".to_string())]).bounded(bound);
+    let stated = |pool: &str, lane: &str| StatedLabels {
+        pool: Some(pool.to_string()),
+        lane: Some(lane.to_string()),
+    };
+
+    let before = scraped(refused, &[]);
+    t.upstream_attempt_stated(
+        "walked-red-arm",
+        A,
+        Some(&stated("entry-red-arm", "undeclared-word")),
+    );
+    assert!(
+        scraped(refused, &[]) > before,
+        "an undeclared lane word is counted refused"
+    );
+    assert!(
+        scraped(
+            attempts,
+            &["pool=\"entry-red-arm\"", "lane=\"own-red-arm\""]
+        ) >= 1.0,
+        "its lane fell back to the walk's own, its reachable pool was taken: {}",
+        busbar_kernel::snapshot::render()
+    );
+    assert_eq!(
+        scraped(attempts, &["lane=\"undeclared-word\""]),
+        0.0,
+        "the undeclared word was never emitted"
+    );
+
+    let before = scraped(refused, &[]);
+    t.upstream_failure_stated(
+        "walked-red-arm",
+        A,
+        "transient_upstream",
+        Some(&stated("unreachable-pool", "declared-word")),
+    );
+    assert!(
+        scraped(refused, &[]) > before,
+        "an unreachable pool is refused"
+    );
+    assert!(
+        scraped(
+            busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
+            &["pool=\"walked-red-arm\"", "lane=\"declared-word\""]
+        ) >= 1.0,
+        "its pool fell back to the walk's own, its declared lane word was taken"
+    );
+
+    let before = scraped(refused, &[]);
+    t.upstream_attempt_stated(
+        "walked-red-arm",
+        A,
+        Some(&stated("entry-red-arm", "declared-word")),
+    );
+    assert_eq!(
+        scraped(refused, &[]),
+        before,
+        "words within the bound refuse nothing"
+    );
+}

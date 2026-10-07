@@ -3047,3 +3047,61 @@ fn a_refused_arrival_may_name_the_entry_it_is_about() {
         "a refusal about no entry is the caller's: a 4xx"
     );
 }
+
+/// THE ATTEMPT'S COUNTER LABELS (ARCHITECT ruling: one optional per-attempt tail): where an answer
+/// states them, each sits inside the arena it wrote; absent is a zero length.
+#[test]
+fn an_attempts_stated_counter_labels_sit_inside_the_arena() {
+    let mut o = attempt_answer();
+    o.metric_pool = sp(0, 4);
+    o.metric_lane = sp(4, 4);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    let mut o = attempt_answer();
+    o.metric_pool = sp(6, 4);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.metric_pool")
+    );
+    let mut o = attempt_answer();
+    o.metric_lane = sp(u32::MAX - 1, 4);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.metric_lane")
+    );
+}
+
+/// THE TAIL'S COUNTER LANE WORDS: a closed vocabulary, declared once. Each word named, a label
+/// value (no control character), none twice, at most `MAX_METRIC_LANES`; a count over NULL is the
+/// tail's own fault.
+#[test]
+fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
+    assert_eq!(check_metric_lanes(&[]), Ok(()));
+    assert_eq!(
+        check_metric_lanes(&[s("jsonrpc"), s("http+json"), s("grpc")]),
+        Ok(())
+    );
+    assert_eq!(
+        check_metric_lanes(&[s("jsonrpc"), s("jsonrpc")]),
+        f(Rule::Contradiction, "tail.metric_lanes")
+    );
+    assert_eq!(
+        check_metric_lanes(&[s("")]),
+        f(Rule::Missing, "tail.metric_lanes")
+    );
+    assert_eq!(
+        check_metric_lanes(&[s("a\nb")]),
+        f(Rule::UnknownCode, "tail.metric_lanes")
+    );
+    const WORDS: [&str; 17] = [
+        "w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10", "w11", "w12", "w13",
+        "w14", "w15", "w16",
+    ];
+    let over: Vec<AbiStr> = WORDS.iter().copied().map(s).collect();
+    assert_eq!(
+        check_metric_lanes(&over),
+        f(Rule::OverMax, "tail.metric_lanes")
+    );
+    let mut t = tail();
+    t.metric_lanes_len = 1;
+    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.metric_lanes"));
+}

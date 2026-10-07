@@ -1702,6 +1702,7 @@ fn piece(
     let left = hop.left;
     let admitted = hop.admitted;
     let need = attempt_need(hop.relay.binding());
+    let binding_word = hop.relay.binding().word();
     let ob = &mut hop.outbox;
     let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
@@ -1788,6 +1789,16 @@ fn piece(
     // THE UNIT'S LEDGER LANE (SEAM-L(j)): the agent it reached, as the engine's meter named it
     // (`agent:<id>`), so the agent's rate card prices it and the metering rows read as 1.5.5's.
     let lane = (!member.is_empty()).then(|| arena.span(door::agent_resource(member).as_bytes()));
+    // THE ATTEMPT'S COUNTER LABELS, as the served engine counted each hop it sent (predev
+    // relay.rs:1705 `upstream_attempt_on(call.agent_id, framed_leg(call.framing))`, and its
+    // failures at :1737-1741): the agent the attempt went to as its `pool`, the binding the hop goes
+    // out on as its `lane` (one of the words the tail declares, `metric_lanes`).
+    let metric = (matches!(ob.head, Some(Head::Attempt(_))) && !member.is_empty()).then(|| {
+        (
+            arena.span(member.as_bytes()),
+            arena.span(binding_word.as_bytes()),
+        )
+    });
     // A stream that already sent messages states the status it ends with on its closing answer:
     // its message and details are in the arena by then.
     let closing_final = ob
@@ -1859,6 +1870,10 @@ fn piece(
     }
     if let Some(lane) = lane {
         out.set(|o| &o.lane, lane);
+    }
+    if let Some((pool, lane)) = metric {
+        out.set(|o| &o.metric_pool, pool);
+        out.set(|o| &o.metric_lane, lane);
     }
     out.set(|o| &o.emitted, n as u64);
     out.set(|o| &o.more, u32::from(more));

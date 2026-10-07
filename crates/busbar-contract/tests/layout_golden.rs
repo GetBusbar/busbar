@@ -1721,7 +1721,9 @@ fn compute_layout() -> String {
             caller_credential_refusal,
             admin_routes,
             admin_routes_len,
-            admin_openapi
+            admin_openapi,
+            metric_lanes,
+            metric_lanes_len
         ]
     );
     record!(
@@ -1852,7 +1854,9 @@ fn compute_layout() -> String {
             final_status,
             _final_reserved,
             final_message,
-            final_details
+            final_details,
+            metric_pool,
+            metric_lane
         ]
     );
     record!(

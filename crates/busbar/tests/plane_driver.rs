@@ -788,6 +788,8 @@ fn zero_piece_out() -> OnPieceOut {
         _final_reserved: 0,
         final_message: span,
         final_details: span,
+        metric_pool: span,
+        metric_lane: span,
     }
 }
 

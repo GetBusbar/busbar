@@ -1139,7 +1139,17 @@ pub struct PlaneTail {
     /// to the admin mount (the kernel keys it under the mount when it merges the admin document);
     /// absent = none. A tail addition.
     pub admin_openapi: Blob,
+    /// THE LANE WORDS THE PLANE MAY STATE ON ITS ATTEMPTS' COUNTERS, declared once (beside the
+    /// operator's entry names, the only other words [`OnPieceOut::metric_lane`] may carry): a
+    /// closed vocabulary of its own, so a plane can never mint a time series per distinct string.
+    /// At most [`MAX_METRIC_LANES`] words, each named, none twice. NULL/0 = none. A tail addition.
+    pub metric_lanes: *const AbiStr,
+    /// How many.
+    pub metric_lanes_len: usize,
 }
+
+/// The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]).
+pub const MAX_METRIC_LANES: usize = 16;
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
 
@@ -1608,6 +1618,16 @@ pub struct OnPieceOut {
     /// With [`EMIT_FINAL_STATUS`]: the final status's details, opaque bytes the carrier hands on
     /// verbatim, in the arena; a zero length = none.
     pub final_details: Span,
+    /// THE ATTEMPT'S COUNTER LABELS, stated on the answer to an ATTEMPT piece: the `pool` label
+    /// the kernel's upstream-attempt and upstream-failure counters carry for it, in the arena; a
+    /// zero length = none, and the kernel keeps its own (the walk's pool). The kernel takes it only
+    /// from a bounded set — a pool label or an entry name the unit's route can reach — and a word
+    /// outside it falls back to its own and is counted refused. UTF-8. A tail addition.
+    pub metric_pool: Span,
+    /// The same for the `lane` label: an entry name the unit's route can reach, or a word of the
+    /// plane's declared [`PlaneTail::metric_lanes`]; anything else falls back to the kernel's own
+    /// (the member's qualified entry) and is counted refused. A tail addition.
+    pub metric_lane: Span,
 }
 
 /// `refusal`'s `in`.

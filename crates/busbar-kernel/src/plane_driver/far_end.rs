@@ -51,7 +51,7 @@ use crate::proxy::egress_unit::{
     attempt::attempt_cap_ms,
     ports::{
         disposition, net, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
-        Disposition, Journal, Outcome, Permit, Telemetry, UpstreamStatus,
+        Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
     },
     walk::budget_secs,
     Member, Pool, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
@@ -391,6 +391,9 @@ struct Live {
     /// transport's reading when the plane has read the answer's last piece and stated none, or
     /// when the attempt settles first.
     unjudged: Option<Unjudged>,
+    /// The counter labels the plane stated for this attempt ([`FarEnd::stated`]): its counters
+    /// take them within their bound.
+    stated: Option<StatedLabels>,
 }
 
 /// The transport's reading of a relayed answer, held for the plane's.
@@ -623,8 +626,12 @@ impl EgressFarEnd<'_> {
         let client_fault = matches!(classified.disposition, Disposition::ClientFault);
         if !client_fault && !(hard && live.passthrough) {
             let pool = Self::metric_pool(&live.pool, &live.member).to_string();
-            e.telemetry
-                .upstream_failure(&pool, destination, classified.label);
+            e.telemetry.upstream_failure_stated(
+                &pool,
+                destination,
+                classified.label,
+                live.stated.as_ref(),
+            );
         }
     }
 
@@ -694,6 +701,7 @@ impl EgressFarEnd<'_> {
             error_left: None,
             keep: ResponseKeep::default(),
             unjudged: None,
+            stated: None,
         });
         Pick::Member {
             name,
@@ -769,7 +777,12 @@ impl EgressFarEnd<'_> {
                 {
                     e.telemetry.breaker_trip(&pool, destination);
                 }
-                e.telemetry.upstream_failure(&pool, destination, failure);
+                e.telemetry.upstream_failure_stated(
+                    &pool,
+                    destination,
+                    failure,
+                    live.stated.as_ref(),
+                );
                 e.telemetry.failover(&pool, failover);
             }
         }
@@ -993,15 +1006,18 @@ impl EgressFarEnd<'_> {
             .map(|(n, v)| (n.as_str(), v.as_slice()))
             .collect();
         let cap_ms = self.attempt_cap();
-        let pool = {
+        let (pool, stated) = {
             let w = self.lock();
-            w.live
-                .as_ref()
-                .map(|l| Self::metric_pool(&l.pool, &l.member).to_string())
-                .unwrap_or_default()
+            w.live.as_ref().map_or_else(Default::default, |l| {
+                (
+                    Self::metric_pool(&l.pool, &l.member).to_string(),
+                    l.stated.clone(),
+                )
+            })
         };
         if self.probe_of.is_none() {
-            e.telemetry.upstream_attempt(&pool, destination);
+            e.telemetry
+                .upstream_attempt_stated(&pool, destination, stated.as_ref());
         }
         // 3. The connector: the judged, pinned dial and the framer's encode.
         let opened = e.conns.open(
@@ -1349,8 +1365,12 @@ impl EgressFarEnd<'_> {
         }
         // A failure failed over: the plane never reads it, so the transport's reading is the one.
         self.record(live, token, classified, now);
-        e.telemetry
-            .upstream_failure(&pool, destination, classified.label);
+        e.telemetry.upstream_failure_stated(
+            &pool,
+            destination,
+            classified.label,
+            live.stated.as_ref(),
+        );
         e.telemetry.failover(&pool, classified.label);
         if matches!(classified.disposition, Disposition::ContextLength) {
             // Every ADMISSIBLE member whose window is at or below the one that refused would refuse
@@ -1373,6 +1393,12 @@ impl Drop for EgressFarEnd<'_> {
 }
 
 impl FarEnd for EgressFarEnd<'_> {
+    fn stated(&self, _token: &Pass<Route>, labels: StatedLabels) {
+        if let Some(live) = self.lock().live.as_mut() {
+            live.stated = Some(labels);
+        }
+    }
+
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         let mut w = self.lock();
         let Some(live) = w.live.as_mut() else {

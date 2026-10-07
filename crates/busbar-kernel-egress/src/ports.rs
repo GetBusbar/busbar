@@ -388,6 +388,17 @@ pub trait Clock: Send + Sync {
 
 // ── telemetry ───────────────────────────────────────────────────────────────────────────────────
 
+/// THE LABELS A PLANE STATED for one attempt's counters (`OnPieceOut::metric_pool` /
+/// `metric_lane`): each `None` where it stated none. Words, never trusted: the counters take a
+/// stated word only from the bound their implementation holds, and keep their own otherwise.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StatedLabels {
+    /// The `pool` label the plane stated.
+    pub pool: Option<String>,
+    /// The `lane` label the plane stated.
+    pub lane: Option<String>,
+}
+
 /// `// contract:` the counters the walk moves. Every method is an observation and none may fail,
 /// block, or change what the walk does next.
 pub trait Telemetry: Send + Sync {
@@ -396,6 +407,32 @@ pub trait Telemetry: Send + Sync {
 
     /// One attempt failed, with the disposition label the previous release used.
     fn upstream_failure(&self, pool: &str, destination: DestinationId, disposition: &'static str);
+
+    /// [`Telemetry::upstream_attempt`] for an attempt whose plane stated its counter labels
+    /// (`stated`): an implementation that bounds them takes the ones within its bound; by default
+    /// they are not taken.
+    fn upstream_attempt_stated(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        stated: Option<&StatedLabels>,
+    ) {
+        let _ = stated;
+        self.upstream_attempt(pool, destination);
+    }
+
+    /// [`Telemetry::upstream_failure`] for an attempt whose plane stated its counter labels, as
+    /// [`Telemetry::upstream_attempt_stated`] takes them.
+    fn upstream_failure_stated(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        disposition: &'static str,
+        stated: Option<&StatedLabels>,
+    ) {
+        let _ = stated;
+        self.upstream_failure(pool, destination, disposition);
+    }
 
     /// One attempt failed over to the next candidate, with the reason label.
     fn failover(&self, pool: &str, reason: &'static str);
