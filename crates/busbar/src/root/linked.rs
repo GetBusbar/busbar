@@ -461,7 +461,7 @@ pub fn plane_rows(
     rows.extend(dropped_doors.iter().copied());
     // PER-AXIS (SEAM-L(s)): a door row owns the plane axis for its key; a legacy row of the same
     // key yields that axis alone and keeps every other axis it registers (its tables are its own).
-    let rows = doors_own_their_plane_keys(rows, &doors);
+    let rows = doors_own_their_plane_keys(rows, &doors)?;
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
@@ -473,16 +473,101 @@ pub fn plane_rows(
 /// case the door serves the plane and the legacy row keeps only the axes the door does not register
 /// (its other tables: the stdio serve, the CLI help, the one-shot runner, the protocols, the
 /// diagnostics), which this fold never touches. Order is kept.
-#[must_use]
+///
+/// The ENGINE is not the plane axis: a legacy row that is the fallback plane carries the routing
+/// tables the core's own readers walk (the `/metrics` lane gauges, `/v1/models`, the provider
+/// merge), so a door taking its key takes them over ([`with_the_engine_of`]) rather than leaving the
+/// node with none.
+///
+/// # Errors
+///
+/// A door taking an engine past the [`CARRIED`] table's last slot, named (see [`carry_into`]).
 pub fn doors_own_their_plane_keys(
     rows: Vec<&'static PlaneDecl>,
     doors: &[&'static PlaneDecl],
-) -> Vec<&'static PlaneDecl> {
-    rows.into_iter()
-        .filter(|row| {
-            doors.iter().any(|d| std::ptr::eq(*d, *row)) || !doors.iter().any(|d| d.key == row.key)
+) -> Result<Vec<&'static PlaneDecl>, String> {
+    doors_own_their_plane_keys_into(&CARRIED, rows, doors)
+}
+
+/// [`doors_own_their_plane_keys`], carrying engines into `table`.
+pub(crate) fn doors_own_their_plane_keys_into(
+    table: &'static [std::sync::OnceLock<PlaneDecl>],
+    rows: Vec<&'static PlaneDecl>,
+    doors: &[&'static PlaneDecl],
+) -> Result<Vec<&'static PlaneDecl>, String> {
+    let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
+    let legacy_of = |key: &str| rows.iter().copied().find(|r| r.key == key && !is_door(r));
+    let mut kept: Vec<&'static PlaneDecl> = rows
+        .iter()
+        .copied()
+        .filter(|row| is_door(row) || !doors.iter().any(|d| d.key == row.key))
+        .collect();
+    for row in &mut kept {
+        if let Some(legacy) = legacy_of(row.key).filter(|_| is_door(row)) {
+            if let Some(carried) = carry_into(table, row, legacy)? {
+                *row = carried;
+            }
+        }
+    }
+    Ok(kept)
+}
+
+/// The door rows a carried engine rides: one slot per door plane a process folds, the shape of table
+/// the kernel keeps its own folded rows in (`busbar_kernel::plane::door`), so a row lives as long as
+/// the process with no allocation leaked for it.
+static CARRIED: [std::sync::OnceLock<PlaneDecl>; busbar_kernel::plane::door::MAX_DOOR_PLANES] =
+    [const { std::sync::OnceLock::new() }; busbar_kernel::plane::door::MAX_DOOR_PLANES];
+
+/// THE DOOR ROW, CARRYING THE ENGINE ITS KEY'S LEGACY ROW HELD, kept in `table`: the fallback flag
+/// and the hooks the kernel builds and reads the fallback plane's routing tables through
+/// (`build_runtime`, `viewer`, `resolve_provider`, `on_swap`), each the legacy row's; every other
+/// word stays the door's. `None` when the legacy row holds none of them: the door's row stands as it
+/// is. Carrying the same key again answers the row the first carry built, as the kernel's fold
+/// answers a key it already folded.
+///
+/// # Errors
+///
+/// Every slot of `table` already holds another key's row: the engine has nowhere to ride, and the
+/// boot refuses rather than serve the door's key without the fallback plane's tables.
+fn carry_into(
+    table: &'static [std::sync::OnceLock<PlaneDecl>],
+    door: &PlaneDecl,
+    legacy: &PlaneDecl,
+) -> Result<Option<&'static PlaneDecl>, String> {
+    let holds_an_engine = legacy.fallback
+        || legacy.build_runtime.is_some()
+        || legacy.viewer.is_some()
+        || legacy.resolve_provider.is_some()
+        || legacy.on_swap.is_some();
+    if !holds_an_engine {
+        return Ok(None);
+    }
+    let carried = || PlaneDecl {
+        declaration: PlaneDeclaration {
+            fallback: legacy.fallback,
+            ..door.declaration
+        },
+        build_runtime: legacy.build_runtime,
+        viewer: legacy.viewer,
+        resolve_provider: legacy.resolve_provider,
+        on_swap: legacy.on_swap,
+        ..*door
+    };
+    table
+        .iter()
+        .find_map(|slot| match slot.get() {
+            Some(row) => (row.key == door.key).then_some(row),
+            None => Some(slot.get_or_init(carried)).filter(|row| row.key == door.key),
         })
-        .collect()
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "the plane door `{}` takes the engine its legacy row holds, and {} door planes \
+                 already carry one, the most one process carries",
+                door.key,
+                table.len()
+            )
+        })
 }
 
 /// TWO DOORS ON ONE AXIS: a plane key registered by two door rows (each `(row name, key)`) is a
