@@ -2271,8 +2271,9 @@ pub(crate) mod tool_door {
 
     /// THE RE-CHECK HONOURS THE REGISTRATION'S `timeout:` (ARCHITECT ruling on `timeout:`): an
     /// upstream that accepts the tool-list fetch and never answers it is given up on at the operator's
-    /// one-second budget, not at a fixed thirty, and the call is refused fail-closed (`error`) well
-    /// inside the budget the caller is waiting on.
+    /// one-second budget, not at a fixed thirty, and the call fails as an upstream failure, never
+    /// sent (ARCHITECT Q3 (c), as the unreachable fetch above), well inside the budget the caller is
+    /// waiting on.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_tool_list_re_check_gives_up_at_the_registrations_timeout() {
         let _one = PUBLISHING.lock().await;
@@ -2313,9 +2314,12 @@ pub(crate) mod tool_door {
         )
         .await
         .expect("the re-check gave up inside 10s: the registration's `timeout: 1s` is its budget");
-        assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
-        assert_eq!(body["error"]["data"]["reason"], "error", "{body}");
+        assert_eq!(
+            body["result"]["isError"], true,
+            "an upstream failure: {body}"
+        );
         assert!(rig.all_ended(), "the refused unit ended");
     }
 
