@@ -41,8 +41,8 @@ use busbar_contract::abi::plane::{
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, RECORD_PUT, REFUSAL_ARRIVE,
-    ROUTE_DIRECT, ROUTE_SCOPE, UNITS_REPORTED,
+    PIECE_HAS_STATUS, PIECE_LAST, PIECE_REFUSED, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, RECORD_PUT,
+    REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_SCOPE, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::conn::Host;
 // THE ONE SHARED FAULT READING (ARCHITECT row 68): the breaker's vocabulary, stated on `OnPieceOut`.
@@ -169,21 +169,10 @@ pub struct Hop {
     /// The agent the latest ATTEMPT reached (its route entry): the unit's ledger lane and the
     /// resource its audit row names.
     member: String,
-    /// The task as its opening left it, kept for a refusal that must end it `failed`
-    /// ([`credential_refusal`]): `refusal` is ticketless and reads no host.
-    opened: Option<OpenedTask>,
-    /// The caller's answer and the record writes of a hop refused for busbar's own credential,
-    /// made once: a short `refusal` re-called renders the same again.
-    credential: Option<(relay::Reply, Vec<Write>)>,
-}
-
-/// A TASK AS A HOP'S OPENING LEFT IT: the caller it is held under, the second it was opened at,
-/// and the records that hold it (the writes the opening made, or the row it read).
-#[derive(Debug)]
-struct OpenedTask {
-    caller: String,
-    now: u64,
-    records: Vec<Write>,
+    /// The caller's answer to a hop refused for busbar's own credential, made once (on the
+    /// refused piece, [`credential_refused`]): `refusal` renders it, and a short `refusal`
+    /// re-called renders the same again.
+    credential: Option<relay::Reply>,
 }
 
 impl Hop {
@@ -210,7 +199,6 @@ impl Hop {
             rewritten: None,
             mint_message_id: false,
             member: String::new(),
-            opened: None,
             credential: None,
         }
     }
@@ -1197,14 +1185,8 @@ fn open_task(
             mut task,
             instead,
             callback,
-            read,
+            ..
         } => {
-            // The task as this opening left it: what a refusal before the dial ends `failed`.
-            hop.opened = Some(OpenedTask {
-                caller: caller.to_string(),
-                now,
-                records: read.into_iter().chain(writes.iter().cloned()).collect(),
-            });
             // The credential an inline callback names is held in plane memory, as the engine's
             // delivery holds it: none clears one held.
             if let Some(callback) = callback {
@@ -1317,46 +1299,47 @@ fn settle_task(
 }
 
 /// A HOP THE KERNEL REFUSED FOR BUSBAR'S OWN CREDENTIAL (`credential_unavailable`: the agent's
-/// `upstream_credential`, re-resolved for this hop, no longer resolves, so nothing was dialled):
-/// logged as the engine logged a lease it could not mint (`A2A_OUTBOUND_CRED_UNLEASED`), the caller
-/// answered in the engine's words ([`Relay::refuse_credential`]), re-framed on the HTTP+JSON line,
-/// and a task the hop opened or addressed ended `failed` over the records its opening left
-/// ([`task_hop::fail_unhosted`]: `refusal` is ticketless and reads no host), its push notification
-/// queued as the engine's `end_task` sent one. Made once per unit: a short `refusal` re-called
-/// renders the same answer and writes. `None` for a unit with no hop.
-fn credential_refusal(plane: &A2aDoor, unit: &mut Unit) -> Option<(relay::Reply, Vec<Write>)> {
-    let target_line = unit.envelope.is_some() && unit.framed.is_none();
-    let addressed = unit.agent.clone();
-    let hop = unit.hop.as_mut()?;
-    if let Some(made) = &hop.credential {
-        return Some(made.clone());
+/// `upstream_credential`, re-resolved for this hop, no longer resolves, so nothing was dialled),
+/// made once per unit: logged as the engine logged a lease it could not mint
+/// (`A2A_OUTBOUND_CRED_UNLEASED`, naming `agent`), and the caller's answer in the engine's words
+/// ([`Relay::refuse_credential`]: the relay's 502 naming the task, or the card fetch's), re-framed
+/// on the HTTP+JSON line, kept on the hop for `refusal` to render. Answers whether the hop's task
+/// is to be ended `failed` (the engine's `fail_task`); a hop already refused answers `false`.
+fn credential_refused(hop: &mut Hop, agent: &str, target_line: bool) -> bool {
+    if hop.credential.is_some() {
+        return false;
     }
-    let agent = if hop.member.is_empty() {
-        addressed.unwrap_or_default()
-    } else {
-        hop.member.clone()
-    };
     busbar_contract::diag_warn!(
         crate::diagnostics::A2A_OUTBOUND_CRED_UNLEASED,
         agent = %agent,
         "a2a: the outbound credential could not be leased"
     );
     let (mut reply, failed) = hop.relay.refuse_credential();
-    let mut writes = Vec::new();
-    if let (true, Some(task), Some(opened)) = (failed, hop.relay.task().cloned(), hop.opened.take())
-    {
-        let (made, moved) =
-            task_hop::fail_unhosted(&task, &opened.records, &opened.caller, opened.now);
-        writes = made;
-        if let Some(row) = moved {
-            crate::push_door::queue(&plane.deliveries, &row, None);
-        }
-    }
     if target_line {
         reply.body = crate::rest::reframe(reply.status, &reply.body);
     }
-    hop.credential = Some((reply.clone(), writes.clone()));
-    Some((reply, writes))
+    hop.credential = Some(reply);
+    failed && hop.relay.task().is_some()
+}
+
+/// The caller's answer to a unit the kernel refused for busbar's own credential, as `refusal`
+/// renders it: what the refused piece made ([`credential_refused`]), its task already ended on the
+/// unit's own ticket through the host's records. A unit refused with no refused piece first is
+/// answered the same and its task is left as it is: `refusal` is ticketless and reads no host.
+/// `None` for a unit with no hop.
+fn credential_refusal(unit: &mut Unit) -> Option<relay::Reply> {
+    let target_line = unit.envelope.is_some() && unit.framed.is_none();
+    let addressed = unit.agent.clone();
+    let hop = unit.hop.as_mut()?;
+    if hop.credential.is_none() {
+        let agent = if hop.member.is_empty() {
+            addressed.unwrap_or_default()
+        } else {
+            hop.member.clone()
+        };
+        credential_refused(hop, &agent, target_line);
+    }
+    hop.credential.clone()
 }
 
 /// THE KERNEL'S VERDICT ON `agent` (`trust.serves`: the kernel's Approve as a query, ARCHITECT
@@ -1531,6 +1514,11 @@ fn piece(
     let Some(hop) = unit.hop.as_mut() else {
         return (Outcome::Refused, false);
     };
+    // THE REFUSED PIECE (`TAIL_REFUSED_PIECE`): the kernel refused the unit before it dialled, and
+    // hands the refusal here first, on the unit's own ticket; every other kernel piece is an
+    // ATTEMPT.
+    let refused = given.from == FROM_KERNEL && given.flags & PIECE_REFUSED != 0;
+    let attempt = given.from == FROM_KERNEL && !refused;
     // A re-call carries the same piece again (after a short or pending answer) or nothing at all
     // (after `more = 1`: no bytes, no flags, no attempt); either way it is served from what is owed.
     let continues = hop.outbox.live
@@ -1540,7 +1528,7 @@ fn piece(
         // THE ADMISSION GATE (the engine's ordered gate, its artifact step), on the ATTEMPT's first
         // entry: an agent whose recorded state is not `approved` is refused before anything else
         // the hop does, in the admission's words.
-        let admission = match (&def, given.from == FROM_KERNEL && !hop.admitted) {
+        let admission = match (&def, attempt && !hop.admitted) {
             (Some(def), true) => {
                 let admitted = admit_unit(
                     reach.plane,
@@ -1562,7 +1550,7 @@ fn piece(
         };
         let opened = if let Some(reply) = admission {
             Some(reply)
-        } else if given.from == FROM_KERNEL {
+        } else if attempt {
             // The skill the agent's held card matched at admission (ARCHITECT ruling B2).
             let skill = hop.skill.clone();
             match open_task(reach, hop, pass, (caller, member), skill, &mut writes) {
@@ -1575,7 +1563,7 @@ fn piece(
         // VERIFY-ON-CALL, then THE HOP'S TRUST GATE: after the task is opened (the engine's order:
         // its local verbs and the addressed task's lookup first), the agent's card is re-verified
         // when its `reverify_ttl` has lapsed, and an agent the look demoted is not sent the request.
-        let demoted = match (&def, given.from == FROM_KERNEL && opened.is_none()) {
+        let demoted = match (&def, attempt && opened.is_none()) {
             (Some(def), true) => {
                 match verify_on_call(reach, hop, pass, member, def, unit.generation) {
                     Poll::Pending => {
@@ -1590,7 +1578,7 @@ fn piece(
         };
         // The binding this attempt speaks, off the agent's held card (JSON-RPC when none is held);
         // a card naming only a binding the plane does not frame refuses the hop by name.
-        let unspeakable = if given.from == FROM_KERNEL && opened.is_none() && demoted.is_none() {
+        let unspeakable = if attempt && opened.is_none() && demoted.is_none() {
             bind(reach, hop, member, unit.generation)
         } else {
             None
@@ -1598,10 +1586,7 @@ fn piece(
         // THE RELAY'S GUARD, last before the attempt goes (the engine's `relay::prepare`).
         let unguarded = match (&def, &url) {
             (Some(def), Some(url))
-                if given.from == FROM_KERNEL
-                    && opened.is_none()
-                    && demoted.is_none()
-                    && unspeakable.is_none() =>
+                if attempt && opened.is_none() && demoted.is_none() && unspeakable.is_none() =>
             {
                 match guard_relay(reach, hop, pass, url, def) {
                     Poll::Pending => {
@@ -1614,6 +1599,23 @@ fn piece(
             _ => None,
         };
         let answer = match (opened, demoted.or(unspeakable).or(unguarded)) {
+            // THE REFUSED PIECE for busbar's own credential: the caller's answer is made for
+            // `refusal` to render, and the hop's task is ended `failed` through the host's records
+            // ([`settle_task`]), race-safe against any other writer of the task, as the engine's
+            // `end_task` moved it under the task's own lock. Nothing goes to the caller from here.
+            _ if refused => {
+                let credential = given.reason
+                    == busbar_contract::abi::plane::RefusalCode::CredentialUnavailable.code();
+                let agent = if member.is_empty() {
+                    addressed.clone().unwrap_or_default()
+                } else {
+                    member.to_string()
+                };
+                if credential && credential_refused(hop, &agent, target_line) {
+                    hop.settle.push(Settled::Failed);
+                }
+                Answer::Nothing
+            }
             (Some(reply), _) => Answer::ToCaller(reply),
             (None, Some(answer)) => answer,
             (None, None) => {
@@ -1642,6 +1644,7 @@ fn piece(
             }
         };
         let outbox = match framed {
+            _ if refused => Outbox::of(answer),
             Some(rpc) => Outbox::framed(answer, rpc),
             None => Outbox::of(for_line(answer, target_line)),
         };
@@ -1680,7 +1683,8 @@ fn piece(
         input.arena_buf(),
         input.units_buf(),
     );
-    let moved = hop.relay.moved();
+    // The refused piece reports no units: what the unit counted stands as its ATTEMPT left it.
+    let moved = if refused { 0 } else { hop.relay.moved() };
     if moved != 0 {
         units.push(UnitCount {
             class: door::CLASS_BYTES_INDEX,
@@ -1688,7 +1692,7 @@ fn piece(
             amount: moved,
         });
     }
-    if left {
+    if left && !refused {
         units.push(UnitCount {
             class: door::CLASS_FEE_INDEX,
             source: UNITS_REPORTED,
@@ -2015,20 +2019,20 @@ slot!(
                 })
             });
         // A hop the kernel refused for busbar's own credential: the engine's answer to a lease it
-        // could not mint, and its task ended `failed` ([`credential_refusal`]).
+        // could not mint, made on the refused piece, which ended its task ([`credential_refusal`]).
         let credential = (given.reason
             == busbar_contract::abi::plane::RefusalCode::CredentialUnavailable.code())
         .then(|| {
             instance.get().and_then(|plane| {
                 plane
                     .units
-                    .with(&given.unit, |u| u.and_then(|u| credential_refusal(plane, u)))
+                    .with(&given.unit, |u| u.and_then(credential_refusal))
             })
         })
         .flatten();
         let rendered = if let Some(refusal) = &unreadable {
             arrival::render(dialect, refusal, true)
-        } else if let Some((reply, _)) = &credential {
+        } else if let Some(reply) = &credential {
             arrival::Rendered {
                 status: reply.status,
                 body: reply.body.clone(),
@@ -2148,15 +2152,6 @@ slot!(
             fields.push(OutField {
                 name: arena.span(name.as_bytes()),
                 value: arena.span(value.as_bytes()),
-            });
-        }
-        // The writes ending the task a credential refusal failed, before the unit's audit row.
-        for w in credential.iter().flat_map(|(_, writes)| writes) {
-            records.push(RecordWrite {
-                kind: kind_index(w.kind),
-                op: RECORD_PUT,
-                key: arena.span(w.key.as_bytes()),
-                value: arena.span(&w.value),
             });
         }
         if let Some(resource) = &audited {

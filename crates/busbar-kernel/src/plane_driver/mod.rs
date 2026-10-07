@@ -233,6 +233,9 @@ pub struct PlaneDriver {
     label: Arc<str>,
     /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
     audit: Arc<dyn AuditSink>,
+    /// The plane takes a unit's refusal for an unavailable credential as a piece first
+    /// (`abi::plane::TAIL_REFUSED_PIECE`).
+    refused_piece: bool,
 }
 
 /// WHERE A DOOR UNIT'S AUDIT ROW GOES (ARCHITECT SEAM-L(k)): a plane writes its unit's audit row
@@ -356,6 +359,7 @@ impl PlaneDriver {
             hooks: None,
             label: Arc::from(&*d.label),
             audit: Arc::new(CoreAudit),
+            refused_piece: false,
         })
     }
 
@@ -386,6 +390,17 @@ impl PlaneDriver {
     #[must_use]
     pub fn with_hooks(mut self, binder: Arc<dyn HookBinder>) -> Self {
         self.hooks = Some(binder);
+        self
+    }
+
+    /// Hand this plane a unit's refusal for an unavailable credential as a piece first
+    /// (`abi::plane::TAIL_REFUSED_PIECE`, which its tail states): the [`PIECE_REFUSED`] piece on
+    /// the unit's own ticket, whose record writes are written, before `refusal` renders it.
+    ///
+    /// [`PIECE_REFUSED`]: busbar_contract::abi::plane::PIECE_REFUSED
+    #[must_use]
+    pub fn with_refused_piece(mut self) -> Self {
+        self.refused_piece = true;
         self
     }
 

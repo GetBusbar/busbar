@@ -1822,7 +1822,7 @@ fn compute_layout() -> String {
             head_fields,
             head_fields_len,
             passthrough,
-            _reserved_tail
+            reason
         ]
     );
     record!(

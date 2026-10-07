@@ -730,7 +730,7 @@ fn the_crossing_is_under_a_microsecond() {
                 head_fields: std::ptr::null(),
                 head_fields_len: 0,
                 passthrough: 0,
-                _reserved_tail: 0,
+                reason: 0,
             },
             zero_piece_out(),
         );

@@ -301,6 +301,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                 attempt_no: 0,
                 src: Src::None,
                 head: false,
+                reason: 0,
             };
             let piece = match next {
                 Err(cause) | Ok(Next::Halt(Halt::Cause(cause))) => return End::Cancel(cause, None),

@@ -30,8 +30,8 @@ use busbar_contract::abi::plane::{
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_KERNEL,
-    ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE,
+    REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -198,6 +198,8 @@ struct Double {
     declared: InstanceDecl,
     /// Its duplex sessions (a `/session` arrival states `ROUTE_SESSION`): see [`Sessions`].
     sessions: Arc<Sessions>,
+    /// The reason of every refused piece (`PIECE_REFUSED`) it was handed.
+    refused: Mutex<Vec<u32>>,
 }
 
 /// The double's sessions: the streams open, the caller pieces each read (stream, bytes), the
@@ -229,6 +231,9 @@ unsafe fn bytes<'a>(b: Blob) -> &'a [u8] {
         std::slice::from_raw_parts(b.ptr, b.len)
     }
 }
+
+/// What the double answers a refused piece with: never the caller's.
+const NOT_FOR_THE_CALLER: &[u8] = b"not-for-the-caller";
 
 /// The words the double's `/refuse-words` arrival states for its refusal.
 const REFUSAL_WORDS: &[u8] = b"the body is not a document";
@@ -304,6 +309,28 @@ impl Double {
             return (ready(Outcome::Fault), Hold::No);
         };
         self.tickets.lock().unwrap().insert(t, i.unit);
+        if i.from == FROM_KERNEL && i.flags & PIECE_REFUSED != 0 {
+            // THE REFUSED PIECE: the plane writes the record `refused` = the reason's code, and
+            // answers bytes, a status and done, none of which may reach the caller.
+            self.refused.lock().unwrap().push(i.reason);
+            let mut at = 0;
+            let key = put(i, &mut at, b"refused");
+            let value = put(i, &mut at, i.reason.to_string().as_bytes());
+            *i.records_buf = RecordWrite {
+                kind: 0,
+                op: RECORD_PUT,
+                key,
+                value,
+            };
+            o.records_written = 1;
+            o.arena_written = at as u64;
+            let n = NOT_FOR_THE_CALLER.len().min(i.reply_cap);
+            std::ptr::copy_nonoverlapping(NOT_FOR_THE_CALLER.as_ptr(), i.reply_buf, n);
+            o.emitted = n as u64;
+            o.reply_status = 299;
+            o.flags = EMIT_DONE;
+            return (ready(Outcome::Ready), Hold::No);
+        }
         let mut units = self.units.lock().unwrap();
         let u = units.entry(i.unit).or_default();
         let piece = bytes(i.bytes);
@@ -2121,4 +2148,142 @@ async fn a_vetoed_units_refusal_names_the_hook_and_writes_its_rejected_row() {
             common::principal().as_str().to_string(),
         )]
     );
+}
+
+// ── a credential refusal handed to the plane as a piece first (`TAIL_REFUSED_PIECE`) ───────────
+
+/// A far end whose walk picks `m0`, sends nothing (its credential no longer resolves), and then
+/// refuses the unit `credential_unavailable`, as the egress walk does.
+struct CredentialGone;
+
+impl busbar_kernel::plane_driver::FarEnd for CredentialGone {
+    fn member<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = busbar_kernel::plane_driver::Pick> + Send + 'a {
+        use busbar_kernel::plane_driver::Pick;
+        let pick = if attempt_no == 1 {
+            Pick::Member {
+                name: "m0".to_string(),
+                pool: "pool-a".to_string(),
+                passthrough: false,
+                provider: "acme".to_string(),
+            }
+        } else {
+            Pick::Refused(busbar_contract::caps::ReasonCode::CredentialUnavailable)
+        };
+        async move { pick }
+    }
+
+    fn send<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        async { false }
+    }
+
+    async fn next(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<busbar_kernel::plane_driver::FarPiece> {
+        None
+    }
+
+    fn write<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        async { false }
+    }
+}
+
+/// Run one unit over [`CredentialGone`] through the one loop; its outcome.
+async fn drive_gone(
+    units: &busbar_kernel::plane_driver::PlaneUnits<
+        '_,
+        common::TestUnits,
+        CredentialGone,
+        cases::Caller,
+    >,
+) -> busbar_contract::caps::Outcome {
+    use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
+    use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
+    let kernel = Kernel::new();
+    let (gauge, canary, leases, meter) = (
+        ConcurrencyGauge::new(),
+        busbar_contract::caps::Canary::new(),
+        LeaseCell::new(),
+        AccrualMeter::new(),
+    );
+    let cell = common::cell(&kernel);
+    let run = Run {
+        cell: &cell,
+        parent: None,
+        leases: &leases,
+        gauge: &gauge,
+        canary: &canary,
+        meter: &meter,
+    };
+    match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
+        Ended::Settled { end, .. } => end.outcome(),
+        Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
+    }
+}
+
+/// A UNIT REFUSED `credential_unavailable` IS HANDED TO A PLANE WHOSE TAIL TAKES IT AS A PIECE
+/// FIRST (`TAIL_REFUSED_PIECE`, `PlaneDriver::with_refused_piece`): a `FROM_KERNEL` piece flagged
+/// `PIECE_REFUSED` and last, carrying the reason, on the unit's own ticket; its record writes are
+/// written, nothing it emits reaches the caller, and the unit is then refused and rendered by
+/// `refusal` as before. RED arm: a plane without the bit is sent no such piece, writes nothing, and
+/// is refused exactly as today.
+#[tokio::test]
+async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_takes_it() {
+    use busbar_contract::caps::{Outcome as Unit, ReasonCode};
+    let code = busbar_contract::abi::plane::reason_code(ReasonCode::CredentialUnavailable);
+    for takes in [true, false] {
+        let s = records();
+        let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+        r.driver = r.driver.with_records(Arc::clone(&s), instance());
+        if takes {
+            r.driver = r.driver.with_refused_piece();
+        }
+        let (steps, far, caller) = (
+            common::TestUnits::passing(),
+            CredentialGone,
+            cases::Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, cases::arrival("/x", b"x"), 0);
+        let outcome = drive_gone(&units).await;
+        assert!(
+            matches!(outcome, Unit::Refused(_, ReasonCode::CredentialUnavailable)),
+            "takes={takes}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the refusal is rendered");
+        let body = String::from_utf8_lossy(&rendered.body).into_owned();
+        assert!(body.starts_with("refused:"), "takes={takes}: {body}");
+        assert!(
+            !caller.text().contains("not-for-the-caller") && caller.status() != Some(299),
+            "takes={takes}: nothing the refused piece emitted reached the caller"
+        );
+        let written = get(&s, b"refused");
+        if takes {
+            assert_eq!(*r.plane.refused.lock().unwrap(), vec![code]);
+            assert_eq!(
+                (written.value, written.bytes),
+                (svc::FOUND, code.to_string().into_bytes()),
+                "the refused piece's record write is written"
+            );
+        } else {
+            assert!(
+                r.plane.refused.lock().unwrap().is_empty(),
+                "no refused piece"
+            );
+            assert_eq!(written.value, svc::ABSENT, "nothing written");
+        }
+    }
 }

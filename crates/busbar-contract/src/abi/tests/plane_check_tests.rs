@@ -1200,9 +1200,9 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     let mut t = tail();
     t.ingress = INGRESS_REQUEST_RESPONSE | (1 << 5);
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
-    // The first bit past the last one a tail may state (`TAIL_HOOKS_GATED`, bit 2, is known).
+    // The first bit past the last one a tail may state (`TAIL_REFUSED_PIECE`, bit 3, is known).
     let mut t = tail();
-    t.flags = TAIL_HOOKS_GATED << 1;
+    t.flags = TAIL_REFUSED_PIECE << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
     let mut t = tail();
     t.dispatch_shape = 2;
@@ -1756,7 +1756,18 @@ fn a_tail_may_declare_the_gate_first_hook_order() {
     let mut t = tail();
     t.flags = TAIL_HOOKS_GATED;
     assert_eq!(check_tail(&t), Ok(()));
-    t.flags = TAIL_HOOKS_GATED << 1;
+    t.flags = TAIL_REFUSED_PIECE << 1;
+    assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
+}
+
+/// A tail may state that the plane takes a credential refusal as a piece first
+/// (`TAIL_REFUSED_PIECE`), beside the gate-first order; a flag past it is still unknown.
+#[test]
+fn a_tail_may_take_a_credential_refusal_as_a_piece() {
+    let mut t = tail();
+    t.flags = TAIL_REFUSED_PIECE | TAIL_HOOKS_GATED;
+    assert_eq!(check_tail(&t), Ok(()));
+    t.flags = TAIL_REFUSED_PIECE << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
 }
 
