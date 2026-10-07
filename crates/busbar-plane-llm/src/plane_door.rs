@@ -51,7 +51,7 @@ use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
@@ -63,6 +63,7 @@ use busbar_contract::abi::plane::{
     PRINCIPAL_NONE, PRINCIPAL_REQUIRED, SHAPE_PIECEWISE, TAIL_FALLBACK, TAIL_PROBES,
     UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
+use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -288,6 +289,10 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: crate::refusal::REFUSAL_STATUSES.as_ptr(),
     refusal_statuses_len: crate::refusal::REFUSAL_STATUSES.len(),
+    caller_credential_refusal: NONE,
+    admin_routes: ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: Blob::ABSENT,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its needs and its tail.
@@ -891,13 +896,13 @@ slot!(
 
 slot!(
     /// `cancel`: the unit on the cancelled ticket ends; nothing it owed is delivered.
-    Cancel, CancelIn, CancelOut, |instance, input, mut out| {
+    Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
         if let Some(door) = instance.get() {
-            if let Some(unit) = guard(&door.tickets).remove(&input.ticket) {
+            if let Some(unit) = guard(&door.tickets).remove(&input.cancel.ticket) {
                 guard(&door.units).remove(&unit);
             }
         }
-        out.set(|o| &o.disposition, CANCEL_ABORTED);
+        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
         Outcome::Ready
     }
 );

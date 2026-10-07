@@ -279,6 +279,23 @@ pub struct Declares {
     /// and keep their canonical bytes (the field is left off the wire when absent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract_abi: Option<ContractAbiRange>,
+    /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
+    /// failure that does not trip them — see [`BreakerDecl`]. Absent, the host's default posture
+    /// holds; left off the wire when absent, so every manifest packed before the field existed
+    /// keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub breaker: Option<BreakerDecl>,
+}
+
+/// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
+/// breaker cells of its members, which the host reads and applies to that plane's cells alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BreakerDecl {
+    /// Whether a transient failure BELOW the trip threshold still benches the member's cell for a
+    /// cooldown. `false`: a cell refuses only on a TRIP (the host's trip thresholds), an upstream
+    /// `Retry-After` still honoured.
+    pub bench_below_trip_threshold: bool,
 }
 
 /// An inclusive `min..=max` range of contract-ABI (payload-schema) versions, as a plugin declares it
@@ -329,6 +346,7 @@ impl Declares {
             && self.destinations.is_empty()
             && self.egress.is_default()
             && self.contract_abi.is_none()
+            && self.breaker.is_none()
     }
 }
 
@@ -353,31 +371,9 @@ impl HookNeeds {
     }
 }
 
-/// One axis of a hook manifest's declared intent — the SAME `no ⊂ ro ⊂ rw` ladder the operator grant
-/// uses, so the core can compare "declared" against "granted" directly. `rw` is meaningful only on the
-/// `prompt` axis (identity is never rewritten); on `user` it reads as "at least ro".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NeedLevel {
-    /// Declares no need for this content (the default).
-    #[default]
-    No,
-    /// Asks to READ this content.
-    Ro,
-    /// Asks to read AND rewrite (prompt axis only).
-    Rw,
-}
-
-impl NeedLevel {
-    /// Whether the plugin declared it needs to READ this axis (`ro` or `rw`).
-    pub fn wants_read(self) -> bool {
-        !matches!(self, NeedLevel::No)
-    }
-    /// Whether the plugin declared it needs to REWRITE (prompt axis; `rw`).
-    pub fn wants_rewrite(self) -> bool {
-        matches!(self, NeedLevel::Rw)
-    }
-}
+/// One axis of a hook manifest's declared intent: the contract's (`busbar_contract::plugin_rows`),
+/// the shape the kernel reads a row's needs in.
+pub use busbar_contract::plugin_rows::NeedLevel;
 
 /// How a plugin was permitted to load when it is NOT signed by a trusted key - the operator's
 /// EXPLICIT opt-in (never a silent default).

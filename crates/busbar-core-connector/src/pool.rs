@@ -68,6 +68,9 @@ pub(crate) struct PoolKey {
     pub(crate) name: Option<String>,
     /// The egress class the dial was judged under, and the need's own.
     pub(crate) class: (u32, u32),
+    /// Whether the dial was judged under the need's private reach to the destination: a line
+    /// dialled under one is never lent to an exchange judged without it.
+    pub(crate) reach: bool,
 }
 
 /// One pooled line: in use (`idle` = `None`), or idle since the instant named.

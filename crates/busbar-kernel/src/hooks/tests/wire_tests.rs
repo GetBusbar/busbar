@@ -176,6 +176,7 @@ fn req() -> RoutingRequest<'static> {
         prompt: None,
         identity: None,
         signals: Default::default(),
+        session: None,
     }
 }
 

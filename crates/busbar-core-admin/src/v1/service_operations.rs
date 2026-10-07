@@ -1454,6 +1454,7 @@ impl AdminService {
                 tokens_cache_creation: r.tokens_cache_write,
                 requests: r.requests,
                 spend_micros: 0,
+                classes: std::collections::BTreeMap::new(),
             };
             // The row's counts AS CORRECTED — its token columns and its ledgered classes alike. A
             // correction that leaves a count fractional or below zero REFUSES the read: a figure
@@ -1533,6 +1534,30 @@ impl AdminService {
                 Ok(spend) => spend,
                 Err(e) => return Err(usage_refusal("usage.price", &e)),
             };
+            // EACH LEDGERED CLASS, ITS COUNT AND ITS COST: the class alone on the row's lane (no
+            // tokens, no requests), priced by the same one function at the same instant, so a
+            // class's cost is the share of `row_spend` it is and never a second pricing of its own.
+            let none = UsageBreakdown::default();
+            for (class, count) in classes {
+                let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
+                let class_cost = match view.as_ref() {
+                    Some(v) => match v.card_at(at) {
+                        Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
+                            v, at, card, &cost, &lane, &none, &one,
+                        ),
+                        None => Err(busbar_kernel_ledger::cost::MoneyError::NoCardInForce { at }),
+                    },
+                    None => derive_spend_micros_row_classes(&cost, &lane, &none, &one),
+                }
+                .map_err(|e| usage_refusal("usage.price", &e))?;
+                row_view.classes.insert(
+                    class.clone(),
+                    ClassUsage {
+                        count: *count,
+                        cost: class_cost,
+                    },
+                );
+            }
             for b in [
                 &mut total,
                 by_model
@@ -1549,6 +1574,15 @@ impl AdminService {
                     .tokens_cache_creation
                     .saturating_add(row_view.tokens_cache_creation);
                 b.requests = b.requests.saturating_add(r.requests);
+                if add_classes(&mut b.classes, &row_view.classes).is_none() {
+                    diag_error!(
+                        ADMIN_STORE_OPERATION_FAILED,
+                        operation = "usage.price",
+                        error = "a class cost rollup left the representable range",
+                        "admin store operation failed"
+                    );
+                    return Err(AdminError::Internal);
+                }
                 // CHECKED, like the one function it sums (item 28): a rollup past the range is a
                 // refused read, never a figure pinned at the ceiling.
                 b.spend_micros = match b.spend_micros.checked_add(row_spend) {
@@ -1607,6 +1641,11 @@ impl AdminService {
                     .saturating_add(row.usage.tokens_cache_creation);
                 o.requests = o.requests.saturating_add(row.usage.requests);
                 o.spend_micros = o.spend_micros.saturating_add(row.usage.spend_micros);
+                for (class, u) in &row.usage.classes {
+                    let e = o.classes.entry(class.clone()).or_default();
+                    e.count = e.count.saturating_add(u.count);
+                    e.cost = e.cost.saturating_add(u.cost);
+                }
             }
             o
         });
@@ -1680,4 +1719,19 @@ fn linked_store_rows() -> Vec<PluginView> {
         PluginView::basic(s.0.to_string(), "store", "compiled-in", None, None)
     };
     stores.iter().map(row).collect()
+}
+
+/// Add one row's classes into a rollup's: counts summed saturating like the token columns, costs
+/// CHECKED like `spend_micros` (item 28) — `None` when a cost left the range, so the read refuses
+/// rather than serving a figure pinned at the ceiling.
+fn add_classes(
+    into: &mut std::collections::BTreeMap<String, ClassUsage>,
+    row: &std::collections::BTreeMap<String, ClassUsage>,
+) -> Option<()> {
+    for (class, u) in row {
+        let e = into.entry(class.clone()).or_default();
+        e.count = e.count.saturating_add(u.count);
+        e.cost = e.cost.checked_add(u.cost)?;
+    }
+    Some(())
 }

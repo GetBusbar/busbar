@@ -16,7 +16,7 @@ use busbar_kernel::plane::config::{plane_sections, validate_plane_section};
 fn parse(yaml: &str) -> Result<ToolsCfg, String> {
     let value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
     let section = super::super::PLANE_DECLARATION.config_section;
-    validate_plane_section(section, &value, super::TRUST_KEYS, &plane_sections())?;
+    validate_plane_section(section, &value, super::TRUST_KEYS, None, &plane_sections())?;
     serde_yaml::from_str::<ToolsCfg>(yaml).map_err(|e| e.to_string())
 }
 
@@ -64,7 +64,13 @@ fn every_serialized_pin_token_is_the_declared_trust_key_token() {
         let section: serde_yaml::Value =
             serde_yaml::from_str(&format!("x:\n  pin: {{ mechanism: {token}, key: K }}\n"))
                 .unwrap();
-        let read = validate_plane_section("tools", &section, super::TRUST_KEYS, &plane_sections());
+        let read = validate_plane_section(
+            "tools",
+            &section,
+            super::TRUST_KEYS,
+            None,
+            &plane_sections(),
+        );
         // A root takes its material; the no-root spelling refuses it.
         assert_eq!(read.is_ok(), m.is_a_root(), "{token}: {read:?}");
     }

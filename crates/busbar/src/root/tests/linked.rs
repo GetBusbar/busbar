@@ -43,6 +43,8 @@ pub(super) fn linked(
         hot_planes,
         plane_doors: &[],
         secrets: &[],
+        plane_door_slots: &[],
+        plane_door_declares: &[],
         protocols: &[],
         path_ingress: &[],
         body_ingress: &[],
@@ -85,6 +87,7 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     };
     let hooks = PlaneHooks {
         wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
@@ -99,6 +102,7 @@ fn render(row: &PlaneDecl) -> String {
     let ctx = BuildCtx {
         endpoint_slot: None,
         agent_defs: &(),
+        tool_defs: &(),
         public_url: None,
         prior: None,
     };
@@ -287,6 +291,7 @@ fn stated(d: &'static hot::PlaneDecl) -> PlaneDeclaration {
             })
             .collect::<Vec<_>>()
             .leak(),
+        caller_credential_refusal: None,
     }
 }
 
@@ -1111,4 +1116,62 @@ fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
          'BUSBAR_WIRE_SECRET_ROOT_UNSET' is unset"
     );
     assert!(axis.shared("vault").is_err());
+}
+
+/// SEAM-L(s), THE PER-AXIS FOLD: a door row and a legacy row sharing a plane key — the door owns the
+/// plane axis for it (the kernel's boot fold keeps the door's row), and the legacy row yields that
+/// axis alone: a legacy row of another key is untouched, and nothing on any other axis is read here
+/// (the legacy crate's other tables are its own). RED: the linked row came first and won the key,
+/// so a plane flipped onto its door only when its legacy row left whole.
+#[test]
+fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
+    let legacy = &native("seam-l-shared")[0];
+    let other = &native("seam-l-other")[0];
+    let door = &native("seam-l-shared")[0];
+    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]);
+    assert_eq!(rows.len(), 2, "the legacy row yields the shared key");
+    assert!(
+        std::ptr::eq(rows[0], other),
+        "a legacy row of another key stays"
+    );
+    assert!(std::ptr::eq(rows[1], door), "the door serves the plane");
+    let folded = merged_boot_plane_decls(&rows, &[]);
+    let shared = folded
+        .iter()
+        .find(|d| d.key == "seam-l-shared")
+        .expect("the shared key is registered");
+    assert!(
+        std::ptr::eq(*shared, door),
+        "the boot fold keeps the door's row"
+    );
+}
+
+/// SEAM-L(s): a key two door rows both register on the same axis is a boot refusal naming both.
+#[test]
+fn a_key_two_doors_register_refuses_the_boot_naming_both() {
+    assert!(refuse_a_key_two_doors_register(&[
+        ("door-a".to_string(), "k1"),
+        ("door-b".to_string(), "k2"),
+    ])
+    .is_ok());
+    let refusal = refuse_a_key_two_doors_register(&[
+        ("door-a".to_string(), "k1"),
+        ("door-b".to_string(), "k1"),
+    ])
+    .expect_err("one axis, one owner");
+    assert!(
+        refusal.contains("door-a") && refusal.contains("door-b") && refusal.contains("k1"),
+        "{refusal}"
+    );
+}
+
+/// ONE DISPATCHER PER PROCESS: a door row's probe binds on the process's one dispatcher, so a door
+/// in the build spawns no second set of `busbar-dispatch` threads (the boot test reads the count).
+/// RED: the probe had a dispatcher of its own, built with the default shape.
+#[test]
+fn a_door_rows_probe_binds_on_the_processs_one_dispatcher() {
+    assert!(Arc::ptr_eq(
+        &door_probe_dispatcher(),
+        &crate::root::dispatch::dispatcher()
+    ));
 }

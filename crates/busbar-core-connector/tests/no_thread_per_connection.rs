@@ -62,6 +62,7 @@ fn dial(target: &str, first: Vec<u8>) -> Dial {
         open_timeout: Duration::from_secs(5),
         opening: Some((Vec::new(), first)),
         head_words: Default::default(),
+        anchors: None,
     }
 }
 

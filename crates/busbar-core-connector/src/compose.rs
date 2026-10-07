@@ -31,7 +31,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+use busbar_contract::abi::host::conn::connector::{
+    CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
+};
 use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT, SIDE_DIAL};
+use busbar_contract::conn::ConnCause;
 
 use crate::endpoint;
 use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
@@ -100,6 +104,9 @@ pub struct Dial {
     pub opening: Option<Opening>,
     /// The first message's head words, method and target (`framer::encode_head`); empty = none.
     pub head_words: HeadWords,
+    /// The destination's sealed trust anchors (the transport pin, ARCHITECT 2026-10-03): the far end's key pin the
+    /// handshake is held to and the client identity it presents; `None` = none sealed.
+    pub anchors: Option<Arc<crate::tls::client::Sealed>>,
 }
 
 /// A message's head words, method and target; empty = none.
@@ -114,6 +121,10 @@ impl std::fmt::Debug for Dial {
             .finish_non_exhaustive()
     }
 }
+
+/// Connection security's error when the far end closes during the handshake (the words the
+/// TLS stack's own handshake reports for it).
+const HANDSHAKE_EOF: &str = "tls handshake eof";
 
 enum Phase {
     Connecting,
@@ -161,6 +172,9 @@ pub struct Connection {
     early: Vec<(u64, Vec<u8>, bool, bool)>,
     /// Every byte the socket has taken, for the life of the connection.
     flushed: u64,
+    /// The far side ENDED its stream (a read answered end of file) and the framer was told, once.
+    /// Nothing more can be read: the socket is never read again, and its end is not news again.
+    read_end: bool,
     open_deadline: Option<Instant>,
     framer_deadline: Option<Instant>,
     sleep: Option<(Instant, Pin<Box<tokio::time::Sleep>>)>,
@@ -169,7 +183,23 @@ pub struct Connection {
     /// Connection security was asked for mid-stream ([`Connection::upgrade_secure`]), not at the
     /// dial.
     upgraded: bool,
+    /// The framer's own error, when it is what failed the open connection.
+    framer_error: Option<String>,
+    /// The far end's key the handshake is held to (the dial's sealed anchors); `None` = no pin.
+    key_pin: Option<String>,
+    /// Raised when the handshake presented busbar's client identity.
+    presented: Arc<std::sync::atomic::AtomicBool>,
+    /// Connection security's own error, when it is what failed the connection.
+    security_error: Option<String>,
+    /// Why the connection failed, once it has (its stage and the underlying error's own text).
+    cause: Option<ConnCause>,
 }
+
+/// THE REFUSAL OF A FAR END WHOSE KEY IS NOT THE PINNED ONE (the transport pin, ARCHITECT 2026-10-03): the handshake's chain
+/// and name check passed and the leaf certificate's key is another, so the connection is refused
+/// before a request byte is written. The connection's facts still name the key it served.
+pub const PIN_REFUSED: &str =
+    "tls: the far end's key is not the one its trust anchors pin; refused before any request byte";
 
 /// One of a listener's connection slots, held by the connection it admitted and freed on drop.
 #[derive(Debug)]
@@ -315,6 +345,13 @@ impl Planned {
         (self.dial.opening, self.dial.head_words)
     }
 
+    /// The same dial held to the destination's sealed trust anchors (`None` = none sealed).
+    #[must_use]
+    pub fn anchored(mut self, anchors: Option<Arc<crate::tls::client::Sealed>>) -> Self {
+        self.dial.anchors = anchors;
+        self
+    }
+
     /// Dial exactly `addr` — the address judged for [`Self::authority`] — with the name the entry
     /// located offered to connection security: a non-blocking connect registered on the calling
     /// worker's reactor. The connection comes back at once, its open in flight.
@@ -329,6 +366,7 @@ impl Planned {
             dial,
             located,
         } = self;
+        let presented = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let tls = if located.secure {
             let base = dial.tls.clone().ok_or_else(|| {
                 Failure::Refused("the target asks for connection security and none is set".into())
@@ -341,6 +379,19 @@ impl Planned {
             } else {
                 located.offer.clone()
             };
+            // A PINNED DESTINATION IS VERIFIED ON EVERY CONNECTION: no session is resumed, so each
+            // handshake carries the far end's certificate and its key is held to the pin afresh
+            // (a resumed session would present the key of the handshake it resumed).
+            if dial.anchors.as_ref().is_some_and(|a| a.key_pin.is_some()) {
+                config.resumption = rustls::client::Resumption::disabled();
+            }
+            // THE DESTINATION'S CLIENT IDENTITY, presented when the far end asks, and recorded.
+            if let Some(identity) = dial.anchors.as_ref().and_then(|a| a.identity.clone()) {
+                config.client_auth_cert_resolver = Arc::new(crate::tls::client::Presenting::new(
+                    identity,
+                    Arc::clone(&presented),
+                ));
+            }
             let host = located.name.clone().unwrap_or_else(|| {
                 located
                     .authority
@@ -361,7 +412,14 @@ impl Planned {
         };
         let sock = Sock::Tcp(socket::connect(addr).map_err(failed)?);
         let offered_name = tls.as_ref().and(located.name.clone());
-        Connection::open_dialled(door, sock, dial, tls, offered_name, &located.offer)
+        Connection::open_dialled(
+            door,
+            sock,
+            dial,
+            (tls, presented),
+            offered_name,
+            &located.offer,
+        )
     }
 }
 
@@ -384,7 +442,14 @@ impl Connection {
             }
             _ => failed(e),
         })?;
-        Self::open_dialled(door, Sock::Unix(stream), dial, None, None, &[])
+        Self::open_dialled(
+            door,
+            Sock::Unix(stream),
+            dial,
+            (None, Arc::new(std::sync::atomic::AtomicBool::new(false))),
+            None,
+            &[],
+        )
     }
 
     /// A dialled connection over `sock`, its connect in flight. `offer` is the protocols the
@@ -393,7 +458,10 @@ impl Connection {
         door: Arc<dyn FramerDoor>,
         sock: Sock,
         dial: Dial,
-        tls: Option<rustls::Connection>,
+        (tls, presented): (
+            Option<rustls::Connection>,
+            Arc<std::sync::atomic::AtomicBool>,
+        ),
         offered_name: Option<String>,
         offer: &[Vec<u8>],
     ) -> Result<Self, Failure> {
@@ -409,7 +477,9 @@ impl Connection {
             offered_name,
             agreed_protocol: prior,
             claim: door.facts().claims.first().map(|c| (*c).to_owned()),
+            ..Established::default()
         };
+        let key_pin = dial.anchors.as_ref().and_then(|a| a.key_pin.clone());
         Ok(Self {
             door,
             wire: Wire::Socket(sock),
@@ -425,11 +495,17 @@ impl Connection {
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
+            read_end: false,
             open_deadline: Some(Instant::now() + dial.open_timeout),
             framer_deadline: None,
             sleep: None,
             _slot: None,
             upgraded: false,
+            framer_error: None,
+            key_pin,
+            presented,
+            security_error: None,
+            cause: None,
         })
     }
 }
@@ -478,11 +554,18 @@ impl Connection {
         let stdout =
             tokio::net::unix::pipe::Receiver::from_owned_fd(host_reads.into()).map_err(failed)?;
         let established = Established {
+            client_identity: false,
+            peer_key_pin: None,
             offered_name: None,
             agreed_protocol: None,
             claim: door.facts().claims.first().map(|c| (*c).to_owned()),
         };
         let mut conn = Self {
+            framer_error: None,
+            cause: None,
+            security_error: None,
+            key_pin: None,
+            presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             door,
             wire: Wire::Program(Box::new(Pipes {
                 child,
@@ -502,6 +585,7 @@ impl Connection {
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
+            read_end: false,
             open_deadline: None,
             framer_deadline: None,
             sleep: None,
@@ -509,6 +593,59 @@ impl Connection {
         };
         conn.begin()?;
         Ok(conn)
+    }
+
+    /// Whether the program a spawned connection runs has exited (without waiting for it); `false`
+    /// for a socket.
+    pub fn program_exited(&mut self) -> bool {
+        match &mut self.wire {
+            Wire::Program(p) => !matches!(p.child.try_wait(), Ok(None)),
+            Wire::Socket(_) => false,
+        }
+    }
+
+    /// Offer ONE WHOLE MESSAGE on the exchange: framed and queued all at once, or not at all while
+    /// what is already queued would leave it past [`WRITE_BUFFER_BYTES`] (`Ok(false)`, nothing
+    /// taken). A message alone in an empty queue is always taken, however long. Several writers
+    /// sharing one connection never interleave part of one message with another's.
+    ///
+    /// # Errors
+    ///
+    /// The connection is closed or failed, or the framer refused the bytes.
+    pub fn write_whole(&mut self, bytes: &[u8], cx: &mut Context<'_>) -> Result<bool, Failure> {
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended => return Err(Failure::Closed),
+            _ => {}
+        }
+        if let Err(f) = self.drive(cx) {
+            self.phase = Phase::Failed(f.clone());
+            return Err(f);
+        }
+        let queued = self.buffered();
+        if queued > 0 && queued.saturating_add(bytes.len()) > WRITE_BUFFER_BYTES {
+            return Ok(false);
+        }
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended => return Err(Failure::Closed),
+            Phase::Open => {
+                let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
+                let y = framing
+                    .emit(EXCHANGE_STREAM, bytes, true, false)
+                    .map_err(failed)?;
+                self.absorb(y)?;
+            }
+            Phase::Connecting | Phase::Handshaking => {
+                self.early
+                    .push((EXCHANGE_STREAM, bytes.to_vec(), true, false));
+            }
+        }
+        if let Err(f) = self.drive(cx) {
+            self.phase = Phase::Failed(f.clone());
+            return Err(f);
+        }
+        Ok(true)
     }
 
     /// The process id of the program a spawned connection runs; `None` for a socket, or once the
@@ -553,6 +690,7 @@ impl Connection {
             offered_name: None,
             agreed_protocol: None,
             claim: door.facts().claims.first().map(|c| (*c).to_owned()),
+            ..Established::default()
         };
         let mut conn = Self {
             door,
@@ -569,11 +707,17 @@ impl Connection {
             head_words: HeadWords::default(),
             early: Vec::new(),
             flushed: 0,
+            read_end: false,
             open_deadline: Some(Instant::now() + accept.handshake_timeout),
             framer_deadline: None,
             sleep: None,
             _slot: slot,
             upgraded: false,
+            framer_error: None,
+            key_pin: None,
+            presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            security_error: None,
+            cause: None,
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -621,6 +765,7 @@ impl Connection {
         self.dialled()
             && self.framing.is_some()
             && matches!(self.phase, Phase::Open)
+            && !self.read_end
             && self.inbox.is_empty()
             && self.early.is_empty()
     }
@@ -631,7 +776,9 @@ impl Connection {
     pub fn fresh(&mut self, cx: &mut Context<'_>) -> bool {
         loop {
             match self.drive(cx) {
-                Ok(true) if self.inbox.is_empty() => {}
+                // Something moved and nothing arrived: drive again, while the connection is live.
+                // One the framer ended (the far end closed it) is spent, whatever else moved.
+                Ok(true) if self.inbox.is_empty() && self.live() => {}
                 Ok(_) => return self.reusable(),
                 Err(f) => {
                     self.phase = Phase::Failed(f);
@@ -806,6 +953,36 @@ impl Connection {
         )
     }
 
+    /// Why the connection failed, once it has: the stage it failed in (the socket's open,
+    /// connection security, or the open connection; a deadline whatever the stage) and the
+    /// underlying error's own text.
+    #[must_use]
+    pub fn cause(&self) -> Option<&ConnCause> {
+        self.cause.as_ref()
+    }
+
+    /// The connection fails with `f`, in the stage it is in.
+    fn fail(&mut self, f: Failure) {
+        let framer = self.framer_error.take();
+        let stage = match (&f, &self.phase) {
+            (Failure::Timeout, _) => CAUSE_DEADLINE,
+            (_, Phase::Open) if framer.is_some() => CAUSE_FRAMER,
+            (_, Phase::Connecting) => CAUSE_CONNECT,
+            (_, Phase::Handshaking) => CAUSE_SECURITY,
+            _ => CAUSE_EXCHANGE,
+        };
+        let text = match &f {
+            Failure::Refused(t) | Failure::Failed(t) => framer
+                .or_else(|| self.security_error.take())
+                .unwrap_or_else(|| t.clone()),
+            Failure::Timeout | Failure::Closed => String::new(),
+        };
+        if !matches!(self.phase, Phase::Failed(_)) {
+            self.cause = Some(ConnCause { stage, text });
+        }
+        self.phase = Phase::Failed(f);
+    }
+
     /// The next frame piece: `Ready(Ok(Some))` a piece, `Ready(Ok(None))` the connection ended,
     /// `Pending` with `cx`'s waker on the socket and the timer.
     ///
@@ -824,8 +1001,12 @@ impl Connection {
             }
             match self.drive(cx) {
                 Ok(true) => {}
+                // The far side ended and the framer answered all it had: nothing more can arrive.
+                Ok(false) if self.read_end && self.inbox.is_empty() => {
+                    return Poll::Ready(Ok(None))
+                }
                 Ok(false) => return Poll::Pending,
-                Err(f) => self.phase = Phase::Failed(f),
+                Err(f) => self.fail(f),
             }
         }
     }
@@ -838,8 +1019,9 @@ impl Connection {
             }
             match self.drive(cx) {
                 Ok(true) => {}
+                Ok(false) if self.read_end => return Poll::Ready(()),
                 Ok(false) => return Poll::Pending,
-                Err(f) => self.phase = Phase::Failed(f),
+                Err(f) => self.fail(f),
             }
         }
     }
@@ -892,7 +1074,7 @@ impl Connection {
         }
         // Let the socket take what it can before measuring the room.
         if let Err(f) = self.drive(cx) {
-            self.phase = Phase::Failed(f.clone());
+            self.fail(f.clone());
             return Err(f);
         }
         let take = bytes
@@ -915,7 +1097,7 @@ impl Connection {
             }
         }
         if let Err(f) = self.drive(cx) {
-            self.phase = Phase::Failed(f.clone());
+            self.fail(f.clone());
             return Err(f);
         }
         Ok(take)
@@ -980,6 +1162,14 @@ impl Connection {
 
     /// Read what the socket has, and hand it on.
     fn read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+        // THE FAR SIDE'S END IS NEWS ONCE. A socket that answered end of file answers it to every
+        // later read, so re-reading it would hand the framer the same end again and report it as
+        // movement every pass: a framer that does not end the connection on it (an idle HTTP/1.1
+        // line whose far end closed) would then keep `fresh` and every reader's drive loop
+        // spinning inside one crossing, until the dispatcher's watchdog faults the caller.
+        if self.read_end {
+            return Ok(false);
+        }
         let mut buf = [0_u8; READ_CHUNK];
         let read = match &mut self.wire {
             Wire::Socket(sock) => sock.poll_io(Direction::Read, cx, |mut s| s.read(&mut buf)),
@@ -991,6 +1181,7 @@ impl Connection {
         };
         match read {
             Poll::Ready(Ok(0)) => {
+                self.read_end = true;
                 self.feed(&[], true)?;
                 Ok(true)
             }
@@ -1055,11 +1246,18 @@ impl Connection {
     /// Begin the framing over what the open established, then send the first message and any
     /// early writes.
     fn begin(&mut self) -> Result<(), Failure> {
-        let (framing, y) = Framing::begin(
+        // A dial hands its opening head fields to the framing's begin too, for a wire that
+        // carries them on the connection's opening (ARCHITECT Q-L5B-WS-DIAL).
+        let opening: &[(String, Vec<u8>)] = match &self.opening {
+            Some((fields, _)) if self.side == SIDE_DIAL => fields,
+            _ => &[],
+        };
+        let (framing, y) = Framing::begin_with(
             Arc::clone(&self.door),
             self.side,
             &self.target,
             &self.established,
+            opening,
         )
         .map_err(|e| Failure::Refused(e.to_string()))?;
         self.framing = Some(framing);
@@ -1078,7 +1276,12 @@ impl Connection {
     fn send_opening(&mut self) -> Result<(), Failure> {
         let opening = self.opening.take();
         let words = std::mem::take(&mut self.head_words);
-        if let Some(message) = self.encode_opening(opening, words)? {
+        // A wire whose envelope renders nothing of an opening (its fields rode the framing's
+        // begin) sends no opening message.
+        if let Some(message) = self
+            .encode_opening(opening, words)?
+            .filter(|m| !m.is_empty())
+        {
             let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
             let y = framing
                 .emit(EXCHANGE_STREAM, &message, true, false)
@@ -1086,6 +1289,27 @@ impl Connection {
             self.absorb(y)?;
         }
         Ok(())
+    }
+
+    /// THE TRANSPORT PIN, held on a dialled connection whose handshake just completed: the far end's
+    /// key read off its leaf certificate (already verified for its chain and name) and whether
+    /// busbar presented its client identity go into the connection's facts, and a key that is not
+    /// the pinned one refuses the connection before the framing begins, so no request byte leaves.
+    fn hold_to_anchors(&mut self) -> Result<(), Failure> {
+        let Some(rustls::Connection::Client(c)) = self.tls.as_ref() else {
+            return Ok(());
+        };
+        self.established.peer_key_pin = c
+            .peer_certificates()
+            .and_then(|chain| chain.first())
+            .and_then(|leaf| crate::tls::client::peer_key_pin(leaf.as_ref()));
+        self.established.client_identity = self.presented.load(std::sync::atomic::Ordering::SeqCst);
+        match &self.key_pin {
+            Some(pin) if self.established.peer_key_pin.as_deref() != Some(pin.as_str()) => {
+                Err(Failure::Refused(PIN_REFUSED.into()))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// What the socket read: through TLS (finishing its handshake) to the framer.
@@ -1096,11 +1320,14 @@ impl Connection {
         let mut rest = bytes;
         while !rest.is_empty() {
             tls.read_tls(&mut rest).map_err(failed)?;
-            tls.process_new_packets()
-                .map_err(|e| Failure::Refused(format!("tls: {e}")))?;
+            if let Err(e) = tls.process_new_packets() {
+                self.security_error = Some(e.to_string());
+                return Err(Failure::Refused(format!("tls: {e}")));
+            }
         }
         if matches!(self.phase, Phase::Handshaking) {
             if end {
+                self.security_error = Some(HANDSHAKE_EOF.into());
                 return Err(Failure::Refused(
                     "tls: the far end closed the handshake".into(),
                 ));
@@ -1113,6 +1340,7 @@ impl Connection {
                 if let Some(rustls::Connection::Server(s)) = self.tls.as_ref() {
                     self.established.offered_name = s.server_name().map(str::to_owned);
                 }
+                self.hold_to_anchors()?;
                 self.begin()?;
             }
         }
@@ -1143,7 +1371,14 @@ impl Connection {
         let Some(framing) = self.framing.as_mut() else {
             return if end { Err(Failure::Closed) } else { Ok(()) };
         };
-        let y = framing.ingest(bytes, end).map_err(failed)?;
+        let y = match framing.ingest(bytes, end) {
+            Ok(y) => y,
+            Err(e) => {
+                // What the far end sent (or its end) failed the framing: the framer's own words.
+                self.framer_error = Some(e.error.clone());
+                return Err(failed(e));
+            }
+        };
         self.absorb(y)
     }
 
