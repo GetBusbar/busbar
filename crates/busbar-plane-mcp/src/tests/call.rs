@@ -543,6 +543,22 @@ fn an_upstream_error_is_a_tool_failure_naming_the_server() {
     );
 }
 
+/// LAW 11 (THE DESIGN 2126, 2131-2132; product hard rule 3369-3373): the upstream's JSON-RPC
+/// error message is the upstream's data and reaches the caller unchanged inside busbar's failure
+/// words; `Vec<String>` and `<b>x</b>` are not markup busbar may strip.
+/// RED arm: the failure text ran through the markup strip, serving `Vec` and `x`.
+#[test]
+fn an_upstream_error_message_reaches_its_caller_unchanged() {
+    let (_, body, _) = answer_of(settle_far(
+        r#"{"jsonrpc":"2.0","id":0,"error":{"code":-32602,"message":"want Vec<String>, got <b>x</b>"}}"#,
+    ));
+    let text = body["result"]["content"][0]["text"].as_str().expect("text");
+    assert_eq!(
+        text,
+        "The MCP server `fs` did not complete this tool call: MCP upstream answered JSON-RPC error -32602: want Vec<String>, got <b>x</b>"
+    );
+}
+
 #[test]
 fn an_answer_to_something_else_is_never_served() {
     let (_, body, _) = answer_of(settle_far(r#"{"jsonrpc":"2.0","id":5,"result":{}}"#));
