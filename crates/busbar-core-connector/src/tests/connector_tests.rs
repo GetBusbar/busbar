@@ -1691,3 +1691,83 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
         );
     });
 }
+
+/// An outbound auth that is only ever bound: it opens nothing and answers no fields.
+struct OnlyBound;
+
+impl busbar_contract::auth_calls::OutboundAuth for OnlyBound {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Err("only bound".to_string())
+    }
+    fn fields_now(
+        &self,
+        _: u64,
+        _: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        Some(busbar_contract::auth_calls::Fields::Refused)
+    }
+    fn fields(
+        &self,
+        _: u64,
+        _: busbar_contract::auth_calls::FieldsRequest,
+        _: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        unreachable!("no cell here asks a bound auth for fields")
+    }
+}
+
+/// A binding under `handle`, nothing else to it.
+fn bound_as(handle: u64) -> busbar_contract::conn::ConnAuth {
+    busbar_contract::conn::ConnAuth {
+        auth: Arc::new(OnlyBound),
+        handle,
+        style_flags: 0,
+        points: busbar_contract::abi::auth::AuthPoints(0),
+        passthrough: false,
+        lender: None,
+        per_request: None,
+    }
+}
+
+/// EACH MEMBER'S BINDING IS ITS OWN, even at an origin it shares (predev `creds.rs`
+/// `Lease::header_for`: a lease minted for one agent is refused on a hop to another; R5: an agent
+/// with no credential is dialled with none): two members at one origin each answer their own
+/// binding, a member that bound none answers none (never its neighbour's), a request naming no
+/// member answers none, and a member's binding reaches no other origin. RED: the table held one
+/// binding per origin, the last member bound there answering for every request to it.
+#[test]
+fn members_sharing_an_origin_each_answer_their_own_binding_and_never_a_neighbours() {
+    let c = Connector::default();
+    let (owner, need) = (InstanceId(3), NeedId(1));
+    let origin = "https://vendor.example";
+    c.bind_auth(owner, need, "planner", origin, bound_as(1));
+    c.bind_auth(owner, need, "summarizer", origin, bound_as(2));
+    let handle =
+        |member: &str, target: &str| c.auth_of(owner, need, member, target).map(|b| b.handle);
+    assert_eq!(handle("planner", "https://vendor.example/planner"), Some(1));
+    assert_eq!(
+        handle("summarizer", "https://vendor.example/summarizer"),
+        Some(2)
+    );
+    assert_eq!(
+        handle("scout", "https://vendor.example/scout"),
+        None,
+        "a member with none"
+    );
+    assert_eq!(
+        handle("", "https://vendor.example/planner"),
+        None,
+        "a request naming none"
+    );
+    assert_eq!(
+        handle("planner", "https://elsewhere.example/planner"),
+        None,
+        "another origin"
+    );
+    assert_eq!(
+        c.auth_of(owner, NeedId(2), "planner", origin)
+            .map(|b| b.handle),
+        None,
+        "another need"
+    );
+}

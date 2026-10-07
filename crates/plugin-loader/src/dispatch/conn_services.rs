@@ -944,12 +944,14 @@ extern "C" fn write_request(
                     });
                     // THE MEMBER'S BINDING (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE): a request to a
                     // member the connector holds a binding for carries that binding's auth fields,
-                    // as the member's relayed calls do. The request is handed over whole; what
-                    // became of it is the reply's to say.
+                    // as the member's relayed calls do. It is the binding of the member the stream
+                    // NAMES (`EstablishIn::member`), never of another registration at the same
+                    // origin. The request is handed over whole; what became of it is the reply's
+                    // to say.
                     let bound = if waived {
                         None
                     } else {
-                        table.auth_of(id, *need, target)
+                        table.auth_of(id, *need, member, target)
                     };
                     // A binding re-resolved per request answers this request's handle; one whose
                     // credential is unavailable refuses the request under its own cause, nothing

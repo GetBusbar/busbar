@@ -365,19 +365,36 @@ pub trait DeclaredConns: Conns {
         let _ = (owner, conn);
         None
     }
-    /// Hold `binding` as the auth binding of `owner`'s requests on `need` to `origin`
-    /// (`scheme://authority`, [`origin_of`]): a MEMBER's binding, which the plugin's own requests to
-    /// that member are authenticated with (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the connector holds
-    /// it per (instance, need, target origin), and the open calls its fields). Binding the same
-    /// triple again replaces it. A table that carries no binding drops it.
-    fn bind_auth(&self, owner: InstanceId, need: NeedId, origin: &str, binding: ConnAuth) {
-        let _ = (owner, need, origin, binding);
+    /// Hold `binding` as the auth binding of `owner`'s requests on `need` that name the
+    /// registration `member` ([`OpenDesc::member`]) and reach `origin` (`scheme://authority`,
+    /// [`origin_of`]): that MEMBER's binding, which the plugin's own requests to that member are
+    /// authenticated with (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the connector holds it per
+    /// instance, need and target origin, and the open calls its fields). It is held per member as
+    /// well: several registrations at one origin each hold their own, and one that holds none
+    /// lends none to its neighbour. Binding the same member, need and origin again replaces it. A
+    /// table that carries no binding drops it.
+    fn bind_auth(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        member: &str,
+        origin: &str,
+        binding: ConnAuth,
+    ) {
+        let _ = (owner, need, member, origin, binding);
     }
 
-    /// The binding [`DeclaredConns::bind_auth`] holds for `owner`'s requests on `need` to `target`'s
-    /// origin; `None` = the request carries no auth fields.
-    fn auth_of(&self, owner: InstanceId, need: NeedId, target: &str) -> Option<ConnAuth> {
-        let _ = (owner, need, target);
+    /// The binding [`DeclaredConns::bind_auth`] holds for `owner`'s requests on `need` that name
+    /// `member` and reach `target`'s origin; `None` = the request carries no auth fields (a request
+    /// that names no member, or a member that holds no binding there, presents none).
+    fn auth_of(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        member: &str,
+        target: &str,
+    ) -> Option<ConnAuth> {
+        let _ = (owner, need, member, target);
         None
     }
 

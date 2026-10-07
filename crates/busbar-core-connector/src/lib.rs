@@ -275,6 +275,10 @@ type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sea
 type MemberAnchored =
     Mutex<HashMap<(InstanceId, NeedId, String), (String, Option<Arc<tls::client::Sealed>>)>>;
 
+/// What a member's auth binding is held under: the need's owner, the need, the registration's
+/// name and its target's origin (`scheme://authority`).
+type AuthKey = (InstanceId, NeedId, String, String);
+
 /// The listeners, one per inbound need, by the need's owner and need.
 type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>;
 
@@ -395,9 +399,10 @@ pub struct Connector {
     /// owner, the need and the registration's name, each with the authority (lower-case,
     /// `host:port`) of its own target ([`PollConns::seal_reach`]).
     reaching: Mutex<HashMap<(InstanceId, NeedId, String), String>>,
-    /// Each member's auth binding, by (instance, need, target origin): what a plugin's own request
-    /// to that member is authenticated with ([`DeclaredConns::bind_auth`]).
-    auths: Mutex<HashMap<(InstanceId, NeedId, String), busbar_contract::conn::ConnAuth>>,
+    /// Each member's auth binding, by (instance, need, member, target origin): what a plugin's own
+    /// request naming that member is authenticated with ([`DeclaredConns::bind_auth`]). Two
+    /// members at one origin each hold their own.
+    auths: Mutex<HashMap<AuthKey, busbar_contract::conn::ConnAuth>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -1345,26 +1350,32 @@ impl DeclaredConns for Connector {
         &self,
         owner: InstanceId,
         need: NeedId,
+        member: &str,
         origin: &str,
         binding: busbar_contract::conn::ConnAuth,
     ) {
-        self.auths
-            .lock()
-            .expect("auth bindings")
-            .insert((owner, need, origin.to_string()), binding);
+        self.auths.lock().expect("auth bindings").insert(
+            (owner, need, member.to_string(), origin.to_string()),
+            binding,
+        );
     }
 
     fn auth_of(
         &self,
         owner: InstanceId,
         need: NeedId,
+        member: &str,
         target: &str,
     ) -> Option<busbar_contract::conn::ConnAuth> {
+        // A request that names no member is no member's: it presents none.
+        if member.is_empty() {
+            return None;
+        }
         let origin = busbar_contract::conn::origin_of(target);
         self.auths
             .lock()
             .expect("auth bindings")
-            .get(&(owner, need, origin.to_string()))
+            .get(&(owner, need, member.to_string(), origin.to_string()))
             .cloned()
     }
 
