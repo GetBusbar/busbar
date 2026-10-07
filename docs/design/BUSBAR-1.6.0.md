@@ -3300,10 +3300,12 @@ branches live on GitHub so CI runs the pipeline).
    record: the full plan (every gate, every build/test step, the money oracle forced, conformance
    produced at judge time and judged absolutely per #68) on the queue's merge commit, judged "no worse
    than base" against the base the queue built it on; its report becomes the base of the commit it
-   lands. The PULL-REQUEST run is the fast pre-check a PR must pass to enter the queue: ONE runner,
-   `build:check`, `build:clippy`, `build:dlopen-cdylibs`, `test:workspace` and `test:workspace-doc`
-   over the crates it changes plus their reverse dependencies, with no gates, no oracle and no
-   conformance ("Verification runs once per input", OWNER-LOCKED 2026-10-06). Neither may add a red. A local Latchkey
+   lands. The PULL-REQUEST run is the pre-check a PR must pass to enter the queue: the merge group's
+   gates and build/test steps, each test and build step over the crates the PR changes plus their
+   reverse dependencies (a row the diff does not reach is reported skipped, "not affected"), on the
+   PR merged onto the base tip, with no oracle and no conformance; on ONE runner when that is
+   estimated within 20 minutes, else as the merge group's shard matrix ("Verification runs once per
+   input", OWNER-LOCKED 2026-10-06). Neither may add a red. A local Latchkey
    run is for iteration only.
 4. A `$` (money-touching) change is its own PR, never bundled with anything else.
 5. On merge the branch is deleted (OWNER 2026-10-01, BRANCH LIFETIME: "as soon as merged into
