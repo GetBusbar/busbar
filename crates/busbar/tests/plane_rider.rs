@@ -178,6 +178,18 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
                 ptr: std::ptr::null(),
                 len: 0,
             },
+            trust_counterparty: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            trust_item: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            trust_digest: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
         },
     );
     let outcome = plugin.call(slot::ARRIVE, &mut frame).outcome;
