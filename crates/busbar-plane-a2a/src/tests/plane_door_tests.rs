@@ -133,22 +133,23 @@ fn the_hook_projection_is_the_method_and_its_params() {
 
 /// THE INVOKE REWRITE CONTRACT, as the served engine applied a `prompt: rw` hook's reply to an A2A
 /// submission's params: an object `content`, a JSON-string `content` that parses to an object, or
-/// a role-less entry itself; the last usable entry wins; nothing usable is not applied.
+/// a role-less entry itself; the last usable entry wins; nothing usable is not applied; a reply
+/// that cannot be read back is no rewrite at all (`Err`, the unit refused).
 #[test]
 fn a_rewrite_replaces_the_params_by_the_invoke_contract() {
     let params = |reply: Value| rewritten_params(&serde_json::to_vec(&reply).unwrap());
     let object = json!({ "message": { "parts": [{ "text": "[redacted]" }] } });
     assert_eq!(
         params(json!({ "messages": [{ "role": "user", "content": object }] })),
-        Some(object.clone())
+        Ok(Some(object.clone()))
     );
     assert_eq!(
         params(json!({ "messages": [{ "role": "user", "content": object.to_string() }] })),
-        Some(object.clone())
+        Ok(Some(object.clone()))
     );
     assert_eq!(
         params(json!({ "messages": [object.clone()] })),
-        Some(object.clone())
+        Ok(Some(object.clone()))
     );
     assert_eq!(
         params(json!({ "messages": [
@@ -156,15 +157,19 @@ fn a_rewrite_replaces_the_params_by_the_invoke_contract() {
             { "role": "user", "content": "plain words" },
             { "role": "user", "content": object },
         ] })),
-        Some(object.clone())
+        Ok(Some(object.clone()))
     );
-    assert_eq!(params(json!({ "messages": [{ "role": "user" }] })), None);
+    assert_eq!(
+        params(json!({ "messages": [{ "role": "user" }] })),
+        Ok(None)
+    );
     assert_eq!(
         params(json!({ "messages": [{ "role": "user", "content": "7" }] })),
-        None
+        Ok(None)
     );
-    assert_eq!(params(json!({ "tools": [] })), None);
-    assert_eq!(rewritten_params(b"not json"), None);
+    assert_eq!(params(json!({ "messages": [] })), Ok(None));
+    assert!(params(json!({ "tools": [] })).is_err());
+    assert!(rewritten_params(b"not json").is_err());
 
     // The envelope keeps every member but its params, re-serialized.
     let send = br#"{"jsonrpc":"2.0","id":7,"method":"message/send","params":{"message":{}}}"#;
@@ -403,4 +408,157 @@ fn the_framed_line_marks_its_messages_and_a_late_failure() {
     });
     let after = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
     assert!(after.done && after.bytes.is_empty() && after.final_status.is_some());
+}
+
+// ── THE REWRITE APPLY SITE FAILS CLOSED (predev `hook_tap_tests`, ported to the door) ───────────
+
+/// A COMMITTED REWRITE BUSBAR CANNOT READ BACK REFUSES THE SUBMISSION — it does not fall back to the
+/// `params` the hook said it had replaced (predev
+/// `hook_tap_tests::a_committed_rewrite_busbar_cannot_read_back_is_refused_rather_than_silently_undone`).
+///
+/// The door read the stage's bytes as an `Option`, so bytes it could not read left the unit with
+/// the caller's ORIGINAL `params`: a redaction hook says it removed the secret, its output is
+/// unreadable, and the message WITH the secret goes to the agent. Driven at the DECISION, as predev
+/// drove it: the kernel's hook stage only ever hands over the `{"messages": [...]}` it serialized,
+/// so the `Err` arm is a guard on the ABI seam; the apply site's disposition of it is pinned by the
+/// source cell below. RED before the fix: every unusable reply read as `None`, not applied, and the
+/// unit relayed the caller's original params.
+#[test]
+fn a_committed_rewrite_busbar_cannot_read_back_is_refused_rather_than_silently_undone() {
+    let ok = rewritten_params(
+        br#"{"messages":[{"role":"user","content":{"message":{"parts":[{"kind":"text","text":"rewritten"}]}}}]}"#,
+    )
+    .expect("an ordinary rewrite is read back")
+    .expect("and used");
+    assert_eq!(
+        ok["message"]["parts"][0]["text"], "rewritten",
+        "the control: a readable rewrite still lands, so the rule refuses unusable output rather \
+         than refusing rewrites"
+    );
+
+    for unusable in [
+        &b"not json at all"[..],
+        &b""[..],
+        &b"{\"message\": "[..],
+        // Well-formed JSON that is not the stage's reply: no `messages` list to read params from.
+        &b"7"[..],
+        &b"[1,2,3]"[..],
+        &b"null"[..],
+        &b"\"message/send\""[..],
+        &b"{\"messages\": 7}"[..],
+    ] {
+        assert!(
+            rewritten_params(unusable).is_err(),
+            "a committed rewrite busbar cannot use must REFUSE the submission; falling back to the \
+             caller's original `params` silently undoes a redaction the hook reported as applied: \
+             {:?}",
+            String::from_utf8_lossy(unusable)
+        );
+    }
+}
+
+/// THE REFUSAL AN A2A CLIENT ACTUALLY READS (predev
+/// `hook_tap_tests::the_unreadable_rewrite_refusal_is_a_conformant_a2a_internal_error`): the row of
+/// A2A section 5.4 its status comes from, `InternalError`, `-32603`, `500`, echoing the caller's id,
+/// in predev's words; the HTTP+JSON line answers the same row as its AIP-193 document.
+#[test]
+fn the_unreadable_rewrite_refusal_is_a_conformant_a2a_internal_error() {
+    let id = json!("req-7");
+    let refusal = unreadable_rewrite(Some(id.clone()));
+    let rendered = crate::arrival::render(crate::arrival::Dialect::JsonRpc, &refusal, true);
+    assert_eq!(
+        rendered.status, 500,
+        "the status the refusal answers is its row's own"
+    );
+    let body: Value = serde_json::from_slice(&rendered.body).expect("a JSON-RPC envelope");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32603,
+                "message": "a rewrite hook attached to this agent committed a rewrite that busbar \
+                            could not read back. The submission is refused rather than relayed \
+                            with the params the hook said it had replaced.",
+            },
+        }),
+        "predev's `rpcerror::body(&rpc_id, A2aError::Internal, ..)`, member for member"
+    );
+    let rest = crate::arrival::render(crate::arrival::Dialect::RestJson, &refusal, true);
+    assert_eq!(rest.status, 500);
+    let doc: Value = serde_json::from_slice(&rest.body).expect("an AIP-193 document");
+    assert_eq!(doc["error"]["code"], 500, "{doc}");
+    assert_eq!(doc["error"]["status"], "INTERNAL", "{doc}");
+}
+
+/// THE APPLY SITE HAS NO LENIENT READER OF THE SAME BYTES, AND ITS `Err` ARM REFUSES (predev
+/// `hook_tap_tests::the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_params`, over
+/// the door's `project`): a source scan, because the behavioural half covers the shapes somebody
+/// thought of and this covers the shape a future convenience would re-add. The committed bytes are
+/// read in one place, through `rewritten_params`, whose `Err` marks the unit and REFUSES it, and the
+/// `refusal` slot answers a marked unit predev's internal error. The COMPANION half runs the
+/// predicate on the defect itself, so a green scan is evidence of something.
+#[test]
+fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_params() {
+    /// Does this code drop a failed read of the committed bytes and carry on with the originals?
+    fn has_lenient_reader(src: &str) -> bool {
+        src.lines().any(|l| {
+            let l = l.trim();
+            !l.starts_with("//")
+                && [
+                    "if let Ok(",
+                    "while let Ok(",
+                    ".ok()",
+                    ".flatten()",
+                    "unwrap_or_default()",
+                ]
+                .iter()
+                .any(|lenient| l.contains(lenient))
+        })
+    }
+
+    let src = include_str!("../plane_door.rs");
+    let site = src
+        .split_once("let rewrite = input.field(|i| &i.rewrite).bytes();")
+        .map(|(_, rest)| rest)
+        .expect("`project` reads the stage's rewrite");
+    let site = &site[..site
+        .find("let Some(projected) = projection(&envelope)")
+        .expect("and projects what it applied")];
+    assert!(
+        site.contains("rewritten_params(rewrite)"),
+        "the committed rewrite must be read through `rewritten_params`, whose `Err` refuses: {site}"
+    );
+    assert!(
+        !has_lenient_reader(site),
+        "`project` reads the committed rewrite through a conditional that drops the error: the \
+         hook committed a rewrite, busbar could not read it, and the ORIGINAL `params` went to the \
+         agent: {site}"
+    );
+    let arm = site
+        .split_once("Err(_) => {")
+        .map(|(_, rest)| rest)
+        .expect("the apply site has an `Err` arm");
+    assert!(
+        arm.contains("u.unreadable_rewrite = true;") && arm.contains("return Outcome::Refused;"),
+        "the `Err` arm must mark the unit and RETURN a refusal; a strict reader whose failure is \
+         stepped over relays the caller's original `params` as the lenient one did: {arm}"
+    );
+    let slot = src
+        .split_once("RefusalSlot, RefusalIn, RefusalOut")
+        .map(|(_, rest)| rest)
+        .expect("the refusal slot");
+    assert!(
+        slot.contains("u.filter(|u| u.unreadable_rewrite)?")
+            && slot.contains("Some(unreadable_rewrite(id))"),
+        "and `refusal` answers a marked unit predev's internal error"
+    );
+    assert!(
+        has_lenient_reader(
+            ".then(|| rewritten_params(rewrite))\n            .flatten()\n            .and_then(|p| p)"
+        ),
+        "the scan's predicate must match the defect it exists for, or a green scan is evidence of \
+         nothing"
+    );
 }
