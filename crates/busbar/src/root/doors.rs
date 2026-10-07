@@ -18,8 +18,8 @@ use std::sync::{Arc, OnceLock};
 
 use super::loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
-    load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink, OutFrame,
-    Plugin,
+    load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
+    OutFrame, Plugin,
 };
 use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -55,7 +55,10 @@ pub fn bind() -> Bind {
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher().adopter(),
-        conns: None,
+        // A transport door is a FRAMER the connector drives (a carrier dials over host io.* fds):
+        // it declares no need, so it serves with no table, and one that declared a need would be
+        // refused at bind.
+        conns: ConnTable::NoNeeds,
     }
 }
 

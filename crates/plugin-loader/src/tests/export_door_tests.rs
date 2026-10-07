@@ -21,7 +21,7 @@ fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
     (plugin, dispatcher)
