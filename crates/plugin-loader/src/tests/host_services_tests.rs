@@ -181,13 +181,8 @@ impl HostServices for Provider {
         Stored::ready(svc::TRUST_DECIDED_SERVING)
     }
 
-    /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same. No
-    /// counterparty named: refused.
+    /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same.
     fn trust_state(&self, c: &Caller, counterparty: &str) -> Stored {
-        // The ticketless sweep's zeroed `in` names no counterparty: refused, as an unserved slot.
-        if counterparty.is_empty() {
-            return Stored::refused(UNIMPLEMENTED);
-        }
         self.saw(c, "trust.state", counterparty.as_bytes());
         let value = b"drifted\0d1\0d2";
         let mut stored = Stored::ready(svc::KEY_SAME);
@@ -569,12 +564,30 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.trust_state,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
+    // The room a READ service is handed, so its well-formed call can be answered whole.
+    let (mut read_buf, mut read_spans) = ([0u8; 64], [NO_SPAN; 4]);
     for (service, f) in (0..SERVICES).zip(slots) {
         // The largest `in` in the table, all zero past its head: every `in` fits it.
         let mut raw = [0u64; 32];
         let h = head(service, Ticket::NONE, 0, size_of_val(&raw));
         // SAFETY: the head fits the buffer's start.
         unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
+        // A read that answers into the caller's buffers is handed a WELL-FORMED `in` (a named
+        // counterparty, room for its items): the slot is served as any other is. Its all-zero
+        // `in` is a short answer of its own (`an_all_zero_trust_state_in_is_a_short_answer`).
+        if service == op::TRUST_STATE {
+            let well_formed = svc::TrustStateIn {
+                head: h,
+                counterparty: text("peer"),
+                into: bufs(&mut read_buf, &mut read_spans),
+            };
+            // SAFETY: a `TrustStateIn` fits the buffer's start.
+            unsafe {
+                raw.as_mut_ptr()
+                    .cast::<svc::TrustStateIn>()
+                    .write_unaligned(well_formed)
+            };
+        }
         let mut o = blank();
         let ret = f.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
         if may_pend(service) {
@@ -594,9 +607,10 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             assert_eq!(error(&o), NO_VERIFY_KEY, "service {service}");
         } else if matches!(
             service,
-            op::TRUST_SIGHT_ITEM | op::TRUST_SERVES | op::TRUST_DECIDE
+            op::TRUST_SIGHT_ITEM | op::TRUST_SERVES | op::TRUST_DECIDE | op::TRUST_STATE
         ) {
-            // Served, with no ticket: the zeroed `in` names empty texts, which reach the kernel.
+            // Served, with no ticket: the zeroed `in` names empty texts, which reach the kernel
+            // (trust.state's, the well-formed `in` above).
             assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
         } else {
             assert!(
@@ -1922,5 +1936,23 @@ fn the_sdk_trust_state_reads_the_kernels_items_under_the_short_buffer_rule() {
     assert_eq!(
         seen,
         vec![("double".to_string(), "trust.state", b"peer".to_vec())]
+    );
+}
+
+/// `trust.state` WITH AN ALL-ZERO `in`: it names no room, so the item the kernel answers is a
+/// SHORT answer, FAILED with the full size named (the short-buffer rule), never READY.
+#[test]
+fn an_all_zero_trust_state_in_is_a_short_answer() {
+    let d = double();
+    let mut raw = [0u64; 32];
+    let h = head(op::TRUST_STATE, Ticket::NONE, 0, size_of_val(&raw));
+    // SAFETY: the head fits the buffer's start.
+    unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_state.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert!(
+        o.needed_bytes > 0 && o.needed_items == 1,
+        "the full size is named"
     );
 }
