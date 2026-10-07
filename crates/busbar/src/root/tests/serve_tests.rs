@@ -2648,18 +2648,60 @@ mod agent_door {
         );
     }
 
-    /// RED (ARCHITECT breaker ruling, the plane's reading): an agent that answers each unit with an
-    /// error the protocol defines — TaskNotFound, under a `502` — is the destination ANSWERING, the
-    /// work failing and not the wire (the engine's `classify_hop`: a well-formed backend error is a
-    /// success to the breaker). Six in a row, past the trip's five outcomes, never open its cell:
-    /// every unit is dialled and answered in the agent's own words.
+    /// THE STATUS FIRST (COORDINATOR ruling 2026-10-07 on finding A: predev `relay.rs:1813-1819`
+    /// turns any non-2xx into `RelayRefusal::Status` before its body is read, and `classify_hop`
+    /// `:1583-1586` folds it as a failure from the status alone): an agent that answers each unit
+    /// with an error the protocol defines — TaskNotFound — under a `502` is failing, and its cell
+    /// opens on the trip's five outcomes; the next unit is refused `breaker_open` and never dialled.
+    /// RED: the protocol error read the destination healthy at any status, and the cell never
+    /// opened.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_agent_answering_protocol_errors_never_trips_its_breaker() {
+    async fn an_agent_answering_protocol_errors_under_a_502_trips_its_breaker() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-breaker-protocol-error";
         let _published = Published(instance);
         let mut agent = Agent::start(
             502,
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}"#,
+        )
+        .await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let mut tripped = None;
+        for call in 0..8 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            if body.contains("breaker_open") {
+                tripped = Some(call);
+                assert!(
+                    !agent.relayed(),
+                    "call {call}: a tripped cell dials nothing"
+                );
+                break;
+            }
+            assert!(agent.relayed(), "call {call} was dialled: {body}");
+        }
+        let tripped = tripped.expect("a protocol error under a 502 opens the agent's cell");
+        assert!(
+            tripped >= 5,
+            "the cell opens on the trip's five outcomes, never sooner: call {tripped}"
+        );
+    }
+
+    /// THE TWIN: an error the protocol defines on a `2xx` is the destination ANSWERING, the work
+    /// failing and not the wire (predev `classify_hop` `:1575`: `BackendError` is a success to the
+    /// breaker). Six in a row, past the trip's five outcomes, never open its cell: every unit is
+    /// dialled and answered in the agent's own words.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_answering_protocol_errors_under_a_200_never_trips_its_breaker() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-breaker-protocol-error-2xx";
+        let _published = Published(instance);
+        let mut agent = Agent::start(
+            200,
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}"#,
         )
         .await;
@@ -2673,7 +2715,7 @@ mod agent_door {
             .await;
             assert!(
                 !body.contains("breaker_open"),
-                "call {call}: a protocol error is no fault of the agent's: {body}"
+                "call {call}: a protocol error on a 2xx is no fault of the agent's: {body}"
             );
             assert!(agent.relayed(), "call {call} was dialled: {body}");
         }
