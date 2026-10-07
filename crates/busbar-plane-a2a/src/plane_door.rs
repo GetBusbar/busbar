@@ -74,8 +74,8 @@ const MAX_INFLIGHT: u32 = 64;
 pub const VERSION: &str = "1.6.0";
 
 /// THE STATEMENT: the plane's name and version, the settings section it declares
-/// ([`door::SECTIONS`]), its two outbound needs ([`door::NEEDS`]), the secret references its section
-/// holds ([`door::SECRET_REFS`]) and its tail ([`door::TAIL`]).
+/// ([`door::SECTIONS`]), its three outbound needs ([`door::NEEDS`]), the secret references its
+/// section holds ([`door::SECRET_REFS`]) and its tail ([`door::TAIL`]).
 pub const STATEMENT: Statement = Statement {
     kind_tail: (door::TAIL as *const busbar_contract::abi::plane::PlaneTail).cast::<KindTailHead>(),
     sections: door::SECTIONS.as_ptr(),
