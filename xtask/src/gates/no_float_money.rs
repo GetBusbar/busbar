@@ -775,6 +775,33 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
         class: AllowClass::NotACount,
         why: "a frame's position in a sequence, not a quantity anybody is billed for",
     },
+    // NEWLY SEEN 2026-10-07 by the value-decided zero (`map_or(0, …)`, audit X3 #11), ruled NotACount
+    // by the coordinator (Rule A) on three conditions: each value traced to every use and none
+    // reaches a usage, token or billed field; v1.5.5 carried the same default; an exact-count plant.
+    Allow {
+        file: "crates/busbar-plane-llm/src/codec/openai_chat/reader.rs",
+        item: "read_response_events",
+        reads: 1,
+        class: AllowClass::NotACount,
+        why: "the stream tool-call `index` (:1026), clamped to MAX_TOOL_INDEX; it is only the \
+              `open_tools` key (:1063, :1073, :1164), the LEGACY_FUNCTION_CALL_KEY compare (:1067) \
+              and the `tool_ir_index` key (:1078, :1098, :1165) — block bookkeeping, never a usage \
+              field. v1.5.5 `crates/busbar/src/proto/openai_chat/reader.rs:611` has the same \
+              `map_or(0, …min(MAX_TOOL_INDEX))`",
+    },
+    Allow {
+        file: "crates/busbar-plane-llm/src/codec/openai_responses/reader.rs",
+        item: "read_response_events",
+        reads: 3,
+        class: AllowClass::NotACount,
+        why: "the stream `output_index` of the reasoning delta (:890), the text delta (:949) and \
+              the #305 annotation arm (:1021, `34a06f2500`), which mirrors :949 so a citation lands \
+              on the block its text did (an index-less annotation goes with index-less text, at 0); \
+              clamped to MAX_OUTPUT_INDEX; it is only the `open_tools` key (raw or + \
+              TEXT_INDEX_KEY_OFFSET) and the IrStreamEvent BlockStart/BlockDelta `index` — block \
+              position, never a usage field. v1.5.5 `crates/busbar/src/proto/openai_responses/\
+              reader.rs:679` and `:718` have the same default; 1.5.5 had no annotation arm",
+    },
     Allow {
         file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
         item: "read_transcription_response",
@@ -2679,6 +2706,32 @@ impl Gate for NoFloatMoneyGate {
             }
             Err(e) => report.note_infra_failure(format!(
                 "no-float-money selftest: could not read {twilio} ({e})"
+            )),
+        }
+
+        // 1b. THE EXACT COUNT HOLDS FOR THE RULED INDEX ROWS TOO: one more defaulted read inside
+        //     `read_response_events` (a fifth across the two ruled rows) is a finding.
+        let responses = "crates/busbar-plane-llm/src/codec/openai_responses/reader.rs";
+        match body_plant(
+            cx,
+            responses,
+            "read_response_events",
+            "let _planted_tokens = data.get(\"usage\").and_then(|u| u.as_u64()).map_or(0, |v| v);",
+        ) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a fifth defaulted read in a ruled `read_response_events` is a finding",
+                &[ROW_COUNT_READ],
+                ov,
+                &[
+                    "openai_responses/reader.rs",
+                    "read_response_events",
+                    "4 defaulted read(s)",
+                ],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not plant inside {responses} ({e})"
             )),
         }
 
