@@ -504,6 +504,64 @@ pub fn breaker_refusal(agent: &str, id: Option<Value>, retry_after_s: u32) -> Re
     }
 }
 
+/// THE POOLED AGENT'S CARD READ, refused (predev `receive.rs:1846-1857`): a pool's members are
+/// distinct backends that may each present a different extended card, so there is no one card to
+/// relay; `400`, `-32004`, echoing the request id `id`.
+#[must_use]
+pub fn pooled_card(id: Value) -> Refusal {
+    Refusal {
+        status: STATUS_BAD_REQUEST,
+        id: (!id.is_null()).then_some(id),
+        code: CODE_UNSUPPORTED_OPERATION,
+        message: "GetExtendedAgentCard is not defined for a pooled agent: its members may present \
+                  different cards"
+            .to_string(),
+    }
+}
+
+/// THE PINNED HOP'S GRANT REFUSAL (predev `route::hop_facts`, `creds::AgentEgressDenied`): a
+/// request about a task held by a pool member other than the one addressed is judged on that
+/// member's grant, `resource` (`agent:<id>`), and one the caller's key does not reach (or a key
+/// that is no longer live) is refused before the socket: `403`, `-32004`, echoing the request id
+/// `id`. predev named the key's id where this says `this key`: the plane never sees the raw
+/// principal (ruling (B), coordinator 2026-10-07, as [`not_granted`] words it).
+#[must_use]
+pub fn pinned_ungranted(id: Value, resource: &str, live: bool) -> Refusal {
+    let message = if live {
+        format!(
+            "this key holds no `{resource}` grant, so NO outbound credential is selected for it: \
+             busbar does not spend its own credential on behalf of a caller that is not itself \
+             authorised for the backend agent"
+        )
+    } else {
+        "this key is not live, so no outbound credential is leased for it".to_string()
+    };
+    Refusal {
+        status: STATUS_FORBIDDEN,
+        id: (!id.is_null()).then_some(id),
+        code: CODE_UNSUPPORTED_OPERATION,
+        message,
+    }
+}
+
+/// THE WALK'S WORDS for a pool member not interchangeable with its primary (predev
+/// `failover::Refusal::NotInterchangeable`): their approved card fingerprints differ (or one has
+/// none), so a request is not moved between them.
+#[must_use]
+pub fn not_interchangeable(
+    pool: &str,
+    (primary, primary_key): (&str, Option<&str>),
+    (other, other_key): (&str, Option<&str>),
+) -> String {
+    format!(
+        "`{other}` is not interchangeable with `{primary}` in pool `{pool}`: their approved \
+         fingerprints differ ({} vs {}), so busbar cannot show they are the same deployment and \
+         will not move a request between them",
+        primary_key.unwrap_or("<nothing approved>"),
+        other_key.unwrap_or("<nothing approved>"),
+    )
+}
+
 /// `-32602`: the request's parameters cannot be served as given.
 pub const CODE_INVALID_PARAMS: i64 = -32602;
 

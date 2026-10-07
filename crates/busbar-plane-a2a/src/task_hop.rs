@@ -144,6 +144,43 @@ fn resumable(rows: Vec<TaskRow>, context_id: &str, member: &str) -> Option<TaskR
     candidates.pop()
 }
 
+/// THE MEMBER HOLDING THE TASK a request to a failover pool is about (predev `receive.rs:1858-1868`
+/// and `route.rs` `select_member`), read off the caller's task records: the `agent_id` of the task
+/// the request names and the caller holds, else of the newest of the caller's interrupted tasks
+/// under the `contextId` it names held by ANY of the pool's `members` (it resumes AT that member).
+/// `None` = the request is a fresh submission, which the pool's walk places. A read that failed
+/// reads as nothing, as [`open`]'s lookups read it.
+///
+/// # Errors
+/// [`Halt::Pending`] when a host call pends: the piece runs again from the top.
+pub fn holder(
+    reach: &mut dyn Records,
+    envelope: &Value,
+    caller: &str,
+    now: u64,
+    members: &[String],
+) -> Result<Option<String>, Halt> {
+    for named in identity::named_tasks(envelope) {
+        if let Some(held) = or_absent(tasks::get(reach, caller, named, now), None)? {
+            return Ok(Some(held.row.agent_id));
+        }
+    }
+    let context = identity::context_of(envelope);
+    if context.is_empty() {
+        return Ok(None);
+    }
+    let mut candidates: Vec<TaskRow> = or_absent(tasks::list(reach, caller, now), Vec::new())?
+        .into_iter()
+        .filter(|r| {
+            r.context_id == context
+                && members.iter().any(|m| *m == r.agent_id)
+                && TaskState::parse(&r.state).is_ok_and(TaskState::is_interrupted)
+        })
+        .collect();
+    candidates.sort_by_key(|r| r.updated_at);
+    Ok(candidates.pop().map(|r| r.agent_id))
+}
+
 /// OPEN the task request `req` is for; its record writes go to `out`. `backends` answers the far
 /// end's id busbar learnt for one of the caller's task ids.
 ///

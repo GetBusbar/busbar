@@ -613,6 +613,51 @@ pub fn read_settings(settings: &[u8]) -> Result<AgentsCfg, String> {
     if settings.is_empty() {
         return Ok(AgentsCfg::default());
     }
+    // THE FAILOVER POOLS the host hands the section at its reserved `pools` key are the host's,
+    // not a registration: lifted off before the section is read, and kept beside it.
+    if let Some((rest, pools)) = lift_pools(settings) {
+        let mut cfg = read_section(&rest)?;
+        cfg.pools = pools;
+        return Ok(cfg);
+    }
+    read_section(settings)
+}
+
+/// The section's reserved `pools` key taken off `settings`: the rest of the section (its keys in
+/// the order written), and each pool's members, in the order declared (a member written as an
+/// object names its entry under `name`). `None` when the section states no pools.
+fn lift_pools(settings: &[u8]) -> Option<(Vec<u8>, indexmap::IndexMap<String, Vec<String>>)> {
+    use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
+    let mut section: indexmap::IndexMap<String, serde_json::Value> =
+        serde_json::from_slice(settings).ok()?;
+    let stated = section.shift_remove(RESERVED_POOLS_KEY)?;
+    let pools: indexmap::IndexMap<String, Vec<String>> = stated
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, pool)| {
+            let members: Vec<String> = pool
+                .get(POOL_MEMBERS_KEY)
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|m| {
+                    m.as_str()
+                        .or_else(|| {
+                            m.get(POOL_MEMBER_NAME_KEY)
+                                .and_then(serde_json::Value::as_str)
+                        })
+                        .map(str::to_string)
+                })
+                .collect();
+            (name.clone(), members)
+        })
+        .collect();
+    Some((serde_json::to_vec(&section).ok()?, pools))
+}
+
+/// The section `settings` read, in the grammar's words.
+fn read_section(settings: &[u8]) -> Result<AgentsCfg, String> {
     serde_json::from_slice::<AgentsCfg>(settings).map_err(|e| {
         let text = e.to_string();
         let at = format!(" at line {} column {}", e.line(), e.column());
