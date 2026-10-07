@@ -27,6 +27,7 @@
 
 use std::collections::BTreeMap;
 
+use busbar_contract::abi::sdk::publish::Keyed;
 use serde_json::Value;
 
 use crate::a2a::task::{plan_transition, Direction, Task, TaskState};
@@ -356,11 +357,97 @@ fn translated(
     }))
 }
 
+/// The error-once latches of the refused record writes, one per condition as predev held them
+/// (`receive.rs` `RELAYED_OUTCOME_UNRECORDED_WARNED`, `STREAM_OUTCOME_UNRECORDED_WARNED`,
+/// `RESUME_CURSOR_UNRECORDED_WARNED`, `FAILURE_UNRECORDED_WARNED`): a store outage persists across
+/// every relayed outcome, so the first refusal of a kind is an error and the rest hold at debug.
+/// Plane memory of the door instance (a restart forgets it), never a process global.
+#[derive(Debug, Default)]
+pub struct Latches {
+    tripped: Keyed<u8, ()>,
+}
+
+impl Latches {
+    /// No latch tripped.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Trip latch `kind`; `true` when this is the first trip.
+    fn first(&self, kind: u8) -> bool {
+        self.tripped.with_all(|m| m.insert(kind, ()).is_none())
+    }
+}
+
+/// Emit the diagnostic at error the first time `latch` is tripped and at debug after that.
+macro_rules! latched {
+    ($latches:expr, $kind:expr, $diag:expr, $($rest:tt)*) => {
+        if $latches.first($kind) {
+            busbar_contract::diag_error!($diag, $($rest)*)
+        } else {
+            busbar_contract::diag_debug!($diag, $($rest)*)
+        }
+    };
+}
+
+/// A record write the store refused, reported and never fatal: the hop SUCCEEDED, the caller is
+/// owed its answer, and the stream keeps flowing. The words are predev's, line for line.
+pub(crate) enum Refused {
+    /// The unary hop's reported state (predev `receive.rs` `record_state`, l.3239).
+    Relayed,
+    /// A streamed event's state (predev l.2965).
+    Streamed(TaskState),
+    /// The hop's task ended `failed` (predev `end_task`, l.3508).
+    Failure,
+    /// The artifact resume cursor (predev `advance_resume_cursor`, l.3198).
+    Cursor,
+}
+
+impl Refused {
+    pub(crate) fn report(&self, latches: &Latches, task: &str, error: &str) {
+        use crate::diagnostics::{A2A_FAILURE_UNRECORDED, A2A_RELAYED_OUTCOME_UNRECORDED};
+        match self {
+            Self::Relayed => latched!(
+                latches, 0,
+                A2A_RELAYED_OUTCOME_UNRECORDED,
+                task = %task,
+                error = %error,
+                "a2a: the relayed task's outcome could not be recorded"
+            ),
+            Self::Streamed(state) => latched!(
+                latches, 1,
+                A2A_RELAYED_OUTCOME_UNRECORDED,
+                task = %task,
+                state = %state.as_str(),
+                error = %error,
+                "a2a: a streamed task transition could not be recorded"
+            ),
+            Self::Failure => latched!(
+                latches, 2,
+                A2A_FAILURE_UNRECORDED,
+                task = %task,
+                error = %error,
+                "a2a: a failed task could not be recorded as failed"
+            ),
+            Self::Cursor => latched!(
+                latches, 3,
+                A2A_RELAYED_OUTCOME_UNRECORDED,
+                task = %task,
+                error = %error,
+                "a2a: a streamed task's artifact resume cursor could not be recorded"
+            ),
+        }
+    }
+}
+
 /// SETTLE `task` on what its answer said; the record writes go to `out`. A write the store refuses
 /// is not the caller's failure: the answer stands. A relayed event settles as it passes: the state
 /// it reported, then the artifact it carried (the resume cursor, one chunk on), each chained over
 /// the writes `out` already holds. Answers the row as it moved (what a push notification about the
 /// move carries), or `None` when nothing moved.
+///
+/// A write the store refuses is journaled through `latches` (error once per kind, debug after).
 ///
 /// # Errors
 /// [`Halt::Pending`] when a records call pends.
@@ -371,6 +458,7 @@ pub fn settle(
     caller: &str,
     now: u64,
     out: &mut Vec<Write>,
+    latches: &Latches,
 ) -> Result<Option<TaskRow>, Halt> {
     let (to, artifact) = match settled {
         Settled::Reported { state, .. } if *state == TaskState::Submitted => return Ok(None),
@@ -394,7 +482,14 @@ pub fn settle(
         };
         match transitioned {
             Err(Halt::Pending) => return Err(Halt::Pending),
-            Err(Halt::Failed(_)) => {}
+            Err(Halt::Failed(words)) => {
+                let refused = match settled {
+                    Settled::Failed => Refused::Failure,
+                    Settled::Reported { .. } => Refused::Relayed,
+                    Settled::Event { .. } => Refused::Streamed(to),
+                };
+                refused.report(latches, &task.task_id, &words);
+            }
             Ok(row) => {
                 out.extend(step);
                 moved = row;
@@ -409,7 +504,7 @@ pub fn settle(
         };
         match bumped {
             Err(Halt::Pending) => return Err(Halt::Pending),
-            Err(Halt::Failed(_)) => {}
+            Err(Halt::Failed(words)) => Refused::Cursor.report(latches, &task.task_id, &words),
             Ok(_) => out.extend(step),
         }
     }

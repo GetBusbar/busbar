@@ -500,6 +500,8 @@ pub struct A2aDoor {
     /// Each registered agent's trust: the identity an operator approved (`approve`), the last
     /// sighting of its card and verify-on-call's ledger: plane memory, so a restart forgets it.
     pub(crate) trust: Keyed<String, crate::trust::Standing>,
+    /// The error-once latches of the record writes the store refused ([`crate::task_hop::Latches`]).
+    pub(crate) latches: crate::task_hop::Latches,
 }
 
 impl A2aDoor {
@@ -649,6 +651,7 @@ slot!(
             generations: Generations::new(),
             units: Keyed::new(),
             swept: Keyed::new(),
+            latches: crate::task_hop::Latches::new(),
             backends: Keyed::new(),
             cards: crate::cards::Cards::new(),
             deliveries: crate::push::Deliveries::new(),
@@ -1259,7 +1262,15 @@ fn settle_task(
     let mut moved = Vec::new();
     let mut halted = false;
     for settled in &settles {
-        match task_hop::settle(&mut via, &task, settled, caller, now, &mut writes) {
+        match task_hop::settle(
+            &mut via,
+            &task,
+            settled,
+            caller,
+            now,
+            &mut writes,
+            &reach.plane.latches,
+        ) {
             Err(Halt::Pending) => {
                 halted = true;
                 break;
@@ -1595,6 +1606,9 @@ fn piece(
     let Some(hop) = unit.hop.as_mut() else {
         return (Outcome::Refused, false);
     };
+    if let Some(url) = &url {
+        hop.relay.name_backend(member, url);
+    }
     // THE REFUSED PIECE (`TAIL_REFUSED_PIECE`): the kernel refused the unit before it dialled, and
     // hands the refusal here first, on the unit's own ticket; every other kernel piece is an
     // ATTEMPT.

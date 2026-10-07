@@ -913,3 +913,110 @@ fn an_oversized_body_is_cut_one_byte_past_the_ceiling_so_the_driver_can_refuse_i
     );
     assert_eq!(r.far.len(), MAX_REPLY_BYTES + 1);
 }
+
+// ── the operator's journal names the backend; the caller's answer never does ───────────────────
+
+/// Every event's level and rendered fields (the plane holds no subscriber dependency, so the
+/// `tracing` trait is implemented by hand).
+struct Capture(std::sync::mpsc::Sender<(tracing::Level, String)>);
+
+struct Render<'a>(&'a mut String);
+
+impl tracing::field::Visit for Render<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write as _;
+        let _ = write!(self.0, "{}={value:?} ", field.name());
+    }
+}
+
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut line = String::new();
+        event.record(&mut Render(&mut line));
+        let _ = self.0.send((*event.metadata().level(), line));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// What `run` answers the caller, and the lines it journaled.
+fn journaled(run: impl FnOnce() -> Reply) -> (Reply, Vec<(tracing::Level, String)>) {
+    let (sent, heard) = std::sync::mpsc::channel();
+    let reply = tracing::subscriber::with_default(Capture(sent), run);
+    (reply, heard.try_iter().collect())
+}
+
+/// Ported from origin/predev `crates/busbar-a2a/src/a2a/tests/refusal_leak_tests.rs`
+/// `the_operator_rendering_still_names_the_backend` (`receive.rs:3300`, `:3326`, `relay.rs:499`
+/// `Display`): a refused hop's journal line names the backend's url at debug, and the caller's
+/// answer, the one the wire-scan cells read, names no backend. RED arm: nothing was journaled.
+#[test]
+fn a_refused_hops_journal_line_names_the_backend_and_the_callers_answer_does_not() {
+    let host = "vendor.example";
+    let submission = crate::diagnostics::A2A_RELAYED_SUBMISSION_FAILED
+        .banner()
+        .to_string();
+    let stream = crate::diagnostics::A2A_RELAYED_STREAM_REFUSED
+        .banner()
+        .to_string();
+    let other = b"data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n\n";
+    type Run = Box<dyn FnOnce() -> Reply>;
+    let cases: Vec<(&str, String, Run)> = vec![
+        (
+            "a task-less hop's backend status",
+            submission.clone(),
+            Box::new(|| answered(&mut sent(), 503, b"{}")),
+        ),
+        (
+            "a task-less hop that heard nothing back",
+            submission.clone(),
+            Box::new(|| sent().refuse_transport().0),
+        ),
+        (
+            "a task hop's backend status",
+            submission.clone(),
+            Box::new(|| answered(&mut task_sent(false), 503, b"{}")),
+        ),
+        (
+            "a stream refused after its answer began",
+            stream,
+            Box::new(move || {
+                let (mut r, _) = events_sent();
+                let first =
+                    event(json!({ "kind": "status-update", "status": { "state": "working" } }));
+                let _ = r.on_piece(far(Some(200), &first, false));
+                let _ = r.on_piece(far(None, other, false));
+                Reply {
+                    status: 0,
+                    content_type: "",
+                    body: Vec::new(),
+                }
+            }),
+        ),
+    ];
+    for (what, banner, run) in cases {
+        let (reply, lines) = journaled(run);
+        let journal = lines
+            .iter()
+            .find(|(_, line)| line.contains(&banner))
+            .unwrap_or_else(|| panic!("{what}: nothing journaled under {banner}: {lines:?}"));
+        assert_eq!(journal.0, tracing::Level::DEBUG, "{what}: at debug");
+        assert!(
+            journal.1.contains(host),
+            "{what}: the operator's line names the backend: {}",
+            journal.1
+        );
+        assert!(
+            !String::from_utf8_lossy(&reply.body).contains(host),
+            "{what}: the caller's answer names no backend"
+        );
+    }
+}
