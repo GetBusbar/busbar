@@ -1073,7 +1073,6 @@ impl busbar_contract::auth_calls::OutboundAuth for CountingOpens {
 /// A `bearer` [`super::PerHop`] over the secret at `path`, opened by `auth` as the composition
 /// opens it.
 fn per_hop(path: &std::path::Path, auth: std::sync::Arc<CountingOpens>) -> super::PerHop {
-    use busbar_contract::secret::SecretResolve as _;
     let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
