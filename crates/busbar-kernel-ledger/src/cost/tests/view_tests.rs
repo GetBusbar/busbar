@@ -18,7 +18,7 @@ use crate::cost::{
 use super::{lines, CACHE_READ, INPUT, OUTPUT};
 
 /// The lane every case below serves on.
-const LANE: &str = "gpt-4o";
+const LANE: &str = "lane-4o";
 
 /// **CARD A**, in force from instant zero: input at 3 micro-units a token, output at 16, a flat fee
 /// of 2 minor units a request.
@@ -214,7 +214,7 @@ fn a_present_card_silent_about_a_hit_class_refuses() {
 
 #[test]
 fn an_open_meter_class_the_card_prices_is_charged_not_dropped() {
-    // The classes a non-LLM plane declares — a2a `hops`, mcp `calls`, streaming `audio-seconds` —
+    // The open classes a plane declares — a count of hops, of calls, of seconds —
     // are ordinary card entries here. The reserved-four derivations cannot see them at all.
     let card = RateCard::from_micro_rates(
         [
@@ -430,8 +430,8 @@ fn money_spells_itself_without_a_float() {
 
 // ── ONE CARD PER PLANE (#42 "scoped per plane", #47): the row's plane key picks its card ──────────
 
-/// A composed card: the flat (llm) card prices `gpt-4o` input at 3; the plane `p` prices its own
-/// lane `gpt-4o` (the SAME lane name, on purpose) at 7 a `calls` unit and nothing else. Built through
+/// A composed card: the flat card prices `lane-4o` input at 3; the plane `p` prices its own
+/// lane `lane-4o` (the SAME lane name, on purpose) at 7 a `calls` unit and nothing else. Built through
 /// the config path — [`crate::cost::compose_plane_cards`] then [`RateCard::from_config`] and
 /// [`RateCard::with_unit_rates`] — exactly as the node builds it.
 fn per_plane_card(flat: bool, plane: bool) -> RateCard {
@@ -542,7 +542,7 @@ fn each_plane_card_is_its_own_switch() {
 type TierPair = (crate::cost::TierRates, Option<u64>);
 
 /// With no plane card the composed map IS the flat map, byte-identical (1.5.5 `rate_card:` loads as
-/// the llm plane's card) — including the present-but-empty `rate_card: {}`.
+/// the flat card) — including the present-but-empty `rate_card: {}`.
 #[test]
 fn a_flat_card_alone_composes_to_itself() {
     use std::collections::BTreeMap;
@@ -570,7 +570,7 @@ fn a_flat_card_alone_composes_to_itself() {
 
 // ── PER-PLANE FEES (#47, OWNER RULING Q32): each plane's `fees` prices that plane's fee units ──────
 
-/// The composed card with fees: the flat (pools) card's `per_request_fee:` is 5; plane `t` charges
+/// The composed card with fees: the flat card's `per_request_fee:` is 5; plane `t` charges
 /// 3 a request; plane `s` (a plane with sessions) 40 a session and NO rate card; plane `p`
 /// (the priced plane above) configured no fees at all.
 fn fee_card() -> RateCard {
@@ -607,9 +607,9 @@ fn a_planes_request_fee_charges_its_calls_and_the_flat_fee_charges_the_pools_pla
     // 4 tool calls on the tools plane's fee lane: 4 × 3 — its OWN fee, not the flat 5.
     let tools = LedgerEntry::new(plane_fee_lane("t"), 0).with_whole(PER_REQUEST, 4);
     assert_eq!(fee_row(tools), Ok(Money::from_micros(12 * MINOR)));
-    // 2 pools requests (the flat fee count on an unqualified lane): 2 × 5, as 1.5.5 billed them.
-    let pools = LedgerEntry::new(LANE, 0).with_fee_count(2);
-    assert_eq!(fee_row(pools), Ok(Money::from_micros(10 * MINOR)));
+    // 2 flat-card requests (the flat fee count on an unqualified lane): 2 × 5, as 1.5.5 billed them.
+    let flat = LedgerEntry::new(LANE, 0).with_fee_count(2);
+    assert_eq!(fee_row(flat), Ok(Money::from_micros(10 * MINOR)));
     // A fee count on a QUALIFIED lane is its plane's: 2 × 3 on `t`.
     let q = format!("t{}srv_read", crate::cost::PLANE_LANE_SEP);
     let tools_posting = LedgerEntry::new(q, 0).with_fee_count(2);
