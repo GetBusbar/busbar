@@ -593,15 +593,63 @@ enum Walk {
 
 /// THE MEMO IS HELD EQUAL TO THE FULL WALK. With `XTASK_MATRIX_VERIFY=1` every measurement is
 /// taken twice, memoised and in full, and a difference is a refusal (the row FAILs naming it), so
-/// a self-test battery run with it set proves, case by case, that every planted tree's matrix is
-/// the one a full re-walk produces. Each equal pair prints one `matrix-verify: equal` line on
-/// stderr, which is what a reader counts against the cases.
+/// a self-test battery run with it set proves that every tree it measured — the unplanted tree and
+/// every planted one — has the matrix a full re-walk produces.
+///
+/// THE COUNT IS OF MEASUREMENTS, NOT OF CASES. Every call prints EXACTLY ONE stderr line, whatever
+/// the outcome — `matrix-verify: equal` (both walks measured the same matrix, or both refused the
+/// tree with the same reason) or `matrix-verify: DIFFER` — naming the tree it measured
+/// (`unplanted`, or the plant's fingerprint digest). A case measures the matrix
+/// zero times (its gate stops before the matrix rule, or its subject does not run it), once (its
+/// planted run), or more (it runs the gate again, e.g. the registered twin beside the subject); the
+/// shared unplanted baseline is one more per gate. So the lines are not the cases, and the proof is
+/// that every line says `equal`. A `DIFFER` is printed here as well as in the row, because the row
+/// of a case expecting RED can fail for the difference and still read as the proof.
 const VERIFY_ENV: &str = "XTASK_MATRIX_VERIFY";
 
 fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
-    let memoised = measure_with(cx, crates, Walk::Memoised)?;
-    if std::env::var(VERIFY_ENV).as_deref() == Ok("1") {
-        let full = measure_with(cx, crates, Walk::Full)?;
+    if std::env::var(VERIFY_ENV).as_deref() != Ok("1") {
+        return measure_with(cx, crates, Walk::Memoised);
+    }
+    measure_verified(cx, crates)
+}
+
+/// [`measure`] under [`VERIFY_ENV`]: memoised and full, compared, one stderr line either way.
+fn measure_verified(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
+    let tree = match cx.overlay().map(crate::ctx::Overlay::fingerprint) {
+        None => "unplanted".to_string(),
+        Some(f) if f.is_empty() => "unplanted".to_string(),
+        Some(f) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            f.hash(&mut h);
+            format!("plant {:016x}", h.finish())
+        }
+    };
+    // A REFUSAL IS A READING TOO: a planted tree the scan refuses (below the file floor) must be
+    // refused the same way by both walks, so both are always taken and compared.
+    let (memoised, full) = match (
+        measure_with(cx, crates, Walk::Memoised),
+        measure_with(cx, crates, Walk::Full),
+    ) {
+        (Ok(m), Ok(f)) => (m, f),
+        (Err(m), Err(f)) if m == f => {
+            eprintln!("matrix-verify: equal ({tree}; both refused: {m})");
+            return Err(m);
+        }
+        (m, f) => {
+            let why =
+                format!(
+                "{VERIFY_ENV}: the memoised walk and the full walk disagree on whether the scan \
+                 runs (memoised: {}, full: {})",
+                m.as_ref().map_or_else(|e| e.clone(), |_| "measured".to_string()),
+                f.as_ref().map_or_else(|e| e.clone(), |_| "measured".to_string())
+            );
+            eprintln!("matrix-verify: DIFFER ({tree}): {why}");
+            return Err(why);
+        }
+    };
+    {
         if full != memoised {
             let cells = |m: &Matrix| m.keys().cloned().collect::<BTreeSet<_>>();
             let differ: Vec<String> = cells(&memoised.0)
@@ -610,7 +658,7 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
                 .take(10)
                 .map(|(c, k)| format!("{c} x {k}"))
                 .collect();
-            return Err(format!(
+            let why = format!(
                 "{VERIFY_ENV}: the memoised matrix differs from the full walk (files {} vs {}, \
                  skipped {} vs {}; cells: {})",
                 memoised.1,
@@ -618,10 +666,12 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
                 memoised.2.len(),
                 full.2.len(),
                 differ.join(", ")
-            ));
+            );
+            eprintln!("matrix-verify: DIFFER ({tree}): {why}");
+            return Err(why);
         }
         eprintln!(
-            "matrix-verify: equal ({} cells, {} files)",
+            "matrix-verify: equal ({tree}; {} cells, {} files)",
             memoised.0.len(),
             memoised.1
         );
@@ -4792,6 +4842,53 @@ mod tests {
                 "plant {i}: the warm memoised matrix is not the full walk's"
             );
         }
+    }
+
+    /// What the verify RED arm writes over its planted file's memo entry: names a plane.
+    const POISON: &str = "busbar_plane_llm mcp a2a\n";
+
+    /// Whether some memo entry holds [`POISON`].
+    fn memo_poisoned() -> bool {
+        MASKED_MEMO.get().is_some_and(|m| {
+            m.lock()
+                .expect("the masked memo mutex is never poisoned")
+                .values()
+                .any(|v| v.as_str() == POISON)
+        })
+    }
+
+    /// THE VERIFY CAN FAIL: a memo entry that no longer matches its file (here, one file's masked
+    /// text replaced by one that names a plane) is a DIFFER, refused, and not a quiet `equal`.
+    #[test]
+    fn the_verify_refuses_a_memo_that_differs_from_the_full_walk() {
+        let cx = Ctx::workspace()
+            .expect("the workspace opens")
+            .with_overlay(plant(
+                &Ctx::workspace().expect("the workspace opens"),
+                "crates/busbar-kernel/src/planted_verify.rs",
+                "//! zqxjkw9vq\n",
+            ));
+        let crates = crates_of(&cx);
+        measure_verified(&cx, &crates).expect("equal before the memo is corrupted");
+        {
+            let mut memo = MASKED_MEMO
+                .get()
+                .expect("the measurement filled the memo")
+                .lock()
+                .expect("the masked memo mutex is never poisoned");
+            let poisoned = std::sync::Arc::new(POISON.to_string());
+            for v in memo.values_mut() {
+                if v.contains("zqxjkw9vq") {
+                    *v = std::sync::Arc::clone(&poisoned);
+                }
+            }
+        }
+        assert!(
+            memo_poisoned(),
+            "the planted file's masked text was found in the memo and corrupted"
+        );
+        let err = measure_verified(&cx, &crates).expect_err("a corrupted memo is refused");
+        assert!(err.contains("differs from the full walk"), "{err}");
     }
 
     /// One cell's measured count over the real workspace with `ov` laid over it.
