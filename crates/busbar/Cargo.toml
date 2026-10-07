@@ -358,10 +358,10 @@ secret-env = "busbar-secret-env"
 secret-file = "busbar-secret-file"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
-# `ws` rides its optional edge. Rows share a crate where one crate carries several wires.
+# `ws` rides its optional edge. ONE ENTRY PER PLUGIN: a row is one crate's one entry, and the seal
+# registers every scheme its door's Statement claims (`sse` is the http entry's).
 transport-tcp = "busbar-transport-tcp"
 transport-http = "busbar-transport-http"
-transport-sse = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
 transport-grpc = "busbar-transport-grpc"
 transport-stdio = "busbar-transport-stdio"
@@ -401,11 +401,12 @@ hooks-ranking = "hooks"
 secret-env = "secret-doors"
 secret-file = "secret-doors"
 transport-tcp = "transport transport-door"
-# `connector-door`: the http framer's door is opened on the root's one Connector, so an export
-# sink's outbound `http` need is served compiled-in; the wire the registry folds keeps its build.
-transport-http = "transport connector-door"
-transport-sse = "transport"
-transport-ws = "transport"
+# `connector-door`: the framer's door is opened on the root's one Connector, so an outbound need on
+# its schemes is served compiled-in. Every transport row is a door row (`transport-door`): the seal
+# folds it from its door's Statement, and no transport names another (the carrier is the
+# connector's choice from the target's scheme).
+transport-http = "transport transport-door connector-door"
+transport-ws = "transport transport-door connector-door"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 plane-decisions = "plane-door"
@@ -414,8 +415,6 @@ plane-mcp-door = "plane-door"
 
 # A linked crate whose entry module is not `<crate>::linked`.
 [package.metadata.busbar.linked-entry]
-# One crate, several wires: each row past the crate's own `linked` names its entry.
-transport-sse = "busbar_transport_http::linked::sse"
 # A secret plugin's door is its `door` module's.
 busbar-secret-env = "busbar_secret_env::door"
 busbar-secret-file = "busbar_secret_file::door"
@@ -591,12 +590,12 @@ prost = { workspace = true }
 hex = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
 criterion = { workspace = true }
-# tests/ws_composed_battery.rs (the `ws` transport battery's cross-transport composition cells,
-# moved here off `busbar-transport-ws`'s own `kind-isolation:closure` `closure-test-reach`
-# findings) builds fixture `VerifiedDestination` and `TransportKeyHandle` values through
-# `busbar_contract::plugin::TestKernelSeal`, the one blessed fixture implementor of the SEALED
-# `KernelSeal` trait (#65) — dev-only and feature-gated, so it is absent from every release build,
-# same as every other crate's own battery does it.
+# The contract's `test-seal` (`busbar_contract::plugin::TestKernelSeal`, the one blessed fixture
+# implementor of the SEALED `KernelSeal` trait, #65) for the root's tests — dev-only and
+# feature-gated, so it is absent from every release build. Its user was tests/ws_composed_battery.rs,
+# the `ws` wire composed over `http`; composition left with ARCHITECT ruling Q128 U7 (no transport
+# names another), and the upgrade's cells return with the http detach -> ws adopt battery
+# (p2-transport-stack stage B).
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 # ── THE HOOK-PATH BENCH ── `harness = false` because criterion supplies its own `main`. Still a
