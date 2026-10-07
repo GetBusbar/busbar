@@ -115,7 +115,7 @@ fn dropped_path() -> Option<PathBuf> {
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
         "the log_witness_door example cdylib is not built under CI; a both-ways proof must not skip \
-         ({} holds {:?})",
+         (run `cargo build --workspace --examples`; {} holds {:?})",
         examples.display(),
         std::fs::read_dir(&examples)
             .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())

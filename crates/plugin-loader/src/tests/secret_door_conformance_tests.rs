@@ -138,8 +138,12 @@ fn dropped() -> Loaded<Secret> {
         .expect("a `secret` row in Cargo.toml's [package.metadata.busbar.both-ways]");
     // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
     let krate = format!("{logic}_plugin");
-    let path = crate::both_ways::cdylib(&krate)
-        .unwrap_or_else(|| panic!("the secret plugin's cdylib ({krate}) is not built"));
+    let path = crate::both_ways::cdylib(&krate).unwrap_or_else(|| {
+        panic!(
+            "the secret plugin's cdylib ({krate}) is not built: run `{}`",
+            crate::both_ways::build_command(&krate)
+        )
+    });
     both::dropped_from::<Secret>(secret_fixture::door::door, &path)
 }
 

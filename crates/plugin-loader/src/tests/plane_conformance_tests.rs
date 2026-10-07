@@ -273,7 +273,8 @@ mod door {
         ));
         assert!(
             path.exists() || std::env::var_os("CI").is_none(),
-            "the plane_door_plugin example cdylib is not built under CI; a both-ways proof must not skip"
+            "the plane_door_plugin example cdylib is not built under CI; a both-ways proof must not skip: \
+             run `cargo build --workspace --examples`"
         );
         // The signed manifest's rendering: the linked rlib's door, the same crate.
         let stated = rendering_of(plug::door).expect("the plane renders its Statement");

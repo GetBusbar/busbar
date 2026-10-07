@@ -75,6 +75,25 @@ pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -
 
 /// The example `cdylib` `name` in this target dir (`cargo test` builds examples). Under CI a
 /// missing artifact is a failure, never a skip: this is a both-ways proof.
+/// THE COMMAND THAT BUILDS `crate_snake`'s `cdylib`, for an absent fixture's message: a pinned
+/// twin (`busbar_<x>_plugin`, its own repo pinned as a git dependency) is built from its cargo git
+/// checkout, as CI's hop builds it; an in-tree example by the workspace's examples build.
+pub(crate) fn build_command(crate_snake: &str) -> String {
+    match crate_snake
+        .strip_prefix("busbar_")
+        .and_then(|s| s.strip_suffix("_plugin"))
+    {
+        Some(x) => {
+            let x = x.replace('_', "-");
+            format!(
+                "cargo build --manifest-path <cargo git checkout of busbar-{x}>/{x}/Cargo.toml \
+                 -p busbar-{x}-plugin --target-dir target"
+            )
+        }
+        None => "cargo build --workspace --examples".to_string(),
+    }
+}
+
 pub(crate) fn example_cdylib(name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let path = exe
@@ -85,7 +104,8 @@ pub(crate) fn example_cdylib(name: &str) -> Option<PathBuf> {
     let found = path.exists().then_some(path);
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
-        "the {name} example cdylib is not built under CI; a both-ways proof must not skip"
+        "the {name} example cdylib is not built under CI; a both-ways proof must not skip: run \
+         `cargo build --workspace --examples`"
     );
     found
 }
@@ -124,7 +144,8 @@ pub(crate) fn cdylib(crate_snake: &str) -> Option<PathBuf> {
     })();
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
-        "the {crate_snake} cdylib is not built under CI; a both-ways proof must not skip"
+        "the {crate_snake} cdylib is not built under CI; a both-ways proof must not skip: run `{}`",
+        build_command(crate_snake)
     );
     found
 }

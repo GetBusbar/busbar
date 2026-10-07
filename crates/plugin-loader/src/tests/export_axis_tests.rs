@@ -72,7 +72,10 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
         busbar_export_prometheus::door::door,
         "busbar_export_prometheus_plugin",
     ) else {
-        eprintln!("skip: the prometheus sink's cdylib is not built");
+        eprintln!(
+            "skip: the prometheus sink's cdylib is not built: run `{}`",
+            crate::both_ways::build_command("busbar_export_prometheus_plugin")
+        );
         return;
     };
     let transcripts = doors.map(|registry| {
@@ -123,7 +126,10 @@ fn the_trace_sink_answers_the_same_through_either_door() {
         busbar_export_otlp::door::door,
         "busbar_export_otlp_plugin",
     ) else {
-        eprintln!("skip: the OTLP sink's cdylib is not built");
+        eprintln!(
+            "skip: the OTLP sink's cdylib is not built: run `{}`",
+            crate::both_ways::build_command("busbar_export_otlp_plugin")
+        );
         return;
     };
     let transcripts = doors.map(|registry| {
@@ -160,7 +166,10 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
         busbar_export_webhook::door,
         "busbar_export_webhook_plugin",
     ) else {
-        eprintln!("skip: the webhook sink's cdylib is not built");
+        eprintln!(
+            "skip: the webhook sink's cdylib is not built: run `{}`",
+            crate::both_ways::build_command("busbar_export_webhook_plugin")
+        );
         return;
     };
     let transcripts = doors.map(|registry| {

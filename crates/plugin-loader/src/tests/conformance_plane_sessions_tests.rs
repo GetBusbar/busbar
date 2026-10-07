@@ -105,7 +105,8 @@ fn dropped_built() -> bool {
         });
     assert!(
         built || std::env::var_os("CI").is_none(),
-        "the plane_door_plugin example cdylib is not built under CI; a both-ways proof must not skip"
+        "the plane_door_plugin example cdylib is not built under CI; a both-ways proof must not skip: \
+         run `cargo build --workspace --examples`"
     );
     built
 }
@@ -125,7 +126,9 @@ fn the_sessions_leg_runs_both_ways_at_its_pins_and_answers_as_wanted() {
     }
     match &dropped {
         Some(dropped) => same(&linked, dropped).unwrap_or_else(|e| panic!("{e}")),
-        None => eprintln!("skip: the plane_door_plugin example cdylib is not built"),
+        None => eprintln!(
+            "skip: the plane_door_plugin example cdylib is not built; run `cargo build --workspace --examples`"
+        ),
     }
     assert!(
         linked[0]

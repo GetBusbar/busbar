@@ -850,7 +850,7 @@ fn dropped_doors() -> &'static [DroppedDoor] {
     });
     assert!(
         !doors.is_empty() || std::env::var_os("CI").is_none(),
-        "the neutral frame door cdylib is built beside the test binary under CI"
+        "the neutral frame door example cdylib is built beside the test binary under CI: run `cargo build --workspace --examples`"
     );
     doors
 }
@@ -915,7 +915,7 @@ fn rows_of(
 #[test]
 fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
     let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: the neutral frame door is not built beside the test binary");
+        eprintln!("skip: the neutral frame door example cdylib is not built beside the test binary; run `cargo build --workspace --examples`");
         return;
     };
     static ROWS: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
@@ -951,7 +951,7 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
 #[test]
 fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
     let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: the neutral frame door is not built beside the test binary");
+        eprintln!("skip: the neutral frame door example cdylib is not built beside the test binary; run `cargo build --workspace --examples`");
         return;
     };
     let row = the_wires_linked_row(wire);

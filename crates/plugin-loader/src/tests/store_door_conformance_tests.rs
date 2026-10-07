@@ -118,7 +118,9 @@ fn a_linked_and_a_dropped_in_store_answer_get_and_put_identically() {
     let door = crate::both_ways::store_fixture::door;
     let linked = script(&store(both::linked::<Store>(door)));
     let Some(dropped) = both::dropped::<Store>(door, "store_v3_door") else {
-        eprintln!("skip: the store's cdylib is not built in this scoped run");
+        eprintln!(
+            "skip: the store's cdylib (the store_v3_door example) is not built; run `cargo build --workspace --examples`"
+        );
         return;
     };
     let dropped = script(&store(dropped));
