@@ -63,8 +63,13 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
             if bytes.is_empty() {
                 return Ok(());
             }
-            let doc: serde_json::Value =
+            // The blob is dealt as stage 3g deals it: `{<section>: <section as written>}`.
+            let dealt: serde_json::Value =
                 serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+            let doc = dealt.get(section).cloned().unwrap_or_default();
+            if doc.is_null() {
+                return Ok(());
+            }
             let Some(map) = doc.as_object() else {
                 return Err("expected a map".to_string());
             };
@@ -229,10 +234,10 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
     let decl = fold(registration("door-fold-facing", NAMED)).expect("folds");
     let reg = registration("door-fold-facing", NAMED);
     let slot = DoorSlot {
-        section: DoorSection {
-            section: NAMED,
-            value: serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
-        },
+        section: DoorSection::new(
+            NAMED,
+            serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+        ),
         facing: (reg.facing)(b"{}", b"", Some("https://gw.example")).expect("faces"),
     };
     assert_eq!(
@@ -311,10 +316,10 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     let parsed = (decl.parse_endpoint.expect("its endpoint parses"))(&block).expect("carried");
     assert!(parsed.is_present());
     let lowered = (decl.lower_endpoint.expect("and lowers"))(&*parsed).expect("as written");
-    let section = DoorSection {
-        section: NAMED,
-        value: serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
-    };
+    let section = DoorSection::new(
+        NAMED,
+        serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+    );
     let ctx = BuildCtx {
         endpoint_slot: Some(lowered),
         agent_defs: &(),

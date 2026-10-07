@@ -167,9 +167,38 @@ pub struct DoorSection {
     pub section: &'static str,
     /// The section as written (`Null` when absent).
     pub value: serde_yaml::Value,
+    /// The secret references the section holds at its door's declared paths
+    /// (`PlaneRegistration::secret_refs`), each with the config path it was read at.
+    refs: Vec<(String, busbar_contract::secret_ref::SecretRef)>,
 }
 
 impl DoorSection {
+    /// The section `section` as written, with the secret references it holds at its door's
+    /// declared paths (`settings.<segment>…`, `*` every key of the map there) read out, so
+    /// `--validate` and boot resolve each one as they resolve every other reference.
+    #[must_use]
+    pub fn new(section: &'static str, value: serde_yaml::Value) -> Self {
+        let paths = DOORS
+            .iter()
+            .filter_map(OnceLock::get)
+            .find(|f| f.reg.section == section)
+            .map(|f| f.reg.secret_refs.as_slice())
+            .unwrap_or_default();
+        let mut refs = Vec::new();
+        for path in paths {
+            let Some(rest) = path.strip_prefix("settings.") else {
+                continue;
+            };
+            let segments: Vec<&str> = rest.split('.').collect();
+            collect_refs(&value, &segments, section.to_string(), &mut refs);
+        }
+        Self {
+            section,
+            value,
+            refs,
+        }
+    }
+
     fn registrations(&self) -> impl Iterator<Item = (&str, &serde_yaml::Value)> {
         crate::trust::section::registrations(&self.value)
     }
@@ -190,9 +219,8 @@ impl DoorSection {
 
 impl PlaneCfg for DoorSection {
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
-        // A door resolves its own settings' references through the secret service it is handed; the
-        // kernel holds no typed reference of a door's section.
-        Vec::new()
+        // The references at the door's declared paths, so `--validate` and boot resolve each one.
+        self.refs.iter().map(|(at, r)| (at.clone(), r)).collect()
     }
 
     fn contains_def(&self, name: &str) -> bool {
@@ -218,6 +246,8 @@ impl PlaneCfg for DoorSection {
         if let Some(m) = self.value.as_mapping_mut() {
             m.insert(serde_yaml::Value::String(name.to_string()), entry);
         }
+        // The written entry's references are the section's too.
+        *self = Self::new(self.section, std::mem::take(&mut self.value));
         Ok(())
     }
 
@@ -231,8 +261,22 @@ impl PlaneCfg for DoorSection {
         }
     }
 
+    /// THE WHOLE EFFECTIVE SECTION, judged by its door: the file's entries and every entry the
+    /// management surface wrote, in one `validate` — the rules no single entry can see (one
+    /// registration's published name colliding with another's) run here, at `resolve`, which boot,
+    /// `--validate` and every config-apply rebuild pass through. An absent section is nothing to judge.
     fn validate_registry(&self) -> Result<(), String> {
-        Ok(())
+        if !self.is_present() {
+            return Ok(());
+        }
+        let Some(fold) = DOORS
+            .iter()
+            .filter_map(OnceLock::get)
+            .find(|f| f.reg.section == self.section)
+        else {
+            return Ok(());
+        };
+        (fold.reg.validate)(&dealt(self.section, settings_of(&self.value)?)?)
     }
 
     /// Every `<section>.models.<m>.provider` reference the section's reserved model map makes
@@ -294,7 +338,54 @@ impl PlaneCfg for DoorSection {
     }
 }
 
+/// Every secret reference under `value` at `segments` (a `*` segment is every key of the map there),
+/// each with its config path. A value at the path that is not a reference (a plain scalar beside
+/// references in one map) is not one: the door's own `validate` judged the section's shape.
+fn collect_refs(
+    value: &serde_yaml::Value,
+    segments: &[&str],
+    at: String,
+    out: &mut Vec<(String, busbar_contract::secret_ref::SecretRef)>,
+) {
+    let Some((head, rest)) = segments.split_first() else {
+        if value.is_mapping() {
+            if let Ok(r) =
+                serde_yaml::from_value::<busbar_contract::secret_ref::SecretRef>(value.clone())
+            {
+                out.push((at, r));
+            }
+        }
+        return;
+    };
+    let Some(map) = value.as_mapping() else {
+        return;
+    };
+    if *head == "*" {
+        for (k, v) in map {
+            if let Some(k) = k.as_str() {
+                collect_refs(v, rest, format!("{at}.{k}"), out);
+            }
+        }
+    } else if let Some(v) = map.get(*head) {
+        collect_refs(v, rest, format!("{at}.{head}"), out);
+    }
+}
+
 /// The section as the door's `validate` reads it: JSON, in the order it was written.
+/// THE BLOB A DOOR'S `validate` IS HANDED, in the one shape stage 3g deals it
+/// (`config_validate::deal`, `Seat::Verbs`): `{<section>: <section as written>}` for the section the
+/// door declares. Every kernel-side judge (a section's parse, an admin write's one-entry section,
+/// the effective registry at `resolve`) hands the door that shape, so a door reads one blob shape
+/// whoever asks. An absent section stays the empty blob (nothing written).
+fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
+    if settings.is_empty() {
+        return Ok(settings);
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&settings).map_err(|e| format!("the section is not JSON: {e}"))?;
+    serde_json::to_vec(&serde_json::json!({ section: value })).map_err(|e| e.to_string())
+}
+
 fn settings_of(value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
     if value.is_null() {
         return Ok(Vec::new());
@@ -374,13 +465,20 @@ fn build<const I: usize>(
         .find(|s| mine(s))
     {
         Some(s) => s.clone(),
+        // ITS ENDPOINT BLOCK ALONE CONFIGURES IT (LAW 7): an owned block carried as written, with no
+        // registration in the section, builds the slot over the section as absent and that block.
+        None if ctx
+            .endpoint_slot
+            .as_deref()
+            .and_then(|slot| slot.downcast_ref::<DoorOwned>())
+            .is_some_and(crate::plane::config::PlaneEndpointCfg::is_present) =>
+        {
+            DoorSection::new(d.reg.section, serde_yaml::Value::Null)
+        }
         None => {
             let raw = ctx.endpoint_slot.as_deref()?;
             let (section, value) = raw.downcast_ref::<(&'static str, serde_yaml::Value)>()?;
-            let s = DoorSection {
-                section,
-                value: value.clone(),
-            };
+            let s = DoorSection::new(section, value.clone());
             if !mine(&s) {
                 return None;
             }
@@ -520,7 +618,7 @@ fn config_validate<const I: usize>(name: &str, def: &serde_json::Value) -> Resul
     let section = d.reg.section;
     let one = serde_json::json!({ name: def });
     let bytes = serde_json::to_vec(&one).map_err(|e| e.to_string())?;
-    (d.reg.validate)(&bytes).map_err(|e| {
+    (d.reg.validate)(&dealt(section, bytes)?).map_err(|e| {
         if e.starts_with(&format!("`{section}.{name}`")) {
             e
         } else {
@@ -594,18 +692,15 @@ fn parse_section<const I: usize>(value: &serde_yaml::Value) -> Result<Box<dyn Pl
     let Some(d) = door(I) else {
         return Err("a door plane's section was parsed before its door was folded".to_string());
     };
-    (d.reg.validate)(&settings_of(value)?)?;
-    Ok(Box::new(DoorSection {
-        section: d.reg.section,
-        value: value.clone(),
-    }))
+    (d.reg.validate)(&dealt(d.reg.section, settings_of(value)?)?)?;
+    Ok(Box::new(DoorSection::new(d.reg.section, value.clone())))
 }
 
 fn default_section<const I: usize>() -> Box<dyn PlaneCfg> {
-    Box::new(DoorSection {
-        section: door(I).map_or("", |d| d.reg.section),
-        value: serde_yaml::Value::Null,
-    })
+    Box::new(DoorSection::new(
+        door(I).map_or("", |d| d.reg.section),
+        serde_yaml::Value::Null,
+    ))
 }
 
 // ── THE ADMIN ROUTES ITS STATEMENT STATES ───────────────────────────────────────────────────────
@@ -660,20 +755,46 @@ fn admin_routes<const I: usize>(
         .collect()
 }
 
-/// The door's stated admin OpenAPI fragment, its paths keyed under the admin mount.
-fn openapi<const I: usize>() -> serde_json::Value {
-    let fragment = door(I)
+/// The key of the door's admin OpenAPI blob that is no path: the component schemas its paths'
+/// `$ref`s name, stated as data because a door links no schema generator (ARCHITECT Q2).
+const OPENAPI_COMPONENTS: &str = "components";
+
+/// The door's stated admin OpenAPI blob as an object (empty when it states none).
+fn openapi_blob<const I: usize>() -> serde_json::Map<String, serde_json::Value> {
+    match door(I)
         .and_then(|d| d.reg.admin_openapi)
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
-    let Some(serde_json::Value::Object(paths)) = fragment else {
-        return serde_json::Value::Object(serde_json::Map::new());
-    };
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+    {
+        Some(serde_json::Value::Object(blob)) => blob,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// The door's stated admin OpenAPI fragment, its paths keyed under the admin mount (its
+/// `components` key is no path; [`stated_schemas`] reads it).
+fn openapi<const I: usize>() -> serde_json::Value {
     serde_json::Value::Object(
-        paths
+        openapi_blob::<I>()
             .into_iter()
+            .filter(|(rel, _)| rel != OPENAPI_COMPONENTS)
             .map(|(rel, item)| (format!("{}{rel}", crate::api::ADMIN_PREFIX), item))
             .collect(),
     )
+}
+
+/// The door's stated `components.schemas`: the bodies its paths' `$ref`s name (the paths already
+/// carry those `$ref`s, as [`openapi`] keyed them). The admin document's generator inserts them
+/// ([`crate::plane::registry::stated_schemas_hook`]); a build that generates no document reads none.
+#[allow(dead_code)] // read only by the document generator's hook, which a non-generating build omits
+pub(crate) fn stated_schemas<const I: usize>() -> Option<serde_json::Map<String, serde_json::Value>>
+{
+    match openapi_blob::<I>()
+        .remove(OPENAPI_COMPONENTS)
+        .and_then(|c| c.get("schemas").cloned())
+    {
+        Some(serde_json::Value::Object(schemas)) => Some(schemas),
+        _ => None,
+    }
 }
 
 /// `target` with its `{name}` segment filled by `name`.
@@ -766,6 +887,7 @@ struct HookRow {
     default_section: fn() -> Box<dyn PlaneCfg>,
     admin_routes: fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>,
     openapi: fn() -> serde_json::Value,
+    openapi_schemas: Option<crate::plane::registry::OpenapiSchemasHook>,
     #[allow(clippy::type_complexity)]
     parse_endpoint:
         fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
@@ -793,6 +915,7 @@ impl HookRow {
             lower_endpoint: lower_endpoint::<I>,
             admin_routes: admin_routes::<I>,
             openapi: openapi::<I>,
+            openapi_schemas: crate::plane::registry::stated_schemas_hook::<I>(),
         }
     }
 
@@ -814,7 +937,7 @@ impl HookRow {
             named_def_get: named.then_some(self.named_def_get),
             registry_contains: named.then_some(self.registry_contains),
             reresolve_gates: Some(self.reresolve_gates),
-            openapi_schemas: None,
+            openapi_schemas: self.openapi_schemas.filter(|_| admin),
             on_swap: None,
             parse_section: Some(self.parse_section),
             parse_endpoint: owns.then_some(self.parse_endpoint),

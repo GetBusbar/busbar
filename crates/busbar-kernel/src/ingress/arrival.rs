@@ -306,12 +306,13 @@ pub fn body_ingress_for(name: &str) -> Option<BodyIngress> {
 }
 
 // ============================================================================
-// THE NEUTRAL RESOLVED-COMPLETION SEAM — the ABI core's `EngineHost::synthesize_completion` (the MCP
-// sampling re-entry) reaches the LLM plane's resolved-operation gauntlet through. The synthesizer
-// drives ONE non-streaming chat completion (a known model + body) through the SAME resolved-op path
-// (`operation_resolved` → the one engine) an arrival takes; that path reads the LLM routing tables
-// and so RELOCATED into `busbar-llm`. Unlike the arrival seams there is exactly one synthesizer (the
-// residual-default chat dialect's), so this is a single fn-pointer, not a protocol-keyed table.
+// THE NEUTRAL RESOLVED-COMPLETION SEAM — the LLM plane's resolved-operation gauntlet, installed by
+// the composition root. No in-tree host reads it since `EngineHost::synthesize_completion` (the MCP
+// sampling re-entry) was deleted with `busbar-mcp`. The synthesizer drives ONE non-streaming chat
+// completion (a known model + body) through the SAME resolved-op path (`operation_resolved` → the
+// one engine) an arrival takes; that path reads the LLM routing tables and so RELOCATED into
+// `busbar-llm`. Unlike the arrival seams there is exactly one synthesizer (the residual-default
+// chat dialect's), so this is a single fn-pointer, not a protocol-keyed table.
 // ============================================================================
 
 /// One synthesize-completion request, as the LLM plane's relocated synthesizer receives it: the
@@ -363,9 +364,9 @@ pub fn set_test_completion_ingress(f: CompletionIngress) {
     let _ = TEST_COMPLETION_INGRESS_HOOK.set(f);
 }
 
-/// RESOLVE THE RESOLVED-COMPLETION SYNTHESIZER — the lookup `EngineHost::synthesize_completion`
-/// performs. `None` when no LLM plane is linked (core booted plane-agnostic): the caller then returns
-/// the honest "no chat dialect installed" error rather than a synthesized completion.
+/// RESOLVE THE RESOLVED-COMPLETION SYNTHESIZER. `None` when no LLM plane is linked (core booted
+/// plane-agnostic): the caller then returns the honest "no chat dialect installed" error rather
+/// than a synthesized completion.
 pub fn completion_ingress() -> Option<CompletionIngress> {
     if let Some(f) = INSTALLED_COMPLETION_INGRESS.get() {
         return Some(*f);

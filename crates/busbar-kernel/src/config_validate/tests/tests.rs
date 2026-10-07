@@ -5651,7 +5651,7 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
 
 // ══ 1.6.0 UNIFIED `pools:` — GLOBAL-NAME VALIDATOR ═══════════════════════════════════════════════
 //
-// The three cross-plane collision tests MOVED to `tests/config_validate_cross_plane.rs` — each
+// The three cross-plane collision tests MOVED to `crates/busbar/tests/config_validate_cross_plane.rs` — each
 // builds a REAL `busbar_mcp::mcp::config::ToolsCfg`, which only type-checks against core's own
 // `RootCfg`/`validate_unified_pool_names` (widened to `pub` for the move) with ONE `busbar_kernel`
 // in the graph. See that file's header for the full rationale.

@@ -89,9 +89,8 @@ pub(crate) mod loader;
 pub mod migration;
 pub mod model_egress;
 pub mod observe;
-// The node a plane's units run through: compiled when a linked plane rides the `node` axis, read
-// off the same manifest table the root folds (the generated `linked_axis_node` cfg).
-#[cfg(linked_axis_node)]
+// The node a plane's units run through, compiled in every build: a door plane's units are driven
+// and posted on it whether the plane is compiled in or dropped in (ARCHITECT Q1).
 pub mod plane_node;
 pub mod policy;
 pub mod registry;
