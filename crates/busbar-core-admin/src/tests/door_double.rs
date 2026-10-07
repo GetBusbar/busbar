@@ -9,7 +9,7 @@
 //! WHY A DOUBLE. In a shipped build that section is owned by a plane served through its memory-ABI
 //! door: the loader reads the door's Statement as a `PlaneRegistration` and the composition root
 //! folds it (DECL-FOLD). This crate is a cleanliness crate with a one-way dependency on the kernel
-//! (THE DESIGN §8; P2 D4): it links no loader, test-only or not, so it cannot read a door. Its
+//! (THE DESIGN, section 8; P2 D4): it links no loader, test-only or not, so it cannot read a door. Its
 //! tests serve the admin surface a shipped build serves from a registration that states the same
 //! facts as DATA (`door_double_statement.json`), every one of which the composition root's tests
 //! pin to the linked door's own Statement (`root::serve` tests, `agent_door`), so the committed
