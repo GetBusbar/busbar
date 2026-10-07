@@ -165,6 +165,10 @@ pub fn boot(
     // ruling 2026-10-03 on Q-L16-1); a remote store's socket on that runtime's reactor would never
     // be driven while it waits.
     busbar_core_connector::io::install_process_reactor(io_reactor());
+    // The process's dispatcher runs every worker's crossings inside the same runtime, installed
+    // here and never taken from a submitter: the first submit is made on the control runtime,
+    // whose thread then waits synchronously on worker ops (the boot's `ready`).
+    crate::root::dispatch::dispatcher().install_runtime(io_reactor());
     let built = process::build(
         || entries(doors, settings),
         dest,

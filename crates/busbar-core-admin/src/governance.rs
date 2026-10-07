@@ -61,8 +61,9 @@ impl GovernanceError {
 pub struct MintedKey {
     /// The key's id.
     pub id: String,
-    /// The plaintext secret/token, shown exactly once.
-    pub secret: String,
+    /// The plaintext secret/token, shown exactly once. Held [`busbar_contract::Redacted`] so this
+    /// struct can never render it; the one reader exposes it where the response is built.
+    pub secret: busbar_contract::Redacted<String>,
     /// Unix-seconds expiry, when the credential shape carries one.
     pub expires_at: Option<u64>,
 }

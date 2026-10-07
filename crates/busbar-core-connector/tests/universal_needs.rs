@@ -139,7 +139,8 @@ fn open_door(
         dispatcher: ONE
             .get_or_init(|| Dispatcher::new(DispatchConfig::default()))
             .adopter(),
-        conns: None,
+        // A transport door is a framer the connector drives: it declares no need.
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_dropped::<Transport>(path, &rendering, bind).ok()?;
     let stated = plugin.context::<TransportFacts>().cloned()?;
@@ -153,6 +154,7 @@ fn open_door(
             name: plugin.name().to_owned(),
             claims: stated.claims,
             composes_over: stated.composes_over,
+            status_rows: stated.status_rows,
         },
         plugin,
     }))
