@@ -1072,7 +1072,7 @@ fn append_batch_epoch_on_failed_is_fault() {
     );
 }
 
-// ── a distinct fault field per arm (SPEC §11.13 "a distinct message per arm") ────────────────
+// ── a distinct fault field per arm (the design: "a distinct message per arm") ────────────────
 
 /// The field a reserve answer's FAULT names.
 fn reserve_field(
