@@ -63,13 +63,15 @@ enum Shape {
 /// `expected one of` lists in the deal's tests.
 fn shape(key: &str) -> Option<Shape> {
     use busbar_contract::section::{
-        RESERVED_POOLS_KEY, RESERVED_WORK_KEY, UPSTREAM_CREDENTIALS_KEY, WORK_MAX_LIVE_KEY,
-        WORK_RETAIN_S_KEY,
+        RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS, RESERVED_WORK_KEY, UPSTREAM_CREDENTIALS_KEY,
+        WORK_MAX_LIVE_KEY, WORK_RETAIN_S_KEY,
     };
     let [card, fees] = crate::config::prepass::PLANE_CARD_KEYS;
     Some(match key {
-        "hooks" | "gates" | "repeatable" => Shape::List,
         UPSTREAM_CREDENTIALS_KEY | "tier" => Shape::Scalar,
+        // The section's other word is its `hooks:` attach list.
+        k if RESERVED_SECTION_KEYS.contains(&k) => Shape::List,
+        "gates" | "repeatable" => Shape::List,
         "breaker" => Shape::Fields(&["base_cooldown_secs", "max_cooldown_secs", "trip"]),
         "on_exhausted" => Shape::Fields(&["fallback_pool", "queue"]),
         "affinity" => Shape::Fields(&["mode", "header_name"]),
