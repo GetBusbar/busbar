@@ -1702,7 +1702,13 @@ fn piece(
     let left = hop.left;
     let admitted = hop.admitted;
     let need = attempt_need(hop.relay.binding());
-    let binding_word = hop.relay.binding().word();
+    // The transport axis's word for the binding (predev `framed_leg`: `framing.leg().name()`, the
+    // lower-case wire word, never the card's upper-case one), as the tail declares it.
+    let binding_word = match hop.relay.binding() {
+        crate::binding::Binding::JsonRpc => crate::surface::BINDING_DOCUMENT,
+        crate::binding::Binding::HttpJson => crate::surface::BINDING_TARGET,
+        crate::binding::Binding::Grpc => crate::surface::BINDING_FRAMED,
+    };
     let ob = &mut hop.outbox;
     let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
