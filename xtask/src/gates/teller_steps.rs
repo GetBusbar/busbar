@@ -1394,7 +1394,7 @@ fn path_mounted_module(cx: &Ctx, file: &str) -> Option<String> {
         .collect();
     siblings.sort();
     for sib in siblings {
-        let text = cx.read(&format!("{dir}/{sib}")).unwrap_or_default();
+        let text = cx.read(format!("{dir}/{sib}")).unwrap_or_default();
         let mut lines = text.lines().map(str::trim);
         while let Some(line) = lines.next() {
             if line != attr {
@@ -1577,15 +1577,16 @@ impl Gate for TellerStepsGate {
         };
 
         let root = check_root_column(cx, &m);
+        let gating = check_gating(&m);
         Verdict::of(rows_from(&Findings {
             cells: m.planes().len() * m.step_order().len(),
             legs: m.root_legs().as_object().map_or(0, json_lite::Obj::len),
-            matrix: Vec::new(),
+            matrix: check_roster(cx, &m),
             rig: check_rig_column(cx, &m),
             root_column: root.column,
             root_legs: root.legs,
-            gating: gating_gaps(&m),
-            owed: Vec::new(),
+            gating: gating.problems,
+            owed: gating.owed,
         }))
     }
 
@@ -1878,7 +1879,7 @@ impl Gate for TellerStepsGate {
         // with the committed matrix untouched. A gate that read its roster off the matrix again
         // would stay green under every one of them.
         let step_rs = cx.read(KERNEL_STEPS_REL).unwrap_or_default();
-        let tree_plants: Vec<(&str, &str, Vec<(&str, String)>)> = vec![
+        let tree_plants: Vec<TreePlant> = vec![
             (
                 "a plane crate with no matrix row",
                 "busbar-plane-shadow declares plane 'shadow', which carries no matrix row",
@@ -1975,6 +1976,10 @@ fn missing_root_cells(cx: &Ctx, doc: &Json) -> Overlay {
     }
     ov
 }
+
+/// One planted violation in the TREE the roster is derived from: its label, the substring its report
+/// must NAME, and the files the plant writes over the real tree.
+type TreePlant = (&'static str, &'static str, Vec<(&'static str, String)>);
 
 /// One planted violation: its label, the owed row it exercises, the substring its report must NAME,
 /// and the edit that plants it into a copy of the real committed matrix.
