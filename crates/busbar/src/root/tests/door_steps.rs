@@ -890,3 +890,46 @@ fn a_registration_member_is_reached_at_its_own_target() {
         .expect("nothing to resolve");
     assert!(none.is_empty());
 }
+
+/// ASKING WHETHER A NAME IS CONFIGURED ALLOCATES NOTHING: the destination guard's membership probe
+/// runs on every request, over eight pools, for a name that is a pool and for one that is nothing.
+/// Measured on this thread's jemalloc counter: a probe that allocated at all would move it.
+///
+/// Ports legacy `crates/busbar-llm/src/unit/tests/verify.rs::asking_whether_a_name_is_configured_allocates_nothing`.
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn asking_whether_a_name_is_configured_allocates_nothing() {
+    use busbar_kernel::door::PoolView as _;
+    let mut section = String::from("models:\n");
+    for i in 0..8 {
+        section.push_str(&format!("  m{i}: {{provider: p}}\n"));
+    }
+    section.push_str("pools:\n");
+    for i in 0..8 {
+        section.push_str(&format!("  p{i}:\n    members: [m{i}]\n"));
+    }
+    let pools = pools(&section);
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let view = super::DoorPoolView {
+        pools: &pools,
+        key: None,
+        app: &app,
+    };
+    let allocated = || {
+        tikv_jemalloc_ctl::thread::allocatedp::read()
+            .map(|m| m.get())
+            .expect("this thread's allocation counter is readable")
+    };
+    let _ = view.is_configured("p3");
+    let before = allocated();
+    let hit = view.is_configured("p3");
+    let miss = view.is_configured("not-a-name");
+    let after = allocated();
+    assert!(hit, "p3 is a configured pool");
+    assert!(!miss, "nothing by that name is configured");
+    assert_eq!(
+        after - before,
+        0,
+        "a membership probe on the request path allocates nothing"
+    );
+}

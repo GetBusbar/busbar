@@ -79,6 +79,10 @@ getrandom = { workspace = true }
 # dropped-in image (the `llm_door` example below), admitted through the one loader and driven
 # through the one dispatcher.
 busbar-plugin-loader = { path = "../plugin-loader" }
+# THE SHIPPED PROVIDER CATALOG (`tests/exchange_shaping_ported.rs`): `providers.yaml` read as the
+# provider entries the plane is handed, so its declared lane capabilities are judged by this plane's
+# own shaping.
+serde_yaml = { workspace = true }
 
 # THE DROPPED-IN DOOR: built by `cargo test`.
 [[example]]
