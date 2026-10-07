@@ -229,3 +229,7 @@ pub fn open_binding(
 #[cfg(test)]
 #[path = "tests/style_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/ported_style_tests.rs"]
+mod ported_tests;

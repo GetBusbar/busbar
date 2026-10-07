@@ -19,6 +19,7 @@ mod harness;
 mod deadline_tests;
 mod exhaustion_tests;
 mod pick_order_tests;
+mod ported_tests;
 mod probe_tests;
 mod relay_tests;
 mod walk_tests;

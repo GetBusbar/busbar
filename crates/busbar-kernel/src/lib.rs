@@ -270,6 +270,10 @@ mod member_tests;
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
 pub mod plane;
+// The previous release's engine tests whose behaviour the kernel owns now, carried over.
+#[cfg(test)]
+#[path = "tests/ported_legacy_tests.rs"]
+mod ported_legacy_tests;
 // The ONLY module permitted `unsafe`: it recovers `&HostState` from the opaque `HostCtx` the
 // `#[repr(C)]` plane ABI threads through every host call — a raw-pointer deref that cannot be
 // expressed safely. The `unsafe` is confined here and audited (see `plane_host::recover`).

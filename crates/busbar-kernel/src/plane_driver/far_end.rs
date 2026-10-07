@@ -1540,6 +1540,10 @@ impl FarEnd for EgressFarEnd<'_> {
 #[path = "tests/far_end_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "tests/ported_far_end_tests.rs"]
+mod ported_tests;
+
 /// Whether `piece`, handed to the plane, delivers a byte of `live`'s SUCCESS answer to the caller:
 /// from then on a cut is not a refund (spec Part 2 #62). Only a `streamed` answer delivers as it
 /// goes; a buffered one reaches the caller whole or not at all, so every cut of it refunds, as

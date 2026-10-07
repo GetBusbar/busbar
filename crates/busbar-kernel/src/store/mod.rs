@@ -139,6 +139,10 @@ pub(crate) use planes::Admission as PlaneAdmission;
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/ported_probe_tests.rs"]
+mod ported_probe_tests;
+
+#[cfg(test)]
 #[path = "tests/breaker_race_tests.rs"]
 mod breaker_race_tests;
 
