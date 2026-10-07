@@ -174,6 +174,8 @@ struct TestHost {
     sent: Vec<String>,
     /// How many sends answer PENDING before one reaches the receiver.
     pends: u32,
+    /// How many attempts were abandoned (their connection closed).
+    abandoned: u32,
 }
 
 impl TestHost {
@@ -189,6 +191,7 @@ impl TestHost {
             judged: Vec::new(),
             sent: Vec::new(),
             pends: 0,
+            abandoned: 0,
         }
     }
 }
@@ -218,6 +221,10 @@ impl Line for TestHost {
 
     fn jitter(&mut self) -> u8 {
         128
+    }
+
+    fn abandon(&mut self, _stream: Option<u64>) {
+        self.abandoned += 1;
     }
 }
 
@@ -461,4 +468,88 @@ fn a_pending_attempt_is_delivered_once_whether_tick_or_drive_runs_first() {
     assert_eq!(tick_over(&mut host, &d, &attempting, 2), Outcome::Ready);
     assert_eq!(host.sent.len(), 1, "never sent twice");
     assert_eq!(d.take_owed(ALICE, None).len(), 1, "one outcome owed");
+}
+
+/// A lost wake still ends in exactly one delivery (R-PUSH, coordinator option (b)): an attempt left
+/// held with no `drive` is abandoned by the first tick past predev's delivery timeout (60 s,
+/// `transport.rs:92`), which is asked for at that moment, and its delivery is requeued under the
+/// retry rules and then sent once. RED against round 2's behaviour (a held attempt is never given
+/// up): nothing is ever sent.
+#[test]
+fn a_dropped_wake_ends_in_exactly_one_delivery_after_the_timeout() {
+    let callback = "https://hook.caller.test/notify";
+    let d = queued(callback);
+    let attempting = Attempting::default();
+    let mut host = TestHost::answering(vec![Some((DEST_ALLOWED, &[AT_REGISTRATION][..]))], 200);
+    host.pends = 1;
+    let start = 1_000;
+    assert_eq!(
+        tick_over(&mut host, &d, &attempting, start),
+        Outcome::Pending
+    );
+    assert_eq!(
+        next_tick_ns(&d, &attempting),
+        start + DELIVERY_TIMEOUT_NS,
+        "the tick is asked for at the abandonment"
+    );
+    // Before the timeout the attempt is the drive's, and no wake comes.
+    assert_eq!(
+        tick_over(&mut host, &d, &attempting, start + 1),
+        Outcome::Ready
+    );
+    assert_eq!(host.abandoned, 0);
+    // At the timeout: cancelled first, then requeued; nothing else is in flight.
+    let at = start + DELIVERY_TIMEOUT_NS;
+    assert_eq!(tick_over(&mut host, &d, &attempting, at), Outcome::Ready);
+    assert_eq!(host.abandoned, 1, "the attempt's connection was closed");
+    assert!(
+        host.sent.is_empty(),
+        "the requeue waits out its retry delay"
+    );
+    assert_eq!(attempting.deadline_ns(), 0, "nothing is held");
+    let again = next_tick_ns(&d, &attempting);
+    assert!(again > at, "the retry is asked for: {again}");
+    assert_eq!(tick_over(&mut host, &d, &attempting, again), Outcome::Ready);
+    assert_eq!(
+        host.sent,
+        vec![callback.to_string()],
+        "exactly one delivery"
+    );
+    assert_eq!(
+        next_tick_ns(&d, &attempting),
+        0,
+        "nothing is left to tick for"
+    );
+}
+
+/// An attempt cancelled by abandonment never also completes: the connection it held is closed, and
+/// a late `drive` (the old connection's answer arriving) finds nothing to carry on, so the
+/// receiver is reached once, by the requeued attempt. RED against a variant that abandons without
+/// dropping the attempt (the late drive sends it a second time).
+#[test]
+fn an_abandoned_attempt_never_also_completes() {
+    let callback = "https://hook.caller.test/notify";
+    let d = queued(callback);
+    let attempting = Attempting::default();
+    let mut host = TestHost::answering(vec![Some((DEST_ALLOWED, &[AT_REGISTRATION][..]))], 200);
+    host.pends = 1;
+    assert_eq!(tick_over(&mut host, &d, &attempting, 0), Outcome::Pending);
+    let at = DELIVERY_TIMEOUT_NS;
+    assert_eq!(tick_over(&mut host, &d, &attempting, at), Outcome::Ready);
+    assert_eq!(host.abandoned, 1);
+    // The old connection's answer arrives late, waking the driver ticket.
+    assert_eq!(drive_over(&mut host, &d, &attempting), Outcome::Ready);
+    assert!(
+        host.sent.is_empty(),
+        "the abandoned attempt did not complete"
+    );
+    let again = next_tick_ns(&d, &attempting);
+    assert_eq!(tick_over(&mut host, &d, &attempting, again), Outcome::Ready);
+    assert_eq!(drive_over(&mut host, &d, &attempting), Outcome::Ready);
+    assert_eq!(
+        host.sent,
+        vec![callback.to_string()],
+        "reached exactly once"
+    );
+    assert_eq!(host.abandoned, 1);
 }

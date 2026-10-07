@@ -183,6 +183,9 @@ trait Line {
     fn send(&mut self, ex: &mut Exchange, url: &str) -> Poll<Option<u16>>;
     /// The jitter byte of a retry's wait.
     fn jitter(&mut self) -> u8;
+    /// GIVE UP the connection of an attempt abandoned at its timeout: the host closes `stream` (when
+    /// the attempt had established one), so nothing the far end answers later reaches anyone.
+    fn abandon(&mut self, stream: Option<u64>);
 }
 
 impl Line for Calls<'_> {
@@ -190,6 +193,13 @@ impl Line for Calls<'_> {
         Calls::jitter(self)
     }
 
+    fn abandon(&mut self, stream: Option<u64>) {
+        if let Some(stream) = stream {
+            // The close names the stream itself, so it needs nothing the tick's cycle forgot; it
+            // never pends on a table, and a close that fails leaves nothing more to do.
+            let _ = self.host.connector_from(self.ticket, 2).close(stream);
+        }
+    }
     fn judge(&mut self, url: &str) -> Poll<Option<Judgement>> {
         let absent = Span {
             offset: SPAN_ABSENT,
@@ -285,12 +295,36 @@ impl Attempting {
         self.0.remove(&())
     }
 
-    fn is_held(&self) -> bool {
-        !self.0.is_empty()
+    /// When the held attempt began (the clock of the tick that started it).
+    fn started_ns(&self) -> Option<u64> {
+        self.0.with(&(), |h| h.map(|(_, at)| *at))
+    }
+
+    /// When the held attempt is abandoned; `0` = none is held.
+    pub(crate) fn deadline_ns(&self) -> u64 {
+        self.started_ns()
+            .map_or(0, |at| at.saturating_add(DELIVERY_TIMEOUT_NS).max(1))
     }
 
     fn hold(&self, flight: Flight, now_ns: u64) {
         self.0.insert((), (flight, now_ns));
+    }
+}
+
+/// THE TIME A DELIVERY ATTEMPT MAY TAKE, predev's own: `RELAY_TIMEOUT`, sixty seconds, the request
+/// ceiling of `origin/predev:crates/busbar-a2a/src/a2a/transport.rs:92`, which
+/// `crates/busbar-a2a/src/a2a/pushdeliver.rs:85` names as the delivery's time ceiling. An attempt
+/// held longer than this lost its wake: it is abandoned, then requeued under predev's retry rules
+/// (spec :390-393, B3).
+const DELIVERY_TIMEOUT_NS: u64 = 60_000_000_000;
+
+/// When the lifecycle tick is next wanted: the earliest waiting delivery, or the moment a held
+/// attempt is abandoned; `0` = neither.
+pub(crate) fn next_tick_ns(deliveries: &Deliveries, attempting: &Attempting) -> u64 {
+    match (deliveries.next_tick_ns(), attempting.deadline_ns()) {
+        (0, b) => b,
+        (a, 0) => a,
+        (a, b) => a.min(b),
     }
 }
 
@@ -345,7 +379,24 @@ fn tick_over(
     attempting: &Attempting,
     now_ns: u64,
 ) -> Outcome {
-    if attempting.is_held() {
+    if let Some(started) = attempting.started_ns() {
+        // A held attempt belongs to `drive`, until it outlives its timeout (its wake was lost):
+        // then it is CANCELLED FIRST (its connection closed, so it can never also complete), and
+        // only then requeued under the retry rules, so two attempts for one delivery are never in
+        // flight at once.
+        if now_ns >= started.saturating_add(DELIVERY_TIMEOUT_NS) {
+            if let Some((flight, _)) = attempting.take() {
+                line.abandon(flight.exchange.as_ref().and_then(Exchange::stream));
+                let jitter = line.jitter();
+                deliveries.owe(&flight.delivery, Attempted::Transport);
+                let _ = deliveries.settle(
+                    &flight.delivery.task_id,
+                    Attempted::Transport,
+                    now_ns,
+                    jitter,
+                );
+            }
+        }
         return Outcome::Ready;
     }
     match deliveries.next_due(now_ns) {
