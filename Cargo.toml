@@ -101,7 +101,7 @@ busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-trans
 busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "6ede2a5b1a27e6a265e3a76db7e5749cb5abce8a" }
 # THE OAUTH MINTING STYLES (kind: auth): a dev edge only — the root's door_steps tests mint a member's
 # credential through the real plugin's door. One pin.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "6883df359ae7cd58ae123d0cc6e5aac1f878cfc9" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "b7d15c7137e890072a4968abc544b0bbfc107f67" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
 # axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
 # build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
