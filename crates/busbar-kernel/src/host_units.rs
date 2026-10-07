@@ -113,8 +113,9 @@ impl UnitRecords {
     }
 
     /// The caller of `unit` presented `credential`: lent, while the unit runs, to a passthrough
-    /// member's auth call made inside it (a request the plane makes on its own need included,
-    /// ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE).
+    /// member's auth call made inside it (a request the plane makes on its own need included: the
+    /// connector keys a binding by (instance, need, member, target origin); a request naming no
+    /// member gets no binding).
     pub fn lend(&self, unit: u64, credential: busbar_contract::redacted::Redacted<Vec<u8>>) {
         self.lent
             .lock()

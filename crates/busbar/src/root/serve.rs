@@ -1111,8 +1111,10 @@ pub(crate) fn compose_planes_over(
                     egress.reach,
                 )
                 .map_err(|e| format!("{instance}: {e}"))?;
-                // The door's own requests to its members carry the members' bindings (ARCHITECT
-                // round 5 Q-L3B-DOOR-EXCHANGE), held on the connection table its need is declared on.
+                // The door's own requests to its members carry the members' bindings, held on the
+                // connection table its need is declared on: the connector keys a binding by
+                // (instance, need, member, target origin); a request naming no member gets no
+                // binding.
                 if let Some(table) = plugin.conn_table() {
                     crate::root::door_steps::bind_member_fetches(
                         &served_facts,
