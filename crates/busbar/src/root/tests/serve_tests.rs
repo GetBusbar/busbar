@@ -1877,6 +1877,306 @@ mod tools_door {
         let (status, answer) = call(&rig, &reader, "cat_read_file", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::OK, "its own tool is served: {answer}");
     }
+
+    // ── THE WALK'S EXHAUSTION ON THIS DOOR: PREDEV'S BYTES ──────────────────────────────────────
+    //
+    // The kernel hands every plane the walk's own sentence for an exhausted walk
+    // (`RefusalIn.text`); this door's baseline is predev's (spec l.4452), which said the reason's
+    // own word there. Each cell below drives a `tools/call` to an exhausted walk on one path the
+    // door's refusal slot takes, and pins the bytes predev serves on it.
+
+    /// The `tools/call` of `tool` with the tasks extension declared (a call that creates a task
+    /// where its tool supports one).
+    fn task_call_of(tool: &str) -> String {
+        let mut call: serde_json::Value =
+            serde_json::from_str(&call_of(tool, serde_json::json!({}))).expect("the call");
+        call["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"] =
+            serde_json::json!({ "extensions": { "io.modelcontextprotocol/tasks": {} } });
+        call.to_string()
+    }
+
+    /// `tasks/get` of `task_id` on `rig`, the extension declared: the status and the JSON-RPC body.
+    async fn task_get(rig: &Rig, task_id: &str) -> (u16, serde_json::Value) {
+        let verb = serde_json::json!({
+            "jsonrpc": "2.0", "id": 43, "method": "tasks/get",
+            "params": {
+                "taskId": task_id,
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": protocol_version(),
+                    "io.modelcontextprotocol/clientCapabilities":
+                        { "extensions": { "io.modelcontextprotocol/tasks": {} } },
+                },
+            },
+        })
+        .to_string();
+        let (status, body) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &verb,
+            "tasks/get",
+            Some(task_id),
+        )
+        .await;
+        (
+            status.as_u16(),
+            serde_json::from_slice(&body).expect("JSON-RPC"),
+        )
+    }
+
+    /// `tasks/get` of `task_id` until the task is terminal (or the test gives up): its body.
+    async fn task_settled(rig: &Rig, task_id: &str) -> serde_json::Value {
+        for _ in 0..600 {
+            let (_, body) = task_get(rig, task_id).await;
+            if ["completed", "failed", "cancelled"]
+                .iter()
+                .any(|s| body["result"]["status"] == *s)
+            {
+                return body;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("task {task_id} never settled");
+    }
+
+    /// A tool server answering its tool list as approved and holding every `tools/call` unanswered.
+    async fn stalling_calls() -> (u16, Heard) {
+        tool_server_replying(Arc::new(|r: &str| {
+            if r.contains("\"tools/list\"") {
+                let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
+                (200, list.to_string())
+            } else {
+                (STALL, String::new())
+            }
+        }))
+        .await
+    }
+
+    /// Wait for the server to hear a `tools/call`.
+    async fn heard_a_call(heard: &mut Heard) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let r = heard.recv().await.expect("the server hears");
+                if r.contains("\"tools/call\"") {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the call reached the server");
+    }
+
+    /// Publish generation 2 of `rig`'s door over the `tools:` section `section` (the operator's
+    /// reload): the plane's catalogue moves; the kernel's sealed egress does not.
+    fn reload(rig: &Rig, section: &serde_yaml::Value) {
+        use crate::root::loader::dispatch::{in_head, out_head, Frame};
+        use busbar_contract::abi::mechanism::call::{Blob, Outcome as AbiOutcome, BLOB_JSON};
+        use busbar_contract::abi::mechanism::lifecycle::RefreshIn;
+        use busbar_contract::abi::plane::PlaneRefreshOut;
+        let settings = serde_json::to_vec(section).expect("json");
+        let mut frame = Frame::new(
+            RefreshIn {
+                head: in_head(),
+                generation: 2,
+                settings: Blob {
+                    ptr: settings.as_ptr(),
+                    len: settings.len(),
+                    fmt: BLOB_JSON,
+                    flags: 0,
+                },
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            PlaneRefreshOut {
+                head: out_head(),
+                snapshot: std::ptr::null(),
+            },
+        );
+        let (called, snapshot) = rig.plane.refresh(&mut frame);
+        assert_eq!(called.outcome, AbiOutcome::Ready, "the refresh is taken");
+        assert!(snapshot.is_some(), "generation 2 is published");
+    }
+
+    /// EXHAUSTED, THE SERVER RESOLVED (the control the two cells after it stand beside): a tripped
+    /// server's call is refused as the served engine refused it, `503` / `-32030` /
+    /// `upstream_unavailable` with its sentence and the wait, byte for byte as predev serves it; the
+    /// walk's own sentence never reaches the caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_servers_exhausted_walk_is_refused_in_predevs_bytes() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-exhausted-bytes";
+        let _published = Published(instance);
+        let (port, mut heard) = answering_calls_with(503).await;
+        let rig = rig_tools(instance, port, registration("flaky", port, ""), &|app| app);
+        fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
+
+        let (status, headers, body) = send_headed(
+            &rig.router,
+            Some(&rig.token),
+            &call_of("flaky_read_file", serde_json::json!({})),
+            "tools/call",
+            Some("flaky_read_file"),
+        )
+        .await;
+        let body = String::from_utf8_lossy(&body).to_string();
+        let wait: u64 = headers
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("a Retry-After: {headers:?} {body}"));
+        assert!(wait > 0, "the open cell's wait: {headers:?}");
+        assert_eq!(status.as_u16(), 503, "{headers:?} {body}");
+        assert_eq!(
+            body,
+            format!(
+                "{{\"error\":{{\"code\":-32030,\"data\":{{\"reason\":\"upstream_unavailable\",\
+                 \"retry_after_ms\":{},\"server\":\"flaky\"}},\"message\":\"MCP server `flaky` is \
+                 unavailable: its circuit breaker is open after repeated failures; busbar did not \
+                 dispatch this call. Retry after {wait}s.\"}},\"id\":41,\"jsonrpc\":\"2.0\"}}",
+                wait * 1000
+            ),
+            "{headers:?}"
+        );
+        assert!(drain(&mut heard).is_empty(), "nothing reached the server");
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// EXHAUSTED, THE SERVER NO LONGER RESOLVED (the generic arm of the door's refusal slot): a call
+    /// dispatched to a server that never answers, whose tool leaves the catalogue (an operator's
+    /// reload) while the call waits out the server's `timeout:`, is refused when the walk is
+    /// exhausted as predev refused it: the walk's status, `-32000`, and the reason's own word, no
+    /// data and no wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exhausted_walk_whose_tool_left_the_catalogue_is_refused_in_predevs_bytes() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-exhausted-unlisted";
+        let _published = Published(instance);
+        let (port, mut heard) = stalling_calls().await;
+        let rig = rig_tools(
+            instance,
+            port,
+            registration("stall", port, "  timeout: 2s\n"),
+            &|app| app,
+        );
+        let (router, token) = (rig.router.clone(), rig.token.clone());
+        let pending = tokio::spawn(async move {
+            send_headed(
+                &router,
+                Some(&token),
+                &call_of("stall_read_file", serde_json::json!({})),
+                "tools/call",
+                Some("stall_read_file"),
+            )
+            .await
+        });
+        heard_a_call(&mut heard).await;
+        // The reload: the server is registered under another name, so the stalled call's tool is no
+        // longer one the catalogue publishes.
+        reload(&rig, &registration("other", port, ""));
+
+        let (status, headers, body) = tokio::time::timeout(Duration::from_secs(20), pending)
+            .await
+            .expect("the stalled call was answered")
+            .expect("the call ran");
+        let body = String::from_utf8_lossy(&body).to_string();
+        assert_eq!(status.as_u16(), 503, "{headers:?} {body}");
+        assert_eq!(
+            body, r#"{"error":{"code":-32000,"message":"breaker_open"},"id":41,"jsonrpc":"2.0"}"#,
+            "{headers:?}"
+        );
+        assert!(
+            headers.get("retry-after").is_none(),
+            "no wait on this arm: {headers:?}"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// EXHAUSTED UNDER A TASK (the continuation's refusal): a task whose call is dispatched to a
+    /// server that never answers fails when its continuation's walk is exhausted, and `tasks/get`
+    /// states the failure as predev stated it: `-32603`, the upstream call failed, and the reason's
+    /// own word.
+    #[cfg(linked_axis_node)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tasks_exhausted_walk_fails_the_task_in_predevs_bytes() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-exhausted-task";
+        let _published = Published(instance);
+        let (port, mut heard) = stalling_calls().await;
+        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "stall:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  timeout: 2s\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{}\", task_support: optional }}\n",
+            tool_digest()
+        ))
+        .expect("a section");
+        let rig = rig_tools(instance, port, tools, &|app| app);
+
+        let (status, body) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &task_call_of("stall_read_file"),
+            "tools/call",
+            Some("stall_read_file"),
+        )
+        .await;
+        let created: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+        assert_eq!(status.as_u16(), 200, "{created}");
+        let task_id = created["result"]["taskId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a task: {created}"))
+            .to_string();
+        heard_a_call(&mut heard).await;
+
+        let settled = task_settled(&rig, &task_id).await;
+        assert_eq!(settled["result"]["status"], "failed", "{settled}");
+        assert_eq!(
+            settled["result"]["error"].to_string(),
+            r#"{"code":-32603,"message":"the MCP upstream call failed: breaker_open"}"#,
+            "{settled}"
+        );
+    }
+
+    /// EXHAUSTED UNDER A TASK, THE SERVER TRIPPED: a task created on a tool whose server's cell is
+    /// open fails as predev failed it, its `tasks/get` stating `-32603`, the upstream call failed,
+    /// and the reason's own word.
+    #[cfg(linked_axis_node)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_on_a_tripped_server_fails_in_predevs_bytes() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-exhausted-task-tripped";
+        let _published = Published(instance);
+        let (port, mut heard) = answering_calls_with(503).await;
+        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "flaky:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{}\", task_support: optional }}\n",
+            tool_digest()
+        ))
+        .expect("a section");
+        let rig = rig_tools(instance, port, tools, &|app| app);
+        fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
+
+        let (status, headers, body) = send_headed(
+            &rig.router,
+            Some(&rig.token),
+            &task_call_of("flaky_read_file"),
+            "tools/call",
+            Some("flaky_read_file"),
+        )
+        .await;
+        let created: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+        assert_eq!(status.as_u16(), 200, "{headers:?} {created}");
+        let task_id = created["result"]["taskId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a task: {created}"))
+            .to_string();
+
+        let settled = task_settled(&rig, &task_id).await;
+        assert_eq!(settled["result"]["status"], "failed", "{settled}");
+        assert_eq!(
+            settled["result"]["error"].to_string(),
+            r#"{"code":-32603,"message":"the MCP upstream call failed: breaker_open"}"#,
+            "{settled}"
+        );
+        assert!(drain(&mut heard).is_empty(), "nothing reached the server");
+    }
 }
 
 #[cfg(feature = "plane-decisions")]
