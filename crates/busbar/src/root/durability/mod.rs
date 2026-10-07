@@ -94,6 +94,7 @@ use std::path::PathBuf;
 use crate::root::kernel::PinnedHistory;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, PostingFlags, StepName};
+use busbar_contract::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditRecord, KeyError,
 };
@@ -102,7 +103,6 @@ use busbar_kernel_ledger::checkpoint::{
 };
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, SummedRows};
-use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_ledger::settle::{Figures, Ledger, Settlement};
 use busbar_kernel_ledger::totals::{
     BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
@@ -152,7 +152,6 @@ mod audit;
 mod book;
 pub use book::{MoneyBook, PostingStamp, Settled, Settling};
 // The pass-through has one caller, the plane node, so it is built where the node is.
-#[cfg(linked_axis_node)]
 pub use book::SharedBook;
 
 /// How many sealed checkpoints a node holds in memory: the latest 1,024, oldest evicted first

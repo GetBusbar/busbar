@@ -208,10 +208,9 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
         dir: "busbar-llm",
         placement: "#83 SPLIT -> def 16-20",
     },
-    PlaneCrate {
-        dir: "busbar-mcp",
-        placement: "#83 SPLIT -> def 16-20",
-    },
+    // `busbar-mcp` IS DELETED (P3 DEL-MCP, ARCHITECT 2026-10-05): the SPLIT finished — the mcp plane
+    // is its door crate, `busbar-plane-mcp`, scanned by the CLEAN row above — so its entry is struck
+    // in this reviewed diff, as the `plane-roots` row asks of a folded crate.
     PlaneCrate {
         dir: "busbar-a2a",
         placement: "#83 SPLIT -> def 16-20",

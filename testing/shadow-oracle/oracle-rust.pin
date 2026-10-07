@@ -275,6 +275,16 @@
 # f0ca9f1f1a76 (#167), 4a7a7bba2c (predev's pin, #464's) and 0ede76aea9, so whichever of #493/#503 lands second keeps
 # every engine change of the other.
 #
+# 2026-10-05 (P5 extraction, busbar #484): moved 4a7a7bba2cef -> 0ede76aea912, the merge of busbar-release
+# #157 into dev: the build-test plan drops the rows naming crates P5 moves out or deletes (the dropped-in
+# sigv4 row: its proof is GetBusbar/busbar-auth-sigv4's own conformance leg; the example plane's dlopen
+# build, re-pointed at the loader's plane_door_plugin). It descends from edd17921e320 (P6 ORACLE-STRICT's
+# pin: #158, #159, #163) and carries #161; promote.yml RELEASE_REF moves to the same sha.
+#
+# 2026-10-06: moved 0ede76aea912 -> 1869c0032ecf, busbar-release dev's head (the merge of #168): it contains every
+# earlier pin (predev's 4a7a7bba2cef, oracle-strict's edd17921e320, #157's 0ede76aea912, #493's 5b89bdf67326), so
+# no lane's engine moves backwards when this lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
 release_ref=1869c0032ecf2cdad8b1153ccf25311cb6baad75

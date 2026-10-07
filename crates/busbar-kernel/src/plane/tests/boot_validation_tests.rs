@@ -116,6 +116,42 @@ fn boot_refuses_a_bad_cadence_in_a_planes_section() {
     assert_refused(boot("  dock:\n    recheck_after: soon\n"), CADENCE_REFUSAL);
 }
 
+/// RED (ARCHITECT timeout ruling): an entry's `timeout:` is a reserved key the KERNEL judges, for a
+/// plane that names none of it: a duration is legal; an unparseable one and a zero are refused in
+/// the kernel's sentence, on the boot path and on the admin write path alike.
+#[test]
+fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
+    let _isolation = crate::plane::registry::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
+    boot("  dock:\n    timeout: 10s\n").expect("a duration is legal");
+    assert_refused(
+        boot("  dock:\n    timeout: soon\n"),
+        "`bays.dock`: `timeout:` invalid duration 'soon': expected <number><s|m|h|d>",
+    );
+    assert_refused(
+        boot("  dock:\n    timeout: 0s\n"),
+        "`bays.dock`: `timeout: 0s` is zero, which would refuse every call to this entry before \
+         it was sent.",
+    );
+    assert_refused(
+        boot("  dock:\n    timeout: 10\n"),
+        "`bays.dock`: `timeout:` must be a duration `<n><s|m|h|d>`, e.g. `30s`",
+    );
+    let entry: serde_yaml::Value = serde_yaml::from_str("timeout: 0m").expect("yaml");
+    let refused = validate_plane_entry("bays", "dock", &entry, KEYS, &["bays"]).unwrap_err();
+    assert!(
+        refused.starts_with("`bays.dock`: `timeout: 0m` is zero"),
+        "{refused}"
+    );
+    // A model-serving section's entries are its `models` map's: each judged, at its own path.
+    let models: serde_yaml::Value =
+        serde_yaml::from_str("models:\n  m1: { timeout: never }\n").expect("yaml");
+    let refused = validate_plane_section("bays", &models, KEYS, None, &["bays"]).unwrap_err();
+    assert!(
+        refused.starts_with("`bays.models.m1`: `timeout:`"),
+        "{refused}"
+    );
+}
+
 #[test]
 fn the_admin_write_path_refuses_what_boot_refuses() {
     let _isolation = crate::plane::registry::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);

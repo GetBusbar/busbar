@@ -30,26 +30,20 @@
 //! read-time view, proven over the real engine in the composition root's tests.
 //!
 //! Everything else on the seam answers the neutral "nothing configured" value (no pools, no secrets,
-//! no identity chain, no completion pipeline). It is a test double: a leg the fixture does not model
+//! no identity chain). It is a test double: a leg the fixture does not model
 //! answers its documented empty value rather than pretending to be the engine.
 
 use busbar_contract::abi::hot::{AdmissionId, Signal};
-use busbar_contract::auth::{AuthPrincipal, IdentityRefusal};
 use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
 use busbar_kernel::billing::{TokenUsage, Usage};
 use busbar_kernel::breaker::{CanonicalSignal, Disposition};
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy, TapEntry};
-use busbar_kernel::plane::approvals::Sealer;
-use busbar_kernel::plane::calllog::CallInput;
 use busbar_kernel::plane_host::{
-    AdmissionHost, AdmitHandle, AudienceBinding, BreakerHost, BudgetHost, ClockHost,
-    CompletionHost, CompletionRefusal, DispatchScope, EngineHost, GateOutcome, GovAdmit, GovHandle,
-    HookConfigHost, HostCompletion, IdentityHost, JournalHost, LanePoolHost, MeterPin, MountHost,
-    RegistryHost, TelemetryHost, TransformVerdict,
+    AdmissionHost, AdmitHandle, BreakerHost, BudgetHost, ClockHost, DispatchScope, EngineHost,
+    GateOutcome, GovAdmit, GovHandle, HookConfigHost, IdentityHost, JournalHost, LanePoolHost,
+    MeterPin, MountHost, RegistryHost, TelemetryHost, TransformVerdict,
 };
 use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
-use busbar_kernel::trust::validate::{Lapsed, Standing};
-use busbar_kernel::trust::TrustState;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -384,9 +378,6 @@ impl LanePoolHost for FixtureHost {
     fn default_probe_timeout_secs(&self) -> u64 {
         5
     }
-    fn pool_members_repeatable(&self, _member: &str) -> Option<(String, Vec<String>, Vec<String>)> {
-        None
-    }
     fn plane_pool_members(&self, _plane_key: &str, _member: &str) -> Option<(String, Vec<String>)> {
         None
     }
@@ -444,8 +435,6 @@ impl JournalHost for FixtureHost {
             principal: principal.to_string(),
         });
     }
-    fn call_log_emit(&self, _principal: &str, _input: CallInput) {}
-    fn call_log_emit_hostless(&self, _principal: &str, _input: CallInput) {}
 }
 
 impl MountHost for FixtureHost {
@@ -490,9 +479,6 @@ impl RegistryHost for FixtureHost {
     }
     fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         self.lock().slots.get(key).cloned()
-    }
-    fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-        self.plane_slot(key)
     }
     fn secret_resolver(&self) -> Arc<dyn busbar_contract::secret::SecretResolve> {
         Arc::new(NoSecrets)
@@ -671,37 +657,7 @@ impl BudgetHost for FixtureHost {
     }
 }
 
-#[async_trait::async_trait]
-impl IdentityHost for FixtureHost {
-    fn quarantine_settle(&self, _subject: &str, _state: TrustState) -> bool {
-        false
-    }
-    fn approval_redeem(&self, _nonce: &str, _expires_at: u64, _now: u64) -> bool {
-        false
-    }
-    fn identity_audience_binding(&self, _token: &str, _expected_aud: &str) -> AudienceBinding {
-        AudienceBinding::Opaque
-    }
-    async fn identity_admit(
-        &self,
-        _token: Option<String>,
-        _audience: String,
-        _resource: String,
-    ) -> Result<(AuthPrincipal, PlaneRequestCtx), IdentityRefusal> {
-        Err(IdentityRefusal::Denied)
-    }
-    fn principal_standing(
-        &self,
-        _standing: &Standing,
-        _live_gen: u64,
-        _now: u64,
-    ) -> Result<Option<Arc<VirtualKey>>, Lapsed> {
-        Ok(None)
-    }
-    fn ask_state_sealer(&self) -> Option<Sealer> {
-        None
-    }
-}
+impl IdentityHost for FixtureHost {}
 
 // ── The admission slice: the scripted hook gate / rewrite chains ────────────────────────────────
 
@@ -826,21 +782,6 @@ impl AdmissionHost for FixtureHost {
     }
 }
 
-#[async_trait::async_trait]
-impl CompletionHost for FixtureHost {
-    async fn synthesize_completion(
-        &self,
-        _gov: &PlaneRequestCtx,
-        _model: &str,
-        _body: bytes::Bytes,
-        _max_body_bytes: usize,
-    ) -> Result<HostCompletion, CompletionRefusal> {
-        // The fixture host drives no dispatch pipeline, so no completion ingress is installed.
-        Err(CompletionRefusal::NotInstalled)
-    }
-}
-
-#[async_trait::async_trait]
 impl EngineHost for FixtureHost {}
 
 #[cfg(test)]
