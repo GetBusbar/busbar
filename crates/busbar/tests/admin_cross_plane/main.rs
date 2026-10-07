@@ -16,6 +16,7 @@
 mod linked;
 
 mod keys;
+#[cfg(feature = "openapi-schema")]
 mod openapi;
 mod served_surface;
 mod service;

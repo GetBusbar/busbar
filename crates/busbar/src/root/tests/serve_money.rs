@@ -600,7 +600,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
             None,
-            None,
+            crate::root::loader::dispatch::ConnTable::NoNeeds,
         )),
         conns: Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,

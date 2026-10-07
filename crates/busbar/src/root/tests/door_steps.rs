@@ -1306,7 +1306,9 @@ pub(crate) mod tool_door {
             let plane = bound(
                 instance,
                 &dispatcher,
-                Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+                crate::root::loader::dispatch::ConnTable::Host(
+                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                ),
             );
             let caller = plane.instance();
             let section_key = plane.served().section;
@@ -1361,7 +1363,9 @@ pub(crate) mod tool_door {
                 Arc::clone(&dispatcher),
                 &linked,
                 None,
-                Some(Arc::clone(&tokens) as Arc<dyn DeclaredConns>),
+                crate::root::loader::dispatch::ConnTable::Host(
+                    Arc::clone(&tokens) as Arc<dyn DeclaredConns>
+                ),
             );
             let reach = crate::root::door_steps::DoorReach {
                 providers: &providers,
@@ -1658,11 +1662,11 @@ pub(crate) mod tool_door {
     }
 
     /// The mcp door, linked, bound through the loader's one load on `dispatcher`, its need declared on
-    /// `conns` when given.
+    /// `conns` (`ConnTable::Probe`: declared on none).
     fn bound(
         instance: &str,
         dispatcher: &Arc<Dispatcher>,
-        conns: Option<Arc<dyn DeclaredConns>>,
+        conns: crate::root::loader::dispatch::ConnTable,
     ) -> crate::root::boot::DoorPlane {
         let row = LinkedRow::of(line_door()).expect("the door states its Statement");
         load_linked::<Plane>(
@@ -2485,7 +2489,11 @@ pub(crate) mod tool_door {
         let _one = PUBLISHING.lock().await;
         let compose = |instance: &'static str, public_url: Option<&str>| {
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-            let plane = bound(instance, &dispatcher, None);
+            let plane = bound(
+                instance,
+                &dispatcher,
+                crate::root::loader::dispatch::ConnTable::Probe,
+            );
             let mut sections = BTreeMap::new();
             sections.insert(plane.served().section, section(9));
             compose_planes(
@@ -2516,7 +2524,11 @@ pub(crate) mod tool_door {
             let block = "serve-door-tools-claims-block";
             let _block = Published(block);
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-            let plane = bound(block, &dispatcher, None);
+            let plane = bound(
+                block,
+                &dispatcher,
+                crate::root::loader::dispatch::ConnTable::Probe,
+            );
             let mut sections = BTreeMap::new();
             sections.insert(plane.served().section, section(9));
             assert_eq!(
