@@ -181,9 +181,15 @@ trait Line {
     /// One exchange of `ex` to `url`: the receiver's status; `None` when the connection or the
     /// exchange failed.
     fn send(&mut self, ex: &mut Exchange, url: &str) -> Poll<Option<u16>>;
+    /// The jitter byte of a retry's wait.
+    fn jitter(&mut self) -> u8;
 }
 
 impl Line for Calls<'_> {
+    fn jitter(&mut self) -> u8 {
+        Calls::jitter(self)
+    }
+
     fn judge(&mut self, url: &str) -> Poll<Option<Judgement>> {
         let absent = Span {
             offset: SPAN_ABSENT,
@@ -279,77 +285,105 @@ impl Attempting {
         self.0.remove(&())
     }
 
+    fn is_held(&self) -> bool {
+        !self.0.is_empty()
+    }
+
     fn hold(&self, flight: Flight, now_ns: u64) {
         self.0.insert((), (flight, now_ns));
     }
 }
 
 /// `tick`: ONE due notification attempted (see the module note); PENDING while its exchange is,
-/// which ends the tick and leaves the attempt to `drive`. A tick starts the driver ticket's next
-/// cycle, so an attempt a drive had not finished begins again from its delivery. A door opened
-/// without host tables, or a tick that may not pend, attempts nothing.
+/// which ends the tick and leaves the attempt to `drive`. While an attempt is held the tick starts
+/// no other and makes no host call: the delivery's one request is the held attempt's, and it goes
+/// on only through `drive`, so a delivery is never sent by both paths. A door opened without host
+/// tables, or a tick that may not pend, attempts nothing.
 pub(crate) fn tick(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>, now_ns: u64) -> Outcome {
-    let Some(ticket) = ticket_of(plane, instance) else {
+    let Some((ticket, mut calls)) = calls_of(plane, instance) else {
         return Outcome::Ready;
     };
-    let deliveries = &plane.deliveries;
     // This op runs on the instance's driver ticket: the one a queued delivery wakes.
     if let Some(host) = plane.host {
-        deliveries.arm(|| Box::new(move || host.wake(ticket)));
+        plane.deliveries.arm(|| Box::new(move || host.wake(ticket)));
     }
-    let flight = match plane.attempting.take() {
-        Some((held, _)) => Flight {
-            delivery: held.delivery,
-            exchange: None,
-        },
-        None => match deliveries.next_due(now_ns) {
-            Some(delivery) => Flight {
-                delivery,
-                exchange: None,
-            },
-            None => return Outcome::Ready,
-        },
-    };
-    advance(plane, ticket, flight, now_ns)
+    tick_over(&mut calls, &plane.deliveries, &plane.attempting, now_ns)
 }
 
 /// `drive`: the attempt a `tick` left PENDING goes on, the wake on the driver ticket being its
 /// service's (the replay rule: the same host calls in the same order, each completed one answered
 /// as it was). With no attempt in flight there is nothing to do.
 pub(crate) fn drive(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>) -> Outcome {
-    let Some(ticket) = ticket_of(plane, instance) else {
-        return Outcome::Ready;
-    };
-    match plane.attempting.take() {
-        Some((flight, now_ns)) => advance(plane, ticket, flight, now_ns),
+    match calls_of(plane, instance) {
+        Some((_, mut calls)) => drive_over(&mut calls, &plane.deliveries, &plane.attempting),
         None => Outcome::Ready,
     }
 }
 
-/// The driver ticket this op runs on, when the door has the host it needs to attempt a delivery.
-fn ticket_of(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>) -> Option<Ticket> {
-    plane.host.as_ref()?;
-    plane.services?;
+/// The driver ticket this op runs on and the host calls it makes, when the door has the host it
+/// needs to attempt a delivery.
+fn calls_of<'p>(
+    plane: &'p A2aDoor,
+    instance: &Instance<'_, A2aDoor>,
+) -> Option<(Ticket, Calls<'p>)> {
+    let (host, services) = (plane.host.as_ref()?, plane.services?);
     let ticket = instance.ticket();
-    (!ticket.is_none()).then_some(ticket)
+    (!ticket.is_none()).then_some((
+        ticket,
+        Calls {
+            host,
+            services,
+            ticket,
+        },
+    ))
+}
+
+/// [`tick`] over `line`.
+fn tick_over(
+    line: &mut dyn Line,
+    deliveries: &Deliveries,
+    attempting: &Attempting,
+    now_ns: u64,
+) -> Outcome {
+    if attempting.is_held() {
+        return Outcome::Ready;
+    }
+    match deliveries.next_due(now_ns) {
+        Some(delivery) => advance(
+            line,
+            deliveries,
+            attempting,
+            Flight {
+                delivery,
+                exchange: None,
+            },
+            now_ns,
+        ),
+        None => Outcome::Ready,
+    }
+}
+
+/// [`drive`] over `line`.
+fn drive_over(line: &mut dyn Line, deliveries: &Deliveries, attempting: &Attempting) -> Outcome {
+    match attempting.take() {
+        Some((flight, now_ns)) => advance(line, deliveries, attempting, flight, now_ns),
+        None => Outcome::Ready,
+    }
 }
 
 /// One entry of `flight`'s attempt, begun at `now_ns`: held again while its exchange pends, else
 /// settled.
-fn advance(plane: &A2aDoor, ticket: Ticket, mut flight: Flight, now_ns: u64) -> Outcome {
-    let (Some(host), Some(services)) = (plane.host.as_ref(), plane.services) else {
-        return Outcome::Ready;
-    };
-    let deliveries = &plane.deliveries;
-    let mut calls = Calls {
-        host,
-        services,
-        ticket,
-    };
-    let jitter = calls.jitter();
-    match attempt(&mut calls, deliveries, &mut flight) {
+fn advance(
+    line: &mut dyn Line,
+    deliveries: &Deliveries,
+    attempting: &Attempting,
+    mut flight: Flight,
+    now_ns: u64,
+) -> Outcome {
+    let jitter = line.jitter();
+    match attempt(line, deliveries, &mut flight) {
         Poll::Pending => {
-            plane.attempting.hold(flight, now_ns);
+            attempting.hold(flight, now_ns);
             Outcome::Pending
         }
         Poll::Ready((end, reached)) => {
