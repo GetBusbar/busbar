@@ -189,7 +189,8 @@ const FALLBACK_POOL_KEY: &str = "fallback_pool";
 impl DoorPools {
     /// WHETHER THE CALLER'S GRANT ADMITS THE ROUTE AS NAMED, judged before its destination (1.5.5's
     /// order: the pool's grant, then its fallback pool's; an unknown pool is refused by its grant
-    /// first, and only then by its absence). A direct route's grant names its entry. Ungoverned
+    /// first, and only then by its absence). A direct route's grant names its entry; a direct
+    /// route to an entry the section does not hold is absent before its grant. Ungoverned
     /// (`key` is `None`): nothing to enforce. A plane that states no scope kind has no resource a
     /// grant names, so it scopes nothing. None named: nothing to judge here (the route's absence
     /// refuses it).
@@ -212,6 +213,13 @@ impl DoorPools {
         };
         // A pool of members each admitted on its own grant: the plane judges the member.
         if class == ROUTE_POOL && self.member_granted.contains(name) {
+            return true;
+        }
+        // A DIRECT route to an entry the section does not hold has no scope to be granted on: it
+        // is absent before any grant is judged, and its absence refuses it (predev's inbound
+        // authorization, whose grant list for an unknown id is empty). A pool keeps 1.5.5's order
+        // above: its grant, then its absence.
+        if class == ROUTE_DIRECT && !self.entries.iter().any(|e| e == name) {
             return true;
         }
         let fallback = (class == ROUTE_POOL)

@@ -3196,8 +3196,11 @@ mod agent_door {
         assert_eq!(status, StatusCode::OK, "{drifted}");
         assert_eq!(drifted["state"], "quarantined", "{drifted}");
         assert_ne!(drifted["fingerprint"], fingerprint.as_str(), "{drifted}");
+        // The kernel's word for a quarantine whose last sighting moved from the pin is `drifted`
+        // (busbar-kernel `trust/book.rs` `KeyState`, #499, ARCHITECT 2026-10-06; `quarantined` is
+        // a quarantine last sighted at its pin).
         let (_, state) = trust_key(&s, "planner").await;
-        assert_eq!(state, "quarantined", "the book holds the quarantine");
+        assert_eq!(state, "drifted", "the book holds the quarantine");
         let (status, stale) = admin(
             &s,
             "/agents/planner/approve",
@@ -3858,7 +3861,7 @@ mod agent_door {
     /// a hop fails closed). The approved agent goes dark between two delegations: the next one's
     /// look cannot reach its card, and the hop is refused with the hop gate's predev bytes (`503`,
     /// `-32004`, "this agent is not currently serving", naming its task) without dialling; the
-    /// kernel's verdict is untouched (still `approved`), so once the card answers again the next
+    /// kernel's verdict is untouched (still approved: `same` on `/trust`), so once the card answers again the next
     /// call's look serves it. RED before the fix: the door served the hop on the kernel's kept
     /// verdict and dialled the dark agent (`agent.relayed()` true, no `503`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3899,9 +3902,12 @@ mod agent_door {
             "the refusal names its task: {body}"
         );
         assert!(!agent.relayed(), "the refused hop never reached the agent");
+        // The kernel's word for an approval last sighted at what was approved is `same`
+        // (busbar-kernel `trust/book.rs` `KeyState`, #499, ARCHITECT 2026-10-06; `approved` is an
+        // approval not sighted since): the unreachable look recorded nothing over it.
         let (_, state) = trust_key(&s, "planner").await;
         assert_eq!(
-            state, "approved",
+            state, "same",
             "the kernel's last verdict is untouched by an unreachable card"
         );
 
@@ -4429,6 +4435,41 @@ mod agent_door {
             !body.contains("scope_denied"),
             "an unregistered agent is not an out-of-scope one: {body}"
         );
+        assert!(heard.try_recv().is_err(), "nothing was dialled");
+        assert_eq!(admitted(&s), 0, "nothing charged");
+    }
+
+    /// AN UNKNOWN AGENT HAS NO SCOPE TO BE GRANTED ON: a key whose grant reaches no agent at all,
+    /// addressing one nothing registered, is told the agent does not exist (`404`, `-32004`, no id,
+    /// "no fronted agent `nonexistent`"), never that it is out of its grant, and nothing is dialled
+    /// or charged. Predev: `busbar-a2a/src/a2a/inbound.rs` l.177-187 (an unknown id's grant list is
+    /// empty, so the artifact step refuses it `NoSuchAgent`, l.241) and l.99 (`404`); its
+    /// `inbound_tests.rs::an_unknown_agent_is_a_404_and_an_out_of_scope_one_says_so` (l.325) asks
+    /// with a key scoped to another agent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_unit_from_a_restricted_key_to_an_unregistered_agent_is_a_404() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-unregistered-restricted";
+        let _published = Published(instance);
+        let (port, mut heard) = far_agent().await;
+        let s = served(instance, &agents(port, false), false, Some(Vec::new()));
+        let (status, body) = answered(
+            &s.router,
+            rpc("nonexistent", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "absent before its grant: {body}"
+        );
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an envelope");
+        assert_eq!(doc["error"]["code"], -32004, "{body}");
+        assert_eq!(
+            doc["error"]["message"], "no fronted agent `nonexistent`",
+            "{body}"
+        );
+        assert_eq!(doc["id"], serde_json::Value::Null, "{body}");
         assert!(heard.try_recv().is_err(), "nothing was dialled");
         assert_eq!(admitted(&s), 0, "nothing charged");
     }
