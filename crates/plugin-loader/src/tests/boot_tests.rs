@@ -26,6 +26,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
     Candidate {
         kind,
         name: name.into(),
+        version: "1.0.0".into(),
         aliases: aliases.iter().map(|s| s.to_string()).collect(),
         sugar: sugar.iter().map(|s| s.to_string()).collect(),
         verbs: verbs.iter().map(|s| s.to_string()).collect(),
@@ -885,4 +886,84 @@ fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
         "oidc: plugin 'secret-auth-witness' open failed: 1 secret(s) handed, not the resolved \
          client_secret"
     );
+}
+
+/// A door that states nothing: the linked origin of a candidate built by hand.
+extern "C" fn stating_nothing() -> *const busbar_contract::abi::mechanism::door::Door {
+    std::ptr::null()
+}
+
+/// `cand` at `version`, LINKED.
+fn linked_cand(name: &str, version: &str) -> Candidate {
+    Candidate {
+        version: version.into(),
+        origin: Origin::Linked(crate::dispatch::LinkedRow {
+            statement: Vec::new(),
+            door: stating_nothing,
+        }),
+        ..cand(KindCode::Hook, name, &["short"], &[], &[])
+    }
+}
+
+/// `cand` at `version`, DROPPED IN as `<name>.tar.gz`.
+fn dropped_cand(name: &str, version: &str) -> Candidate {
+    Candidate {
+        version: version.into(),
+        ..cand(KindCode::Hook, name, &["short"], &[], &[])
+    }
+}
+
+/// THE ONE-VERSION RULE ON AN AXIS'S CANDIDATES (ARCHITECT C'): one plugin (one Statement name)
+/// linked and dropped in at ONE version is one plugin — admitted, the linked row first (it serves),
+/// and named once for the log; at TWO versions the boot is refused, naming the plugin, both doors
+/// and both versions. RED before: every same-name pair was skipped whatever its versions, so the
+/// linked row silently won over a dropped-in copy of another version.
+#[test]
+fn one_plugin_by_both_doors_is_one_version_or_refused() {
+    let same = [
+        linked_cand("busbar-hook-x", "1.2.3"),
+        dropped_cand("busbar-hook-x", "1.2.3"),
+    ];
+    one_owner(&same).expect("one plugin at one version");
+    assert_eq!(
+        both_doors(&same),
+        vec![
+            "plugin 'busbar-hook-x' v1.2.3 is linked and also dropped in (busbar-hook-x.tar.gz); \
+             the linked build serves it"
+                .to_string()
+        ]
+    );
+    let uses = Uses {
+        modules: vec![(KindCode::Hook, "h".into(), "short".into())],
+        ..Uses::default()
+    };
+    assert_eq!(
+        select(&uses, &same),
+        vec![sel(0, "h")],
+        "the linked row serves"
+    );
+    for pair in [
+        [
+            linked_cand("busbar-hook-x", "1.2.3"),
+            dropped_cand("busbar-hook-x", "1.2.4"),
+        ],
+        [
+            dropped_cand("busbar-hook-x", "1.2.4"),
+            linked_cand("busbar-hook-x", "1.2.3"),
+        ],
+    ] {
+        let refused = one_owner(&pair).expect_err("two versions of one plugin");
+        assert_eq!(
+            refused,
+            "plugin 'busbar-hook-x' arrives by both doors at two versions: linked v1.2.3, dropped \
+             in v1.2.4 (busbar-hook-x.tar.gz) - one version per plugin: remove one"
+        );
+        assert!(both_doors(&pair).is_empty());
+    }
+    // Two DROPPED-IN candidates of one name are not two doors: phase 3 holds those.
+    let dropped = [
+        dropped_cand("busbar-hook-x", "1.2.3"),
+        dropped_cand("busbar-hook-x", "1.2.4"),
+    ];
+    one_owner(&dropped).expect("not the one-version rule's pair");
 }

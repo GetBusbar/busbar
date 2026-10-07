@@ -1097,6 +1097,188 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     }
 }
 
+/// `webrequest`'s 1.6.0 manifest at `version`.
+fn webrequest_at(version: &str) -> Manifest {
+    let mut m = renamed(
+        "hook",
+        "busbar-hook-webrequest",
+        "webrequest",
+        &["busbar-webrequest"],
+    );
+    m.version = version.into();
+    m
+}
+
+/// THE ONE-VERSION RULE, SAME VERSION (ARCHITECT C'): one plugin linked and dropped in at ONE
+/// version is ONE plugin, admitted once — the linked row serves every name, the dropped-in copy is
+/// no row of its own — and is recorded for boot's one INFO line naming both doors and the version.
+/// RED before: the copy stayed a second loadable row of the same plugin beside the linked one.
+#[test]
+fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
+    let reg = dropped_in("copy-same", webrequest_at("1.5.0"))
+        .link(vec![LinkedPlugin::door(
+            webrequest_at("1.5.0"),
+            unopened_door,
+        )])
+        .expect("one plugin at one version is admitted");
+    assert!(reg.loadable().is_empty(), "the copy is no row of its own");
+    for word in ["busbar-hook-webrequest", "webrequest", "busbar-webrequest"] {
+        assert!(
+            reg.resolve(word).expect("resolves").linked(),
+            "{word}: the linked row serves"
+        );
+    }
+    assert_eq!(
+        reg.linked_copies(),
+        &[LinkedCopy {
+            name: "busbar-hook-webrequest".into(),
+            version: "1.5.0".into(),
+            file: "plugin.tar.gz".into(),
+        }]
+    );
+    assert_eq!(
+        reg.linked_copies()[0].line(),
+        "plugin 'busbar-hook-webrequest' v1.5.0 is linked and also dropped in (plugin.tar.gz); \
+         the linked build serves it"
+    );
+}
+
+/// THE ONE-VERSION RULE, TWO VERSIONS: the same plugin linked and dropped in at another version
+/// refuses the boot, naming the plugin, both doors and both versions. RED before: the pair was
+/// skipped and the linked row silently won.
+#[test]
+fn one_plugin_by_both_doors_at_two_versions_refuses_the_boot() {
+    let refused = dropped_in("copy-other", webrequest_at("1.6.1"))
+        .link(vec![LinkedPlugin::door(
+            webrequest_at("1.5.0"),
+            unopened_door,
+        )])
+        .expect_err("two versions of one plugin");
+    assert_eq!(
+        refused,
+        "plugin 'busbar-hook-webrequest' arrives by both doors at two versions: linked v1.5.0, \
+         dropped in v1.6.1 (plugin.tar.gz) - one version per plugin: remove one"
+    );
+}
+
+/// TRUST BEFORE IDENTITY: an UNSIGNED copy of a linked plugin at another version is SKIPPED by the
+/// trust phase before the one-version rule ever compares it — the boot is not refused for a
+/// tarball that was never admitted, and the skip names it.
+#[test]
+fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
+    let release = key(1);
+    let dir = tmpdir("copy-unsigned");
+    let mut m = webrequest_at("1.6.1");
+    m.sha256 = crate::sign::sha256_hex(b"unsigned lib");
+    write_tarball(&dir, "plugin.tar.gz", &m, b"unsigned lib");
+    let reg = scan_and_validate(&dir, &policy(&release))
+        .expect("scan")
+        .link(vec![LinkedPlugin::door(
+            webrequest_at("1.5.0"),
+            unopened_door,
+        )])
+        .expect("an untrusted tarball is skipped, not compared");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(reg.skipped().len(), 1, "the unsigned copy is skipped");
+    assert!(reg.linked_copies().is_empty() && reg.loadable().is_empty());
+}
+
+/// THE VERSION COMPARED IS THE PLUGIN'S (what its Statement states), not the manifest's: a linked
+/// row's manifest carries the LOADER's version, which says nothing about the plugin. The build's
+/// store, linked under its canonical name, and a release-signed tarball of the same door (whose
+/// Statement states the same version, whatever its manifest's says) are one plugin at one version;
+/// a tarball stating no Statement is judged by its manifest's version, here another.
+#[test]
+fn the_one_version_rule_compares_the_versions_the_plugins_state() {
+    let door = crate::both_ways::store_fixture::door;
+    let stated = crate::dispatch::rendering_of(door).expect("the store states itself");
+    let version = busbar_contract::abi::mechanism::rendering::read(&stated)
+        .expect("reads")
+        .version;
+    let linked = || {
+        vec![LinkedPlugin::store_named(
+            "busbar-store-mem",
+            "mem",
+            door,
+            true,
+        )]
+    };
+    let mut m = manifest("busbar-store-mem", "mem", "busbar");
+    m.version = "9.9.9".into();
+    assert_ne!(m.version, version);
+    let reg = dropped_in(
+        "copy-stated",
+        Manifest {
+            statement: Some(hex::encode(&stated)),
+            ..m.clone()
+        },
+    )
+    .link(linked())
+    .expect("one plugin at the version both doors state");
+    assert_eq!(reg.linked_copies()[0].version, version);
+    let refused = dropped_in("copy-unstated", m)
+        .link(linked())
+        .expect_err("a manifest version that is not the linked plugin's");
+    assert!(
+        refused.contains(&format!("linked v{version}, dropped in v9.9.9")),
+        "{refused}"
+    );
+}
+
+/// THE LINKED BUILT-IN UNDER ITS CANONICAL NAME (ARCHITECT C'): a store or auth row the root names
+/// canonically answers to that name AND to its key, and every surface that printed the key before
+/// still prints it ([`LoadablePlugin::key`]): the claim conflict, a row of the wrong kind
+/// (`resolve_kind`'s words, which `appbuild` and the axes print), a store with no door. A
+/// dropped-in row prints its manifest name.
+#[test]
+fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
+    let door = crate::both_ways::store_fixture::door;
+    let reg = PluginRegistry::empty()
+        .link(vec![
+            LinkedPlugin::store_named("busbar-store-mem", "mem", door, true),
+            LinkedPlugin::auth_door_named("busbar-auth-tok", "tok", unopened_door),
+        ])
+        .expect("the rows register");
+    for (word, key) in [
+        ("busbar-store-mem", "mem"),
+        ("mem", "mem"),
+        ("busbar-auth-tok", "tok"),
+        ("tok", "tok"),
+    ] {
+        let p = reg.resolve(word).expect("resolves");
+        assert_eq!(p.key(), key, "{word}");
+    }
+    assert!(reg.store_door("busbar-store-mem").is_ok() && reg.store_door("mem").is_ok());
+    // A row of another kind: the key, as before (`store.module` naming the auth row).
+    assert_eq!(
+        reg.store_door("busbar-auth-tok").err().as_deref(),
+        Some("plugin 'tok' has kind 'auth', not 'store' - it cannot back the governance store")
+    );
+    assert_eq!(
+        reg.secret_refusal("tok"),
+        "plugin 'tok' has kind 'auth', not 'secret' - it cannot resolve config secrets"
+    );
+    // The claim conflict: a different dropped-in plugin spelling the store's key.
+    let refused = dropped_in("key-claim", manifest("busbar-store-other", "mem", "busbar"))
+        .link(vec![LinkedPlugin::store_named(
+            "busbar-store-mem",
+            "mem",
+            door,
+            true,
+        )])
+        .expect_err("two plugins claim `mem`");
+    assert_eq!(
+        refused,
+        "plugin claim conflict: 'mem' is claimed by both (linked) (mem) and plugin.tar.gz \
+         (busbar-store-other) - a name, alias or former name must resolve to one plugin; remove one"
+    );
+    // A row the root does not name canonically prints its name, as before.
+    let plain = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::store("plain", door, true)])
+        .expect("registers");
+    assert_eq!(plain.resolve("plain").expect("resolves").key(), "plain");
+}
+
 /// The fleet's plugins.yaml entries, as `(repo, kind, alias, former_names)`: the four fields this
 /// sweep reads, off the registry's own flat shape (`  - repo:` opens an entry).
 fn fleet_entries(yaml: &str) -> Vec<(String, String, String, Vec<String>)> {

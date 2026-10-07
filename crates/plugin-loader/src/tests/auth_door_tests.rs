@@ -583,3 +583,42 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
         .open("reader-a", "reader-a", &serde_json::json!("ok"))
         .is_ok());
 }
+
+/// A door that states nothing: a linked row whose load fails.
+extern "C" fn broken_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    std::ptr::null()
+}
+
+/// THE LINKED AUTH ROW UNDER ITS CANONICAL NAME (ARCHITECT C'): the root names a built-in auth row
+/// canonically beside its key; the axis answers, opens and counts it as linked by EITHER name, and
+/// a row that will not load is refused in its KEY's words, as before the canonical name existed
+/// (the load error and its sink's `plugin=` field are one binding: `AuthRows::load`'s `name`).
+#[test]
+fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
+    let registry = PluginRegistry::empty()
+        .link(vec![
+            LinkedPlugin::auth_door_named("busbar-auth-judge", "judge", judge::door),
+            LinkedPlugin::auth_door_named("busbar-auth-broken", "broken", broken_door),
+        ])
+        .expect("the linked doors register");
+    let rows = AuthRows::new(Arc::new(registry), dispatcher());
+    for word in ["busbar-auth-judge", "judge"] {
+        assert!(rows.answers(word) && rows.linked(word), "{word}");
+        rows.open(word, word, &serde_json::json!("ok"))
+            .unwrap_or_else(|e| panic!("{word}: {e}"));
+    }
+    assert_eq!(
+        rows.linked_names(),
+        vec!["judge", "broken"],
+        "keys, as before"
+    );
+    for word in ["busbar-auth-broken", "broken"] {
+        let Err(refused) = rows.open(word, word, &serde_json::json!("ok")) else {
+            panic!("{word}: a door that states nothing does not open");
+        };
+        assert!(
+            refused.starts_with("auth plugin 'broken': "),
+            "{word}: {refused}"
+        );
+    }
+}

@@ -845,6 +845,9 @@ impl HookRows {
             candidates.push(c);
         }
         crate::boot::one_owner(&candidates)?;
+        for line in crate::boot::both_doors(&candidates) {
+            tracing::info!("{line}");
+        }
         let mut rows = Self::of(candidates, dispatcher);
         rows.first_party = first_party;
         Ok(rows)

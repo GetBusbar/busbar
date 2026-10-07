@@ -192,6 +192,8 @@ pub struct Candidate {
     pub kind: KindCode,
     /// Its name.
     pub name: String,
+    /// Its version, as its Statement states it (the one-version rule's, [`one_owner`]).
+    pub version: String,
     /// The other names config may give it: its Statement's alias rewrites and, for a dropped
     /// plugin, its manifest's alias and former names.
     pub aliases: Vec<String>,
@@ -248,6 +250,7 @@ impl Candidate {
             schemes: r.claims,
             needs: r.needs,
             name: r.name,
+            version: r.version,
             stated,
             origin,
         })
@@ -307,15 +310,26 @@ impl Candidate {
 /// plugins (different names) that answer one word (a name, an alias, a former name) are refused,
 /// naming both and the word. No ambiguity is resolved by picking a winner, and neither door outranks
 /// the other (compiled in = dropped in). Two candidates of the SAME plugin (a linked row and its
-/// dropped-in copy) are not a claim conflict: the one-version-per-kind rule governs them.
+/// dropped-in copy) are not a claim conflict: they are one plugin, held to the ONE-VERSION RULE
+/// (ARCHITECT C', [`crate::registry::one_version`]) — at one version the linked row serves (it is
+/// read first; [`both_doors`] names the pair for the log), at two the boot is refused.
 ///
 /// # Errors
 ///
-/// The first contested word, with the two plugins that claim it.
+/// The first contested word, with the two plugins that claim it; or one plugin linked and dropped
+/// in at two versions.
 pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
     for (i, a) in candidates.iter().enumerate() {
         for b in &candidates[i + 1..] {
             if a.name == b.name {
+                if let Some((linked, file, dropped)) = doors(a, b) {
+                    crate::registry::two_versions(
+                        &a.name,
+                        &linked.version,
+                        file,
+                        &dropped.version,
+                    )?;
+                }
                 continue;
             }
             if let Some(word) = a.words().find(|w| b.answers(w)) {
@@ -328,6 +342,36 @@ pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The pair `a`, `b` as (the linked one, the dropped-in one's file, the dropped-in one), when one
+/// came in by each door.
+fn doors<'c>(
+    a: &'c Candidate,
+    b: &'c Candidate,
+) -> Option<(&'c Candidate, &'c str, &'c Candidate)> {
+    match (&a.origin, &b.origin) {
+        (Origin::Linked(_), Origin::Dropped { file, .. }) => Some((a, file, b)),
+        (Origin::Dropped { file, .. }, Origin::Linked(_)) => Some((b, file, a)),
+        _ => None,
+    }
+}
+
+/// THE ONE INFO LINE per plugin among `candidates` that is linked AND dropped in at one version
+/// ([`crate::registry::LinkedCopy::line`]'s words): what the axis that admits them logs, once.
+#[must_use]
+pub fn both_doors(candidates: &[Candidate]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (i, a) in candidates.iter().enumerate() {
+        for b in &candidates[i + 1..] {
+            if let Some((linked, file, dropped)) = doors(a, b) {
+                if a.name == b.name && linked.version == dropped.version {
+                    lines.push(crate::registry::both_doors(&a.name, &linked.version, file));
+                }
+            }
+        }
+    }
+    lines
 }
 
 // ── SELECT: the plugins the configuration uses ──────────────────────────────────────────────────
