@@ -6001,6 +6001,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     },
     wire_format_names: || &[],
     claims: |_| Vec::new(),
@@ -6139,6 +6140,59 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
     assert!(validate(&cfg).is_ok(), "no card = billing off, no refusal");
 }
 
+/// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
+/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane::door::fold` builds the row.
+static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "door-fee-plane",
+        billable_classes: &[
+            bc("calls", "count"),
+            bc("bytes", "byte"),
+            bc(busbar_contract::plane::PER_REQUEST, "count"),
+        ],
+        fee_units: &[busbar_contract::plane::PER_REQUEST],
+        ..CLASS_PLANE.declaration
+    },
+    ..CLASS_PLANE
+};
+
+/// SEAM-L(m), FEE-UNIT VALIDATION PARITY: a door plane's fee unit is no priced class. The card
+/// that priced the plane's lane before it was served through its door (its declared classes, no
+/// fee unit) boots; a class it leaves unpriced still refuses (#42), the fee unit never named among
+/// them; and a card naming the fee unit as a class refuses as it did, a fee unit being no class a
+/// card prices. RED: the fee unit was demanded of every card, so the predev card refused.
+#[test]
+fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(plane_card(
+        "door-fee-plane",
+        "srv_read",
+        "units: { calls: 2, bytes: 3 }",
+    ));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+
+    cfg.rate_card = Some(plane_card(
+        "door-fee-plane",
+        "srv_read",
+        "units: { calls: 2 }",
+    ));
+    let errs = validate(&cfg).expect_err("bytes is declared and unpriced");
+    let want = "tools.rate_card does not configure billable unit(s) bytes declared by this plane; \
+                add them (0 to make them free)";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    cfg.rate_card = Some(plane_card(
+        "door-fee-plane",
+        "srv_read",
+        "units: { calls: 2, bytes: 3, per_request: 1 }",
+    ));
+    let errs = validate(&cfg).expect_err("a fee unit is no class a card prices");
+    let want = "tools.rate_card configures unit(s) per_request not declared by this plane \
+                (declared: calls, bytes); remove them or fix the name";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+}
+
 /// A plane the kernel was never compiled with — its declaration built at run time, the way a plane
 /// registered from outside core arrives — has ITS declared classes honoured: the kernel reads the
 /// list off the declaration and names what it says.
@@ -6245,4 +6299,40 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
 
     cfg.plane_fees = fees("session-plane", 0, 40);
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}
+
+/// A FEE UNIT IS PRICED BY `fees:`, NEVER BY THE CARD (ARCHITECT Q-L5-FEE (A); Q17-5 (c)): a plane
+/// that declares `per_session` both as its fee unit and as a billable class (so it can report it)
+/// owes no card price for it, and a card that prices it is refused as pricing an undeclared unit:
+/// the fee unit is never ledgered, so a card price for it could only mislead.
+#[test]
+fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
+    use busbar_kernel_ledger::cost::PER_SESSION;
+    const CLASSES: &[crate::plane::registry::BillableClass] =
+        &[bc("calls", "count"), bc(PER_SESSION, "count")];
+    let session: &'static crate::plane::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
+            declaration: crate::plane::registry::PlaneDeclaration {
+                key: "session-plane",
+                config_section: "live",
+                billable_classes: CLASSES,
+                fee_units: &[PER_SESSION],
+                ..CLASS_PLANE.declaration
+            },
+            ..CLASS_PLANE
+        }));
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(plane_card("session-plane", "a", "units: { calls: 1 }"));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+
+    cfg.rate_card = Some(plane_card(
+        "session-plane",
+        "a",
+        "units: { calls: 1, per_session: 5 }",
+    ));
+    let errs = validate(&cfg).expect_err("a card does not price the fee unit");
+    let want = "live.rate_card configures unit(s) per_session not declared by this plane \
+                (declared: calls); remove them or fix the name";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
 }

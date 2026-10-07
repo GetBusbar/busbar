@@ -4495,6 +4495,57 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     handle.abort();
 }
 
+/// `POST /api/v1/admin/config/apply` accepts EXACTLY the boot config shape (ARCHITECT, FLIP-A2A;
+/// DECISIONS #52, admin API and config file are ONE schema): a 1.6.0-additive top-level key the boot
+/// pre-pass lifts (`oauth_as:`, as a plane's section is) applies 200, where the plain-derived
+/// `DeployCfg` body refused it "unknown field". THE RED ARM: a key the boot loader does not know is
+/// still refused, 400, and nothing is swapped.
+#[tokio::test]
+async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknown_key() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    let router = crate::build_router(app);
+    let (addr, handle, client) = spin_up(router).await;
+    let url = format!("http://{addr}/api/v1/admin/config/apply");
+    let apply = |config: serde_json::Value| {
+        client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .body(serde_json::json!({"config": config, "providers": {}}).to_string())
+            .send()
+    };
+
+    let lifted = apply(serde_json::json!({
+        "oauth_as": null,
+        "providers": {},
+        "store": {"module": "memory"},
+        "models": {}
+    }))
+    .await
+    .unwrap();
+    let status = lifted.status().as_u16();
+    let body = lifted.text().await.unwrap();
+    assert_eq!(status, 200, "a key the boot pre-pass lifts applies: {body}");
+
+    let unknown = apply(serde_json::json!({
+        "not_a_config_key": true,
+        "providers": {},
+        "store": {"module": "memory"},
+        "models": {}
+    }))
+    .await
+    .unwrap();
+    let status = unknown.status().as_u16();
+    let body = unknown.text().await.unwrap();
+    assert_eq!(status, 400, "a key boot does not know is refused: {body}");
+    assert!(body.contains("not_a_config_key"), "{body}");
+
+    handle.abort();
+}
+
 /// `GET /api/v1/admin/config` composes the effective-config snapshot (auth + pools/models/providers +
 /// hooks + global_hooks) from the redacted reads. Asserts the shape and that no secret-bearing
 /// field (client tokens, provider keys) appears anywhere in the serialized body.
@@ -14069,6 +14120,7 @@ async fn named_map_app_opts(
         let ctx = busbar_kernel::plane::registry::BuildCtx {
             endpoint_slot: None,
             agent_defs: cfg.as_any(),
+            tool_defs: &(),
             public_url: Some("https://busbar.example"),
             prior: None,
         };

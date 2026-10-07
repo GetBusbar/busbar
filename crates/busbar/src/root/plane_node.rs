@@ -52,7 +52,9 @@ use busbar_contract::caps::{
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::plane_host::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
+use busbar_kernel::teller::{
+    AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
+};
 use busbar_kernel_audit::{
     AuditInputs, Controls, FinishClass as RecordFinish, OpClassId as RecordOpClass, OutcomeFacts,
     Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
@@ -694,6 +696,72 @@ impl Node {
         }
         occupied.reached_end = true;
         true
+    }
+
+    /// THE BORROWED SESSION OPEN (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03): one duplex session
+    /// unit whose steps, far end and caller live on the serving task (a plane driver's unit), run
+    /// through the loop's session opener ([`busbar_kernel::teller::open_unit`]: arrival to the door
+    /// and its audit, a session admitting at a zero hold, so nothing is held on the book and there is
+    /// no exit to settle) under this node's in-flight table, sweep and gauge. Its facts are opened on
+    /// `post` for the whole session. What the door said comes back with the unit's context and the
+    /// slot the session holds while it runs: [`SessionSlot::finish`] gives it back once the session
+    /// ended (its money is the session's one line, `PlaneMoney::session_ended`); dropping the slot
+    /// marks it for the sweep. `None` when the table would not take the unit.
+    pub fn open_borrowed<U: Units>(
+        &self,
+        key: UnitKey,
+        arrived: Arrived,
+        principal: &PrincipalId,
+        post: &'_ NodeEndPost,
+        units: &U,
+        history: Option<crate::root::kernel::PinnedHistory>,
+    ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'_>)> {
+        self.sweep(arrived);
+        post.open(key, principal.clone(), arrived, history);
+        let meter = Arc::new(AccrualMeter::new());
+        let hold =
+            busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        let Ok(slot) = self.inflight.insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: arrived.ms(),
+        }) else {
+            post.close(key);
+            return None;
+        };
+        let occupied = Occupied {
+            node: self,
+            slot: Arc::clone(&slot),
+            arrived,
+            reached_end: false,
+        };
+        let ctx = UnitCtx {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let borrowed = Borrowed { units, post };
+        let opened = busbar_kernel::teller::open_unit(
+            &self.kernel,
+            &borrowed,
+            &ctx,
+            busbar_kernel::teller::Run {
+                cell: slot.cell(),
+                parent: None,
+                leases: slot.leases(),
+                gauge: &self.gauge,
+                canary: &self.canary,
+                meter: &meter,
+            },
+        );
+        Some((opened, ctx, SessionSlot { occupied, key }))
     }
 
     /// Walk one handed unit through the loop and answer with what the terminal posted.
@@ -1518,6 +1586,29 @@ struct Occupied<'n> {
     reached_end: bool,
 }
 
+/// THE IN-FLIGHT SLOT A BORROWED SESSION HOLDS while it runs ([`Node::open_borrowed`]).
+#[must_use = "a session slot dropped unfinished is marked for the sweep"]
+pub struct SessionSlot<'n> {
+    occupied: Occupied<'n>,
+    key: UnitKey,
+}
+
+impl std::fmt::Debug for SessionSlot<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionSlot")
+            .field("key", &self.key)
+            .finish()
+    }
+}
+
+impl SessionSlot<'_> {
+    /// The session ended on its own path: its facts close on `post` and its slot is given back.
+    pub fn finish(mut self, post: &NodeEndPost) {
+        post.close(self.key);
+        self.occupied.reached_end = true;
+    }
+}
+
 impl Drop for Occupied<'_> {
     fn drop(&mut self) {
         if self.reached_end {
@@ -1715,6 +1806,12 @@ impl RouteAwait for Driven<'_> {
         )
     }
 
+    /// The plane's own screen before the door (SEAM-4j: a gate-first plane's hooks), forwarded:
+    /// a wrapper that answered the default would let the gate run after admission.
+    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
+        self.route.screen(ctx)
+    }
+
     /// THE CALLER WENT AWAY MID-DISPATCH, and the end the loop reached for it is POSTED here (item
     /// 99). The loop's guard has already sealed this end at the charged audit door, emptied the cell
     /// and given the leases back; what it hands over is the posting, which has moved no balance and
@@ -1857,6 +1954,11 @@ impl<U: RouteAwait> RouteAwait for Borrowed<'_, U> {
 
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         self.units.abandoned(ctx, ended);
+    }
+
+    /// The borrowed units' own screen before the door, forwarded (SEAM-4j).
+    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
+        self.units.screen(ctx)
     }
 }
 

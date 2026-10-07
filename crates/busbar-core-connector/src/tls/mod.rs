@@ -99,7 +99,7 @@ pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
 ///
 /// Relocated verbatim from `busbar_kernel::tls::load_cert_chain`.
 fn load_cert_chain(
-    resolver: &SecretResolver,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
 ) -> Result<Vec<CertificateDer<'static>>, String> {
     let src = secret.describe();
@@ -120,7 +120,7 @@ fn load_cert_chain(
 ///
 /// Relocated verbatim from `busbar_kernel::tls::load_private_key`.
 fn load_private_key(
-    resolver: &SecretResolver,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
 ) -> Result<PrivateKeyDer<'static>, String> {
     let src = secret.describe();
@@ -134,6 +134,27 @@ fn load_private_key(
             format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
         }
         other => format!("cannot parse TLS key ({src}): {other}"),
+    })
+}
+
+/// BUSBAR'S CLIENT IDENTITY for one destination, from its two secret references: the PEM chain
+/// (leaf first) and the PEM private key, parsed as the inbound listener parses its own. Errors name
+/// the sources, never the bytes. Whether the pair is usable is judged when it is sealed into a
+/// destination's anchors ([`client::seal`]).
+///
+/// # Errors
+///
+/// Either reference does not resolve, or does not parse.
+pub fn client_identity(
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+    cert: &SecretRef,
+    key: &SecretRef,
+) -> Result<busbar_contract::transport::trust::ClientIdentity, String> {
+    let chain = load_cert_chain(resolver, cert)?;
+    let key = load_private_key(resolver, key)?;
+    Ok(busbar_contract::transport::trust::ClientIdentity {
+        cert_chain: chain.into_iter().map(|c| c.as_ref().to_vec()).collect(),
+        private_key: key.secret_der().to_vec().into(),
     })
 }
 

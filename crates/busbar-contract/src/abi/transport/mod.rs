@@ -918,6 +918,13 @@ pub struct BeginIn {
     pub facts: *const ConnFacts,
     /// The sink.
     pub sink: FramerSink,
+    /// [`SIDE_DIAL`]: the dial's OPENING head fields (the bound auth's fields and the request's
+    /// own, in order), for a framer whose wire carries them on its connection's opening (an
+    /// upgrade request) rather than on a message; a framer that renders them per message takes them
+    /// in `encode` too and ignores these (ARCHITECT Q-L5B-WS-DIAL 2026-10-03). A tail addition.
+    pub fields: *const Field,
+    /// How many.
+    pub fields_len: usize,
 }
 
 /// `ingest`'s `in`.

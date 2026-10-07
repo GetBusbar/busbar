@@ -777,6 +777,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "url",
  "zeroize",
@@ -1060,7 +1061,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=fc91230af97997994e9206124ee7414f3aec6eee#fc91230af97997994e9206124ee7414f3aec6eee"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a#9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a"
 dependencies = [
  "busbar-contract",
  "bytes",

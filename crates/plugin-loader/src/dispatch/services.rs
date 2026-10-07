@@ -503,7 +503,7 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             if check::text(i.dest, "dest_judge.dest").is_err()
                 || check::bits(
                     u64::from(i.flags),
-                    u64::from(svc::DEST_RESOLVE),
+                    u64::from(svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN),
                     "dest_judge.flags",
                 )
                 .is_err()
@@ -511,7 +511,6 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             {
                 return Answered::fault();
             }
-            let resolve = i.flags & svc::DEST_RESOLVE != 0;
             // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
             let dest = if i.dest.len == 0 {
                 String::new()
@@ -526,7 +525,7 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             unsafe {
                 serve(&served.store, &route, &head, Some(&i.into), |completer| {
                     let later = completer.map(|c| -> Later { Box::new(move |s| c.complete(s)) });
-                    provider.dest_judge(&dest, i.egress_class, resolve, later)
+                    provider.dest_judge(&dest, i.egress_class, i.flags, later)
                 })
             }
         },

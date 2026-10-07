@@ -47,9 +47,7 @@
 
 use busbar_contract::abi::hook::SignalEntry;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, OutHead, Span, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, CancelIn, CancelOut, GenIn, RefreshIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn, RefreshIn};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut,
     PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
@@ -537,9 +535,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         format!("{} next={next}", called(&c))
     });
     r.line("cancel", 1, || {
-        let mut f: Frame<CancelIn, CancelOut> = Frame::new(input(), output());
+        let mut f: Frame<
+            busbar_contract::abi::plane::PlaneCancelIn,
+            busbar_contract::abi::plane::PlaneCancelOut,
+        > = Frame::new(input(), output());
         let c = p.call(life::CANCEL, &mut f);
-        format!("{} disposition={}", called(&c), f.out.disposition)
+        format!("{} disposition={}", called(&c), f.out.cancel.disposition)
     });
     let refresh = |what: &[u8]| {
         let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(input(), output());
