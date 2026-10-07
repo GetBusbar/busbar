@@ -1352,11 +1352,18 @@ impl DeployCfg {
     /// through its door opens with its own (LAW 7: a section absent here opens nothing).
     #[must_use]
     pub fn door_sections(&self) -> std::collections::BTreeMap<&'static str, serde_yaml::Value> {
+        // A named-definition carrier (`tools:`/`agents:`) holds a door plane's section as the door
+        // judged it ([`busbar_kernel::plane::door::DoorSection`], DECL-FOLD): handed as written.
+        let named = [&*self.tools.0, &*self.agents.0]
+            .into_iter()
+            .filter_map(|c| c.as_any().downcast_ref::<crate::plane::door::DoorSection>())
+            .map(|d| (d.section, d.value.clone()));
         self.plane_raw
             .iter()
             .chain(&self.declared_raw)
-            .filter(|(_, v)| !v.is_null())
             .map(|(k, v)| (*k, v.clone()))
+            .chain(named)
+            .filter(|(_, v)| !v.is_null())
             .collect()
     }
 

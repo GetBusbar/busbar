@@ -134,6 +134,61 @@ where
         })
 }
 
+/// BRIDGE an admitted session route's upgrade onto its [`SessionPipe`](crate::plane_routes::SessionPipe)
+/// (TRANSITIONAL with the session routes: deleted when INBOUND-LISTEN's accepted::Caller serves). The
+/// same size ceiling as [`accept`] applies at the handshake. Each caller message, text or binary,
+/// crosses as its bytes (backpressure: the send awaits the pipe's capacity); each frame toward the
+/// caller is one text message when the session said so, else one binary message. Either side ending
+/// ends both: the caller's close drops the pipe's sender, and the session dropping its sender closes
+/// the socket.
+pub fn bridge(upgrade: WebSocketUpgrade, pipe: crate::plane_routes::SessionPipe) -> Response {
+    let cap = max_inbound_message_bytes();
+    upgrade
+        .max_message_size(cap)
+        .max_frame_size(cap)
+        .on_upgrade(move |socket| async move {
+            let crate::plane_routes::SessionPipe {
+                from_caller,
+                mut to_caller,
+            } = pipe;
+            let (mut ws_tx, mut ws_rx) = socket.split();
+            let inbound = async move {
+                while let Some(Ok(msg)) = ws_rx.next().await {
+                    let bytes = match msg {
+                        Message::Binary(b) => b.to_vec(),
+                        Message::Text(t) => t.as_bytes().to_vec(),
+                        Message::Close(_) => break,
+                        // Control frames carry no session data; the WS layer answers pings itself.
+                        _ => continue,
+                    };
+                    if from_caller.send(bytes).await.is_err() {
+                        break;
+                    }
+                }
+            };
+            let outbound = async move {
+                while let Some(out) = to_caller.recv().await {
+                    let msg = if out.text {
+                        match String::from_utf8(out.bytes) {
+                            Ok(text) => Message::Text(text.into()),
+                            Err(e) => Message::Binary(e.into_bytes().into()),
+                        }
+                    } else {
+                        Message::Binary(out.bytes.into())
+                    };
+                    if ws_tx.send(msg).await.is_err() {
+                        return;
+                    }
+                }
+                let _ = ws_tx.close().await;
+            };
+            tokio::select! {
+                () = inbound => {}
+                () = outbound => {}
+            }
+        })
+}
+
 /// SERVE one inbound WS session on the neutral pump: accept the upgrade, then drive `plane`'s two
 /// callbacks (`classify` + `handle`) over the upgraded socket through
 /// [`serve_messages`](crate::ingress::byte_duplex::serve_messages) until the peer closes. The one-call

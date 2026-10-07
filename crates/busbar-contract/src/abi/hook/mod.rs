@@ -331,6 +331,14 @@ pub struct RequestView {
     pub signals: *const SignalEntry,
     /// How many.
     pub signals_len: usize,
+    /// The request's session: opaque octets ([`BLOB_OCTETS`](super::mechanism::call::BLOB_OCTETS))
+    /// that group the requests of one conversation, filled by the plane's `project` (each plane
+    /// names its own key; a plane with none leaves it absent). Neither the kernel nor a hook reads
+    /// meaning into the bytes: the kernel keys its incremental scan on them, bound to the caller and
+    /// the hook generation. [`BLOB_ABSENT`](super::mechanism::call::BLOB_ABSENT) = no session, and
+    /// every request is screened whole. ARCHITECT RULING 2026-10-03 (Q-FOLD-A2A-2-PROJECT-POOL,
+    /// session half): appended, a pre-tag v1 layout edit, the layout golden regenerated, no bump.
+    pub session: Blob,
 }
 
 /// [`CandidateStatic::present`]: `context_max` is present.
