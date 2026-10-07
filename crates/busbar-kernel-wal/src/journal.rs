@@ -722,14 +722,9 @@ impl std::fmt::Debug for Journal {
 }
 
 impl Journal {
-    /// A journal over a memory-buffered log that ships nowhere and touches no disk.
-    #[must_use]
-    pub fn memory_buffered(node: u64, clock: Clock) -> Self {
-        Journal::over(Wal::memory_buffered(clock), node)
-    }
-
-    /// A journal over a memory-buffered log shipping through `shipper` — the shape a deployment that
-    /// names a store but no data directory runs.
+    /// A journal over a memory-buffered log shipping through `shipper` — the default, and the shape a
+    /// deployment that names no data directory runs. It starts a fresh chain each process: what such
+    /// a node keeps across a restart is what the previous release kept, not the journal.
     #[must_use]
     pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper>, clock: Clock) -> Self {
         Journal::over(Wal::memory_buffered_to(shipper, clock), node)
@@ -788,25 +783,6 @@ impl Journal {
         // would report success, and the loss would be silent, which is the one outcome a journal may
         // not produce. Taking the log's own floor costs a visible link break at the resumption point
         // and never a lost record.
-        journal.floor_seq_to_the_log();
-        journal
-    }
-
-    /// A journal continuing a chain somebody else is holding — the store, on a node that keeps no
-    /// data directory and whose own buffer therefore did not survive the restart.
-    ///
-    /// The head and the sequence number come from the records that were SHIPPED, which is the only
-    /// honest place for them on such a node: what the store acknowledged is what exists.
-    #[must_use]
-    pub fn resuming(log: Wal, node: u64, head: [u8; 32], next_seq: u64) -> Self {
-        let mut journal = Journal::over(log, node);
-        journal.head = head;
-        journal.next_seq = next_seq.max(1);
-        // The caller's number is where the STORE got to, and on the node this constructor is for the
-        // log holds nothing, so the two agree. Where they do not — a store that acknowledged less
-        // than the local log took — the caller's number would re-use identities the log already
-        // carries, and the log answers a duplicate identity by passing over the record and reporting
-        // success. The floor is what keeps that from being a settlement lost behind an `Ok`.
         journal.floor_seq_to_the_log();
         journal
     }
@@ -929,8 +905,8 @@ impl Journal {
     /// # Errors
     ///
     /// The log could not make the batch durable. Without a data directory that means the store
-    /// refused it; with one it means a write or a sync failed. Either way the records are retained
-    /// and re-offered on the next append, up to the bound.
+    /// refused it; with one it means a write, a sync or the roll to a fresh segment failed. Either
+    /// way the records are retained and re-offered on the next append, up to the bound.
     pub fn append(
         &mut self,
         token: &Grant<DurableWrite>,

@@ -3,11 +3,13 @@
 
 //! The ONE durable-write choke point. Every durable file publish in busbar goes through here:
 //! `temp → write → flush → fsync(file) → rename → fsync(parent)`, with RAII tmp cleanup on EVERY
-//! error path. There is no other public durable-write path in the crate (see the guard test in
-//! `admin::structure` / the `structure-lint` gate): outside this module, the ephemeral
-//! `plugin-loader::stage`, and `#[cfg(test)]` blocks, no source file may hand-roll a
-//! `std::fs::rename` used to publish or a `sync_all` for durability. A 5th call-site that tries to
-//! re-hand-roll the dance fails CI instead of compiling — the atomic-write bug class is made
+//! error path. It is also the ONE home of directory durability — the parent fsync that makes a
+//! created, renamed or removed entry survive a power loss — which the log's own segment files and
+//! quarantine copies go through as well. There is no other durable-write path: the `A-persistence`
+//! row of the `structure-lint` gate (`xtask/src/gates/structure_lint/choke_points.rs`) refuses a
+//! hand-rolled `fs::rename(` publish, a hand-rolled `sync_all`/`sync_data`, or an
+//! `fs::create_dir_all(` anywhere outside the files that row ledgers, so a call site that tries to
+//! re-hand-roll the dance fails CI instead of merging — the atomic-write bug class is made
 //! structurally unrepresentable rather than "fixed at N sites".
 //!
 //! The primitive's contract makes it impossible to call it and skip a step: a caller supplies bytes
@@ -54,76 +56,86 @@ pub struct DurableOpts {
 
 /// Atomically + durably publish `bytes` to `path` (default posture: overlay/state).
 ///
-/// See [`write_with`] for the full contract. In short:
-///   1. create a sibling temp in the SAME directory as `path`,
-///   2. `create → write_all → flush → fsync(file)` the temp,
-///   3. `rename(temp, path)` — atomic for a concurrent reader,
-///   4. `fsync(parent dir)` — best-effort; makes the rename's directory entry durable.
-///
-/// On ANY error in steps 1–3 the temp is removed by an RAII guard before returning the error, so a
-/// failed write NEVER leaves a stale temp to accumulate or to wedge a retry. Steps 1–3 failing is a
-/// hard error (`Err`); step 4 failing is swallowed (contents are already durable; not every FS
-/// supports opening a directory for fsync).
+/// See [`write_with`] for the contract.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_with(path, bytes, DurableOpts::default())
 }
 
-/// Atomically + durably publish `bytes` to `path` with `opts`.
-///
-/// The primitive OWNS temp naming (a per-call-unique sibling in the target's directory) so no
-/// call-site can pick a cross-directory temp (a cross-FS rename is not atomic and can `EXDEV`-fail)
-/// or collide with a concurrent writer to the same target. Naming: the target file-name prefixed
-/// `.` and suffixed `.<pid>-<seq>.tmp`, where `seq` is a process-monotonic counter. A leftover temp
-/// from a crashed run has a DIFFERENT name and is simply ignored (it can't wedge us); the
-/// `exclusive` posture additionally best-effort removes our own about-to-use name first.
-///
-/// Post-condition on `Ok(())`: a concurrent reader observes either the old file or the fully-written
-/// new file, never a torn/partial one (rename atomicity); and after a power loss the surfaced file
-/// is the fully-written new contents (contents fsync before rename) with its directory entry durable
-/// (best-effort parent fsync after). On `Err`: no temp is left behind and `path` is untouched (still
-/// the prior contents, or still absent).
 /// The directory whose ENTRY a publish or an unlink of `path` mutates -- the one that has to be
 /// fsynced for the change to survive a power loss. A RELATIVE `path` has an empty parent
 /// (`Some("")`, which cannot be opened), so it resolves to "." -- the CWD, where the file actually
 /// lives. UNCONDITIONAL and in ONE place, so no caller can pass a relative path that dodges the
 /// parent fsync, and `write`/`remove` can never disagree about which directory it is.
-fn holding_dir(path: &Path) -> &Path {
+pub(crate) fn holding_dir(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
 }
 
-/// fsync the directory that holds `path`, so a rename or an unlink of it is itself durable.
-/// Best-effort by design: the file CONTENTS are already durable at every call site, and not every
-/// platform/filesystem supports opening a directory for fsync.
+/// fsync the directory that holds `path`, so a creation, rename or unlink of it is itself durable.
 ///
-/// **ON WINDOWS THIS IS A COMPLETE NO-OP, and it is a silent one — worth naming because nothing in
-/// the code shape shows it.** `File::open` on a DIRECTORY fails on Windows unless the handle is
-/// opened with `FILE_FLAG_BACKUP_SEMANTICS`, so the `if let Ok(..)` below never binds and no fsync
-/// is even attempted; and even with that flag `FlushFileBuffers` on a directory handle is not the
-/// directory-entry barrier `fsync(dirfd)` is on unix. There is no Win32 equivalent to reach for, so
-/// this is a platform gap rather than an omission: on Windows the durability of a publish rests on
-/// NTFS's metadata journal ordering the rename, not on anything this function does. The FILE
-/// CONTENTS half is unaffected and holds everywhere — `sync_all` on the temp runs before the rename
-/// on every platform, so the failure this guards against on Windows is a lost RENAME after a power
-/// loss (the old file survives, or the file is absent), never a torn or half-written one.
-fn sync_holding_dir(path: &Path) {
-    let parent = holding_dir(path);
-    #[cfg(test)]
-    fault_record_parent_fsync(parent);
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
+/// THE one home of directory durability in this crate: the publish below, [`remove`],
+/// [`create_dir_all`], and the log's own segment files and quarantine copies
+/// (`crate::backend::DirectoryFactory`) all go through it.
+///
+/// A failure is the caller's error. Opening the directory, or fsyncing it, failing with an I/O error
+/// means the entry is NOT durable, and a caller that reported success would be reporting a
+/// durability the medium did not give. The one exception is a filesystem that says the operation
+/// is not supported on a directory — `EINVAL`, which `fsync(2)` names for exactly that, or an error
+/// the platform reports as [`io::ErrorKind::Unsupported`]: it cannot be made to promise more than it
+/// does, and refusing every publish on it would trade a weaker durability story for no durability
+/// at all.
+///
+/// **ON WINDOWS THIS IS A NO-OP, and it is worth naming because nothing in the code shape shows
+/// it.** `File::open` on a DIRECTORY fails on Windows unless the handle is opened with
+/// `FILE_FLAG_BACKUP_SEMANTICS`, and even with that flag `FlushFileBuffers` on a directory handle is
+/// not the directory-entry barrier `fsync(dirfd)` is on unix. There is no Win32 equivalent to reach
+/// for, so this is a platform gap rather than an omission: on Windows the durability of a publish
+/// rests on NTFS's metadata journal ordering the rename, not on anything this function does. The
+/// FILE CONTENTS half is unaffected and holds everywhere — `sync_all` on the temp runs before the
+/// rename on every platform, so the failure this guards against on Windows is a lost RENAME after a
+/// power loss (the old file survives, or the file is absent), never a torn or half-written one.
+pub(crate) fn sync_holding_dir(path: &Path) -> io::Result<()> {
+    match sync_dir(holding_dir(path)) {
+        Err(e) if fsync_unsupported(&e) => Ok(()),
+        other => other,
     }
+}
+
+/// fsync `dir` itself, every failure reported. [`sync_holding_dir`] decides which are the caller's.
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    crate::tests::hooks::parent_fsync(dir)?;
+    #[cfg(unix)]
+    {
+        std::fs::File::open(dir)?.sync_all()
+    }
+    // See [`sync_holding_dir`]: there is no directory-entry barrier to reach for on this platform.
+    #[cfg(not(unix))]
+    {
+        let _no_barrier = dir;
+        Ok(())
+    }
+}
+
+/// Whether `e` is a filesystem saying a directory cannot be fsynced at all, as opposed to failing
+/// to do it: `EINVAL` (the descriptor does not support synchronization), or an error the platform
+/// reports as unsupported.
+fn fsync_unsupported(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput
+    )
 }
 
 /// DURABLY remove `path`: unlink it, then fsync the holding directory so the REMOVAL survives a
 /// power loss. The asymmetric sibling of [`write()`] -- installing a file fsynced the directory entry
 /// and removing one did not, so a crash after a plugin delete could resurrect the deleted artifact
-/// on the next boot and load it. `Err` only if the unlink itself fails.
+/// on the next boot and load it. `Err` if the unlink fails, or if the directory fsync after it does
+/// (the file is gone, but its removal may not survive a power loss).
 pub fn remove(path: &Path) -> io::Result<()> {
     std::fs::remove_file(path)?;
-    sync_holding_dir(path);
-    Ok(())
+    sync_holding_dir(path)
 }
 
 /// DURABLY create `path` and any missing ancestors: each directory that is actually created has its
@@ -133,6 +145,7 @@ pub fn remove(path: &Path) -> io::Result<()> {
 /// entry were fsynced -- the same asymmetry class as an unlink that skips the parent fsync.
 ///
 /// Already-existing directories are left alone: their entries are durable by whoever created them.
+/// A directory fsync that fails is this call's error, as `sync_holding_dir` says.
 pub fn create_dir_all(path: &Path) -> io::Result<()> {
     // Walk up collecting the missing ancestors (deepest first), then create shallowest first so each
     // `create_dir` finds its parent present.
@@ -148,7 +161,7 @@ pub fn create_dir_all(path: &Path) -> io::Result<()> {
     for dir in missing.iter().rev() {
         match std::fs::create_dir(dir) {
             // Fsync the HOLDING directory, which is what makes `dir`'s own entry durable.
-            Ok(()) => sync_holding_dir(dir),
+            Ok(()) => sync_holding_dir(dir)?,
             // A concurrent creator won the race; the entry is theirs to make durable.
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),
@@ -157,7 +170,31 @@ pub fn create_dir_all(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Atomically + durably publish `bytes` to `path` with `opts` (the contract is on [`write`]).
+/// Atomically + durably publish `bytes` to `path` with `opts`.
+///
+///   1. create a sibling temp in the SAME directory as `path`,
+///   2. `create → write_all → flush → fsync(file)` the temp,
+///   3. `rename(temp, path)` — atomic for a concurrent reader,
+///   4. `fsync(parent dir)` — makes the rename's directory entry durable.
+///
+/// The primitive OWNS temp naming (a per-call-unique sibling in the target's directory) so no
+/// call-site can pick a cross-directory temp (a cross-FS rename is not atomic and can `EXDEV`-fail)
+/// or collide with a concurrent writer to the same target. Naming: the target file-name prefixed
+/// `.` and suffixed `.<pid>-<seq>.tmp`, where `seq` is a process-monotonic counter. A leftover temp
+/// from a crashed run has a DIFFERENT name and is simply ignored (it can't wedge us); the
+/// `exclusive` posture additionally best-effort removes our own about-to-use name first.
+///
+/// Post-condition on `Ok(())`: a concurrent reader observes either the old file or the fully-written
+/// new file, never a torn/partial one (rename atomicity); and after a power loss the surfaced file
+/// is the fully-written new contents (contents fsync before rename) with its directory entry durable
+/// (parent fsync after).
+///
+/// On `Err` from steps 1–3: no temp is left behind and `path` is untouched (still the prior
+/// contents, or still absent) — the RAII guard removes the temp on every early return. On `Err`
+/// from step 4: the rename happened, so `path` holds the new contents, but its directory entry was
+/// NOT made durable and a power loss may still surface the prior contents; the caller is told
+/// rather than handed an `Ok` the medium did not give. A filesystem that reports a directory fsync
+/// as unsupported is not an error (see `sync_holding_dir`).
 pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -187,11 +224,11 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     let tmp = parent.join(tmp_name);
-    // #[cfg(test)] seam: plant a decoy AT the exact about-to-use temp name. The name embeds a pid +
-    // an atomic sequence, so no test can predict it from the outside -- which is why the `exclusive`
-    // anti-wedge pre-removal below had no test at all until this existed.
+    // #[cfg(test)] hook: a test may plant a decoy AT the exact about-to-use temp name. The name
+    // embeds a pid + an atomic sequence, so no test can predict it from the outside -- which is why
+    // the `exclusive` anti-wedge pre-removal below had no test at all until this existed.
     #[cfg(test)]
-    plant_decoy_if_armed(&tmp);
+    crate::tests::hooks::plant_decoy_if_armed(&tmp);
 
     // RAII: the temp is removed on EVERY early return (every `?` below, and any future `?` an editor
     // adds) UNLESS we disarm after a successful rename. There is no manual cleanup to forget, so the
@@ -245,20 +282,18 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
     guard.armed = false; // published: the temp was consumed by the rename; disarm.
 
     // fsync the parent dir so the rename's directory entry is itself durable.
-    sync_holding_dir(path);
-    Ok(())
+    sync_holding_dir(path)
 }
 
-// ── `#[cfg(test)]`-only fault-injection seam ──────────────────────────────────────────────────────
+// ── `#[cfg(test)]` hook points ─────────────────────────────────────────────────────────────────────
 // In a release build `fault_point!` expands to nothing, so the primitive's production path carries
-// ZERO indirection — no trait object, no branch. Under test it consults a thread-local so a single
-// harness can inject `ENOSPC`/`EIO` at any step and observe the resolved parent that was fsync'd.
-// These are module-level `#[cfg(test)]` items (not a wrapping `mod`) so the file keeps exactly ONE
-// inline test-BODY (`mod tests`), satisfying the test-locality structure invariant.
+// ZERO indirection — no trait object, no branch. Under test it asks the test hooks
+// (`src/tests/hooks.rs`, where the armed faults and the recorded fsyncs live) whether to fail this
+// step.
 #[cfg(test)]
 macro_rules! fault_point {
     ($step:expr) => {
-        if let Some(err) = fault_take_if($step) {
+        if let Some(err) = crate::tests::hooks::fault_take_if($step) {
             return Err(err);
         }
     };
@@ -269,92 +304,5 @@ macro_rules! fault_point {
 }
 use fault_point;
 
-/// The fallible steps of the primitive, in order (the fault-injection axis of the class test).
 #[cfg(test)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum FaultStep {
-    Create,
-    Write,
-    Flush,
-    Fsync,
-    Rename,
-}
-
-#[cfg(test)]
-thread_local! {
-    /// `(step, raw_os_errno)` — the next `fault_point!(step)` on this thread returns that errno once.
-    static FAULT_INJECT: std::cell::RefCell<Option<(FaultStep, i32)>> =
-        const { std::cell::RefCell::new(None) };
-    /// Every parent path the primitive fsync'd on this thread, in order. A Vec, not a single slot,
-    /// because `create_dir_all` fsyncs one parent per directory it creates and the ancestor walk is
-    /// the thing under test.
-    static FAULT_PARENT_FSYNC: std::cell::RefCell<Vec<std::path::PathBuf>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-    /// One-shot: plant a decoy file at the NEXT write's exact temp path on this thread.
-    static PLANT_DECOY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Arm a one-shot fault: the next matching step returns `io::Error::from_raw_os_error(errno)`.
-#[cfg(test)]
-fn fault_arm(step: FaultStep, errno: i32) {
-    FAULT_INJECT.with(|c| *c.borrow_mut() = Some((step, errno)));
-}
-
-/// Clear any armed fault + recorded parent fsync (call at the start of each case).
-#[cfg(test)]
-fn fault_reset() {
-    FAULT_INJECT.with(|c| *c.borrow_mut() = None);
-    FAULT_PARENT_FSYNC.with(|c| c.borrow_mut().clear());
-}
-
-/// If a fault is armed for `step`, consume it and return the injected error.
-#[cfg(test)]
-fn fault_take_if(step: FaultStep) -> Option<io::Error> {
-    FAULT_INJECT.with(|c| {
-        let mut slot = c.borrow_mut();
-        match *slot {
-            Some((s, errno)) if s == step => {
-                *slot = None;
-                Some(io::Error::from_raw_os_error(errno))
-            }
-            _ => None,
-        }
-    })
-}
-
-/// Arm a one-shot decoy: the next write on this thread finds a file ALREADY SITTING at the exact
-/// temp path it is about to create. That is the crashed-previous-run state the `exclusive` posture's
-/// pre-removal exists for, and the only way to reach it deterministically -- the temp name embeds a
-/// pid and an atomic counter, so a test cannot name it from outside.
-#[cfg(test)]
-fn plant_decoy_arm() {
-    PLANT_DECOY.with(|c| c.set(true));
-}
-
-#[cfg(test)]
-fn plant_decoy_if_armed(tmp: &Path) {
-    if PLANT_DECOY.with(|c| c.replace(false)) {
-        let _ = std::fs::write(tmp, b"leftover from a crashed run");
-    }
-}
-
-#[cfg(test)]
-fn fault_record_parent_fsync(parent: &Path) {
-    FAULT_PARENT_FSYNC.with(|c| c.borrow_mut().push(parent.to_path_buf()));
-}
-
-/// The LAST parent fsync'd, for the single-publish assertions.
-#[cfg(test)]
-fn fault_parent_fsynced() -> Option<std::path::PathBuf> {
-    FAULT_PARENT_FSYNC.with(|c| c.borrow().last().cloned())
-}
-
-/// Every parent fsync'd, in order, for the `create_dir_all` ancestor-walk assertion.
-#[cfg(test)]
-fn fault_parents_fsynced() -> Vec<std::path::PathBuf> {
-    FAULT_PARENT_FSYNC.with(|c| c.borrow().clone())
-}
-
-#[cfg(test)]
-#[path = "tests/durable_tests.rs"]
-mod tests;
+use crate::tests::hooks::FaultStep;

@@ -3,7 +3,10 @@
 
 //! The batteries.
 
+mod dir_fsync;
+mod durable_tests;
 mod fixtures;
+pub(crate) mod hooks;
 mod journal_chain;
 mod no_disk;
 mod record_layout;

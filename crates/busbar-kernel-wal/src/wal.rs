@@ -41,11 +41,29 @@
 //!
 //! ## What happens when a sync fails
 //!
-//! The segment is poisoned and the caller is handed a `DurabilityLost`. The failed batch is retained
-//! whole. The next append rolls to a fresh segment and writes the retained batch first, then the new
-//! one — batches *n* and *n+1*, in order, on a segment that has not lost anything. If the fresh
-//! segment fails too, the node has a disk that cannot be written to, and the log says so on every
-//! subsequent call rather than accumulating silently.
+//! The segment is poisoned, the failed batch's bytes are cut off it, the next segment is opened, and
+//! the caller is handed a `DurabilityLost`. The failed batch is retained whole. The next append moves
+//! to the fresh segment and writes the retained batch first, then the new one — batches *n* and
+//! *n+1*, in order, on a segment that has not lost anything. If the fresh segment cannot be opened, or fails too, the node has a
+//! disk that cannot be written to: the batch is retained with the one that could not follow it, and
+//! the log says so on every subsequent call rather than accumulating silently or dropping either.
+//!
+//! ## A segment that lost a sync is never written to again, across a restart too
+//!
+//! Poison is a flag in the process that saw the sync fail, and the flag dies with it. So the log
+//! does not leave the poisoned segment on the next append, it opens the next segment AT ONCE, before
+//! the loss is reported — and the next segment's directory entry, made durable when it is created,
+//! is the durable record that the poisoned one is finished. A restart appends to the newest segment
+//! and never to one below it, even when the newest holds nothing yet and the tail of the log is read
+//! from the one before; so the segment that lost a sync is not resumed into. The failed batch's
+//! bytes were cut off it before the loss was reported, so the restart does not read them back
+//! either.
+//!
+//! What that cannot cover is a medium that refuses everything at once: if the cut fails as well as
+//! the sync, the failed batch's bytes may still be readable at a restart until the retried batch is
+//! durable in the next segment; and if the next segment cannot be created either, a restart resumes
+//! in the segment that lost the sync. A disk that will make nothing durable cannot be made to
+//! record that it lost something; every call on it reports the loss.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -56,7 +74,7 @@ use crate::backend::{DirectoryFactory, MemoryFactory, SegmentFactory};
 use crate::record::Record;
 use crate::recover::{recover_and_truncate, Quarantine, Recovered};
 use crate::segment::{Segment, SegmentError, SEGMENT_BYTES};
-use crate::ship::{NullShipper, ShipError, Shipper};
+use crate::ship::{ShipError, Shipper};
 
 /// How many skipped numbers the idempotence check remembers below a node's mark.
 ///
@@ -159,6 +177,10 @@ pub struct Wal {
     segments_used: u64,
     /// Every corrupt remainder recovery set aside, at open and at any roll since, oldest first.
     quarantined: Vec<Quarantine>,
+    /// The segment after a poisoned one, opened the moment the poison happened so that its
+    /// directory entry records, durably, that the poisoned one is finished. The next append moves
+    /// to it.
+    next_segment: Option<Segment>,
 }
 
 impl std::fmt::Debug for Wal {
@@ -174,24 +196,12 @@ impl std::fmt::Debug for Wal {
 }
 
 impl Wal {
-    /// The default log: memory-buffered, shipping nowhere, touching no disk.
+    /// A memory-buffered log shipping to `shipper`: the default, and the shape a deployment that
+    /// names no data directory runs. The buffer stages, and the shipper decides what, if anything,
+    /// is kept (the shipped store adapter keeps a count and the last identity only).
     ///
     /// A node built this way cannot create a file even by mistake, because the only thing that
     /// knows how to open one is the directory factory and this log does not hold one.
-    pub fn memory_buffered(clock: Clock) -> Self {
-        Wal::with_parts(
-            Box::new(MemoryFactory::new()),
-            Box::new(NullShipper::new()),
-            Mode::MemoryBuffered,
-            SEGMENT_BYTES,
-            clock,
-        )
-        .expect("a memory segment cannot fail to open")
-    }
-
-    /// A memory-buffered log shipping to `shipper`. This is the shape a deployment that names a
-    /// store but no data directory runs: the buffer stages, and the shipper decides what, if
-    /// anything, is kept (the shipped store adapter keeps a count and the last identity only).
     pub fn memory_buffered_to(shipper: Box<dyn Shipper>, clock: Clock) -> Self {
         Wal::with_parts(
             Box::new(MemoryFactory::new()),
@@ -207,7 +217,7 @@ impl Wal {
     ///
     /// Constructing this IS the decision to write to a disk. Nothing here probes for a directory or
     /// guesses at one: a caller that has no data directory configured calls
-    /// [`Wal::memory_buffered`] and never reaches this function.
+    /// [`Wal::memory_buffered_to`] and never reaches this function.
     pub fn in_directory(
         dir: impl AsRef<std::path::Path>,
         shipper: Box<dyn Shipper>,
@@ -254,6 +264,7 @@ impl Wal {
             recovered: Vec::new(),
             segments_used,
             quarantined: Vec::new(),
+            next_segment: None,
         };
         for record in &recovered.records {
             wal.mark_written(record.node, record.node_seq);
@@ -431,9 +442,14 @@ impl Wal {
     ) -> Result<BatchAck, DurabilityLost> {
         let replaying = !self.lost_batch.is_empty();
         // A poisoned segment is left behind before anything else happens. If a fresh one cannot be
-        // opened either, the node has a disk it cannot write to and the caller is told so.
-        if self.segment.is_poisoned() && self.roll().is_err() {
-            return Err(DurabilityLost::observed(token, at));
+        // opened, the node has a disk it cannot write to and the caller is told so; the records are
+        // retained exactly as on every other arm, because the journal has already chained them and
+        // a record that is on no medium and in no retry queue is a hole in the chain nothing names.
+        if self.segment.is_poisoned() {
+            if let Err(_e) = self.roll() {
+                self.lost_batch.extend(records.iter().cloned());
+                return Err(DurabilityLost::observed(token, at));
+            }
         }
 
         // Batch n first, then batch n+1, so the order records went in is the order they come back.
@@ -524,8 +540,15 @@ impl Wal {
             }
             Err(_poisoned_or_io) => {
                 // The write or the sync failed. Everything after the last good commit in this
-                // segment is of unknown state, so the whole batch is owed again, on a fresh segment.
+                // segment is of unknown state — the segment has already cut it off — so the whole
+                // batch is owed again, on a fresh segment.
                 self.lost_batch = owed.into_iter().chain(records.iter().cloned()).collect();
+                // The fresh segment is opened NOW, not on the next append: its directory entry is
+                // what tells a restart, durably, not to resume in this one. If it cannot be opened,
+                // the next append tries again and reports the loss again.
+                if self.next_segment.is_none() {
+                    self.next_segment = self.open_next().ok();
+                }
                 Err(DurabilityLost::observed(token, at))
             }
         }
@@ -592,6 +615,17 @@ impl Wal {
 
     /// Move to the next segment. Called when the current one is poisoned or full.
     fn roll(&mut self) -> io::Result<()> {
+        let segment = match self.next_segment.take() {
+            Some(opened) => opened,
+            None => self.open_next()?,
+        };
+        self.segment = segment;
+        self.segments_used += 1;
+        Ok(())
+    }
+
+    /// Open the segment after the current one.
+    fn open_next(&mut self) -> io::Result<Segment> {
         let next = self.segment.index() + 1;
         let backend = self.factory.open(next)?;
         let mut segment = Segment::open_at(backend, next, 0, self.ceiling)?;
@@ -602,15 +636,13 @@ impl Wal {
         if let Some(q) = recovered.quarantined {
             self.take_quarantine(q);
         }
-        self.segment = segment;
-        self.segments_used += 1;
-        Ok(())
+        Ok(segment)
     }
 }
 
-/// Open the segment a restart has to resume in, and hand back the records on its tail.
+/// Open the segment a restart appends to, and hand back the records on the log's tail.
 ///
-/// ## Which segment that is
+/// ## Which segment the tail is in
 ///
 /// The highest one the factory has a backing for — a directory listing on disk, the resident slots
 /// in memory — and NOT index zero. A log that has rolled has its newest records in its newest
@@ -624,6 +656,13 @@ impl Wal {
 /// walk steps back over segments that hold no complete record until it finds the one the writes
 /// actually end in, or reaches the first. In practice that is one step at most; it is a loop because
 /// nothing forbids a run of them.
+///
+/// ## Which segment the appends go to
+///
+/// The highest one, ALWAYS — even when it holds nothing and the tail was read from below it. An empty
+/// highest segment is one a roll opened: either the segment below it was full, or it lost a sync and
+/// the log opened this one the moment it did. Either way the segment below takes no more writes,
+/// and resuming in it would hand a restart the one segment a previous process knew was finished.
 ///
 /// ## Why the seeding does not scan the earlier segments
 ///
@@ -658,6 +697,9 @@ fn open_tail(
 ) -> Result<(Segment, Recovered, Vec<Quarantine>), OpenError> {
     let mut index = factory.highest_index()?.unwrap_or(0);
     let mut quarantined = Vec::new();
+    // The highest segment, held while the walk steps back below it for the tail: the appends go to
+    // it, never to the segment the tail is found in.
+    let mut newest: Option<Segment> = None;
     loop {
         let backend = factory.open(index)?;
         let mut segment = Segment::open_at(backend, index, 0, ceiling)?;
@@ -671,7 +713,10 @@ fn open_tail(
             quarantined.push(q);
         }
         if !recovered.records.is_empty() || index == 0 {
-            return Ok((segment, recovered, quarantined));
+            return Ok((newest.unwrap_or(segment), recovered, quarantined));
+        }
+        if newest.is_none() {
+            newest = Some(segment);
         }
         index -= 1;
     }

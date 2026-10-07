@@ -180,7 +180,6 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                         "crates/busbar-kernel-wal/src/durable.rs".into(),
                         format!("{core}/test_support/mod.rs"),
                         format!("{core}/test_support/export_axis.rs"),
-                        "crates/busbar-kernel-wal/src/backend.rs".into(),
                     ],
                 )
                 .core_tier(),

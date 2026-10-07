@@ -3,9 +3,10 @@
 
 //! Tests for `crates/busbar-kernel-wal/src/durable.rs`.
 
-use super::{
-    create_dir_all, fault_arm, fault_parent_fsynced, fault_parents_fsynced, fault_reset,
-    holding_dir, plant_decoy_arm, write, write_with, DurableOpts, FaultStep,
+use crate::durable::{create_dir_all, holding_dir, write, write_with, DurableOpts};
+use crate::tests::hooks::{
+    fault_arm, fault_reset, parent_fsynced as fault_parent_fsynced,
+    parents_fsynced as fault_parents_fsynced, plant_decoy_arm, FaultStep,
 };
 use std::path::{Path, PathBuf};
 
@@ -282,7 +283,7 @@ fn remove_unlinks_and_fsyncs_the_holding_dir() {
     // -- left `.last()` still `Some(sc.dir)` and the test still green.
     fault_reset();
 
-    super::remove(&target).expect("the unlink succeeds");
+    crate::durable::remove(&target).expect("the unlink succeeds");
     assert!(!target.exists(), "the artifact is gone");
     assert_eq!(
         fault_parent_fsynced().as_deref(),
@@ -293,7 +294,7 @@ fn remove_unlinks_and_fsyncs_the_holding_dir() {
     // A missing target is a real error, not a silent success -- the caller's 404 check is a
     // separate concern and must not be papered over here.
     assert!(
-        super::remove(&target).is_err(),
+        crate::durable::remove(&target).is_err(),
         "removing nothing is an error"
     );
 }

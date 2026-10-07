@@ -34,11 +34,13 @@ pub enum Fault {
     WriteEio,
 }
 
-/// A disk that can be told, from outside, to fail its next sync or write.
+/// A disk that can be told, from outside, to fail its next sync or write — or to refuse to create a
+/// new segment at all.
 #[derive(Debug, Clone, Default)]
 pub struct FaultSwitch {
     fault: Arc<Mutex<Fault>>,
     syncs: Arc<Mutex<u64>>,
+    refuse_opens: Arc<Mutex<bool>>,
 }
 
 impl FaultSwitch {
@@ -47,6 +49,7 @@ impl FaultSwitch {
         FaultSwitch {
             fault: Arc::new(Mutex::new(Fault::None)),
             syncs: Arc::new(Mutex::new(0)),
+            refuse_opens: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -58,6 +61,12 @@ impl FaultSwitch {
     /// Disarm.
     pub fn clear(&self) {
         self.arm(Fault::None);
+    }
+
+    /// While set, the factory refuses to open a segment it does not already hold — what a full
+    /// volume or an exhausted descriptor table does to a roll.
+    pub fn refuse_new_segments(&self, refuse: bool) {
+        *self.refuse_opens.lock().unwrap() = refuse;
     }
 
     /// How many syncs the disk has been asked for. This is what makes "one sync per group commit"
@@ -128,7 +137,16 @@ pub struct FaultyFactory {
 impl FaultyFactory {
     /// A factory and the switch that drives it.
     pub fn new() -> (Self, FaultSwitch, MemoryFactory) {
-        let inner = MemoryFactory::new();
+        FaultyFactory::over(MemoryFactory::new())
+    }
+
+    /// The same over memory that keeps every segment it ever handed out, the way a data directory
+    /// keeps its files across a restart.
+    pub fn retaining() -> (Self, FaultSwitch, MemoryFactory) {
+        FaultyFactory::over(MemoryFactory::retaining())
+    }
+
+    fn over(inner: MemoryFactory) -> (Self, FaultSwitch, MemoryFactory) {
         let switch = FaultSwitch::new();
         (
             FaultyFactory {
@@ -143,6 +161,12 @@ impl FaultyFactory {
 
 impl SegmentFactory for FaultyFactory {
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>> {
+        if *self.switch.refuse_opens.lock().unwrap() && self.inner.existing(index)?.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "simulated ENOSPC creating the next segment",
+            ));
+        }
         Ok(Box::new(FaultyBackend {
             inner: busbar_kernel_wal::backend::MemorySegment::over(self.inner.segment_bytes(index)),
             switch: self.switch.clone(),
@@ -173,6 +197,32 @@ impl SegmentFactory for FaultyFactory {
         bytes: &[u8],
     ) -> io::Result<Option<std::path::PathBuf>> {
         self.inner.quarantine(index, offset, unix_ms, bytes)
+    }
+}
+
+/// A store that keeps every record it was handed, in order, behind a shared handle so whoever
+/// configured it can see what reached it after handing ownership to the log.
+#[derive(Debug, Default, Clone)]
+pub struct KeepingShipper {
+    records: Arc<Mutex<Vec<Record>>>,
+}
+
+impl KeepingShipper {
+    /// A fresh one.
+    pub fn new() -> Self {
+        KeepingShipper::default()
+    }
+
+    /// A snapshot of everything shipped so far, in order.
+    pub fn records(&self) -> Vec<Record> {
+        self.records.lock().unwrap().clone()
+    }
+}
+
+impl busbar_kernel_wal::ship::Shipper for KeepingShipper {
+    fn ship(&mut self, records: &[Record]) -> Result<(), busbar_kernel_wal::ship::ShipError> {
+        self.records.lock().unwrap().extend_from_slice(records);
+        Ok(())
     }
 }
 

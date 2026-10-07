@@ -34,7 +34,12 @@ fn every_class_is_pinned_to_its_byte() {
 fn the_bound_is_pinned() {
     assert_eq!(MEMORY_BUFFER_RECORDS, 8192);
     assert_eq!(
-        Journal::memory_buffered(1, crate::tests::fixtures::wall_ms).capacity(),
+        Journal::memory_buffered_to(
+            1,
+            Box::new(crate::ship::NullShipper::new()),
+            crate::tests::fixtures::wall_ms
+        )
+        .capacity(),
         MEMORY_BUFFER_RECORDS
     );
 }
