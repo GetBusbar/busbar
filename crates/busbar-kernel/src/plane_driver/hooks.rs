@@ -1293,15 +1293,22 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return;
         };
         let d = self.driver;
-        let (unit, principal, dialect) = {
+        // A unit reaches its route leg only through the decode step, which refuses every unit
+        // its plane did not decode (`DecodeFailed`), so its dialect is always known here; a unit
+        // with none would state no stage, and the in-session services refuse a unit they do not
+        // hold by name, never binding it under some other dialect.
+        let (unit, principal, arrived_in) = {
             let st = self.lock();
+            let Some(arrived_in) = st.decoded.as_ref().map(|x| x.dialect) else {
+                return;
+            };
             (
                 st.unit,
                 st.principal.as_ref().map(|p| p.as_str().to_string()),
-                st.decoded.as_ref().map_or(0, |x| x.dialect),
+                arrived_in,
             )
         };
-        let arrived_in = dialect;
+        let dialect = arrived_in;
         let (pool, dialect) = match &d.hooks {
             Some(binder) => (
                 self.far
@@ -1317,8 +1324,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             runtime,
             d.hooks.clone(),
             (pool, principal, dialect),
-        )
-        .arrived_in(arrived_in);
+            arrived_in,
+        );
         let _held = d.services.units().staged(unit, Arc::new(stage));
     }
 
@@ -1923,13 +1930,16 @@ impl Drop for OwedStage {
 
 impl SessionStage {
     /// The stage of a unit of instance `instance`, routed over `pool` for `principal`, its hooks
-    /// bound by `binder` (none = no hook binds), run on `runtime`.
+    /// bound by `binder` (none = no hook binds), run on `runtime`; the unit arrived in dialect
+    /// `arrived_in` (the index into the plane's dialects; its name is `dialect`), and its hooks bind
+    /// there. There is no default dialect: a stage is stated only for a unit its plane decoded.
     #[must_use]
     pub fn new(
         instance: Arc<str>,
         runtime: tokio::runtime::Handle,
         binder: Option<Arc<dyn HookBinder>>,
         (pool, principal, dialect): (String, Option<String>, String),
+        arrived_in: u32,
     ) -> Self {
         Self {
             instance,
@@ -1938,17 +1948,9 @@ impl SessionStage {
             pool,
             principal,
             dialect,
-            arrived_in: 0,
+            arrived_in,
             bound: std::sync::OnceLock::new(),
         }
-    }
-
-    /// The same stage, its unit having arrived in dialect `at` (the index into the plane's
-    /// dialects; `new` binds under the first).
-    #[must_use]
-    pub fn arrived_in(mut self, at: u32) -> Self {
-        self.arrived_in = at;
-        self
     }
 
     /// The unit's hooks, bound once.
