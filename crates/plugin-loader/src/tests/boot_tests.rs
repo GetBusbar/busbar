@@ -960,6 +960,18 @@ fn one_plugin_by_both_doors_is_one_version_or_refused() {
         );
         assert!(both_doors(&pair).is_empty());
     }
+    // A Statement stating no version cannot be compared: refused, naming the plugin.
+    assert_eq!(
+        one_owner(&[
+            linked_cand("busbar-hook-x", "1.2.3"),
+            dropped_cand("busbar-hook-x", ""),
+        ]),
+        Err(
+            "plugin 'busbar-hook-x' states no version in its Statement: the one-version rule \
+             cannot compare it"
+                .to_string()
+        )
+    );
     // Two DROPPED-IN candidates of one name are not two doors: phase 3 holds those.
     let dropped = [
         dropped_cand("busbar-hook-x", "1.2.3"),

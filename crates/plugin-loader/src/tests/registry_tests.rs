@@ -1072,8 +1072,8 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
         "{refused}"
     );
     // GREEN: the linked row and its own dropped-in copy; the linked row answers.
-    let reg = dropped_in("cross-same", webrequest())
-        .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+    let reg = dropped_in("cross-same", stating(webrequest(), None))
+        .link(vec![LinkedPlugin::door(webrequest(), versioned_door)])
         .expect("the same plugin linked and dropped in is not a conflict");
     assert!(reg.resolve("busbar-webrequest").expect("resolves").linked());
     // RED (Q-P4-12): a different dropped-in plugin spelling the linked row's ALIAS, or its NAME.
@@ -1097,6 +1097,43 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     }
 }
 
+/// A linked door whose Statement states a version: the store both-ways fixture's.
+#[allow(non_upper_case_globals)]
+const versioned_door: busbar_contract::abi::mechanism::door::DoorFn =
+    crate::both_ways::store_fixture::door;
+
+/// The version [`versioned_door`]'s Statement states.
+fn door_version() -> String {
+    let stated = crate::dispatch::rendering_of(versioned_door).expect("the door states itself");
+    busbar_contract::abi::mechanism::rendering::read(&stated)
+        .expect("reads")
+        .version
+}
+
+/// `rendering` with its Statement's version restated as `version` (the rendering's head is the
+/// magic, four `u32`s, then the name and the version, each a `u32` length and its bytes).
+fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
+    let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
+    let len = |at: usize| u32::from_le_bytes(rendering[at..at + 4].try_into().unwrap()) as usize;
+    let at = head + 4 + len(head);
+    let mut out = rendering[..at].to_vec();
+    out.extend_from_slice(&(version.len() as u32).to_le_bytes());
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&rendering[at + 4 + len(at)..]);
+    out
+}
+
+/// `m` stating [`versioned_door`]'s Statement in its manifest, its version restated as `version`
+/// (`None`: the door's own).
+fn stating(m: Manifest, version: Option<&str>) -> Manifest {
+    let stated = crate::dispatch::rendering_of(versioned_door).expect("the door states itself");
+    let stated = version.map_or(stated.clone(), |v| restated(&stated, v));
+    Manifest {
+        statement: Some(hex::encode(stated)),
+        ..m
+    }
+}
+
 /// `webrequest`'s 1.6.0 manifest at `version`.
 fn webrequest_at(version: &str) -> Manifest {
     let mut m = renamed(
@@ -1110,15 +1147,17 @@ fn webrequest_at(version: &str) -> Manifest {
 }
 
 /// THE ONE-VERSION RULE, SAME VERSION (ARCHITECT C'): one plugin linked and dropped in at ONE
-/// version is ONE plugin, admitted once — the linked row serves every name, the dropped-in copy is
-/// no row of its own — and is recorded for boot's one INFO line naming both doors and the version.
-/// RED before: the copy stayed a second loadable row of the same plugin beside the linked one.
+/// version — the version each door's Statement states — is ONE plugin, admitted once: the linked
+/// row serves every name, the dropped-in copy is no row of its own, and it is recorded for boot's
+/// one INFO line naming both doors and the version. The manifests' own `version`s differ on
+/// purpose: they are never compared. RED before: the copy stayed a second loadable row.
 #[test]
 fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
-    let reg = dropped_in("copy-same", webrequest_at("1.5.0"))
+    let version = door_version();
+    let reg = dropped_in("copy-same", stating(webrequest_at("9.9.9"), None))
         .link(vec![LinkedPlugin::door(
             webrequest_at("1.5.0"),
-            unopened_door,
+            versioned_door,
         )])
         .expect("one plugin at one version is admitted");
     assert!(reg.loadable().is_empty(), "the copy is no row of its own");
@@ -1132,32 +1171,37 @@ fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
         reg.linked_copies(),
         &[LinkedCopy {
             name: "busbar-hook-webrequest".into(),
-            version: "1.5.0".into(),
+            version: version.clone(),
             file: "plugin.tar.gz".into(),
         }]
     );
     assert_eq!(
         reg.linked_copies()[0].line(),
-        "plugin 'busbar-hook-webrequest' v1.5.0 is linked and also dropped in (plugin.tar.gz); \
-         the linked build serves it"
+        format!(
+            "plugin 'busbar-hook-webrequest' v{version} is linked and also dropped in \
+             (plugin.tar.gz); the linked build serves it"
+        )
     );
 }
 
-/// THE ONE-VERSION RULE, TWO VERSIONS: the same plugin linked and dropped in at another version
-/// refuses the boot, naming the plugin, both doors and both versions. RED before: the pair was
-/// skipped and the linked row silently won.
+/// THE ONE-VERSION RULE, TWO VERSIONS: the same plugin linked and dropped in, its Statements stating
+/// two versions, refuses the boot, naming the plugin, both doors and both versions. RED before: the
+/// pair was skipped and the linked row silently won.
 #[test]
 fn one_plugin_by_both_doors_at_two_versions_refuses_the_boot() {
-    let refused = dropped_in("copy-other", webrequest_at("1.6.1"))
+    let refused = dropped_in("copy-other", stating(webrequest_at("1.5.0"), Some("1.6.1")))
         .link(vec![LinkedPlugin::door(
             webrequest_at("1.5.0"),
-            unopened_door,
+            versioned_door,
         )])
         .expect_err("two versions of one plugin");
     assert_eq!(
         refused,
-        "plugin 'busbar-hook-webrequest' arrives by both doors at two versions: linked v1.5.0, \
-         dropped in v1.6.1 (plugin.tar.gz) - one version per plugin: remove one"
+        format!(
+            "plugin 'busbar-hook-webrequest' arrives by both doors at two versions: linked v{}, \
+             dropped in v1.6.1 (plugin.tar.gz) - one version per plugin: remove one",
+            door_version()
+        )
     );
 }
 
@@ -1168,14 +1212,14 @@ fn one_plugin_by_both_doors_at_two_versions_refuses_the_boot() {
 fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
     let release = key(1);
     let dir = tmpdir("copy-unsigned");
-    let mut m = webrequest_at("1.6.1");
+    let mut m = stating(webrequest_at("1.5.0"), Some("1.6.1"));
     m.sha256 = crate::sign::sha256_hex(b"unsigned lib");
     write_tarball(&dir, "plugin.tar.gz", &m, b"unsigned lib");
     let reg = scan_and_validate(&dir, &policy(&release))
         .expect("scan")
         .link(vec![LinkedPlugin::door(
             webrequest_at("1.5.0"),
-            unopened_door,
+            versioned_door,
         )])
         .expect("an untrusted tarball is skipped, not compared");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1183,18 +1227,15 @@ fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
     assert!(reg.linked_copies().is_empty() && reg.loadable().is_empty());
 }
 
-/// THE VERSION COMPARED IS THE PLUGIN'S (what its Statement states), not the manifest's: a linked
-/// row's manifest carries the LOADER's version, which says nothing about the plugin. The build's
-/// store, linked under its canonical name, and a release-signed tarball of the same door (whose
-/// Statement states the same version, whatever its manifest's says) are one plugin at one version;
-/// a tarball stating no Statement is judged by its manifest's version, here another.
+/// THE VERSION COMPARED IS THE STATEMENT'S, AND ONLY THE STATEMENT'S (ARCHITECT C', 2026-10-07): a
+/// plugin that reaches the one-version compare stating no version in a Statement is REFUSED, naming
+/// it — a dropped-in copy whose manifest states no Statement (its manifest `version` is never read
+/// in its place, even when it equals the linked plugin's), one stating an empty version, and a
+/// linked row whose door states none. The build's store under its canonical name and a copy
+/// stating the store door's own Statement are one plugin at one version.
 #[test]
-fn the_one_version_rule_compares_the_versions_the_plugins_state() {
+fn the_one_version_rule_compares_statement_versions_only() {
     let door = crate::both_ways::store_fixture::door;
-    let stated = crate::dispatch::rendering_of(door).expect("the store states itself");
-    let version = busbar_contract::abi::mechanism::rendering::read(&stated)
-        .expect("reads")
-        .version;
     let linked = || {
         vec![LinkedPlugin::store_named(
             "busbar-store-mem",
@@ -1203,26 +1244,34 @@ fn the_one_version_rule_compares_the_versions_the_plugins_state() {
             true,
         )]
     };
-    let mut m = manifest("busbar-store-mem", "mem", "busbar");
-    m.version = "9.9.9".into();
-    assert_ne!(m.version, version);
-    let reg = dropped_in(
-        "copy-stated",
-        Manifest {
-            statement: Some(hex::encode(&stated)),
-            ..m.clone()
-        },
-    )
-    .link(linked())
-    .expect("one plugin at the version both doors state");
-    assert_eq!(reg.linked_copies()[0].version, version);
-    let refused = dropped_in("copy-unstated", m)
+    let m = || {
+        let mut m = manifest("busbar-store-mem", "mem", "busbar");
+        m.version = door_version();
+        m
+    };
+    let reg = dropped_in("copy-stated", stating(m(), None))
         .link(linked())
-        .expect_err("a manifest version that is not the linked plugin's");
-    assert!(
-        refused.contains(&format!("linked v{version}, dropped in v9.9.9")),
-        "{refused}"
-    );
+        .expect("one plugin at the version both doors state");
+    assert_eq!(reg.linked_copies()[0].version, door_version());
+    let refusal = "plugin 'busbar-store-mem' states no version in its Statement: the one-version \
+                   rule cannot compare it";
+    for (tag, copy) in [
+        ("copy-unstated", m()),
+        ("copy-empty", stating(m(), Some(""))),
+    ] {
+        let refused = dropped_in(tag, copy)
+            .link(linked())
+            .expect_err("a copy stating no version cannot be compared");
+        assert_eq!(refused, refusal, "{tag}");
+    }
+    let refused = dropped_in("copy-unopened", stating(m(), None))
+        .link(vec![LinkedPlugin::door_of_kind(
+            "store",
+            "busbar-store-mem",
+            unopened_door,
+        )])
+        .expect_err("a linked row whose door states nothing cannot be compared");
+    assert_eq!(refused, refusal);
 }
 
 /// THE LINKED BUILT-IN UNDER ITS CANONICAL NAME (ARCHITECT C'): a store or auth row the root names

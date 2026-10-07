@@ -552,25 +552,46 @@ fn install_strict_posture_rejects_unsigned() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
-/// The build's linked store, as `(canonical name, key, the version it states)`: what a copy of it
-/// dropped in must carry to be the same plugin at the same version.
-fn linked_store() -> (&'static str, &'static str, String) {
+/// The build's linked store, as `(canonical name, key, the version it states, its Statement)`: what
+/// a copy of it dropped in must carry to be the same plugin at the same version.
+pub(crate) fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
     let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
         .stores
         .first()
         .expect("the build links a store");
-    let version = busbar_kernel::preflight::linked()
-        .expect("the linked rows register")
+    let reg = busbar_kernel::preflight::linked().expect("the linked rows register");
+    let row = reg
         .resolve(canonical)
-        .expect("the linked store answers its canonical name")
-        .plugin_version();
-    (canonical, key, version)
+        .expect("the linked store answers its canonical name");
+    let version = row.plugin_version().expect("the store states its version");
+    (
+        canonical,
+        key,
+        version,
+        row.statement().expect("the store states itself"),
+    )
 }
 
-/// `name` aliased `alias` at `version`, unsigned, over junk library bytes.
-fn unsigned_tarball(name: &str, alias: &str, version: &str) -> Vec<u8> {
+/// `rendering` with its Statement's version restated as `version` (the rendering's head is the
+/// magic, four `u32`s, then the name and the version, each a `u32` length and its bytes).
+fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
+    let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
+    let len = |at: usize| u32::from_le_bytes(rendering[at..at + 4].try_into().unwrap()) as usize;
+    let at = head + 4 + len(head);
+    let mut out = rendering[..at].to_vec();
+    out.extend_from_slice(&(version.len() as u32).to_le_bytes());
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&rendering[at + 4 + len(at)..]);
+    out
+}
+
+/// A copy of the linked store, `name` aliased `alias`, unsigned over junk library bytes, stating
+/// the store's Statement restated at `version`.
+pub(crate) fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
+    let (_, _, _, statement) = linked_store();
     let lib = b"junk lib bytes of a linked plugin";
-    let mut m = test_manifest(name, alias, "acme", version);
+    let mut m = test_manifest(name, alias, "acme", "1.0.0");
+    m.statement = Some(hex::encode(restated(&statement, version)));
     m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
@@ -583,9 +604,9 @@ fn unsigned_tarball(name: &str, alias: &str, version: &str) -> Vec<u8> {
 fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
     let dir = tmp_plugins_dir("linked-same");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let (canonical, key, version) = linked_store();
+    let (canonical, key, version, _) = linked_store();
     let view = svc
-        .install_store_plugin("copy.tar.gz", &unsigned_tarball(canonical, key, &version))
+        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, &version))
         .expect("the same plugin at the same version is accepted");
     assert_eq!(view.name, canonical);
     assert!(view.note.contains("nothing was written"), "{}", view.note);
@@ -598,13 +619,39 @@ fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
 fn install_of_a_linked_plugin_at_another_version_is_refused() {
     let dir = tmp_plugins_dir("linked-other");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let (canonical, key, version) = linked_store();
+    let (canonical, key, version, _) = linked_store();
     let err = svc
-        .install_store_plugin("copy.tar.gz", &unsigned_tarball(canonical, key, "99.0.0"))
+        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, "99.0.0"))
         .unwrap_err();
     let want = format!(
         "plugin '{canonical}' arrives by both doors at two versions: linked v{version}, dropped \
          in v99.0.0 (copy.tar.gz) - one version per plugin: remove one"
+    );
+    assert!(
+        matches!(&err, AdminError::Conflict(msg) if *msg == want),
+        "got {err:?}"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+/// THE ONE-VERSION RULE COMPARES STATEMENT VERSIONS ONLY at the admin install: a copy of a linked
+/// plugin stating no Statement is refused, naming it, whatever its manifest `version` says; nothing
+/// is written.
+#[test]
+fn install_of_a_linked_plugin_stating_no_version_is_refused() {
+    let dir = tmp_plugins_dir("linked-unstated");
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    let (canonical, key, version, _) = linked_store();
+    let lib = b"junk lib bytes of a linked plugin";
+    let mut m = test_manifest(canonical, key, "acme", &version);
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
+    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    let err = svc
+        .install_store_plugin("copy.tar.gz", &tarball)
+        .unwrap_err();
+    let want = format!(
+        "plugin '{canonical}' states no version in its Statement: the one-version rule cannot \
+         compare it"
     );
     assert!(
         matches!(&err, AdminError::Conflict(msg) if *msg == want),
@@ -619,9 +666,9 @@ fn install_of_a_linked_plugin_at_another_version_is_refused() {
 fn install_judges_trust_before_the_one_version_rule() {
     let dir = tmp_plugins_dir("linked-untrusted");
     let svc = svc_with(dir.clone(), strict_posture());
-    let (canonical, key, _) = linked_store();
+    let (canonical, key, _, _) = linked_store();
     let err = svc
-        .install_store_plugin("copy.tar.gz", &unsigned_tarball(canonical, key, "99.0.0"))
+        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, "99.0.0"))
         .unwrap_err();
     assert!(
         matches!(&err, AdminError::Conflict(msg) if msg.starts_with("plugin rejected by the trust policy")

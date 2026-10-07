@@ -931,7 +931,8 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     let canonical = row.manifest.name.clone();
     assert_ne!(canonical, name, "the row's canonical name is not its key");
     assert_eq!(row.key(), name, "the row prints its key");
-    let version = row.plugin_version();
+    let version = row.plugin_version().expect("the store states its version");
+    let statement = row.statement().expect("the store states itself");
     reg.store_door(&canonical)
         .expect("the canonical name opens the same store");
     let by_canonical = crate::plugins_preflight(
@@ -949,6 +950,7 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     let dir = tmp_plugin_dir("linked-store");
     let mut m = plugin_manifest(&canonical, name, "acme");
     m.version = version.clone();
+    m.statement = Some(hex::encode(&statement));
     std::fs::write(dir.join("copy.tar.gz"), unsigned_tarball(m, b"lib")).unwrap();
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;

@@ -87,22 +87,36 @@ impl LoadablePlugin {
     }
 
     /// THE PLUGIN'S VERSION, as the one-version rule compares it ([`one_version`]): the version its
-    /// Statement states (the plugin's own `CARGO_PKG_VERSION`, what its door says for a linked row
-    /// and what its release's signed manifest carries for a dropped-in one), else its manifest's.
-    /// A linked row's manifest version is the loader's, which says nothing about the plugin.
-    pub fn plugin_version(&self) -> String {
-        let read =
-            |rendering: Vec<u8>| busbar_contract::abi::mechanism::rendering::read(&rendering).ok();
-        let stated = match self.entry {
+    /// STATEMENT states (the plugin's own `CARGO_PKG_VERSION`: what its door says for a linked row,
+    /// what its signed manifest's `statement` says for a dropped-in one), and nothing else — never a
+    /// manifest's `version` (a linked row's is the loader's, which says nothing about the plugin;
+    /// ARCHITECT C', 2026-10-07).
+    ///
+    /// # Errors
+    /// The plugin states no version in a Statement ([`unversioned`]).
+    pub fn plugin_version(&self) -> Result<String, String> {
+        if self.entry.is_none() {
+            return stated_version(&self.manifest);
+        }
+        self.statement()
+            .and_then(|s| busbar_contract::abi::mechanism::rendering::read(&s).ok())
+            .map(|r| r.version)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| unversioned(&self.manifest.name))
+    }
+
+    /// The Statement rendering this row states: a linked door's own, a dropped-in manifest's signed
+    /// one; `None` when it states none (a cold row, a door that will not state itself).
+    pub fn statement(&self) -> Option<Vec<u8>> {
+        match self.entry {
             Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => {
                 crate::dispatch::LinkedRow::of(door)
                     .ok()
-                    .and_then(|row| read(row.statement))
+                    .map(|row| row.statement)
             }
             Some(LinkedEntry::Boundary(_)) => None,
-            None => return stated_version(&self.manifest),
-        };
-        stated.map_or_else(|| self.manifest.version.clone(), |r| r.version)
+            None => self.manifest.stated_rendering().ok().flatten(),
+        }
     }
 
     /// Whether this row is the build's in-process STORE ([`LinkedEntry::Store`]) — such a row is
@@ -513,7 +527,7 @@ impl PluginRegistry {
         else {
             return Ok(None);
         };
-        let version = one_version(linked, file, &stated_version(manifest))?;
+        let version = one_version(linked, file, &stated_version(manifest)?)?;
         Ok(Some(LinkedCopy {
             name: manifest.name.clone(),
             version,
@@ -843,7 +857,7 @@ fn cross_claim(rows: &[LoadablePlugin], new: usize) -> Result<Vec<(usize, String
         for (j, b) in rows.iter().enumerate().skip(i + 1) {
             if a.manifest.name == b.manifest.name {
                 if !b.linked() && !copies.iter().any(|(k, _)| *k == j) {
-                    copies.push((j, one_version(a, &b.file, &b.plugin_version())?));
+                    copies.push((j, one_version(a, &b.file, &b.plugin_version()?)?));
                 }
                 continue;
             }
@@ -892,14 +906,20 @@ pub fn both_doors(name: &str, version: &str, file: &str) -> String {
 /// answers it; another refuses, naming the plugin, both doors and both versions.
 ///
 /// # Errors
-/// The two versions differ.
+/// The two versions differ, or the linked plugin states no version ([`unversioned`]).
 pub fn one_version(linked: &LoadablePlugin, file: &str, dropped: &str) -> Result<String, String> {
     two_versions(
         &linked.manifest.name,
-        &linked.plugin_version(),
+        &linked.plugin_version()?,
         file,
         dropped,
     )
+}
+
+/// The refusal of a plugin that reaches the one-version compare stating no version in a Statement:
+/// there is nothing to compare, and a manifest's `version` is never read in its place.
+pub fn unversioned(name: &str) -> String {
+    format!("plugin '{name}' states no version in its Statement: the one-version rule cannot compare it")
 }
 
 /// [`one_version`] over the two versions as read: `Ok(version)` when they are one.
@@ -917,11 +937,14 @@ pub fn two_versions(name: &str, linked: &str, file: &str, dropped: &str) -> Resu
 }
 
 /// The version a signed manifest's plugin states ([`LoadablePlugin::plugin_version`]): its
-/// Statement's, else the manifest's own.
-pub fn stated_version(manifest: &Manifest) -> String {
+/// Statement's, and only its Statement's.
+///
+/// # Errors
+/// The manifest states no Statement, or one stating no version ([`unversioned`]).
+pub fn stated_version(manifest: &Manifest) -> Result<String, String> {
     match manifest.stated() {
-        Ok(Some(read)) => read.version,
-        _ => manifest.version.clone(),
+        Ok(Some(read)) if !read.version.is_empty() => Ok(read.version),
+        _ => Err(unversioned(&manifest.name)),
     }
 }
 

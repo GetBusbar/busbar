@@ -323,6 +323,9 @@ pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
         for b in &candidates[i + 1..] {
             if a.name == b.name {
                 if let Some((linked, file, dropped)) = doors(a, b) {
+                    if linked.version.is_empty() || dropped.version.is_empty() {
+                        return Err(crate::registry::unversioned(&a.name));
+                    }
                     crate::registry::two_versions(
                         &a.name,
                         &linked.version,

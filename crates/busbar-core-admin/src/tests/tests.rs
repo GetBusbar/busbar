@@ -7224,6 +7224,71 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
+/// THE ONE-VERSION RULE OVER THE WIRE (ARCHITECT C'): `POST /plugins` with a copy of a plugin this
+/// build LINKS, at the version its Statement states, answers exactly as every successful install
+/// has since 1.5.5 — `201 Created` with the install view (v1.5.5 had no "already installed" answer:
+/// `crates/busbar/src/admin/v1/json/handlers.rs:211` is its one success, and
+/// `crates/busbar/src/admin/v1/service.rs:1873` overwrote a same-file upload) — its note saying the
+/// linked build serves it, and NOTHING is written to the plugins directory.
+#[tokio::test]
+async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
+    use base64::Engine as _;
+    busbar_kernel::metrics::init();
+    let (canonical, key, version, _) = crate::v1::service::tests::linked_store();
+    let tarball = crate::v1::service::tests::unsigned_copy(canonical, key, &version);
+    let file = "linked-copy.tar.gz";
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-plugins-linked-copy-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (addr, _handle) = serve_with_plugins_dir(dir.clone()).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/admin/plugins"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({
+            "file": file,
+            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "the install view, as every success"
+    );
+    let v: serde_json::Value = resp.json().await.unwrap();
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "file",
+            "interface_version",
+            "name",
+            "note",
+            "publisher",
+            "trust",
+            "version"
+        ],
+        "the install view's shape: {v}"
+    );
+    assert_eq!(
+        (v["file"].as_str(), v["name"].as_str()),
+        (Some(file), Some(canonical))
+    );
+    assert_eq!(
+        v["note"],
+        "this build links the plugin at this version and the linked build serves it: nothing \
+         was written"
+    );
+    assert!(!dir.join(file).exists(), "nothing is written");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// FULL LIFECYCLE over the wire: `POST /plugins` installs an (unsigned, allow_unsigned-posture)
 /// plugin tarball → `GET /plugins?type=store` lists it as a dynamic-library row → `POST
 /// /plugins/reload` reports it → `DELETE /plugins/{file}` removes it (204) → a second DELETE is
