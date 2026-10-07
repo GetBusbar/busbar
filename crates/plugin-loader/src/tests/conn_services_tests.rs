@@ -1877,3 +1877,50 @@ fn a_request_whose_member_credential_no_longer_resolves_is_refused_and_opens_not
         "nothing presented"
     );
 }
+
+/// THE REFUSAL NAMES ITS CAUSE: a request refused because its member credential no longer resolves
+/// is the refused ack with `CAUSE_CREDENTIAL_UNAVAILABLE` in `value` and the credential's own text,
+/// so the plugin can tell a vanished secret from the target's, the egress rules' or the far end's
+/// refusal. RED arm: a table's plain refusal names no such cause.
+#[test]
+fn a_request_refused_for_an_unavailable_credential_names_that_cause() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_CREDENTIAL_UNAVAILABLE;
+    let (table, _, _) = resolving_table(&[None]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    whole_request_on(&p, 1, stream);
+    let mut buf = [0_u8; 8];
+    let (o, _) = read_reply(&p, 3, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+    assert_eq!(o.value, CAUSE_CREDENTIAL_UNAVAILABLE);
+    assert_eq!(error_text(&o), ConnError::CredentialUnavailable.text());
+
+    let plain = Arc::new(Scripted {
+        failing: Some((
+            ConnError::Refused,
+            ConnCause {
+                stage: 0,
+                text: "".into(),
+            },
+        )),
+        ..Scripted::default()
+    });
+    let p = bound_over(&plain);
+    let stream = opened_stream(&p, 0).value;
+    let (o, _) = read_reply(&p, 1, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+    assert_ne!(o.value, CAUSE_CREDENTIAL_UNAVAILABLE);
+    assert_eq!(error_text(&o), ConnError::Refused.text());
+}
+
+/// A whole request's head (`HEAD_BYTES`) and end on `stream`, from handle `seq`.
+fn whole_request_on(p: &Plugin<TestKind>, seq: u32, stream: u64) {
+    assert!(ready(&request(p, seq, stream, &head_piece(), HEAD_BYTES)));
+    assert!(ready(&request(
+        p,
+        seq + 1,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
+}

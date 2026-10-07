@@ -159,6 +159,43 @@ pub fn answered(
     Some((200, serde_json::to_vec(&envelope).ok()?))
 }
 
+/// A REQUEST BUSBAR ORIGINATES THAT MADE NO HOP: the agent's `upstream_credential`, re-resolved for
+/// it, is unavailable, so the host sent nothing (the engine's `originate` returning `None` once it
+/// had logged `A2A_OUTBOUND_CRED_UNLEASED`, before any of its requests). Nothing follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unleased;
+
+/// WHAT ONE ORIGINATED REQUEST CAME TO, out of its exchange's `answer`: the status and body
+/// [`answered`] reads (`None` for a request that was not answered), or [`Unleased`] for one the host
+/// refused for an unavailable credential, logged as the engine logged a lease it could not mint
+/// (`A2A_OUTBOUND_CRED_UNLEASED`, naming `agent`).
+///
+/// # Errors
+/// [`Unleased`].
+pub fn landed(
+    binding: Binding,
+    agent: &str,
+    method: &str,
+    answer: Result<
+        busbar_contract::abi::sdk::exchange::ExchangeResponse,
+        busbar_contract::abi::sdk::conn::ConnFailure,
+    >,
+) -> Result<Option<(u16, Vec<u8>)>, Unleased> {
+    use busbar_contract::abi::sdk::conn::ConnFailure;
+    match answer {
+        Err(ConnFailure::CredentialUnavailable) => {
+            busbar_contract::diag_warn!(
+                crate::diagnostics::A2A_OUTBOUND_CRED_UNLEASED,
+                agent = %agent,
+                "a2a: the outbound credential could not be leased"
+            );
+            Err(Unleased)
+        }
+        Err(_) => Ok(None),
+        Ok(reply) => Ok(answered(binding, method, reply.status, reply.body)),
+    }
+}
+
 /// Whether a read's answer leaves busbar's registration drifted (gone at the agent): an answer that
 /// is not a JSON-RPC `result` naming [`config_id`] (a refusal, an error, nothing) has drifted.
 #[must_use]
@@ -256,6 +293,15 @@ impl Flight {
         params_for(self.issuing(), &self.backend_task, &self.create)
     }
 
+    /// The stage after this one's request came to `landed`: an [`Unleased`] request ends the mirror
+    /// (the engine originated none of it, re-arm included); else [`Flight::advance`].
+    pub fn land(&mut self, landed: Result<Option<(u16, &[u8])>, Unleased>) {
+        match landed {
+            Err(Unleased) => self.stage = Stage::Done,
+            Ok(answered) => self.advance(answered),
+        }
+    }
+
     /// The stage after this one's request was answered (`answered` = its status and body, `None`
     /// when it was not answered or could not be framed).
     pub fn advance(&mut self, answered: Option<(u16, &[u8])>) {
@@ -334,3 +380,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/mirror_legs_tests.rs"]
 mod legs_tests;
+
+#[cfg(test)]
+#[path = "tests/mirror_unleased_tests.rs"]
+mod unleased_tests;

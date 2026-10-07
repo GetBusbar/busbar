@@ -402,14 +402,15 @@ impl Outbox {
 /// ONE REQUEST BUSBAR ORIGINATES ([`crate::mirror::Originated`]): its agent's url judged as a
 /// relayed hop's endpoint is, then `method` with `params` sent over the agent's need naming its
 /// registration. Its answer's status and body; `None` for a request that could not be judged,
-/// framed or answered.
+/// framed or answered; [`crate::mirror::Unleased`] for one the host refused for the agent's
+/// unavailable credential, logged ([`crate::mirror::landed`]).
 pub(crate) fn drive_originated(
     plane: &A2aDoor,
     ticket: Ticket,
     hop: &mut crate::mirror::Originated,
     method: &str,
     params: &serde_json::Value,
-) -> Poll<Option<(u16, Vec<u8>)>> {
+) -> Poll<Result<Option<(u16, Vec<u8>)>, crate::mirror::Unleased>> {
     use busbar_contract::abi::sdk::exchange::{exchange, Exchange};
     if hop.exchange.is_none() {
         let at = LookAt {
@@ -419,7 +420,7 @@ pub(crate) fn drive_originated(
         };
         let within = match judge_hop(&at, &hop.url, hop.allow_private, hop.seq) {
             Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(_)) => return Poll::Ready(None),
+            Poll::Ready(Err(_)) => return Poll::Ready(Ok(None)),
             Poll::Ready(Ok((next, within))) => {
                 hop.seq = next;
                 within
@@ -428,17 +429,17 @@ pub(crate) fn drive_originated(
         let request = crate::mirror::request(hop.binding, &hop.url, hop.version, method, params)
             .and_then(|r| Exchange::request(r).ok());
         let Some(ex) = request else {
-            return Poll::Ready(None);
+            return Poll::Ready(Ok(None));
         };
         let ex = ex.landing_within(within).as_member(hop.agent.clone());
         hop.exchange = Some((hop.seq, Box::new(ex)));
     }
     let Some(host) = plane.host.as_ref() else {
         hop.exchange = None;
-        return Poll::Ready(None);
+        return Poll::Ready(Ok(None));
     };
     let Some((start, ex)) = hop.exchange.as_mut() else {
-        return Poll::Ready(None);
+        return Poll::Ready(Ok(None));
     };
     let mut conn = host.connector_from(ticket, *start);
     let need = match hop.binding {
@@ -450,15 +451,19 @@ pub(crate) fn drive_originated(
         Poll::Ready(answer) => {
             hop.seq = conn.issued();
             hop.exchange = None;
-            Poll::Ready(answer.ok().and_then(|reply| {
-                crate::mirror::answered(hop.binding, method, reply.status, reply.body)
-            }))
+            Poll::Ready(crate::mirror::landed(
+                hop.binding,
+                &hop.agent,
+                method,
+                answer,
+            ))
         }
     }
 }
 
 /// THE MIRROR ([`crate::mirror::Flight`]): each stage's request originated, until its last stage
-/// is answered. Its outcome is only ever the next stage.
+/// is answered or one is refused for the agent's unavailable credential. Its outcome is only ever
+/// the next stage.
 pub(crate) fn drive_mirror(
     plane: &A2aDoor,
     ticket: Ticket,
@@ -468,9 +473,10 @@ pub(crate) fn drive_mirror(
         let (method, params) = (flight.issuing(), flight.params());
         match drive_originated(plane, ticket, &mut flight.hop, method, &params) {
             Poll::Pending => return Poll::Pending,
-            Poll::Ready(answered) => {
-                flight.advance(answered.as_ref().map(|(s, b)| (*s, b.as_slice())));
-            }
+            Poll::Ready(landed) => flight.land(match &landed {
+                Ok(answered) => Ok(answered.as_ref().map(|(s, b)| (*s, b.as_slice()))),
+                Err(unleased) => Err(*unleased),
+            }),
         }
     }
     Poll::Ready(())

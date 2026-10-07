@@ -564,6 +564,7 @@ extern "C" {
 #define BB_HCONN_CAUSE_EXCHANGE UINT64_C(3) /* `ServiceOut::value` on a failure: the open connection failed; `error` is the socket's error. */
 #define BB_HCONN_CAUSE_DEADLINE UINT64_C(4) /* `ServiceOut::value` on a failure: a deadline the host keeps passed. */
 #define BB_HCONN_CAUSE_FRAMER UINT64_C(5) /* `ServiceOut::value` on a failure: the open connection's framer failed it; `error` is its own. */
+#define BB_HCONN_CAUSE_CREDENTIAL_UNAVAILABLE UINT64_C(6) /* `ServiceOut::value` on a refusal: the request's credential is unavailable; nothing was sent. */
 #define BB_HCONN_UPGRADE_VERIFY_OFF UINT32_C(1) /* [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's */
 #define BB_HCONN_UPGRADE_IN_V1_SIZE ((size_t)64) /* The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`. */
 #define BB_HCONN_CHECKIN_REUSE UINT32_C(0) /* [`CheckinIn::disposition`]: return the stream to the pool as is. */
