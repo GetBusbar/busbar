@@ -5059,6 +5059,24 @@ mod agent_door {
             .expect("the key exists");
         assert_eq!(usage.requests, 1, "one call, one request accrual");
         assert_eq!(usage.tokens, 0, "a locally answered verb accrues no tokens");
+        // THE LANE the one request is ledgered on: the plane pool, the `agents` section, as predev
+        // wrote it (its metering row's `model`, `busbar-a2a`
+        // `a2a/tests/metered_verbs_tests.rs:104`, `rows[0].model == "agents"`), never an
+        // `agent:<id>` member line.
+        let lanes: Vec<String> = s
+            .book
+            .lock()
+            .expect("unpoisoned")
+            .read_back()
+            .into_iter()
+            .filter_map(|l| l.counts)
+            .map(|c| c.lane)
+            .collect();
+        assert_eq!(
+            lanes,
+            vec![surface("section").to_string()],
+            "the card is billed to the plane pool, on no member line"
+        );
         assert!(
             !agent.relayed(),
             "the extended card is busbar's, never relayed"
