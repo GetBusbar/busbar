@@ -600,7 +600,10 @@ report_path, waivers_path = sys.argv[1], sys.argv[2]
 report = json.load(open(report_path, encoding="utf-8"))
 per = report.get("per_requirement") or {}
 must = {k: v for k, v in per.items() if isinstance(v, dict) and v.get("level") == "MUST"}
-waived = set((json.load(open(waivers_path, encoding="utf-8")) or {}).get("waived") or [])
+# `waived` is a list of {id, why, premise} entries (the premises are evaluated by the leg's own
+# assert_tck_number); only the ids matter here. A bare id string is accepted too.
+waived = {(w.get("id") if isinstance(w, dict) else w)
+          for w in ((json.load(open(waivers_path, encoding="utf-8")) or {}).get("waived") or [])}
 
 n_pass = n_fail = n_skip = 0
 print(f"META\t{len(must)}\t{len(waived)}")
