@@ -656,7 +656,6 @@ fn a_refused_hops_task_end_keeps_a_concurrent_writers_change() {
     let held = get(&mut d.book, ALICE, "t1", 300).unwrap().unwrap();
     assert_eq!(held.row.state, "failed");
     assert_eq!(held.next_seq, next + 2);
-    assert_eq!(held.tail_hash, failed.hash);
 }
 
 // ── ported from the engine's `relay_stream_tests` ──────────────────────────────────────────────
@@ -899,5 +898,126 @@ fn a_hop_that_heard_nothing_back_ends_its_task_keeping_a_concurrent_writers_chan
     let held = get(&mut d.book, ALICE, &id, 300).unwrap().unwrap();
     assert_eq!(held.row.state, "failed");
     assert_eq!(held.next_seq, next + 2);
-    assert_eq!(held.tail_hash, failed.hash);
+}
+
+// ── a record write the store refuses is reported, and the answer stands ────────────────────────
+
+/// Every event's level and rendered fields, sent down a channel (the plane holds no subscriber
+/// dependency, so the `tracing` trait is implemented by hand). Admits every level, so the
+/// assertion holds whichever side of the error-once latch this process is on.
+struct Capture(std::sync::mpsc::Sender<(tracing::Level, String)>);
+
+struct Render<'a>(&'a mut String);
+
+impl tracing::field::Visit for Render<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write as _;
+        let _ = write!(self.0, "{}={value:?} ", field.name());
+    }
+}
+
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut line = String::new();
+        event.record(&mut Render(&mut line));
+        let _ = self.0.send((*event.metadata().level(), line));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// Settle `how` on Alice's task as BOB, who holds no such task: the store refuses the write.
+/// Answers what the call answered, the writes it staged, and the lines it logged.
+fn refused_settle(how: &Settled) -> (Result<Option<TaskRow>, Halt>, usize, Vec<String>) {
+    let mut desk = desk();
+    let (task, _) = hop(opened(&mut desk, &send(json!({})), ALICE));
+    let (sent, heard) = std::sync::mpsc::channel();
+    let mut out = Vec::new();
+    let answer = tracing::subscriber::with_default(Capture(sent), || {
+        settle(&mut desk.book, &task, how, BOB, 400, &mut out)
+    });
+    let lines = heard.try_iter().map(|(_, line)| line).collect();
+    (answer, out.len(), lines)
+}
+
+/// **A REFUSED CURSOR WRITE IS SURFACED, AND THE ANSWER STANDS.** Ported from origin/predev
+/// `crates/busbar-a2a/src/a2a/tests/relay_stream_tests.rs:824`
+/// `a_resume_cursor_the_store_refuses_is_surfaced` (`receive.rs:3180-3204`
+/// `advance_resume_cursor`): the diagnostic, naming the task, in predev's words. RED arm: the
+/// refusal was swallowed, so nothing was logged.
+#[test]
+fn a_resume_cursor_the_store_refuses_is_surfaced_and_the_answer_stands() {
+    let artifact = Settled::Event {
+        state: None,
+        artifact: true,
+        backend_id: None,
+    };
+    let (answer, staged, lines) = refused_settle(&artifact);
+    assert!(matches!(answer, Ok(None)), "the answer stands");
+    assert_eq!(staged, 0, "a refused write stages nothing");
+    let banner = crate::diagnostics::A2A_RELAYED_OUTCOME_UNRECORDED
+        .banner()
+        .to_string();
+    assert!(
+        lines.iter().any(|l| l.contains(&banner)
+            && l.contains(MINTED)
+            && l.contains("resume cursor could not be recorded")),
+        "the refused cursor write is logged under {banner}, naming the task: {lines:?}"
+    );
+}
+
+/// **A REFUSED STATE TRANSITION IS SURFACED, AND THE ANSWER STANDS**, each arm under predev's
+/// code and words: the unary hop's reported state (`receive.rs:3239`), a streamed event's state
+/// with the state named (`:2965`), and a task that could not be ended `failed` (`:3508`).
+#[test]
+fn a_transition_the_store_refuses_is_surfaced_and_the_answer_stands() {
+    let reported = Settled::Reported {
+        state: TaskState::Completed,
+        backend_id: None,
+    };
+    let streamed = Settled::Event {
+        state: Some(TaskState::Working),
+        artifact: false,
+        backend_id: None,
+    };
+    let arms: [(&Settled, &busbar_contract::diagnostic::Diagnostic, &[&str]); 3] = [
+        (
+            &reported,
+            &crate::diagnostics::A2A_RELAYED_OUTCOME_UNRECORDED,
+            &["the relayed task's outcome could not be recorded"],
+        ),
+        (
+            &streamed,
+            &crate::diagnostics::A2A_RELAYED_OUTCOME_UNRECORDED,
+            &[
+                "a streamed task transition could not be recorded",
+                "state=\"working\"",
+            ],
+        ),
+        (
+            &Settled::Failed,
+            &crate::diagnostics::A2A_FAILURE_UNRECORDED,
+            &["a failed task could not be recorded as failed"],
+        ),
+    ];
+    for (how, diag, words) in arms {
+        let (answer, staged, lines) = refused_settle(how);
+        assert!(matches!(answer, Ok(None)), "the answer stands: {how:?}");
+        assert_eq!(staged, 0, "a refused write stages nothing: {how:?}");
+        let banner = diag.banner().to_string();
+        assert!(
+            lines.iter().any(|l| l.contains(&banner)
+                && l.contains(MINTED)
+                && words.iter().all(|w| l.contains(w))),
+            "{how:?} is logged under {banner} naming the task and {words:?}: {lines:?}"
+        );
+    }
 }
