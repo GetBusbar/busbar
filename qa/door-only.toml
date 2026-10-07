@@ -195,11 +195,6 @@ file = "crates/busbar-voice/src/topology/mod.rs"
 item = "busbar_plane_streaming"
 
 [[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/root/plane_decisions.rs"
-item = "busbar_plane_decisions"
-
-[[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-core-admin/src/v1/service.rs"
 item = "USAGE_RATE_HISTORY"

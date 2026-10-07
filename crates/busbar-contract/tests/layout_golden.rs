@@ -1629,7 +1629,23 @@ fn compute_layout() -> String {
         tkind::RefuseIn,
         [head, framing, stream, has_stream, _reserved, bytes, len, sink, status, _reserved2]
     );
-    record!(s, tkind::FinishIn, [head, framing, reason, _reserved, sink]);
+    record!(
+        s,
+        tkind::FinishIn,
+        [
+            head,
+            framing,
+            reason,
+            _reserved,
+            sink,
+            final_status,
+            _final_reserved,
+            final_message,
+            final_details,
+            final_bytes,
+            final_bytes_len
+        ]
+    );
     record!(s, tkind::FramingIn, [head, framing, sink]);
     record!(
         s,
@@ -1764,7 +1780,8 @@ fn compute_layout() -> String {
             pool,
             route,
             route_flags,
-            _route_reserved
+            _route_reserved,
+            affinity
         ]
     );
     record!(
@@ -1823,7 +1840,8 @@ fn compute_layout() -> String {
             verb,
             target,
             need,
-            _need_reserved,
+            fault,
+            _fault_reserved,
             lane,
             final_status,
             _final_reserved,
@@ -2127,7 +2145,8 @@ fn compute_layout() -> String {
             need_admit,
             trust_verify,
             records_secret,
-            disk_append
+            disk_append,
+            snapshot_read
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
@@ -2143,6 +2162,7 @@ fn compute_layout() -> String {
         hsvc::DiskWritten,
         [size, rotated, faults, _reserved, written]
     );
+    record!(s, hsvc::SnapshotReadIn, [head, scope, _reserved, into]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);

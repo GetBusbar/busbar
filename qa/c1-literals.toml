@@ -41,21 +41,6 @@ item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/admin/v1/contract/mod.rs"
-item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/admin/v1/contract/taxonomy.rs"
-item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/admin/v1/contract/taxonomy.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/api.rs"
 item = "openapi"
 
@@ -91,16 +76,6 @@ item = "otlp"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate_export.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate_export.rs"
-item = "webhook"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/mod.rs"
 item = "github"
 
@@ -133,21 +108,6 @@ item = "openapi"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/providers.rs"
 item = "anthropic"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/sections.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/sections.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/sections.rs"
-item = "webhook"
 
 [[finding]]
 rule = "c1-literals:literal"
@@ -196,7 +156,7 @@ item = "jsonrpc"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/metrics/mod.rs"
+file = "crates/busbar-kernel/src/snapshot/mod.rs"
 item = "prometheus"
 
 [[finding]]

@@ -132,8 +132,9 @@ zeroize = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 metrics = { workspace = true }
-metrics-exporter-prometheus = { workspace = true }
-metrics-util = { workspace = true }
+# The observation source (`metrics/source.rs`) is built on the facade's generational registry and
+# summary storage (`recency` = the registry's generations; it implies `registry` and `storage`).
+metrics-util = { workspace = true, features = ["recency"] }
 http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -292,16 +293,19 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # kernel names no export module; its tests need one on the axis). Pulled from its own repo at the SAME
 # pinned rev the composition root links.
 busbar-export-prometheus = { workspace = true }
+# 1.5.5's recorder, as the REFERENCE the observation source is proven against byte for byte
+# (`tests/metrics_source_tests.rs`). A test edge only: the kernel ships no exposition renderer.
+metrics-exporter-prometheus = { workspace = true }
 # The REAL token-verifying auth module `auth/tests/plugin_chain_tests.rs` loads through the dropped-in
 # door (R-FIX2; the owner's FIXTURES ruling: real plugins are the proofs): GetBusbar/busbar-auth-oidc's cdylib
 # crate at the SAME pinned rev the composition root's tests use. Nothing links it; this edge is what
 # makes `cargo test -p busbar-kernel` build its cdylib (under `deps/`, hashed), which the tests sign
 # into a temp `plugins/` directory and drive with JWTs a local issuer signs.
 busbar-auth-oidc-plugin = { workspace = true }
-# ...and the issuer those tokens come from: the module's OWN test issuer (its logic crate's `testkit`
-# feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the module
-# trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
-busbar-auth-oidc = { workspace = true, features = ["testkit"] }
+# ...and its LOGIC crate at the SAME rev, for the name its door's Statement states (the identity the
+# chain reports). The issuer those tokens come from is the loader's `test_issuer` (`test-support`),
+# reached through the loader's `https_conns` connection table: the module holds no socket and no TLS.
+busbar-auth-oidc = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }

@@ -323,6 +323,7 @@ extern "C" {
 #define BB_EXPORT_SCRAPE_KIND_HISTOGRAM UINT8_C(2) /* [`ScrapeFamily::kind`]: a histogram (`_bucket`/`_sum`/`_count` legs as separate */
 #define BB_EXPORT_SCRAPE_KIND_SUMMARY UINT8_C(3) /* [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate [`ScrapeSample`]s). */
 #define BB_EXPORT_SCRAPE_KIND_UNTYPED UINT8_C(4) /* [`ScrapeFamily::kind`]: untyped. */
+#define BB_EXPORT_SCRAPE_FLAG_HOOK_FAMILIES UINT32_C(2) /* [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families. */
 #define BB_EXPORT_CHECK_PHASE_LIMITS UINT32_C(0) /* [`CheckIn::phase`]: among the operational limits' checks (a bound this sink's instances */
 #define BB_EXPORT_CHECK_PHASE_INSTANCES UINT32_C(1) /* [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD */
 #define BB_EXPORT_ROUTE_AUTH_NONE UINT32_C(0) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`. */
@@ -381,6 +382,7 @@ extern "C" {
 #define BB_PLANE_ROUTE_SCOPE_SEPARATOR ", " /* What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names. */
 #define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4 */
 #define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
+#define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
 #define BB_PLANE_FROM_CALLER UINT32_C(0) /* [`OnPieceIn::from`]: the piece is the caller's. */
 #define BB_PLANE_FROM_FAR_END UINT32_C(1) /* [`OnPieceIn::from`]: the piece is the far end's. */
 #define BB_PLANE_FROM_KERNEL UINT32_C(2) /* [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it */
@@ -464,6 +466,7 @@ extern "C" {
 #define BB_TRANSPORT_FACT_DECODES_PAYLOAD UINT32_C(2) /* [`TransportTail::facts`]: the framer decodes the payload. */
 #define BB_TRANSPORT_SIDE_ACCEPT UINT32_C(0) /* `side`: the accepting end. */
 #define BB_TRANSPORT_SIDE_DIAL UINT32_C(1) /* `side`: the dialing end. */
+#define BB_TRANSPORT_SIDE_ACCEPT_STREAM UINT32_C(2) /* `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries */
 #define BB_TRANSPORT_CLOSE_NORMAL UINT32_C(0) /* Close reason: normal. */
 #define BB_TRANSPORT_CLOSE_PEER_CLOSED UINT32_C(1) /* Close reason: the far end closed. */
 #define BB_TRANSPORT_CLOSE_DRAIN UINT32_C(2) /* Close reason: drain. */
@@ -477,6 +480,10 @@ extern "C" {
 #define BB_TRANSPORT_STATUS_CALLER_FAULT UINT8_C(2) /* Status class: the caller's fault. */
 #define BB_TRANSPORT_STATUS_FAR_END_FAULT UINT8_C(3) /* Status class: the far end's fault. */
 #define BB_TRANSPORT_STATUS_OTHER UINT8_C(4) /* Status class: other. */
+#define BB_TRANSPORT_FAULT_NONE UINT8_C(0) /* Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's */
+#define BB_TRANSPORT_FAULT_CALLER UINT8_C(1) /* Fault reading: the caller's own fault. The destination is healthy and nothing is recorded. */
+#define BB_TRANSPORT_FAULT_TRANSIENT UINT8_C(2) /* Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the */
+#define BB_TRANSPORT_FAULT_HARD UINT8_C(3) /* Fault reading: the destination itself is down for every caller (its credential or its account */
 #define BB_TRANSPORT_STATUS_AT_NONE UINT8_C(0) /* [`Claim::status_at`]: no status. */
 #define BB_TRANSPORT_STATUS_AT_FIRST_FRAME UINT8_C(1) /* [`Claim::status_at`]: the first frame carries the status. */
 #define BB_TRANSPORT_STATUS_AT_TERMINAL UINT8_C(2) /* [`Claim::status_at`]: the terminal frame carries the status. */
@@ -592,7 +599,8 @@ extern "C" {
 #define BB_HSVC_OP_TRUST_VERIFY UINT32_C(20) /* `trust.verify`. */
 #define BB_HSVC_OP_RECORDS_SECRET UINT32_C(21) /* `records.secret`. */
 #define BB_HSVC_OP_DISK_APPEND UINT32_C(22) /* `disk.append`. */
-#define BB_HSVC_SERVICES UINT32_C(23) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_SNAPSHOT_READ UINT32_C(23) /* `snapshot.read`. */
+#define BB_HSVC_SERVICES UINT32_C(24) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -642,6 +650,10 @@ extern "C" {
 #define BB_HSVC_HOOK_FROM_MAX UINT32_C(255) /* The furthest a rewrite chain resumes (`HookCallIn::from`), and the most hooks one chain runs. */
 #define BB_HSVC_HOOK_STOP_MIN UINT64_C(400) /* The least status a stopping hook answers `hook.call` with. */
 #define BB_HSVC_HOOK_STOP_MAX UINT64_C(599) /* The greatest status a stopping hook answers `hook.call` with. */
+#define BB_HSVC_SNAPSHOT_SCOPE_WHOLE UINT32_C(0) /* [`SnapshotReadIn::scope`]: the host recorder's WHOLE snapshot, in its order (kind, then name), */
+#define BB_HSVC_SNAPSHOT_SCOPE_HOOKS UINT32_C(1) /* [`SnapshotReadIn::scope`]: the families the configured hooks REPORT (each hook's own metrics, */
+#define BB_HSVC_SNAPSHOT_SCOPES UINT32_C(2) /* How many scopes there are; a scope at or past it is REFUSED. */
+#define BB_HSVC_SNAPSHOT_ALIGN ((size_t)8) /* The alignment [`SnapshotReadIn::into`]'s `buf` holds (the scrape layout's: every record of it */
 #define BB_HSVC_DISK_ROTATED UINT8_C(1) /* [`DiskWritten::rotated`]: the host rotated the file before appending. */
 #define BB_HSVC_DISK_RETENTION_FAILED UINT8_C(1) /* [`DiskWritten::faults`]: dropping the oldest archive failed (the archive series may exceed the */
 #define BB_HSVC_DISK_SHIFT_FAILED UINT8_C(2) /* [`DiskWritten::faults`]: shifting an archive up one slot failed (it was left in place). */
@@ -999,6 +1011,7 @@ typedef struct bb_hsvc_EntitlementCheckIn bb_hsvc_EntitlementCheckIn;
 typedef struct bb_hsvc_RandomFillIn bb_hsvc_RandomFillIn;
 typedef struct bb_hsvc_ContentScanIn bb_hsvc_ContentScanIn;
 typedef struct bb_hsvc_HookCallIn bb_hsvc_HookCallIn;
+typedef struct bb_hsvc_SnapshotReadIn bb_hsvc_SnapshotReadIn;
 typedef struct bb_hsvc_NeedAdmitIn bb_hsvc_NeedAdmitIn;
 typedef struct bb_hsvc_DiskAppendIn bb_hsvc_DiskAppendIn;
 typedef struct bb_hsvc_DiskWritten bb_hsvc_DiskWritten;
@@ -2616,6 +2629,7 @@ struct bb_plane_ArriveOut {
     uint8_t route;
     uint8_t route_flags;
     uint8_t _route_reserved[6];
+    bb_mech_AbiStr affinity;
 };
 
 /* `on_piece`'s `in`. */
@@ -2670,7 +2684,8 @@ struct bb_plane_OnPieceOut {
     bb_mech_Span verb;
     bb_mech_Span target;
     uint32_t need;
-    uint32_t _need_reserved;
+    uint8_t fault;
+    uint8_t _fault_reserved[3];
     bb_mech_Span lane;
     uint32_t final_status;
     uint32_t _final_reserved;
@@ -3164,6 +3179,12 @@ struct bb_transport_FinishIn {
     uint32_t reason;
     uint32_t _reserved;
     bb_transport_FramerSink sink;
+    uint32_t final_status;
+    uint32_t _final_reserved;
+    bb_mech_Span final_message;
+    bb_mech_Span final_details;
+    const uint8_t *final_bytes;
+    size_t final_bytes_len;
 };
 
 /* `detach`'s and `timer`'s `in`. */
@@ -3570,6 +3591,14 @@ struct bb_hsvc_HookCallIn {
     bb_hsvc_ServiceBufs into;
 };
 
+/* [`op::SNAPSHOT_READ`]'s `in`: THE HOST SNAPSHOT SERVICE (kind-neutral; `BUSBAR-1.6.0.md` owner */
+struct bb_hsvc_SnapshotReadIn {
+    bb_hsvc_ServiceHead head;
+    uint32_t scope;
+    uint32_t _reserved;
+    bb_hsvc_ServiceBufs into;
+};
+
 /* [`op::NEED_ADMIT`]'s `in`: the host's verdict on the calling instance's declared need `need` (its */
 struct bb_hsvc_NeedAdmitIn {
     bb_hsvc_ServiceHead head;
@@ -3621,9 +3650,10 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn trust_verify;
     bb_hsvc_ServiceFn records_secret;
     bb_hsvc_ServiceFn disk_append;
+    bb_hsvc_ServiceFn snapshot_read;
 };
 
-/* ---- layout proof: 264 of 267 structures are pinned by the golden ---- */
+/* ---- layout proof: 265 of 268 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4864,7 +4894,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveIn, body) == 136, "bb_plane_ArriveIn.body: off
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_buf) == 160, "bb_plane_ArriveIn.units_buf: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_cap) == 168, "bb_plane_ArriveIn.units_cap: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, method) == 176, "bb_plane_ArriveIn.method: offset");
-BB_ASSERT(sizeof(bb_plane_ArriveOut) == 168, "bb_plane_ArriveOut: size");
+BB_ASSERT(sizeof(bb_plane_ArriveOut) == 184, "bb_plane_ArriveOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ArriveOut) == 8, "bb_plane_ArriveOut: alignment");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, head) == 0, "bb_plane_ArriveOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, op_class) == 96, "bb_plane_ArriveOut.op_class: offset");
@@ -4881,6 +4911,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveOut, pool) == 144, "bb_plane_ArriveOut.pool: o
 BB_ASSERT(offsetof(bb_plane_ArriveOut, route) == 160, "bb_plane_ArriveOut.route: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, route_flags) == 161, "bb_plane_ArriveOut.route_flags: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, _route_reserved) == 162, "bb_plane_ArriveOut._route_reserved: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, affinity) == 168, "bb_plane_ArriveOut.affinity: offset");
 BB_ASSERT(sizeof(bb_plane_OnPieceIn) == 312, "bb_plane_OnPieceIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceIn) == 8, "bb_plane_OnPieceIn: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head) == 0, "bb_plane_OnPieceIn.head: offset");
@@ -4931,7 +4962,8 @@ BB_ASSERT(offsetof(bb_plane_OnPieceOut, arena_needed) == 152, "bb_plane_OnPieceO
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, verb) == 160, "bb_plane_OnPieceOut.verb: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, target) == 168, "bb_plane_OnPieceOut.target: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, need) == 176, "bb_plane_OnPieceOut.need: offset");
-BB_ASSERT(offsetof(bb_plane_OnPieceOut, _need_reserved) == 180, "bb_plane_OnPieceOut._need_reserved: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, fault) == 180, "bb_plane_OnPieceOut.fault: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, _fault_reserved) == 181, "bb_plane_OnPieceOut._fault_reserved: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, lane) == 184, "bb_plane_OnPieceOut.lane: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_status) == 192, "bb_plane_OnPieceOut.final_status: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, _final_reserved) == 196, "bb_plane_OnPieceOut._final_reserved: offset");
@@ -5330,13 +5362,19 @@ BB_ASSERT(offsetof(bb_transport_RefuseIn, len) == 120, "bb_transport_RefuseIn.le
 BB_ASSERT(offsetof(bb_transport_RefuseIn, sink) == 128, "bb_transport_RefuseIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, status) == 208, "bb_transport_RefuseIn.status: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, _reserved2) == 212, "bb_transport_RefuseIn._reserved2: offset");
-BB_ASSERT(sizeof(bb_transport_FinishIn) == 184, "bb_transport_FinishIn: size");
+BB_ASSERT(sizeof(bb_transport_FinishIn) == 224, "bb_transport_FinishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FinishIn) == 8, "bb_transport_FinishIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FinishIn, head) == 0, "bb_transport_FinishIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, framing) == 88, "bb_transport_FinishIn.framing: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, reason) == 96, "bb_transport_FinishIn.reason: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, _reserved) == 100, "bb_transport_FinishIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, sink) == 104, "bb_transport_FinishIn.sink: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_status) == 184, "bb_transport_FinishIn.final_status: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, _final_reserved) == 188, "bb_transport_FinishIn._final_reserved: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_message) == 192, "bb_transport_FinishIn.final_message: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_details) == 200, "bb_transport_FinishIn.final_details: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes) == 208, "bb_transport_FinishIn.final_bytes: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes_len) == 216, "bb_transport_FinishIn.final_bytes_len: offset");
 BB_ASSERT(sizeof(bb_transport_FramingIn) == 176, "bb_transport_FramingIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramingIn) == 8, "bb_transport_FramingIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FramingIn, head) == 0, "bb_transport_FramingIn.head: offset");
@@ -5631,6 +5669,12 @@ BB_ASSERT(offsetof(bb_hsvc_HookCallIn, stage) == 24, "bb_hsvc_HookCallIn.stage: 
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, from) == 28, "bb_hsvc_HookCallIn.from: offset");
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, prompt) == 32, "bb_hsvc_HookCallIn.prompt: offset");
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, into) == 40, "bb_hsvc_HookCallIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_SnapshotReadIn) == 64, "bb_hsvc_SnapshotReadIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_SnapshotReadIn) == 8, "bb_hsvc_SnapshotReadIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_SnapshotReadIn, head) == 0, "bb_hsvc_SnapshotReadIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_SnapshotReadIn, scope) == 24, "bb_hsvc_SnapshotReadIn.scope: offset");
+BB_ASSERT(offsetof(bb_hsvc_SnapshotReadIn, _reserved) == 28, "bb_hsvc_SnapshotReadIn._reserved: offset");
+BB_ASSERT(offsetof(bb_hsvc_SnapshotReadIn, into) == 32, "bb_hsvc_SnapshotReadIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_NeedAdmitIn) == 32, "bb_hsvc_NeedAdmitIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_NeedAdmitIn) == 4, "bb_hsvc_NeedAdmitIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, head) == 0, "bb_hsvc_NeedAdmitIn.head: offset");
@@ -5649,7 +5693,7 @@ BB_ASSERT(offsetof(bb_hsvc_DiskWritten, rotated) == 4, "bb_hsvc_DiskWritten.rota
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, faults) == 5, "bb_hsvc_DiskWritten.faults: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, _reserved) == 6, "bb_hsvc_DiskWritten._reserved: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, written) == 8, "bb_hsvc_DiskWritten.written: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 192, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 200, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5676,6 +5720,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 160, "bb_hsvc_HostSlots.nee
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 168, "bb_hsvc_HostSlots.trust_verify: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 176, "bb_hsvc_HostSlots.records_secret: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, disk_append) == 184, "bb_hsvc_HostSlots.disk_append: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, snapshot_read) == 192, "bb_hsvc_HostSlots.snapshot_read: offset");
 #endif
 
 #ifdef __cplusplus

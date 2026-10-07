@@ -51,7 +51,7 @@ fn grp_principal(id: &str, roles: &[&str]) -> Principal {
 /// (no principal) is full.
 #[test]
 fn admin_scope_resolution() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use busbar_contract::authz::{Grants, Scope};
     let rb = bindings_for(
         "test-groups-module",
         &[
@@ -122,7 +122,7 @@ fn admin_scope_resolution() {
 /// principal identified by the test-groups-module.
 #[test]
 fn admin_scope_bindings_are_module_scoped() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use busbar_contract::authz::{Grants, Scope};
     let rb = bindings_for(
         "other-module",
         &[("admins", binding(None, None, Some("full")))],
@@ -708,7 +708,7 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/totally/unknown/path", // unknown → fallback
     ];
     for path in paths {
-        let body = decode_body(unauthorized_response(&residual_app(), path));
+        let body = decode_body(unauthorized_response(&residual_app(), path, None));
         let mut strings = Vec::new();
         collect_strings(&body, &mut strings);
         for s in &strings {
@@ -762,7 +762,7 @@ fn test_extract_admin_header_token_empty_filtered() {
 async fn forbidden_admin_requests_audit_once_per_window() {
     use crate::test_support::TestApp;
 
-    crate::metrics::init();
+    crate::snapshot::init();
 
     // Unique per test run so concurrently-running tests sharing the process-global `AUDIT` ring
     // cannot be counted here, and this test's own records cannot be miscounted by a sibling.
@@ -862,7 +862,7 @@ async fn serve_app(
 /// `test-scope-module` external-admin stand-in.
 #[tokio::test]
 async fn admin_plugin_full_binding_allows_mutation() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let rb = bindings_for(
         "test-scope-module",
         &[("minters", binding(None, None, Some("full")))],
@@ -902,7 +902,7 @@ async fn admin_plugin_full_binding_allows_mutation() {
 /// read-only grant never satisfies.
 #[tokio::test]
 async fn admin_plugin_readonly_binding_get_ok_post_403() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let rb = bindings_for(
         "test-scope-module",
         &[("viewers", binding(None, None, Some("read-only")))],
@@ -956,7 +956,7 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
 /// down to read-only (`Grants::capped_by`).
 #[tokio::test]
 async fn admin_max_admin_scope_caps_binding() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let rb = bindings_for(
         "test-scope-module",
         &[("ops", binding(None, None, Some("full")))],
@@ -992,7 +992,7 @@ async fn admin_max_admin_scope_caps_binding() {
 /// dispatch path.
 #[tokio::test]
 async fn roleless_external_admin_principal_denied() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["ext-admin".to_string()])
         .admin_module("ext-admin", Box::new(RolelessAdminModule))
@@ -1018,7 +1018,7 @@ async fn roleless_external_admin_principal_denied() {
 /// the blocking pool, so `/healthz` (and a concurrent admin request) stay responsive while it sleeps.
 #[tokio::test]
 async fn admin_offload_does_not_stall_healthz() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["slow-oidc".to_string()])
         .admin_module(
@@ -1090,7 +1090,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::metrics::init();
+    crate::snapshot::init();
 
     // No upstream call is expected on the 401 paths; the plain-token /stats control makes no
     // upstream call either.
@@ -1215,7 +1215,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::metrics::init();
+    crate::snapshot::init();
 
     // No upstream call should happen — auth must reject before routing.
     let state = Arc::new(MockServerState::new());
@@ -1372,7 +1372,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::metrics::init();
+    crate::snapshot::init();
 
     // No upstream call should happen — auth must reject before routing.
     let state = Arc::new(MockServerState::new());
@@ -1430,8 +1430,8 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
 ///   - a credential no module identifies is denied outright.
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
-    use crate::admin::v1::contract::{Grants, Scope};
-    crate::metrics::init();
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
 
     let mk_app = |cap: Option<&str>, bind_module: &str| {
         let mut app = crate::test_support::TestApp::new().build();
@@ -1485,8 +1485,8 @@ fn test_admin_scope_cap_ceilings_external_module() {
 /// restart opt-in.
 #[test]
 fn test_dry_run_empty_admin_chain_is_not_full() {
-    use crate::admin::v1::contract::{Grants, Scope};
-    crate::metrics::init();
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
 
     let mut app = crate::test_support::TestApp::new().build();
     let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
@@ -1580,7 +1580,7 @@ fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
 #[tokio::test]
 async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    crate::metrics::init();
+    crate::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let key_id = gov.all_keys().unwrap()[0].id.clone();
@@ -1615,7 +1615,7 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
 #[test]
 fn test_1_5_2_keys_arm_resolves_the_vkey() {
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    crate::metrics::init();
+    crate::snapshot::init();
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
@@ -1999,7 +1999,7 @@ async fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
 async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
     use busbar_contract::auth_calls::Verified;
-    crate::metrics::init();
+    crate::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
     let ask = |auth: AuthMiddleware| {
         let app = TestApp::new()

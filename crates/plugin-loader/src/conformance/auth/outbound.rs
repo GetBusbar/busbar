@@ -111,8 +111,8 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
 
 use super::super::{
-    bind, called, close, crossings, dispatcher, input, json, open_with, output, ready_step,
-    real_door, validate, Counts, Fold, Leg, Recorder, Restated, Subject,
+    bind, called, close, crossings, dispatcher, input, json, open, output, ready_step, real_door,
+    validate, Counts, Fold, Leg, Recorder, Restated, Subject,
 };
 use super::{secret, stated, undeclared, Stated};
 use crate::dispatch::kinds::auth::Auth;
@@ -979,7 +979,6 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
              for it"
         );
     }
-    let secrets = s.secrets();
     let mut fold = Fold::new();
     for (i, x) in styles.iter().enumerate() {
         let (flags, point) = point_of(st, &x.style);
@@ -1009,9 +1008,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
             });
         }
         r.line(&label("validate"), 1, || called(&validate(&p, &x.settings)));
-        r.line(&label("open"), 1, || {
-            called(&open_with(&p, &x.settings, &secrets))
-        });
+        r.line(&label("open"), 1, || called(&open(&p, &x.settings)));
         ready_step(&mut r, s, &p, &d);
         let handle = r.step(&label("open_outbound"), 1, || open_outbound(&p, x));
         let signed = || sign(&p, handle, &x.head, flags, point);
@@ -1150,7 +1147,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
             );
             let mut rq = Recorder::new(crossings(&q));
             rq.line(&label("failing endpoint: open"), 1, || {
-                called(&open_with(&q, &x.settings, &secrets))
+                called(&open(&q, &x.settings))
             });
             ready_step(&mut rq, s, &q, &d);
             let hq = rq.step(&label("failing endpoint: open_outbound"), 1, || {
@@ -1186,7 +1183,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
             );
             let mut rq = Recorder::new(crossings(&q));
             rq.line(&label("failing endpoint: open"), 1, || {
-                called(&open_with(&q, &x.settings, &secrets))
+                called(&open(&q, &x.settings))
             });
             ready_step(&mut rq, s, &q, &d);
             let hq = rq.step(&label("failing endpoint: open_outbound"), 1, || {

@@ -363,6 +363,6 @@ impl busbar_kernel::test_support::BuiltAppSeam for crate::state::App {
     }
 
     fn refresh_scrape_gauges(&self) {
-        crate::metrics::refresh_scrape_gauges(self);
+        crate::snapshot::refresh_scrape_gauges(self);
     }
 }

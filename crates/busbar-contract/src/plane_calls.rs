@@ -180,6 +180,11 @@ pub struct PlaneRegistration {
     /// The other sections the Statement owns (neither declaring nor consumed): the plane's
     /// endpoint block beside its verb, handed to its `open` as `PlaneOpenIn::owned`.
     pub owns: Vec<&'static str>,
+    /// The sections the Statement CONSUMES (`SECTION_CONSUMED`): sections another owner declares
+    /// that the plane reads (a kind's root, such as the connections its members are reached over).
+    /// A plane that consumes the transport kind's root restricts the members its section names
+    /// there to the dialects it states.
+    pub consumes: Vec<&'static str>,
     /// The Statement's secret-reference paths (`Statement::secret_refs`): the settings paths whose
     /// values are secret references, each `settings.<key>...`, where `*` stands for every key of
     /// the map at that point (each registration, each entry). The kernel enumerates the references
@@ -270,6 +275,14 @@ pub trait PlaneCalls: Send + Sync {
     /// The pool a READY `arrive` named ([`ArriveOut::pool`], ARCHITECT Q-SW6), copied out of the
     /// plane's memory while that answer is the instance's last; `None` when it named none.
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>>;
+
+    /// The sticky-routing key a READY `arrive` stated ([`ArriveOut::affinity`], ARCHITECT Q1
+    /// ArriveOut), copied out of the plane's memory while that answer is the instance's last;
+    /// `None` when it stated none. Opaque: the kernel only hashes it.
+    fn arrived_affinity(&self, out: &ArriveOut) -> Option<Vec<u8>> {
+        let _ = out;
+        None
+    }
 
     /// The words a REFUSED `arrive` stated in its `head.error` (abi/plane "A refused arrival"),
     /// copied out of the plane's memory while that answer is the instance's last; `None` when it
