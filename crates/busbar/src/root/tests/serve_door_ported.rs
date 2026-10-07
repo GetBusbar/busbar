@@ -1838,3 +1838,180 @@ async fn an_apply_that_raises_the_upstream_timeout_takes_effect() {
         String::from_utf8_lossy(&body)
     );
 }
+
+// ── the kernel router's served-traffic tests, on the door ───────────────────────────────────────
+
+/// A STORED `expires_at` IN THE PAST IS NOT ENFORCED ON THE DATA PLANE: the key row is rewritten
+/// with an expiry a month gone, the caches reloaded, and the caller's token (its own `exp` still in
+/// the future) is still admitted; a token that is not a key's is refused on the same door, so the
+/// admission is a real gate. Measured on the published 1.5.5 and on the release binary: both 200.
+///
+/// Ports kernel `tests/key_expires_at_cross_plane.rs::a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane`
+/// (it drove the model plane through the kernel router, which no longer serves it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_door() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-ported-row-expiry";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let gov = rig
+        .app
+        .governance
+        .clone()
+        .expect("the rig keeps a governance book");
+    let store = gov.store();
+    let mut row = store
+        .get_key(&rig.key_id)
+        .expect("store read")
+        .expect("the minted row");
+    assert_eq!(
+        row.expires_at, None,
+        "mint never stamps expires_at; it is a stored field nothing in the engine writes"
+    );
+    row.expires_at = Some(busbar_kernel::store::now() - 30 * 86_400);
+    store.put_key(&row).expect("rewrite the row");
+    gov.refresh().expect("reload caches");
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(
+        status,
+        200,
+        "a key row with a past expires_at is still admitted (1.5.5 never enforced it; measured): {}",
+        String::from_utf8_lossy(&body)
+    );
+    let chat = serde_json::to_vec(&chat_on("p")).expect("json");
+    let (status, _, _) = call(
+        &rig,
+        "POST",
+        "/v1/chat/completions",
+        &chat,
+        &[("authorization", "Bearer bbk_not_a_real_token")],
+        false,
+    )
+    .await;
+    assert_eq!(
+        status, 401,
+        "the keys chain is a real gate on this door: a bad token is refused"
+    );
+    assert_eq!(
+        far.served(),
+        1,
+        "only the admitted unit reached the far end"
+    );
+}
+
+/// The words an alarm or a disputes-report entry would carry, matched case-insensitively.
+const ALARM_MARKERS: &[&str] = &["alarm", "dispute"];
+
+fn mentions_an_alarm_marker(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    ALARM_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// The metric name of one exposition line: the token before `{` or the first space on a sample
+/// line, or the second token of a `# HELP` / `# TYPE` line.
+fn exposition_metric_name(line: &str) -> Option<&str> {
+    if let Some(rest) = line.strip_prefix("# ") {
+        let mut it = rest.split_whitespace();
+        let _kind = it.next()?;
+        return it.next();
+    }
+    let end = line.find(['{', ' ']).unwrap_or(line.len());
+    let name = &line[..end];
+    (!name.is_empty()).then_some(name)
+}
+
+/// AN ALARM AND A DISPUTES-REPORT ENTRY ARE LEDGER-ENDPOINT ROWS ONLY: on a 1.5.5-shaped deployment
+/// (no ledger, no data dir) a request lifecycle through the door (a served unit, a unit whose only
+/// member is unreachable, the liveness probe, `/stats`) emits no tracing event at DEBUG or above and
+/// no metric name that mentions an alarm or a dispute. On the single-threaded runtime, so every
+/// event the lifecycle raises is on the capturing thread.
+///
+/// Ports kernel `tests/alarm_silence_cross_plane.rs::a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric`
+/// (it drove the model plane through the kernel router, which no longer serves it).
+#[tokio::test(flavor = "current_thread")]
+async fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-ported-alarm-silence";
+    let _published = Withdrawn(instance);
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::capturing_debug();
+    let _capturing = {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()))
+    };
+    let far = far_end_answering(200, SERVED).await;
+    // Pool `p` holds the live member; pool `q` holds one at a closed port, so its unit fails upstream
+    // — the path a stall or lane alarm would ride.
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1), (1, 1)],
+            pooled: Some(1),
+            pools: &[("q", &[1], "")],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let mut statuses: Vec<(&str, u16)> = Vec::new();
+    statuses.push((
+        "ok request",
+        rig.send("POST", "/v1/chat/completions", Some(chat_on("p")))
+            .await
+            .0,
+    ));
+    statuses.push((
+        "failed-upstream request",
+        rig.send("POST", "/v1/chat/completions", Some(chat_on("q")))
+            .await
+            .0,
+    ));
+    statuses.push((
+        "healthz",
+        call(&rig, "GET", "/healthz", b"", &[], false).await.0,
+    ));
+    statuses.push(("stats", call(&rig, "GET", "/stats", b"", &[], true).await.0));
+    let status_of = |what: &str| {
+        statuses
+            .iter()
+            .find(|(w, _)| *w == what)
+            .map(|(_, s)| *s)
+            .expect("driven")
+    };
+    assert_eq!(status_of("ok request"), 200, "statuses: {statuses:?}");
+    assert_ne!(
+        status_of("failed-upstream request"),
+        200,
+        "statuses: {statuses:?}"
+    );
+    assert_eq!(status_of("healthz"), 200, "statuses: {statuses:?}");
+
+    let hits: Vec<String> = cap
+        .messages()
+        .into_iter()
+        .filter(|m| mentions_an_alarm_marker(m))
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "no tracing event may carry an alarm/dispute message or field on a 1.5.5-shaped \
+         deployment; found:\n{}",
+        hits.join("\n")
+    );
+    let exposition = scrape();
+    let leaked: Vec<&str> = exposition
+        .lines()
+        .filter_map(exposition_metric_name)
+        .filter(|n| mentions_an_alarm_marker(n))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "no metric name may mention an alarm or a dispute on a 1.5.5-shaped deployment; found: \
+         {leaked:?}"
+    );
+}

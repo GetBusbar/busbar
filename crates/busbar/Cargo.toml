@@ -53,16 +53,16 @@ getrandom = { workspace = true }
 # admin verb's effect half.
 ed25519-dalek = { workspace = true }
 # THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
-# PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
-# coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a
+# PER PROTOCOL: `busbar-plane-llm` carries the LLM protocol's six dialects together (an operator picks
+# LLM coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a
 # different plugin — it carries the MCP protocol codec today (folded in from the former
 # `busbar-proto-mcp`) and the MCP plane in a later plane-split step, both behind the ONE `plane-mcp`
 # switch. Each is optional behind a feature so the deletion gate can build the binary WITHOUT a
 # protocol and watch it refuse that protocol's config rather than serve it
 # (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks both.
-busbar-llm = { path = "../busbar-llm", optional = true }
-# THE LLM PLANE, through its memory-ABI door: the edge the development-only `llm-on-driver` switch
-# carries (see that feature). Off by default: the `proto-llm` row serves llm until the flip.
+# THE LLM PLANE, through its memory-ABI door: the edge the `proto-llm-door` row carries, which
+# `proto-llm` turns on (the llm fold is flipped onto the driver and the engine crate that served it
+# before the fold is deleted; see that feature).
 busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
 busbar-mcp = { path = "../busbar-mcp", optional = true }
 # THE A2A PLANE-KIND SHELL (step 3.B.0 of the plane split). Empty crate so far (see its `src/lib.rs`)
@@ -102,8 +102,8 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 # THE DECISIONS PLANE (jev), #48's fifth — and the one plane crate that is BOTH halves at once. Its
 # four siblings above are PURE planes whose registry declaration is carried by a separate impure
-# host crate (`busbar-llm`/`busbar-mcp`/`busbar-a2a`/`busbar-voice`, the optional protocol crates
-# declared further up); jev has no host, by the signed design, so this single crate is the plane AND
+# host crate (`busbar-mcp`/`busbar-a2a`/`busbar-voice`, the optional protocol crates declared
+# further up; the llm plane's engine host is deleted and its plane is served through its door); jev has no host, by the signed design, so this single crate is the plane AND
 # the section. That is why this line is OPTIONAL when the four above are not: it follows the
 # convention of the thing it is — the crate whose `PLANE_DECL` is installed — and `plane-decisions`
 # below is the ONE switch for the plane and its crate edge together, exactly as `plane-a2a` and
@@ -144,14 +144,13 @@ busbar-auth-header = { path = "../busbar-auth-header", optional = true }
 # THE OUTBOUND SIGNING AND TOKEN STYLES (sigv4; jwt-bearer, oauth-client-credentials): the auth plugins
 # an llm member is bound under when its provider's dialect default is `sigv4` (bedrock) or its `auth:`
 # names an OAuth grant (THE DESIGN §6 step 3), linked through the `auths` axis under `auth-sigv4` and
-# `auth-oauth` (ARCHITECT Q-L1-AUTH (A), 2026-10-03). Carried by the llm fold's switch while it is in
-# flight (the default build serves llm through its `proto-llm` row and binds no member through them).
-# Staged in-tree; their only busbar edge is `busbar-contract`.
+# `auth-oauth` (ARCHITECT Q-L1-AUTH (A), 2026-10-03). Carried by `proto-llm`, the llm plane's switch,
+# which serves llm through its door in the default build. Staged in-tree; their only busbar edge is `busbar-contract`.
 busbar-auth-sigv4 = { path = "../busbar-auth-sigv4", optional = true }
 # THE INBOUND WEBHOOK SIGNATURE (scheme `webhook-signature`; Standard Webhooks, Twilio): the auth
 # plugin whose inbound verify a door plane's public route names by scheme (spec Part 3 "Inbound
-# webhooks"), linked through the `auths` axis under `auth-webhook-signature`; carried by the llm
-# fold's switch while it is in development (its webhook receiver is the llm plane's).
+# webhooks"), linked through the `auths` axis under `auth-webhook-signature`; carried by `proto-llm`
+# (its webhook receiver is the llm plane's).
 busbar-auth-webhook-signature = { path = "../busbar-auth-webhook-signature", optional = true }
 busbar-auth-oauth = { path = "../busbar-auth-oauth", optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
@@ -241,10 +240,19 @@ default = ["auth-admin-tokens", "auth-header", "hooks-ranking", "proto-llm", "pl
 # ONE switch for the plane and the node its units run through (`src/root/plane_node.rs`): the plane's
 # `linked-axes` row carries the `node` axis, so linking it sets the generated `linked_axis_node` cfg
 # the node compiles under, and its `root-units` row puts the node's `ROOT_UNIT` in the boot order. The
-# plane's arrivals hand every unit to the node and there is no other path an arrival can take
+# plane's door hands every unit to the node and there is no other path an arrival can take
 # (ARCHITECT R7(b): the build that served them through the shell instead is dropped). There is no
 # second, per-node switch (spec #17: one feature per plane, no `root-*`; ARCHITECT K2i residue).
-proto-llm = ["dep:busbar-llm"]
+# THE LLM PLANE behind this switch, which carries its crate edge. Default-on: the shipped binary
+# speaks LLM. The plane is served through its memory-ABI door (`proto-llm-door`, the row that owns
+# the `llm` key's plane axis); the engine crate that served it before the fold is deleted (FLIP-LLM,
+# the flip), and the plane crate's own linked row carries its protocol declarations, its diagnostics
+# catalog, its CLI help and the node its units run through. It carries the auth rows a door-served
+# llm member binds its outbound style through (`auth-header` for the bearer and api-key styles a
+# provider credential defaults to, `auth-sigv4`, `auth-oauth`), so the single-plane build boots a
+# provider the way the shipped one does, and the inbound webhook signature its webhook receiver's
+# public route names (`auth-webhook-signature`).
+proto-llm = ["proto-llm-door", "auth-header", "auth-sigv4", "auth-oauth", "auth-webhook-signature"]
 # THE MCP PROTOCOL, carried by `busbar-mcp`: the dependency edge plus the `busbar_mcp::PROTO_DECL`
 # registration line in main.rs. ONE switch for MCP the protocol codec today and MCP the plane once
 # it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`
@@ -301,13 +309,12 @@ plane-decisions = ["dep:busbar-plane-decisions"]
 # section 11.4). It carries `plane-decisions`, which keeps the crate edge and the `decisions:` key's
 # owner.
 plane-decisions-door = ["plane-decisions"]
-# THE LLM PLANE THROUGH ITS DOOR, the llm fold's development-only switch (BUSBAR-1.6.0.md Part 3
-# section 12, "The switch"; deleted when the llm fold completes). Never in `default`. On, the plane's
-# memory-ABI door (`busbar_plane_llm::plane_door::door`) is a `plane-door` row, bound through the
-# loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
-# (#2, #30; THE DESIGN section 11.4). It carries `proto-llm`, whose row stays linked and answers
-# every arrival the serve path does not hand the door.
-llm-on-driver = ["proto-llm", "dep:busbar-plane-llm", "auth-sigv4", "auth-oauth", "auth-webhook-signature"]
+# THE LLM PLANE'S DOOR ROW, carried by `proto-llm` (never set alone): the plane's memory-ABI door
+# (`busbar_plane_llm::plane_door::door`) is a `plane-door` row, bound through the loader's one load
+# beside every dropped-in plane door, the same table as its dropped-in cdylib (#2, #30; THE DESIGN
+# section 11.4). It owns the `llm` key's plane axis; the linked plane crate's row carries its other
+# axes (`proto-llm`).
+proto-llm-door = ["dep:busbar-plane-llm"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-file = ["dep:busbar-export-file"]
@@ -349,15 +356,15 @@ auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
 # plugin serving a plane need's header style, on the `auths` axis. Off, a member whose style it serves
 # binds only when a signed tarball of the module is dropped into `plugins/`.
 auth-header = ["dep:busbar-auth-header"]
-# THE OUTBOUND SIGNING STYLE'S LINKED ROW: `sigv4` (on with the llm fold's switch).
+# THE OUTBOUND SIGNING STYLE'S LINKED ROW: `sigv4` (on with `proto-llm`).
 auth-sigv4 = ["dep:busbar-auth-sigv4"]
 # THE INBOUND WEBHOOK SIGNATURE'S LINKED ROW (scheme `webhook-signature`).
 auth-webhook-signature = ["dep:busbar-auth-webhook-signature"]
-# THE OUTBOUND TOKEN STYLES' LINKED ROW: `jwt-bearer`, `oauth-client-credentials` (on with the llm
-# fold's switch).
+# THE OUTBOUND TOKEN STYLES' LINKED ROW: `jwt-bearer`, `oauth-client-credentials` (on with
+# `proto-llm`).
 auth-oauth = ["dep:busbar-auth-oauth"]
 hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
-openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
+openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
 # ── THE LINKED PLUGINS (K1, #2 rule (1)) ─────────────────────────────────────────────────────────────
@@ -376,7 +383,7 @@ loom-model = ["busbar-kernel/loom-model"]
 # them. `crates/busbar/tests/composition_root_names_no_linked_plugin.rs` refuses a `main.rs` that
 # names any crate or root module listed here.
 [package.metadata.busbar.linked]
-proto-llm = "busbar-llm"
+proto-llm = "busbar-plane-llm"
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
 plane-streaming = "busbar-voice"
@@ -411,16 +418,17 @@ transport-stdio = "busbar-transport-stdio"
 # THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
 # loader's one load beside the dropped-in plane doors.
 plane-decisions-door = "busbar-plane-decisions"
-llm-on-driver = "busbar-plane-llm"
+proto-llm-door = "busbar-plane-llm"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
-# kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
-# `ws-arrivals`, `on-host`, `compose`, `stdio-serve`, `exports` — each an item of the crate's entry
+# kernel-side), `protocols`, `diagnostics`, `ws-arrivals`, `compose`, `stdio-serve`, `exports` —
+# each an item of the crate's entry
 # module — and the root-bound seams it drives: `egress`, `plane-sections`, `admin-envelope`.
 # `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
 # `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
-# `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
+# `node`: the root's node (`root::plane_node`) the row's plane's units are driven on and settle onto;
+# it names no entry item, and linking it sets the `linked_axis_node` cfg the node compiles under.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
 # `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
 # `auths`: a `kind: auth` plugin's memory-ABI door (`<entry>::door::door`, the one its dropped-in
@@ -429,7 +437,7 @@ llm-on-driver = "busbar-plane-llm"
 # `secret-doors`: a `kind: secret` plugin's memory-ABI `door`.
 # `export-doors`: a memory-ABI `kind: export` sink's `NAME`, `ALIAS`, `DECLARES` and `door`.
 [package.metadata.busbar.linked-axes]
-proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
+proto-llm = "protocols diagnostics cli-help node"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
@@ -456,7 +464,7 @@ transport-ws = "transport"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 plane-decisions-door = "plane-door"
-llm-on-driver = "plane-door"
+proto-llm-door = "plane-door"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
@@ -476,7 +484,7 @@ busbar-auth-webhook-signature = "busbar_auth_webhook_signature::compiled_in"
 busbar-auth-oauth = "busbar_auth_oauth::compiled_in"
 # A plane door row's entry is the module that exports its `door`.
 plane-decisions-door = "busbar_plane_decisions::plane_door"
-llm-on-driver = "busbar_plane_llm::plane_door"
+proto-llm-door = "busbar_plane_llm::plane_door"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
 busbar-export-prometheus = "busbar_export_prometheus::door"
 busbar-export-otlp = "busbar_export_otlp::door"
@@ -527,8 +535,6 @@ tokio-rustls = { workspace = true }
 # `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
 # is `#[async_trait]`, so its test impl needs the macro.
 async-trait = { workspace = true }
-# The root's own llm tests install the plane's seams.
-busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The served planes' test kits: `testkit::SERVED` (their served-leg witnesses) is `test-support` only.
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }

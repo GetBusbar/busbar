@@ -7,10 +7,10 @@
 //! binary turns it on and never off; its twin `route_policy_headers_off` never turns it on. Between
 //! them the four combinations of the switch and a policy that chose the member are each pinned.
 //!
-//! Development-only, like the switch it proves: built with the plane's development-only fold switch
-//! (`linked_fold_on_driver`).
+//! Built wherever the plane serving the `pools` map is linked (its row rides the node axis:
+//! `linked_axis_node`).
 
-#![cfg(linked_fold_on_driver)]
+#![cfg(linked_axis_node)]
 
 // The linked plane doors (`LINKED_PLANE_DOORS`), generated from the manifest.
 include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));

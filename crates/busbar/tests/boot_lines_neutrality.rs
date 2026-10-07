@@ -15,7 +15,7 @@
 //! before comparison, exactly as `testing/shadow-oracle/normalize.py`'s `boot.exhaustion-order` rule
 //! does for the oracle's own recording of this same cell.
 #![cfg(unix)]
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 

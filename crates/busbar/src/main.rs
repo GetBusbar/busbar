@@ -253,7 +253,7 @@ include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 /// in. The set is the table's order, which is the manifest's: appending a row keeps every existing
 /// index; inserting one renumbers them.
 fn register_protocols() {
-    root::linked::register_protocols(&LINKED, ROOT_UNITS);
+    root::linked::register_protocols(&LINKED);
 }
 
 /// REGISTER THE PLANES — the composition root's one write into the plane axis
@@ -752,6 +752,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     for step in ROOT_UNITS.iter().filter_map(|u| u.on_config) {
         step(&cfg.limits);
     }
+    // THE UPSTREAM PROXY DECISION, read once from the process environment before the first app build:
+    // absent, every pooled egress client dials direct; present and valid, it tunnels through it;
+    // present and malformed, the boot refuses rather than egress direct past a configured proxy.
+    busbar_kernel::egress::engine::install_proxy_tunnel_if_configured()
+        .unwrap_or_else(|e| die(format!("upstream proxy tunnel: {e}")));
     // EACH LINKED PLUGIN'S PROVIDER, captured off the deployment's ORDINARY provider catalog before
     // `cfg` moves into the build, and composed below once the resolver that turns a secret reference
     // into a credential exists. A deployment that pins nothing captures nothing, so nothing about it
@@ -981,29 +986,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // exporters were configured, so a sink that refuses its own target at start says so here.
     export::plugin::start();
 
-    // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
-    // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host
-    // (App-retype WEDGE 2f): the probers re-anchor on a `Weak<dyn EngineHost>` over it — never an
-    // `Arc<App>` — so the plane's health module names no core `App` type. We hand the SAME host to the
-    // `AppHandle` below (`set_snapshot_host`), which owns it for the boot generation and DROPS it on the
-    // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
-    // `Weak<App>` did when the boot snapshot drained.
-    // Built only when some linked entry re-anchors work on it: a build with none holds no host.
-    // While a plane's fold switch is on, the plane serving the `pools` map runs its health probes
-    // through its door as the K7 probe unit (`root::serve`'s probe target over the plane's sealed
-    // egress), so the legacy row's probers are not spawned beside them: one prober per lane, as
-    // 1.5.5 ran.
-    let on_host = if cfg!(linked_fold_on_driver) {
-        &[][..]
-    } else {
-        LINKED.on_host
-    };
-    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_host::engine_host(&app));
-    if let Some(host) = &boot_host {
-        for spawn in on_host {
-            spawn(host);
-        }
-    }
+    // The active health probers are the served plane's: the plane serving the `pools` map runs its
+    // probes through its door as the K7 probe unit (`root::serve`'s probe target over the plane's
+    // sealed egress), one prober per lane, as 1.5.5 ran.
 
     // Build the two routers with the operator-configured ingress body cap + the inbound-concurrency
     // layer (installed by default; `limits.max_inbound_concurrent: 0` opts out — no layer). The admin surface is built onto its
@@ -1254,19 +1239,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         ),
         None => admin_router,
     };
-
-    // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot
-    // probers depend on (they hold a `Weak`): the first config swap drops it and retires them. See the
-    // spawn_probers call above and `AppHandle::set_snapshot_host`.
-    if let Some(host) = boot_host {
-        app_handle.set_snapshot_host(host);
-    }
-    // And bind the spawner every later swap re-attaches the probers with (item 552): the swap drops
-    // this generation's host and retires its probers, so without the binding the first admin
-    // mutation stops active health probing for the life of the process. The seam holds one.
-    if let Some(&spawn) = on_host.first() {
-        app_handle.attach_on_swap(spawn);
-    }
 
     // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections and let
     // in-flight requests drain. The signal future is panic-free — a failed registration logs and

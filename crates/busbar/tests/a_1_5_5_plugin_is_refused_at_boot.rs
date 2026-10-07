@@ -26,7 +26,7 @@
 // (crates/plugin-loader/src/tests) proves the one-version-per-kind refusal mechanism in EVERY build;
 // this proof is the end-to-end boot half, which only a build that boots a data door can exercise.
 // (THE DESIGN's no-legacy-loading rule; ruling C21/ABI-o1.)
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 

@@ -16,10 +16,10 @@
 //! in their own crates (`busbar-kernel` hooks tests, the plugin loader's hook tests, the ranking
 //! hook's tests).
 //!
-//! Development-only, like the switch it proves: built with the plane's development-only fold switch
-//! (`linked_fold_on_driver`).
+//! Built wherever the plane serving the `pools` map is linked (its row rides the node axis:
+//! `linked_axis_node`).
 
-#![cfg(linked_fold_on_driver)]
+#![cfg(linked_axis_node)]
 
 // The linked plane doors (`LINKED_PLANE_DOORS`), generated from the manifest: the plane under proof
 // is the one whose Statement declares the `pools` map, found by what it states, never by name.

@@ -17,7 +17,7 @@
 //!
 //! RED before the fix: both boots printed the line.
 #![cfg(unix)]
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 #![cfg(feature = "export-prometheus")]
 
 mod common;

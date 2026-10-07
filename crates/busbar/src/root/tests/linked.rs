@@ -46,12 +46,8 @@ pub(super) fn linked(
         plane_door_slots: &[],
         plane_door_declares: &[],
         protocols: &[],
-        path_ingress: &[],
-        body_ingress: &[],
-        protocol_seams: &[],
         diagnostics: &[],
         ws_arrivals: &[],
-        on_host: &[],
         compose: &[],
         stdio_serve: &[],
         cli_help: &[],
@@ -63,7 +59,6 @@ pub(super) fn linked(
         gauntlet_session: &[],
         transports: &[],
         claims: &[],
-        node: &[],
     }
 }
 
@@ -126,12 +121,12 @@ fn render(row: &PlaneDecl) -> String {
         row.viewer.is_some(),
         row.retain_verify_gates.is_some(),
         row.default_section.is_some(),
-        row.resolve_provider.is_some(),
     ];
     format!(
         "{:?} wire={:?} claims={:?} admission={:?} build={} hooks={optional:?}",
         row.declaration,
         (row.wire_format_names)(),
+        row.resolve_provider.is_some(),
         (row.claims)(&()),
         (row.admission)(&()),
         (row.build)(&ctx).is_some(),

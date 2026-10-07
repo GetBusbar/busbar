@@ -3259,17 +3259,13 @@ mod tests;
 mod planes_tests;
 
 // The door test file: the decisions door's served route, and the capability cells of the door
-// serving the `pools` map under the fold switch.
-#[cfg(all(
-    test,
-    linked_axis_node,
-    any(feature = "plane-decisions", linked_fold_on_driver)
-))]
+// serving the `pools` map.
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door.rs"]
 mod door_tests;
 
 // The legacy engine's end-to-end tests, held to the door serving the `pools` map (U11).
-#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door_ported.rs"]
 mod door_ported_tests;
 
@@ -3277,32 +3273,32 @@ mod door_ported_tests;
 #[path = "tests/serve_money.rs"]
 mod money_tests;
 
-#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_hook_seats.rs"]
 mod hook_seat_tests;
 
-#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door_hooks_ported.rs"]
 mod door_hooks_ported_tests;
 
 // The far end's answer on the door, ported from the legacy engine's tests.
-#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door_reply_ported.rs"]
 mod door_reply_ported_tests;
 
 // The previous release's engine tests whose behaviour the kernel owns, on the door serving the
 // `pools` map, where a kernel unit test cannot express them.
-#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door_kernel_ported.rs"]
 mod door_kernel_ported_tests;
 
 // The exchange cases of the retired engine crate, served through the door (the U11 port).
-#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door_exchange_ported.rs"]
 mod door_exchange_ported_tests;
 
 // The release engine's timing gate, on the door (ignored; run explicitly in release mode).
-#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door_timing.rs"]
 mod door_timing_tests;
 

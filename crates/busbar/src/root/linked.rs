@@ -35,11 +35,10 @@ use busbar_contract::abi::hot::StatusClass;
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_contract::ids::OpClassId;
 use busbar_contract::plane::{MetricFamily, ServedOpClass};
-use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
 use busbar_kernel::plane::PlaneAdmission;
-use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
+use busbar_kernel::plane_host::LiveHostFactory;
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
@@ -87,20 +86,11 @@ pub struct Linked {
     )],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
-    /// URL-model arrivals, by protocol name.
-    pub path_ingress: &'static [&'static [PathIngressEntry]],
-    /// Body-model arrivals, by protocol name.
-    pub body_ingress: &'static [&'static [BodyIngressEntry]],
-    /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
-    /// synthesizer, a stream-translator factory), each set once.
-    pub protocol_seams: &'static [fn()],
     /// Owned diagnostics, joining the rendered catalog.
     pub diagnostics: &'static [&'static [&'static busbar_contract::diagnostic::Diagnostic]],
     /// Installers of a duplex plane's inbound WS-accept arrivals (the seam is set once: the first
     /// duplex entry in table order is the one installed).
     pub ws_arrivals: &'static [fn()],
-    /// Background work re-anchored on every generation's engine host (boot, then each swap).
-    pub on_host: &'static [fn(&Arc<dyn EngineHost>)],
     /// Providers composed off the resolved configuration (see [`Compose`]).
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
     /// The stdio serve mode (see [`StdioServe`]).
@@ -126,52 +116,22 @@ pub struct Linked {
     pub transports: &'static [LinkedTransport],
     /// Each linked plane's pure plane, as the boot seal registers it, and the claims it declares.
     pub claims: &'static [LinkedClaims],
-    /// The node axis: each entry whose arrivals hand their units to a node, handed the node a root
-    /// unit drives them through (see [`node`]).
-    pub node: &'static [fn(node::Drive)],
 }
 
-/// THE NODE AXIS — what crosses between a plane whose arrivals hand their units to a node and the
-/// node that drives them through the kernel's loop. Plain values in the loop's own vocabulary, so
-/// neither side names the other: an arrival hands the node whose unit it is, its operation class, the
-/// dialect a node-side refusal is written in, and a build; the node lends the build its lane
-/// resolver, the loop's meter and the unit's pinned arrival epoch, and gets back the unit's steps,
-/// its awaited Route leg and its finish — the terminal's bytes and the reading of what they consumed,
-/// taken once their body has drained. The reading is a report, never an amount.
+/// THE NODE'S VALUES — what a door plane's unit hands the node it is driven on
+/// (`crate::root::plane_node`): the lane resolver the node lends, and the reading of what the unit
+/// consumed, taken once its body has drained. The reading is a report, never an amount.
 pub mod node {
-    use std::future::Future;
-    use std::pin::Pin;
     use std::sync::Arc;
-
-    use busbar_contract::caps::{OpClassId, PrincipalId};
-    use busbar_kernel::plane_host::PlaneAnswer;
-    use busbar_kernel::teller::{RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
     /// the image's vocabulary cannot hold the name.
     pub type Resolve = Arc<dyn Fn(&str) -> Option<busbar_contract::LaneId> + Send + Sync>;
-    /// What the node lends a build: its lane resolver and the pinned arrival epoch.
-    pub type Lent = (Resolve, u64);
     /// What a unit consumed, read after its body drained: every class, the billable count, the
     /// serving lane's config name.
     pub type Reported = (busbar_contract::billing::Usage, u32, String);
     /// The late reading, taken once, when the body is done with.
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
-    /// A unit's finish: the answer its terminal posted (#28), and the late reading of what it
-    /// consumed. The node turns the answer into the served response on its audited exit.
-    pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
-    /// A built unit: its steps, its awaited Route leg (the same unit), and its finish.
-    pub type Built = (
-        Arc<dyn Units + Send + Sync>,
-        Arc<dyn RouteAwait + Send + Sync>,
-        Finish,
-    );
-    /// The build the node runs once it holds the values it lends.
-    pub type Build = Box<dyn FnOnce(Lent) -> Built + Send>;
-    /// One arrival, handed to the node.
-    pub type Handed = (PrincipalId, OpClassId, &'static str, Build);
-    /// The node: takes a handed unit, drives it through the loop, answers with its terminal's answer.
-    pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 }
 
 /// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
@@ -270,8 +230,6 @@ pub struct RootUnit {
     /// The boot-time self-check of what this unit composes. `Err` carries the refusal as the operator
     /// reads it after `busbar: `; the process exits 2 before any listener binds.
     pub seal: Option<fn() -> Result<(), String>>,
-    /// The node this unit drives the node axis's units through, handed to every entry on that axis.
-    pub drive: Option<node::Drive>,
     /// Runs once the deployment's limits are resolved, before the app is built.
     pub on_config: Option<fn(&busbar_kernel::config::limits::LimitsResolved)>,
     /// TRUE for a unit that settles onto the node's book: the book is opened for it.
@@ -294,35 +252,15 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// THE PROTOCOL AXIS: every entry's declarations and its path- and body-model arrivals, then each
-/// entry's protocol-axis seams — and the node axis, which those arrivals hand their units to: every
-/// entry on it is handed the node a root unit drives it through.
-pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
+/// THE PROTOCOL AXIS: every entry's declarations, appended to the installed protocol set in table
+/// order.
+pub fn register_protocols(linked: &Linked) {
     let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
         .protocols
         .iter()
         .flat_map(|decls| decls.iter().copied())
         .collect();
-    let path_ingress: Vec<PathIngressEntry> = linked
-        .path_ingress
-        .iter()
-        .flat_map(|arrivals| arrivals.iter().copied())
-        .collect();
-    busbar_kernel::proto::install_protocols_with_path_ingress(installed, path_ingress);
-    let body_ingress: Vec<BodyIngressEntry> = linked
-        .body_ingress
-        .iter()
-        .flat_map(|arrivals| arrivals.iter().copied())
-        .collect();
-    busbar_kernel::ingress::arrival::install_body_ingress(body_ingress);
-    for install in linked.protocol_seams {
-        install();
-    }
-    for drive in units.iter().filter_map(|u| u.drive) {
-        for install in linked.node {
-            install(drive);
-        }
-    }
+    busbar_kernel::proto::install_protocols(installed);
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
@@ -1068,7 +1006,6 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    resolve_provider: None,
 };
 
 /// THE EXPORT AXIS'S REGISTRY: the registry an `export:` instance's `module:` resolves against —
@@ -1131,6 +1068,7 @@ pub fn door_breaker(
     for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE) {
         let Some(stated) = p
             .manifest
+    resolve_provider: None,
             .stated()
             .map_err(|e| format!("plugin '{}': {e}", p.manifest.name))?
         else {
@@ -1329,7 +1267,7 @@ pub fn seal(units: &[&RootUnit]) {
 #[path = "tests/linked.rs"]
 mod tests;
 
-#[cfg(all(test, feature = "auth-admin-tokens", linked_axis_body_ingress))]
+#[cfg(all(test, feature = "auth-admin-tokens", linked_axis_node))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
 

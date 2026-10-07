@@ -372,7 +372,9 @@ fn the_manifest_links_a_plane_through_its_door() {
 /// A FOLD'S SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): every development-only
 /// `<plane>-on-driver` feature links its plane's memory-ABI door on the `plane-door` axis, and the
 /// default build links none of those doors, so the shipped binary serves the plane as it did until
-/// the flip. The switches are read off the manifest, so this names no plane.
+/// the flip. The switch is deleted when its fold completes: with none left, the shipped build is the
+/// one that links a plane's door (the flipped plane serves through it). The switches are read off
+/// the manifest, so this names no plane.
 #[test]
 fn every_on_driver_switch_links_its_door_and_the_default_build_does_not() {
     let manifest = read("Cargo.toml");
@@ -385,16 +387,38 @@ fn every_on_driver_switch_links_its_door_and_the_default_build_does_not() {
         .step_by(2)
         .map(str::to_string)
         .collect();
+    // What `default` turns on, as cargo resolves it: a feature a default feature lists (a bare name,
+    // not a `dep:` edge or another crate's `x/y`) is on too, so a door row a default switch carries
+    // is a default row.
+    let mut default = default;
+    loop {
+        let more: Vec<String> = manifest
+            .lines()
+            .filter_map(|l| l.trim().split_once(" = ["))
+            .filter(|(name, _)| default.iter().any(|d| d == name.trim()))
+            .flat_map(|(_, list)| {
+                list.split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .filter(|f| !f.contains(':') && !f.contains('/'))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|f| !default.contains(f))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        default.extend(more);
+        default.sort();
+        default.dedup();
+    }
     let switches: Vec<String> = manifest
         .lines()
         .filter_map(|l| l.trim().split_once(" = ["))
         .map(|(name, _)| name.trim().to_string())
         .filter(|name| name.ends_with("-on-driver"))
         .collect();
-    assert!(
-        !switches.is_empty(),
-        "the manifest states no development-only `-on-driver` switch"
-    );
     let doors_of = |on: &dyn Fn(&str) -> bool| {
         let (src, _) = linked_source(&manifest, on);
         src.lines()
@@ -402,6 +426,13 @@ fn every_on_driver_switch_links_its_door_and_the_default_build_does_not() {
             .unwrap_or_else(|| panic!("no plane_doors table generated:\n{src}"))
     };
     let shipped = doors_of(&|f: &str| default.iter().any(|d| d == f));
+    if switches.is_empty() {
+        assert!(
+            shipped.contains("::plane_door::door"),
+            "no development-only switch is left and the default build links no plane door: \
+             shipped = [{shipped}"
+        );
+    }
     for switch in &switches {
         assert!(
             !default.iter().any(|f| f == switch),

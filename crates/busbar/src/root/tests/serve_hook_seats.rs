@@ -42,10 +42,6 @@ use crate::root::loader::dispatch::{
 };
 use crate::root::plane_node::{Node, NodeEndPost};
 
-// The plane the node is handed, as the manifest's linked table names it (the `node` axis): the
-// legacy row's test seams the registry rows that own the `pools:`/`models:` sections come from.
-include!(concat!(env!("OUT_DIR"), "/node_plane.rs"));
-
 /// THE LINKED DOOR THAT SERVES THE `pools` MAP, found by what its Statement declares (the composition
 /// root names no plane): every linked plane door bound on a probe dispatcher of its own, the one
 /// whose declaring section is `pools` kept.
@@ -73,6 +69,23 @@ fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
                 == busbar_contract::section::RESERVED_POOLS_KEY
         })
         .expect("the fold switch links the door serving the `pools` map")
+}
+
+/// THE DOOR'S REGISTRY ROW, folded once for the process exactly as the boot folds a linked door
+/// (`root::linked::door_rows`): the loader's registration over a probe instance of the door, folded
+/// by the kernel into the row a deployment's sections resolve against.
+fn pools_door_row() -> &'static busbar_kernel::plane::registry::PlaneDecl {
+    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane::registry::PlaneDecl> =
+        std::sync::OnceLock::new();
+    ROW.get_or_init(|| {
+        let bind = crate::root::loader::dispatch::kinds::plane::linked_probe(
+            pools_door(),
+            "pools-door-row",
+        );
+        let reg = crate::root::loader::dispatch::kinds::plane::registration(bind)
+            .expect("the door states its registry facts");
+        busbar_kernel::plane::door::fold(reg).expect("the kernel folds the door's row")
+    })
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.
@@ -668,8 +681,13 @@ impl DoorRig {
 /// on the process connector, over `opts`' far ends, its egress the model-serving walk over the
 /// kernel's lane cells, its hooks the kernel's stage with the four probed seats installed.
 pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
-    // The registry rows that own the `pools:`/`models:` sections the deployment writes.
-    node_plane::testkit::install_test_seams();
+    // The linked protocol declarations the deployment's providers name, read off the linked table
+    // the root registers from, and the door's registry row (the plane key's row, which owns the
+    // `pools:`/`models:` sections the deployment writes), folded as the boot folds it.
+    for decls in crate::LINKED.protocols {
+        busbar_kernel::proto::register_test_protocols(decls);
+    }
+    busbar_kernel::plane::registry::register_test_plane(pools_door_row());
     busbar_kernel::metrics::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,

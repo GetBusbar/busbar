@@ -78,12 +78,12 @@ models:
 /// A config that configures the plane owning `tools:` and NOTHING else — no provider, no model — so
 /// it validates on any build that links that plane, whatever other planes (and their provider wire
 /// codecs) the build carries. The empty `providers:`/`models:` pair is written only when the plane
-/// that owns `models:` is linked (`linked_axis_body_ingress`): a plane the build does not link
+/// that owns `models:` is linked (`linked_axis_node`): a plane the build does not link
 /// requires nothing (Law 7).
 #[cfg(linked_axis_stdio_serve)]
 fn write_tools_only_configs(dir: &Path, extra: &str) {
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
-    let catalog = if cfg!(linked_axis_body_ingress) {
+    let catalog = if cfg!(linked_axis_node) {
         "providers: {}\nmodels: {}\n"
     } else {
         ""
@@ -153,7 +153,7 @@ fn plugins_block(dir: &Path, enabled: bool, allow_unsigned: bool) -> String {
 
 /// Baseline: a valid config with no plugins block validates clean (exit 0) and reports plugins
 /// disabled.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_ok_on_valid_config_without_plugins() {
     let dir = fixture_dir("ok");
@@ -175,7 +175,7 @@ fn validate_ok_on_valid_config_without_plugins() {
 /// uncovered branch: `if !unset_env_vars.is_empty()` at main.rs's note-printing site had zero
 /// coverage of either branch (the baseline test above never referenced `${VAR}` syntax at all, so
 /// it exercised neither "note present" nor a confirmed "note absent").
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_notes_unset_interpolated_env_vars_by_name() {
     let dir = fixture_dir("unsetenv");
@@ -218,7 +218,7 @@ fn validate_fails_on_unknown_config_key() {
 
 /// FAIL-CLOSED (hard requirement 1+2): `store.module: valkey` with plugins disabled exits 1
 /// naming `plugins.enabled` — the exact same refusal boot performs.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_fails_when_store_plugin_referenced_but_plugins_disabled() {
     let dir = fixture_dir("disabled");
@@ -245,7 +245,7 @@ fn validate_fails_when_store_plugin_referenced_but_plugins_disabled() {
 /// proof. This test proves the other half: with plugins enabled but nothing actually installed
 /// under that name, `--validate` must STILL refuse, and the error must come from the registry-aware
 /// layer (naming the plugins dir / what's loadable), not silently pass.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_fails_on_unresolvable_auth_chain_plugin() {
     let dir = fixture_dir("authplugin");
@@ -273,7 +273,7 @@ fn validate_fails_on_unresolvable_auth_chain_plugin() {
 
 /// FAIL-CLOSED: ANY invalid tarball in an enabled plugins dir fails --validate naming the file,
 /// even when no plugin is referenced by the config.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_fails_on_invalid_tarball_in_enabled_dir() {
     let dir = fixture_dir("invalid");
@@ -287,7 +287,7 @@ fn validate_fails_on_invalid_tarball_in_enabled_dir() {
 }
 
 /// FAIL-CLOSED: a sha256-mismatched (tampered) manifest fails --validate with the integrity reason.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_fails_on_sha_mismatch() {
     let dir = fixture_dir("sha");
@@ -309,7 +309,7 @@ fn validate_fails_on_sha_mismatch() {
 /// FAIL-CLOSED: referencing an UNSIGNED plugin store under the strict default posture exits 1
 /// naming the opt-in flag; with allow_unsigned it validates clean and the summary reports the
 /// validated plugin — proving --validate exercises the trust gate exactly as boot does.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_trust_gate_matches_boot() {
     let dir = fixture_dir("trust");
@@ -349,7 +349,7 @@ fn validate_trust_gate_matches_boot() {
 }
 
 /// FAIL-CLOSED (conflict): two plugins claiming the same alias fail --validate naming BOTH.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_fails_on_alias_conflict_naming_both() {
     let dir = fixture_dir("conflict");
@@ -543,7 +543,7 @@ fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
 /// while `plugins.enabled` stays at its default `false`) each guard on `!plugins_cfg.enabled` — a
 /// deleted `!` would silently invert the gate (rejecting the NORMAL enabled case instead of the
 /// actual misconfiguration). None of the three had any test coverage at all.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
     // store.module referencing a non-memory backend with plugins.enabled left at its default false.
@@ -592,7 +592,7 @@ fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
 /// reject a resolved plugin of the WRONG kind, not silently accept it — `store.module` pointing (by
 /// name/alias collision) at a `kind: hook` plugin is a real misconfiguration class, not a manifest
 /// integrity failure, so it needs its own named error rather than falling through as if it loaded.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_fails_when_store_module_resolves_to_a_non_store_plugin_kind() {
     let dir = fixture_dir("wrongkind");
@@ -645,7 +645,7 @@ fn validate_fails_when_keys_chain_lacks_signing_key() {
 
 /// A `keys` chain WITH an `auth.signing_key` secret reference validates clean — and `--validate`
 /// never generates or persists a key (the secret is resolved at BOOT, not here).
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_ok_when_keys_chain_has_signing_key_and_writes_no_file() {
     let dir = fixture_dir("sk-ok");
@@ -669,7 +669,7 @@ fn validate_ok_when_keys_chain_has_signing_key_and_writes_no_file() {
 /// `busbar --generate-signing-key` mints a fresh 64-hex ed25519 secret to STDOUT (guidance to
 /// stderr), writes NOTHING, and the key — once written to a file and referenced from
 /// `auth.signing_key` — makes a `keys`-chain config validate clean.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn generate_signing_key_emits_a_usable_referenced_key() {
     let dir = fixture_dir("sk-gen");
@@ -710,7 +710,7 @@ fn generate_signing_key_emits_a_usable_referenced_key() {
 /// production names it: `config.overlay.file` in config.yaml. This helper REWRITES config.yaml to
 /// append that pointer, so callers can keep writing a plain config via `write_configs(&dir, "")`
 /// first.)
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {
     // Append the overlay pointer to the fixture's config.yaml. Single-quoted YAML scalar so a Windows
     // backslash path is never treated as an escape (mirrors `plugins_block`).
@@ -750,7 +750,7 @@ fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, S
 /// validation (here: a DESCENDING `reasoning_effort_budgets`) must fail `--validate` exactly as a
 /// hand-written config.yaml would — the durable-validation invariant. And `--safe-mode` quarantines
 /// the whole overlay (root included), so the same bad overlay validates clean under safe mode.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_applies_and_rejects_a_bad_root_overlay() {
     let dir = fixture_dir("rootovl");
@@ -781,7 +781,7 @@ fn validate_applies_and_rejects_a_bad_root_overlay() {
 
 /// A VALID root overlay (a live-swappable per_request_fee + a well-formed limits override) validates
 /// CLEAN — the effective config resolves + passes semantic validation with the overrides merged in.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_ok_on_valid_root_overlay() {
     let dir = fixture_dir("rootovlok");
@@ -803,7 +803,7 @@ fn validate_ok_on_valid_root_overlay() {
 /// across the upgrade. Point it at a BAD overlay (one that fails `--validate` when applied) and set
 /// NO `config.overlay.file`; validate must apply it and exit 1, proving the env var still selects the
 /// overlay.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_honors_deprecated_busbar_config_overlay_env_var() {
     let dir = fixture_dir("ovlenvdep");
@@ -1003,7 +1003,7 @@ fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
 /// preserved by taking the dialects out in the built-in table's own order and appending each to
 /// `busbar_llm::DECLS`, which keeps the installed set a PREFIX of the operator-visible list at
 /// every step; this test is what makes that a checked property rather than a careful intention.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn the_operator_visible_protocol_order_is_exactly_the_shipped_one() {
     let d = fixture_dir("protocol-order");
@@ -1032,7 +1032,7 @@ fn the_operator_visible_protocol_order_is_exactly_the_shipped_one() {
 /// arbitrary extra args and env pairs — the flexible harness the 1.6.0 flag-precedence tests need
 /// (they vary the config/providers inputs beyond what `run_busbar` fixes). Returns (code, stdout,
 /// stderr).
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 fn run_cli(
     config_env: Option<&Path>,
     args: &[&str],
@@ -1065,7 +1065,7 @@ fn run_cli(
 /// 1.6.0 FLAG-FIRST (config): `-c`/`--config <path>` OVERRIDES `BUSBAR_CONFIG` and the compiled-in
 /// default. `BUSBAR_CONFIG` points at a BOGUS (nonexistent) path; the flag names the real config, and
 /// `--validate` must succeed AND report the flag's path — proving the flag won over the env layer.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn config_flag_overrides_env_and_default() {
     let dir = fixture_dir("cfgflag");
@@ -1097,7 +1097,7 @@ fn config_flag_overrides_env_and_default() {
 /// the default catalog. The config declares a NONEXISTENT `providers_file:` and has NO providers.yaml
 /// beside it, so without the flag `--validate` fails; with `--providers <real>` it succeeds and reports
 /// the flag's catalog — proving the flag won over `providers_file:`.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn providers_flag_overrides_providers_file_and_default() {
     let dir = fixture_dir("provflag");
@@ -1157,7 +1157,7 @@ fn providers_flag_overrides_providers_file_and_default() {
 /// sits at the DEFAULT location next to config.yaml — `--validate` must FAIL with the
 /// cannot-read-providers error naming the bogus path, and the warning must precede that error. This
 /// pins both halves: the var is warned about AND it still selects the catalog.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn busbar_providers_env_is_deprecated_but_honored() {
     let dir = fixture_dir("provenvdep");
@@ -1253,7 +1253,7 @@ models:
 // `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
 // is asking about. The question here genuinely needs a provider lane, so it is gated rather than
 // re-fixtured.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
     let dir = fixture_dir("apikey-unresolvable");
@@ -1287,7 +1287,7 @@ fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
 // `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
 // is asking about. The question here genuinely needs a provider lane, so it is gated rather than
 // re-fixtured.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_accepts_api_key_none_for_a_keyless_upstream() {
     let dir = fixture_dir("apikey-none");
@@ -1522,13 +1522,13 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
 
 /// The published 1.5.5 refusal for `protocol: bogus`, byte for byte (golden cell
 /// `boot.refusal|BOOT-020|validate`). The list is the linked provider wire codecs', so these cells
-/// also need the linked `body-ingress` axis: a build with no provider codec refuses every provider
+/// also need the linked `node` axis: a build with no provider codec refuses every provider
 /// lane first (BUSBAR-3015), and that is the correct answer there, not a missed 1.5.5 line.
-#[cfg(all(feature = "plane-decisions", linked_axis_body_ingress))]
+#[cfg(all(feature = "plane-decisions", linked_axis_node))]
 const PROTOCOLS_1_5_5: &str =
     "must be one of: anthropic, openai, gemini, bedrock, responses, cohere\n";
 
-#[cfg(all(feature = "plane-decisions", linked_axis_body_ingress))]
+#[cfg(all(feature = "plane-decisions", linked_axis_node))]
 #[test]
 fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
     let dir = fixture_dir("bogus-protocol-no-decisions");
@@ -1547,7 +1547,7 @@ fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
 /// `protocol: jev` with no `decisions:` section refuses as 1.5.5 refuses it: no configured plane
 /// speaks it. (The CONTROL `validate_ok_on_a_good_decisions_config` above is the same provider WITH
 /// the section, which validates clean.)
-#[cfg(all(feature = "plane-decisions", linked_axis_body_ingress))]
+#[cfg(all(feature = "plane-decisions", linked_axis_node))]
 #[test]
 fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configured() {
     let dir = fixture_dir("decision-protocol-no-decisions");
@@ -1572,7 +1572,7 @@ fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configure
 /// Retry-After ceiling — and its delivery deadline after them, though both are the sink's own
 /// checks now. The whole refusal is pinned line for line; RED: the sink's lines answered in one
 /// place (all after the limits) reorder the second and third lines.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
     // Whether this binary links the webhook sink is the binary's own answer — a module on no export
@@ -1616,7 +1616,7 @@ fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
 
 /// A store tarball whose signed manifest states a 1.6.0 Statement (`kind_abi` as given) over
 /// `lib`: bytes that are NOT a library, so any `dlopen` of them fails.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &[u8]) {
     use busbar_contract::abi::mechanism::door::Statement;
     use busbar_contract::abi::mechanism::rendering::render;
@@ -1642,7 +1642,7 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
 /// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` names a dropped-in plugin's stated facts and whether the
 /// configuration selects it, read off its signed manifest — WITHOUT opening it: the library bytes
 /// are not a library, so a `dlopen` would refuse the run.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_names_a_dropped_plugins_stated_facts_without_opening_it() {
     use busbar_contract::abi::mechanism::KindCode;
@@ -1679,7 +1679,7 @@ fn validate_names_a_dropped_plugins_stated_facts_without_opening_it() {
 /// RED (BUSBAR-1.6.0.md §11.8): a SELECTED dropped-in plugin whose Statement states another kind ABI
 /// version than this host's is refused by `--validate`, naming the rebuild — still without opening
 /// it.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn validate_refuses_a_selected_plugin_built_for_another_host() {
     use busbar_contract::abi::mechanism::KindCode;

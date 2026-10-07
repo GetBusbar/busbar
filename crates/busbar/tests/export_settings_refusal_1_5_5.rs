@@ -13,7 +13,7 @@
 //! `settings: …`, with no instance.
 
 #![cfg(unix)]
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 

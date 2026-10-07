@@ -22,7 +22,7 @@
 // The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
 // no wire codec compiled in and fails closed at boot, which is correct product behavior, not the
 // seam under test here.
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 // The config names `module: prometheus`, the linked scrape sink on the export-doors axis: a build
 // that links no export door (the single-plane rows link only the exports axis) refuses that module at
 // boot ("unknown exporter 'prometheus'"), which is correct product behaviour, not what this measures.

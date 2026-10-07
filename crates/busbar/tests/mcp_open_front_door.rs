@@ -81,11 +81,11 @@ fn section_key() -> &'static str {
 /// verbatim. Everything absent is absent on purpose: no providers, no models, no pools — the MCP
 /// plane needs none of them, and a fixture that also carried an LLM fleet could fail for a reason
 /// that is about the fleet. The empty `providers:`/`models:` pair is written only when the plane that
-/// owns `models:` is linked (`linked_axis_body_ingress`): a plane the build does not link requires
+/// owns `models:` is linked (`linked_axis_node`): a plane the build does not link requires
 /// nothing (Law 7).
 fn write_config(dir: &Path, data_port: u16, admin_port: u16, auth_block: &str) -> PathBuf {
     std::fs::write(dir.join("providers.yaml"), "{}\n").unwrap();
-    let catalog = if cfg!(linked_axis_body_ingress) {
+    let catalog = if cfg!(linked_axis_node) {
         "providers: {}\nmodels: {}\n"
     } else {
         ""

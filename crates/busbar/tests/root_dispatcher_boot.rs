@@ -10,7 +10,7 @@
 //! when `run()` stops building the dispatcher at boot — none is built (0 threads), or a later
 //! first use builds the one-worker fallback (2).
 #![cfg(target_os = "linux")]
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 

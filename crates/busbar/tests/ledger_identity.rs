@@ -45,7 +45,7 @@
 #![cfg(unix)]
 // Needs a bootable server with a provider route (the money path is what is being reconciled) AND
 // the root's admin surface, which serves the ledger reads the identity is asserted over.
-#![cfg(all(linked_axis_body_ingress, feature = "root-admin"))]
+#![cfg(all(linked_axis_node, feature = "root-admin"))]
 
 mod common;
 

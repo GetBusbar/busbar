@@ -1,23 +1,18 @@
 # busbar-plane-llm — THE LLM PLANE, as an ADAPTER and nothing else.
 #
 # WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind for the LLM protocol.
-# Every method is a thin adapter over a codec that already exists in `busbar-llm`: the dialect
-# readers and writers, the intermediate representation, the cross-dialect translator, the stream
-# translator and the dialect-shaped error envelopes. No wire format is written twice. If a byte
-# differs between what this crate produces and what the existing codec produces, the existing codec
-# is the answer and this crate has the bug.
+# Every method is a thin adapter over the codecs folded into its `codec` module: the dialect readers
+# and writers, the intermediate representation, the cross-dialect translator, the stream translator
+# and the dialect-shaped error envelopes. No wire format is written twice.
 #
 # WHAT THIS CRATE IS NOT. There is no governance here, no breaker, no hook seat, and no metering
 # arithmetic. Those are units, and a unit is on the other side of the kernel from a plane. The
 # metering method returns LOCATORS — where the numbers are — and never a number the ledger would
 # post. The routing method returns a plan, never a connection.
 #
-# THE DEPENDENCY EDGE, STATED HONESTLY. The contract crate is the surface a plugin is written
-# against and it stands alone. `busbar-llm` is named here for the codecs only, and it is a heavier
-# crate than a pure plane's dependency rule would like: it carries an HTTP stack and an async
-# runtime for the engine that still lives beside its codecs. That is a finding about where the
-# codecs sit today, not a decision taken here — the adapter itself names no runtime, opens nothing
-# and reads no clock but the one the context hands it.
+# THE DEPENDENCY EDGE. The contract crate is the surface a plugin is written against and it stands
+# alone; it is the one busbar crate this manifest names. The engine crate the codecs once sat beside
+# (`busbar-llm`) is deleted (FLIP-LLM): the plane is served through its door.
 [package]
 name = "busbar-plane-llm"
 version = "1.6.0"
@@ -25,7 +20,7 @@ publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 # One pinned number, set to what CI verifies — the same rationale every other member states.
 rust-version = "1.97"
-description = "The LLM plane for busbar: the plugin contract's plane kind implemented as a thin adapter over the busbar-llm dialect codecs."
+description = "The LLM plane for busbar: the plugin contract's plane kind implemented as a thin adapter over its dialect codecs."
 license = "Apache-2.0"
 
 [lib]

@@ -8,7 +8,7 @@
 # BESIDE the codec in a later plane-split step — ONE PLUGIN PER PROTOCOL, and MCP the protocol and
 # MCP the plane are the same protocol, so they end up behind the same on/off switch rather than two.
 #
-# `busbar-kernel = { default-features = false }` mirrors `busbar-llm`: the feature decisions belong to
+# `busbar-kernel = { default-features = false }` mirrors every plane crate: the feature decisions belong to
 # the composition root, not to a plugin. The plugin contracts it names are `busbar-contract`'s (the
 # former `busbar-api` retired into it).
 [package]
@@ -25,11 +25,7 @@ license = "Apache-2.0"
 name = "busbar_mcp"
 path = "src/lib.rs"
 
-# THE TEST-LINKED PLANES (SEAM-T): the dev-dependency plane crate `mcp/tests/sampling_satisfy_tests.rs`
-# installs (the fallback plane whose model lane a sampling completion runs on). build.rs emits
-# `$OUT_DIR/test_linked.rs` from this list, so the test's source names no other plane.
 [package.metadata.busbar]
-test-linked = ["busbar-llm"]
 # THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW: the auth plugin dev-dependency whose SDK boundary the
 # admin-verb battery's own test run links onto the auth axis (build.rs emits
 # `$OUT_DIR/test_operator_auth.rs`; the sources name no auth plugin), as the composition root links it
@@ -143,18 +139,12 @@ test-support = [    "busbar-kernel/test-support",
 sha2 = { workspace = true }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
-# THE TEST-LINKED FALLBACK PLANE, dev-only: the MCP sampling suite drives a REAL upstream chat
-# completion on the operator's model (`protocol: openai`), so it installs this crate's
-# `testkit::TEST_SEAM` (listed in `[package.metadata.busbar] test-linked` above; build.rs emits the
-# table) the way the composition root installs the plane — `test-support` is what exports that entry.
-# A dev-dep back-edge, not linked into any shipped target.
-busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # Test-only crates the MCP plane's own `test-support` suite names — reachable through busbar-core's
 # dev-deps under the old dual-compile, declared here now that the suite runs in this crate's own binary.
 reqwest = { workspace = true, features = ["json"] }
 rcgen = { workspace = true, features = ["pem"] }
 # THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
-# (the same shape as the `busbar-llm` back-edge above). `/api/v1/admin/*` is served by busbar-admin,
+# (a dev-only back-edge). `/api/v1/admin/*` is served by busbar-admin,
 # which busbar-core nests through the runtime fn-pointer seam `busbar_core::admin::seam`; production
 # registers it via `busbar_admin::install()` at the composition root. This plane crate's `test-support`
 # engine path never calls it, so the admin surface is absent and every trust-verb test is a router-level

@@ -808,29 +808,23 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
 // cell below drives a keyed caller through the data router built with the door's claims, the
 // kernel's hook stage, the model-serving walk over the kernel's lane cells and the node's book
 // (`super::hook_seat_tests::rig`), and reads the capability where the kernel keeps it.
-#[cfg(linked_fold_on_driver)]
 use super::hook_seat_tests::{
     chunk, far_end_answering, far_end_scripted, rig, webhook_secret, RigOpts, Script, REWRITTEN,
     WEBHOOK_KEY,
 };
-#[cfg(linked_fold_on_driver)]
 use super::planes_tests::{Published as Withdrawn, PUBLISHING as ONE_PUBLISHER};
 
 /// A served chat completion, marked by the member that answered it.
-#[cfg(linked_fold_on_driver)]
 const SERVED_BY_TWIN: &str = r#"{"id":"chatcmpl-2","object":"chat.completion","created":0,"model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"served-by-the-twin"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
 
 /// A far end that cannot serve now.
-#[cfg(linked_fold_on_driver)]
 const OVERLOADED: &str = r#"{"error":{"message":"overloaded","type":"server_error"}}"#;
 
 /// A far end refusing the request itself.
-#[cfg(linked_fold_on_driver)]
 const MALFORMED: &str = r#"{"error":{"message":"bad request","type":"invalid_request_error"}}"#;
 
 /// BREAKER-TRIP: a member whose far end fails records into the kernel's ONE breaker cell for its
 /// (pool, lane), and the cell opens: the walk's failure benched it.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_trips_a_failing_members_breaker_cell() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -861,7 +855,6 @@ async fn the_pools_door_trips_a_failing_members_breaker_cell() {
 
 /// BREAKER-FASTFAIL: a tripped member is refused before dispatch, at once: the next unit never
 /// dials it, and its twin serves.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_refuses_a_tripped_member_before_dispatch() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -897,7 +890,6 @@ async fn the_pools_door_refuses_a_tripped_member_before_dispatch() {
 
 /// FAILOVER-REROUTE: a second interchangeable candidate is tried before the first byte, through
 /// the one walk: the first member fails, the twin's answer is the caller's.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_reroutes_to_the_twin_before_the_first_byte() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -928,7 +920,6 @@ async fn the_pools_door_reroutes_to_the_twin_before_the_first_byte() {
 /// DISPOSITION: the far end's answer is classified before it is relayed: a refusal of the request
 /// itself is the caller's own fault, relayed with its status, never failed over and never charged
 /// to the member's breaker cell.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_classifies_a_refused_request_as_the_callers_fault() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -961,7 +952,6 @@ async fn the_pools_door_classifies_a_refused_request_as_the_callers_fault() {
 
 /// EGRESS-AUTH: the member's credential is the one the egress mechanism binds and injects; the
 /// caller's own token never crosses.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_injects_the_members_credential_not_the_callers() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -985,8 +975,13 @@ async fn the_pools_door_injects_the_members_credential_not_the_callers() {
     );
 }
 
-/// METRICS: the door's traffic appears on the scrape, under the pool and lane it was served on.
-#[cfg(linked_fold_on_driver)]
+/// METRICS: the door's traffic appears on the scrape, under the pool and lane it was served on, and
+/// its request families keep the exact v1.5.4 label set — `{ingress_protocol, pool, outcome}`, no
+/// `plane` label on either family anywhere in the exposition (the BI-2 byte-identity guard).
+///
+/// The request-family half ports the model-plane half of kernel
+/// `tests/plane_integration.rs::metrics_scrape::mounted_plane_traffic_appears_on_a_real_metrics_scrape`
+/// (it drove the model plane through the kernel router, which no longer serves it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1011,11 +1006,52 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
                 && l.contains("lane=\"m0\"")),
         "the attempt is on the scrape under its pool and lane:\n{scrape}"
     );
+    let family = |name: &str| -> Vec<String> {
+        scrape
+            .lines()
+            .filter(|l| !l.starts_with('#') && l.starts_with(name))
+            .map(str::to_string)
+            .collect()
+    };
+    let keys_of = |line: &str| -> Vec<String> {
+        let mut keys: Vec<String> = line
+            .split_once('{')
+            .and_then(|(_, rest)| rest.rsplit_once('}'))
+            .map(|(inner, _)| {
+                inner
+                    .split(',')
+                    .filter_map(|kv| kv.split_once('=').map(|(k, _)| k.trim().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        keys.sort();
+        keys
+    };
+    let requests = family("busbar_requests_total{");
+    assert!(
+        requests
+            .iter()
+            .any(|l| l.contains("pool=\"p\"")
+                && keys_of(l) == ["ingress_protocol", "outcome", "pool"]),
+        "the unit is counted on the v1.5.4-shaped request family:\n{scrape}"
+    );
+    assert!(
+        !family("busbar_request_duration_seconds").is_empty(),
+        "and timed on its duration family:\n{scrape}"
+    );
+    for line in requests
+        .iter()
+        .chain(family("busbar_request_duration_seconds").iter())
+    {
+        assert!(
+            !line.contains("plane=\""),
+            "a `plane` label leaked onto a v1.5.4 request family: {line}"
+        );
+    }
 }
 
 /// GOVERNANCE-BUDGET: the unit's spend is attributed to the presenting key, and a key whose budget
 /// is spent is refused before any far end is dialled.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1048,7 +1084,6 @@ async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
 }
 
 /// AUDIT-CHAIN: every unit the door serves seals exactly one record on the node's chain.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_seals_one_audit_record_per_unit() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1069,7 +1104,6 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
 }
 
 /// HOOKS-GATE: a decision gate refuses the door's traffic before dispatch.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1091,7 +1125,6 @@ async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
 
 /// HOOKS-TAP: the rewrite and observe hooks run over the door's payloads: the request-stage tap
 /// sees the request as the global rewrite left it.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1118,7 +1151,6 @@ async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
 
 /// CATALOGUE: what a restricted key may SEE is the one catalogue walk's answer: the pool it may
 /// reach and that pool's members, never a model it cannot reach.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1155,7 +1187,6 @@ async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches()
 }
 
 /// An anthropic message whose usage carries a member the openai caller's dialect has no form for.
-#[cfg(linked_fold_on_driver)]
 const ANTHROPIC_ANSWER: &str = r#"{"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0}}}"#;
 
 /// THE DROPPED-CONTROLS AUDIT ROW ON THE DOOR (ARCHITECT, Q128 gap): a TRANSLATE attempt that
@@ -1163,7 +1194,6 @@ const ANTHROPIC_ANSWER: &str = r#"{"id":"msg_1","type":"message","role":"assista
 /// outcome `degraded`, `<control> on <dialect>`; an answer member the caller's dialect has no form
 /// for writes `<path> from <dialect>`. Both reach the kernel's audit chain through the plane's
 /// `RECORD_AUDIT` write. RED arm: a request that sets nothing the far dialect drops writes no row.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1231,7 +1261,6 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
 /// recorded, its free concurrency, its remaining budget, and, where the generation declares them,
 /// its breaker state, error rate and p95 latency in the routing pool. RED before: every one of them
 /// was empty on the door path.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_hooks_see_each_candidates_standing() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1285,12 +1314,10 @@ async fn the_pools_doors_hooks_see_each_candidates_standing() {
 // ── what only the plane reads, the kernel routes on (ARCHITECT Q1 ArriveOut, 2026-10-05) ────────
 
 /// A streamed far end's head: chunked, so a far end that closes before its last chunk CUT it.
-#[cfg(linked_fold_on_driver)]
 const STREAM_HEAD: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
                            transfer-encoding: chunked\r\nconnection: close\r\n\r\n";
 
 /// The streamed answer's frames, in order: a delta, the stop, the usage, the end.
-#[cfg(linked_fold_on_driver)]
 const FRAMES: [&str; 4] = [
     r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}"#,
     r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
@@ -1299,13 +1326,11 @@ const FRAMES: [&str; 4] = [
 ];
 
 /// One event-stream frame, as a chunk.
-#[cfg(linked_fold_on_driver)]
 fn frame(data: &str) -> Vec<u8> {
     chunk(format!("data: {data}\n\n").as_bytes())
 }
 
 /// A stream that pauses `pause_ms` after its first frame, then ends cleanly.
-#[cfg(linked_fold_on_driver)]
 fn stream_pausing(pause_ms: u64) -> Script {
     Script {
         head: STREAM_HEAD.to_string(),
@@ -1320,7 +1345,6 @@ fn stream_pausing(pause_ms: u64) -> Script {
 }
 
 /// A caller's chat on pool `p` asking for its answer streamed.
-#[cfg(linked_fold_on_driver)]
 fn streamed_chat() -> serde_json::Value {
     serde_json::json!({"model": "p", "stream": true, "max_tokens": 16,
         "messages": [{"role": "user", "content": "hi"}]})
@@ -1330,7 +1354,6 @@ fn streamed_chat() -> serde_json::Value {
 /// `ROUTE_STREAM`; v1.5.5 bounded a stream's whole send by the stream ceiling): a stream that
 /// outlives its pool's one-second failover timeout is delivered whole. Before the plane stated the
 /// stream, the door cut it at the pool's timeout.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_timeout() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1360,7 +1383,6 @@ async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_time
 /// THE STREAM CEILING CUTS a streamed answer that outlives it, however long its pool's timeout
 /// (RED before the plane stated `ROUTE_STREAM`: the door read the stream as buffered and waited the
 /// pool's timeout out).
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_cuts_a_stream_at_the_stream_ceiling() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1398,7 +1420,6 @@ async fn the_pools_door_cuts_a_stream_at_the_stream_ceiling() {
 /// A MID-STREAM CUT IS NOT A REFUND (Part 2 #62): a streamed answer the far end cuts after its
 /// first byte reached the caller keeps the member's lifetime budget unit it spent (RED before the
 /// plane stated `ROUTE_STREAM`: the door refunded it as a buffered answer's).
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1432,7 +1453,6 @@ async fn the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_by
 
 /// THE CONTROL: a buffered answer the far end cuts reaches the caller whole or not at all, so its
 /// budget unit is given back (v1.5.5 `engine/mod.rs:329-353`).
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_refunds_the_budget_unit_of_a_buffered_answer_cut() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1462,12 +1482,10 @@ async fn the_pools_door_refunds_the_budget_unit_of_a_buffered_answer_cut() {
 }
 
 /// A whole same-dialect answer that reports 1500 + 90 tokens.
-#[cfg(linked_fold_on_driver)]
 const WHOLE: &str = r#"{"id":"chatcmpl-9","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hello there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1500,"completion_tokens":90,"total_tokens":1590}}"#;
 
 /// A far end that answers [`WHOLE`] under its full length but writes only `prefix` of it, then
 /// holds the connection `hold_ms` and closes (a cut).
-#[cfg(linked_fold_on_driver)]
 fn whole_cut_after(prefix: usize, hold_ms: u64) -> Script {
     Script {
         head: format!(
@@ -1487,7 +1505,6 @@ fn whole_cut_after(prefix: usize, hold_ms: u64) -> Script {
 /// `nonstream_drop_billing_tests`, rows 338/342): a same-dialect non-stream answer the far end cuts
 /// AFTER its `usage` bills exactly what the far end reported; one cut BEFORE its `usage` reported
 /// nothing and bills nothing, never a floor over the relayed bytes.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_reported() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1525,7 +1542,6 @@ async fn the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_repo
 
 /// ITEM 367 (Q33 (a), told), legacy row 338: a same-dialect non-stream answer the CALLER drops
 /// mid-relay was generated whole before its first byte, so it bills what it relayed: never 0.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bills_a_non_stream_answer_the_caller_dropped_mid_relay() {
     use http_body_util::BodyExt as _;
@@ -1579,7 +1595,6 @@ async fn the_pools_door_bills_a_non_stream_answer_the_caller_dropped_mid_relay()
 /// plane states the session key it reads (the pool's header, `x-session-id` by default, else chat's
 /// body `system`) and the kernel pins every unit with that key to one member; a unit without one
 /// is spread by the weighted floor.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_pins_a_session_to_one_member() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1650,7 +1665,6 @@ async fn the_pools_door_pins_a_session_to_one_member() {
 
 /// A POOL'S OWN AFFINITY HEADER (`affinity.header_name`) is the one its sessions are read from; the
 /// default header is then no key.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1707,12 +1721,10 @@ async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
 // ── THE INBOUND RESPONSES WEBHOOK RECEIVER (new in 1.6.0; ARCHITECT Q2, 2026-10-06) ─────────────
 
 /// A completed background turn's webhook body.
-#[cfg(linked_fold_on_driver)]
 const COMPLETED: &str = r#"{"id":"evt_abc123","type":"response.completed","created_at":1700000900,"data":{"id":"resp_xyz789"}}"#;
 
 /// HMAC-SHA256 of `data` under `key` (RFC 2104 over the RustCrypto digest: an independent witness
 /// of the plugin's own `ring` HMAC).
-#[cfg(linked_fold_on_driver)]
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     let mut block = [0u8; 64];
@@ -1734,7 +1746,6 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 /// The Standard Webhooks head for `body` sent as message `id` now, signed under `key`.
-#[cfg(linked_fold_on_driver)]
 fn signed_head(id: &str, key: &[u8], body: &str) -> Vec<(String, String)> {
     use base64::Engine as _;
     let ts = std::time::SystemTime::now()
@@ -1753,7 +1764,6 @@ fn signed_head(id: &str, key: &[u8], body: &str) -> Vec<(String, String)> {
 }
 
 /// One unauthenticated POST of `body` to `path` with `head`: its status and body.
-#[cfg(linked_fold_on_driver)]
 async fn deliver(
     router: &axum::Router,
     path: &str,
@@ -1782,7 +1792,6 @@ async fn deliver(
 }
 
 /// The receiver a configured rig's plane states: its one public route's target.
-#[cfg(linked_fold_on_driver)]
 fn receiver(rig: &super::hook_seat_tests::DoorRig) -> String {
     match rig.public_routes.as_slice() {
         [(verb, target)] if verb == "POST" => target.clone(),
@@ -1795,7 +1804,6 @@ fn receiver(rig: &super::hook_seat_tests::DoorRig) -> String {
 /// acknowledged with its correlation id); a missing signature, a wrong one and a replayed message
 /// id are each 401, alike, and never reach the plane. RED without the kernel's verify: every
 /// delivery would be served.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_webhook_receiver_serves_a_signed_delivery_once() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1865,7 +1873,6 @@ async fn the_pools_doors_webhook_receiver_serves_a_signed_delivery_once() {
 /// answers as 1.5.5's did (an unkeyed caller the data auth gate's 401, a keyed caller the fallback's
 /// not-found), and a signed delivery is never served. 1.5.5 refuses the section's key at boot, so
 /// every configuration 1.5.5 accepts is this one.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unconfigured_webhook_receiver_states_no_route() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1919,7 +1926,6 @@ async fn an_unconfigured_webhook_receiver_states_no_route() {
 /// A ROUTE WHOSE SCHEME NO INSTANCE SERVES refuses the boot, naming the route and the scheme; one
 /// `identity-providers:` entry whose module serves the scheme admits it; an unconfigured receiver
 /// names no scheme to check.
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_webhook_scheme_no_identity_provider_serves_refuses_the_boot() {
     let _one = ONE_PUBLISHER.lock().await;
@@ -1973,7 +1979,6 @@ async fn a_webhook_scheme_no_identity_provider_serves_refuses_the_boot() {
 /// streaming reader's usage is consulted"): a same-dialect stream whose far end reported its input
 /// usage in its opening frame bills it when the caller goes after the first bytes, never 0 (the
 /// plane's cancel answers OK_PARTIAL and the reader's running counts are its checkpoint).
-#[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bills_a_stream_the_caller_dropped_what_its_readers_counted() {
     use http_body_util::BodyExt as _;

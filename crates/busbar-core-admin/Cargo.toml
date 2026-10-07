@@ -27,7 +27,13 @@ path = "src/lib.rs"
 # THE LINKED TEST-SEAM LIST: the dev-dependency crates whose `testkit::TEST_SEAM` entry this crate's
 # unit tests register and loop (build.rs emits the table; the sources name none of these crates).
 [package.metadata.busbar]
-test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+test-linked = ["door:busbar-plane-llm", "busbar-mcp", "busbar-a2a"]
+# A `door:` row is a plane crate served through its memory-ABI door only: build.rs emits its
+# `plane_door::door` and the harness folds its registry row from its Statement, as the composition
+# root does (`root::linked::door_rows`). The list is the install order (the planes' layering order).
+# `test-linked-protocols` names the crates whose linked row installs protocol declarations on the
+# protocol axis (`linked::PROTOCOLS`): the dialects a lane's `protocol:` resolves against.
+test-linked-protocols = ["busbar-plane-llm"]
 # THE TEST REGISTRY ROW for the operator credential: the auth plugin dev-dependency whose SDK boundary
 # this crate's unit tests link onto the auth axis (build.rs emits it; the sources name no auth plugin),
 # as the composition root links it into the shipped binary.
@@ -73,14 +79,14 @@ plane-a2a = ["busbar-kernel/plane-a2a"]
 test-support = ["busbar-kernel/test-support"]
 # The openapi-schema derive: the moved admin-view types derive `schemars::JsonSchema` under this
 # feature, mirroring busbar-kernel/busbar-a2a. Forwards to busbar-kernel/openapi-schema so the shared
-# schema surface resolves in lock-step. It ALSO forwards to the three dev-dependency planes'
+# schema surface resolves in lock-step. It ALSO forwards to the two dev-dependency planes'
 # `openapi-schema` (a dev-dep feature only applies to test builds; it never links a plane into the
 # library): the openapi tests assemble the document from the linked plane decls, and a plane built
 # without its own feature contributes its paths but not its `openapi_schemas`, so the a2a/mcp trust
 # verbs lose their typed bodies. The binary forwards the same four; without this, `cargo test -p
 # busbar-core-admin --features openapi-schema` run alone generated a different document than CI's
 # combined `-p busbar -p busbar-kernel -p busbar-core-admin` run, where feature unification hid it.
-openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
 
 [dev-dependencies]
 # Test-only (json body decode + public-key hex in the service tests); no production use.
@@ -91,7 +97,10 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # testkits register the plane decls + the self-enveloping admin-verb backing (core's
 # `CorePlaneAdminEnvelope`, which STAYED in busbar-core). NOTE: do NOT enable busbar-admin/test-support
 # on these edges.
-busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
+# THE FIRST TEST-LINKED PLANE, through its memory-ABI door only (a `door:` row of `test-linked`
+# above, its protocol declarations `test-linked-protocols`): a pure plane crate (it names the contract
+# alone), so no engine rides in.
+busbar-plane-llm = { path = "../busbar-plane-llm" }
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW (`test-operator-auth` above): the admin e2e tests

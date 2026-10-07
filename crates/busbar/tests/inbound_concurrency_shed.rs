@@ -16,7 +16,7 @@
 #![cfg(unix)]
 // Needs a bootable server with a route to send a real request through; a build without a wire
 // codec fail-closes at boot. The shed layer itself is plane-independent.
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 

@@ -356,71 +356,6 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     }
 }
 
-/// A pool name used by NOTHING else in this binary. The test process shares one global recorder and
-/// runs tests in parallel, so an exact-delta assertion has to be made on a label set no other test
-/// can touch; `"unresolved"` would not be one.
-const POOL: &str = "observe-residual-exactness-pool";
-
-/// A MODEL-plane request is counted EXACTLY ONCE with the door plane mounted alongside it.
-///
-/// The residual plane is the one the boundary must not touch: it labels its own requests from
-/// `ingress::finish_inner`, which also owns the non-2xx flat-fee refund and therefore cannot be
-/// replaced by the layer. If the layer ever stops asking the mount table and starts counting
-/// everything, this goes to 2 and says so.
-#[tokio::test]
-async fn a_model_plane_request_is_counted_exactly_once() {
-    busbar_kernel::metrics::init();
-    // The linked roster registers the fallback plane (as the composition root does in production),
-    // so the neutral residual-key derivation recognises it as the residual — otherwise the
-    // model-plane boundary would not know this request rides the residual and would double-count it.
-    linked::install();
-    assert!(
-        linked::fallback().fallback,
-        "the roster carries the fallback plane"
-    );
-    let app = configured(
-        TestApp::new()
-            .lane(LaneSpec::new(
-                "observe-residual-model",
-                busbar_kernel::proto::PROTO_OPENAI,
-                "http://127.0.0.1:1",
-            ))
-            .pool(POOL, &[(0, 1)]),
-        &door_section_yaml("gateway.example.com"),
-        None,
-    )
-    .build();
-    let router = busbar_kernel::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-    // The model plane's `busbar_requests_total` carries NO `plane` label (v1.5.4-identical); this
-    // pool name is unique to this test, so it alone pins the delta.
-    let labels = [("pool", POOL)];
-    let before = metric_sum(busbar_kernel::metrics::REQUESTS_TOTAL, &labels);
-    // The upstream is a closed port, so this fails to forward — which is fine and deliberate. What
-    // is under test is HOW MANY TIMES the request is counted, not what it returned.
-    let _ = reqwest::Client::new()
-        .post(format!("http://{addr}/v1/chat/completions"))
-        .json(&serde_json::json!({
-            "model": POOL,
-            "messages": [{ "role": "user", "content": "hi" }],
-        }))
-        .send()
-        .await
-        .unwrap();
-    let after = metric_sum(busbar_kernel::metrics::REQUESTS_TOTAL, &labels);
-    server.abort();
-
-    assert_eq!(
-        (after - before).round() as u64,
-        1,
-        "one model-plane request must produce ONE count, not one from `finish_inner` plus one from \
-         the plane ingress boundary"
-    );
-}
-
 #[cfg(test)]
 mod metrics_scrape {
     use super::*;
@@ -460,8 +395,7 @@ mod metrics_scrape {
 
     /// A TOOL-PLANE call and an AGENT-PLANE task each produce a `busbar_plane_requests_total` and a
     /// `busbar_plane_request_duration_seconds` series on a real `/metrics` scrape, labelled with the
-    /// plane they arrived on — WHILE the model plane's `busbar_requests_total` stays v1.5.4-identical
-    /// (no `plane` label).
+    /// plane they arrived on — WHILE the v1.5.4 request families carry no `plane` label.
     ///
     /// Delete the observation layer and this test fails: without it, no mounted-plane request
     /// reaches an emission site at all. That is what the test is for — the mounted planes were
@@ -519,21 +453,6 @@ mod metrics_scrape {
             .status()
             .as_u16();
 
-        // ── MODEL-PLANE TRAFFIC, so the three planes are compared on ONE scrape ─────────────────────
-        // An unroutable model is deliberate: it reaches `ingress::finish_inner` without needing an
-        // upstream, which is all this assertion needs. The point is the SERIES SHAPE, not the status.
-        let model_status = client
-            .post(format!("{base}/v1/chat/completions"))
-            .json(&serde_json::json!({
-                "model": "no-such-model",
-                "messages": [{ "role": "user", "content": "hi" }],
-            }))
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .as_u16();
-
         // ── THE SCRAPE, through the real `/metrics` route ───────────────────────────────────────────
         let scrape = client.get(format!("{base}/metrics")).send().await.unwrap();
         assert_eq!(
@@ -556,7 +475,7 @@ mod metrics_scrape {
             assert!(
                 !counters.is_empty(),
                 "no `{}` series for plane=\"{plane}\" after driving real traffic \
-                 (door {door_status}, agents {agents_status}, model {model_status}). \
+                 (door {door_status}, agents {agents_status}). \
                  Exposition:\n{exposition}",
                 busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
             );
@@ -585,35 +504,11 @@ mod metrics_scrape {
             }
         }
 
-        // THE MODEL PLANE STAYS v1.5.4-IDENTICAL. `busbar_requests_total` carries the exact 1.5.4 label
-        // set {ingress_protocol, pool, outcome} and NO `plane` label — the whole point of the split.
-        // (The recorder is process-global and shared across the whole test binary, so other tests'
-        // model-plane series are present too; the positive claim is that a correctly-shaped one exists,
-        // and the byte-identity guard below then holds for EVERY model-family line regardless of origin.)
-        let model_counters = lines_for(&exposition, busbar_kernel::metrics::REQUESTS_TOTAL);
-        assert!(
-            model_counters.iter().any(|line| keys_of(line)
-                == vec![
-                    "ingress_protocol".to_string(),
-                    "outcome".to_string(),
-                    "pool".to_string()
-                ]),
-            "no v1.5.4-shaped `{}` series {{ingress_protocol,pool,outcome}} after driving model traffic \
-             (model {model_status}). Exposition:\n{exposition}",
-            busbar_kernel::metrics::REQUESTS_TOTAL,
-        );
-        assert!(
-            !lines_for(
-                &exposition,
-                busbar_kernel::metrics::REQUEST_DURATION_SECONDS
-            )
-            .is_empty(),
-            "no `{}` series after driving model traffic. Exposition:\n{exposition}",
-            busbar_kernel::metrics::REQUEST_DURATION_SECONDS,
-        );
-        // BYTE-IDENTITY GUARD: the two model families never carry a `plane` label anywhere in the whole
-        // exposition. This is the assertion that fails if the BI-2 regression (a `plane` label on these
-        // pre-existing families) is ever reintroduced by any emission site.
+        // BYTE-IDENTITY GUARD: the mounted planes' traffic never lands on the two v1.5.4 request
+        // families with a `plane` label, anywhere in the whole exposition. This is the assertion that
+        // fails if the BI-2 regression (a `plane` label on these pre-existing families) is ever
+        // reintroduced by an emission site the mounted planes reach. (The door-served residual
+        // traffic's own v1.5.4 shape is the root's to prove: `crates/busbar/src/root/tests/serve_door.rs`.)
         for family in [
             busbar_kernel::metrics::REQUESTS_TOTAL,
             busbar_kernel::metrics::REQUEST_DURATION_SECONDS,

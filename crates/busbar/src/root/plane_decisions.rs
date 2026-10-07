@@ -211,7 +211,6 @@ pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
 /// THE DECISIONS PLANE'S ROOT UNIT: the read-back seal, and nothing else.
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: Some(installed_under_its_own_key),
-    drive: None,
     on_config: None,
     opens_book: false,
     on_book: None,

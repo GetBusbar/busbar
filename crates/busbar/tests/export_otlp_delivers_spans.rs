@@ -19,7 +19,7 @@
 #![cfg(unix)]
 // The config serves `providers:`/`models:`, so the build must link the plane that takes body
 // ingress: the linked table's answer, never a feature name.
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 

@@ -29,7 +29,13 @@ path = "src/lib.rs"
 # `tests/linked/mod.rs` includes it, so the tests' sources name none of these crates; they address a
 # plane by what its declaration states, read back from the registry.
 [package.metadata.busbar]
-test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+test-linked = ["door:busbar-plane-llm", "busbar-mcp", "busbar-a2a"]
+# A `door:` row is a plane crate served through its memory-ABI door only: build.rs emits its
+# `plane_door::door` and the harness folds its registry row from its Statement, as the composition
+# root does (`root::linked::door_rows`). The list is the install order (the planes' layering order).
+# `test-linked-protocols` names the crates whose linked row installs protocol declarations on the
+# protocol axis (`linked::PROTOCOLS`): the dialects a lane's `protocol:` resolves against.
+test-linked-protocols = ["busbar-plane-llm"]
 
 [dependencies]
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
@@ -251,7 +257,7 @@ jsonrpc-ingress = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
-openapi-schema = ["dep:schemars", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
 loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
@@ -282,13 +288,12 @@ busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 # there (a plane is featureless on purpose), so `cargo test --workspace` runs them without any edge
 # at all; the meter cells came back to `busbar-a2a`, which this file already dev-depends on above
 # with `test-support` set. Nothing this line reached went unreached.
-# THE LLM PLANE crate, on the SAME dev-dependency back-edge as MCP/A2A above: core's own test binary
-# names `busbar_llm::PLANE_DECL` (the `#[cfg(test)]` row in `plane::registry::BUILTIN_PLANE_DECLS`) so
-# the process plane list its registry/plane tests drive is the same `[llm, mcp, a2a]` the shipped
-# binary boots with — the plane's PUBLIC decl across the honest crate boundary, not the former
-# `#[path]` dual-compile of its source. `busbar-llm` normal-depends on `busbar-core`; a dev-dep the
-# other way is not a build cycle (lib built first, then dev-deps, then the test binary).
-busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
+# THE FIRST TEST-LINKED PLANE, served through its memory-ABI door only: a `door:` row of
+# `test-linked` above (and its protocol declarations, `test-linked-protocols`), its registry row
+# folded from its Statement in the cross-plane tests as the composition root folds it. A pure plane
+# crate (it names the contract alone): no engine rides in. The engine crate that served it before the
+# fold is deleted (FLIP-LLM).
+busbar-plane-llm = { path = "../busbar-plane-llm" }
 # The export axis this crate's config tests resolve `module: prometheus` against: the scrape sink,
 # LINKED into the test binary exactly as the composition root links it into the shipped one (the
 # kernel names no export module; its tests need one on the axis). Pulled from its own repo at the SAME

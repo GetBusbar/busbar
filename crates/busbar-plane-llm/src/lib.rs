@@ -38,6 +38,19 @@ pub mod plane;
 pub mod plane_door;
 pub mod refusal;
 
+/// THE ENTRY A COMPOSITION ROOT THAT LINKED THIS PLANE READS beside its door (the root's
+/// `[package.metadata.busbar.linked-axes]` row for this crate). The door itself is
+/// `plane_door::door`, the plane-door row's entry.
+pub mod linked {
+    /// The diagnostics axis: the plane's own coded diagnostics, defined beside the dialect code
+    /// that emits them.
+    pub use crate::codec::diagnostics::DIAGNOSTICS;
+    /// The protocol axis: the six dialects' declarations, in the order an operator sees.
+    pub use crate::codec::DECLS as PROTOCOLS;
+    /// The CLI-help axis: this plane's rows of `busbar --help`, as declared data.
+    pub use crate::meta::CLI_HELP;
+}
+
 use busbar_contract::ids::LaneId;
 use busbar_contract::ir::egress_prep::LaneCaps;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};

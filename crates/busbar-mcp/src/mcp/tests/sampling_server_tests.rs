@@ -12,7 +12,6 @@ use crate::mcp::test_engine::*;
 use busbar_contract::plane::{PlaneDeclaration, ServedOpClass};
 use busbar_kernel::{
     plane::registry::{PlaneDecl, TestRegistryIsolation},
-    test_support::seam::{register_test_plane_seam, test_plane_seams},
     test_support::NEUTRAL_FALLBACK,
 };
 use busbar_plane_mcp::meta::SAMPLING_OP;
@@ -48,22 +47,6 @@ static SERVING_OTHER: PlaneDecl = PlaneDecl {
     },
     ..NEUTRAL_FALLBACK
 };
-
-// The linked planes' test seams, as this crate's manifest lists them (`test-linked`, emitted by
-// build.rs) — so the completion seam this test proves is NOT what refuses is a real, answering one.
-include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
-
-/// Install the linked planes' seams — the completion seam among them. With it installed, an ask
-/// that got past the class resolution would reach a synthesizer and come back as something other
-/// than the no-server refusal, so the refusal below is proven to come from the resolution.
-fn install_linked_seams() {
-    for entry in TEST_LINKED {
-        register_test_plane_seam(entry);
-    }
-    for seam in test_plane_seams() {
-        (seam.install)();
-    }
-}
 
 /// The dispatch round the budget refusal below is raised on.
 const ROUND: u32 = 3;
@@ -117,7 +100,6 @@ fn the_sampling_server_is_the_plane_declaring_the_class_and_the_refusal_reads_it
 /// refused in, before the host is asked to drive anything; and the budget refusal names no plane.
 #[tokio::test]
 async fn a_plane_that_does_not_declare_the_class_answers_no_sampling_ask() {
-    install_linked_seams();
     let app = test_app().build();
     let host = engine_host(&app);
     let _registry = TestRegistryIsolation::seeded(&[&SERVING_OTHER]);

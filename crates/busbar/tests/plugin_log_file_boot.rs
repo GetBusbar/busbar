@@ -20,7 +20,7 @@
 //!
 //! Run it: `cargo test -p busbar --test plugin_log_file_boot -- --ignored`
 #![cfg(unix)]
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 

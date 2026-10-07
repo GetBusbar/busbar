@@ -24,7 +24,7 @@
 // build has no wire codec compiled in and fail-closes at boot (BUSBAR-9007), which is correct product
 // behavior, not a regression. The state-file invariant under test is plane-independent, but this proof
 // of it requires a bootable server, so it is gated on the LLM plane. Full-feature builds still run it.
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 

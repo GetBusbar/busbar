@@ -170,14 +170,14 @@ fn install_auth_plugin(dir: &Path) -> bool {
 }
 
 /// The config skeleton every scenario shares: the MCP resource, `extra` verbatim, and the minimal
-/// provider/model pair ONLY when a linked row carries the body-ingress axis — the plane that owns
-/// provider lanes. Whether to write them is read off the linked set (`linked_axis_body_ingress`, as
+/// provider/model pair ONLY when a linked row carries the node axis — the plane that owns
+/// provider lanes. Whether to write them is read off the linked set (`linked_axis_node`, as
 /// `thread_per_core_serves.rs` gates), never off a plane's name: a build without that axis has no
 /// wire codec and refuses a provider at boot (BUSBAR-9007), so its scenarios died before their first
 /// frame. Without the axis neither key is written: only a linked plane that requires a section makes
 /// it required.
 fn write_configs(dir: &Path, extra: &str) {
-    let provider_lanes = cfg!(linked_axis_body_ingress);
+    let provider_lanes = cfg!(linked_axis_node);
     std::fs::write(
         dir.join("providers.yaml"),
         if provider_lanes {
@@ -349,7 +349,7 @@ fn meta() -> serde_json::Value {
 
 /// CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): `providers:` and `models:` are required only by a linked
 /// plane that declares it requires them. This file's builds all link the plane serving this door;
-/// with the plane that owns `models:` linked too (`linked_axis_body_ingress`: the default build),
+/// with the plane that owns `models:` linked too (`linked_axis_node`: the default build),
 /// a document carrying neither is refused with the published v1.5.5 line — measured on that
 /// binary: `[error] config.yaml: invalid YAML: missing field `providers`` — carrying only 1.6.0's
 /// diagnostic-code stamp (`BUSBAR-3015: `; accepted difference D-1, "the text after the code is
@@ -377,7 +377,7 @@ fn the_catalog_sections_are_required_only_when_a_linked_plane_requires_them() {
         .expect("run busbar --validate");
     let _ = std::fs::remove_dir_all(&dir);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if cfg!(linked_axis_body_ingress) {
+    if cfg!(linked_axis_node) {
         assert_eq!(out.status.code(), Some(1), "{stderr}");
         let stamped = PROVIDERS_1_5_5.replacen("[error] ", &format!("[error] {STAMP}"), 1);
         assert!(

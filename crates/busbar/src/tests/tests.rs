@@ -719,13 +719,13 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
 /// threads: two boot-book tests that each set it would resolve one directory and write two chains
 /// into one journal, whose replay then fails verification. Every test that sets it does so through
 /// [`data_dir_env`], which holds this lock until the test ends. Its only callers are the
-/// `linked_axis_body_ingress` boot-book cells, so it is gated with them.
-#[cfg(linked_axis_body_ingress)]
+/// `linked_axis_node` boot-book cells, so it is gated with them.
+#[cfg(linked_axis_node)]
 static DATA_DIR_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Set `BUSBAR_DATA_DIR` to `dir` for the rest of the calling test, serialized against every other
 /// test that sets it. The tuple drops in order: the variable is restored, then the lock released.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 fn data_dir_env(dir: &std::path::Path) -> (EnvVarGuard, std::sync::MutexGuard<'static, ()>) {
     // A test that panicked while holding the lock still restored the variable on unwind.
     let held = DATA_DIR_ENV
@@ -806,10 +806,10 @@ fn empty_opening_plan() -> root::migration::MigrationConfig {
 ///     it looks authoritative while measuring from the wrong point.
 // A PROVIDER NEEDS A WIRE CODEC. `cfg_with_provider_api_key` configures one provider on the
 // registry's residual-default dialect, and a build that links no protocol (a single-plane build of a
-// plane with no body-ingress codec) has none to name: the fixture refuses, and which test happened to
+// plane with no provider codec) has none to name: the fixture refuses, and which test happened to
 // register a dialect first decided the verdict. Gated on the linked axis that carries the codecs, as
 // the root's other provider-configuring cells are.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
@@ -1169,7 +1169,7 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
 /// a claim about reloads and not true by construction. RED arms: a rebuild that drops the prior
 /// generation's store (`build_app_from_config` ignoring `prior`) fails (a); a second call of
 /// `root::boot::book` anywhere in the crate's code (a reload that reopens Book) fails (c).
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn one_seal_after_two_reloads() {
     use busbar_kernel_wal::RecordClass;
@@ -1237,7 +1237,7 @@ fn one_seal_after_two_reloads() {
 /// `boot.rs`), one entry per call. Not a call: a method (`.book(`), a longer name (`node_book(`)
 /// and the definition (`fn book(`). A line comment is skipped, and so is every `tests` directory
 /// and `tests.rs`. Read only by [`one_seal_after_two_reloads`], so gated with it.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 fn book_call_sites(src: &std::path::Path) -> Vec<String> {
     fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)

@@ -24,12 +24,12 @@
 
 #![cfg(unix)]
 // THE PINNED EXCHANGE IS A PROVIDER-LANE ROUTE (`GET /v1/models`, answered from the configured
-// provider/model pair), so this proof needs the row carrying the body-ingress axis — the plane that
+// provider/model pair), so this proof needs the row carrying the node axis — the plane that
 // owns provider lanes — linked; read off the linked set, as thread_per_core_serves.rs gates. A
 // single-plane build without that axis has no wire codec and refuses the provider at boot
 // (BUSBAR-9007), which is correct product behaviour, not what this test measures. The dropped-in
 // wire itself is proven in every build that links that axis, including the no-tcp feature row.
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 

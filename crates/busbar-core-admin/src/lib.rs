@@ -150,11 +150,44 @@ mod test_seams {
             for entry in TEST_LINKED {
                 register_test_plane_seam(entry);
             }
+            // The protocol declarations a door plane's linked row installs on the protocol axis,
+            // first: a lane's dialect resolves against them, as the root registers them.
+            for decls in TEST_LINKED_PROTOCOLS {
+                busbar_kernel::proto::register_test_protocols(decls);
+            }
+            // In the list's order (the planes' layering order): each linked crate's own install,
+            // each door plane's registry row folded from its Statement, as the root folds a door.
+            let (mut seam, mut door) = (0, 0);
+            for &is_door in TEST_LINKED_ORDER {
+                if is_door {
+                    let (label, door_fn) = TEST_LINKED_DOORS[door];
+                    busbar_kernel::plane::registry::register_test_plane(fold_door(label, door_fn));
+                    door += 1;
+                } else {
+                    (TEST_LINKED[seam].install)();
+                    seam += 1;
+                }
+            }
             for seam in test_plane_seams() {
                 (seam.install)();
             }
             super::install();
         });
+    }
+
+    /// A door plane's registry row: a probe of the door bound through the loader's one load
+    /// (`linked_probe`), its facts read as a registration and folded by the kernel
+    /// (`plane::door::fold`) — the path the composition root folds every door candidate by
+    /// (`root::linked::door_rows`).
+    fn fold_door(
+        label: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> &'static busbar_kernel::plane::registry::PlaneDecl {
+        use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
+        let reg = registration(linked_probe(door, label))
+            .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"));
+        busbar_kernel::plane::door::fold(reg)
+            .unwrap_or_else(|e| panic!("the test-linked door `{label}` folds: {e}"))
     }
 }
 #[cfg(test)]

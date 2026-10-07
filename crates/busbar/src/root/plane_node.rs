@@ -3,32 +3,26 @@
 
 //! # The node, and the money book behind it
 //!
-//! The composition root's half of a unit that a plane's arrival HANDS it: the kernel, the in-flight
-//! table the unit's cell lives in, the interner the unit's lanes are sealed through, the one Route
-//! seam its leg is driven through, and the book its end and its late figure settle onto. The unit
-//! itself — the ten methods over the plane's step files — is the plane's, and so are the arrivals
-//! that hand it over: they reach this node through the linked table's `node` axis
-//! ([`crate::root::linked::node`]), and this file names no plane.
+//! The composition root's half of a unit a plane's door serves: the kernel, the in-flight table the
+//! unit's cell lives in, the interner the unit's lanes are sealed through, and the book its end and
+//! its late figure settle onto. The unit itself — the steps over the plane's answers — is the plane
+//! driver's, borrowed for the drive ([`Node::drive_borrowed`]), and this file names no plane. A plane
+//! row on the linked table's `node` axis links this node (the `linked_axis_node` cfg).
 //!
 //! ## What crosses, and why it is values
 //!
-//! An arrival hands the node whose unit it is, its operation class, the dialect a refusal this node
-//! renders is written in, and a BUILD ([`Handed`]). The node lends the build what only it holds — its
-//! lane resolver, the loop's meter, and the unit's pinned arrival epoch — and gets back the unit's
-//! steps, its awaited Route leg, and its FINISH: the bytes the terminal posted and the reading of
-//! what they consumed, taken once their body has drained. That reading is a report, never an amount:
-//! what it is worth is this node's card's answer, priced here (`one-pricing-site.allowed.root-wiring`)
-//! against the snapshot pinned at the unit's door.
+//! The serving path hands the node whose unit it is, the steps, and a LATE reading of what the unit
+//! consumed, taken once its body has drained. That reading is a report, never an amount: what it is
+//! worth is this node's card's answer, priced here (`one-pricing-site.allowed.root-wiring`) against
+//! the snapshot pinned at the unit's door.
 //!
 //! ## The two ends the node keeps its hands on
 //!
 //! The loop hands whoever drives it two things beside the steps: the Route LEG, which it awaits, and
-//! an ABANDONED end, when the caller goes away mid-dispatch. The node drives the plane's unit through
-//! [`Driven`], which answers every step with the plane's own answer and holds those two: the leg goes
-//! out through the node's one Route seam after the dispatch is on the book, and an abandoned end is
-//! posted onto the same book, balance and window a returned end is.
+//! an ABANDONED end, when the caller goes away mid-dispatch. A borrowed unit holds both; an abandoned
+//! end is posted onto the same book, balance and window a returned end is ([`NodeEndPost`]).
 //!
-//! ## What the switch costs
+//! ## What the drive costs
 //!
 //! Nothing a thread pool can run out of. The loop's Route step is a future it awaits on the caller's
 //! own runtime, so a unit occupies its in-flight slot and no thread at all while the upstream thinks:
@@ -41,16 +35,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use axum::http::StatusCode;
-use axum::response::Response;
-
 use busbar_contract::caps::{
     Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decode, Dial, Encode,
-    Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Refusal, Route, SeatVerdict,
+    Grant, Meter, OriginKind, Outcome, Pass, PrincipalId, Refusal, Route, SeatVerdict,
     VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
-use busbar_kernel::plane_host::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{
     AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
@@ -61,7 +51,7 @@ use busbar_kernel_audit::{
 };
 use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
-use crate::root::linked::node::{Handed, Late, Reported, Resolve};
+use crate::root::linked::node::{Late, Reported, Resolve};
 
 // ---------------------------------------------------------------------------------------------
 // The node
@@ -177,8 +167,8 @@ impl LaneNames {
 
 /// The long-lived half: the kernel, the in-flight table, the gauge, the counts and the interner.
 ///
-/// One per process. The per-request half is the plane's unit, which a plane's arrival hands this
-/// node ([`Handed`]) and which is thrown away with the unit.
+/// One per process. The per-request half is the plane's unit, which the serving path lends this
+/// node for one drive ([`Node::drive_borrowed`]) and which is thrown away with the unit.
 pub struct Node {
     kernel: Arc<busbar_kernel::teller::Kernel>,
     inflight: busbar_kernel::inflight::InFlight,
@@ -518,12 +508,12 @@ impl Node {
     /// the unit ENTERED in. Then the slot leaves the table.
     ///
     /// A client that hangs up mid-dispatch is not usually this path: the loop's own guard reaches
-    /// that unit's terminal and hands the end to [`Driven`]'s `abandoned`, so by the time the sweep
+    /// that unit's terminal and hands the end to the unit's `abandoned`, so by the time the sweep
     /// arrives the cell is already empty and the sweep only gives the slot back. What this path is
     /// FOR is the unit whose end nobody reached — and it posts that unit's hold rather than leaving
     /// it in a cell nothing will ever take it out of.
     ///
-    /// Run by the next arrival (see [`Node::answer_arriving_at`]), and only when something is
+    /// Run by the next arrival (see [`Node::drive_borrowed`]), and only when something is
     /// marked, so a lost task costs one arrival's delay and an ordinary arrival costs one atomic
     /// read. The idle bound does not apply on this node — a slow streamed answer was never cut, and
     /// the sweep does not start cutting it — so only a MARKED slot is ever settled here.
@@ -614,8 +604,7 @@ impl Node {
     /// THE BORROWED DRIVE (SERVE-WIRE step 33; the node's half of a unit served through a plane's
     /// door, ARCHITECT Q-SW3 2026-10-02): one unit whose steps, route and caller live on the serving
     /// future's stack (a plane driver's unit), walked through the loop under this node's in-flight
-    /// table, sweep and gauge, its hold on the journal before it runs, as [`Node::answer`] walks a
-    /// handed one. `key` is from [`Node::mint`], `arrived` from [`Node::arrived`] (the reading the
+    /// table, sweep and gauge, its hold on the journal before it runs. `key` is from [`Node::mint`], `arrived` from [`Node::arrived`] (the reading the
     /// unit's steps charged in); `principal` is whose arrival hold the table enters; `history` the
     /// card history pinned at its door, which its one line is priced against.
     ///
@@ -774,210 +763,6 @@ impl Node {
             },
         );
         Some((opened, ctx, SessionSlot { occupied, key }))
-    }
-
-    /// Walk one handed unit through the loop and answer with what the terminal posted.
-    ///
-    /// The whole of the kernel's ten steps, two audit doors and one exit, for a unit a plane's
-    /// arrival handed this node. What comes back is what the AUDIT step posted: this function
-    /// chooses the PATH, never the bytes.
-    ///
-    /// Awaited on the runtime the request arrived on. Drop this future — which is what axum does
-    /// when the client hangs up — and the loop's own future goes with it: the unit ends at its one
-    /// terminal, the hold leaves the cell, and [`Occupied`] hands the table its slot back on the way
-    /// out. Nothing is spawned here, so there is no detached task left holding either.
-    #[must_use]
-    pub async fn answer(&self, handed: Handed) -> Response {
-        self.answer_arriving_at(handed, self.arrived()).await
-    }
-
-    /// The same drive, with the arrival reading HANDED IN rather than taken.
-    ///
-    /// [`answer`](Self::answer) is this with the node's own clock read once, at the top, which is
-    /// the only place on this path a clock is read. It is split out because "what this loop does
-    /// with the instant it arrived at" is a property of the loop, and a drive that reads the clock
-    /// itself cannot be asked about an instant a test picks — least of all the one instant that
-    /// matters, a unit arriving at the last millisecond of a window.
-    #[must_use]
-    pub async fn answer_arriving_at(&self, handed: Handed, arrived: Arrived) -> Response {
-        self.answer_pinned(handed, arrived, || crate::root::kernel::ROOT_CARD.pin())
-            .await
-    }
-
-    /// The drive itself, with the history snapshot the unit is admitted under taken by `pin` — at the
-    /// door, after the sweep, exactly where [`answer_arriving_at`](Self::answer_arriving_at) reads the
-    /// process's history.
-    async fn answer_pinned(
-        &self,
-        handed: Handed,
-        arrived: Arrived,
-        pin: impl FnOnce() -> Option<crate::root::kernel::PinnedHistory>,
-    ) -> Response {
-        // The sweep, before this unit takes a slot of its own: any slot a lost task left MARKED is
-        // settled and given back now. One atomic read when nothing is marked.
-        self.sweep(arrived);
-        // Whose unit, what class, and the dialect a refusal this node renders is written in — the
-        // plane's statements about what arrived, read off it before any step runs.
-        let (principal, op_class, proto, build) = handed;
-        let key = self.next_key.mint();
-        // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
-        // kernel reads it at the exit. It is lent to the unit at the build.
-        let meter = Arc::new(AccrualMeter::new());
-        // THE HISTORY SNAPSHOT THIS UNIT IS ADMITTED UNDER, pinned here for the same reason the
-        // charge epoch below is: a live apply may APPEND to the root's history at any instant, and a
-        // request that opened before one is priced against the history it agreed to. Pinning at
-        // admission rather than reading at drain time is what makes that true even for the accrual
-        // that lands after the body has finished — the figure arrives late, but the snapshot it is
-        // resolved against was fixed at the door.
-        //
-        // A SNAPSHOT, NOT A CARD, and the difference is the whole of this wave. A card is one price;
-        // a snapshot is every price this node has ever charged, up to the door. The unit prices at
-        // the entry in force AT ITS ARRIVAL, which under a single-entry history is the same card the
-        // previous release would have used and under a longer one is the card the request was
-        // actually earned under.
-        let history = pin();
-        // THE UNIT, built with what this node lends it: its resolver, the loop's meter, and the
-        // header-arrival epoch every charge and every refund it makes lands in — pinned once, spelled
-        // out of the ONE arrival reading, so a request whose response completes in a later window
-        // than its headers arrived cannot split its charges across two windows, and the epoch it is
-        // billed in and the stamp the table enters it under cannot be two different instants.
-        let (units, route, finish) = build((self.resolver(), arrived.secs()));
-
-        let hold =
-            busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
-        let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
-            key,
-            origin: OriginKind::Client,
-            session: None,
-            admin_listener: false,
-            zero_hold_tick: false,
-            arrival: hold,
-            // THE SAME READING the charge above is pinned from, in the units this table keeps. A
-            // second read here is a second arrival: the table would stamp the unit in one window
-            // and the books would bill it in another, and nothing downstream could say which of the
-            // two the request actually arrived in.
-            now: arrived.ms(),
-        });
-
-        match entered {
-            // The table is uncapped on this listener, so this arm is the table declining for a
-            // reason that is not capacity. It is still an answer rather than a panic.
-            Err(_refused) => unavailable(proto),
-            Ok(slot) => {
-                // THE SLOT, from here to whichever way this unit leaves. The table is what bounds
-                // how many units this node has in flight, so the one thing that must not depend on
-                // the unit finishing is giving the slot back — and a client that hangs up is exactly
-                // the case where it does not finish.
-                // THE HOLD, ON THE JOURNAL, before the unit runs (item 127): what this unit holds
-                // is written down now, so a node killed mid-unit leaves a record the next boot
-                // recovers and posts rather than a hold that only ever existed in memory.
-                self.open_on_book(&principal, arrived);
-                let mut occupied = Occupied {
-                    node: self,
-                    slot: Arc::clone(&slot),
-                    arrived,
-                    reached_end: false,
-                };
-                let ctx = UnitCtx {
-                    key,
-                    origin: OriginKind::Client,
-                    session: None,
-                    generation: busbar_kernel::registry::Generation::FIRST,
-                    admin_listener: false,
-                    kernel_verb_only: false,
-                };
-                let driven = Driven {
-                    node: self,
-                    units: &*units,
-                    route: &*route,
-                    op_class,
-                    principal: &principal,
-                    arrived,
-                    history: history.as_ref(),
-                    sealing: Mutex::new(None),
-                };
-                let ended = busbar_kernel::teller::run_unit_async(
-                    &self.kernel,
-                    &driven,
-                    &ctx,
-                    busbar_kernel::teller::Run {
-                        cell: slot.cell(),
-                        parent: None,
-                        leases: slot.leases(),
-                        gauge: &self.gauge,
-                        canary: &self.canary,
-                        meter: &meter,
-                    },
-                    &driven,
-                )
-                .await;
-                // THE EXIT ARM. The loop took the hold out of the cell and handed back a POSTING,
-                // which has moved no balance and left no record until something settles it — and
-                // until this line nothing did, so a unit ran, ended, posted, and posted into a value
-                // that was dropped on the floor.
-                // The SAME pin the late arm prices against, so the posting and the figure that
-                // follows it name one snapshot. Re-pinning here would read a history a live apply
-                // may have appended to since the door, which is the hazard the pin exists for.
-                // The loop ran; the answer is whatever the terminal posted. There is no unit that
-                // reaches an end without passing one of the two audit doors, so the fallback below
-                // is unreachable — and it is an answer rather than an unwrap, because a path that
-                // cannot be taken still has to say something if it is.
-                // THE AUDITED EXIT (#28): the plane's answer becomes the served response here, and
-                // nowhere on the plane's side of the seam.
-                let (answer, late) = finish();
-                let response =
-                    answer.map_or_else(|| unavailable(proto), PlaneAnswer::into_response);
-                let seal = driven.take_seal(key);
-                let response = self.tail(
-                    ended,
-                    response,
-                    late,
-                    &principal,
-                    arrived,
-                    history.as_ref(),
-                    seal,
-                );
-                // The unit reached its own end and its posting is on the book or in the late arm's
-                // hands: the slot goes straight back. Anything that leaves this function before here
-                // leaves it MARKED.
-                occupied.reached_end = true;
-                response
-            }
-        }
-    }
-
-    /// THE UNIT'S TAIL: its ONE LINE (KERNEL<>PLUGINS step 14) and the answer it serves.
-    ///
-    /// A unit whose figure arrives with its drained body has its line written by the late arm, which
-    /// carries the exit's posting there unwritten: the exit writes none for it, and the reservation
-    /// and the reported figure close on one record when the figure arrives. Every other unit's line
-    /// is the exit's posting, written here and now.
-    #[allow(clippy::too_many_arguments)]
-    fn tail(
-        &self,
-        ended: Ended,
-        response: Response,
-        late: Option<Late>,
-        principal: &PrincipalId,
-        arrived: Arrived,
-        history: Option<&crate::root::kernel::PinnedHistory>,
-        seal: Option<UnitSeal>,
-    ) -> Response {
-        match self.late_arm(late, principal, arrived, history) {
-            Some(mut arm) => {
-                arm.seal = seal;
-                // THE LATE ARM. On a plane whose money is in a cell the response's own body fills
-                // when it DRAINS, the terminal knew nothing of it. So the body goes out wrapped,
-                // and the unit's one line lands when the figure arrives.
-                let arm = arm.carrying(ended);
-                let (parts, body) = response.into_parts();
-                Response::from_parts(parts, axum::body::Body::new(LateBody::new(body, arm)))
-            }
-            None => {
-                self.settle_end(principal, arrived, history, ended, seal);
-                response
-            }
-        }
     }
 
     /// The late arm for this unit's answer, if its line is to be written when the figure arrives.
@@ -1490,97 +1275,10 @@ fn post_late(
     let _settled = book.settle_counted(&at, posted, &counts, arrived.ms());
 }
 
-/// The answer's body, with the late arm riding on it.
-///
-/// A passthrough and nothing more: every frame the inner body yields is the frame this yields, in
-/// order, and the end-of-stream and size-hint questions are answered by asking it. The client cannot
-/// tell this is here, which is the requirement — the previous release's bytes are the bytes.
-///
-/// The arm fires ONCE, on whichever of the two ends this body reaches. A body that runs to
-/// `Ready(None)` has been drained and the tap has filled; a body that is DROPPED first has been cut,
-/// which is the client hanging up mid-answer, and the tap fills on that path too — the engine's own
-/// stream wrapper reports a partial from its `Drop`. Which of the two happened is the tap's to say
-/// and not this wrapper's.
-struct LateBody {
-    /// `None` after the inner body has been let go, which is how the drop path orders itself.
-    inner: Option<axum::body::Body>,
-    /// `None` after the arm has fired, which is what makes "once" a property of the value.
-    arm: Option<LateAccrual>,
-}
-
-impl LateBody {
-    fn new(inner: axum::body::Body, arm: LateAccrual) -> Self {
-        LateBody {
-            inner: Some(inner),
-            arm: Some(arm),
-        }
-    }
-
-    /// Fire the arm if it has not fired. Called from both ends.
-    fn fire(&mut self) {
-        if let Some(arm) = self.arm.take() {
-            arm.post();
-        }
-    }
-}
-
-impl http_body::Body for LateBody {
-    type Data = axum::body::Bytes;
-    type Error = axum::Error;
-
-    fn poll_frame(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        let this = self.get_mut();
-        let Some(inner) = this.inner.as_mut() else {
-            return std::task::Poll::Ready(None);
-        };
-        let polled = std::pin::Pin::new(inner).poll_frame(cx);
-        // THE DRAIN. `Ready(None)` is the inner body saying it has no more frames, and by then its
-        // own end-of-stream arm has already filled the tap — the report is on the cell before the
-        // frame that ends the stream is handed back. A stream that ends in an ERROR is not fired on
-        // here: that body is dropped rather than drained, and the drop path below is what reads it.
-        if matches!(polled, std::task::Poll::Ready(None)) {
-            this.fire();
-        }
-        polled
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.inner
-            .as_ref()
-            .is_none_or(http_body::Body::is_end_stream)
-    }
-
-    fn size_hint(&self) -> http_body::SizeHint {
-        self.inner.as_ref().map_or_else(
-            || http_body::SizeHint::with_exact(0),
-            http_body::Body::size_hint,
-        )
-    }
-}
-
-impl Drop for LateBody {
-    /// THE CUT. A client that hangs up mid-answer drops this body where it stands, and what the node
-    /// bills for that is what the tap reported — the same figure the previous release's ledger took
-    /// from the same cell, on the same event, which is why this arm posts rather than declining.
-    ///
-    /// The inner body is let go FIRST and the order is the whole of it: the engine's stream wrapper
-    /// files its partial report from its own `Drop`, so an arm that read the cell before that ran
-    /// would read an empty one and post nothing for a request the previous release charges for.
-    /// Fields drop after this body runs, so dropping it by hand here is what puts the two in the
-    /// order the figure needs.
-    fn drop(&mut self) {
-        drop(self.inner.take());
-        self.fire();
-    }
-}
-
 /// THE IN-FLIGHT SLOT, for the length of one unit — and the drop guard that MARKS it (item 129).
 ///
 /// A unit that reached its own end gives its slot straight back. Every other way out — a panic, or
-/// the client hanging up mid-request, which drops the whole of `answer` where it stands — leaves the
+/// the client hanging up mid-request, which drops the whole drive where it stands — leaves the
 /// slot in the table MARKED, and the node's sweep ([`Node::sweep`]) is what gives it back.
 ///
 /// It used to REMOVE the slot on every way out, and that is the half of the protocol that could not
@@ -1634,205 +1332,6 @@ impl Drop for Occupied<'_> {
             self.slot.mark();
             self.node.marked.fetch_add(1, Ordering::AcqRel);
         }
-    }
-}
-
-/// What a node that cannot take the unit at all answers with, in the caller's own dialect.
-fn unavailable(proto: &str) -> Response {
-    busbar_kernel::proxy::ingress_error(
-        proto,
-        StatusCode::SERVICE_UNAVAILABLE,
-        busbar_contract::protocol::KIND_OVERLOADED,
-        "The service is temporarily overloaded. Please retry shortly.",
-    )
-}
-
-// ---------------------------------------------------------------------------------------------
-// The unit, as this node drives it
-// ---------------------------------------------------------------------------------------------
-
-/// ONE UNIT, AS THIS NODE DRIVES IT: the plane's unit, answering every step with the plane's own
-/// answer, and the node's hands on the two ends the loop gives to whoever drives it.
-///
-/// The ROUTE LEG goes out through the node's one seam ([`PlaneDispatch`]) after the dispatch is on
-/// the book, so a recovery can tell a unit that sent something from one that never did. An
-/// ABANDONED end — the caller went away mid-dispatch, and the loop's guard sealed the end at the
-/// charged audit door — is posted here (item 99), onto the same book, balance and window
-/// [`Node::answer_arriving_at`] posts a returned end to, through the same exit arm.
-///
-/// [`PlaneDispatch`]: crate::root::transports::PlaneDispatch
-struct Driven<'n> {
-    node: &'n Node,
-    units: &'n (dyn Units + Send + Sync),
-    route: &'n (dyn RouteAwait + Send + Sync),
-    op_class: OpClassId,
-    /// Whose unit this is — the principal the balance it settles onto is keyed by.
-    principal: &'n PrincipalId,
-    /// The unit's arrival, both readings.
-    arrived: Arrived,
-    /// The history snapshot the unit was admitted under.
-    history: Option<&'n crate::root::kernel::PinnedHistory>,
-    /// The audit pass and facts the loop handed back at the unit's audit door (`Units::audited`),
-    /// held until the unit's one line is written, where its record is sealed with them.
-    sealing: Mutex<Option<(busbar_contract::caps::AuditFacts, Pass<Audit>)>>,
-}
-
-impl Driven<'_> {
-    /// The unit's record-to-be, if its audit door handed its pass back.
-    fn take_seal(&self, key: UnitKey) -> Option<UnitSeal> {
-        let (facts, pass) = self
-            .sealing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()?;
-        Some(UnitSeal {
-            facts,
-            pass,
-            key,
-            origin: self.node.kernel.origin(OriginKind::Client),
-            parent: None,
-        })
-    }
-}
-
-impl Units for Driven<'_> {
-    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
-        self.units.arrival(token, ctx)
-    }
-
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
-        self.units.decode(token, ctx)
-    }
-
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
-        self.units.authenticate(token, ctx)
-    }
-
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        trust: &Grant<Dial>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-    ) -> SeatVerdict<Verify> {
-        self.units.verify(token, trust, ctx, principal)
-    }
-
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Approve> {
-        self.units.approve(token, ctx, principal, destinations)
-    }
-
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        admit: &Grant<Admittance>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-        leases: &GroupLeaseSlip,
-    ) -> SeatVerdict<Admit> {
-        self.units
-            .admit(token, admit, ctx, principal, destinations, leases)
-    }
-
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        ctx: &UnitCtx,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Route> {
-        self.units.route(token, ctx, destinations)
-    }
-
-    fn meter(
-        &self,
-        token: &Pass<Meter>,
-        usage: &Grant<Consumption>,
-        ctx: &UnitCtx,
-        provisional: &Outcome,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Meter> {
-        self.units
-            .meter(token, usage, ctx, provisional, destinations)
-    }
-
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        self.units.audit(token, ctx, outcome)
-    }
-
-    fn audit_refused(
-        &self,
-        token: &Pass<Audit>,
-        ctx: &UnitCtx,
-        refusal: &Refusal,
-    ) -> SeatVerdict<Audit> {
-        self.units.audit_refused(token, ctx, refusal)
-    }
-
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> SeatVerdict<Encode> {
-        self.units.encode(token, ctx, outcome)
-    }
-
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
-        self.units.evidence(ctx)
-    }
-
-    fn audited(&self, _ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
-        *self
-            .sealing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((facts, pass));
-    }
-}
-
-impl RouteAwait for Driven<'_> {
-    fn route_leg<'a>(
-        &'a self,
-        token: &'a Pass<Route>,
-        ctx: &'a UnitCtx,
-        destinations: &'a [VerifiedDestination],
-    ) -> RouteLeg<'a> {
-        // THE DISPATCH, ON THE JOURNAL, before the leg leaves: what a recovery reads to tell a unit
-        // that sent something from one that never did.
-        self.node.dispatch_on_book(self.principal, self.arrived);
-        // THROUGH THE ONE SEAM. The leg is the plane's own; the seam awaits it and gives back its
-        // value, so the bytes, the status, the headers, the stream's frames and the tap on its body
-        // are the plane's exactly — byte identity is a property of that construction, not of a
-        // measurement. What the seam adds is the one fact no status can carry: that the engine ran
-        // for this unit. A unit refused at Authenticate, Verify, Approve or Admit never reaches
-        // Route, so it never reaches this line.
-        self.node.dispatch.execute(
-            self.op_class,
-            self.route.route_leg(token, ctx, destinations),
-        )
-    }
-
-    /// The plane's own screen before the door (SEAM-4j: a gate-first plane's hooks), forwarded:
-    /// a wrapper that answered the default would let the gate run after admission.
-    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
-        self.route.screen(ctx)
-    }
-
-    /// THE CALLER WENT AWAY MID-DISPATCH, and the end the loop reached for it is POSTED here (item
-    /// 99). The loop's guard has already sealed this end at the charged audit door, emptied the cell
-    /// and given the leases back; what it hands over is the posting, which has moved no balance and
-    /// left no record until something settles it. Nothing else will: the future that would have read
-    /// it is the one being dropped.
-    fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
-        let seal = self.take_seal(ctx.key);
-        self.node
-            .settle_end(self.principal, self.arrived, self.history, ended, seal);
     }
 }
 
@@ -2075,7 +1574,7 @@ impl NodeEndPost {
 /// THE EGRESS WALK'S WRITE-AHEAD RECORD, ON THE NODE'S BOOK (ARCHITECT P3 (c), 2026-10-02): a
 /// dispatch of a driven unit is written onto the book under the facts the unit was opened with at
 /// admission (its balance, window and arrival), before the dial, as a handed unit's is
-/// ([`Node::answer`]). A unit with no open facts was never admitted onto the book, so its record is
+/// ([`Node::drive_borrowed`]). A unit with no open facts was never admitted onto the book, so its record is
 /// refused and the walk sends nothing.
 impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     fn dispatched(
@@ -2399,16 +1898,6 @@ pub fn node() -> Arc<Node> {
     Arc::clone(&NODE)
 }
 
-/// THE PROCESS'S NODE, as the node axis hands it to a plane ([`ROOT_UNIT`]'s `drive`): one handed
-/// unit, driven on the runtime the request arrived on. What goes back is the served response the
-/// audited exit made, as a [`PlaneAnswer::Live`] (#28): its body may still be draining into the
-/// late arm, so the outer handler serves it as it stands.
-fn drive(
-    handed: Handed,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = PlaneAnswer> + Send>> {
-    Box::pin(async move { PlaneAnswer::Live(NODE.answer(handed).await) })
-}
-
 /// Bind the process's one node to the process's one book.
 ///
 /// Called by the composition root at boot, with the same handle the administrative views were bound
@@ -2423,11 +1912,9 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
     bind_node_book(&NODE, &crate::root::kernel::ROOT_CARD, book);
 }
 
-/// THE NODE'S ROOT UNIT, addressed through the composition root's generated table — the loop every
-/// handed unit runs through, and the money book behind it:
+/// THE NODE'S ROOT UNIT, addressed through the composition root's generated table — the money book
+/// behind the loop every door plane's unit runs through:
 ///
-/// * the node itself ([`drive`]) is handed to every entry on the linked table's `node` axis, whose
-///   arrivals hand it their units;
 /// * the card repricer is installed once the limits resolve and BEFORE the first app build, so the
 ///   boot's own rate resolution is the history's opening entry (see
 ///   [`crate::root::kernel::install_card_repricer`]);
@@ -2436,7 +1923,6 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
 /// * a door plane's driven unit posts its abandoned end onto the node ([`NodeEndPost`]).
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: None,
-    drive: Some(drive),
     on_config: Some(|_| crate::root::kernel::install_card_repricer()),
     opens_book: true,
     on_book: Some(|ctx| bind_book(Arc::clone(&ctx.book.durability))),
@@ -2454,20 +1940,7 @@ fn bind_node_book(
     node.bind_book(book);
 }
 
-// ---------------------------------------------------------------------------------------------
-// THE SWITCH-OVER'S OWN PROOF
-// ---------------------------------------------------------------------------------------------
-
-/// THE SWITCH, DRIVEN BOTH WAYS on the same fixture and the same deployment shape.
-///
-/// The rehearsal beside the step files proves the nine steps COMPOSE. What it cannot prove is that
-/// the composition root drives them the way the loop drives them, because it has no loop: it is a
-/// driver written in a test file. This module drives the real one — `run_unit`, the kernel's ten
-/// steps, its two audit doors and its one exit — through [`Node::answer`], against the shell's
-/// entry point on its own deployment, and compares what a client and an operator can see.
-///
-/// Each fixture builds TWO deployments — own registry, own scripted upstream, own governance store —
-/// so the two legs' counters are compared rather than summed.
+/// The node's own money machinery, read without a plane (see the module).
 #[cfg(test)]
 #[path = "tests/plane_node.rs"]
 mod tests;

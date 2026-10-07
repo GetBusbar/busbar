@@ -34,12 +34,8 @@
 /// and its HOT lane (`hot-plane`: the entry's `#[repr(C)]` `PLANE_DECL`, referenced) beside it.
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
-    ("path-ingress", "path_ingress", "PATH_INGRESS"),
-    ("body-ingress", "body_ingress", "BODY_INGRESS"),
-    ("protocol-seams", "protocol_seams", "install_protocol_seams"),
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
     ("ws-arrivals", "ws_arrivals", "install_ws_arrivals"),
-    ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
     ("stdio-serve", "stdio_serve", "stdio_serve"),
     ("cli-help", "cli_help", "CLI_HELP"),
@@ -47,8 +43,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
     // dropped-in build exports.
     ("hooks", "hook_doors", "door"),
-    // The node axis: a plane whose units a composition root's node drives is handed that node.
-    ("node", "node", "install_node"),
     // The unified kernel loop (#28): the key a plane is flipped onto its one-shot or session runner
     // under — its declaration's key, so these two rows ride on `plane` (refused without it).
     (
@@ -87,6 +81,11 @@ pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
 /// `ALIAS` and manifest `DECLARES`, and its entry module exports its `door` (`plugin_door!`), the
 /// same door its `cdylib` exports — admitted through the one registration as a door row.
 pub(crate) const EXPORT_DOOR_AXIS: &str = "export-doors";
+
+/// The node axis: the row's plane's units are driven on the composition root's node
+/// (`crate::root::plane_node`) and settle onto its book. It names no entry item: linking a row on it
+/// links the node, under the `linked_axis_node` cfg.
+const NODE_AXIS: &str = "node";
 
 /// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
 /// the claims it declares (`CLAIMS`); rides on `plane`.
@@ -270,6 +269,7 @@ pub(crate) fn linked_source(
                     || axis == SECRET_AXIS
                     || axis == EXPORT_DOOR_AXIS
                     || axis == CLAIMS_AXIS
+                    || axis == NODE_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
                     || SEAMS.iter().any(|(a, _)| a == axis),
                 "Cargo.toml: `{krate}` names an unknown linked axis `{axis}`"

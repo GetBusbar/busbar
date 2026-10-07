@@ -19,7 +19,7 @@
 #![cfg(unix)]
 // The config serves `providers:`/`models:`, so the build must link the plane that takes body
 // ingress: the linked table's answer, never a feature name.
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_axis_node)]
 
 mod common;
 
@@ -124,6 +124,9 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
+/// The deployment: one model on a loopback provider, which the destination guard (OWNER ruling
+/// DESTINATION GUARD, 2026-10-02) refuses unless allowlisted, so the fixture allowlists it as every
+/// booted fixture with a loopback provider does.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -136,6 +139,8 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream: u16) {
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
 admin_require_mtls: false
+advanced:
+  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 auth:
   chain: []

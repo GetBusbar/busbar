@@ -29,7 +29,6 @@ root-leg root-decisions plane-decisions
 #
 # crate <crates/busbar-<suffix>> <ledger column>...: the columns each workspace plane crate answers
 # to (both halves of every plane; plane-streaming is the plane voice is a dialect of).
-crate llm llm
 crate mcp mcp-client mcp-server
 crate a2a a2a-client a2a-server
 crate voice streaming-client streaming-server
@@ -44,8 +43,8 @@ crate plane-decisions decisions
 #
 # installed <plane key> <ledger column>...: the doctrine's installed-plane axis (plane_isomorphism.rs)
 # — each plane the composition root installs from its own linked entry, and the directional ledger
-# column(s) it answers to.
-installed llm llm
+# column(s) it answers to. The LLM plane is not on it since FLIP-LLM: it is served only through its
+# memory-ABI door (`plane-door` axis), which has no linked PlaneDecl to compare.
 installed mcp mcp-client mcp-server
 installed a2a a2a-client a2a-server
 installed streaming streaming-client streaming-server
