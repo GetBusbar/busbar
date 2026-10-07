@@ -12,10 +12,10 @@ use busbar_contract::records::{
 };
 
 // THE TWO KIND STRINGS ARE THE PLANE'S, AND ARE READ FROM IT. A record kind is the name the plane
-// declares its schema under (`busbar_plane_mcp::records::SCHEMA_CALL`), so it is named once, there,
+// declares its schema under (`busbar_plane_mcp::tool_records::SCHEMA_CALL`), so it is named once, there,
 // and this crate reads it. Spelling it on both sides is how two answers to "what is this record
 // called" come to differ, and the schema id is what a store indexes by.
-pub use crate::records::{KIND_CALL, KIND_DEMOTION};
+pub use crate::tool_records::{KIND_CALL, KIND_DEMOTION};
 
 /// One MCP TOOL-CALL record, as it crosses the store seam for DURABLE persistence — the per-call
 /// evidence the audit claim rests on. The chain is scoped to the PRINCIPAL. A store persists these
@@ -67,7 +67,7 @@ impl McpCallRecord {
     /// serialization of this struct. NOT the engine's persisted shape (that is the neutral journal
     /// body — see [`Self::from_journal_body`]); this decodes a bare `McpCallRecord` where one is held.
     pub fn from_body(body: &[u8]) -> RecordStoreResult<Self> {
-        decode(body)
+        decode_record(body)
     }
 
     /// Reconstruct a record from the NEUTRAL durable-journal body the engine's call-log seam persists
@@ -88,7 +88,7 @@ impl McpCallRecord {
             hash: String,
             content: Vec<u8>,
         }
-        let nb: NeutralJournalBody = decode(body)?;
+        let nb: NeutralJournalBody = decode_record(body)?;
         let (ts, server, tool, outcome, reason, tool_digest, pin_generation) =
             parse_call_suffix(&nb.content)?;
         Ok(McpCallRecord {
@@ -106,6 +106,42 @@ impl McpCallRecord {
             hash: nb.hash,
         })
     }
+}
+
+/// THE CALL RECORD'S CONTENT SUFFIX, as the plane writes it to the host's record seam: the chained
+/// fields after the prelude the host frames (`prev_hash`, the scope, `seq`), LengthPrefixed — every
+/// field `len:u64-be ⧺ bytes`, a numeric field its eight big-endian bytes as one such field — in the
+/// call digest's order: `ts, server, tool, outcome, reason, tool_digest, pin_generation`. The
+/// `request_id` is not in it: a join key is never in the digest. The inverse is
+/// [`parse_call_suffix`], so a record written here reads back as the record it was.
+#[must_use]
+pub fn call_suffix(
+    ts: u64,
+    server: &str,
+    tool: &str,
+    outcome: &str,
+    reason: &str,
+    tool_digest: &str,
+    pin_generation: u64,
+) -> Vec<u8> {
+    fn text(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(&(s.len() as u64).to_be_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+    fn num(out: &mut Vec<u8>, v: u64) {
+        let b = v.to_be_bytes();
+        out.extend_from_slice(&(b.len() as u64).to_be_bytes());
+        out.extend_from_slice(&b);
+    }
+    let mut out = Vec::new();
+    num(&mut out, ts);
+    text(&mut out, server);
+    text(&mut out, tool);
+    text(&mut out, outcome);
+    text(&mut out, reason);
+    text(&mut out, tool_digest);
+    num(&mut out, pin_generation);
+    out
 }
 
 /// Parse the LengthPrefixed call SUFFIX (`ts, server, tool, outcome, reason, tool_digest,
@@ -204,7 +240,7 @@ impl McpDemotionRow {
 
     /// Reconstruct a row from an opaque `demotion` body — the inverse of [`Self::to_plane_record`].
     pub fn from_body(body: &[u8]) -> RecordStoreResult<Self> {
-        decode(body)
+        decode_record(body)
     }
 }
 
@@ -214,7 +250,7 @@ fn encode<T: serde::Serialize>(row: &T) -> RecordStoreResult<Vec<u8>> {
 }
 
 /// Decode an opaque `PlaneRecord::body` back into its typed plane row — the inverse of [`encode`].
-fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<T> {
+fn decode_record<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<T> {
     serde_json::from_slice(body).map_err(|e| RecordStoreError(format!("plane body decode: {e}")))
 }
 

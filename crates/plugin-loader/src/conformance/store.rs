@@ -308,7 +308,17 @@ impl<'a> Inputs<'a> {
     }
 }
 
+/// ONE STORE LEG AT A TIME, per process: [`leg_mint`] is a plain `fn` the bridge calls (it captures
+/// nothing), so its node and counter are process statics, reset at each leg's `open`. The suite's
+/// tests run in parallel threads (the both-ways arm, the RED count arm, the kind-ABI arm), and a leg
+/// opening in one would rewind another's counter mid-leg — the store refuses the replayed op id
+/// (`STORE_OPID_CONFLICT`), a failure of the suite, not of the plugin. Held for the whole leg.
+static LEG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
+    let _one_leg = LEG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let i = Inputs::of(s.kind_inputs(ROOT));
     let settings = leg.settings(s);
     let rt = tokio::runtime::Builder::new_current_thread()

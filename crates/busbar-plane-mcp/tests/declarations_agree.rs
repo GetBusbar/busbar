@@ -24,8 +24,8 @@ use std::collections::BTreeSet;
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::plane::{Plane, PlaneMeta};
-use busbar_plane_mcp::meta::CLASS_TOOL_CALLS;
-use busbar_plane_mcp::{records, McpPlane};
+use busbar_plane_mcp::tool_meta::CLASS_TOOL_CALLS;
+use busbar_plane_mcp::{tool_records as records, McpPlane};
 use common::Scaffold;
 
 /// Every record leg this plane's plans reach, written down.

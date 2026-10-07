@@ -125,6 +125,31 @@ pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) ->
 }
 
 /// Whether `arg` is a flag a linked plane declares — the first word of one of its `Flags:` rows.
+/// EVERY PLANE'S `busbar --help` ROWS: each linked row's (its `cli-help` axis), then each linked
+/// plane door's, read off its tail's `cli_help` without binding it (a door states one `Flags:` block),
+/// in manifest order. A door whose tail cannot be read contributes nothing here; its boot refuses it.
+pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
+    // The doors' rows, read once and kept for the process (the linked doors are fixed at build),
+    // each lent out as a one-row slice: nothing is leaked to give them their `'static` life.
+    static DOOR_ROWS: std::sync::OnceLock<Vec<super::linked::CliHelpRow>> =
+        std::sync::OnceLock::new();
+    let door_rows = DOOR_ROWS.get_or_init(|| {
+        crate::LINKED
+            .plane_doors
+            .iter()
+            .filter_map(|door| {
+                match crate::root::loader::dispatch::kinds::plane::linked_cli_help(*door) {
+                    Ok(Some(text)) => Some(("flag", text)),
+                    _ => None,
+                }
+            })
+            .collect()
+    });
+    let mut rows: Vec<&'static [super::linked::CliHelpRow]> = crate::LINKED.cli_help.to_vec();
+    rows.extend(door_rows.iter().map(std::slice::from_ref));
+    rows
+}
+
 pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) -> bool {
     planes
         .iter()
@@ -210,16 +235,13 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         // is read again inside `run()`, where it swaps the two TCP listeners for the process's own
         // stdin/stdout. Recognised here so it is not refused as an unknown argument.
         // A flag a linked plane declares (its `Flags:` row) is not an exit-and-print flag either.
-        Some(arg) if is_plane_flag(crate::LINKED.cli_help, arg) => None,
+        Some(arg) if is_plane_flag(&help_rows(), arg) => None,
         Some("--validate") => Some(validate_config_command()),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),
         Some("--migrate-config") => Some(migrate_config_command(args.next())),
         Some("--help" | "-h") => {
-            print!(
-                "{}",
-                render_help(env!("CARGO_PKG_VERSION"), crate::LINKED.cli_help)
-            );
+            print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
             Some(0)
         }
         // `-c`/`--config`/`--providers` (value-taking flags) as the FIRST argument mean "run the
