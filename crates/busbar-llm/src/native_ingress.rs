@@ -394,13 +394,14 @@ pub(crate) fn payload(ctx: &ArrivalCtx) -> &busbar_kernel::ingress::arrival::Arr
 
 /// THE LLM PLANE'S RESOLVED-COMPLETION SYNTHESIZER — installed into the substrate completion seam
 /// (`install_completion_ingress` in production `main.rs`, `set_test_completion_ingress` in a
-/// `test-support` build) and reached by core's `EngineHost::synthesize_completion` (the MCP-sampling
-/// re-entry). Drives ONE non-streaming chat completion (a known `model` + body) through the SAME
-/// resolved-op path (`operation_resolved`) a first-party arrival takes, so governance attribution and
-/// metering are byte-identical to an arrival. The successor to the former core-resident
-/// `synthesize_completion_over` body: the residual-default chat dialect is read by NAME off the
-/// registry (so this spells no dialect), `Transport::Http`, `caller_token` from the arrival, model
-/// explicit, `model_not_found_message = None`. Matches the `CompletionIngress` fn-pointer shape.
+/// `test-support` build). Its one in-tree reader, core's `EngineHost::synthesize_completion` (the
+/// MCP-sampling re-entry), was deleted with `busbar-mcp`. Drives ONE non-streaming chat completion
+/// (a known `model` + body) through the SAME resolved-op path (`operation_resolved`) a first-party
+/// arrival takes, so governance attribution and metering are byte-identical to an arrival. The
+/// successor to the former core-resident `synthesize_completion_over` body: the residual-default
+/// chat dialect is read by NAME off the registry (so this spells no dialect), `Transport::Http`,
+/// `caller_token` from the arrival, model explicit, `model_not_found_message = None`. Matches the
+/// `CompletionIngress` fn-pointer shape.
 pub fn synthesize_completion(
     a: busbar_kernel::ingress::arrival::CompletionArrival,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
