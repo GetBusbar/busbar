@@ -322,12 +322,15 @@ fn arrival(p: &Plugin<Plane>, unit: u64) -> (Outcome, u32) {
 fn a_full_unit_table_refuses_the_next_arrival_and_evicts_nothing() {
     let d = Dispatcher::new(DispatchConfig::default());
     let p = started(&d);
-    for unit in 1..=4096 {
-        assert_eq!(arrival(&p, unit).0, Outcome::Ready, "unit {unit}");
+    let mut first_refused = None;
+    for unit in 1..=5000 {
+        if arrival(&p, unit) != (Outcome::Ready, 0) && first_refused.is_none() {
+            first_refused = Some((unit, arrival(&p, unit)));
+        }
     }
     assert_eq!(
-        arrival(&p, 4097),
-        (Outcome::Refused, 429),
+        first_refused,
+        Some((4097, (Outcome::Refused, 429))),
         "the arrival past the cap"
     );
     assert_eq!(
