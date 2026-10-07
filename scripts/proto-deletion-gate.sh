@@ -595,10 +595,10 @@ llm_dialect_refused() {
 #      own level-3a refusal, because ONE plugin now carries SIX dialects and all six must go
 # THE FEATURES EVERY DELETED BUILD KEEPS. `auth-admin-tokens` and `hooks-ranking` are not protocols,
 # and `transport-tcp` is the wire under the data door: the tcp wire's LINKED ROW behind a default-on
-# switch (9f98bb888, spec #3: a transport is compiled in OR dropped in). With the row off and no tcp
-# tarball in `plugins/`, `http` composes over nothing and the composition root refuses to seal — the
-# DESIGNED refusal, pinned by crates/busbar/tests/transport_dropped_in_serves.rs:258-273 — so a
-# `--no-default-features` build that drops it is an unbootable binary, not a protocol deletion.
+# switch (9f98bb888, spec #3: a transport is compiled in OR dropped in). It is kept so a deleted build
+# differs from the shipped one by protocols alone; no layer composes over it any more (ARCHITECT
+# ruling Q128 U7: no transport names another, the carrier is the connector's choice), so dropping it
+# would no longer refuse the seal, but it would no longer be a protocol deletion either.
 BASE_KEEP="auth-admin-tokens,hooks-ranking,transport-tcp"
 
 run_gate() {
