@@ -1114,7 +1114,17 @@ pub use busbar_kernel::proxy::auth_failure_status_and_kind;
 /// envelope. Using the shared builder means the auth path, the forward path, and the route/fallback
 /// path CANNOT diverge on error shape or headers — each protocol writer keeps its own error `kind`,
 /// status, and any header attach it needs consistent with each other, all outside this crate.
-fn unauthorized_response(app: &crate::state::App, path: &str) -> Response {
+fn unauthorized_response(
+    app: &crate::state::App,
+    path: &str,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+) -> Response {
+    // A DOOR ROUTE'S 401 (spec Part 3 section 12, "Refusals"): the kernel decided it, exactly as on
+    // any data-plane path; the route's plane renders it, unit-less, in the route's refusal dialect
+    // for the request target. Every other path keeps the residual data plane's envelope.
+    if let Some((refuse, target)) = door {
+        return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
+    }
     let ingress = ingress_for_path(app, path);
     // The dialect names the PROTOCOL whose bad-credential status, `kind` and copy a client expects.
     // A mounted, audience-bound plane names its own wire format, which has no registered protocol
@@ -1779,6 +1789,7 @@ fn rate_limited_response() -> Response {
 fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     path: &str,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
 ) -> Response {
     // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
     // mounted plane is tapped as that plane's dialect rather than as whichever residual-plane
@@ -1826,7 +1837,7 @@ fn unauthorized_with_completion_taps(
             &host,
         );
     }
-    unauthorized_response(app, path)
+    unauthorized_response(app, path, door)
 }
 
 /// Axum middleware layer that validates auth before routing.
@@ -1850,6 +1861,18 @@ pub(crate) async fn auth_middleware(
     // downstream handler time is never attributed to auth. No-op unless `BUSBAR_PROFILE` is set.
     let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
+    // THE DOOR ROUTE THIS REQUEST MATCHES, resolved FIRST (spec Part 3 section 12: route, then
+    // authenticate): a `401` this middleware decides on it is rendered by the route's plane. `None`
+    // on every residual data-plane path, which keeps its envelope byte for byte.
+    // `(the route's plane rendering, the request target it renders for)`.
+    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
+        core_routes.door_refusal(&path, req.method()).map(|refuse| {
+            let target = req
+                .uri()
+                .path_and_query()
+                .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
+            (refuse.clone(), target)
+        });
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
     // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The
@@ -1936,7 +1959,7 @@ pub(crate) async fn auth_middleware(
                          did not verify.",
                         None,
                     ),
-                    None => unauthorized_response(&app, &path),
+                    None => unauthorized_response(&app, &path, door.as_ref()),
                 });
             }
         }
@@ -2165,7 +2188,7 @@ pub(crate) async fn auth_middleware(
             && req.headers().contains_key(X_AMZ_CONTENT_SHA256)
             && req.headers().contains_key(X_AMZ_DATE);
         if !structurally_valid {
-            return Err(unauthorized_response(&app, &path));
+            return Err(unauthorized_response(&app, &path, door.as_ref()));
         }
         // BODY INTEGRITY: a SigV4 signature only binds the payload if we re-hash the actual bytes
         // and confirm they match the signed `x-amz-content-sha256` (which the signature covers).
@@ -2187,7 +2210,7 @@ pub(crate) async fn auth_middleware(
         let Ok(body_bytes) =
             axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
         else {
-            return Err(unauthorized_response(&app, &path));
+            return Err(unauthorized_response(&app, &path, door.as_ref()));
         };
         req = Request::from_parts(parts, Body::from(body_bytes.clone()));
         // Governance is always constructed (RAM by default); if somehow absent there is no store
@@ -2203,9 +2226,9 @@ pub(crate) async fn auth_middleware(
                 // signed-headers mismatch, bad signature, OR a body whose bytes don't match the
                 // signed x-amz-content-sha256) maps to the identical native auth error — the
                 // distinction is logged inside the verifier, never surfaced, so there is no oracle.
-                Err(()) => return Err(unauthorized_response(&app, &path)),
+                Err(()) => return Err(unauthorized_response(&app, &path, door.as_ref())),
             },
-            None => return Err(unauthorized_response(&app, &path)),
+            None => return Err(unauthorized_response(&app, &path, door.as_ref())),
         }
     } else {
         // Not `run_chain_cached` directly: a plugin chain does blocking I/O on a Tokio worker. The
@@ -2283,7 +2306,11 @@ pub(crate) async fn auth_middleware(
                     None,
                 ));
             }
-            return Err(unauthorized_with_completion_taps(&app, &path));
+            return Err(unauthorized_with_completion_taps(
+                &app,
+                &path,
+                door.as_ref(),
+            ));
         }
         Err(IdentityRefusal::NoGrant) => {
             if let Some(adm) = admission.as_ref() {
@@ -2294,7 +2321,11 @@ pub(crate) async fn auth_middleware(
                     None,
                 ));
             }
-            return Err(unauthorized_with_completion_taps(&app, &path));
+            return Err(unauthorized_with_completion_taps(
+                &app,
+                &path,
+                door.as_ref(),
+            ));
         }
     }
 

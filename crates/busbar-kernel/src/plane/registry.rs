@@ -620,13 +620,17 @@ pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl
 ///   mounted, so [`super::PlaneDispatch::admission_for`] resolves an audience on it. A path a plane
 ///   answers on but omits here is unreachable through this table's audience check — which is why the
 ///   claim set, not the router, is the thing a test pins.
-/// - **R2 (mounted ⇒ admitted, or boot refuses):** a plane that claims a path but returns no
-///   admission would serve an audience-less — hence unauthenticated — resource. That is refused here
-///   with a named error rather than mounted, so a future plane cannot lower its own bar to nothing by
-///   omitting an admission.
+/// - **R2 (mounted ⇒ admitted, or boot refuses):** a plane that claims a path but has no admission
+///   path would serve an unauthenticated resource. That is refused here with a named error rather
+///   than mounted, so a future plane cannot lower its own bar to nothing by omitting an admission.
+///   A claim is ADMITTED by an audience the plane binds, or — for a plane served through its door
+///   ([`super::door::is_door`]) — by the kernel's key-verify chain (`key_chain`: the data chain
+///   verifies the busbar key), which admits a door claim exactly as it admits any data-plane path.
+///   A door claim with neither is refused, as any plane's is.
 pub fn build_dispatch(
     decls: &[&'static PlaneDecl],
     slots: &std::collections::BTreeMap<&'static str, &dyn std::any::Any>,
+    key_chain: bool,
 ) -> Result<super::PlaneDispatch, String> {
     let mut dispatch = super::PlaneDispatch::default();
     for decl in decls {
@@ -637,8 +641,9 @@ pub fn build_dispatch(
         };
         let claims = (decl.claims)(slot);
         let admission = (decl.admission)(slot);
-        // R2: a claimed path with no admission is a door with no lock. Refuse the boot.
-        if !claims.is_empty() && admission.is_none() {
+        // R2: a claimed path with no admission path is a door with no lock. Refuse the boot.
+        let key_admitted = key_chain && super::door::is_door(decl);
+        if !claims.is_empty() && admission.is_none() && !key_admitted {
             return Err(format!(
                 "plane `{}` mounts {} path(s) but bound no admission; a mounted plane must bind an \
                  RFC 8707 audience (see PlaneDispatch::admission_for) or claim no path — serving a \

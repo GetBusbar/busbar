@@ -1953,6 +1953,7 @@ pub fn build_app_from_config(
             crate::plane::registry::build_dispatch(
                 crate::plane::registry::plane_decls(),
                 &ref_slots,
+                auth_mw.keys_in_chain,
             )?
         }),
         // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that

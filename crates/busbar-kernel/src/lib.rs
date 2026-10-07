@@ -372,8 +372,9 @@ pub use preflight::{
     plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
 };
 pub use router::{
-    build_router, build_split_routers_serving, build_split_routers_serving_sessions,
-    build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,
+    build_router, build_split_routers_serving, build_split_routers_serving_doors,
+    build_split_routers_serving_sessions, build_split_routers_with_limits, fallback_error_response,
+    REQUEST_ACTIVITY_TICKS,
 };
 // Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
 // build sees them as unused — allowed, with the reason written down rather than widened away.
