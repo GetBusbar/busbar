@@ -10,9 +10,9 @@
 //! |---|---|
 //! | arrival | proceeds: the data listener's gates ran before the data door |
 //! | authenticate | the auth gate's verdict (the unit's principal); a unit with no key on a claim that takes a credential is refused (ARCHITECT P3 (a)) |
-//! | verify | the route the plane's `arrive` named, resolved against its section ([`DoorPools`], ARCHITECT Q-SW6/Q-FL3), a `ROUTE_SCOPE` unit to the one entry the principal's grant reaches among the plane's candidates (Q-DEL-A2A-SELECT, -SCOPE-TRUST); each member sealed under its (plane key, entry) |
+//! | verify | the route the plane's `arrive` named, resolved against its section ([`DoorPools`], ARCHITECT Q-SW6/Q-FL3), a `ROUTE_SCOPE` unit to the one entry the principal's grant reaches among the plane's candidates (Q-DEL-A2A-SELECT, -SCOPE-TRUST); each member sealed under its (plane key, entry); a `ROUTE_SCOPE_LOCAL` unit resolved the same way and sealed nothing, the plane told its one entry |
 //! | approve | the caller's grant of the plane's scope kind over the route as named, then its fallback pool |
-//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged, unless the plane counts it as an admitted call (`ROUTE_COUNTED`): then a keyed one is charged on the plane's pool as below; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
+//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`, `ROUTE_SCOPE_LOCAL` once resolved) is admitted with no walk and nothing held or charged, unless the plane counts it as an admitted call (`ROUTE_COUNTED`): then a keyed one is charged on the plane's pool as below; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
 //! | meter | the plane's last far-end-reported counts, as the unit's usage lines (an estimate never bills) |
 //! | audit | the record's facts: the decoded operation class and how the unit finished |
 //!
@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::plane::{
-    units_bill, UnitCount, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE,
+    units_bill, UnitCount, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL,
     ROUTE_SCOPE_SEPARATOR,
 };
 use busbar_contract::caps::{
@@ -488,6 +488,9 @@ struct DoorUnit {
     recorded: Option<u64>,
     /// A `ROUTE_SCOPE` unit several entries reach: those entries, named in its refusal's words.
     reachable: Vec<String>,
+    /// A `ROUTE_SCOPE_LOCAL` unit's one entry, its scope resolved at verify: the plane answers it
+    /// there, with no route walked.
+    resolved: Option<String>,
     /// The counterparty its `arrive` stated among its trust facts: the entry it is addressed to.
     counterparty: Option<Vec<u8>>,
 }
@@ -729,13 +732,17 @@ impl DriverSteps for DoorSteps<'_> {
         let scoped = u
             .named
             .as_ref()
-            .is_some_and(|(class, _)| *class == ROUTE_SCOPE);
+            .is_some_and(|(class, _)| *class == ROUTE_SCOPE || *class == ROUTE_SCOPE_LOCAL);
         (reason == ReasonCode::NoDestination && scoped)
             .then(|| u.reachable.join(ROUTE_SCOPE_SEPARATOR).into_bytes())
     }
 
     fn counterparty(&self, _ctx: &UnitCtx, counterparty: &[u8]) {
         self.lock().counterparty = Some(counterparty.to_vec());
+    }
+
+    fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
+        self.lock().resolved.clone().map(String::into_bytes)
     }
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
@@ -804,10 +811,12 @@ impl Units for DoorSteps<'_> {
         // its route, directly; zero or several seal nothing and it is refused at admission, the
         // several named in its refusal's words.
         let named_scope = match &self.lock().named {
-            Some((ROUTE_SCOPE, candidates)) => Some(candidates.clone()),
+            Some((class @ (ROUTE_SCOPE | ROUTE_SCOPE_LOCAL), candidates)) => {
+                Some((*class, candidates.clone()))
+            }
             _ => None,
         };
-        if let Some(candidates) = named_scope {
+        if let Some((class, candidates)) = named_scope {
             // The plane's candidates (the entries that would serve the unit, ARCHITECT
             // Q-DEL-A2A-SCOPE-TRUST); none named = every entry.
             let candidates: Option<Vec<String>> = candidates.map(|c| {
@@ -834,6 +843,11 @@ impl Units for DoorSteps<'_> {
                 .collect();
             let mut u = self.lock();
             match reachable.as_slice() {
+                // A UNIT THE PLANE ANSWERS AT THE ONE ENTRY (ROUTE_SCOPE_LOCAL, COORDINATOR ruling
+                // 2026-10-07): resolved as a scope's, and routed nowhere (no pool, no breaker, no
+                // egress), as predev answered its local verbs at the agent `select` chose before
+                // any pool was read (receive.rs:1257-1279, :1559-1593, before `pool_of` :1839).
+                [one] if class == ROUTE_SCOPE_LOCAL => u.resolved = Some(one.clone()),
                 // The one entry, routed as an addressed unit naming it is: over the pool of
                 // members each admitted on their own grant that it is a member of, else directly
                 // (predev's unaddressed request reached the same pool walk as an addressed one,
@@ -874,6 +888,7 @@ impl Units for DoorSteps<'_> {
         // A unit routed by scope that no one entry reached names its candidates, not a route: the
         // grant was the resolution itself, and admission refuses it (no destination).
         if class == ROUTE_SCOPE
+            || class == ROUTE_SCOPE_LOCAL
             || self.pools.granted_to(
                 self.facts.scope_kind.as_deref(),
                 self.key.as_deref(),
@@ -906,16 +921,17 @@ impl Units for DoorSteps<'_> {
             let local = u
                 .named
                 .as_ref()
-                .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+                .is_some_and(|(class, _)| *class == ROUTE_LOCAL || *class == ROUTE_SCOPE_LOCAL);
             (local, local && u.counted)
         };
         // A UNIT ROUTED BY SCOPE that no one entry reached (Q-DEL-A2A-SELECT): refused before
         // anything is charged, as 1.5.5 chose the agent before its admission.
-        let unrouted_scope = self
-            .lock()
-            .named
-            .as_ref()
-            .is_some_and(|(class, _)| *class == ROUTE_SCOPE);
+        let unrouted_scope = {
+            let u = self.lock();
+            u.named.as_ref().is_some_and(|(class, _)| {
+                *class == ROUTE_SCOPE || (*class == ROUTE_SCOPE_LOCAL && u.resolved.is_none())
+            })
+        };
         if unrouted_scope && !matches!(admission(self.key.as_ref(), self.open), Admission::Refused)
         {
             return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));

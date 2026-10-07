@@ -72,7 +72,8 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
-    REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION,
+    REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_LOCAL,
+    ROUTE_SCOPE_LOCAL, ROUTE_SESSION,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -596,7 +597,8 @@ pub struct Decoded {
     /// The entry it routes over: the name inside the plane's own section (ARCHITECT Q-SW6), opaque
     /// bytes the kernel never parses; `None` = it named none.
     pub pool: Option<Vec<u8>>,
-    /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3).
+    /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3), or how the
+    /// unit routes with no entry named (`ROUTE_LOCAL`, `ROUTE_SCOPE`, `ROUTE_SCOPE_LOCAL`).
     pub route: u8,
     /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`).
     pub route_flags: u8,
@@ -625,6 +627,13 @@ pub trait DriverSteps: Units {
     /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
     /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
     fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
+
+    /// THE ONE ENTRY a `ROUTE_SCOPE_LOCAL` unit's scope resolved to (its Verify), lent to the
+    /// plane as the member of the unit's pieces with no attempt, so the plane answers and audits it
+    /// under that entry; asked once, at the unit's route leg. `None` = none resolved.
+    fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
+        None
+    }
 
     /// THE STEPS' OWN WORDS for a refusal they decided with `reason`, handed to the plane's
     /// `refusal` as [`busbar_contract::abi::plane::RefusalIn::text`] (as a limit names the bucket
@@ -1089,6 +1098,16 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             drop(st);
             run.lend_unit(self.arrival.claim, dialect, &caller_ref, 0);
         }
+        // A UNIT ITS PLANE ANSWERS AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`): no route is
+        // walked (the steps sealed none), and the plane is told the entry its scope resolved to.
+        let scope_local = self
+            .lock()
+            .decoded
+            .as_ref()
+            .is_some_and(|d| d.route == ROUTE_SCOPE_LOCAL);
+        if let Some(entry) = scope_local.then(|| self.steps.resolved(ctx)).flatten() {
+            run.lend_resolved(&entry);
+        }
         let end = self.attempts(&mut run, None).await;
         // THE `response` STAGE TAP of a unit whose answer never reached the caller's head (the
         // head itself fires it, in the pump): the status the caller is answered under.
@@ -1361,7 +1380,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> PlaneUnits<'_, S, F, C>
             .lock()
             .decoded
             .as_ref()
-            .is_some_and(|d| d.route == ROUTE_LOCAL);
+            .is_some_and(|d| d.route == ROUTE_LOCAL || d.route == ROUTE_SCOPE_LOCAL);
         match self.session_priced(token, ctx, sealed, !local).await {
             Ok(()) => StepAnswer::proceed(token, RoutePlan::default()),
             Err(reason) => failed(token, reason),

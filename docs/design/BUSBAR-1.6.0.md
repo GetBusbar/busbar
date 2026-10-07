@@ -5025,6 +5025,21 @@ Other rulings:
   the pinned hop's refusal read the pinned member's cell). The narrowing is plane-stated, not
   kernel-wide.
 
+### 2026-10-07 — COORDINATOR ruling (A2A-FLIP pools round 3, item 3): `ROUTE_SCOPE_LOCAL`, a unit the plane answers at its scope's one entry
+- 2026-10-07 COORDINATOR (A2A-FLIP, pools round 3): `ArriveOut::route` gains the value
+  `ROUTE_SCOPE_LOCAL = 4` (a route VALUE, not a flag): the plane answers the unit itself at the ONE
+  entry the principal's grant reaches. The kernel resolves the entry exactly as `ROUTE_SCOPE` does
+  (the candidates may be named; zero or several reachable entries refuse `no_destination`, rendered
+  as `ROUTE_SCOPE`'s), then admits it with NO route walk: no pool, no breaker, no egress. It bills as
+  `ROUTE_LOCAL` does (nothing, unless `ROUTE_COUNTED`, which it may carry), and it is audited under the
+  resolved entry, which the kernel lends to the plane as `OnPieceIn::member` on the unit's pieces with
+  no attempt (`attempt_no` `0`); no layout moved. The a2a door states it for every unaddressed unit
+  it answers itself (counted), as predev answered its local verbs at the agent `select` chose
+  (`crates/busbar-a2a/src/a2a/receive.rs:1257-1260`, `admit` `:1279`, the local verbs `:1559-1593`),
+  before the egress gate and before any pool was read (`pool_of` `:1839`). Addressed local verbs stay
+  direct; the round-2 scope-to-pool widening stays for relayed units alone. llm, mcp and decisions
+  never state it.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 

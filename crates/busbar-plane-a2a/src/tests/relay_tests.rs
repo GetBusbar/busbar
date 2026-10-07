@@ -672,11 +672,14 @@ fn an_http_json_far_ends_bare_events_are_read_as_results() {
     assert_eq!(got[0]["result"]["id"], "a2a-p-0102030405060708");
 }
 
-/// THE BREAKER'S READING (ARCHITECT ruling: the engine's `classify_hop` table, stated by the plane):
-/// a well-formed protocol answer is the destination answering, at whatever status — a TaskNotFound
-/// error at `502` included — while a `5xx` or `429` with no protocol answer is transient, a
-/// `401`/`403` hard, another `4xx` the caller's, and a `2xx` whose body is no usable answer
-/// transient. Nothing is read before the answer is whole.
+/// THE BREAKER'S READING (ARCHITECT ruling: the engine's `classify_hop` table, stated by the plane;
+/// its ORDER per the COORDINATOR ruling 2026-10-07 on finding A, predev `relay.rs:1813-1819` and
+/// `classify_hop` `:1575`/`:1583-1586`): the STATUS FIRST. Outside `2xx` the status table alone
+/// reads the answer, whatever its body — a TaskNotFound error under a `502` or a `500` is a
+/// transient failure, under a `404` the caller's, under a `401` hard; `408`, `429` and `529` are
+/// transient; a `3xx` is the caller's (`ClientError`, nothing recorded). Only on a `2xx` is the body
+/// read: a result or a protocol error is the destination answering, and a body that is no usable
+/// answer is transient. Nothing is read before the answer is whole.
 #[test]
 fn the_far_ends_whole_answer_states_the_breakers_reading() {
     let not_found =
@@ -685,8 +688,11 @@ fn the_far_ends_whole_answer_states_the_breakers_reading() {
     let cases: &[(u32, &[u8], Option<Reading>)] = &[
         (200, result, Some(Reading::Healthy)),
         (200, not_found, Some(Reading::Healthy)),
-        (502, not_found, Some(Reading::Healthy)),
-        (500, not_found, Some(Reading::Healthy)),
+        (502, not_found, Some(Reading::Transient)),
+        (500, not_found, Some(Reading::Transient)),
+        (529, not_found, Some(Reading::Transient)),
+        (408, b"", Some(Reading::Transient)),
+        (404, not_found, Some(Reading::Caller)),
         (502, b"SyntaxError: not JSON", Some(Reading::Transient)),
         (503, br#"{"error":"down"}"#, Some(Reading::Transient)),
         (429, b"", Some(Reading::Transient)),
@@ -699,7 +705,8 @@ fn the_far_ends_whole_answer_states_the_breakers_reading() {
             br#"{"jsonrpc":"2.0","id":8,"result":{}}"#,
             Some(Reading::Transient),
         ),
-        (302, b"", None),
+        (302, b"", Some(Reading::Caller)),
+        (302, not_found, Some(Reading::Caller)),
     ];
     for (status, body, want) in cases {
         let mut r = sent();

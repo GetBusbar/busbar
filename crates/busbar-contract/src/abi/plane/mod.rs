@@ -422,6 +422,13 @@ pub const ROUTE_LOCAL: u8 = 2;
 pub const ROUTE_SCOPE: u8 = 3;
 /// What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names.
 pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
+/// [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF at the ONE entry the principal's grant
+/// reaches. The kernel resolves the entry exactly as ROUTE_SCOPE does ([`ArriveOut::pool`] may
+/// name the candidates; zero or several reachable entries refuse `no_destination`, rendered through
+/// `refusal` as ROUTE_SCOPE's), then admits it with NO route walk: no pool, no breaker, no egress.
+/// It bills nothing when only far-end-reported units bill, as ROUTE_LOCAL does, and it is audited
+/// under the resolved entry.
+pub const ROUTE_SCOPE_LOCAL: u8 = 4;
 
 /// [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4
 /// Q-L3B-SURFACES (h): the walk does repeatable). A walk over a pool still moves to another member
@@ -445,7 +452,8 @@ pub const ROUTE_SESSION: u8 = 2;
 /// not a refund (Part 2 #62). Unset, the answer is the caller's whole or not at all.
 pub const ROUTE_STREAM: u8 = 4;
 
-/// [`ArriveOut::route_flags`], on a [`ROUTE_LOCAL`] unit alone: the plane answers it itself AS AN
+/// [`ArriveOut::route_flags`], on a [`ROUTE_LOCAL`] or [`ROUTE_SCOPE_LOCAL`] unit alone: the plane
+/// answers it itself AS AN
 /// ADMITTED CALL. The kernel admits a keyed unit through its one check-then-charge on the plane's
 /// own pool, so the call counts its request against the caller's caps and is refused when they are
 /// spent (1.5.5's rule, R2: a verb answered out of busbar's own state is still admitted, metered
@@ -1489,7 +1497,8 @@ pub struct ArriveOut {
     /// valid until the instance's next call. A tail addition; absent on every other outcome.
     pub pool: AbiStr,
     /// On READY: [`ROUTE_POOL`] or [`ROUTE_DIRECT`], what [`ArriveOut::pool`] names (ARCHITECT Q-FL3,
-    /// 2026-10-02), or [`ROUTE_LOCAL`] or [`ROUTE_SCOPE`] with no pool named. A tail addition;
+    /// 2026-10-02), or [`ROUTE_LOCAL`], [`ROUTE_SCOPE`] or [`ROUTE_SCOPE_LOCAL`] with no pool named
+    /// (the scope's two naming their candidates there). A tail addition;
     /// [`ROUTE_POOL`] on every
     /// other outcome.
     pub route: u8,
@@ -1562,8 +1571,9 @@ pub struct OnPieceIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
-    /// On an ATTEMPT piece: the operator's name for the member the kernel picked; absent
-    /// otherwise.
+    /// On an ATTEMPT piece: the operator's name for the member the kernel picked. On every piece
+    /// with `attempt_no` `0` of a [`ROUTE_SCOPE_LOCAL`] unit: the entry its scope resolved to (it
+    /// is walked to no member). Absent otherwise.
     pub member: AbiStr,
     /// On an ATTEMPT piece: the attempt's number, from `1`; `0` on every other piece.
     pub attempt_no: u32,

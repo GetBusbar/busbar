@@ -21,9 +21,9 @@
 // `{path, method, headers, body}`.
 //
 // CONTROL: a control file (arg 2), if it exists and its contents (trimmed, lower-cased) are `down`,
-// answers every POST with a 502 carrying no JSON-RPC answer (the gateway's response in front of an
-// unreachable agent under a hard outage) instead of dispatching -- used by the route-failover
-// scenario to trip the breaker. Checked per request, so a scenario can flip it mid-run with no restart.
+// answers every `message/send` POST with a 502 (an unreachable-agent response a real vendor would
+// give under a hard outage) instead of dispatching -- used by the route-failover scenario to trip
+// the breaker. Checked per request, so a scenario can flip it mid-run with no restart.
 //
 // Usage: node h2-mock-agent.mjs <port> [control-file] [issuer-key-out]
 import { createServer } from 'node:http';
@@ -142,12 +142,8 @@ const server = createServer((req, res) => {
     const rid = body.id ?? null;
     const method = body.method;
     if (isDown()) {
-      // A gateway's 502 in front of an agent that is not there: no JSON-RPC answer in it. A
-      // correlated JSON-RPC error is the agent ANSWERING, which never trips its cell (ARCHITECT
-      // breaker ruling, the plane's reading_of, eec1f2820d), so it cannot stand for "down".
-      const raw = Buffer.from('502 Bad Gateway: h2 fixture agent is down', 'utf8');
-      res.writeHead(502, { 'content-type': 'text/plain', 'content-length': raw.length });
-      return res.end(raw);
+      return send(res, 502, { jsonrpc: '2.0', id: rid,
+        error: { code: -32603, message: 'h2 fixture agent: down' } });
     }
     if (method === 'message/send' || method === 'SendMessage' || (req.url || '').endsWith('message:send')) {
       const params = body.params || {};
