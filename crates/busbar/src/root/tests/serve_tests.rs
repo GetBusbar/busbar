@@ -3197,6 +3197,159 @@ mod agent_door {
         assert!(agent.relayed(), "dialled again");
     }
 
+    /// A CARD SIGNED BY THE WRONG KEY IS REFUSED AND RECORDED AS A FAILED CONTACT (the engine's
+    /// `verify_tests::a_card_signed_by_the_wrong_key_is_refused_and_recorded_as_a_failed_contact`):
+    /// a perfectly valid signed card, not signed by the key the operator supplied out of band.
+    /// `connect` reports the registration `error` in the engine's words with no fingerprint to
+    /// approve, the card was fetched once (a card that failed verification is never retried at the
+    /// legacy path), an approval of it is refused, and a delegation to it is never dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_card_signed_by_the_wrong_key_is_refused_and_recorded_as_a_failed_contact() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-wrong-key";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let operator = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let section = format!(
+            "planner: {{url: 'http://127.0.0.1:{}/planner', allow_private: true, reverify_ttl: \
+             '0s', pin: {{mechanism: jws_issuer_key, key: '{}'}}}}",
+            agent.port,
+            key_info(&operator)
+        );
+        let s = served(instance, &section, false, None);
+        let (status, view) = admin(&s, "/agents/planner/connect", "").await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(
+            view["state"], "error",
+            "a card we could not authenticate must not present as an agent that is fine: {view}"
+        );
+        assert_eq!(
+            view["failure"], "the agent card is signed, but not by the pinned issuer key",
+            "{view}"
+        );
+        assert_eq!(view["fingerprint"], serde_json::Value::Null, "{view}");
+        assert_eq!(agent.fetches(), 1, "fetched once, at the canonical path");
+        let (status, refused) = admin(
+            &s,
+            "/agents/planner/approve",
+            &format!(r#"{{"fingerprint": "{}"}}"#, agent.fingerprint()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(
+            !agent.relayed(),
+            "an unauthenticated agent is never dialled"
+        );
+    }
+
+    /// THE LEGACY WELL-KNOWN PATH IS TRIED ONLY WHEN THE CANONICAL ONE SERVED NOTHING (the engine's
+    /// `verify_tests::the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothing`):
+    /// a canonical path that answers nothing usable falls back to the legacy one, whose signed card
+    /// is observed; a canonical path that serves a card signed by the WRONG key is refused there,
+    /// and the good card at the legacy path is never reached (retrying would let an upstream serve a
+    /// signed card at one path and a hostile one at the other).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothing() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        const LEGACY_PATH: &str = "GET /.well-known/agent.json ";
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-legacy-path";
+        let _published = Published(instance);
+        let issuer = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[2u8; 32]);
+        // `split` false: the canonical path answers 404; true: it serves the impostor's card.
+        let split = Arc::new(AtomicBool::new(false));
+        let (canonical, legacy) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let served_card = Arc::new(std::sync::Mutex::new(serde_json::Value::Null));
+        let (port, _heard) = {
+            let (split, canonical, legacy, served_card) = (
+                Arc::clone(&split),
+                Arc::clone(&canonical),
+                Arc::clone(&legacy),
+                Arc::clone(&served_card),
+            );
+            let (issuer, impostor) = (issuer.clone(), impostor.clone());
+            far_end_answering(Arc::new(move |request: &str| {
+                let card = served_card.lock().map(|c| c.clone()).unwrap_or_default();
+                if request.starts_with(CARD_PATH) {
+                    canonical.fetch_add(1, Ordering::SeqCst);
+                    return Some(if split.load(Ordering::SeqCst) {
+                        FarReply::of(200, signed(&card, &impostor).to_string())
+                    } else {
+                        FarReply::of(404, String::new())
+                    });
+                }
+                if request.starts_with(LEGACY_PATH) {
+                    legacy.fetch_add(1, Ordering::SeqCst);
+                    return Some(FarReply::of(200, signed(&card, &issuer).to_string()));
+                }
+                Some(FarReply::of(200, ANSWER.to_string()))
+            }))
+            .await
+        };
+        let good = card(port, "plans the work");
+        *served_card.lock().expect("the card") = good.clone();
+        let section = format!(
+            "planner: {{url: 'http://127.0.0.1:{port}/planner', allow_private: true, \
+             reverify_ttl: '1h', pin: {{mechanism: jws_issuer_key, key: '{}'}}}}",
+            key_info(&issuer)
+        );
+        let s = served(instance, &section, false, None);
+
+        let (status, view) = admin(&s, "/agents/planner/connect", "").await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(
+            view["failure"],
+            serde_json::Value::Null,
+            "the legacy path is tolerated: {view}"
+        );
+        assert_eq!(
+            view["fingerprint"],
+            card_fingerprint(&signed(&good, &issuer)).as_str(),
+            "{view}"
+        );
+        assert_eq!(
+            canonical.load(Ordering::SeqCst),
+            1,
+            "canonical is tried FIRST"
+        );
+        assert_eq!(
+            legacy.load(Ordering::SeqCst),
+            1,
+            "and the legacy path after it"
+        );
+
+        split.store(true, Ordering::SeqCst);
+        let (status, view) = admin(&s, "/agents/planner/connect", "").await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(view["state"], "error", "{view}");
+        assert_eq!(
+            view["failure"], "the agent card is signed, but not by the pinned issuer key",
+            "a verification failure at the canonical path must NOT fall through to the legacy \
+             one: {view}"
+        );
+        assert_eq!(canonical.load(Ordering::SeqCst), 2, "{view}");
+        assert_eq!(
+            legacy.load(Ordering::SeqCst),
+            1,
+            "the good card at the legacy path was never reached"
+        );
+    }
+
     // ── THE HOOK PARITY CELLS ON THE DOOR PATH (the engine's `hook_gate_tests` / `hook_tap_tests`,
     //    each driven through the a2a door and the driver's gate-first hook stage). ────────────────
 

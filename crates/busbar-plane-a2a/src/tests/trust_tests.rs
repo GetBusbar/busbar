@@ -637,3 +637,57 @@ fn a_refused_hop_of_a_transport_pinned_registration_reads_as_the_pin_s_refusal()
         None
     );
 }
+
+/// THE RATCHET (predev `verify_tests::the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion`):
+/// the asymmetry is one line away from being lost to a well-meaning `detection_backoff:` or
+/// `demotion_grace:`, and either would be a window an upstream opens for itself by flapping. The
+/// door's grammar and cadence are scanned and the cadence's own field set is enumerated: the ONLY
+/// held direction anything may name is recovery. The plane tests itself; the kernel's trust book
+/// and verify gate, which hold drift, quarantine and the recovery backoff, are held to the same
+/// rule by the kernel's own `book_tests`.
+#[test]
+fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
+    // A path that silently stopped resolving would be this guard quietly covering nothing: a file
+    // that moved moves the ratchet, it does not drop the path.
+    let read = |rel: &str| -> String {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "the cadence ratchet cannot read `{rel}`: {e}. If the file moved, MOVE THE \
+                     RATCHET — do not drop the path."
+                )
+            })
+    };
+    let code = |s: &str| -> String {
+        s.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for rel in ["src/a2a/config.rs", "src/trust.rs"] {
+        let src = code(&read(rel));
+        for banned in [
+            "detection_backoff",
+            "detection_grace",
+            "demotion_backoff",
+            "demotion_grace",
+            "demotion_delay",
+            "quarantine_grace",
+            "quarantine_delay",
+            "drift_grace",
+            "suppress_drift",
+            "min_drift",
+        ] {
+            assert!(
+                !src.contains(banned),
+                "{rel} names `{banned}`. Detection is never rate-limited and demotion is never \
+                 held; the only direction that may be held is RECOVERY. A window an upstream can \
+                 open for itself by flapping is a window it will use."
+            );
+        }
+    }
+    // The door's cadence carries exactly one knob (its recovery backoff is the kernel book's), so a
+    // second cannot arrive unnoticed. Exhaustive destructure, no `..`.
+    let Cadence { ttl_ms } = Cadence { ttl_ms: 1 };
+    assert_eq!(ttl_ms, 1);
+}

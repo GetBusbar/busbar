@@ -562,3 +562,59 @@ fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_params() {
          nothing"
     );
 }
+
+// ── VERIFY-ON-CALL'S PASS (predev `verify_tests`, ported to the door) ────────────────────────────
+
+/// THE BREAKER IS APPLIED ON THE PASS, not on the next timer (predev
+/// `verify_tests::the_breaker_is_applied_on_the_pass_rather_than_waiting_for_the_next_timer`): the
+/// standing predev's cell drove trips on one evaluation and its suspension outranks a card that is
+/// entirely in order; and the door's verify-on-call evaluates it after settling the look and before
+/// it reads whether the agent serves, in the same pass.
+#[test]
+fn the_breaker_is_applied_on_the_pass_rather_than_waiting_for_the_next_timer() {
+    use crate::a2a::anomaly::{Thresholds, Window};
+    let mut standing = crate::trust::Standing {
+        thresholds: Thresholds {
+            min_observations: 10,
+            terminal_failure_rate: Some(0.4),
+            ..Thresholds::default()
+        },
+        window: Window {
+            observations: 50,
+            terminal_failures: 40,
+            first_observation_ms: 1_000,
+            last_observation_ms: 60_000,
+            ..Window::default()
+        },
+        ..crate::trust::Standing::default()
+    };
+    let trip = standing
+        .apply_anomaly_breaker()
+        .expect("the breaker must trip on this pass");
+    assert_eq!(trip.signal.label(), "terminal_failure_rate");
+    assert!(
+        standing.suspension.is_some(),
+        "suspension OUTRANKS a card that is entirely in order"
+    );
+
+    let src = include_str!("../plane_door.rs");
+    let pass = src
+        .split_once("fn verify_on_call(")
+        .map(|(_, rest)| rest)
+        .expect("verify-on-call");
+    let pass = &pass[..pass.find("\n}\n").expect("its body ends")];
+    let settled = pass
+        .find("cadence.settle(looked.sighting")
+        .expect("the look is settled");
+    let breaker = pass
+        .find("standing.apply_anomaly_breaker();")
+        .expect("the breaker is applied in verify-on-call");
+    let serving = pass
+        .find("let serving = serves(&standing);")
+        .expect("the verdict is read after the pass");
+    assert!(
+        settled < breaker && breaker < serving,
+        "the breaker is evaluated on the look's own pass, after it settles and before the hop's \
+         verdict is read"
+    );
+}

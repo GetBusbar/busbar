@@ -507,3 +507,131 @@ fn an_approved_item_never_sighted_is_pending_until_its_first_sighting_compares()
         "a mismatching first sighting is refused until re-approved"
     );
 }
+
+/// A FLAPPING UPSTREAM GETS ONE PERSISTENT QUARANTINE, AND EVERY FLAP IS STILL COUNTED (the served
+/// engine's verify battery, on the book that now holds drift): the quarantine persists across the
+/// clean answers inside the recovery backoff (one demotion, no storm), and the ledger records every
+/// drift observed (the operator sees the flapping, not only what survived the filter). Past the
+/// backoff a clean answer is believed: the hold delays recovery, it never refuses it. Four flaps
+/// count four here; the engine counted five because its first capture of an unruled skill was
+/// itself drift, where the book pins a declared fingerprint from the start.
+#[test]
+fn a_flapping_upstream_gets_one_persistent_quarantine_and_every_flap_is_still_counted() {
+    let (b, i) = book(entry(Some("good"), 60_000, 300_000));
+    let whole = TrustFacts {
+        counterparty: "cp",
+        item: None,
+        digest: None,
+    };
+    assert_eq!(
+        b.sight(&i, "cp", "good", 1_000),
+        Ok((Sight::Same, Effect::None))
+    );
+    let mut now = 1_000;
+    let mut demotions = 0;
+    for flap in 0..4 {
+        now += 61_000;
+        let (sight, effect) = b.sight(&i, "cp", "bad", now).expect("judged");
+        assert!(
+            matches!(sight, Sight::Drifted | Sight::Quarantined),
+            "flap {flap}: {sight:?}"
+        );
+        demotions += usize::from(effect == Effect::Demote);
+        assert!(b.judge(&i, &whole).is_err(), "flap {flap}: quarantined");
+
+        now += 61_000;
+        assert_eq!(
+            b.sight(&i, "cp", "good", now),
+            Ok((Sight::Quarantined, Effect::None)),
+            "flap {flap}: a clean answer inside the backoff is not believed"
+        );
+        assert!(
+            b.judge(&i, &whole).is_err(),
+            "flap {flap}: the quarantine persists rather than storming"
+        );
+    }
+    assert_eq!(
+        demotions, 1,
+        "one persistent quarantine, not a demotion per flap"
+    );
+    let observed = b
+        .lock()
+        .get("inst")
+        .and_then(|book| book.subjects.get("cp"))
+        .map(|s| s.ledger.drift_observations);
+    assert_eq!(
+        observed,
+        Some(4),
+        "DETECTION IS NEVER RATE-LIMITED: every drift is counted even when the demotion is what \
+         persists"
+    );
+
+    now += 400_000;
+    assert_eq!(
+        b.sight(&i, "cp", "good", now),
+        Ok((Sight::Same, Effect::Clear)),
+        "past the backoff a clean answer IS believed"
+    );
+    assert_eq!(b.judge(&i, &whole), Ok(()));
+}
+
+/// THE RATCHET (the served engine's
+/// `the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion`, the kernel's half):
+/// the book (drift, quarantine, the recovery backoff), the cadence it keeps and the verify gate
+/// every kind runs are scanned for a knob that would slow detection or hold a demotion, and the
+/// cadence policy's field set is enumerated: the ONLY held direction it may name is recovery.
+#[test]
+fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
+    // A path that silently stopped resolving would be this guard quietly covering nothing: a file
+    // that moved moves the ratchet, it does not drop the path.
+    let read = |rel: &str| -> String {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "the cadence ratchet cannot read `{rel}`: {e}. If the file moved, MOVE THE \
+                     RATCHET — do not drop the path."
+                )
+            })
+    };
+    let code = |s: &str| -> String {
+        s.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for rel in [
+        "src/trust/book.rs",
+        "src/trust/reverify.rs",
+        "src/trust/verify.rs",
+    ] {
+        let src = code(&read(rel));
+        for banned in [
+            "detection_backoff",
+            "detection_grace",
+            "demotion_backoff",
+            "demotion_grace",
+            "demotion_delay",
+            "quarantine_grace",
+            "quarantine_delay",
+            "drift_grace",
+            "suppress_drift",
+            "min_drift",
+        ] {
+            assert!(
+                !src.contains(banned),
+                "{rel} names `{banned}`. Detection is never rate-limited and demotion is never \
+                 held; the only direction that may be held is RECOVERY. A window an upstream can \
+                 open for itself by flapping is a window it will use."
+            );
+        }
+    }
+    // Exactly two knobs, so a third cannot arrive unnoticed. Exhaustive destructure, no `..`.
+    let Policy {
+        ttl_ms,
+        recovery_backoff_ms,
+    } = Policy {
+        ttl_ms: 1,
+        recovery_backoff_ms: 2,
+    };
+    assert_eq!((ttl_ms, recovery_backoff_ms), (1, 2));
+}
