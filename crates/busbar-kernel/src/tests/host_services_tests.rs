@@ -170,6 +170,7 @@ fn rig() -> Rig {
                         ttl_ms: 100,
                         recovery_backoff_ms: 0,
                     },
+                    approved: Default::default(),
                 },
             )],
             scope_kinds: vec!["group".into(), "item".into()],
@@ -421,6 +422,125 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
 }
 
+/// THE OPERATOR'S TRUST DECISIONS (`/api/v1/admin/trust`) ARE KEPT: approving a drifted
+/// counterparty re-pins it at what it now reports and clears its durable demotion, a restart
+/// replays the approval over the declared pin, and an unreachable sighting answers the last
+/// verdict without changing it. An unknown key is no key.
+#[test]
+fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
+    use crate::trust::book::Ruling;
+    let r = rig();
+    let me = caller("inst");
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
+        svc::TRUST_DRIFTED
+    );
+    assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_QUARANTINED);
+    let row = r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    assert_eq!(row.approved.as_deref(), Some("moved"));
+    assert!(
+        r.s.demotions.get().unwrap().record.list().is_empty(),
+        "the approval clears the demotion"
+    );
+    assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_SAME);
+    let fresh = restarted(&r);
+    fresh.admit("inst", trusting(Some("fp"))).unwrap();
+    assert_eq!(
+        run(|l| fresh.trust_sight(&me, "cp", "moved", l)).value,
+        svc::TRUST_SAME,
+        "the kept approval, over the declared pin"
+    );
+    assert_eq!(
+        fresh.trust_rule("inst/nobody", Ruling::Revoke),
+        Err(TrustRefused::NoSuchKey)
+    );
+    let s = fresh.trust_unreached(&caller("nowhere"), "cp");
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+}
+
+/// `trust.decide` (a plane's own administrative verb, ARCHITECT 2026-10-06): the ONE decide path
+/// the core-admin trust verbs take. Approving what the caller saw serves; revoking refuses; a stale
+/// fingerprint and a key never sighted are refused; an undeclared key is unknown; and a changed
+/// sighting after the approval quarantines.
+#[test]
+fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
+    use busbar_contract::services::TrustKeyRef;
+    let r = rig();
+    let me = caller("inst");
+    let tool = TrustKeyRef {
+        counterparty: "cp",
+        item: Some("t"),
+    };
+    let serves = |item| r.s.trust_serves(&me, "cp", Some(item), None).value;
+    assert_eq!(
+        r.s.trust_decide(&me, tool, Some("d1"), true).value,
+        svc::UNDECIDED_UNPINNED,
+        "nothing sighted yet"
+    );
+    assert_eq!(
+        r.s.trust_sight_item(&me, "cp", "t", "d1").value,
+        svc::TRUST_NEW
+    );
+    assert_eq!(serves("t"), svc::DISTRUST_NOT_APPROVED);
+    assert_eq!(
+        r.s.trust_decide(&me, tool, Some("d0"), true).value,
+        svc::UNDECIDED_STALE,
+        "approve what you saw"
+    );
+    assert_eq!(
+        r.s.trust_decide(&me, tool, Some("d1"), true).value,
+        svc::TRUST_DECIDED_SERVING
+    );
+    assert_eq!(serves("t"), svc::DISTRUST_NONE, "approved, it serves");
+    assert_eq!(
+        r.s.trust_sight_item(&me, "cp", "t", "d2").value,
+        svc::TRUST_DRIFTED
+    );
+    assert_eq!(
+        serves("t"),
+        svc::DISTRUST_CHANGED,
+        "a changed sighting refuses"
+    );
+    assert_eq!(
+        r.s.trust_decide(&me, tool, None, true).value,
+        svc::TRUST_DECIDED_SERVING,
+        "re-approved at its current sighting"
+    );
+    assert_eq!(
+        r.s.trust_decide(&me, tool, None, false).value,
+        svc::TRUST_DECIDED_PENDING
+    );
+    assert_eq!(
+        serves("t"),
+        svc::DISTRUST_NOT_APPROVED,
+        "revoked, it is refused"
+    );
+    // The counterparty: a changed catalogue quarantines it; its own verb sees it.
+    let whole = TrustKeyRef {
+        counterparty: "cp",
+        item: None,
+    };
+    run(|l| r.s.trust_sight(&me, "cp", "moved", l));
+    assert_eq!(
+        r.s.trust_decide(&me, tool, None, false).value,
+        svc::TRUST_DECIDED_QUARANTINED
+    );
+    assert_eq!(
+        r.s.trust_decide(&me, whole, Some("moved"), true).value,
+        svc::TRUST_DECIDED_SERVING
+    );
+    let stranger = TrustKeyRef {
+        counterparty: "nobody",
+        item: None,
+    };
+    assert_eq!(
+        r.s.trust_decide(&me, stranger, None, true).value,
+        svc::UNDECIDED_UNKNOWN
+    );
+    let s = r.s.trust_decide(&caller("nowhere"), whole, None, true);
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+}
+
 #[test]
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();
@@ -443,6 +563,7 @@ fn a_durable_demotion_is_replayed_at_admit() {
                             ttl_ms: 0,
                             recovery_backoff_ms: 0,
                         },
+                        approved: Default::default(),
                     },
                 )],
                 ..InstanceFacts::default()
@@ -539,6 +660,7 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
                     ttl_ms: 0,
                     recovery_backoff_ms: 0,
                 },
+                approved: Default::default(),
             },
         )],
         ..InstanceFacts::default()

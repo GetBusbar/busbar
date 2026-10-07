@@ -1949,6 +1949,35 @@ fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
     );
 }
 
+/// RED (ARCHITECT 2026-10-06): the configured item approvals name the field each item's digest is
+/// written under (`default`), and carry no flags and no mechanisms.
+#[test]
+fn an_item_approvals_key_names_its_digest_field() {
+    let approvals = duration_key(TRUST_ITEM_APPROVALS);
+    assert_eq!(check_trust_keys(&[pin_key(), approvals]), Ok(()));
+    assert_eq!(
+        check_trust_keys(&[TrustKey {
+            default: AbiStr {
+                ptr: null(),
+                len: 0,
+            },
+            ..approvals
+        }]),
+        f(Rule::Missing, "trust_key.approvals_field")
+    );
+    assert_eq!(
+        check_trust_keys(&[TrustKey {
+            flags: 1,
+            ..approvals
+        }]),
+        f(Rule::UnknownCode, "trust_key.duration_flags")
+    );
+    assert_eq!(
+        check_trust_keys(&[approvals, approvals]),
+        f(Rule::Contradiction, "trust_key.role_twice")
+    );
+}
+
 #[test]
 fn a_trust_key_is_named() {
     let mut k = pin_key();
@@ -1961,7 +1990,7 @@ fn a_trust_key_is_named() {
 
 #[test]
 fn a_trust_key_role_is_known() {
-    for role in [0, TRUST_PRIVATE_REACH + 1] {
+    for role in [0, TRUST_ITEM_APPROVALS + 1] {
         assert_eq!(
             check_trust_keys(&[duration_key(role)]),
             f(Rule::UnknownCode, "trust_key.role")
@@ -2213,6 +2242,7 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
     (39, RefusalCode::Superseded, "superseded"),
     (40, RefusalCode::ClientGone, "client_gone"),
     (41, RefusalCode::DeadlineExceeded, "deadline_exceeded"),
+    (42, RefusalCode::Untrusted, "untrusted"),
 ];
 
 #[test]
@@ -2768,6 +2798,76 @@ fn an_arrivals_route_flags_are_once_and_session() {
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.pool"),
         "a refused arrival opens no session"
+    );
+}
+
+/// THE TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): a READY arrival may state a
+/// counterparty, a capability there and the digest it is offered at, each a bounded text. RED arms:
+/// a capability with no counterparty, a digest with no capability, a fact counted with no bytes, a
+/// fact past the text bound, and any fact on an answer that admits nothing.
+#[test]
+fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
+    let s = |b: &'static [u8]| AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    };
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "none");
+    o.trust_counterparty = s(b"peer-a");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "a counterparty"
+    );
+    o.trust_item = s(b"cap-x");
+    o.trust_digest = s(b"d1");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "all three"
+    );
+
+    // RED: a digest with no capability; a capability with no counterparty.
+    o.trust_item = z();
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust_digest")
+    );
+    o.trust_digest = z();
+    o.trust_item = s(b"cap-x");
+    o.trust_counterparty = z();
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust_item")
+    );
+    // RED: counted with no bytes; past the text bound.
+    o.trust_item = z();
+    o.trust_counterparty = AbiStr {
+        ptr: std::ptr::null(),
+        len: 2,
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.trust_counterparty")
+    );
+    let long = vec![b'p'; MAX_TEXT + 1];
+    o.trust_counterparty = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.trust_counterparty")
+    );
+    // RED: an answer that admits nothing states no trust fact.
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.trust_counterparty = s(b"peer-a");
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust")
     );
 }
 
