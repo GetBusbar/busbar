@@ -247,6 +247,12 @@ pub fn id_key(id: &Value) -> String {
     }
 }
 
+/// Whether a request already livened `round` times may be livened again.
+#[must_use]
+pub fn may_liven(_round: u32) -> bool {
+    true
+}
+
 /// Where a live ask stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskStand {
@@ -331,6 +337,15 @@ impl LiveAsk {
             deadline_ns: 0,
             stand: AskStand::Waiting,
         })
+    }
+
+    /// Starts the clock on the ask in flight (not yet implemented: no ask ever lapses).
+    pub fn arm(&mut self, _now_ns: u64) {}
+
+    /// Whether the ask in flight went unanswered past its deadline at `now_ns`.
+    #[must_use]
+    pub fn lapsed(&self, _now_ns: u64) -> bool {
+        false
     }
 
     /// The next ask as the request line busbar writes, under ask number `n`; `None` once every ask
