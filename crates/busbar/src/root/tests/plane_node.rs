@@ -3198,6 +3198,7 @@ fn invoice_micros(
         tokens_cache_creation: unit(busbar_contract::records::UNIT_CACHE_WRITE),
         requests: u64::from(report.fee_count),
         spend_micros: 0,
+        classes: Default::default(),
     };
     let cost =
         busbar_kernel::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
@@ -3467,6 +3468,7 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
         tokens_cache_creation: 0,
         requests: 1,
         spend_micros: 0,
+        classes: Default::default(),
     };
     let cost =
         busbar_kernel::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());

@@ -986,9 +986,24 @@ pub struct UsageWindow {
     pub end: u64,
 }
 
+/// One plane-declared class's consumption on a usage row: its raw count and its cost.
+///
+/// NEW IN 1.6.0 (1.5.5's usage rows carried the token split alone, and 1.5.5 served no plane that
+/// declares a class of its own): ledgered by the FLIP-A2A ruling. `cost` is in the same MICRO-units
+/// as [`UsageBreakdown::spend_micros`], priced by the same card in force at the row's instant, and is
+/// part of that row's `spend_micros`, never added to it a second time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct ClassUsage {
+    /// The raw count the plane's ledger lines recorded under the class.
+    pub count: u64,
+    /// What the card in force priced that count at, in micro-units.
+    pub cost: i64,
+}
+
 /// The raw consumption counts + the derived spend estimate: the one shape shared by `total`,
 /// `by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct UsageBreakdown {
     /// Uncached input tokens (normalized additive-cache convention).
@@ -1004,6 +1019,11 @@ pub struct UsageBreakdown {
     /// the consumer's concern. A consumer with its own per-model catalog recomputes from the raw
     /// token split instead.
     pub spend_micros: i64,
+    /// THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by
+    /// the class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries
+    /// none, so a token-only row reads exactly as 1.5.5's.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub classes: std::collections::BTreeMap<String, ClassUsage>,
 }
 
 /// One (model, provider) row of the per-model aggregation.
