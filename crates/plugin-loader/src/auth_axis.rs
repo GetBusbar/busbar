@@ -203,7 +203,7 @@ impl AuthRows {
         rows.filter(|p| p.manifest.kind == AUTH)
             .filter_map(|row| {
                 let alias = &row.manifest.alias;
-                let Ok(Door::Memory(plugin, _)) = self.load(row, alias) else {
+                let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
                     return None;
                 };
                 let facts = plugin.context::<AuthFacts>()?;

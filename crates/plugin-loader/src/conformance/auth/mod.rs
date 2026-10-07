@@ -687,7 +687,7 @@ fn inbound(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) -> Fold {
     // `rotated_settings` when named, else over its own settings, on a host serving other secrets.
     let reads = st.reads_credentials();
     let rotated = if reads && k.get("rotated_settings").is_none_or(|v| v.is_null()) {
-        settings.clone()
+        settings.to_vec()
     } else {
         text(&k["rotated_settings"])
     };
