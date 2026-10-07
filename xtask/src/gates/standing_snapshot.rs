@@ -383,6 +383,42 @@ mod tests {
         assert!(!still.contains_key("g:matrix\tunlisted-cell\tnew × kind"));
     }
 
+    /// X5 finding 10: a LISTED row that goes red with a detail the snapshot cannot read is a red
+    /// the posture never evaluated. A plain sentence (a read error, a scan that stopped) parses to
+    /// zero findings, and the posture used to hold over it; it must block, naming the row and the
+    /// text it could not read.
+    #[test]
+    fn a_listed_row_red_with_a_plain_sentence_detail_blocks() {
+        let stopped = "the scan stopped: Cargo.lock could not be read (permission denied)";
+        let (blocking, _) = judge(&SR, &Verdict::of(vec![row(stopped)]), &snap_of(TREE));
+        assert!(
+            blocking
+                .iter()
+                .any(|b| b.starts_with("NEW RED g:matrix") && b.contains(stopped)),
+            "{blocking:?}"
+        );
+    }
+
+    /// The same, with the plain sentence riding beside findings the snapshot holds: every chunk is
+    /// read or the row blocks. An empty tag and an empty subject are not readable either.
+    #[test]
+    fn an_unparsed_chunk_beside_standing_findings_blocks() {
+        for odd in [
+            "and then the walk gave up",
+            "x: \tbusbar × auth\tno tag",
+            "ratchet\t \tno subject",
+        ] {
+            let planted = format!("{TREE} | {odd}");
+            let (blocking, _) = judge(&SR, &Verdict::of(vec![row(&planted)]), &snap_of(TREE));
+            assert!(
+                blocking
+                    .iter()
+                    .any(|b| b.starts_with("NEW RED g:matrix") && b.contains(odd)),
+                "{odd:?}: {blocking:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_red_row_outside_the_snapshot_rows_is_new() {
         let v = Verdict::of(vec![row(TREE), Row::fail("g:name", "t", "a fused name")]);
