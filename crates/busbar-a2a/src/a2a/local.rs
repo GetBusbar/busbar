@@ -477,7 +477,7 @@ pub(crate) fn delivery_auth(
     }
     Ok(Some(super::pushdeliver::DeliveryAuth {
         scheme,
-        credentials,
+        credentials: credentials.into(),
     }))
 }
 

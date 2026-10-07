@@ -4965,6 +4965,30 @@ fn a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports() {
     );
 }
 
+/// **A LINE ON A LANE THE CARD DOES NOT NAME NEVER SERVES AS A FEE-ONLY FIGURE (#42).**
+///
+/// The statement used to price such a line at its flat fee and say nothing, and this view trusts
+/// the statement's unpriceable list — so it served the fee as the row's money. The line is listed
+/// unpriceable now, and the view does what it does for every refusal: it serves the book's balance
+/// rather than a derivation with a hole in it. RED before the fix: the row read the one flat fee
+/// alone, a figure no rate row for the lane produced.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_line_on_a_lane_the_card_does_not_name_is_never_served_as_its_fee() {
+    let mut line = a_booked_line("team-a", A_LINE_MS, 1_000_000, 1);
+    line.lane = "lane-the-card-does-not-name".to_string();
+    let view = Arc::new(PricedLedger::over(vec![line]));
+    view.history.apply(a_card_at(2.0, 5), 1_000);
+
+    let rows = totals_rows_over(&view);
+    assert_eq!(rows.len(), 1, "one bucket-day: {rows:?}");
+    assert_eq!(
+        rows[0]["priced_nanos"],
+        A_STORED_BALANCE_NOBODY_DERIVED.to_string(),
+        "an unpriceable line refuses the derivation; the view serves the balance, never a fee-only figure"
+    );
+}
+
 /// **PROOF TWO — A FORWARD-DATED CARD LEAVES EVERY EARLIER POSTING'S TOTAL BYTE-IDENTICAL (#79).**
 ///
 /// "Price against the latest rate card" means the latest card whose `effective_from` had ARRIVED at

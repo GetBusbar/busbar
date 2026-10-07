@@ -123,7 +123,7 @@ async fn change(
 /// refused, at the commit — the live configuration and the dated card history disagreed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_config_change_whose_card_the_journal_refuses_leaves_the_config_unchanged() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     linked::install();
     let journal: &'static Journal = Box::leak(Box::new(Journal(Mutex::new(Vec::new()))));
     install_rate_apply(journal);

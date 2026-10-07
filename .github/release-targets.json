@@ -64,18 +64,41 @@
   ],
   "plugin_probe": {
     "_comment": [
-      "The known-good signed first-party plugin the `first_party_plugin` contract row runs against.",
-      "It is a REAL release of a REAL first-party plugin repo, signed by the REAL private half of",
-      "BUSBAR_RELEASE_PUBKEY -- which is the only thing that can prove the shipped busbar embeds the",
-      "matching public half. A self-packed fixture signed by an ephemeral key would prove only that",
-      "the signature code compiles (scripts/signing-gate.sh already proves that, on a binary it",
-      "builds itself); it would have gone green on the broken 1.5.3 aarch64 artifact."
+      "The REAL published release of a REAL first-party plugin repo the `first_party_plugin` contract",
+      "row hands the shipped binary, signed by the REAL private half of BUSBAR_RELEASE_PUBKEY.",
+      "",
+      "WHAT v1.0.4 IS, CHECKED AGAINST THE ASSET ITSELF (2026-10-04): a 1.5.x JSON-CONTRACT store",
+      "plugin. Its manifest.json states `kind: store`, `abi_version: 2` (the 1.5.5 store payload",
+      "version), and the repo's `.busbar-ref` at the tag records busbar 1.5.3 (c8780349cf66); the",
+      "cdylib is `busbar_plugin_sdk::export_store_plugin!` over the 1.5 JSON `Store` contract.",
+      "",
+      "SO ITS EXPECTED STATE IS THE NAMED REFUSAL, NOT `ready`. 1.6.0 loads no legacy plugin: each",
+      "kind admits exactly its current ABI and a 1.5.5 JSON-contract plugin is refused at boot,",
+      "naming the rebuild (BUSBAR-1.6.0.md THE DESIGN §11.8, \"No legacy loading\"; ruling C21/ABI-o1;",
+      "crates/busbar/tests/a_1_5_5_plugin_is_refused_at_boot.rs). A binary that reports this plugin",
+      "`ready` is loading legacy, and the row is RED for it.",
+      "",
+      "`expect_status` is `ready` or `refused`. `ready` also needs `expect_signature`; `refused`",
+      "needs `expect_refusal`: every string the STATUS column must carry (it must also be an",
+      "`INVALID:` row, the class the structural ABI check files a refused version under). The ABI",
+      "check runs BEFORE trust, so a refused row carries no signature verdict and this probe proves",
+      "no key: the release key's presence is the `release_pubkey` row's, until a first-party plugin",
+      "built against the 1.6.0 SDK is published and this probe returns to `ready` on it. THE RELEASE",
+      "THAT RE-ARMS IT: busbar-store-sqlite's first release built against the 1.6.0 SDK (store ABI 4),",
+      "signed in its release workflow by the real private half; then `tag` moves to it, the",
+      "plugin_asset names follow, and `expect_status` returns to `ready` with `expect_signature:",
+      "first-party`. Only a real-key signature proves the SHIPPED binary embeds the real key; the",
+      "signing-gate check in qa/pipeline-checks.json proves the verifier on a 1.6.0-SDK plugin with an",
+      "ephemeral key, which a shipped binary correctly refuses."
     ],
     "repo": "GetBusbar/busbar-store-sqlite",
     "tag": "v1.0.4",
     "alias": "sqlite",
-    "expect_signature": "first-party",
-    "expect_status": "ready"
+    "expect_status": "refused",
+    "expect_refusal": [
+      "manifest abi_version 2 is not supported for kind 'store' by this binary",
+      "rebuild the plugin against the 1.6.0 SDK"
+    ]
   },
   "pgo_floor": 4,
   "targets": [

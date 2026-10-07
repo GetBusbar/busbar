@@ -76,6 +76,8 @@ pub mod hook_wire;
 #[allow(missing_docs)]
 pub mod hooks;
 pub mod ids;
+// THE HOST'S I/O, as the connector implements it and the loader's `io` slots reach it.
+pub mod io_host;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod ir;
 pub(crate) mod json_grammar;
@@ -91,6 +93,7 @@ pub mod operation;
 pub mod plane;
 pub mod plane_calls;
 pub mod plugin;
+pub mod plugin_rows;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod protocol;
 pub mod redacted;

@@ -259,7 +259,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
             fire_stage_taps(
                 host.tap_hooks_response(),
                 &shape,
-                busbar_kernel::hooks::wire::HookStageProjection {
+                busbar_contract::hook_wire::HookStageProjection {
                     at: "response",
                     model: None,
                     attempt_number: None,
@@ -1270,7 +1270,7 @@ async fn reconcile_phase2_gates(
                     name,
                 } => {
                     metrics::counter!(
-                        busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                        busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
                         "policy" => *name,
                         "pool" => pool_name.to_string(),
                         "status" => status.to_string(),
@@ -1342,7 +1342,7 @@ async fn reconcile_phase2_gates(
         }
         if let Some((_, name)) = &gate_order {
             metrics::counter!(
-                busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
                 "policy" => *name,
                 "pool" => pool_name.to_string(),
             )
@@ -1408,7 +1408,7 @@ fn apply_gate_restricts(
                     // leave `cands` unchanged and continue reconciling the next restrict.
                 } else {
                     metrics::counter!(
-                        busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                        busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
                         "policy" => *name,
                         "pool" => pool_name.to_string(),
                         "status" => "503".to_string(),
@@ -1431,7 +1431,7 @@ fn apply_gate_restricts(
             } else {
                 *cands = restricted;
                 metrics::counter!(
-                    busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                    busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
                     "policy" => *name,
                     "pool" => pool_name.to_string(),
                 )
@@ -1551,7 +1551,7 @@ fn apply_policy_outcome(
         // `x-busbar-route-policy` header + the metric) and hand the order to the ordered walk.
         PolicyOutcome::Order { order, name } => {
             metrics::counter!(
-                busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
                 "policy" => name,
                 "pool" => pool_name.to_string(),
             )
@@ -1583,7 +1583,7 @@ fn apply_policy_outcome(
             // outcome clamps it to 400..=499 for every producer, so the worst-case series
             // fan-out is 100 per (policy, pool).
             metrics::counter!(
-                busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
                 "policy" => name,
                 "pool" => pool_name.to_string(),
                 "status" => status.to_string(),
@@ -1689,7 +1689,7 @@ fn apply_base_policy_restrict(
             Ok(None)
         } else {
             metrics::counter!(
-                busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
                 "policy" => name,
                 "pool" => pool_name.to_string(),
                 "status" => "503".to_string(),
@@ -1714,7 +1714,7 @@ fn apply_base_policy_restrict(
         // failover hop, then let SWRR pick among them.
         *cands = restricted;
         metrics::counter!(
-            busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+            busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
             "policy" => name,
             "pool" => pool_name.to_string(),
         )
@@ -1763,7 +1763,7 @@ fn capture_candidate_taps<'a>(
         fire_stage_taps(
             host.tap_hooks_candidate(),
             shape,
-            busbar_kernel::hooks::wire::HookStageProjection {
+            busbar_contract::hook_wire::HookStageProjection {
                 at: "candidate",
                 model: None,
                 attempt_number: None,
@@ -1803,7 +1803,7 @@ fn fire_routing_tap(
         fire_stage_taps(
             host.tap_hooks_routing(),
             shape,
-            busbar_kernel::hooks::wire::HookStageProjection {
+            busbar_contract::hook_wire::HookStageProjection {
                 at: "routing",
                 model: Some(&EngineTables::new(rt).lanes()[i].model),
                 attempt_number: Some(

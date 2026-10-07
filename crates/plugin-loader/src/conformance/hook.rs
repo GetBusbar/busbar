@@ -58,8 +58,8 @@ use busbar_contract::abi::sdk::door::abi_str;
 use serde_json::Value;
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick,
+    validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{Called, Frame, Plugin, Recall};
@@ -435,7 +435,7 @@ fn recall_again(p: &Plugin<Hook>, r: &Request, op: u32, order_cap: usize) -> Str
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("hook");
     assert!(k.is_object(), "conformance.json has no `hook` inputs");
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let bad: Vec<Vec<u8>> = k["bad_settings"]
         .as_array()
         .expect("conformance.json: hook.bad_settings must be an array")
@@ -470,7 +470,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let after = Request::of(&k["refresh"]["request"], order_cap);
 
     let d = dispatcher();
-    let p = load::<Hook>(s, leg, bind(&d, "hook")).expect("the hook door loads");
+    let p = load::<Hook>(s, leg, s.bind(&d, "hook")).expect("the hook door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(

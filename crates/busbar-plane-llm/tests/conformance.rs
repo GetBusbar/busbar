@@ -46,7 +46,8 @@ fn bind(d: &Dispatcher) -> Bind {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        // These rows never dial: the door's needs are not declared, bound as a probe.
+        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
     }
 }
 

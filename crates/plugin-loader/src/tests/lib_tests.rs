@@ -4,8 +4,6 @@
 //! Tests for `crates/plugin-loader/src/lib.rs`.
 
 use super::*;
-// The artifact table lives in `crate::test_support`; this crate's tests name it here.
-pub(crate) use crate::test_support::artifact;
 use busbar_contract::abi::cold::{
     STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED, TRANSPORT_VERSION,
 };
@@ -15,12 +13,16 @@ use busbar_contract::abi::cold::{
 /// at it to pin the schema-keyed shim rule.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
-/// The REAL JSON-lane plugin the loader-MECHANISM tests below dlopen (validation, inventory, the kind
-/// gates): the export row of `[package.metadata.busbar.both-ways]`, the request-log file sink's
-/// `cdylib`, one of the two sinks still on that lane (M6-COLD-DELETE residue). Under CI a missing
-/// cdylib is a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
+/// The REAL plugin the loader-MECHANISM tests below dlopen (validation, inventory, the kind gates):
+/// the `auth` row of `[package.metadata.busbar.both-ways]`, the token-verifying OIDC module's
+/// dropped-in `cdylib`. It is on the auth kind's memory ABI (its row is a door row, and the table names
+/// its logic crate, so its cdylib is `<logic>_plugin`); every SDK-built library still answers the
+/// plugin-ABI handshake these tests drive (`busbar_abi`, `busbar_plugin_kind` and the four
+/// operational symbols), so it is the subject the cold auth cdylib was. Under CI a missing cdylib is
+/// a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
 fn json_lane_plugin_path() -> Option<std::path::PathBuf> {
-    super::both_ways::cdylib(super::both_ways::fixture("export").0)
+    let (logic, _) = super::both_ways::door_fixture("auth");
+    super::both_ways::cdylib(&format!("{logic}_plugin"))
 }
 
 /// `validate_plugin` accepts the real JSON-lane fixture cdylib (ABI v1) without constructing an
@@ -32,7 +34,7 @@ fn json_lane_plugin_path() -> Option<std::path::PathBuf> {
 #[test]
 fn validate_and_inventory() {
     let Some(path) = json_lane_plugin_path() else {
-        eprintln!("skip: the export sink cdylib is not built");
+        eprintln!("skip: the JSON-lane auth cdylib is not built");
         return;
     };
     assert_eq!(validate_plugin(&path).expect("validate"), TRANSPORT_VERSION);
@@ -200,7 +202,7 @@ fn the_library_extension_match_uses_this_filesystems_case_rule() {
 #[test]
 fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
     let Some(real_plugin) = json_lane_plugin_path() else {
-        eprintln!("skip: the export sink cdylib is not built");
+        eprintln!("skip: the JSON-lane auth cdylib is not built");
         return;
     };
     let dir = std::env::temp_dir().join(format!(
@@ -247,36 +249,106 @@ fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
 /// exports) are two different attacks and must not be conflatable into one check.
 #[test]
 fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
-    let Some(export_plugin) = json_lane_plugin_path() else {
-        eprintln!("skip: the export sink cdylib is not built");
+    let Some(auth_plugin) = json_lane_plugin_path() else {
+        eprintln!("skip: the JSON-lane auth cdylib is not built");
         return;
     };
-    let bytes = std::fs::read(&export_plugin).expect("read the JSON-lane fixture cdylib");
+    let bytes = std::fs::read(&auth_plugin).expect("read the JSON-lane fixture cdylib");
+    let export = busbar_contract::abi::mechanism::kind::EXPORT;
+    let auth = busbar_contract::abi::mechanism::kind::AUTH;
 
-    // Seam mismatch: a real EXPORT library loaded through the AUTH entry point (expected_kind =
-    // auth, exported_kind = export) must be refused, naming both kinds. Both kind-check guards run
-    // BEFORE `busbar_open`, so the empty config never reaches the sink.
-    let Err(err) = auth::load_login_image(
+    // Seam mismatch: a real AUTH library loaded as an EXPORT plugin (expected_kind = export,
+    // exported_kind = auth) must be refused, naming both kinds. Both kind-check guards run BEFORE
+    // `busbar_open`, so the empty config never reaches the plugin.
+    let Err(err) = load_image(
         Image::Bytes(&bytes),
         "{}",
         "kind-mismatch-seam",
-        busbar_contract::abi::mechanism::kind::EXPORT,
+        export,
+        export,
     ) else {
-        panic!("an export library must not load as an auth module");
+        panic!("an auth library must not load as an export plugin");
     };
-    assert!(err.contains("export"), "must name the exported kind: {err}");
-    assert!(err.contains("auth"), "must name the expected kind: {err}");
+    assert!(err.contains("export"), "must name the expected kind: {err}");
+    assert!(err.contains("auth"), "must name the exported kind: {err}");
 
-    // Manifest mismatch: expected_kind matches exported_kind (both export), but the signed
+    // Manifest mismatch: expected_kind matches exported_kind (both auth), but the signed
     // manifest_kind lies about it — must still be refused.
-    let Err(err) = export::load_export_from_bytes(&bytes, "{}", "kind-mismatch-manifest", "auth")
-    else {
-        panic!("an exported-export/manifest-auth disagreement must be refused");
+    let Err(err) = load_image(
+        Image::Bytes(&bytes),
+        "{}",
+        "kind-mismatch-manifest",
+        auth,
+        export,
+    ) else {
+        panic!("an exported-auth/manifest-export disagreement must be refused");
     };
     assert!(
         err.contains("kind mismatch"),
         "must name it as a manifest disagreement, not a seam mismatch: {err}"
     );
+}
+
+/// NO LEGACY LOADING at the loader-mechanism paths (THE DESIGN §11.8, ruling C21/ABI-o1): a library
+/// with no `busbar_plugin_door` that states a JSON-contract kind by its `busbar_plugin_kind` symbol
+/// alone is a 1.5.5-era plugin. The symbol only CLASSIFIES it: the upload vet refuses it, the
+/// plugins inventory lists it invalid, and the kind gate refuses it even when the seam and the
+/// signed manifest agree with the kind it states, each naming the missing door and the rebuild.
+///
+/// RED against a loader that takes a kind symbol on its word: every handshake and kind check
+/// passes, so the vet answers `Ok`, the inventory lists it valid and the gate admits it to
+/// `busbar_open`.
+#[test]
+fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
+    let Some(path) = super::both_ways::example_cdylib("json_contract_auth") else {
+        eprintln!("skip: the json_contract_auth example cdylib is not built");
+        return;
+    };
+    let names_the_rebuild = |why: &str| {
+        assert!(
+            why.contains("busbar_plugin_door"),
+            "names the missing door: {why}"
+        );
+        assert!(why.contains("'auth'"), "names the kind it states: {why}");
+        assert!(
+            why.contains(crate::dispatch::load::REBUILD),
+            "names the rebuild: {why}"
+        );
+    };
+
+    // The upload vet.
+    let vet = validate_plugin(&path).expect_err("the upload vet refuses a door-less library");
+    names_the_rebuild(&vet);
+
+    // The plugins inventory.
+    let file = path.file_name().unwrap().to_owned();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-inventory-json-contract-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(&path, dir.join(&file)).unwrap();
+    let inv = inventory(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let listed = inv
+        .iter()
+        .find(|p| std::ffi::OsStr::new(&p.file) == file)
+        .expect("the door-less library is listed");
+    assert!(!listed.valid, "listed invalid: {listed:?}");
+    assert_eq!(listed.abi_version, None, "{listed:?}");
+    names_the_rebuild(listed.error.as_deref().expect("listed with its refusal"));
+
+    // The kind gate, with the seam and the signed manifest both agreeing on `auth`.
+    let bytes = std::fs::read(&path).expect("read the door-less cdylib");
+    let auth = busbar_contract::abi::mechanism::kind::AUTH;
+    let Err(gate) = load_image(Image::Bytes(&bytes), "{}", "json-contract-auth", auth, auth) else {
+        panic!("the kind gate must not admit a door-less library");
+    };
+    names_the_rebuild(&gate);
 }
 
 #[test]
@@ -378,34 +450,6 @@ fn transport_error_classification() {
     assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
 }
 
-/// END-TO-END over the export kind's REAL sink `cdylib` (the export row of
-/// `[package.metadata.busbar.both-ways]` — the request-log file sink, built from its own repo): load
-/// it through the loader (which queries `Streams` once at load), assert it reports `[Logs]`, then
-/// `Deliver` a request-log line and assert the sink acks (an `Ok(())`). This is the exact seam the
-/// engine's observability export consumes: verified bytes in, a `DynExport` out. Under CI a missing
-/// cdylib is a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
-#[test]
-fn load_and_exercise_export_plugin() {
-    use busbar_contract::abi::export::ExportStream;
-    let Some(path) = super::both_ways::cdylib(super::both_ways::fixture("export").0) else {
-        eprintln!("skip: the export sink cdylib is not built");
-        return;
-    };
-    let bytes = std::fs::read(&path).expect("read the export sink cdylib");
-    let sink = export::load_export_from_bytes(&bytes, "{}", "export-sink", "export")
-        .expect("load the export sink over the ABI");
-
-    // Streams was queried once at load and reports exactly [Logs].
-    assert_eq!(sink.streams(), &[ExportStream::Logs]);
-
-    // A delivery for the declared stream acks (Ok).
-    sink.deliver(
-        ExportStream::Logs,
-        &serde_json::json!({"status": 200, "model": "m"}),
-    )
-    .expect("deliver acks");
-}
-
 /// `validate_plugin` must UNLOAD on a plugin worker, not on the caller's thread.
 ///
 /// It `dlopen`s to run the ABI handshake and then has to unmap again. An implicit drop of the
@@ -423,7 +467,7 @@ fn load_and_exercise_export_plugin() {
 #[test]
 fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
     let Some(path) = json_lane_plugin_path() else {
-        eprintln!("skip: the export sink cdylib is not built");
+        eprintln!("skip: the JSON-lane auth cdylib is not built");
         return;
     };
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);

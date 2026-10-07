@@ -9,7 +9,7 @@
 //! its paths would enter the tree with NO entry in `CoreRouteTable` — and a served path the table
 //! does not describe is the one state that table exists to make unrepresentable. The paths are
 //! therefore registered here, concretely, derived from the operator's issuer at mount time, exactly
-//! as the MCP plane registers its own.
+//! as every other served surface registers its own.
 //!
 //! ## The bars, and the one that looks wrong until you read the RFC
 //!
@@ -157,7 +157,7 @@ fn into_axum(response: oauth_as::http::Response) -> Response {
 ///    `client_id` and `request_uri`, and `oauth-as` spends the handle on arrival. Sent to the
 ///    library undecided, the request would be spent by merely loading the page, and the operator's
 ///    answer would come back to a handle that no longer exists. So an undecided pushed request goes
-///    straight to the consent screen, and reaches the library only once a decision is staked for
+///    straight to the consent screen, and reaches the library only once an approval or a refusal is staked for
 ///    it — one-time use enforced at the point of authorization (FAPI 2.0 s5.3.2.2 NOTE 3). A
 ///    `request_uri` this store does not hold, or one presented by a client that did not push it,
 ///    goes to the library, which refuses it.
@@ -289,7 +289,7 @@ async fn consent_screen(
         headers.append(axum::http::header::SET_COOKIE, value);
     }
     // A page naming a client and a scope set is a per-request answer. Cached, it would show the
-    // next request's operator a previous request's decision.
+    // next request's operator a previous request's answer.
     headers.insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
@@ -384,8 +384,8 @@ async fn consent_submit(
         )
             .into_response();
     };
-    // Absent is Approve: the decision the screen's only button made before it grew a second one.
-    let approve = match form.decision.as_deref() {
+    // Absent is Approve: the answer the screen's only button gave before it grew a second one.
+    let approve = match form.answer.as_deref() {
         None | Some("approve") => true,
         Some("deny") => false,
         Some(_) => {
@@ -434,7 +434,7 @@ struct ConsentForm {
     #[serde(rename = "return")]
     return_to: Option<String>,
     /// `approve` or `deny`.
-    decision: Option<String>,
+    answer: Option<String>,
 }
 
 /// One query parameter of a local `/authorize?...` target, decoded.
@@ -484,16 +484,25 @@ fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending {
 
 /// Is this a path on THIS server rather than a URL somewhere else?
 ///
-/// The consent screen redirects a browser to this value, so an unchecked one is an open redirect —
-/// and an open redirect on an OAuth server's own origin is the single most useful thing an attacker
-/// can find there. Accepted: a single leading `/` followed by something that is not another `/` and
-/// not a `\`. Refused: an absolute URL, a scheme-relative `//evil.example`, and the backslash form
-/// browsers normalise into one.
+/// The consent screen redirects a browser to this value once the operator presses Approve or Deny,
+/// so an unchecked one is an open redirect — and an open redirect on an OAuth server's own origin is
+/// the single most useful thing an attacker can find there. A browser does not read a `Location`
+/// the way a prefix check does: it drops every tab and newline anywhere in it, trims leading
+/// controls and spaces, and reads `\` as `/`, so `/\t/evil.example` and `/\n/evil.example` are
+/// `//evil.example` to it, a scheme-relative URL on someone else's host.
+///
+/// So the value is held to the ONE shape a local absolute path has, byte by byte, and anything else
+/// is refused rather than cleaned: it opens with exactly one `/`; its second byte is neither `/` nor
+/// `\`; and no byte anywhere is a backslash, a control (C0, DEL, or a C1 control), or whitespace.
+/// What the authorization endpoint sends here is the request target the browser itself sent, which
+/// is percent-encoded and carries none of those.
 fn is_local_path(value: &str) -> bool {
-    value.starts_with('/')
-        && !value.starts_with("//")
-        && !value.starts_with("/\\")
-        && !value.contains('\\')
+    let mut bytes = value.bytes();
+    bytes.next() == Some(b'/')
+        && !matches!(bytes.next(), Some(b'/' | b'\\'))
+        && !value
+            .chars()
+            .any(|c| c == '\\' || c.is_control() || c.is_whitespace())
 }
 
 /// The `client_id` and `scope` of a pending authorization request, read out of its query string.
@@ -690,8 +699,8 @@ fn consent_page(return_to: &str, pending: &Pending) -> String {
          <p>Sends the credential to: <code>{host}</code></p>{revisit}\
          <form method=post>\
          <input type=hidden name=return value=\"{ret}\">\
-         <button type=submit id=approve name=decision value=approve>Approve</button>\
-         <button type=submit id=deny name=decision value=deny>Deny</button>\
+         <button type=submit id=approve name=answer value=approve>Approve</button>\
+         <button type=submit id=deny name=answer value=deny>Deny</button>\
          </form>",
         client = escape(&pending.client_id),
         scope = escape(scope),
@@ -720,3 +729,7 @@ mod percent_decode_tests;
 #[cfg(test)]
 #[path = "tests/consent_host_tests.rs"]
 mod consent_host_tests;
+
+#[cfg(test)]
+#[path = "tests/local_path_tests.rs"]
+mod local_path_tests;

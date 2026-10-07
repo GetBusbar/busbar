@@ -114,7 +114,7 @@ pub(crate) struct DeliveryAuth {
     pub(crate) scheme: String,
     /// The credential itself. **Never logged, never echoed on a read verb, never persisted.** See
     /// [`auths`] for where it lives and why that is not a durable store.
-    pub(crate) credentials: String,
+    pub(crate) credentials: busbar_contract::Redacted<String>,
 }
 
 impl DeliveryAuth {
@@ -122,10 +122,10 @@ impl DeliveryAuth {
     /// caller supplied none (the proto marks `credentials` optional, and a scheme with an empty
     /// value trailing a space is a header a strict receiver rejects).
     fn header_value(&self) -> String {
-        if self.credentials.is_empty() {
+        if self.credentials.expose_secret().is_empty() {
             self.scheme.clone()
         } else {
-            format!("{} {}", self.scheme, self.credentials)
+            format!("{} {}", self.scheme, self.credentials.expose_secret())
         }
     }
 }

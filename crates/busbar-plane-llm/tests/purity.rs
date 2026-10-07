@@ -148,8 +148,6 @@ struct Pass {
     ending: Option<Vec<u8>>,
     credential: String,
     destination: String,
-    scope: Vec<String>,
-    admit: String,
     legs: usize,
     usage: Vec<String>,
     audit: String,
@@ -233,14 +231,6 @@ fn run_once() -> Pass {
         ending: ending.map(|e| e.as_slice().to_vec()),
         credential: format!("{:?}", plane.authenticate(&unit, &ctx)),
         destination: format!("{:?}", plane.verify(&unit, &ctx)),
-        scope: plane
-            .approve(&unit, &ctx)
-            .resources
-            .as_slice()
-            .iter()
-            .map(|r| format!("{}:{}", r.kind, r.name))
-            .collect(),
-        admit: format!("{:?}", plane.admit(&unit, &ctx)),
         legs: plane.route(&unit, &ctx).legs.len(),
         usage: plane
             .meter(&unit, &response, &ctx)

@@ -175,6 +175,12 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
 /// `busbar_plane_mcp::meta::CLASS_BYTES` is `crates/busbar-plane-mcp/src/meta.rs`'s
 /// `const CLASS_BYTES: … = MeterClassId::new("bytes")` (or `= "bytes"`).
 fn resolve(root: &Path, path: &str) -> Result<String, String> {
+    let (file, src, name) = defining(root, path)?;
+    literal_of(&src, name).ok_or_else(|| format!("{path}: no `const {name}` literal in {file:?}"))
+}
+
+/// The file that defines the item a constant path names, its text, and the item's name.
+fn defining<'p>(root: &Path, path: &'p str) -> Result<(PathBuf, String, &'p str), String> {
     let segments: Vec<&str> = path.split("::").collect();
     let (krate, rest) = segments.split_first().ok_or("an empty path")?;
     let (name, modules) = rest.split_last().ok_or("a path with no constant")?;
@@ -196,7 +202,7 @@ fn resolve(root: &Path, path: &str) -> Result<String, String> {
         .find(|f| f.exists())
         .ok_or_else(|| format!("{path}: no defining file among {candidates:?}"))?;
     let src = std::fs::read_to_string(file).map_err(|e| format!("{path}: {e}"))?;
-    literal_of(&src, name).ok_or_else(|| format!("{path}: no `const {name}` literal in {file:?}"))
+    Ok((file.clone(), src, name))
 }
 
 /// The string literal `const name` is defined as in `src`.
@@ -218,15 +224,48 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
         .ok_or_else(|| format!("no declaration file for plane {plane}"))?;
     let src = std::fs::read_to_string(root.join(file)).map_err(|e| format!("{file}: {e}"))?;
     let start = src
-        .find("billable_classes: &[")
+        .find("billable_classes: &")
         .ok_or_else(|| format!("{file}: no billable_classes"))?;
-    let block = &src[start..];
-    let end = block.find("],").ok_or("an unterminated billable_classes")?;
+    let after = &src[start + "billable_classes: &".len()..];
+    // Either a literal list (`&[ BillableClass { class: … }, … ]`) or a named const table in the
+    // same file (`&LLM_BILLABLE_CLASSES`), whose body states the classes the same way.
+    let block = if after.starts_with('[') {
+        let end = after.find("],").ok_or("an unterminated billable_classes")?;
+        &after[..end]
+    } else {
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let at = src
+            .find(&format!("const {name}:"))
+            .ok_or_else(|| format!("{file}: billable_classes names `{name}`, defined nowhere"))?;
+        let body = &src[at..];
+        let end = body
+            .find("\n};")
+            .ok_or_else(|| format!("{file}: an unterminated `const {name}`"))?;
+        &body[..end]
+    };
     let mut classes = BTreeSet::new();
-    for line in block[..end].lines() {
+    // A table that splices in the codec's open classes (`OPEN_CLASSES[k].0`) declares every one
+    // of them: read that table off its own defining file, by the path the block imports it from.
+    if let Some(at) = block.find("::{OPEN_CLASSES") {
+        let line_start = block[..at]
+            .rfind("use ")
+            .ok_or("an OPEN_CLASSES import with no `use`")?;
+        let module = block[line_start + 4..at].trim();
+        for class in open_classes(root, &format!("{module}::OPEN_CLASSES"))? {
+            classes.insert(class);
+        }
+    }
+    for line in block.lines() {
         let Some(expr) = line.trim().strip_prefix("class:") else {
             continue;
         };
+        // The spliced open classes are read above; `""` is the table's fill before it is written.
+        if expr.trim().starts_with("OPEN_CLASSES[") || expr.trim().starts_with("\"\"") {
+            continue;
+        }
         let expr = expr
             .trim()
             .trim_end_matches(',')
@@ -238,6 +277,62 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
         });
     }
     Ok(classes)
+}
+
+/// The class of every `(CLASS, family)` row of the `&[(&str, &str)]` table `path` names, each
+/// resolved off the table's own file.
+fn open_classes(root: &Path, path: &str) -> Result<Vec<String>, String> {
+    let (file, src, name) = defining(root, path)?;
+    let at = src
+        .find(&format!("const {name}:"))
+        .ok_or_else(|| format!("{path}: no `const {name}` in {file:?}"))?;
+    let body = &src[at..];
+    let open = body
+        .find("= &[")
+        .ok_or_else(|| format!("{path}: not a table"))?
+        + 4;
+    let end = body[open..]
+        .find("\n];")
+        .ok_or_else(|| format!("{path}: an unterminated table"))?;
+    let mut out = Vec::new();
+    // The rows, line comments dropped (a comment may hold a parenthesis).
+    let rows: String = body[open..open + end]
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for row in rows.split('(').skip(1) {
+        let class = row.split(',').next().unwrap_or("").trim();
+        if class.is_empty() {
+            continue;
+        }
+        out.push(if let Some(lit) = class.strip_prefix('"') {
+            lit.trim_end_matches('"').to_string()
+        } else {
+            match literal_of(&src, class) {
+                Some(lit) => lit,
+                // Defined elsewhere in the same crate and imported (`use crate::a::b::NAME;`).
+                None => {
+                    let krate = path.split("::").next().unwrap_or("");
+                    let import = src
+                        .lines()
+                        .filter_map(|l| l.trim().strip_prefix("use crate::"))
+                        .filter_map(|l| l.strip_suffix(';'))
+                        .find(|l| l.rsplit("::").next() == Some(class))
+                        .ok_or_else(|| {
+                            format!(
+                                "{path}: row `{class}` is neither defined nor imported in {file:?}"
+                            )
+                        })?;
+                    resolve(root, &format!("{krate}::{import}"))?
+                }
+            }
+        });
+    }
+    if out.is_empty() {
+        return Err(format!("{path}: a table with no rows"));
+    }
+    Ok(out)
 }
 
 /// Every finding for `sites` over `found` (file -> shape -> count) — empty is the only good answer.

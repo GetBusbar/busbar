@@ -122,6 +122,12 @@
 //! GetBusbar/busbar-hook-webrequest, which boots this binary with itself dropped in as the tap. The
 //! readings above are the record of the cell as it ran here. C1 — the regression gate — stays.
 
+// The ports the booted busbar listens on are the root tests' own (`tests/common/boot.rs`): held from
+// the moment they are chosen, never a number another socket can take before the child binds it.
+#[path = "../tests/common/boot.rs"]
+#[allow(dead_code)]
+mod boot;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -132,11 +138,11 @@ use std::time::{Duration, Instant};
 // FIXTURE PLUMBING
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// A free loopback port, asked of the OS. A hard-coded port is a red that is not a defect the first
-/// time this machine happens to have something on it.
+/// A loopback port for the booted busbar, asked of the OS and held (see [`boot::free_port`]). A
+/// hard-coded port is a red that is not a defect the first time this machine happens to have
+/// something on it.
 fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
+    boot::free_port()
 }
 
 fn fixture_dir(tag: &str) -> PathBuf {
@@ -169,7 +175,10 @@ const UPSTREAM_REPLY: &str = r#"{"id":"chatcmpl-bench","object":"chat.completion
 /// (the process exit tears it down), which is what a bench fixture wants: one upstream for the whole
 /// run, so no cell pays another cell's startup.
 fn spawn_stub_upstream() -> u16 {
-    let port = free_port();
+    // Bound here, before the port is handed out: the stub owns its port from the moment it is chosen.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -183,9 +192,7 @@ fn spawn_stub_upstream() -> u16 {
                     UPSTREAM_REPLY,
                 )
             }));
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-                .await
-                .unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
             axum::serve(listener, app).await.unwrap();
         });
     });

@@ -566,27 +566,34 @@ fn test_cardinality_invariant_no_raw_secret_in_labels() {
             "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out}"
         );
 }
+/// A source of its own (leaked, as the process one is) whose gauges drop out after `idle`, and its
+/// test-view reader.
+fn local_source(idle: Duration) -> (&'static Source, impl Fn() -> String) {
+    let width = Duration::from_secs(1);
+    let source: &'static Source = Box::leak(Box::new(Source::new(width, SUMMARY_BUCKETS, idle)));
+    (source, move || {
+        crate::test_support::export_axis::lines(&source.snapshot())
+    })
+}
+
 /// A gauge whose subject is gone must stop being exported; one still being refreshed must not.
 ///
 /// Per-key gauges are only `set` while iterating LIVE keys, so without an idle timeout a deleted
 /// key's spend was re-rendered with its final value for the life of the process — `/metrics`
 /// growing with lifetime key churn, and dashboards showing a deleted key's spend as current.
 ///
-/// Driven through a LOCALLY-built recorder: installing is global and once-per-process, but
+/// Driven through a LOCALLY-built source: installing is global and once-per-process, but
 /// building is not, so the reaping behaviour can be exercised on a short window.
 #[test]
 fn a_gauge_that_stops_being_refreshed_is_expired() {
     let idle = Duration::from_millis(60);
-    let recorder = super::recorder_builder(Duration::from_secs(1), idle)
-        .expect("builder")
-        .build_recorder();
-    let handle = recorder.handle();
+    let (recorder, handle) = local_source(idle);
 
     metrics::with_local_recorder(&recorder, || {
         metrics::gauge!("busbar_test_deleted_subject").set(1.0);
         metrics::gauge!("busbar_test_live_subject").set(1.0);
     });
-    let before = handle.render();
+    let before = handle();
     assert!(before.contains("busbar_test_deleted_subject"), "{before}");
     assert!(before.contains("busbar_test_live_subject"));
 
@@ -597,7 +604,7 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
         metrics::gauge!("busbar_test_live_subject").set(2.0);
     });
 
-    let after = handle.render();
+    let after = handle();
     assert!(
         !after.contains("busbar_test_deleted_subject"),
         "a gauge nothing refreshes must stop being exported, got:\n{after}"
@@ -613,10 +620,7 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
 #[test]
 fn only_gauges_are_expired() {
     let idle = Duration::from_millis(60);
-    let recorder = super::recorder_builder(Duration::from_secs(1), idle)
-        .expect("builder")
-        .build_recorder();
-    let handle = recorder.handle();
+    let (recorder, handle) = local_source(idle);
 
     metrics::with_local_recorder(&recorder, || {
         metrics::counter!("busbar_test_idle_counter").increment(7);
@@ -624,7 +628,7 @@ fn only_gauges_are_expired() {
     });
     std::thread::sleep(idle * 3);
 
-    let after = handle.render();
+    let after = handle();
     assert!(
         after.contains("busbar_test_idle_counter"),
         "an idle counter must survive — expiring it would reset it and break rate(), got:\n{after}"
@@ -635,7 +639,7 @@ fn only_gauges_are_expired() {
     );
 }
 
-/// Item 24: the money gauges moved into `metrics/money.rs` and now reach the recorder through ONE
+/// Item 24: the money gauges moved into `snapshot/money.rs` and now reach the recorder through ONE
 /// named boundary, `money::set_gauge`, instead of an inline `as f64` at each site. The served
 /// `/metrics` text must be the text 1.5.5 served. For every probe value the SAME family is written
 /// once the 1.5.5 way (the direct cast, kept here as the reference) and once through the boundary,

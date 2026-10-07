@@ -72,4 +72,16 @@ impl ExportAxis for RootExports {
     fn first_party(&self, module: &str) -> bool {
         rows().is_some_and(|r| r.first_party(module))
     }
+
+    fn one_instance(&self, module: &str) -> bool {
+        rows().is_some_and(|r| r.one_instance(module))
+    }
+
+    fn linked_modules(&self) -> Vec<String> {
+        rows().map(|r| r.linked_modules()).unwrap_or_default()
+    }
+
+    fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
+        rows().map(|r| r.routes(module)).unwrap_or_default()
+    }
 }

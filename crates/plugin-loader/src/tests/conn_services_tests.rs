@@ -190,6 +190,15 @@ fn bind_over(
     needs: &'static [Need],
     table: &Arc<Recording>,
 ) -> Result<Plugin<TestKind>, crate::dispatch::LoadError> {
+    let conns: Arc<dyn DeclaredConns> = table.clone();
+    bind_as(needs, crate::dispatch::ConnTable::Host(conns))
+}
+
+/// The test plugin's door, its Statement declaring `needs`, bound with `conns`: the bind's answer.
+fn bind_as(
+    needs: &'static [Need],
+    conns: crate::dispatch::ConnTable,
+) -> Result<Plugin<TestKind>, crate::dispatch::LoadError> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st: Statement = unsafe { *real.statement };
@@ -203,7 +212,6 @@ fn bind_over(
         ..real
     }));
     let v = validate_door::<TestKind>(door).expect("the door validates");
-    let conns: Arc<dyn DeclaredConns> = table.clone();
     Plugin::bind(
         v,
         None,
@@ -212,9 +220,52 @@ fn bind_over(
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
-            conns: Some(conns),
+            conns,
         },
     )
+}
+
+/// RED (Q-P4-3): a door whose Statement declares a need, bound to SERVE with no connection table,
+/// is refused at bind, naming the plugin and its count of needs; never bound to fail at its first
+/// dial.
+#[test]
+fn a_serving_bind_of_a_networked_door_with_no_table_is_refused_by_name() {
+    let refused = bind_as(
+        Box::leak(Box::new(NEEDS)),
+        crate::dispatch::ConnTable::NoNeeds,
+    )
+    .expect_err("a networked door serving with no table is refused");
+    let name = "dispatch-test-plugin";
+    assert_eq!(
+        refused,
+        crate::dispatch::LoadError::NoConnectionTable {
+            plugin: name.to_owned(),
+            needs: 1,
+        }
+    );
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "plugin '{name}' declares 1 connection need(s) and was bound with no connection table"
+        )
+    );
+}
+
+/// GREEN twins: a PROBE bind of the same door, with no table, binds (its need not declared, no
+/// slots handed); a door that declares no need serves with no table.
+#[test]
+fn a_probe_bind_with_no_table_binds_and_a_door_with_no_need_serves_with_none() {
+    let p = bind_as(
+        Box::leak(Box::new(NEEDS)),
+        crate::dispatch::ConnTable::Probe,
+    )
+    .expect("a probe binds with no table");
+    assert!(
+        p.inner.conns_table().is_null(),
+        "a probe is handed no slots"
+    );
+    let p = bind_as(&[], crate::dispatch::ConnTable::NoNeeds).expect("no need, no table");
+    assert!(p.inner.conns_table().is_null());
 }
 
 /// `ESTABLISH` through the slots, under `p`'s context, for `need` at `target`.
@@ -876,7 +927,7 @@ fn bound_over(table: &Arc<Scripted>) -> Plugin<TestKind> {
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
-            conns: Some(conns),
+            conns: crate::dispatch::ConnTable::Host(conns),
         },
     )
     .expect("the instance binds")
@@ -1372,6 +1423,7 @@ fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
         wake: None,
         conns: &CONN_SLOTS,
         services: std::ptr::null(),
+        io: std::ptr::null(),
     })
 }
 

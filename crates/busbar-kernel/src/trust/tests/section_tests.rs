@@ -262,3 +262,69 @@ fn a_registrations_private_reach_is_its_declared_boolean() {
     assert!(judge_entry("`bays.dock`", &entry("inside: 3"), REACHING).is_ok());
     assert!(parse_entry("`bays.dock`", &entry("inside: true"), REACHING).is_ok());
 }
+
+/// THE CONFIGURED ITEM APPROVALS (`TRUST_ITEM_APPROVALS`): each item whose object carries a
+/// non-blank digest under the declared field is approved at it (trimmed); a blank or absent digest
+/// is allowed and approved at none; a shape that is not an item object approves nothing (the
+/// plane's own grammar refuses it in its words).
+#[test]
+fn configured_item_approvals_are_read_under_the_declared_field() {
+    const APPROVALS: &[TrustKeyDecl] = &[TrustKeyDecl {
+        key: "permitted",
+        role: TrustRole::ItemApprovals,
+        fingerprint: false,
+        default: Some("digest"),
+        mechanisms: &[],
+    }];
+    let parsed = parse_entry(
+        "`bays.dock`",
+        &entry(
+            "permitted: { a: { digest: ' d1 ' }, b: { digest: '  ' }, c: {}, d: { other: x }, e: 7 }",
+        ),
+        APPROVALS,
+    )
+    .expect("parses");
+    assert_eq!(
+        parsed.approved.into_iter().collect::<Vec<_>>(),
+        vec![("a".to_string(), "d1".to_string())]
+    );
+    let none = parse_entry("`bays.dock`", &entry("permitted: [a, b]"), APPROVALS).expect("parses");
+    assert!(none.approved.is_empty());
+}
+
+/// A REGISTRATION WITH NO AUTHENTICITY ROOT SEEDS NO APPROVAL: its configured digests approve
+/// nothing (as an unrooted registration never served), and a rooted one's do.
+#[test]
+fn a_rootless_registration_seeds_no_configured_approval() {
+    const ROOTED_APPROVALS: &[TrustKeyDecl] = &[
+        TrustKeyDecl {
+            key: "anchor",
+            role: TrustRole::Pin,
+            fingerprint: false,
+            default: None,
+            mechanisms: MECHANISMS,
+        },
+        TrustKeyDecl {
+            key: "permitted",
+            role: TrustRole::ItemApprovals,
+            fingerprint: false,
+            default: Some("digest"),
+            mechanisms: &[],
+        },
+    ];
+    let open = parse_entry(
+        "`bays.dock`",
+        &entry("anchor: { mechanism: open }\npermitted: { a: { digest: d1 } }"),
+        ROOTED_APPROVALS,
+    )
+    .expect("parses");
+    assert!(open.rootless());
+    assert!(open.approved.is_empty(), "no root, no approval");
+    let sealed = parse_entry(
+        "`bays.dock`",
+        &entry("anchor: { mechanism: sealed_key, key: k }\npermitted: { a: { digest: d1 } }"),
+        ROOTED_APPROVALS,
+    )
+    .expect("parses");
+    assert_eq!(sealed.approved.len(), 1);
+}

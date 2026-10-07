@@ -37,7 +37,7 @@ pub struct DurableOpts {
     /// There are no mode bits, so the `#[cfg(unix)]` block below never runs and the published file
     /// gets whatever ACL it inherits from its parent directory. The caller that matters is
     /// `config/overlay.rs`, whose overlay can hold operator credential material verbatim (a
-    /// `postgres://user:pass@host/db` in `store.settings.url`); on unix that file is 0600, on
+    /// `scheme://user:pass@host/db` in `store.settings.url`); on unix that file is 0600, on
     /// Windows its confidentiality is exactly the confidentiality of the directory holding
     /// `config.yaml` and nothing here narrows it. An operator deploying on Windows who needs the
     /// unix guarantee must set the ACL on that directory themselves. Stated here rather than left

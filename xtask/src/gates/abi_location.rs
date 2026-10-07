@@ -785,8 +785,8 @@ fn collect_rs(base: &Path, dir: &Path, out: &mut Vec<String>) {
 /// invents beside it (`planted_slot.rs`, `planted_double.rs`, `planted_cfg_test.rs` — none of those
 /// are `const`s, so `qa-names` never asked about them; this one is, because the two overlay call
 /// sites below share it rather than repeating the literal).
-// qa-names: crates/busbar-auth-header/src/planted_impl.rs -- xtask/src/gates/abi_location.rs -- an overlay-only plant path this gate's selftest writes into a virtual tree, never a file on disk; the sibling planted_*.rs literals beside it are not consts so qa-names never asked about them
-const PLUGIN_PLANT: &str = "crates/busbar-auth-header/src/planted_impl.rs";
+// qa-names: crates/busbar-plane-decisions/src/planted_impl.rs -- xtask/src/gates/abi_location.rs -- an overlay-only plant path this gate's selftest writes into a virtual tree, never a file on disk; the sibling planted_*.rs literals beside it are not consts so qa-names never asked about them
+const PLUGIN_PLANT: &str = "crates/busbar-plane-decisions/src/planted_impl.rs";
 /// A plugin's `Op` and `DoorFn` bodies: implementations of abi/'s fn types, never findings.
 const PLUGIN_IMPLS: &str = "use std::os::raw::c_void;\n\
      pub extern \"C\" fn planted_op(\n    instance: *mut c_void,\n    input: *const c_void,\n    \

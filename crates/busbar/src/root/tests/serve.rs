@@ -65,6 +65,32 @@ impl HostServices for Judges {
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
         Ran::Now(Stored::ready(16))
     }
+    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(17))
+    }
+    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+        Stored::ready(18)
+    }
+    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(19))
+    }
+    fn hook_call(
+        &self,
+        _: &Caller,
+        _: Option<u64>,
+        _: busbar_contract::services::HookAsk,
+        _: Later,
+    ) -> Ran {
+        Ran::Now(Stored::ready(20))
+    }
+
+    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
+        Ran::Now(Stored::ready(12))
+    }
+
+    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
+        busbar_contract::services::Snapshot::NotReady
+    }
 }
 
 fn judged(s: &LateServices) -> Stored {
@@ -424,12 +450,20 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     let k = Arc::new(kernel(&[], false));
     late.install_kernel(Arc::clone(&k), k).expect("the install");
     let k = late.kernel().expect("kept");
+    // A declared pin: a first sighting pins nothing (ARCHITECT 2026-10-06).
     let entry = TrustEntry {
-        pin: None,
+        pin: Some(busbar_kernel::trust::section::DeclaredPin {
+            mechanism: "fingerprint".into(),
+            root: false,
+            peer_key: false,
+            key: None,
+            fingerprint: Some("h1".into()),
+        }),
         policy: Policy {
             ttl_ms: 0,
             recovery_backoff_ms: 0,
         },
+        approved: Default::default(),
     };
     let facts = InstanceFacts {
         signing: Some(Signing {
@@ -463,7 +497,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
         }
     };
     assert_eq!(late.sign(&caller, b"data").outcome, Outcome::Refused);
-    assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
+    assert_eq!(sight("h1"), (svc::TRUST_SAME, false));
     assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
     let demotions = Arc::new(DemotionRecord::default());
     attach(
@@ -503,18 +537,20 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
             crate::root::loader::dispatch::DispatchConfig::default(),
         )),
         logs: crate::root::boot::plugin_logs().clone(),
-        conns: None,
+        // The build's ephemeral store declares no need: it serves with no connection table.
+        conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
         mint: busbar_kernel::door::op_id,
     };
     let opened = axis
         .open(
-            // A store the build links, through its door as boot opens it (no row is a default:
-            // the store is the one config names, Q-STORE = (B)).
+            // The build's ephemeral linked store, picked by its flag (the row's `(name, ephemeral,
+            // door)`), as boot opens it.
             StoreDoor::Linked(
                 crate::LINKED
                     .stores
-                    .first()
-                    .expect("the build links a store")
+                    .iter()
+                    .find(|s| s.1)
+                    .expect("the build links an ephemeral store")
                     .2,
             ),
             "records-attach",

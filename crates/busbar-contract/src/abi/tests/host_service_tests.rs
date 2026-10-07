@@ -289,6 +289,8 @@ fn a_ready_value_outside_the_service_range_is_fault() {
         head: head(op::TRUST_SIGHT, TICKET, 0),
         counterparty: none(),
         catalogue_hash: none(),
+        outcome: TRUST_REACHED,
+        _outcome_reserved: 0,
     };
     o.value = TRUST_QUARANTINED + 1;
     assert_eq!(
@@ -412,7 +414,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_eight() {
+fn the_services_that_never_pend_are_exactly_the_stated_twelve() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -424,7 +426,11 @@ fn the_services_that_never_pend_are_exactly_the_stated_eight() {
             op::ENTITLEMENT_CHECK,
             op::RANDOM_FILL,
             op::NEED_ADMIT,
-            op::TRUST_VERIFY
+            op::TRUST_VERIFY,
+            op::SNAPSHOT_READ,
+            op::TRUST_SIGHT_ITEM,
+            op::TRUST_SERVES,
+            op::TRUST_DECIDE
         ]
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
@@ -485,6 +491,14 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, need_admit), op::NEED_ADMIT),
         (offset_of!(HostSlots, trust_verify), op::TRUST_VERIFY),
         (offset_of!(HostSlots, records_secret), op::RECORDS_SECRET),
+        (offset_of!(HostSlots, disk_append), op::DISK_APPEND),
+        (offset_of!(HostSlots, snapshot_read), op::SNAPSHOT_READ),
+        (
+            offset_of!(HostSlots, trust_sight_item),
+            op::TRUST_SIGHT_ITEM,
+        ),
+        (offset_of!(HostSlots, trust_serves), op::TRUST_SERVES),
+        (offset_of!(HostSlots, trust_decide), op::TRUST_DECIDE),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -723,4 +737,270 @@ fn a_work_record_past_its_cap_is_refused() {
         check_work_record(&at(MAX_WORK_RECORD + 1)).unwrap_err(),
         fault(Rule::OverMax, "work.record")
     );
+}
+
+fn hook_in(stage: u32, from: u32, prompt: *const crate::abi::hook::PromptView) -> HookCallIn {
+    HookCallIn {
+        head: head(op::HOOK_CALL, TICKET, core::mem::size_of::<HookCallIn>()),
+        stage,
+        from,
+        prompt,
+        into: ServiceBufs {
+            buf: core::ptr::null_mut(),
+            cap: 0,
+            spans: core::ptr::null_mut(),
+            spans_cap: 0,
+        },
+    }
+}
+
+/// RED, one arm each: an unknown stage, a chain resumed past the cap, a resumed gate, no prompt.
+#[test]
+fn a_hook_call_in_that_breaks_a_rule_is_refused_by_its_arm() {
+    let view = crate::abi::hook::PromptView {
+        system: none(),
+        message_count: 0,
+        body: empty_blob(),
+        messages: core::ptr::null(),
+        messages_len: 0,
+    };
+    let p: *const crate::abi::hook::PromptView = &view;
+    assert!(check_hook_call_in(&hook_in(HOOK_GATE, 0, p)).is_ok());
+    assert!(check_hook_call_in(&hook_in(HOOK_REWRITE, HOOK_FROM_MAX, p)).is_ok());
+    assert_eq!(
+        check_hook_call_in(&hook_in(2, 0, p)).unwrap_err(),
+        fault(Rule::UnknownCode, "hook_call.stage")
+    );
+    assert_eq!(
+        check_hook_call_in(&hook_in(HOOK_REWRITE, HOOK_FROM_MAX + 1, p)).unwrap_err(),
+        fault(Rule::OverMax, "hook_call.from")
+    );
+    assert_eq!(
+        check_hook_call_in(&hook_in(HOOK_GATE, 1, p)).unwrap_err(),
+        fault(Rule::Contradiction, "hook_call.from")
+    );
+    assert_eq!(
+        check_hook_call_in(&hook_in(HOOK_GATE, 0, core::ptr::null())).unwrap_err(),
+        fault(Rule::Missing, "hook_call.prompt")
+    );
+}
+
+/// RED: `hook.call` answers `0`, a stopping status, or (a rewrite only) `1 + i` within the cap.
+#[test]
+fn a_hook_call_answer_outside_its_values_is_fault() {
+    let gate = hook_in(HOOK_GATE, 0, core::ptr::null());
+    let rewrite = hook_in(HOOK_REWRITE, 0, core::ptr::null());
+    let mut o = out(Outcome::Ready);
+    for (i, value, ok) in [
+        (&gate, 0, true),
+        (&gate, 403, true),
+        (&gate, 1, false),
+        (&rewrite, 1, true),
+        (&rewrite, u64::from(HOOK_FROM_MAX), true),
+        (&rewrite, u64::from(HOOK_FROM_MAX) + 1, false),
+        (&rewrite, 599, true),
+        (&rewrite, 600, false),
+    ] {
+        o.value = value;
+        let r = check_hook_call(i, ready(&o), &o);
+        assert_eq!(r.is_ok(), ok, "stage {} value {value}", i.stage);
+        if !ok {
+            assert_eq!(rule(r), Rule::UnknownCode);
+        }
+    }
+}
+
+/// A `disk.append` `in` appending `bytes` to `key`, its result into `result`.
+fn disk_in(
+    ticket: Ticket,
+    key: &'static str,
+    bytes: &[u8],
+    result: &mut DiskWritten,
+) -> DiskAppendIn {
+    DiskAppendIn {
+        head: head(
+            op::DISK_APPEND,
+            ticket,
+            core::mem::size_of::<DiskAppendIn>(),
+        ),
+        dest_key: AbiStr {
+            ptr: key.as_ptr(),
+            len: key.len(),
+        },
+        bytes: Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: crate::abi::mechanism::call::BLOB_OCTETS,
+            flags: 0,
+        },
+        result: core::ptr::from_mut(result),
+    }
+}
+
+/// A `DiskWritten` of this layout.
+fn written(rotated: u8, faults: u8, written: u64) -> DiskWritten {
+    DiskWritten {
+        size: core::mem::size_of::<DiskWritten>() as u32,
+        rotated,
+        faults,
+        _reserved: [0; 2],
+        written,
+    }
+}
+
+/// THE HOST'S CHECK OF A `disk.append` `in` (`check_disk_append_in`), one RED per arm: no key, a key
+/// or bytes as a count behind NULL, no result slot. A well-formed `in` passes.
+#[test]
+fn the_host_refuses_a_disk_append_in_with_no_key_a_null_range_or_no_result() {
+    let mut w = written(0, 0, 0);
+    let good = disk_in(TICKET, "path", b"line\n", &mut w);
+    assert_eq!(check_disk_append_in(&good), Ok(()));
+
+    let mut i = good;
+    i.dest_key = none();
+    assert_eq!(
+        check_disk_append_in(&i).unwrap_err(),
+        fault(Rule::Missing, "disk_append.dest_key")
+    );
+    let mut i = good;
+    i.dest_key.ptr = core::ptr::null();
+    assert_eq!(
+        check_disk_append_in(&i).unwrap_err().rule,
+        Rule::NullWithCount
+    );
+    let mut i = good;
+    i.bytes.ptr = core::ptr::null();
+    assert_eq!(
+        check_disk_append_in(&i).unwrap_err().rule,
+        Rule::NullWithCount
+    );
+    let mut i = good;
+    i.result = core::ptr::null_mut();
+    assert_eq!(
+        check_disk_append_in(&i).unwrap_err(),
+        fault(Rule::Missing, "disk_append.result")
+    );
+    // Empty bytes append nothing, and are legal.
+    let mut i = good;
+    i.bytes = empty_blob();
+    assert_eq!(check_disk_append_in(&i), Ok(()));
+}
+
+/// `disk.append`'s ANSWER (`check_disk_append`): READY writes the whole of `bytes`, a known
+/// `rotated` and known fault bits into a result of this layout; FAILED writes nothing appended and
+/// names its step; it may pend on a ticket and never without one. One RED per arm.
+#[test]
+fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
+    let bytes = b"one line\n";
+    let len = bytes.len() as u64;
+    let check = |w: DiskWritten, o: &ServiceOut, ticket: Ticket| {
+        let mut slot = w;
+        let i = disk_in(ticket, "path", bytes, &mut slot);
+        check_disk_append(&i, o.outcome, o)
+    };
+    let ready = out(Outcome::Ready);
+    assert_eq!(
+        check(written(0, 0, len), &ready, TICKET),
+        Ok(Filled::Written)
+    );
+    assert_eq!(
+        check(written(DISK_ROTATED, DISK_FAULTS, len), &ready, TICKET),
+        Ok(Filled::Written)
+    );
+    // A partial append on READY.
+    assert_eq!(
+        rule(check(written(0, 0, len - 1), &ready, TICKET)),
+        Rule::Contradiction
+    );
+    // A foreign result.
+    let mut foreign = written(0, 0, len);
+    foreign.size += 8;
+    assert_eq!(rule(check(foreign, &ready, TICKET)), Rule::Foreign);
+    // `rotated` outside {0, DISK_ROTATED}; a fault bit no one knows.
+    assert_eq!(
+        rule(check(written(2, 0, len), &ready, TICKET)),
+        Rule::UnknownCode
+    );
+    assert_ne!(
+        check(written(0, 8, len), &ready, TICKET),
+        Ok(Filled::Written)
+    );
+    // FAILED: the step is named, nothing was appended, the rotation is still reported.
+    let mut failed = out(Outcome::Failed);
+    for step in [DISK_OPEN_FAILED, DISK_APPEND_FAILED] {
+        failed.value = step;
+        assert!(check(written(DISK_ROTATED, 0, 0), &failed, TICKET).is_ok());
+    }
+    assert_eq!(
+        rule(check(written(0, 0, len), &failed, TICKET)),
+        Rule::Contradiction
+    );
+    failed.value = 0;
+    assert_eq!(
+        rule(check(written(0, 0, 0), &failed, TICKET)),
+        Rule::UnknownCode
+    );
+    // PENDING on a ticket is legal; with none it is FAULT.
+    let pending = out(Outcome::Pending);
+    assert!(check(written(0, 0, 0), &pending, TICKET).is_ok());
+    assert!(check(written(0, 0, 0), &pending, Ticket::NONE).is_err());
+    assert!(may_pend(op::DISK_APPEND));
+}
+
+/// `trust.decide` (ARCHITECT 2026-10-06): it never pends, and its value is a `TRUST_DECIDED_*`
+/// verdict or an `UNDECIDED_*` refusal code; RED: a value past the vocabulary, and a PENDING
+/// answer even on a ticket, are FAULT.
+#[test]
+fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
+    let i = TrustDecideIn {
+        head: head(
+            op::TRUST_DECIDE,
+            TICKET,
+            core::mem::size_of::<TrustDecideIn>(),
+        ),
+        counterparty: none(),
+        item: none(),
+        expected: none(),
+        decision: TRUST_DECIDE_APPROVE,
+        _reserved: 0,
+    };
+    assert!(!may_pend(op::TRUST_DECIDE));
+    let mut o = out(Outcome::Ready);
+    for value in [
+        TRUST_DECIDED_SERVING,
+        TRUST_DECIDED_PENDING,
+        TRUST_DECIDED_QUARANTINED,
+        UNDECIDED_UNPINNED,
+        UNDECIDED_STALE,
+        UNDECIDED_UNKNOWN,
+        UNDECIDED_ROOTLESS,
+    ] {
+        o.value = value;
+        assert!(check_trust_decide(&i, ready(&o), &o).is_ok(), "{value}");
+    }
+    for value in [0, UNDECIDED_ROOTLESS + 1] {
+        o.value = value;
+        assert_eq!(
+            rule(check_trust_decide(&i, ready(&o), &o)),
+            Rule::UnknownCode
+        );
+    }
+    let pending = out(Outcome::Pending);
+    assert!(check_trust_decide(&i, ready(&pending), &pending).is_err());
+}
+
+/// `snapshot.read`'s buffer alignment is the scrape layout's: every record the host lays out in
+/// it (family, sample, label) is aligned at it and is a whole multiple of it.
+#[test]
+fn the_snapshot_alignment_is_the_scrape_layouts() {
+    use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
+    use core::mem::{align_of, size_of};
+    for (align, size) in [
+        (align_of::<ScrapeFamily>(), size_of::<ScrapeFamily>()),
+        (align_of::<ScrapeSample>(), size_of::<ScrapeSample>()),
+        (align_of::<ScrapeLabel>(), size_of::<ScrapeLabel>()),
+    ] {
+        assert!(align <= SNAPSHOT_ALIGN && SNAPSHOT_ALIGN.is_multiple_of(align));
+        assert_eq!(size % SNAPSHOT_ALIGN, 0);
+    }
 }

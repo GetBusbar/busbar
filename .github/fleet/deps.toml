@@ -25,11 +25,22 @@ repos = ["busbar-auth-ldap"]
 reason = "the LDAP client of the ldap auth module. 0.12 is on rustls 0.23 / ring 0.17 (DEPS-AUDIT cut #7, busbar-auth-ldap#7). Its TLS features are a plugin-side TLS stack and are net-banned."
 
 [plugin-deps.mysql]
-version = "26"
+version = "28"
 default-features = false
-features = ["minimal"]
+features = ["minimal-rust"]
 repos = ["busbar-store-mysql"]
-reason = "the MySQL/MariaDB driver of the mysql store (its zlib is libz-sys, on the C allow-list below)."
+reason = "TESTS ONLY: the upstream MySQL/MariaDB driver the mysql store's live tests verify what landed with, independently of the store. Never in the shipped image (the store reaches its server only over the host's connector, busbar-store-mysql#15)."
+
+[plugin-deps.mysql_common]
+version = "0.35"
+default-features = false
+repos = ["busbar-store-mysql"]
+reason = "the sans-IO MySQL client protocol (packets, handshake, auth plugins, values) the mysql store speaks over the host's connector; no socket of its own (busbar-store-mysql#15)."
+
+[plugin-deps.percent-encoding]
+version = "2"
+repos = ["busbar-store-mysql"]
+reason = "the mysql store's reading of its `mysql://` URL (the 1.5.5 driver's URL rules); pure parsing."
 
 [plugin-deps.postgres]
 version = "0.19"
@@ -52,7 +63,25 @@ reason = "the SQLite store's engine, with SQLite compiled in (libsqlite3-sys bun
 [plugin-deps.ulid]
 version = "1"
 repos = ["busbar-store-mysql"]
-reason = "sortable ids for the mysql store's rows."
+reason = "TESTS ONLY: sortable ids the mysql store's conformance battery writes (a dev-dependency since busbar-store-mysql#15)."
+
+# ── Extra semver lines (Cargo.lock parity, ARCHITECT 2026-10-05) ──────────────────────────────────
+# Parity is ONE vetted version per semver-compatible line, shared by busbar and its plugins: where busbar's
+# lock holds a version in a crate's compatible line, a plugin's lock holds exactly that version (any drift
+# is RED). A line busbar's lock holds NO version of is a different crate to Cargo; a plugin may carry it
+# only when it is declared HERE for that plugin repo: `crate`, `line` (`1`, `0.11`, `0.0.3`), `repos`,
+# `use` (`shipped` | `tests-only`) and `reason`. Undeclared is RED, by name (`plugin-gates parity`). A
+# declaration never exempts an advisory: cargo-deny's advisory check stays blocking, and the parity gate
+# is RED on a declared line it refused.
+[parity-lines]
+allow = [
+    { crate = "sha2", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "postgres-protocol >= 0.6.11 (SCRAM-SHA-256; 0.6.10 carries RUSTSEC-2026-0179/0180) is on the sha2 0.11 line; busbar holds 0.10" },
+    { crate = "digest", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "sha2 0.11's digest line (postgres-protocol >= 0.6.11 SCRAM)" },
+    { crate = "block-buffer", line = "0.12", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's block-buffer line (postgres-protocol >= 0.6.11 SCRAM)" },
+    { crate = "crypto-common", line = "0.2", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's crypto-common line (postgres-protocol >= 0.6.11 SCRAM)" },
+    { crate = "const-oid", line = "0.10", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's const-oid line (postgres-protocol >= 0.6.11 SCRAM)" },
+    { crate = "wasi", line = "0.14", repos = ["busbar-store-postgres"], use = "tests-only", reason = "the independent `postgres` test client (tokio-postgres 0.7.18 -> whoami 2) the live tests verify the store with; never shipped" },
+]
 
 # ── cargo-deny [bans] ─────────────────────────────────────────────────────────────────────────────
 # ONE protocol = ONE library, ONE crypto backend = ring (BUSBAR-1.6.0.md §Libraries). Rendered into

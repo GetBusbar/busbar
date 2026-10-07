@@ -259,7 +259,7 @@ unit-b = "beta"
 /// THE TRANSPORT AND CLAIMS AXES, and the rows no feature can drop. A row whose crate is a required
 /// dependency is linked in every build and its key only names the row; two rows may share a crate,
 /// each naming its own entry; a `transport` row fills `transports` with the entry's `KEY`,
-/// `COMPOSES_OVER` and `build`; a `claims` row fills `claims` with its `PLANE` and `CLAIMS`. A row
+/// `COMPOSES_OVER`, `build`, its claims and its upgrade claims; a `claims` row fills `claims` with its `PLANE` and `CLAIMS`. A row
 /// on an OPTIONAL crate still needs its feature, and `claims` off the plane axis is refused.
 #[test]
 fn the_generator_folds_the_transport_and_claims_axes() {
@@ -293,7 +293,15 @@ host = "unit"
         1,
         "two rows on one crate link it once: {out}"
     );
-    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: busbar_wire::linked::build }"), "{out}");
+    // A row off the door axis claims its own key and opens no upgrade (a door row reads both off
+    // its door's Statement: `crate::root::doors::{claims_of, upgrades_of}`).
+    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: busbar_wire::linked::build, claims: __row_claims_0, upgrades: __row_upgrades_0 }"), "{out}");
+    assert!(
+        out.contains(
+            "fn __row_claims_0() -> Vec<&'static str> {\n    vec![busbar_wire::linked::KEY]\n}"
+        ),
+        "{out}"
+    );
     assert!(out.contains("key: busbar_wire::linked::high::KEY"), "{out}");
     assert!(out.contains("::std::sync::Arc::new(busbar_plane_host::linked::PLANE), claims: busbar_plane_host::linked::CLAIMS"), "{out}");
 

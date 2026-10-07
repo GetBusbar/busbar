@@ -82,6 +82,20 @@ fn a_generation_the_plane_cannot_serve_is_refused() {
         .contains("unknown model"));
 }
 
+/// THE DEALT SECTION ALONE (the boot's stage 3g deal hands the plane `{pools: ...}`, no `models`):
+/// its members are not judged against models the blob does not state, so a valid deployment is not
+/// refused at boot; with `models` stated, an undefined member is still refused (the RED arm).
+#[test]
+fn a_pools_section_dealt_alone_names_no_unknown_model() {
+    let dealt = json!({ "pools": { "op": { "members": [{ "model": "test-model" }] } } });
+    Shaping::from_settings(&dealt).expect("the dealt section alone reads");
+    let mut stated = dealt.clone();
+    stated["models"] = json!({});
+    assert!(Shaping::from_settings(&stated)
+        .unwrap_err()
+        .contains("unknown model"));
+}
+
 #[test]
 fn empty_settings_are_an_empty_generation_with_the_defaults() {
     let s = Shaping::from_settings(&json!({})).expect("reads");

@@ -47,7 +47,8 @@ const CLIENT_SECRETS_PATH: &str = "/v1/realtime/client_secrets";
 pub struct HttpsTokenMinter {
     client: EngineClient,
     base_url: String,
-    api_key: String,
+    /// The real provider key, held `Redacted`; exposed only into the mint's `Authorization` header.
+    api_key: busbar_contract::Redacted<String>,
     safety_identifier: String,
     requested_ttl_secs: Option<u64>,
 }
@@ -67,7 +68,7 @@ impl HttpsTokenMinter {
         HttpsTokenMinter {
             client,
             base_url: base_url.into(),
-            api_key: api_key.into(),
+            api_key: busbar_contract::Redacted::new(api_key.into()),
             safety_identifier: safety_identifier.into(),
             requested_ttl_secs,
         }
@@ -87,6 +88,20 @@ struct ClientSecretResponse {
     value: String,
     #[serde(default)]
     expires_at: u64,
+}
+
+/// A decode failure on the mint answer, described without `serde_json::Error`'s own `Display`: the
+/// body carries the minted secret and a data error quotes the offending value, so the decoder's text
+/// is withheld (secret-hygiene #53, Check 3). The class and the place of the failure survive.
+fn json_failure_shape(e: &serde_json::Error) -> String {
+    let class = match e.classify() {
+        serde_json::error::Category::Io => "the body could not be read",
+        serde_json::error::Category::Syntax => "it is not well-formed JSON",
+        serde_json::error::Category::Data => "a field is missing or has the wrong type",
+        serde_json::error::Category::Eof => "it ends before the JSON does",
+    };
+    let (line, column) = (e.line(), e.column());
+    format!("{class} (line {line}, column {column}; the decoder's text is withheld)")
 }
 
 #[async_trait]
@@ -112,7 +127,7 @@ impl TokenMinter for HttpsTokenMinter {
             .header(http::header::CONTENT_TYPE, "application/json")
             .header(
                 http::header::AUTHORIZATION,
-                format!("Bearer {}", self.api_key),
+                format!("Bearer {}", self.api_key.expose_secret()),
             )
             .header(SAFETY_IDENTIFIER_HEADER, &self.safety_identifier)
             .body(Full::new(Bytes::from(body_bytes)))
@@ -140,8 +155,14 @@ impl TokenMinter for HttpsTokenMinter {
             )));
         }
 
+        // Decoded here, in the binary's own crate (door-only: the streaming plane's reader is a plugin
+        // crate's item). A decode failure is described WITHOUT the decoder's text, which can quote the
+        // minted secret (secret-hygiene #53, Check 3): what survives is the class and the place.
         let parsed: ClientSecretResponse = serde_json::from_slice(&raw).map_err(|e| {
-            MintError::Provider(format!("client-secret response did not parse: {e}"))
+            MintError::Provider(format!(
+                "client-secret response did not parse: {}",
+                json_failure_shape(&e)
+            ))
         })?;
 
         // The browser-facing invariant: only an `ek_` secret ever leaves this boundary. A response

@@ -52,11 +52,13 @@ pub(crate) struct CachedToken {
 
 impl CachedToken {
     /// Construct a `CachedToken`, building its `header` once here so no caller has to remember to.
-    pub(crate) fn new(token: String, expires_at: u64) -> Self {
-        let header = if token.is_empty() {
+    /// The token arrives already [`Redacted`](busbar_contract::redacted::Redacted) (the minters
+    /// decode it straight into one); the header build below is its one exposure.
+    pub(crate) fn new(token: busbar_contract::redacted::Redacted<String>, expires_at: u64) -> Self {
+        let header = if token.expose_secret().is_empty() {
             None
         } else {
-            match HeaderValue::from_str(&format!("Bearer {token}")) {
+            match HeaderValue::from_str(&format!("Bearer {}", token.expose_secret())) {
                 Ok(v) => Some(v),
                 Err(_) => {
                     diag_warn!(
@@ -69,7 +71,7 @@ impl CachedToken {
             }
         };
         Self {
-            token: busbar_contract::redacted::Redacted::new(token),
+            token,
             expires_at,
             header,
         }
@@ -135,7 +137,7 @@ impl CredentialProvider for BearerToken {
 pub(crate) fn spawn(minter: Minter) -> CredentialProviderArc {
     let (alive, dropped) = tokio::sync::watch::channel(());
     let provider = Arc::new(BearerToken {
-        token: RwLock::new(Arc::new(CachedToken::new(String::new(), 0))),
+        token: RwLock::new(Arc::new(CachedToken::new(String::new().into(), 0))),
         _alive: Some(alive),
     });
     if let Ok(handle) = tokio::runtime::Handle::try_current() {

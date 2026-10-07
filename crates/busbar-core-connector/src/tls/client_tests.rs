@@ -230,7 +230,7 @@ async fn a_client_identity_is_presented_to_a_mutual_peer() {
         pinned_public_keys: Vec::new(),
         client_identity: Some(busbar_contract::transport::trust::ClientIdentity {
             cert_chain: client_chain,
-            private_key: client_key,
+            private_key: client_key.into(),
         }),
     };
     dial(
@@ -250,7 +250,7 @@ fn a_client_identity_that_does_not_parse_refuses_the_boot_naming_the_need() {
     let bad = EgressTrust {
         client_identity: Some(busbar_contract::transport::trust::ClientIdentity {
             cert_chain: chain,
-            private_key: b"not a private key".to_vec(),
+            private_key: b"not a private key".to_vec().into(),
         }),
         ..EgressTrust::default()
     };
@@ -267,4 +267,45 @@ fn a_client_identity_that_does_not_parse_refuses_the_boot_naming_the_need() {
         need_client_config("plain", &EgressTrust::default()).is_ok(),
         "a need with no identity configured is unchanged"
     );
+}
+
+/// A destination's client identity crosses the seam with its key REDACTED: the identity prints the
+/// key as `<redacted>`, never its bytes, and [`seal`] reads the bytes at the one point that hands
+/// them to rustls, so the sealed identity presents. A redacted key that does not parse refuses the
+/// seal.
+#[test]
+fn a_sealed_identity_keeps_its_key_redacted_until_the_seal_parses_it() {
+    use busbar_contract::transport::trust::{Anchors, ClientIdentity};
+    let (_, chain, key) = ca_and_leaf(&["busbar-client"]);
+    let identity = ClientIdentity {
+        cert_chain: chain.clone(),
+        private_key: key.clone().into(),
+    };
+    let printed = format!("{identity:?}");
+    assert!(printed.contains("<redacted>"), "{printed}");
+    assert!(
+        !printed.contains(&format!("{:?}", &key[..8])),
+        "the key's bytes leaked into the identity's text: {printed}"
+    );
+    let base = build_client_config(&EgressTrust::default()).expect("the base config");
+    let sealed = seal(
+        Some(&base),
+        &Anchors {
+            key_pin: None,
+            client_identity: Some(identity),
+            private_reach: false,
+        },
+    )
+    .expect("the redacted key parses at the seal");
+    assert!(sealed.identity.is_some(), "the sealed identity presents");
+
+    let bad = Anchors {
+        key_pin: None,
+        client_identity: Some(ClientIdentity {
+            cert_chain: chain,
+            private_key: b"not a private key".to_vec().into(),
+        }),
+        private_reach: false,
+    };
+    assert!(matches!(seal(Some(&base), &bad), Err(BadClientIdentity(_))));
 }

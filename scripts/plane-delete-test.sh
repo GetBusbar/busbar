@@ -679,8 +679,10 @@ section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 write_boot_config() {
   local mode="$1" dir="$2" port="$3" admin_port="$4" omit="${5:-}" f="$2/config.yaml"
   printf '{}\n' >"$dir/providers.yaml"
-  # BASE — plane-free, and identical in both modes bar the auth posture below.
-  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\n' \
+  # BASE — plane-free, and identical in both modes bar the auth posture below. `store:` is required
+  # since Q-STORE (B) (01af48417: a config with no store block is refused at boot); without it neither
+  # boot came up and the boot leg had no control, on every tree.
+  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nstore: { module: memory }\nproviders: {}\nmodels: {}\n' \
     "$port" "$admin_port" >"$f"
   case "$mode" in
     mcp)
@@ -742,8 +744,10 @@ boot_and_probe() {
     sleep 0.5
   done
   if [ -z "$up" ]; then
-    red "  boot leg ($label/$mode): the binary did not come up"
-    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /'
+    # To STDERR: the control's codes are read through `$(control_codes)`, which captured these two
+    # lines and printed only "control build/boot failed", so the reason a boot died was never shown.
+    red "  boot leg ($label/$mode): the binary did not come up" >&2
+    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /' >&2
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
     return 1
   fi
@@ -786,11 +790,11 @@ build_bin() {
   log="$CACHE_TARGET/.plane-delete-$tag-build.log"; mkdir -p "$CACHE_TARGET"
   CARGO_TARGET_DIR="$CACHE_TARGET" cargo build --manifest-path "$dir/Cargo.toml" -p busbar >"$log" 2>&1; rc=$?
   if [ "$rc" -ne 0 ]; then
-    red "  boot leg ($tag): bin FAILED to build (not just check)"
-    grep -m4 -E "error(\[|:)|couldn't read" "$log" | sed 's/^/      /'
+    red "  boot leg ($tag): bin FAILED to build (not just check)" >&2
+    grep -m4 -E "error(\[|:)|couldn't read" "$log" | sed 's/^/      /' >&2
     return 1
   fi
-  [ -x "$CACHE_TARGET/debug/busbar" ] || { red "  boot leg ($tag): built binary not found"; return 1; }
+  [ -x "$CACHE_TARGET/debug/busbar" ] || { red "  boot leg ($tag): built binary not found" >&2; return 1; }
   kept="$CACHE_TARGET/busbar-$tag"
   cp "$CACHE_TARGET/debug/busbar" "$kept" || return 1
   printf '%s\n' "$kept"
@@ -1601,10 +1605,10 @@ run_selftest() {
   write_boot_config open "$cfgdir" 46000 46001 "$(plane_config_sections a2a)"
   open_stripped="$(grep -c . "$cfgdir/config.yaml")"
   if [ "$open_stripped" -lt "$open_full" ] && grep -q "^listen:" "$cfgdir/config.yaml" \
-     && grep -q "^public_url:" "$cfgdir/config.yaml"; then
+     && grep -q "^public_url:" "$cfgdir/config.yaml" && grep -q "^store:" "$cfgdir/config.yaml"; then
     note "PASS  boot fixture: omitting a plane section shrinks the config and leaves the plane-free base intact"
   else
-    fail=1; note "FAIL  boot fixture: the omission removed nothing, or took the plane-free base with it ($open_full -> $open_stripped lines)"
+    fail=1; note "FAIL  boot fixture: the omission removed nothing, or took the plane-free base (listen, public_url, store) with it ($open_full -> $open_stripped lines)"
   fi
   rm -rf "$cfgdir"
 

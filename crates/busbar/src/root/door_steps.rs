@@ -351,6 +351,10 @@ pub struct DoorFacts {
     /// Each need's response-head rule, in Statement need order: what of a far end's head reaches
     /// the plane on that need.
     pub keeps: Vec<busbar_kernel::plane_driver::ResponseKeep>,
+    /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
+    /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
+    /// every cell keeps the host's default.
+    pub bench_below_trip_threshold: Option<bool>,
 }
 
 /// What one unit carries between its steps.
@@ -925,6 +929,7 @@ pub fn door_facts(
             .collect(),
         audit_kind: OpClassId::new(audit_kind),
         keeps,
+        bench_below_trip_threshold: None,
     }
 }
 
@@ -1016,12 +1021,18 @@ pub fn compose_egress(
             Pool::new(member.name.clone(), vec![member.clone()]),
         );
     }
+    // Every cell of this plane's members under the default ladder, with the plane's declared
+    // breaker fact where it states one (ARCHITECT Q4); where it states none, the default holds.
+    let cell = || {
+        let mut cfg = busbar_kernel::store::pool_breaker_cfg(None);
+        if let Some(bench) = facts.bench_below_trip_threshold {
+            cfg.bench_below_trip_threshold = bench;
+        }
+        cfg
+    };
     let policy = built.keys().fold(
-        crate::root::adapters::BreakerPolicy::new()
-            .with_default_cell(busbar_kernel::store::pool_breaker_cfg(None)),
-        |policy, pool| {
-            policy.with_pool(pool.as_str(), busbar_kernel::store::pool_breaker_cfg(None))
-        },
+        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell()),
+        |policy, pool| policy.with_pool(pool.as_str(), cell()),
     );
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
@@ -1148,7 +1159,7 @@ pub struct OutboundAuths {
     dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
-    conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    conns: crate::root::loader::dispatch::ConnTable,
     opened:
         Mutex<HashMap<String, Arc<crate::root::loader::dispatch::auth_outbound::OutboundInstance>>>,
 }
@@ -1166,14 +1177,15 @@ impl std::fmt::Debug for OutboundAuths {
 
 impl OutboundAuths {
     /// The auth rows `linked` (the build's) and `dropped` (the plugins directory's), loaded on
-    /// `dispatcher`, their needs declared on `conns` (the process's connector; `None`: no need is
-    /// granted, and a style that mints mints nothing).
+    /// `dispatcher`, their needs declared on `conns`: `ConnTable::Host`, the process's connector;
+    /// or, stated by the caller, `ConnTable::NoNeeds`: no need is granted, a row that declares one
+    /// will not load and is passed over, and a style that mints mints nothing.
     #[must_use]
     pub fn new(
         dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
         linked: &[busbar_kernel::preflight::LinkedAuth],
         dropped: Option<&'static crate::root::loader::PluginRegistry>,
-        conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+        conns: crate::root::loader::dispatch::ConnTable,
     ) -> Self {
         Self {
             dispatcher,
@@ -1311,7 +1323,7 @@ pub struct DoorReach<'a> {
     pub conns: Arc<dyn busbar_contract::conn::PollConns>,
     /// Whole seconds.
     pub stream_ceiling_secs: u64,
-    /// The linked wires composed over the data carrier (`crate::root::serve::upgrade_carriers`):
+    /// The linked claims that open at an upgrade (`crate::root::serve::upgrade_carriers`):
     /// a need over one dials its member's base URL in its own scheme ([`spelled_for`]).
     pub upgrades: Vec<&'static str>,
 }
@@ -1742,9 +1754,9 @@ pub fn member_routes(
     Ok(routes)
 }
 
-/// THE BASE URL A NEED'S FRAMER READS: a need over `transport`, a framer composed over the
-/// carrier the operator's `base_url` names (`upgrades`: the linked wires composing over the data
-/// carrier, `crate::root::serve::upgrade_carriers`), dials the same authority and path under the
+/// THE BASE URL A NEED'S FRAMER READS: a need over `transport`, a claim that opens at an upgrade of
+/// the connection the operator's `base_url` names (`upgrades`: the linked claims that open at an
+/// upgrade, `crate::root::serve::upgrade_carriers`), dials the same authority and path under the
 /// framer's own scheme, its secured form for a secured base (`http://h` -> `<key>://h`,
 /// `https://h` -> `<key>s://h`, the pairing every upgrade-over-HTTP scheme keeps, RFC 6455 section
 /// 3). `None` when the need dials the base URL as written.

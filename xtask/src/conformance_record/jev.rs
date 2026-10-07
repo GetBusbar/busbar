@@ -23,6 +23,8 @@
 //!
 //!   `usage.billable-success-only` is read off `GET /api/v1/admin/ledger/totals` (ARCHITECT ruling
 //!   2026-10-02): on the jev lane `fee_count` must be exactly 1 AND the reported units must show.
+//!   The 1.6.0 node keeps its rows at bucket-day width (no lane, no provider), so there the jev
+//!   lane's row is the rig's caller's own bucket ([`judge_jev_ledger`]).
 //!   The subject's own card prices the `decision` class at 1 micro-unit per unit
 //!   (`decisions.rate_card.<model>.units.decision: 1`, in the rig's generated config only), so the
 //!   lane's `priced_micros` IS the unit count: 42.
@@ -207,8 +209,11 @@ pub const REPORTED_UNITS: u64 = 42;
 
 /// THE BILLING JUDGEMENT over `GET /api/v1/admin/ledger/totals` after one success and one 422: on
 /// the jev lane exactly one fee, priced at exactly [`REPORTED_UNITS`] micro-units (the card prices
-/// one unit at one micro-unit). Every other row is another lane's and is not read.
-pub fn judge_jev_ledger(totals: &[u8]) -> Result<(), String> {
+/// one unit at one micro-unit). A row is the jev lane's when it names it (`lane`/`provider`), or,
+/// at the width the 1.6.0 node keeps (no lane, no provider: every row is a bucket-day), when it is
+/// the rig's caller's own bucket (`bucket`, the key the rig minted and served under). Every other
+/// row is another lane's or another caller's and is not read.
+pub fn judge_jev_ledger(totals: &[u8], bucket: &str) -> Result<(), String> {
     let v: Value =
         serde_json::from_slice(totals).map_err(|e| format!("ledger/totals is not JSON ({e})"))?;
     let rows = v
@@ -218,8 +223,14 @@ pub fn judge_jev_ledger(totals: &[u8]) -> Result<(), String> {
     let mine: Vec<&Value> = rows
         .iter()
         .filter(|r| {
-            r.get("lane").and_then(Value::as_str) == Some(MODEL)
-                && r.get("provider").and_then(Value::as_str) == Some(PROVIDER)
+            let (lane, provider) = (
+                r.get("lane").and_then(Value::as_str),
+                r.get("provider").and_then(Value::as_str),
+            );
+            (lane == Some(MODEL) && provider == Some(PROVIDER))
+                || (lane == Some("")
+                    && provider == Some("")
+                    && r.get("bucket").and_then(Value::as_str) == Some(bucket))
         })
         .collect();
     let fees: u64 = mine
@@ -256,11 +267,12 @@ pub fn judge_jev_ledger(totals: &[u8]) -> Result<(), String> {
 /// loopback address declared as an allowed destination (`advanced.allow_destinations`), as an
 /// operator declares one, so the connector's default destination guard (private, loopback and
 /// metadata addresses refused, QUESTIONS Q130/Q131) admits the dial. The oidf rig declares its IdP
-/// stub the same way.
+/// stub the same way. It names its store (`store: {module: memory}`), as every config must (owner ruling Q-STORE (B)).
 pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
     format!(
         "listen: \"127.0.0.1:{data}\"\n\
          admin_listen: \"127.0.0.1:{admin}\"\n\
+         store: {{ module: memory }}\n\
          providers:\n  {PROVIDER}:\n    api_key: {{ env: JEV_CONFORMANCE_PROVIDER_KEY }}\n\
          models: {{}}\n\
          identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
@@ -387,13 +399,14 @@ impl Runner {
         )
         .ok()
         .map(|r| r.status);
-        let client_key = match subject::mint_key(&scratch, admin, &admin_token, "jev-conformance") {
-            Ok(k) => k,
-            Err(e) => {
-                run.boot = Err(format!("{e}: {}", booted.log_tail()));
-                return;
-            }
-        };
+        let (client_key, client_id) =
+            match subject::mint_key(&scratch, admin, &admin_token, "jev-conformance") {
+                Ok(k) => k,
+                Err(e) => {
+                    run.boot = Err(format!("{e}: {}", booted.log_tail()));
+                    return;
+                }
+            };
         let bearer = format!("Bearer {client_key}");
         let nonce = subject::random_hex(8).unwrap_or_else(|_| "probe".to_string());
         let send = |auth: bool| {
@@ -552,7 +565,7 @@ impl Runner {
                 if r.status != 200 {
                     return Err(format!("ledger/totals answered {}", r.status));
                 }
-                judge_jev_ledger(&r.body)
+                judge_jev_ledger(&r.body, &client_id)
             }),
         ));
         drop(booted);

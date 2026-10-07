@@ -291,3 +291,57 @@ fn an_arrival_names_its_route_and_keeps_the_name() {
     Out::new(&mut bare).route(ROUTE_DIRECT, "entry");
     assert_eq!((bare.route, bare.pool.len), (ROUTE_DIRECT, 0));
 }
+
+/// THE TRUST FACTS SETTER (ARCHITECT 2026-10-06): the counterparty, item and digest a unit rests
+/// on, each kept in the instance's memory past the call; an empty counterparty, item or digest
+/// states none, and with no instance nothing is stated.
+#[test]
+fn an_arrival_states_its_trust_facts_and_keeps_them() {
+    use crate::abi::plane::ArriveOut;
+    let kept = Kept::default();
+    let reporting: Reporting = std::cell::Cell::new(None);
+    let mut o: ArriveOut = zeroed();
+    let (cp, item) = (String::from("peer"), String::from("tool"));
+    Out::kept(&mut o, &kept, &reporting).trust(&cp, Some(&item), Some("d1"));
+    drop((cp, item));
+    assert_eq!(
+        (
+            read(o.trust_counterparty),
+            read(o.trust_item),
+            read(o.trust_digest)
+        ),
+        (b"peer".to_vec(), b"tool".to_vec(), b"d1".to_vec())
+    );
+    let mut whole: ArriveOut = zeroed();
+    Out::kept(&mut whole, &kept, &reporting).trust("peer", Some(""), None);
+    assert_eq!(
+        (whole.trust_item.len, whole.trust_digest.len),
+        (0, 0),
+        "no item, no digest"
+    );
+    let mut none: ArriveOut = zeroed();
+    Out::kept(&mut none, &kept, &reporting).trust("", Some("tool"), Some("d1"));
+    assert_eq!(none.trust_counterparty.len, 0);
+    let mut bare: ArriveOut = zeroed();
+    Out::new(&mut bare).trust("peer", None, None);
+    assert_eq!(bare.trust_counterparty.len, 0);
+}
+
+/// `keep` names a lease for an answer whose only material is program memory: the static header
+/// list a `serve` answers with is then under a lease the host releases, as the kind's check asks.
+#[test]
+fn keep_names_a_lease_for_static_material() {
+    const HEADERS: &[AbiStr] = &[AbiStr {
+        ptr: b"h".as_ptr(),
+        len: 1,
+    }];
+    let leases = Leases::default();
+    let mut o: ServeOut = zeroed();
+    let mut out = Out::new(&mut o);
+    out.list(|o| &o.headers_out, |o| &o.headers_out_len, HEADERS);
+    out.keep(&leases, ());
+    assert_ne!(o.head.lease, 0, "a lease is named");
+    assert_eq!(leases.held(), 1);
+    assert_eq!(leases.release(o.head.lease), Outcome::Ready);
+    assert_eq!(leases.held(), 0);
+}

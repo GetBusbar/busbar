@@ -1047,7 +1047,7 @@ fn test_additive_flush_carries_refund_deltas() {
 /// bounded, the loss of attribution is visible, and not one token or request is dropped.
 #[test]
 fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outage() {
-    crate::metrics::init();
+    crate::snapshot::init();
 
     /// A store whose `add_metering` ALWAYS fails — a metering-write outage that never recovers.
     struct MeteringDownStore {
@@ -1182,7 +1182,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
     );
 
     // The loss of ATTRIBUTION is COUNTED, not silent: the coalesce metric is exported and non-zero.
-    let rendered = crate::metrics::render();
+    let rendered = crate::snapshot::render();
     let coalesced = rendered
         .lines()
         .find(|l| l.starts_with("busbar_metering_pending_coalesced_total "))
@@ -2259,7 +2259,7 @@ impl RecordStore for RecordingBarrierStore {
 /// must hold EXACTLY the total accrued requests - nothing lost, nothing double-counted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(RecordingBarrierStore {
@@ -3415,7 +3415,7 @@ mod signed_token {
             "the PRE-ROTATION token must be rejected immediately after rotate"
         );
         assert!(
-            g.verify_token(&token, 1_500, None).is_some(),
+            g.verify_token(token.expose_secret(), 1_500, None).is_some(),
             "the re-minted token authenticates"
         );
     }

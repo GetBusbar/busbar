@@ -5,7 +5,7 @@
 //!
 //! The version-specific WIRE layer for the JSON transport: it declares the v1 routes, owns the v1 JSON
 //! envelope helpers, and maps each route to a shared `AdminService` call. It holds NO operation logic
-//! — logic lives in `super::service`, the frozen types in `busbar_kernel::admin::v1::contract`. A GraphQL adapter for v1
+//! — logic lives in `super::service`, the frozen types in `crate::v1::contract`. A GraphQL adapter for v1
 //! is a sibling `super::graphql` over the SAME service. Releasing v2 copies the whole `v1/` directory
 //! to `v2/`, changes only what differs, and mounts `/admin/v2/*` alongside; v1 keeps answering.
 
@@ -24,12 +24,14 @@ use super::service::{
     build_without_hook, AdminService,
 };
 use crate::transport::AdminTransport;
-use busbar_kernel::admin::v1::contract::taxonomy::Cond;
-use busbar_kernel::admin::v1::contract::{
+use crate::v1::contract::taxonomy::Cond;
+use crate::v1::contract::{
     AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS,
     PATH_PLUGINS_INSPECT,
 };
-use busbar_kernel::audit_ring as audit;
+// The kernel's admin audit ring, named once for this crate (the handlers, the plane-verb backing and
+// the audit-page view all reach it here).
+pub(crate) use busbar_kernel::audit_ring as audit;
 use busbar_kernel::state::AppHandle;
 
 /// The OpenAPI response-object key (`"responses"`). Named here ONCE and assembled from fragments so
@@ -198,7 +200,7 @@ async fn record_declared_error(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    use busbar_kernel::admin::v1::contract::taxonomy;
+    use crate::v1::contract::taxonomy;
     let Some(method) = taxonomy::method_tag(req.method()) else {
         return next.run(req).await;
     };
@@ -210,7 +212,7 @@ async fn record_declared_error(
     let tag = resp.extensions().get::<taxonomy::observed::Tag>().copied();
     if let (Some(path), Some(tag)) = (matched, tag) {
         let rel = path
-            .strip_prefix(busbar_kernel::admin::v1::contract::ADMIN_PREFIX)
+            .strip_prefix(crate::v1::contract::ADMIN_PREFIX)
             .unwrap_or(&path);
         // UNDER-CLAIM IS FATAL, HERE, NOW. If a handler emitted something the endpoint's
         // declaration does not list, `openapi.json` would under-document the surface — so fail the
@@ -323,7 +325,7 @@ pub(crate) fn unconfigured_plane(
     // matches no route) never is: it carries no taxonomy tag for the recording layer to attribute.
     #[cfg(any(test, feature = "test-support"))]
     resp.extensions_mut()
-        .remove::<busbar_kernel::admin::v1::contract::taxonomy::observed::Tag>();
+        .remove::<crate::v1::contract::taxonomy::observed::Tag>();
     Some(resp)
 }
 
@@ -401,14 +403,12 @@ fn finish_admin_reply(
         if let AdminVerbKind::Audited { verb } = kind {
             let anon = busbar_kernel::auth::AuthPrincipal(None);
             let p = principal.as_ref().unwrap_or(&anon);
-            busbar_kernel::admin::planeverbs::audit(plane, verb, name, outcome, p);
+            crate::planeverbs::audit(plane, verb, name, outcome, p);
         }
     };
     match reply {
         AdminReply::Prebuilt(resp) => resp,
-        AdminReply::Refused(e) => {
-            busbar_kernel::admin::planeverbs::refusal_response(plane, name, e)
-        }
+        AdminReply::Refused(e) => crate::planeverbs::refusal_response(plane, name, e),
         AdminReply::Applied(body) => {
             record_audit(audit::OUTCOME_APPLIED);
             // Byte-identical to `ok_json(StatusCode::OK, &view)`: same status, same content type, and the
@@ -422,19 +422,18 @@ fn finish_admin_reply(
         }
         AdminReply::Rejected(e) => {
             record_audit(audit::OUTCOME_REJECTED);
-            busbar_kernel::admin::planeverbs::refusal_response(plane, name, e)
+            crate::planeverbs::refusal_response(plane, name, e)
         }
     }
 }
 
 // ── JSON wire helpers (v1) ───────────────────────────────────────────────────────────────────────
 
-// The v1 envelope PRIMITIVES (`ok_json`/`err_json`/`err_json_cond`) STAY in busbar-core
-// (`busbar_kernel::admin::v1::json`): `busbar_kernel::router::fallback_error_response` renders `err_json`
-// for the native-API root, and `busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope` reaches all
-// three — so they cannot move here without the forbidden reverse dependency edge. Imported so every
-// call site below is unchanged.
-use busbar_kernel::admin::v1::json::{err_json, err_json_cond, ok_json};
+// The v1 envelope PRIMITIVES (`ok_json`/`err_json`/`err_json_cond`), moved here from the kernel's
+// `admin::v1::json` (P2 D4); the kernel keeps only the neutral envelope for its own answers
+// (`busbar_kernel::admin::gate`).
+mod envelope;
+pub use envelope::{err_json, err_json_cond, ok_json};
 
 /// Map a service `Result<View, AdminError>` onto the JSON wire: `ok_json` on success (given status),
 /// `err_json` on error. The single seam every v1 json handler funnels through.
@@ -453,7 +452,7 @@ fn respond<T: Serialize>(status: StatusCode, result: Result<T, AdminError>) -> R
 fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize, Response> {
     match q.get("cursor") {
         None => Ok(0),
-        Some(c) => busbar_kernel::admin::v1::contract::decode_offset_cursor(c).ok_or_else(|| {
+        Some(c) => crate::v1::contract::decode_offset_cursor(c).ok_or_else(|| {
             err_json_cond(
                 &AdminError::Validation("invalid or foreign pagination cursor".into()),
                 Cond::MalformedCursor,
@@ -472,7 +471,7 @@ fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize,
 fn page_cursor<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Option<String> {
     if items.len() > limit {
         items.truncate(limit);
-        Some(busbar_kernel::admin::v1::contract::encode_offset_cursor(
+        Some(crate::v1::contract::encode_offset_cursor(
             start.saturating_add(limit),
         ))
     } else {

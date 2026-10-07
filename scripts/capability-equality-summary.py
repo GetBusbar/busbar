@@ -39,11 +39,12 @@ import tempfile
 LEDGER = "qa/capability-equality.json"
 STATES = {"proven", "missing", "not-applicable"}
 ROOT_STATES = {"proven", "none", "not-applicable"}
-# The five legs the composition root carries, and the one cargo invocation that turns them all on:
+# The six legs the composition root carries, and the one cargo invocation that turns them all on:
 # the admin leg's own feature, for the mcp, a2a and voice legs (the kernel-loop rider those planes are
-# served through) the feature that links the plane, and for the llm leg the feature that links the
-# plane riding the `node` axis, which compiles the root's node (`root/plane_node.rs`).
-ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm"
+# served through) and the decisions leg (its door, served end to end) the feature that links the
+# plane, and for the llm leg the feature that links the plane riding the `node` axis, which compiles
+# the root's node (`root/plane_node.rs`).
+ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,proto-llm"
 
 
 def load(path):

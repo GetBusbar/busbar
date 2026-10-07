@@ -48,7 +48,8 @@
 //! everywhere else on this seam, a write's `Ok(())` is not evidence of durability: the engine finds
 //! out what its backend kept by READING IT BACK at boot.
 
-use crate::plane::store::{decode, encode, PlaneStore, KIND_DEMOTION};
+use crate::plane::store::{decode, encode, PlaneStore, KIND_DEMOTION, KIND_TRUST_DECISION};
+use crate::trust::book::RulingRow;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
 use std::sync::{Arc, Mutex};
 
@@ -181,6 +182,63 @@ impl DemotionRecord {
                     error = %e,
                     "the durable demotion records could NOT be read at boot; any upstream this \
                      deployment had demoted is re-opened until the first sweep looks again"
+                );
+                Vec::new()
+            }
+        }
+    }
+}
+
+impl DemotionRecord {
+    /// KEEP the operator's trust decision about one key, upserted under it (the instance label,
+    /// the counterparty and any item, joined by the unit separator). Unlike a demotion this is the
+    /// answer to an operator's write, so a failure is RETURNED, in the store's own words, for the
+    /// write to refuse: a decision nothing kept was not made durable.
+    ///
+    /// # Errors
+    ///
+    /// The store's refusal.
+    pub fn keep_decision(&self, row: &RulingRow, now: u64) -> Result<(), String> {
+        let Some(store) = self.sink() else {
+            return Ok(());
+        };
+        let sep = crate::host_services::DEMOTION_SEP;
+        let mut id = format!("{}{sep}{}", row.instance, row.counterparty);
+        if let Some(item) = &row.item {
+            id.push(sep);
+            id.push_str(item);
+        }
+        let record = PlaneRecord {
+            kind: KIND_TRUST_DECISION.to_string(),
+            id,
+            parent: None,
+            seq: 0,
+            ts: now,
+            disposition: PlaneDisposition::Active,
+            body: encode(row).map_err(|e| e.to_string())?,
+        };
+        store
+            .upsert_plane_record(record.view())
+            .map_err(|e| e.to_string())
+    }
+
+    /// EVERY kept trust decision; empty when no store is attached or none was kept. A read failure
+    /// is reported and reads as none: the configured trust stands until the operator decides again.
+    pub fn decisions(&self) -> Vec<RulingRow> {
+        let Some(store) = self.sink() else {
+            return Vec::new();
+        };
+        let read = store
+            .list_plane_records(KIND_TRUST_DECISION, &PlaneSelector::All)
+            .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect());
+        match read {
+            Ok(rows) => rows,
+            Err(e) => {
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_DEMOTIONS_UNREAD,
+                    error = %e,
+                    "the durable trust decisions could NOT be read at boot; the configured trust \
+                     stands until the operator decides again"
                 );
                 Vec::new()
             }

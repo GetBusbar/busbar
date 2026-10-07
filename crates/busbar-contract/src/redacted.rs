@@ -31,7 +31,9 @@ use core::fmt;
 use zeroize::Zeroize;
 
 /// A resolved secret held in memory. `Debug`/`Display` print `"[REDACTED]"`; the value never
-/// serializes; the backing memory is zeroized on drop. See the module docs.
+/// serializes; the backing memory is zeroized on drop. See the module docs. `Default` is an EMPTY
+/// secret (what a `#[derive(Default)]` on a struct with a `Redacted` field fills in): no material.
+#[derive(Default)]
 pub struct Redacted<T: Zeroize>(T);
 
 impl<T: Zeroize> Redacted<T> {
@@ -86,16 +88,16 @@ impl<T: Zeroize + Clone> Clone for Redacted<T> {
 /// field — e.g. `ExchangeRequest`, `CompleteLogin`) would compare byte-by-byte with a data-dependent
 /// early exit, leaking through timing how long a common prefix two secrets share. Routing through the
 /// crate's [`constant_time_eq`](crate::constant_time_eq) — the same primitive the auth path uses to
-/// compare credentials — closes that channel for every secret comparison, structurally. The bound is
-/// `AsRef<str>` (satisfied by `String`, the only `T` any secret is wrapped in) so the comparison can
-/// go through that str-based primitive.
-impl<T: Zeroize + AsRef<str>> PartialEq for Redacted<T> {
+/// compare credentials, here over its byte form — closes that channel for every secret comparison,
+/// structurally. The bound is `AsRef<[u8]>`, satisfied by both shapes a secret is wrapped in: a
+/// `String` (a token, a key) and a `Vec<u8>` (DER key material, a raw credential).
+impl<T: Zeroize + AsRef<[u8]>> PartialEq for Redacted<T> {
     fn eq(&self, other: &Self) -> bool {
-        constant_time_eq(self.0.as_ref(), other.0.as_ref())
+        constant_time_eq(&self.0, &other.0)
     }
 }
 
-impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
+impl<T: Zeroize + AsRef<[u8]>> Eq for Redacted<T> {}
 
 // ── The constant-time primitive `Redacted`'s `PartialEq` is built on ───────────────────────────
 //
@@ -123,11 +125,12 @@ impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
 /// `sha256_hex`) still leaks whether the two lengths matched. Prefer hashing both sides
 /// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
 /// does not guarantee that for its caller.
+///
+/// Generic over any byte view (`str`, `String`, `[u8]`, `Vec<u8>`), so [`Redacted`]'s `PartialEq`
+/// (which also compares `Vec<u8>` secrets) runs this same loop: one constant-time primitive.
 #[inline(never)]
-pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-
+pub fn constant_time_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A, b: &B) -> bool {
+    let (a_bytes, b_bytes) = (a.as_ref(), b.as_ref());
     if a_bytes.len() != b_bytes.len() {
         return false;
     }

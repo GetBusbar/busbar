@@ -455,7 +455,7 @@ fn an_operator_blocked_answer_is_refused_on_the_dial() {
     assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
 }
 
-/// ASKED TO REFUSE PRIVATE REACH AND TO EXPLAIN (ARCHITECT Q-DEL-A2A-GUARD-WORDS): under a
+/// ASKED TO REFUSE PRIVATE REACH AND TO EXPLAIN (ARCHITECT ruling on a plane's guard words): under a
 /// deployment that does NOT block private addresses, `DEST_REFUSE_PRIVATE` refuses a private
 /// literal, a loopback name and a name answering a private address all the same; with
 /// `DEST_EXPLAIN` a refusal an address decided names it (a cloud-metadata answer included), a

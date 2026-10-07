@@ -1197,8 +1197,15 @@ impl ProtocolReader for BedrockReader {
                     }
                 };
                 // The guardrail policy units ride the same frame's `trace`, as they do buffered,
-                // and travel on the usage as residuals (never billed).
-                usage.detail.residual_units = warn_guardrail_units(data);
+                // and travel on the usage under their open classes (LEDGER-100). An unreadable one
+                // REFUSES, as an unreadable token count does above.
+                usage.detail.open_units = match guardrail_units(data) {
+                    Ok(units) => units,
+                    Err(refusal) => {
+                        out.push(IrStreamEvent::Error(refusal));
+                        return out;
+                    }
+                };
 
                 if let Some(tier) = read_served_tier(data) {
                     usage.detail.service_tier = Some(tier);
@@ -1421,8 +1428,8 @@ impl ProtocolReader for BedrockReader {
             usage.detail.service_tier = Some(tier);
         }
         // The guardrail policy units AWS bills beside the tokens ride `trace`, not `usage`; they
-        // travel on the usage as residuals (never billed).
-        usage.detail.residual_units = warn_guardrail_units(body);
+        // travel on the usage under their open classes (LEDGER-100). An unreadable one REFUSES.
+        usage.detail.open_units = guardrail_units(body)?;
 
         Ok(crate::codec::ir::IrResponse {
             logprobs: Vec::new(),

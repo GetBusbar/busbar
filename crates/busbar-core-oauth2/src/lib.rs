@@ -26,14 +26,21 @@
 //!
 //! ## The seam
 //!
-//! Core's `App::oauth_as` field, `router::base_data_router`'s mount call and `appbuild`'s plane
-//! construction all go through `busbar_kernel::oauth_as::seam::AsPlaneSeam` — a small fn-pointer pair
-//! (`build`/`mount`) rather than the full `PlaneDecl` vocabulary the CRUD-shaped planes (MCP/A2A)
-//! use: `oauth_as` is a SINGLETON plane (no named-definition map, no scope-kind grants, no admin
-//! CRUD verbs), so most of `PlaneDecl`'s fields would be fictions here. [`install`] registers this
-//! crate's implementation of that seam; the composition root (`crates/busbar`'s `main`) calls it
-//! once, unconditionally — `oauth_as` carries no feature flag, unlike MCP/A2A/voice, because
-//! `oauth-as` (the underlying crate) is a normal dependency and costs nothing until configured.
+//! Core's `App::oauth_as` field, `router::base_data_router`'s mount call and `appbuild`'s
+//! construction all go through `busbar_kernel::oauth_as::seam::AsPlaneSeam` — a small fn-pointer
+//! set (`check`/`build`/`mount`/`verify_dpop`) for a SINGLETON server: no named-definition map, no
+//! scope-kind grants, no admin CRUD verbs. [`install`] registers this crate's implementation of
+//! that seam; the composition root (`crates/busbar`'s `main`) calls it once, unconditionally —
+//! `oauth_as` carries no feature flag, because `oauth-as` (the underlying crate) is a normal
+//! dependency and costs nothing until configured.
+//!
+//! ## The connection table
+//!
+//! The one outbound fetch this crate makes (a Client ID Metadata Document, [`cimd`]) rides the
+//! deployment's ONE root Connector (THE DESIGN §5), whose destination guard is the only check on
+//! where it goes. The composition root names that table through [`Connections`], a type it hands
+//! [`install`] as a parameter: the seam's `build` is instantiated over it, so the table reaches
+//! every built server without a process-wide slot of this crate's own.
 
 pub mod cimd;
 pub mod config;
@@ -68,18 +75,48 @@ mod flow_tests;
 #[path = "tests/mount_tests.rs"]
 mod mount_tests;
 
-/// Register this crate's implementation of the authorization-server plane seam
-/// (`busbar_kernel::oauth_as::seam::AsPlaneSeam`) into busbar-core's process-wide registration slot.
+/// THE CONNECTION TABLE THE COMPOSITION ROOT HANDS THIS CRATE: the root Connector's table, read
+/// as the connection-table traits the contract defines, and the instance identity this crate's
+/// needs are declared under on it. `None` = no table (a build with no connector): every outbound
+/// fetch then fails closed.
+pub trait Connections: 'static {
+    /// The table, read at the moment a fetch needs it.
+    fn table() -> Option<Table>;
+}
+
+/// One connection table as a fetch reaches it.
+#[derive(Clone)]
+pub struct Table {
+    /// The identity this crate's needs are declared and opened under.
+    pub owner: busbar_contract::conn::InstanceId,
+    /// Where the needs are declared.
+    pub declared: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
+    /// Where the connections are opened and read.
+    pub conns: std::sync::Arc<dyn busbar_contract::conn::PollConns>,
+}
+
+/// The table of a build with no connector: none, so every outbound fetch fails closed.
+pub struct NoConnections;
+
+impl Connections for NoConnections {
+    fn table() -> Option<Table> {
+        None
+    }
+}
+
+/// Register this crate's implementation of the authorization-server seam
+/// (`busbar_kernel::oauth_as::seam::AsPlaneSeam`) into the kernel's process-wide registration slot,
+/// every server it builds fetching over `C`'s connection table.
 ///
 /// Called EXACTLY ONCE, by the composition root (`crates/busbar`'s `main`), unconditionally and
 /// before any config loads — mirroring `busbar_kernel::plane::registry::install_planes`'s discipline
 /// for the same reason. `oauth_as:` carries no feature flag (it is a normal dependency, like the
 /// underlying `oauth-as` crate always was), so every real build calls this.
-pub fn install() {
+pub fn install<C: Connections>() {
     busbar_kernel::oauth_as::seam::install_as_plane_seam(
         busbar_kernel::oauth_as::seam::AsPlaneSeam {
             check: config::seam_check,
-            build: plane::seam_build,
+            build: plane::seam_build::<C>,
             mount: routes::seam_mount,
             verify_dpop: plane::seam_verify_dpop,
         },

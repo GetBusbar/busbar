@@ -385,9 +385,10 @@ pub struct Env {
     /// to SEE the denominator. Diagnostic only: it changes no verdict and writes to stderr, so a
     /// runner that captures stdout is unaffected.
     pub scan_audit: bool,
-    /// `SECRET_GATE_REPORT_ONLY=0` — the secret-hygiene gate's BLOCKING mode (#53): its three
-    /// check rows FAIL on a violation instead of carrying it. Any other value, or none, is the
-    /// default report-only mode. Captured here so no gate reaches for `std::env` itself.
+    /// The secret-hygiene gate's BLOCKING mode (#53) — the DEFAULT: its three check rows FAIL on a
+    /// violation. `SECRET_GATE_REPORT_ONLY=1` is the one explicit escape back to report-only (rows
+    /// carry the violations instead of failing them); any other value, or none, blocks. Captured
+    /// here so no gate reaches for `std::env` itself.
     pub secret_gate_blocking: bool,
 }
 
@@ -403,7 +404,7 @@ impl Env {
                 .filter(|s| !s.is_empty()),
             config_bootstrap: std::env::var("CONFIG_SCHEMA_BOOTSTRAP").as_deref() == Ok("1"),
             scan_audit: std::env::var("XTASK_SCAN_AUDIT").as_deref() == Ok("1"),
-            secret_gate_blocking: std::env::var("SECRET_GATE_REPORT_ONLY").as_deref() == Ok("0"),
+            secret_gate_blocking: std::env::var("SECRET_GATE_REPORT_ONLY").as_deref() != Ok("1"),
         }
     }
 }

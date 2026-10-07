@@ -225,21 +225,25 @@ fn a_failed_framer_answer_that_wrote_is_fault() {
     );
 }
 
-/// A stream ends with an EMPTY piece, and a failed stream with a STREAM_FAILED piece; each is the
-/// stream's last piece, so each carries END_OF_FRAME. Either without it is FAULT.
+/// A stream ends with a PIECE_END piece, and a failed stream with a STREAM_FAILED piece; each is
+/// the stream's last piece, so each carries END_OF_FRAME, and so does an empty frame (an empty
+/// message). Any of them without it is FAULT.
 #[test]
 fn a_stream_end_or_failure_without_end_of_frame_is_fault() {
     let mut o: FramerOut = z();
     o.yielded.frame_len = 4;
     o.yielded.pieces_len = 1;
     let mut end = piece(4, 0);
-    end.flags = PIECE_END_OF_FRAME;
+    end.flags = PIECE_END | PIECE_END_OF_FRAME;
     assert_eq!(check_framer(Ready, &o, &[end], 8, 8, 8), Ok(()));
-    end.flags = 0;
-    assert_eq!(
-        check_framer(Ready, &o, &[end], 8, 8, 8),
-        f(Rule::Contradiction, "framer.piece.end_without_end_of_frame")
-    );
+    for flags in [PIECE_END, 0] {
+        end.flags = flags;
+        assert_eq!(
+            check_framer(Ready, &o, &[end], 8, 8, 8),
+            f(Rule::Contradiction, "framer.piece.end_without_end_of_frame"),
+            "{flags:#x}"
+        );
+    }
     let mut failed = piece(0, 4);
     failed.flags = PIECE_STREAM_FAILED | PIECE_END_OF_FRAME;
     assert_eq!(check_framer(Ready, &o, &[failed], 8, 8, 8), Ok(()));
@@ -344,8 +348,9 @@ fn a_continued_piece_outside_a_field_block_is_fault() {
     assert_eq!(check_framer(Ready, &o, &[p], 8, 8, 8), Ok(()));
 }
 
-/// PIECE_TEXT is a fact about a message's bytes (C19-TAIL U5): on a payload piece it passes; on an
-/// empty piece (a stream's end), a field block or a failed stream's reason it is FAULT.
+/// PIECE_TEXT is a fact about a message (C19-TAIL U5): on a payload piece it passes, and on an
+/// EMPTY one too (an empty text message, Autobahn 1.1.1/6.1.1); on a stream's end, a field block
+/// or a failed stream's reason it is FAULT.
 #[test]
 fn text_rides_a_message_piece_only() {
     let mut o: FramerOut = z();
@@ -356,8 +361,11 @@ fn text_rides_a_message_piece_only() {
     assert_eq!(check_framer(Ready, &o, &[message], 8, 8, 8), Ok(()));
     message.flags = PIECE_TEXT | PIECE_END_OF_FRAME;
     assert_eq!(check_framer(Ready, &o, &[message], 8, 8, 8), Ok(()));
+    let mut empty = piece(4, 0);
+    empty.flags = PIECE_TEXT | PIECE_END_OF_FRAME;
+    assert_eq!(check_framer(Ready, &o, &[empty], 8, 8, 8), Ok(()));
     for (p, flags) in [
-        (piece(4, 0), PIECE_TEXT | PIECE_END_OF_FRAME),
+        (piece(4, 0), PIECE_TEXT | PIECE_END | PIECE_END_OF_FRAME),
         (piece(0, 4), PIECE_TEXT | PIECE_FIELDS | PIECE_END_OF_FRAME),
         (
             piece(0, 4),
@@ -368,6 +376,47 @@ fn text_rides_a_message_piece_only() {
         assert_eq!(
             check_framer(Ready, &o, &[p], 8, 8, 8),
             f(Rule::Contradiction, "framer.piece.text_not_message"),
+            "{flags:#x}"
+        );
+    }
+}
+
+/// RED (ARCHITECT, the stream-end ruling): an EMPTY piece is a message, text or binary, never the
+/// stream's end; PIECE_END is the end, and only on its own empty piece: with bytes it would
+/// swallow a message, with a field block or a failure's reason it is not the whole end.
+#[test]
+fn an_empty_piece_is_a_message_and_the_end_is_its_own_flag() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 3;
+    let flagged = |p: FramePiece, flags| FramePiece { flags, ..p };
+    let binary = flagged(piece(4, 0), PIECE_END_OF_FRAME);
+    let text = flagged(piece(4, 0), PIECE_TEXT | PIECE_END_OF_FRAME);
+    let end = flagged(piece(4, 0), PIECE_END | PIECE_END_OF_FRAME);
+    assert_eq!(
+        check_framer(Ready, &o, &[binary, text, end], 8, 8, 8),
+        Ok(())
+    );
+    o.yielded.pieces_len = 1;
+    assert_eq!(
+        check_framer(
+            Ready,
+            &o,
+            &[flagged(piece(0, 4), PIECE_END | PIECE_END_OF_FRAME)],
+            8,
+            8,
+            8
+        ),
+        f(Rule::Contradiction, "framer.piece.end_with_bytes")
+    );
+    for flags in [
+        PIECE_END | PIECE_FIELDS | PIECE_END_OF_FRAME,
+        PIECE_END | PIECE_STREAM_FAILED | PIECE_END_OF_FRAME,
+        PIECE_END | PIECE_FIELDS | PIECE_CONTINUED | PIECE_END_OF_FRAME,
+    ] {
+        assert_eq!(
+            check_framer(Ready, &o, &[flagged(piece(4, 0), flags)], 8, 8, 8),
+            f(Rule::Contradiction, "framer.piece.end_not_payload"),
             "{flags:#x}"
         );
     }

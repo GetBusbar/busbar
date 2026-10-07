@@ -16,7 +16,8 @@ use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::redacted::Redacted;
 use busbar_contract::services::{
-    Caller, CredentialRead, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, CredentialRead, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading,
+    RecordsList, Stored,
 };
 
 /// The App's swap handle, once it exists.
@@ -156,6 +157,41 @@ impl HostServices for CredentialServices {
         self.inner.trust_due(caller)
     }
 
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        self.inner.trust_unreached(caller, counterparty)
+    }
+
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        self.inner.trust_decide(caller, key, expected, approve)
+    }
+
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        self.inner
+            .trust_sight_item(caller, counterparty, item, digest)
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        self.inner.trust_serves(caller, counterparty, item, digest)
+    }
+
     fn trust_verify(
         &self,
         caller: &Caller,
@@ -223,6 +259,36 @@ impl HostServices for CredentialServices {
 
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
         self.inner.work_resume(caller, unit, handle, later)
+    }
+
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        self.inner.disk_append(dest, bytes, later)
+    }
+
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        self.inner.verify_lookup(caller, key, later)
+    }
+
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        self.inner.verify_store(caller, key, entry, ttl_ms)
+    }
+
+    fn content_scan(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        content: &[u8],
+        later: Later,
+    ) -> Ran {
+        self.inner.content_scan(caller, unit, content, later)
+    }
+
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        self.inner.hook_call(caller, unit, ask, later)
+    }
+
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        self.inner.snapshot_read(caller, scope)
     }
 }
 

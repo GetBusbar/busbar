@@ -54,6 +54,7 @@ pub mod loc;
 pub mod loom;
 pub mod manifest;
 pub mod method_inventory;
+pub mod par;
 pub mod parity;
 pub mod perf_ab;
 pub mod pin_missing_cells;

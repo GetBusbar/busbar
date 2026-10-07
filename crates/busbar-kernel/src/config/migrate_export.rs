@@ -12,7 +12,7 @@
 //!    NAMED-DEFINITION map (`<name>: { module, settings }`), so one module can back several
 //!    instances.
 //! 2. [`migrate_observability_block`] — 1.5.3: the `observability:` block is DELETED, its last
-//!    field folded into an `export:` instance with `module: otlp`.
+//!    field folded into an `export:` instance of the trace exporter (the root legacy table names it).
 //! 3. [`migrate_export_projection`] — 1.5.3 A0.1: each instance's PROJECTION is made explicit
 //!    (`streams:`), from the same module→streams table the validator reads.
 //!
@@ -24,33 +24,37 @@ use busbar_contract::abi::export::ExportStream;
 use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
-/// The default instance NAME each built-in export module gets when the TYPE-KEYED `export:` block is
-/// rewritten into the 1.5.3 NAMED map. Chosen to read as an instance (what it IS) rather than as the
-/// module (what backs it), so the migrated config teaches the pattern: `metrics: { module: prometheus }`.
-/// Shared with the migrator tests so the goldens cannot drift from the rewrite.
-pub(crate) const EXPORT_TYPE_KEY_TO_INSTANCE_NAME: &[(&str, &str, &str)] = &[
-    // (retired type key, new instance name, `module:` value)
-    ("prometheus", "metrics", "prometheus"),
-    ("request-log-webhook", "req-log", "request-log-webhook"),
-    ("request-log-file", "req-log-file", "request-log-file"),
-    // The retired `generic-webhook` exporter FOLDED into `request-log-webhook` (1.5.3): its only
-    // extra was `auth_header:`, now just a setting there, and its other reason to exist (a SECOND
-    // webhook target) is what the named map itself provides.
-    ("generic-webhook", "req-log-audit", "request-log-webhook"),
-];
+/// The retired TYPE keys of the 1.5.x type-keyed `export:` block, each with the default instance
+/// NAME it is rewritten to and the `module:` that backs it — `(type key, instance name, module)` —
+/// read off the root legacy table's `export_type_keys` row (BUSBAR-1.6.0.md §2: a migration for a
+/// plugin that may not be in the build lives there, frozen 1.5.5 text; the kernel names no export
+/// instance). Shared with the migrator tests so the goldens cannot drift from the rewrite.
+pub(crate) fn export_type_keys() -> Vec<(&'static str, &'static str, &'static str)> {
+    super::legacy::text("export_type_keys")
+        .split(" | ")
+        .filter_map(|row| {
+            let mut field = row.split(':');
+            Some((field.next()?, field.next()?, field.next()?))
+        })
+        .collect()
+}
 
 /// The streams each 1.5.x export module carried — a FROZEN fact about the documents this pass
-/// rewrites, for the modules the kernel no longer serves itself (a first-party sink on the export
-/// axis now carries them, and declares the same streams: `request-log-file` → `logs`, K9b;
-/// `request-log-webhook` → `logs`, K9c; `prometheus` → `metrics`, K9d; `otlp` → `traces`, K9e-2).
-const RELEASED_MODULE_STREAMS: &[(&str, &[ExportStream])] = &[
-    ("request-log-file", &[ExportStream::Logs]),
-    // K9c.
-    ("request-log-webhook", &[ExportStream::Logs]),
-    ("prometheus", &[ExportStream::Metrics]),
-    // K9e-2.
-    (crate::config::EXPORT_MODULE_OTLP, &[ExportStream::Traces]),
-];
+/// rewrites (the root legacy table's `export_module_streams` row, `module:stream` per module): the
+/// first-party sink on the export axis that now carries each declares the same streams.
+fn released_module_streams() -> Vec<(&'static str, Vec<ExportStream>)> {
+    super::legacy::text("export_module_streams")
+        .split(" | ")
+        .filter_map(|row| {
+            let (module, streams) = row.split_once(':')?;
+            let streams = streams
+                .split(',')
+                .map(ExportStream::from_token)
+                .collect::<Option<Vec<_>>>()?;
+            Some((module, streams))
+        })
+        .collect()
+}
 
 /// Ensure `root.export` exists as a mapping, returning a handle to splice an instance into.
 fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
@@ -86,14 +90,13 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
     let Some(Value::Mapping(export)) = root.get(Value::from(Kind::Export.root())).cloned() else {
         return;
     };
+    let type_keys = export_type_keys();
     // Split: the retired TYPE keys to rewrite vs everything else (already-named instances) to keep.
     let mut kept = Mapping::new();
     let mut to_rewrite: Vec<(String, Value)> = Vec::new();
     for (k, v) in export {
         let key = k.as_str().unwrap_or_default().to_string();
-        let is_type_key = EXPORT_TYPE_KEY_TO_INSTANCE_NAME
-            .iter()
-            .any(|(t, _, _)| *t == key);
+        let is_type_key = type_keys.iter().any(|(t, _, _)| *t == key);
         let already_named = v
             .as_mapping()
             .is_some_and(|m| m.contains_key(Value::from("module")));
@@ -107,7 +110,7 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
         return;
     }
     for (type_key, body) in to_rewrite {
-        let (_, base_name, module) = EXPORT_TYPE_KEY_TO_INSTANCE_NAME
+        let (_, base_name, module) = type_keys
             .iter()
             .find(|(t, _, _)| *t == type_key)
             .expect("only retired type keys reach here");
@@ -139,7 +142,7 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
 /// this module carries" (see `crate::export::projection::resolve_projection`), so this is a
 /// TEACHING rewrite, not a semantic one — the migrated document shows the operator the key they will
 /// narrow with `fields:`, and the ledger says so. The streams are read from
-/// [`RELEASED_MODULE_STREAMS`] — for each 1.5.x module, the streams its sink on the export axis
+/// [`released_module_streams`] — for each 1.5.x module, the streams its sink on the export axis
 /// declares — so the migrator cannot write a projection the validator would then reject.
 ///
 /// IDEMPOTENT (an instance that already declares `streams:` is left alone) and NON-DESTRUCTIVE:
@@ -212,8 +215,9 @@ fn migrate_one_export_projection(
         ));
         return;
     };
-    let released = RELEASED_MODULE_STREAMS.iter().find(|(m, _)| *m == module);
-    let Some(streams) = released.map(|(_, s)| *s) else {
+    let released = released_module_streams();
+    let released = released.iter().find(|(m, _)| *m == module);
+    let Some(streams) = released.map(|(_, s)| s.as_slice()) else {
         todos.push(format!(
             "{ctx}: `module: {module}` is not a built-in export module in this build, so its              `streams:` projection could not be inferred and was NOT guessed. Add `streams:` by              hand naming what this sink subscribes to."
         ));
@@ -232,8 +236,9 @@ fn migrate_one_export_projection(
 }
 
 /// 1.5.3: DELETE the `observability:` block, folding its last field (`otlp_url`, or the 1.4.x
-/// `otlp_endpoint` if `migrate_observability`'s rename has not run) into an `export:` instance with
-/// `module: otlp`. IDEMPOTENT: a config with no `observability:` block has nothing to fold.
+/// `otlp_endpoint` if `migrate_observability`'s rename has not run) into an `export:` instance of the
+/// trace exporter 1.5.5 folded it into (the root legacy table's `export_trace_module`, named
+/// `export_trace_instance`). IDEMPOTENT: a config with no `observability:` block has nothing to fold.
 ///
 /// A MALFORMED block (`observability: null`, a sequence, a scalar — real hand-edited shapes) is still
 /// DELETED: the section does not exist in 1.5.3, so there is nothing to carry it into and leaving it
@@ -259,15 +264,16 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
     let url = url.filter(|v| !v.is_null());
     if let Some(url) = url {
         let export = export_map_mut(root);
-        let name = uniq_export_name(export, "traces");
+        let module = super::legacy::text("export_trace_module");
+        let name = uniq_export_name(export, super::legacy::text("export_trace_instance"));
         let mut settings = Mapping::new();
         settings.insert("url".into(), url);
         let mut inst = Mapping::new();
-        inst.insert("module".into(), Value::from("otlp"));
+        inst.insert("module".into(), Value::from(module));
         inst.insert("settings".into(), Value::Mapping(settings));
         export.insert(Value::from(name.as_str()), Value::Mapping(inst));
         changes.push(format!(
-            "observability.otlp_url -> export.{name}: {{ module: otlp }} (the `observability:` block \
+            "observability.otlp_url -> export.{name}: {{ module: {module} }} (the `observability:` block \
              is DELETED in 1.5.3; `export:` is the single telemetry-egress surface)"
         ));
     } else {

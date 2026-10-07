@@ -15,9 +15,9 @@
 //!    it as a REFUSAL (`invalid_client_metadata`) rather than a narrowing, which is the stronger of
 //!    the two behaviours: a client that asked for `admin` is told no, rather than quietly issued a
 //!    lesser client it then believes is an `admin` one.
-//! 2. **The policy is a decision somebody wrote.** `oauth-as` refuses every registration when no
+//! 2. **The policy is a choice somebody wrote.** `oauth-as` refuses every registration when no
 //!    [`RegistrationPolicy`] is installed, so an open endpoint cannot be reached by setting a config
-//!    field and moving on. [`OpenRegistration`] below is that decision, and it is deliberately the
+//!    field and moving on. [`OpenRegistration`] below is that choice, and it is deliberately the
 //!    smallest possible one: it says who may register, and it says NOTHING about what they get,
 //!    because the ceiling above is not the policy's to move.
 //!
@@ -98,8 +98,8 @@ pub(crate) fn registration_config(
         oauth_as::grant::GrantType::RefreshToken,
     ];
     // RFC 7592 management is OFF. A registration that can be rewritten after it was approved is a
-    // way to change what a user consented to without asking them again, and nothing in the MCP
-    // client population uses it.
+    // way to change what a user consented to without asking them again, and no client this server
+    // is built for uses it.
     config.management_enabled = false;
     Box::new(config)
 }

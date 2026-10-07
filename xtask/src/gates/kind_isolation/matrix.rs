@@ -635,27 +635,39 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     // coupling ([`super::conformance_witness_edges`]).
     let granted = super::conformance_witness_edges(cx, crates);
 
-    // The external crate roots each crate's manifest declares ([`external`]).
+    // The external crate roots each crate's manifest declares ([`external`]): a pure function of
+    // the crate's dependency tables, so it is taken once per directory before the files are read.
     let tree: BTreeSet<&str> = crates.iter().map(|c| c.name.as_str()).collect();
-    let mut externals: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let externals: BTreeMap<&str, BTreeSet<String>> = by_dir
+        .iter()
+        .map(|(dir, c)| {
+            (
+                *dir,
+                external::external_roots(
+                    c.deps
+                        .iter()
+                        .chain(&c.dev_deps)
+                        .map(|d| (d.pkg.as_str(), d.key.as_str())),
+                    &tree,
+                ),
+            )
+        })
+        .collect();
 
-    let mut matrix: Matrix = BTreeMap::new();
-    let mut wire_locks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (rel, text) in &files {
-        let rel = rel.clone();
+    // EACH FILE IS MASKED AND SCANNED ON ITS OWN BYTES, so the files are read across the cores and
+    // their hits folded into the matrix below IN SCAN-SET ORDER — the order the serial loop filed
+    // them in, which is the order every cell's drain list prints. The wire-lock cache is a cache of
+    // file reads (the same answer whoever fills it), shared under a lock.
+    let wire_locks: std::sync::Mutex<BTreeMap<String, BTreeSet<String>>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let scanned = crate::par::par_map(&files, |(rel, text)| {
         // OWNER 2026-10-03: "Cargo.toml is ignored blanketly from this check" (see the module doc).
-        if is_cargo_manifest(&rel) {
-            continue;
+        if is_cargo_manifest(rel) {
+            return None;
         }
-        let Some(dir) = owning_dir(&rel) else {
-            continue;
-        };
-        let Some(c) = by_dir.get(dir.as_str()) else {
-            continue;
-        };
-        let Some(per_kind) = plan.get(dir.as_str()) else {
-            continue;
-        };
+        let dir = owning_dir(rel)?;
+        let c = *by_dir.get(dir.as_str())?;
+        let per_kind = plan.get(dir.as_str())?;
         // `BUSBAR-1.6.0.md` §11.5 "One place for every ABI shape": every ABI shape lives in ONE place,
         // `busbar-contract/src/abi/` — the seven kinds' operations, data shapes and versions
         // legitimately live and cross-reference each other there (`abi/store/` naming `abi/auth/`'s
@@ -667,8 +679,8 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         // `abi/` exactly as before — only the kind-isolation MATRIX stops filing it into a cell. Code
         // in `busbar-contract` OUTSIDE `abi/` is still counted, same as any other crate, except the
         // three mirrors that restate `abi/`'s shapes ([`CONTRACT_ABI_LAYOUT_MIRRORS`]).
-        if c.name == CONTRACT_PACKAGE && is_contract_abi_shape(&rel) {
-            continue;
+        if c.name == CONTRACT_PACKAGE && is_contract_abi_shape(rel) {
+            return None;
         }
         // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
         // vocabulary is its own row's to measure (see [`contract_identifiers`]).
@@ -679,52 +691,63 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         };
         // A name inside a path rooted at an EXTERNAL crate is that crate's word (`std::process::
         // Stdio`), and `busbar_kernel::audit` is a module of the kernel facade, not a sibling crate.
-        let roots = externals.entry(dir.clone()).or_insert_with(|| {
-            external::external_roots(
-                c.deps
-                    .iter()
-                    .chain(&c.dev_deps)
-                    .map(|d| (d.pkg.as_str(), d.key.as_str())),
-                &tree,
-            )
-        });
-        let masked = external::mask_external_paths(&rel, &masked, roots);
-        let masked = external::mask_kernel_facade(&rel, &masked);
+        let roots = &externals[dir.as_str()];
+        let masked = external::mask_external_paths(rel, &masked, roots);
+        let masked = external::mask_kernel_facade(rel, &masked);
         // English words that are also instance names are not counted as English prose.
-        let masked = mask_english_prose(&rel, &masked);
+        let masked = mask_english_prose(rel, &masked);
         // Instance ids that are also a crate's or an abbreviation's name count only as references.
-        let masked = mask_colliding_words(&rel, &masked);
+        let masked = mask_colliding_words(rel, &masked);
         // `unix` as the operating system (a cfg, `std::os::unix`, the clock) is not the carrier.
         // Its context is read off the ORIGINAL text: an earlier mask's filler must not change what
         // a neighbouring word says ("the unix socket" with `socket` masked as a contract name).
-        let masked = os_words::mask_os_words_in(&rel, text, &masked);
-        let masked = match auth_words::scope(c.kind, &dir, &rel).filter(|_| auth_decision) {
+        let masked = os_words::mask_os_words_in(rel, text, &masked);
+        let masked = match auth_words::scope(c.kind, &dir, rel).filter(|_| auth_decision) {
             Some(with_type) => std::borrow::Cow::Owned(
-                auth_words::mask_auth_decision(&rel, &masked, with_type).into_owned(),
+                auth_words::mask_auth_decision(rel, &masked, with_type).into_owned(),
             ),
             None => masked,
         };
         // A dialect mapping file's wire-lock keys are the provider's words (ruling above).
         let masked = if c.kind == Some("plane") {
-            mask_dialect_wire_keys(cx, &dir, &rel, text, &masked, &mut wire_locks)
+            let mut locks = wire_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            mask_dialect_wire_keys(cx, &dir, rel, text, &masked, &mut locks)
         } else {
             std::borrow::Cow::Borrowed(&*masked)
         };
         // A dialect module's native item-id prefix literal is the provider's word (ruling below).
         let masked = if c.kind == Some("plane") {
-            mask_dialect_id_prefixes(cx, &dir, &rel, text, &masked)
+            mask_dialect_id_prefixes(cx, &dir, rel, text, &masked)
         } else {
             std::borrow::Cow::Borrowed(&*masked)
         };
-        for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
-            let line = h
-                .line
-                .checked_sub(1)
-                .and_then(|i| text.lines().nth(i))
-                .unwrap_or("");
-            if super::is_witness_hit(&granted, c, h.kind, &rel, line) {
-                continue;
-            }
+        // A hit on a line the conformance witness covers is the witness, not a coupling. Each
+        // hit's line is looked up in the file's line list, read once, rather than by walking the
+        // text from its start once per hit.
+        let lines: Vec<&str> = text.lines().collect();
+        let hits = scan_file(per_kind, &dir, rel, &masked);
+        let kept: Vec<bool> = hits
+            .iter()
+            .map(|h| {
+                let line = h
+                    .line
+                    .checked_sub(1)
+                    .and_then(|i| lines.get(i).copied())
+                    .unwrap_or("");
+                !super::is_witness_hit(&granted, c, h.kind, rel, line)
+            })
+            .collect();
+        Some((c, hits, kept))
+    });
+
+    let mut matrix: Matrix = BTreeMap::new();
+    for ((rel, _), found) in files.iter().zip(scanned) {
+        let Some((c, hits, kept)) = found else {
+            continue;
+        };
+        for (h, _) in hits.iter().zip(kept).filter(|(_, keep)| *keep) {
             let cell = matrix.entry((c.name.clone(), h.kind)).or_default();
             cell.by_segments += h.by_segments;
             cell.by_windows += h.by_windows;
@@ -1725,11 +1748,11 @@ fn scan_needles(
         // an ASCII line has nothing to fold.
         let decoded = decoded_line(raw).map(|t| {
             let c: Vec<char> = t.chars().collect();
-            (line_segments(&t), c)
+            (line_segments(&t), c, t.to_ascii_lowercase())
         });
         let folded = folded_line(raw).map(|t| {
             let c: Vec<char> = t.chars().collect();
-            (line_segments(&t), c)
+            (line_segments(&t), c, t.to_ascii_lowercase())
         });
 
         let mut candidates: Vec<usize> = Vec::new();
@@ -1756,17 +1779,32 @@ fn scan_needles(
         candidates.sort_unstable();
         candidates.dedup();
         let segs = line_segments(raw);
+        // EVERY PART OF A NEEDLE IS IN THE READING, LOWERCASED, WHEREVER EITHER SCANNER SEES IT: a
+        // segment is a run of the reading's ASCII alphanumerics, lowercased, and a window matches
+        // each part character for character with ASCII case ignored. So a reading that lacks a part
+        // counts zero in both scanners, and is answered zero without being walked.
+        let raw_lower = raw.to_ascii_lowercase();
+        let has_parts =
+            |lower: &str, parts: &[String]| parts.iter().all(|p| lower.contains(p.as_str()));
         for i in candidates {
             let n = &plan.needles[i];
-            let by_segments = count_by_segments(&segs, &n.parts);
-            let by_windows = count_by_windows(&chars, &n.parts);
+            let (by_segments, by_windows) = if has_parts(&raw_lower, &n.parts) {
+                (
+                    count_by_segments(&segs, &n.parts),
+                    count_by_windows(&chars, &n.parts),
+                )
+            } else {
+                (0, 0)
+            };
             let by_decoded = decoded
                 .as_ref()
-                .map(|(s, c)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
+                .filter(|(_, _, lower)| has_parts(lower, &n.parts))
+                .map(|(s, c, _)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
                 .unwrap_or(0);
             let by_folded = folded
                 .as_ref()
-                .map(|(s, c)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
+                .filter(|(_, _, lower)| has_parts(lower, &n.parts))
+                .map(|(s, c, _)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
                 .unwrap_or(0);
             let plain = by_segments.max(by_windows).max(by_decoded);
             if plain == 0 && by_folded == 0 {
@@ -2300,7 +2338,41 @@ fn measured_row(
     reg: &super::KindRegistry,
     ship: bool,
 ) -> (Row, Option<Reading>) {
-    let (matrix, scanned, skipped) = match measure(cx, crates) {
+    // THE THREE READINGS OF THE SCAN SET ARE INDEPENDENT — the matrix, the instance axes and the
+    // vendor names — so they are taken at once. Their refusals are read back in the order the
+    // serial run met them: a matrix that could not be measured is reported before a scan set the
+    // instance axes could not read, and that before a vendor scan that did not run.
+    let (measured, rest) = std::thread::scope(|scope| {
+        let measured = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn_scoped(scope, || measure(cx, crates))
+            .expect("spawn the matrix measurement thread");
+        let rest = scan_set(cx).map(|(files, _)| {
+            let registry = cx.read(instances::REGISTRY).unwrap_or_default();
+            let ivocab = instances::vocabulary(crates, &files, &reg.core_names, &registry);
+            let (inst, vendor) = std::thread::scope(|scope| {
+                let vendor = std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(scope, || vendors::offenders(cx, crates, &files))
+                    .expect("spawn the vendor-name scan thread");
+                let inst = instances::measure(crates, &files, &ivocab);
+                (
+                    inst,
+                    vendor
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                )
+            });
+            (ivocab, inst, vendor)
+        });
+        (
+            measured
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            rest,
+        )
+    });
+    let (matrix, scanned, skipped) = match measured {
         Ok(m) => m,
         Err(e) => {
             return (
@@ -2320,8 +2392,10 @@ fn measured_row(
     let total: usize = matrix.values().map(|c| c.count).sum();
 
     // THE FIVE INSTANCE AXES (item 118). Same scan set, read a second way — see [`instances`].
-    let (files, _) = match scan_set(cx) {
-        Ok(f) => f,
+    // LAW 1 OVER THE NEUTRAL CENSUS (item 203) — a vendor name in a neutral crate plane-purity does
+    // not list. Ceiling 0 in both twins; see [`vendors`].
+    let (ivocab, inst, vendor) = match rest {
+        Ok(r) => r,
         Err(e) => {
             return (
                 Row::fail(
@@ -2333,13 +2407,8 @@ fn measured_row(
             )
         }
     };
-    let ivocab = instances::vocabulary(crates, &files, &reg.core_names);
-    let inst = instances::measure(crates, &files, &ivocab);
     let inst_total: usize = inst.values().map(|c| c.count).sum();
-
-    // LAW 1 OVER THE NEUTRAL CENSUS (item 203) — a vendor name in a neutral crate plane-purity does
-    // not list. Ceiling 0 in both twins; see [`vendors`].
-    let vendor = match vendors::offenders(cx, crates, &files) {
+    let vendor = match vendor {
         Ok(v) => v,
         Err(e) => {
             return (
@@ -3025,7 +3094,6 @@ pub fn selftest<'a>(
 
     // THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324): a dialect module's
     // native item-id prefix (`ws`) is the provider's word; a real transport `ws` still counts.
-    // The plane crate has no transport cell, so a reference that counts is an `unlisted-cell`.
     let prefix_case = |file: &'static str, line: &'static str| {
         let cx = cx.clone();
         move || {
@@ -3034,7 +3102,6 @@ pub fn selftest<'a>(
         }
     };
     let responses_mod = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
-    let transport_raised = ["unlisted-cell", "busbar-plane-llm \u{d7} transport"];
     report.push(prove_rows_green(
         cx,
         gate,
@@ -3046,35 +3113,13 @@ pub fn selftest<'a>(
             "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
         ),
     ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "a real transport `ws` reference in the same dialect module still counts",
-        &[ROW_MATRIX],
-        {
-            // `busbar-transport-ws` left the workspace (befd20dc37), so `ws` is no needle until a
-            // census transport crate teaches it. Plant one (empty) beside the real reference; the
-            // green control above keeps its own in-tree vocabulary so the dialect-prefix mask is
-            // proven, not flooded.
-            let base = prefix_case(responses_mod, "const PLANTED_CARRIER: &str = \"ws\";");
-            move || with_transport(base(), "ws")
-        },
-        &transport_raised,
-    ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "an id-prefix literal outside a dialect module still counts",
-        &[ROW_MATRIX],
-        {
-            let base = prefix_case(
-                "crates/busbar-plane-llm/src/codec/proto_stream.rs",
-                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
-            );
-            move || with_transport(base(), "ws")
-        },
-        &transport_raised,
-    ));
+    // …and THE RED HALF IS PROVEN ON THE CELL, not here. The pinned transport checkouts are crates
+    // of the census (ARCHITECT W4B-Q1), so `http` and `sse` are needles on the unplanted tree and
+    // `busbar-plane-llm × transport` is already a measured cell: the debt-free subject takes its
+    // `unlisted-cell` out of view, and presence cannot see one more hit in it. A real `ws` in the
+    // dialect module and an id-prefix literal outside one each raise the cell by exactly one in
+    // `tests::the_dialect_id_prefix_literal_is_masked_and_a_real_ws_still_counts`, over the
+    // tree the gate reads (the pinned mount beneath).
 
     // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
     // `files.len() < MIN_SCANNED` into `false && …` and the whole battery stayed green: every other
@@ -3994,7 +4039,7 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-breaker` carries a live cell; it
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-egress` carries a live cell; it
     // measures nothing the moment the crate stops being one.
     //
     // RE-TARGETED TWICE. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
@@ -4008,16 +4053,18 @@ pub fn selftest<'a>(
     // [`COLLIDING_INSTANCE_WORDS`] no longer counts, so that row went dead on the real tree.
     // Re-targeted a fourth time: the subject was `busbar-kernel-ledger × kernel`, whose last hit was
     // the dev-dependency on the deleted `busbar-kernel-budget` (DEL-BUDGET-R), so that row went dead
-    // on the real tree and was struck.
+    // on the real tree and was struck. Re-targeted a fifth time: the subject was
+    // `busbar-kernel-breaker × plane`, which went dead when the breaker stopped naming a plane
+    // (row 66: it reads the transport's and the plane's fault readings) and was struck.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-kernel-breaker/Cargo.toml");
+    ov.remove("crates/busbar-kernel-egress/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &["dead-cell", "busbar-kernel-breaker \u{d7} plane"],
+        &["dead-cell", "busbar-kernel-egress \u{d7} plane"],
     ));
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
@@ -4554,6 +4601,58 @@ mod tests {
             cell_count(key, "busbar-plugin-loader", "plane") > base,
             "the decisions plane's registry key `\"decision\"` written as a bare literal still \
              counts, auth-named file or not"
+        );
+    }
+
+    /// THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324), measured on the cell
+    /// over the tree the gate reads — the pinned checkouts mounted beneath (ARCHITECT W4B-Q1), so
+    /// `ws` is a transport needle because `busbar-transport-ws` is a crate of the census. In a
+    /// dialect module the id-prefix literal adds nothing to `busbar-plane-llm × transport`; a real
+    /// `ws` reference in the same module, and the same id-prefix const outside a dialect module,
+    /// each add exactly one. (The cell is measured on the unplanted tree — `http`, `sse` — so the
+    /// selftest's debt-free subject cannot see a rise in it; this is where the rise is proven.)
+    #[test]
+    fn the_dialect_id_prefix_literal_is_masked_and_a_real_ws_still_counts() {
+        let real = Ctx::workspace().expect("the workspace opens");
+        let count = |file: &str, line: &str| {
+            let mut ov = crate::ctx::Overlay::new();
+            if !file.is_empty() {
+                let body = real.read(file).expect("the planted file reads");
+                ov.set(file, format!("{body}\n{line}\n"));
+            }
+            let cx = super::super::pinned::with_pinned(&real.with_overlay(ov));
+            let crates = crates_of(&cx);
+            assert!(
+                crates.iter().any(|c| c.name == "busbar-transport-ws"),
+                "the pinned ws checkout is a crate of the census"
+            );
+            let (matrix, _, _) = measure(&cx, &crates).expect("the matrix measures");
+            matrix
+                .get(&("busbar-plane-llm".to_string(), "transport"))
+                .map_or(0, |c| c.count)
+        };
+        let responses_mod = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
+        let base = count("", "");
+        assert_eq!(
+            count(
+                responses_mod,
+                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";"
+            ),
+            base,
+            "a dialect module's native item-id prefix literal is the provider's word"
+        );
+        assert_eq!(
+            count(responses_mod, "const PLANTED_CARRIER: &str = \"ws\";"),
+            base + 1,
+            "a real transport `ws` reference in the same dialect module still counts"
+        );
+        assert_eq!(
+            count(
+                "crates/busbar-plane-llm/src/codec/proto_stream.rs",
+                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";"
+            ),
+            base + 1,
+            "an id-prefix literal outside a dialect module still counts"
         );
     }
 

@@ -763,6 +763,27 @@
         ],
         "type": "object"
       },
+      "ClassUsage": {
+        "description": "One plane-declared class's consumption on a usage row: its raw count and its cost.\n\nNEW IN 1.6.0 (1.5.5's usage rows carried the token split alone, and 1.5.5 served no plane that\ndeclares a class of its own): ledgered by the FLIP-A2A ruling. `cost` is in the same MICRO-units\nas [`UsageBreakdown::spend_micros`], priced by the same card in force at the row's instant, and is\npart of that row's `spend_micros`, never added to it a second time.",
+        "properties": {
+          "cost": {
+            "description": "What the card in force priced that count at, in micro-units.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "count": {
+            "description": "The raw count the plane's ledger lines recorded under the class.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "cost"
+        ],
+        "type": "object"
+      },
       "CommitUpgradeReq": {
         "description": "`POST /commit-upgrade`: the release the fleet commits to.",
         "properties": {
@@ -2005,6 +2026,13 @@
       "KeyUsageView": {
         "description": "One key's row of the per-key aggregation: the key id/name (never the secret) + its counts.",
         "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClassUsage"
+            },
+            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's.",
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },
@@ -2730,6 +2758,13 @@
       "ModelUsageView": {
         "description": "One (model, provider) row of the per-model aggregation.",
         "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClassUsage"
+            },
+            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's.",
+            "type": "object"
+          },
           "model": {
             "type": "string"
           },
@@ -3961,6 +3996,88 @@
         ],
         "type": "object"
       },
+      "TrustKeyReq": {
+        "description": "`POST /trust/approve` and `/trust/revoke`: the trust key decided.",
+        "properties": {
+          "key": {
+            "description": "`<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "TrustKeyView": {
+        "description": "One trust key of the kernel's trust book and its state.",
+        "properties": {
+          "approved": {
+            "description": "What it is approved at: the catalogue hash, or the item's digest.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counterparty": {
+            "description": "The counterparty, as the instance's configuration names it.",
+            "type": "string"
+          },
+          "instance": {
+            "description": "The plane instance label.",
+            "type": "string"
+          },
+          "item": {
+            "description": "The item at the counterparty, for an item key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "description": "The key, `<instance>/<counterparty>[/<item>]`: what `POST /trust/approve` and `/revoke` name.",
+            "type": "string"
+          },
+          "seen": {
+            "description": "What it was last sighted at.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`new` (sighted and never approved, or revoked: refused), `approved` (approved, not sighted\nsince), `same` (sighted as approved), `drifted` (sighted other than approved: refused until\nre-approved) or `quarantined` (the counterparty's catalogue moved: refused until re-approved).",
+            "pattern": "^(new|approved|same|drifted|quarantined)$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "instance",
+          "counterparty",
+          "item",
+          "state",
+          "approved",
+          "seen"
+        ],
+        "type": "object"
+      },
+      "TrustListView": {
+        "description": "`GET /trust`: every trust key and its state.",
+        "properties": {
+          "keys": {
+            "description": "Ordered by instance, counterparty and item, each counterparty before its items.",
+            "items": {
+              "$ref": "#/components/schemas/TrustKeyView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "type": "object"
+      },
       "UpdateKeyReq": {
         "additionalProperties": false,
         "description": "Partial update to an existing key. Keys are PURE AUTH (1.5.0), so the mutable surface is\nauth-shaped only. Every field is optional; only the present ones change. The credential, name,\nallowed-pools, and labels are immutable here (rotate/recreate for those).\n\n`group` is THREE-STATE via serde double-option (`Option<Option<String>>`):\n- absent (`#[serde(default)]` -> outer `None`): leave the binding unchanged.\n- JSON `null` (`Some(None)`): UNBIND to no group (authed + unlimited).\n- a value (`Some(Some(name))`): REBIND to that group (must exist; mint-parity check).\n\nA single `Option<T>` could not tell absent from present-null, so a binding could never be\ncleared once set. `enabled` is a plain `Option<bool>` (a bool has no clear state). The 1.4.x\ncap fields (`rpm_limit`/`tpm_limit`/`max_budget_cents`) are GONE: limits live on the group.",
@@ -3986,6 +4103,13 @@
       "UsageBreakdown": {
         "description": "The raw consumption counts + the derived spend estimate: the one shape shared by `total`,\n`by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.",
         "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClassUsage"
+            },
+            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's.",
+            "type": "object"
+          },
           "requests": {
             "format": "uint64",
             "minimum": 0,
@@ -13452,6 +13576,243 @@
         "summary": "Replace ONLY the opaque `settings:` bag of one `tools:` definition; every other field is left byte-identical",
         "x-busbar-plane": "tools",
         "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/trust": {
+      "get": {
+        "description": "The counterparties every plane instance this node serves declares, and the items sighted or approved at each: its key, state, what it is approved at and what it was last sighted at. A read: it mutates nothing and needs `read-only`.",
+        "operationId": "GetTrust",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustListView"
+                }
+              }
+            },
+            "description": "Every trust key and its state"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Every trust key of the kernel's trust book and its state",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/trust/approve": {
+      "post": {
+        "description": "A counterparty is approved at the catalogue hash it last reported, which clears its quarantine; an item at the digest it was last sighted at. The decision is kept durably and outlives a restart. Idempotent: the same key twice answers the same row.",
+        "operationId": "PostTrustApprove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrustKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustKeyView"
+                }
+              }
+            },
+            "description": "The key, decided"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, `key is required`, or a request body that could not be read to the operator's size cap"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: ``trust key `<key>` not found`` — no plane instance this node serves has the key"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: ``trust key `<key>` was never sighted`` — nothing to approve it at — or ``trust key `<key>` has no authenticity root`` — its registration declares none, and nothing at it is approvable"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or could not keep the decision. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Approve one trust key at what it was last sighted at",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/trust/revoke": {
+      "post": {
+        "description": "Refused until approved again: a counterparty revoked refuses everything at it, an item revoked refuses it over its configured approval. The decision is kept durably and outlives a restart. Idempotent: the same key twice answers the same row.",
+        "operationId": "PostTrustRevoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrustKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustKeyView"
+                }
+              }
+            },
+            "description": "The key, decided"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, `key is required`, or a request body that could not be read to the operator's size cap"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: ``trust key `<key>` not found`` — no plane instance this node serves has the key"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or could not keep the decision. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Revoke one trust key",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/usage": {

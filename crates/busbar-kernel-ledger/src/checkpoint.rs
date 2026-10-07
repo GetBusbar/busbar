@@ -482,6 +482,19 @@ fn encode_body(
         push_text(&mut body, HISTORY_SEQ_FIELD);
         num(seq.get(), &mut body);
     }
+    // THE FEE COUNTS, under the digest like every other sealed figure. They were left out, so a
+    // sealed count could be edited and the seal still verified — and the count is half of what the
+    // reconciliation reads. Framed by name after everything else, and only when some row carries
+    // one, for the reason the history snapshot is: every body sealed with no fee count is the byte
+    // sequence it always was, and a body with them cannot be read as one without, because the name
+    // and the per-row counts are framed rather than run on. The counts follow the rows' own order.
+    if totals.values().any(|figures| figures.fee_count != 0) {
+        push_text(&mut body, FEE_COUNT_FIELD);
+        num(totals.len() as u64, &mut body);
+        for figures in totals.values() {
+            num(figures.fee_count, &mut body);
+        }
+    }
     body
 }
 
@@ -490,6 +503,10 @@ fn encode_body(
 /// Named rather than positional, because it is the first field that is sometimes absent, and a
 /// reader that told presence from length alone would be one totals row away from being wrong.
 const HISTORY_SEQ_FIELD: &str = "history_seq";
+
+/// The name the per-row fee counts are framed under in a checkpoint body, present exactly when a
+/// sealed row carries a fee count.
+const FEE_COUNT_FIELD: &str = "fee_count";
 
 fn push_text(body: &mut Vec<u8>, text: &str) {
     body.extend_from_slice(&(text.len() as u64).to_be_bytes());

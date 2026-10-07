@@ -39,6 +39,7 @@ fn plane(grant: &[&str]) -> AsPlane {
         identity,
         None,
         vec!["https://gw.example.com/rpc".to_string()],
+        crate::cimd::unconnected(),
     )
     .expect("the plane builds")
 }
@@ -177,8 +178,13 @@ async fn registration_is_on_whenever_the_plane_is() {
         "/register",
         "every validated identity derives the registration path; there is nothing to switch"
     );
-    let plane =
-        AsPlane::build(identity, None, vec!["https://gw.example.com/rpc".into()]).expect("builds");
+    let plane = AsPlane::build(
+        identity,
+        None,
+        vec!["https://gw.example.com/rpc".into()],
+        crate::cimd::unconnected(),
+    )
+    .expect("builds");
     assert_eq!(
         plane.server().metadata().registration_endpoint.as_deref(),
         Some("https://gw.example.com/register"),

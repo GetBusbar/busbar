@@ -14,8 +14,8 @@
 # hostless-egress / admin-envelope seams). busbar-core stays an OPTIONAL dep pulled ONLY by
 # `test-support`: the plane's tests drive the engine fixture through the neutral substrate test kit
 # (`busbar_substrate::testkit::engine_kit` / `engine_kit_plus`), and the engine's ONE implementation
-# of that kit is bound in three `tests/`-path boot files (`engine_boot`, `egress_boot`,
-# `envelope_boot`) — the only places this crate's test tree names `busbar_core::`.
+# of that kit is bound in two `tests/`-path boot files (`engine_boot`, `egress_boot`) —
+# the only places this crate's test tree names `busbar_core::`.
 [package]
 name = "busbar-a2a"
 version = "1.6.0"

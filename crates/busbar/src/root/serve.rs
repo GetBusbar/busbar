@@ -27,7 +27,7 @@ use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{
-    Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
@@ -63,7 +63,9 @@ use busbar_kernel::plane_driver::{
     Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
 };
 #[cfg(linked_axis_node)]
-use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+use busbar_kernel::plane_routes::{
+    PlaneRefusalSpec, PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec,
+};
 
 /// The egress class `dest.judge` applies when a plugin names none: the deployment's own stance.
 pub const DEFAULT_EGRESS_CLASS: u32 = 0;
@@ -296,6 +298,52 @@ impl HostServices for LateServices {
         }
     }
 
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_unreached(caller, counterparty),
+            Err(r) => r,
+        }
+    }
+
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_decide(caller, key, expected, approve),
+            Err(r) => r,
+        }
+    }
+
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_sight_item(caller, counterparty, item, digest),
+            Err(r) => r,
+        }
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_serves(caller, counterparty, item, digest),
+            Err(r) => r,
+        }
+    }
+
     fn trust_due(&self, caller: &Caller) -> Stored {
         match self.served() {
             Ok(s) => s.trust_due(caller),
@@ -370,6 +418,54 @@ impl HostServices for LateServices {
         match self.served() {
             Ok(s) => s.work_resume(caller, unit, handle, later),
             Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.disk_append(dest, bytes, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.verify_lookup(caller, key, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        match self.served() {
+            Ok(s) => s.verify_store(caller, key, entry, ttl_ms),
+            Err(r) => r,
+        }
+    }
+
+    fn content_scan(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        content: &[u8],
+        later: Later,
+    ) -> Ran {
+        match self.served() {
+            Ok(s) => s.content_scan(caller, unit, content, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.hook_call(caller, unit, ask, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        match self.served() {
+            Ok(s) => s.snapshot_read(caller, scope),
+            Err(r) => busbar_contract::services::Snapshot::Refused(r.error),
         }
     }
 }
@@ -815,6 +911,37 @@ pub fn compose_planes(
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
 ) -> Result<Served, String> {
+    compose_planes_over(
+        &crate::LINKED,
+        doors,
+        dispatcher,
+        late,
+        sections,
+        public_url,
+        money,
+        egress,
+        hooks,
+    )
+}
+
+/// [`compose_planes`] over `linked`, the linked table each door plane's declared facts are read
+/// from beside the dropped-in manifests (its breaker fact, [`crate::root::linked::door_breaker`]).
+///
+/// # Errors
+///
+/// As [`compose_planes`]; and a door plane whose declared facts do not read.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compose_planes_over(
+    linked: &crate::root::linked::Linked,
+    doors: &[(String, DoorPlane)],
+    dispatcher: &Arc<Dispatcher>,
+    late: &LateServices,
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    public_url: Option<&str>,
+    money: &dyn Fn() -> Arc<PlaneMoney>,
+    egress: Option<&DoorEgress<'_>>,
+    hooks: Option<&HookStage>,
+) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
         return Ok(served);
@@ -928,7 +1055,7 @@ pub fn compose_planes(
                 ));
             }
         }
-        let facts = door_facts(
+        let mut facts = door_facts(
             plugin.name(),
             &declared.scope_kinds,
             &served_facts.billable_classes,
@@ -944,6 +1071,15 @@ pub fn compose_planes(
                 })
                 .collect(),
         );
+        // THE PLANE'S BREAKER FACT, as it declares it (ARCHITECT Q4): read off its `declares`
+        // section, whichever plane it is; absent, its members' cells keep the default.
+        facts.bench_below_trip_threshold = crate::root::linked::door_breaker(
+            linked,
+            crate::root::linked::dropped(),
+            plugin.name(),
+        )
+        .map_err(|e| format!("{instance}: {e}"))?
+        .map(|b| b.bench_below_trip_threshold);
         let pools = DoorPools::of(section);
         // THE EGRESS, SEALED (THE DESIGN §6 steps 2-3): each member's route resolved and its
         // credential bound by the auth plugin serving its style, over the connector its needs were
@@ -1223,6 +1359,14 @@ pub fn data_routes(
     }
 }
 
+/// What the data router is built with for the door planes ([`data_mounts`]): their request routes,
+/// their session routes, and their request routes' unit-less refusals.
+pub type DataMounts = (
+    Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+);
+
 /// [`data_routes`], and the door planes' session routes beside them (ARCHITECT Q-L5B-SESSION-SERVE;
 /// TRANSITIONAL: deleted when INBOUND-LISTEN's accepted::Caller serves): what the data router is
 /// built with.
@@ -1239,15 +1383,9 @@ pub fn data_mounts(
         busbar_contract::abi::mechanism::route::RouteAuth,
     )],
     upgrades: &[&str],
-) -> Result<
-    (
-        Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-        Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-    ),
-    String,
-> {
+) -> Result<DataMounts, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
     #[cfg(linked_axis_node)]
     {
@@ -1258,7 +1396,11 @@ pub fn data_mounts(
             core,
             upgrades,
         )
-        .map(|m| (m.routes, m.sessions))
+        .and_then(|m| {
+            // THE ROUTES AND THEIR REFUSALS PAIR, or the boot is refused (ARCHITECT 2026-10-06).
+            busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
+            Ok((m.routes, m.sessions, m.refusals))
+        })
     }
     #[cfg(not(linked_axis_node))]
     {
@@ -1309,18 +1451,18 @@ fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAut
 #[cfg(linked_axis_node)]
 const CORE_CLAIMANT: &str = "core";
 
-/// The data listener's own framer: a claim over a carrier that composes over it is an upgrade line.
+/// The data listener's own framer: a stream whose claim's carrier another framer answers is framed
+/// by that framer alone (ARCHITECT 4l, `serve_framed::stream_framer`). Upgrade lines are read off the
+/// door Statements, not off this name ([`upgrade_carriers`]).
 const DATA_CARRIER: &str = "http";
 
-/// THE UPGRADE CARRIERS: the linked wires that compose over the data listener's own framer, whose
-/// claims are upgrade lines (their connection handed over after the head) and served as sessions.
+/// THE UPGRADE CARRIERS: every linked claim whose unit 0 opens at an UPGRADE, read off the door
+/// Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names another). Their
+/// lines are handed over after the head and served as sessions; the handoff target on an upgrade
+/// is the claim that owns the requested scheme.
 #[must_use]
 pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
-    transports
-        .iter()
-        .filter(|t| t.composes_over.contains(&DATA_CARRIER))
-        .map(|t| t.key)
-        .collect()
+    transports.iter().flat_map(|t| (t.upgrades)()).collect()
 }
 
 /// How many messages a session route's pipe queues each way before the sender waits.
@@ -1426,6 +1568,8 @@ pub struct DoorMounts {
     pub routes: Vec<PlaneRouteSpec>,
     /// The session routes.
     pub sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    /// The request routes' unit-less refusals (their `401`, worded by their plane).
+    pub refusals: Vec<PlaneRefusalSpec>,
 }
 
 #[cfg(linked_axis_node)]
@@ -1462,6 +1606,7 @@ pub fn door_mounts(
         return Ok(DoorMounts {
             routes: public,
             sessions: Vec::new(),
+            refusals: Vec::new(),
         });
     }
     let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
@@ -1593,6 +1738,7 @@ pub fn door_mounts(
             runtime,
         }));
     }
+    let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
     let mut requests = Vec::new();
     for mount in mounts {
@@ -1605,6 +1751,7 @@ pub fn door_mounts(
         if method != RouteMethod::Get {
             continue;
         }
+        session_mounts.push((path.clone(), RouteMethod::Get, auth, door));
         let routes = Arc::clone(&routes);
         let (plane, claim) = door;
         sessions.push(busbar_kernel::plane_routes::PlaneSessionSpec {
@@ -1626,6 +1773,41 @@ pub fn door_mounts(
             ),
         });
     }
+    // THE DOOR ROUTES' UNIT-LESS REFUSALS (ARCHITECT ruling 2026-10-05; spec Part 3 section 12,
+    // "Refusals"): each route that takes a credential, at its own path and method, words the `401`
+    // the kernel's auth decides there through its plane's `refusal`, in the claim's refusal dialect,
+    // for the request target. The decision stays the kernel's; no unit opens, nothing is charged.
+    // Keyed by the door route's own identity (`DoorRouteId`), request and session routes alike.
+    let refusals: Vec<PlaneRefusalSpec> = requests
+        .iter()
+        .chain(&session_mounts)
+        .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
+        .map(|(path, method, _, (plane, claim))| {
+            let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
+            PlaneRefusalSpec {
+                route: busbar_kernel::plane_routes::DoorRouteId {
+                    path: path.clone(),
+                    method: *method,
+                },
+                refuse: Arc::new(move |reason: ReasonCode, target: &str| {
+                    let served = &routes.served.planes[plane];
+                    let dialect = served
+                        .snapshot
+                        .claims
+                        .get(claim as usize)
+                        .map_or(0, |c| u32::from(c.refusal_dialect));
+                    let rendered =
+                        served
+                            .driver
+                            .refuse_unitless(reason, dialect, target.as_bytes());
+                    stated(
+                        (rendered.status, rendered.fields),
+                        Body::from(rendered.body),
+                    )
+                }),
+            }
+        })
+        .collect();
     let routes_of = requests
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
@@ -1675,6 +1857,7 @@ pub fn door_mounts(
     Ok(DoorMounts {
         routes: routes_of,
         sessions,
+        refusals,
     })
 }
 
@@ -2778,8 +2961,10 @@ mod tests;
 #[path = "tests/serve_planes.rs"]
 mod planes_tests;
 
+// The decisions plane's door, served end to end: the `root-decisions` leg's own cells
+// (qa/capability-equality.json), in this module's sibling tests file.
 #[cfg(all(test, feature = "plane-decisions", linked_axis_node))]
-#[path = "tests/serve_door.rs"]
+#[path = "tests/serve_tests.rs"]
 mod door_tests;
 
 #[cfg(all(test, linked_axis_node))]

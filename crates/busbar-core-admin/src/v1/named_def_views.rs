@@ -10,7 +10,7 @@
 //! that rule checkable by reading one file; a new section's projection lands here beside the others.
 
 use super::service::settings_keys;
-use busbar_kernel::admin::v1::contract::NamedDefView;
+use crate::v1::contract::NamedDefView;
 
 /// The key a definition carries its opaque settings bag under.
 pub(super) const SETTINGS_KEY: &str = "settings";

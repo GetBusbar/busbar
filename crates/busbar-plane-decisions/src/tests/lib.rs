@@ -56,10 +56,10 @@ fn every_cited_test_file_exists_and_defines_the_cited_test() {
     );
 }
 
-/// Item 398. The provider doc states what the composition root does today — installs the plane's
-/// identity and config seam and builds no plane — rather than a boot-time build nothing performs.
+/// Item 398. The provider doc states what the served build does — the plane is served through its
+/// door and nothing builds the plane — rather than a boot-time build nothing performs.
 #[test]
 fn the_provider_doc_does_not_claim_a_boot_build_that_does_not_exist() {
     assert!(!LIB_RS.contains("The composition root builds one at boot"));
-    assert!(LIB_RS.contains("builds no `DecisionPlane` today"));
+    assert!(LIB_RS.contains("never builds a `DecisionPlane`"));
 }

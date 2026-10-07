@@ -30,6 +30,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -1262,6 +1263,78 @@ fn the_declared_contract_abi_range_is_signed_and_absent_by_default() {
     );
 }
 
+/// THE BREAKER FACT A PLANE DECLARES (`declares.breaker`, ARCHITECT Q4) is spelled
+/// `{"breaker": {"bench_below_trip_threshold": ..}}` in a declares file, reads back as stated and is
+/// signed like every other `declares` statement. A manifest that states none carries no `breaker`
+/// key at all: its wire bytes and its signed bytes are exactly the ones it had before the field
+/// existed, so every manifest already packed keeps its signature.
+#[test]
+fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_bytes() {
+    // ABSENT: no `breaker` key on the wire or under the signature, and the bytes survive a read.
+    let key = test_key(12);
+    let mut quiet = manifest("busbar-plane-quiet", "quiet", FIRST_PARTY_PUBLISHER);
+    quiet.kind = "plane".to_string();
+    quiet.declares.contract_abi = Some(ContractAbiRange { min: 1, max: 2 });
+    let quiet = sign(&key, quiet, b"door");
+    let wire = serde_json::to_vec(&quiet).expect("encodes");
+    assert!(
+        !String::from_utf8_lossy(&wire).contains("breaker"),
+        "an absent fact is left off the wire"
+    );
+    assert!(!String::from_utf8_lossy(&canonical_manifest_bytes(&quiet)).contains("breaker"));
+    let read: Manifest = serde_json::from_slice(&wire).expect("reads");
+    assert_eq!(read.declares.breaker, None);
+    assert_eq!(
+        serde_json::to_vec(&read).expect("encodes"),
+        wire,
+        "a manifest that states no breaker fact keeps its exact bytes"
+    );
+    assert_eq!(
+        canonical_manifest_bytes(&read),
+        canonical_manifest_bytes(&quiet),
+        "and the bytes its signature covers"
+    );
+    assert!(Declares::default().is_empty());
+
+    // STATED: it reads as stated, round-trips, and refuses a word it does not know.
+    let stated = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
+    let d: Declares = serde_json::from_str(stated).expect("parses");
+    assert_eq!(
+        d.breaker,
+        Some(BreakerDecl {
+            bench_below_trip_threshold: false
+        })
+    );
+    assert!(!d.is_empty(), "a stated fact is a declaration");
+    assert_eq!(serde_json::to_string(&d).expect("encodes"), stated);
+    assert!(serde_json::from_str::<Declares>(
+        r#"{"breaker":{"bench_below_trip_threshold":false,"x":1}}"#
+    )
+    .is_err());
+    assert!(serde_json::from_str::<Declares>(r#"{"breaker":{}}"#).is_err());
+
+    let mut m = quiet.clone();
+    m.declares.breaker = d.breaker;
+    let m = sign(&key, m, b"door");
+    let back: Manifest =
+        serde_json::from_slice(&serde_json::to_vec(&m).expect("encodes")).expect("reads");
+    assert_eq!(back, m, "a stated fact round-trips whole");
+    let mut flipped = m.clone();
+    flipped.declares.breaker = Some(BreakerDecl {
+        bench_below_trip_threshold: true,
+    });
+    assert_ne!(
+        canonical_manifest_bytes(&m),
+        canonical_manifest_bytes(&flipped),
+        "the fact is covered by the signature"
+    );
+    assert_ne!(
+        canonical_manifest_bytes(&m),
+        canonical_manifest_bytes(&quiet),
+        "stating it changes the signed bytes"
+    );
+}
+
 /// THE STATEMENT A MANIFEST CARRIES is signed: a tampered rendering fails the signature, a
 /// rendering that is not one whole Statement is a structural refusal, and a manifest with none keeps
 /// the canonical bytes (and so the signature) it had before the field existed.
@@ -1370,4 +1443,91 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
         Some(test_key(3).verifying_key().to_bytes())
     );
     assert_eq!(p.first_party_key, embedded_release_pubkey());
+}
+
+// ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load unchanged) ─────────────────────────────
+
+/// The busbar release public key (`.cargo/config.toml`'s `BUSBAR_RELEASE_PUBKEY`), which signed
+/// every 1.5.5-era first-party tarball.
+const RELEASE_PUBKEY: &str = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7";
+
+/// A manifest packed before `former_names` existed parses UNCHANGED and its signature still
+/// verifies over this binary's canonical bytes: the field is skipped when empty, so an old
+/// manifest's signed bytes are exactly what its publisher signed. The witness is the REAL manifest
+/// of `busbar-webrequest` v1.0.6 (the release beside busbar v1.5.5), as its published tarball
+/// `busbar-webrequest-1.0.6-aarch64-apple-darwin.tar.gz` carries it (sha256 `7f0818c6…`, the
+/// testing/shadow-oracle/plugin-digests.tsv row), verified against the release key that signed it.
+#[test]
+fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
+    let text = include_str!("../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json");
+    let m: Manifest = serde_json::from_str(text).expect("a 1.5.5 manifest parses");
+    assert!(m.former_names.is_empty());
+    assert_eq!(m.name, "busbar-webrequest");
+    let key = public_key_from_hex(RELEASE_PUBKEY).unwrap();
+    let sig: [u8; 64] = hex::decode(&m.signature).unwrap().try_into().unwrap();
+    let canonical = canonical_manifest_bytes(&m);
+    assert!(
+        !String::from_utf8_lossy(&canonical).contains("former_names"),
+        "an empty former-name list stays off the signed bytes"
+    );
+    key.verify_strict(&canonical, &Signature::from_bytes(&sig))
+        .expect("the 1.5.5 release signature verifies over this binary's canonical bytes");
+    // Re-serialized, it is still the same document (no field appears from nowhere).
+    let back: serde_json::Value = serde_json::to_value(&m).unwrap();
+    let orig: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(back, orig);
+}
+
+/// A former name is SIGNED: the signature covers it, so a former name added, dropped or changed
+/// after signing fails verification (RED), and the signed list verifies (GREEN).
+#[test]
+fn former_names_are_covered_by_the_signature() {
+    let key = test_key(9);
+    let lib = b"lib";
+    let mut m = manifest("busbar-store-alpha", "alpha", "busbar");
+    m.former_names = vec!["busbar-store-alpha-plugin".into()];
+    let signed = sign(&key, m, lib);
+    assert!(String::from_utf8_lossy(&canonical_manifest_bytes(&signed))
+        .contains("\"former_names\":[\"busbar-store-alpha-plugin\"]"));
+    signature_ok(&signed, lib, &key.verifying_key()).expect("the signed list verifies");
+    for tamper in [
+        vec![],
+        vec![
+            "busbar-store-alpha-plugin".to_string(),
+            "alpha-x".to_string(),
+        ],
+        vec!["busbar-store-beta-plugin".to_string()],
+    ] {
+        let mut t = signed.clone();
+        t.former_names = tamper.clone();
+        assert!(
+            signature_ok(&t, lib, &key.verifying_key()).is_err(),
+            "a tampered former-name list {tamper:?} must not verify"
+        );
+    }
+}
+
+/// A former name is held to the alias's rules, and to being a name the plugin does not already
+/// have: lowercase `[a-z0-9-]+`, not the plugin's name or alias, not listed twice.
+#[test]
+fn a_malformed_or_repeated_former_name_fails_structure() {
+    let ok = |former: &[&str]| {
+        let mut m = manifest("busbar-hook-webrequest", "webrequest", "busbar");
+        m.former_names = former.iter().map(|s| s.to_string()).collect();
+        validate_identity(&m, HOST_IDENTITY)
+    };
+    ok(&["busbar-webrequest"]).expect("a well-formed former name");
+    ok(&[]).expect("none");
+    for bad in [
+        &["Busbar-WebRequest"][..],
+        &["busbar_webrequest"],
+        &["-busbar"],
+        &[""],
+        &["busbar-hook-webrequest"],
+        &["webrequest"],
+        &["busbar-webrequest", "busbar-webrequest"],
+    ] {
+        let e = ok(bad).expect_err("refused");
+        assert!(e.contains("former name"), "{bad:?}: {e}");
+    }
 }

@@ -53,15 +53,16 @@ pub use jev::{
 };
 pub use oidf::{
     as_signing_key, base64_std, decide_oidf, es256_jwk, idp_reply, module_results,
-    oidf_plan_config, oidf_subject_config, rsa_jwk_from_pkcs8, suite_client_key, OidfClient,
-    OidfRun, OidfSubject, AS_KEY_ID, RESOURCE_PATH as OIDF_RESOURCE_PATH, SUITES as OIDF_SUITES,
+    oidf_plan_config, oidf_subject_config, rsa_jwk_from_pkcs8, suite_client_key, workspace_above,
+    OidfClient, OidfRun, OidfSubject, AS_KEY_ID, RESOURCE_PATH as OIDF_RESOURCE_PATH,
+    SUITES as OIDF_SUITES,
 };
 pub use rigs::{
-    decide_legs, decide_llm, decide_voice, decide_ws, rig_for, Inputs, LlmRun, VoiceRun, WsRun,
-    LLM_DIALECTS,
+    decide_legs, decide_llm, decide_voice, decide_ws, mcp_node_platform, rig_for, Inputs, LlmRun,
+    VoiceRun, WsRun, LLM_DIALECTS, MCP_NODE_VERSION,
 };
 pub use slsa::{decide_slsa, provenance_commit, SlsaRun};
-pub use subject::b64url;
+pub use subject::{b64url, base_config};
 pub use tls::{decide_tls, TlsRun};
 
 /// The schema id every verdict carries (`conformance/verdicts/verdict.schema.json`, `title`).

@@ -375,6 +375,18 @@ pub fn classify(text: &str, path_is_test: bool) -> Result<FileVerdict, String> {
     })
 }
 
+/// The counts [`classify`] gives a file it is told is a TEST PATH, from the line kinds it gave the
+/// same text when it was not. The test question is the last one [`classify`] asks of a line and
+/// only ever turns `Code` into `Test`; for a test path every such line is `Test`, so the answer is
+/// that substitution and nothing else — the parse it would repeat has already been made.
+pub fn as_test_path(kinds: &[Kind]) -> Counts {
+    let mut counts = Counts::default();
+    for &kind in kinds {
+        counts.tally(if kind == Kind::Code { Kind::Test } else { kind });
+    }
+    counts
+}
+
 /// The file's lines, WITHOUT the phantom empty line a trailing newline otherwise produces.
 ///
 /// `"a\n".split('\n')` is `["a", ""]`, and counting that second element is a free blank line on

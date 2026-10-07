@@ -806,7 +806,7 @@ mod v3 {
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: None,
+            conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
         }
     }
 

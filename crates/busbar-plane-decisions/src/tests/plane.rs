@@ -187,8 +187,8 @@ static TWO: &[DecisionProvider] = &[
     },
 ];
 
-/// What `verify` and `approve` answer for one `systemone` unit on a plane.
-fn verify_and_approve(plane: DecisionPlane) -> (DestinationFacts, Vec<ResourceLocator>) {
+/// What `verify` answers for one `systemone` unit on a plane.
+fn verify_of(plane: DecisionPlane) -> DestinationFacts {
     let scaffold = common::Scaffold::new("http");
     let ctx = scaffold.ctx();
     let seal = common::TestSeal;
@@ -205,27 +205,25 @@ fn verify_and_approve(plane: DecisionPlane) -> (DestinationFacts, Vec<ResourceLo
         Facts::new(),
         None,
     );
-    (
-        plane.verify(&unit, &ctx),
-        plane.approve(&unit, &ctx).resources.as_slice().to_vec(),
-    )
+    plane.verify(&unit, &ctx)
 }
 
 /// Item 399. A request names no provider, so with more than one configured the plane cannot say
 /// which one a caller meant. Before: it dialled, and asked scope for, whichever was declared first.
 /// After: the same honest answer as a plane with none — the unreachable destination the trust unit
-/// refuses, and no provider named for scope.
+/// refuses.
 #[test]
 fn more_than_one_provider_resolves_to_no_destination_and_names_no_provider() {
-    let (dest, resources) = verify_and_approve(DecisionPlane::new(TWO));
-    assert_eq!(dest, verify_and_approve(DecisionPlane::EMPTY).0);
-    assert!(resources.is_empty(), "{resources:?}");
+    assert_eq!(
+        verify_of(DecisionPlane::new(TWO)),
+        verify_of(DecisionPlane::EMPTY)
+    );
 }
 
-/// With exactly one provider, it is the one dialled and the one scope is asked for.
+/// With exactly one provider, it is the one dialled.
 #[test]
 fn exactly_one_provider_is_the_one_dialled_and_judged() {
-    let (dest, resources) = verify_and_approve(DecisionPlane::new(ONE));
+    let dest = verify_of(DecisionPlane::new(ONE));
     assert_eq!(
         dest,
         DestinationFacts::Upstream {
@@ -233,13 +231,6 @@ fn exactly_one_provider_is_the_one_dialled_and_judged() {
             address: busbar_contract::UpstreamAddress::socket("api.typesafe.ai"),
             lane: busbar_contract::ids::LaneId::new("prod"),
         }
-    );
-    assert_eq!(
-        resources,
-        vec![ResourceLocator {
-            kind: "decision_provider",
-            name: "typesafe-prod",
-        }]
     );
 }
 

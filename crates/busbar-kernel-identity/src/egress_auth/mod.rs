@@ -46,7 +46,9 @@ pub mod sigv4;
 mod token_response;
 
 pub use declared::{present, present_declared, presentation, report_unpresented};
-pub use token_response::{default_expires_in, deserialize_expires_in};
+pub use token_response::{
+    default_expires_in, deserialize_expires_in, deserialize_redacted, TokenResponse,
+};
 
 use busbar_contract::caps::{AuthDecoration, Grant, SecretSlot, Sign, VerifiedDestination};
 

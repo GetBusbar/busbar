@@ -475,7 +475,7 @@ async fn create_push_notification_config_is_served_and_keeps_the_callers_credent
         held,
         super::super::pushdeliver::DeliveryAuth {
             scheme: "Bearer".to_string(),
-            credentials: "CUSTOMER-WEBHOOK-SECRET".to_string(),
+            credentials: busbar_contract::Redacted::new("CUSTOMER-WEBHOOK-SECRET".to_string()),
         },
         "busbar holds a different credential from the one the caller registered"
     );

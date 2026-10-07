@@ -37,10 +37,49 @@ fn the_tail_is_one_the_contract_accepts() {
     assert_eq!(TAIL.dialects_len, DIALECTS.len());
     assert_eq!(TAIL.op_classes_len, 7);
     assert_eq!(
-        TAIL.billable_classes_len, 5,
+        TAIL.billable_classes_len, 19,
         "tokens in, out, cache read, cache write, then the open classes"
     );
-    assert_eq!(OPEN_CLASSES, &[("search_units", "units")]);
+    // Every reported count's class (owner LEDGER-100), `search_units` first and in its own family.
+    assert_eq!(
+        OPEN_CLASSES,
+        &[
+            ("search_units", "units"),
+            ("classifications", "count"),
+            ("web_fetch_requests", "count"),
+            ("unitemized_tokens", "count"),
+            ("images", "count"),
+            ("audio_ms", "duration"),
+            ("guardrail_automated_reasoning_policies", "count"),
+            ("guardrail_automated_reasoning_policy_units", "count"),
+            ("guardrail_content_policy_image_units", "count"),
+            ("guardrail_content_policy_units", "count"),
+            ("guardrail_contextual_grounding_policy_units", "count"),
+            ("guardrail_sensitive_information_policy_free_units", "count"),
+            ("guardrail_sensitive_information_policy_units", "count"),
+            ("guardrail_topic_policy_units", "count"),
+            ("guardrail_word_policy_units", "count"),
+        ]
+    );
+    // SAFETY: the tail's billable classes are a `'static` list of `billable_classes_len` entries.
+    let stated =
+        unsafe { std::slice::from_raw_parts(TAIL.billable_classes, TAIL.billable_classes_len) };
+    for (k, (class, family)) in OPEN_CLASSES.iter().enumerate() {
+        let b = &stated[4 + k];
+        // SAFETY: each `AbiStr` names a `'static` string of `len` bytes.
+        let (c, f) = unsafe {
+            (
+                std::slice::from_raw_parts(b.class.ptr, b.class.len),
+                std::slice::from_raw_parts(b.family.ptr, b.family.len),
+            )
+        };
+        assert_eq!(
+            (c, f),
+            (class.as_bytes(), family.as_bytes()),
+            "tail class {}",
+            4 + k
+        );
+    }
 }
 
 #[test]
@@ -253,5 +292,26 @@ fn red_no_dialects_governed_response_field_leaks_through_a_need() {
                 "`{relayed}` is the upstream's and crosses (F2)"
             );
         }
+    }
+}
+
+/// EVERY DECLARED OPEN CLASS REACHES THE DURABLE BOOK (owner LEDGER-100): one count of each open
+/// class becomes exactly one reported `UnitCount` at that class's index in the tail, so no reported
+/// count is dropped with the "class the plane does not state" WARN.
+#[test]
+fn every_open_class_becomes_one_reported_count_at_its_tail_index() {
+    use busbar_contract::abi::plane::UNITS_REPORTED;
+    for (k, (class, _)) in OPEN_CLASSES.iter().enumerate() {
+        let units = busbar_plane_llm::exchange::reply::Units {
+            open: std::collections::BTreeMap::from([(class.to_string(), 7)]),
+            ..Default::default()
+        };
+        let out = counts(&units);
+        assert_eq!(out.len(), 1, "{class}: {out:?}");
+        assert_eq!(
+            (out[0].class, out[0].source, out[0].amount),
+            (u32::try_from(4 + k).expect("small"), UNITS_REPORTED, 7),
+            "{class}"
+        );
     }
 }

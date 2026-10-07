@@ -10,7 +10,7 @@
 //! stays in the connector and this crate names no TLS library, so a test hands it a double of the
 //! connector's (whose real `upgrade_secure` its own suite proves). A read with nothing ready answers
 //! PENDING and wakes the ticket shortly after, so a plugin's pending path is exercised. A test double: it never ships
-//! (`test-support`).
+//! (`test-support`; and `conformance`, the published suite's table, a plugin repo's dev-dependency).
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -124,6 +124,15 @@ impl TcpConns {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// How many needs have been declared on this table, by every owner.
+    #[must_use]
+    pub fn declarations(&self) -> usize {
+        self.classes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// A table waking a parked read's ticket through `wake` (the dispatcher's

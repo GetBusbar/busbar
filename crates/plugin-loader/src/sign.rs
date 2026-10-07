@@ -199,9 +199,35 @@ pub struct Manifest {
     /// manifest packed before it keeps its canonical bytes and its signature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statement: Option<String>,
+    /// The FORMER NAMES the plugin answers to beside `name` and `alias`: the manifest names its
+    /// earlier releases carried (a 1.5.5 config names `busbar-webrequest`, the 1.6.0 plugin is
+    /// `busbar-hook-webrequest`), so a configuration written for those releases loads unchanged.
+    /// Each is a reference the registry resolves exactly as it resolves the alias, and each is held
+    /// to the alias's rules (lowercase `[a-z0-9-]+`) and to phase 3's collision checks. SIGNED like
+    /// every field; `busbar-plugin-pack --former-name` (repeatable) writes it from plugins.yaml's
+    /// `former_names:`. Absent on every manifest packed before it existed, and skipped when empty,
+    /// so their canonical bytes, and therefore their signatures, are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub former_names: Vec<String>,
 }
 
 impl Manifest {
+    /// The names config may reference this plugin by beside its canonical `name`: the alias, then
+    /// each former name ([`Manifest::former_names`]).
+    pub fn config_names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.alias.as_str()).chain(self.former_names.iter().map(String::as_str))
+    }
+
+    /// Every identifier this plugin claims: its canonical `name`, then [`Manifest::config_names`].
+    pub fn identities(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.name.as_str()).chain(self.config_names())
+    }
+
+    /// Whether config naming `word` names this plugin: its name, its alias or a former name.
+    pub fn answers_to(&self, word: &str) -> bool {
+        self.identities().any(|n| n == word)
+    }
+
     /// The Statement rendering this manifest states ([`Manifest::statement`], hex-decoded); `None`
     /// when it states none.
     ///
@@ -279,6 +305,23 @@ pub struct Declares {
     /// and keep their canonical bytes (the field is left off the wire when absent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract_abi: Option<ContractAbiRange>,
+    /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
+    /// failure that does not trip them — see [`BreakerDecl`]. Absent, the host's default posture
+    /// holds; left off the wire when absent, so every manifest packed before the field existed
+    /// keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub breaker: Option<BreakerDecl>,
+}
+
+/// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
+/// breaker cells of its members, which the host reads and applies to that plane's cells alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BreakerDecl {
+    /// Whether a transient failure BELOW the trip threshold still benches the member's cell for a
+    /// cooldown. `false`: a cell refuses only on a TRIP (the host's trip thresholds), an upstream
+    /// `Retry-After` still honoured.
+    pub bench_below_trip_threshold: bool,
 }
 
 /// An inclusive `min..=max` range of contract-ABI (payload-schema) versions, as a plugin declares it
@@ -329,6 +372,7 @@ impl Declares {
             && self.destinations.is_empty()
             && self.egress.is_default()
             && self.contract_abi.is_none()
+            && self.breaker.is_none()
     }
 }
 
@@ -353,31 +397,9 @@ impl HookNeeds {
     }
 }
 
-/// One axis of a hook manifest's declared intent — the SAME `no ⊂ ro ⊂ rw` ladder the operator grant
-/// uses, so the core can compare "declared" against "granted" directly. `rw` is meaningful only on the
-/// `prompt` axis (identity is never rewritten); on `user` it reads as "at least ro".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NeedLevel {
-    /// Declares no need for this content (the default).
-    #[default]
-    No,
-    /// Asks to READ this content.
-    Ro,
-    /// Asks to read AND rewrite (prompt axis only).
-    Rw,
-}
-
-impl NeedLevel {
-    /// Whether the plugin declared it needs to READ this axis (`ro` or `rw`).
-    pub fn wants_read(self) -> bool {
-        !matches!(self, NeedLevel::No)
-    }
-    /// Whether the plugin declared it needs to REWRITE (prompt axis; `rw`).
-    pub fn wants_rewrite(self) -> bool {
-        matches!(self, NeedLevel::Rw)
-    }
-}
+/// One axis of a hook manifest's declared intent: the contract's (`busbar_contract::plugin_rows`),
+/// the shape the kernel reads a row's needs in.
+pub use busbar_contract::plugin_rows::NeedLevel;
 
 /// How a plugin was permitted to load when it is NOT signed by a trusted key - the operator's
 /// EXPLICIT opt-in (never a silent default).
@@ -606,6 +628,56 @@ pub enum RejectKind {
     Tampered,
     /// Validly signed but by a publisher NOT in the allowlist, and `allow_third_party` is off.
     UnknownPublisher,
+    /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
+    /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
+    EgressGrant,
+}
+
+/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: every
+/// class that relaxes the open web's rule — a provider's allow-list and metadata hosts, the
+/// operator infrastructure's private and plaintext targets, a collector's loopback plaintext.
+/// The connector's default class and the open web are any trusted plugin's (ARCHITECT ruling
+/// EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
+pub const FIRST_PARTY_EGRESS: [(u32, &str); 3] = [
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+        "provider",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
+        "operator-infrastructure",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
+        "loopback-allowed",
+    ),
+];
+
+/// THE EGRESS-CLASS GRANT on a door plugin's needs: `Err` naming the first need of `manifest`'s
+/// stated Statement whose egress class is a first-party grant ([`FIRST_PARTY_EGRESS`]). Asked of a
+/// plugin that is not first-party; a manifest that states no Statement (a cold plugin) declares no
+/// need here.
+///
+/// # Errors
+///
+/// The refusal, naming the plugin and the class.
+pub fn egress_grant(manifest: &Manifest) -> Result<(), String> {
+    let Some(stated) = manifest.stated()? else {
+        return Ok(());
+    };
+    for need in &stated.needs {
+        if let Some((_, class)) = FIRST_PARTY_EGRESS
+            .iter()
+            .find(|(c, _)| *c == need.egress_class)
+        {
+            return Err(format!(
+                "plugin '{}' declares a `{}` need in the `{class}` egress class, which the host \
+                 grants to a first-party plugin only",
+                manifest.name, need.transport
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Trust failure. The posture forbids loading this plugin; the message is safe to surface. `kind` is
@@ -806,8 +878,8 @@ pub fn validate_structure(
 }
 
 /// The STATEMENT half of [`validate_structure`] — everything a manifest says about the plugin rather
-/// than about the artifact file (`sha256` is the file's): name, alias, kind, version, publisher,
-/// host. A plugin linked into the build has no artifact, and states exactly this; the registry's
+/// than about the artifact file (`sha256` is the file's): name, alias, former names, kind, version,
+/// publisher, host. A plugin linked into the build has no artifact, and states exactly this; the registry's
 /// linked door runs it, then [`validate_abi`], so a linked row passes the same structural gate a
 /// dropped-in one does.
 pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
@@ -822,6 +894,18 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
             "manifest alias '{}' is not a valid plugin alias (lowercase [a-z0-9-]+)",
             m.alias
         ));
+    }
+    for (i, former) in m.former_names.iter().enumerate() {
+        if !valid_name(former) {
+            return Err(format!(
+                "manifest former name '{former}' is not a valid plugin name (lowercase [a-z0-9-]+)"
+            ));
+        }
+        if *former == m.name || *former == m.alias || m.former_names[..i].contains(former) {
+            return Err(format!(
+                "manifest former name '{former}' repeats another name of the plugin"
+            ));
+        }
     }
     if !KNOWN_KINDS.contains(&m.kind.as_str()) {
         return Err(format!(

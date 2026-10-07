@@ -9,8 +9,7 @@
 //!
 //! M6-COLD-DELETE residue: the raw JSON-lane load below ([`Image`], `RawPlugin`) serves only the
 //! `kind: auth` plugin still built on it ([`auth`]: its verify and its hosted login), until that
-//! plugin's door re-pin, and the request-log file and webhook sinks ([`export`]), until their door
-//! re-pins land. No store, secret or hook plugin loads through it.
+//! plugin's door re-pin. No store, secret, hook or export plugin loads through it.
 
 use busbar_contract::abi::cold::{
     symbol, CallFn, CloseFn, FreeFn, MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC,
@@ -30,13 +29,13 @@ pub mod boot;
 pub mod carrier;
 /// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
 /// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
-/// dev-dependency turns it on; no busbar build ships it.
-#[cfg(feature = "conformance")]
+/// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
+/// transport row through it too (`transport_door_conformance_tests`).
+#[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
 pub mod dispatch;
-pub mod export;
 pub mod export_axis;
 pub mod export_door;
 pub mod fetch;
@@ -48,22 +47,36 @@ mod host;
 /// publishes (fetched artifacts, the high-water marks, plugin log directories) goes through it.
 pub(crate) use busbar_kernel_wal::durable;
 mod hostlog;
+/// NEVER SHIPPED: the framed connection-table stand-in with in-process far ends (`test-support`,
+/// and the published conformance suite's `far_ends`), for a build that cannot link the process's
+/// connector. No TLS library: TLS stays in the connector.
+#[cfg(any(test, feature = "test-support", feature = "conformance"))]
+pub mod https_conns;
 pub mod observe;
 pub mod plane;
 pub mod registry;
-pub mod scrape;
 /// THE SECRET AXIS over the one dispatcher: every admitted secret plugin, linked or dropped in.
 pub mod secret_calls;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
+/// TEST ONLY: a real door restated with one `tcp` need (the bind tests' subject; no plugin).
+#[cfg(test)]
+#[path = "tests/needs_restated.rs"]
+mod needs_restated;
 pub mod sign;
 mod stage;
 pub mod store_adapter;
 pub mod store_v3;
 pub mod tarball;
-#[cfg(any(test, feature = "test-support"))]
+/// TEST ONLY: the test connection table. Also the published conformance suite's (`conformance`):
+/// a plugin repo names this crate only as a dev-dependency, so it reaches no shipped closure.
+#[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod tcp_conns;
+/// TEST ONLY: a local token issuer (an ES256 key, its JWKS, signed tokens) for the tests of a host
+/// that loads a token-verifying auth plugin (`test-support`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_issuer;
 /// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
 /// Compiled for this crate's tests and under the `test-support` feature, which only
 /// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
@@ -74,21 +87,14 @@ pub mod test_support;
 pub mod transport;
 pub mod transport_adapter;
 
+/// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
+pub mod rows;
+
 pub use auth::DynAuth;
 use busbar_contract::abi::cold::ColdEntry;
-pub use export::{load_export_from_bytes, load_export_image, DynExport};
 pub use sign::EgressPolicy;
 
 impl LinkedPlugin {
-    /// M6-COLD-DELETE residue: a FIRST-PARTY JSON-lane export sink a build links, as
-    /// [`LinkedPlugin::first_party_door`] states it, over `entry`, the boundary its `cdylib` exports.
-    pub fn first_party(kind: &str, name: &str, alias: &str, entry: &'static ColdEntry) -> Self {
-        let mut row = LinkedPlugin::door_of_kind(kind, name, no_door);
-        row.manifest.alias = alias.into();
-        row.entry = LinkedEntry::Boundary(entry);
-        row
-    }
-
     /// A FIRST-PARTY memory-ABI plugin a build links: `name` aliased `alias`, of `kind`, at this
     /// loader's one version of the kind, published by busbar — the manifest its release tarball
     /// states — over its `door` (`plugin_door!`): the same door its `cdylib` exports.
@@ -103,15 +109,10 @@ impl LinkedPlugin {
         row
     }
 }
-/// The placeholder a JSON-lane row's entry replaces before it is ever read.
-extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
-    std::ptr::null()
-}
 
 pub use carrier::{HotReply, ReplyStream, RequestHead, MAX_PLANE_REPLY_LEN};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
-pub use host::{install_egress_carrier, EgressCarrier};
 pub use plane::{
     link_plane, load_plane, load_plane_from_bytes, DynPlane, HotClaim, HotDeclaration, ServedPlane,
 };
@@ -356,7 +357,7 @@ fn reclaim_failed_open(
 
 /// The resolved core C fn pointers + the opaque handle + the mapped library + staging backing, shared
 /// by every kind's typed wrapper. The KIND is bound at construction (cross-checked against the signed
-/// manifest) and then carried by the typed `DynAuth` / `DynExport` (the JSON lane's residue).
+/// manifest) and then carried by the typed `DynAuth` (the JSON lane's residue).
 struct RawPlugin {
     handle: *mut c_void,
     call: CallFn,
@@ -561,7 +562,9 @@ mod response_shape {
 /// are explicitly NOT unsupported and always propagate. This is the revocation-denylist fail-open,
 /// closed BY CONSTRUCTION.
 pub(crate) struct TransportError {
-    /// The semantic classification a loader caller keys on (see [`TransportErrorKind`]).
+    /// The semantic classification a loader caller keys on (see [`TransportErrorKind`]). Read by
+    /// [`Self::is_unsupported`] only, which the JSON-lane auth residue's tests hold.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) kind: TransportErrorKind,
     /// The human-readable failure message (plugin body on a plugin error, engine text otherwise).
     pub(crate) message: String,
@@ -647,6 +650,7 @@ impl TransportError {
     /// the request enum because it predates the variant. CANNOT be produced by a panic — a current-SDK
     /// panic is [`STATUS_PANIC`] (Fault) and a v1-SDK panic is a bare [`STATUS_PROTOCOL`] (Protocol),
     /// so neither can open a safe-default fallback.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn is_unsupported(&self) -> bool {
         matches!(self.kind, TransportErrorKind::Unsupported)
     }
@@ -972,12 +976,41 @@ fn wire_up(
     })
 }
 
-/// Read `busbar_plugin_kind()` from a mapped library into an owned `String`.
+/// Read the kind a mapped library states into an owned `String`. A memory-ABI image states it in
+/// its door's head ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`],
+/// [`dispatch::load::kind_of_door`]): the SDK's `busbar_plugin_kind` answers for no door it
+/// registered (a null kind). A plane or transport image registered through its decl answers
+/// `busbar_plugin_kind()`. Any other library with no door is a 1.5.5-era JSON-contract plugin: its
+/// kind symbol only CLASSIFIES it, and it is REFUSED here, naming the rebuild (no legacy loading,
+/// THE DESIGN §11.8, ruling C21/ABI-o1), so no upload vet, inventory or kind gate takes it as valid.
 fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
+    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
+    // fn pointer and `lib` outlives every use of it here.
+    let door = unsafe {
+        lib.get::<busbar_contract::abi::mechanism::door::DoorFn>(
+            busbar_contract::abi::mechanism::DOOR_SYMBOL,
+        )
+        .map(|s| *s)
+    };
+    if let Ok(door) = door {
+        // Guarded: the door function is plugin code; a panic fails the read CLOSED.
+        let kind = ffi_guard_confined(display, "door", || dispatch::load::kind_of_door(door))?
+            .map_err(|e| format!("plugin '{display}' states no kind the host has: {e}"))?;
+        return Ok(kind.word().to_string());
+    }
     let f = unsafe { lib.get::<PluginKindFn>(symbol::PLUGIN_KIND) }.map_err(|_| {
         format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
     })?;
-    kind_from_fn(*f, display)
+    let kind = kind_from_fn(*f, display)?;
+    use busbar_contract::abi::mechanism::kind::{PLANE, TRANSPORT};
+    if kind != PLANE && kind != TRANSPORT {
+        return Err(format!(
+            "plugin '{display}' states kind '{kind}' and exports no busbar_plugin_door — a plugin \
+             built against the 1.5.5 JSON contract; {}",
+            dispatch::load::REBUILD
+        ));
+    }
+    Ok(kind)
 }
 
 /// Call a plugin's `busbar_plugin_kind()` — looked up or linked — and read the kind it names.
@@ -1239,7 +1272,8 @@ mod loader_seam_tests;
 /// DECISIONS #11's real test: ONE crate built both ways must be observationally identical. Declared
 /// at the crate root rather than under `export` because it is not a test OF the export seam — it is
 /// a test of the equivalence the two build shapes are supposed to have, and the export kind is
-/// merely the first one with a fixture that can prove it.
+/// merely the first one with real plugins that can prove it (ARCHITECT ruling EXP2-PROOF
+/// 2026-10-03: the spec's working proof of the plugin model, on the export kind's door registries).
 #[cfg(test)]
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
@@ -1333,8 +1367,8 @@ mod store_door_conformance_tests;
 #[path = "tests/secret_door_conformance_tests.rs"]
 mod secret_door_conformance_tests;
 
-/// `kind: transport` over the REAL `tcp` door, both ways: the shipped linked door against the pinned
-/// cdylib, one script, equal transcripts and exact crossing counts.
+/// `kind: transport` over the REAL shipped carrier, both ways: the linked door against the pinned
+/// cdylib, through the published suite's carrier script, equal folds and exact crossing counts.
 #[cfg(test)]
 #[path = "tests/transport_door_conformance_tests.rs"]
 mod transport_door_conformance_tests;

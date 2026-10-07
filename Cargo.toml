@@ -24,14 +24,8 @@ members = [
     "crates/busbar-plane-streaming",
     "crates/busbar-plane-decisions",
     "crates/plugin-loader",
-    "crates/plane-example",
-    "crates/hooks-ranking",
     "crates/store-memory",
     "crates/busbar-transport-stdio",
-    "crates/busbar-auth-header",
-    "crates/busbar-auth-sigv4",
-    "crates/busbar-auth-oauth",
-    "crates/busbar-auth-webhook-signature",
     "testing/ws-conformance/subject",
     "xtask",
 ]
@@ -66,14 +60,14 @@ members = [
 [workspace.dependencies]
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "648b6683d0b9274c02a20f6da17146ba1b85f74c" }
-busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
-busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
-busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
-busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "b10cd35eaec72969ac2b40dea379194d655daca9" }
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "b10cd35eaec72969ac2b40dea379194d655daca9" }
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "1df4b10d12764fef89966b9c9bd007f5d481f6ed" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "1df4b10d12764fef89966b9c9bd007f5d481f6ed" }
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb" }
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb" }
+busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c0a2d690b281ec96ef5d904981f73e2b2a0b11c2" }
+busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c0a2d690b281ec96ef5d904981f73e2b2a0b11c2" }
+busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "d4e24f17b57ae9e16026fbe6a56a1e8966773e51" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "d4e24f17b57ae9e16026fbe6a56a1e8966773e51" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "049592be7a06945cd35bfc32d72ac0fb21197a57" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "049592be7a06945cd35bfc32d72ac0fb21197a57" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
 # crate's door on the secret axis; the kernel's test build stands their `resolve` in. One rev each.
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
@@ -88,20 +82,31 @@ fixture-secret-file = { package = "busbar-secret-file", git = "https://github.co
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
-busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
+busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "22c441f74fe57d4ec469ca4febadbcdd8c9338fc" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "0ff0e022e8d93ac300f9d6184ea4b54456550934" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
-busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "9c7bda86c06b0bdedc6952f07899c3455714fb98" }
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "1303273a732bdd208305c4b96c8f4a5d0c05400f" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "77289f64bfdde1c012611e05361dc429aee267af" }
-busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "2fd38617db6b139a14adc7a32affeed239f60ab3" }
+busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "cd3fdccfacfb074f5869434c7bcb5c0678f5b707" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "cd3fdccfacfb074f5869434c7bcb5c0678f5b707" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "b3047ce8748dcb6485f032c9c2c0cfa892ba3966" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "b3047ce8748dcb6485f032c9c2c0cfa892ba3966" }
+# THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
+# (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "6ede2a5b1a27e6a265e3a76db7e5749cb5abce8a" }
+# THE OAUTH MINTING STYLES (kind: auth): a dev edge only — the root's door_steps tests mint a member's
+# credential through the real plugin's door. One pin.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "b7d15c7137e890072a4968abc544b0bbfc107f67" }
+# THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
+# axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
+# build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
+busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
+fixture-hook = { package = "busbar-hook-ranking", git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all
@@ -422,3 +427,15 @@ strip = true         # strip symbols from the shipped binary (much smaller; set 
 # panic is left at the default `unwind` ON PURPOSE: a panic in one request task must unwind that
 # task, not abort the whole gateway. `panic = "abort"` would trade per-request isolation for a
 # little size — the wrong trade for a service in the request path.
+
+# xtask, OPTIMIZED IN EVERY DEV BUILD (ARCHITECT 2026-10-07, p6-selftest-memo). `cargo xtask` is
+# `cargo run --package xtask` under the dev profile, so CI's gates and self-tests ran xtask at
+# opt-level 0. Measured on busbar 214678af59, Latchkey large (8 cores), the same four batteries at
+# opt-level 0 -> 2: kind-isolation 925 s -> 170 s, kind-isolation-ship 631 s -> 123 s, ship-ready
+# 127 s -> 23 s, construction 101 s -> 19 s, every per-case verdict line byte-identical; building
+# xtask 67 s -> 71 s. Only xtask itself: its dependencies keep the dev profile. debug-assertions and
+# overflow-checks stay on (they follow the profile, not the opt-level), so the checks a dev build
+# makes are the checks it still makes. The self-test budgets (xtask/src/gates/mod.rs, TAKEN and
+# BUDGET) are measured at this opt-level.
+[profile.dev.package.xtask]
+opt-level = 2

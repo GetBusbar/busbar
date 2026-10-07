@@ -76,6 +76,15 @@ pub struct Linked {
     /// Each plane door row's place among [`Linked::planes`] (how many plane rows precede it in
     /// manifest order), parallel to [`Linked::plane_doors`]: where its folded registry row goes.
     pub plane_door_slots: &'static [usize],
+    /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
+    /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
+    /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
+    /// first-party.
+    pub plane_door_declares: &'static [(
+        &'static str,
+        busbar_contract::abi::mechanism::door::DoorFn,
+        &'static str,
+    )],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
@@ -98,9 +107,6 @@ pub struct Linked {
     pub stdio_serve: &'static [StdioServe],
     /// The CLI-help axis: each linked plane's rows of `busbar --help` (see [`CliHelpRow`]).
     pub cli_help: &'static [&'static [CliHelpRow]],
-    /// The export axis, M6-COLD-DELETE (TRANSITIONAL, drained by the request-log sinks' door
-    /// re-pins): each linked COLD export sink's statement and boundary (see [`LinkedExport`]).
-    pub exports: &'static [LinkedExport],
     /// The export axis on the memory ABI: each linked export sink's statement and door (see
     /// [`LinkedDoorExport`]).
     pub export_doors: &'static [LinkedDoorExport],
@@ -179,7 +185,16 @@ pub struct LinkedTransport {
     pub composes_over: &'static [&'static str],
     /// Build the wire over `lower`.
     pub build: BuildTransport,
+    /// Every scheme its entry claims, its own first: a door row's are read off the door's
+    /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
+    pub claims: ClaimsOf,
+    /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
+    /// upgrade lines (`crate::root::serve::upgrade_carriers`; ARCHITECT ruling Q128 U7).
+    pub upgrades: ClaimsOf,
 }
+
+/// A row's claims, read when the seal runs.
+pub type ClaimsOf = fn() -> Vec<&'static str>;
 
 /// A wire's build: handed the layer built beneath it, where one is, and the deployment's settings.
 pub type BuildTransport = fn(
@@ -196,15 +211,6 @@ pub struct LinkedClaims {
     /// The bytes it claims.
     pub claims: &'static [busbar_contract::grammar::Claim],
 }
-
-/// A linked EXPORT sink's entry (K9b): `(name, alias, declares, boundary)` — what its signed tarball
-/// states (the manifest `declares` section as JSON) and the boundary the one cold load runs over.
-pub type LinkedExport = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static busbar_contract::abi::cold::ColdEntry,
-);
 
 /// A linked export sink on the export kind's MEMORY ABI: what its signed tarball states (its name,
 /// its alias, the manifest `declares` section as JSON) and its door (`plugin_door!`), the same door
@@ -231,7 +237,6 @@ fn export_abi() -> u32 {
 /// binary's payload schema, exactly what a release-signed tarball of each carries but `sha256` and
 /// `signature`, which describe a file a linked row does not have.
 pub fn linked_exports(
-    exports: &[LinkedExport],
     doors: &[LinkedDoorExport],
 ) -> Result<Vec<crate::root::loader::LinkedPlugin>, String> {
     let manifest = |name: &str, alias: &str, declares: &str| {
@@ -255,17 +260,28 @@ pub fn linked_exports(
             host: None,
             declares,
             statement: None,
+            former_names: Vec::new(),
         })
     };
-    let doors = doors.iter().map(|d| {
-        manifest(d.name, d.alias, d.declares)
-            .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
+    let mut rows = doors
+        .iter()
+        .map(|d| {
+            manifest(d.name, d.alias, d.declares)
+                .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
+                .map(busbar_kernel::preflight::answering_former_names)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
+    // built-in exporters in), so the kernel's unknown-exporter refusal, which lists the linked rows
+    // in registration order, reads as 1.5.5's did. A row the table does not name follows, in place.
+    let order = crate::root::legacy::export_order();
+    rows.sort_by_key(|p| {
+        order
+            .iter()
+            .position(|m| *m == p.manifest.alias)
+            .unwrap_or(usize::MAX)
     });
-    let cold = exports.iter().map(|&(name, alias, declares, entry)| {
-        manifest(name, alias, declares)
-            .map(|m| crate::root::loader::LinkedPlugin::boundary(m, entry))
-    });
-    doors.chain(cold).collect()
+    Ok(rows)
 }
 
 /// What the composition root wires for one of its own unit modules — the kernel-loop half of a plane
@@ -369,7 +385,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
     std::sync::Arc::new(crate::root::loader::store_v3::DoorStoreAxis {
         dispatcher: crate::root::dispatch::dispatcher(),
         logs: crate::root::boot::plugin_logs().clone(),
-        conns: Some(conns),
+        conns: crate::root::loader::dispatch::ConnTable::Host(conns),
         mint: busbar_kernel::door::op_id,
     })
 }
@@ -399,6 +415,7 @@ pub fn link_secrets(
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
     }
+    rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 
@@ -464,7 +481,7 @@ pub fn plane_rows(
     rows.extend(dropped_doors.iter().copied());
     // PER-AXIS (SEAM-L(s)): a door row owns the plane axis for its key; a legacy row of the same
     // key yields that axis alone and keeps every other axis it registers (its tables are its own).
-    let rows = doors_own_their_plane_keys(rows, &doors);
+    let rows = doors_own_their_plane_keys(rows, &doors)?;
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
@@ -476,16 +493,101 @@ pub fn plane_rows(
 /// case the door serves the plane and the legacy row keeps only the axes the door does not register
 /// (its other tables: the stdio serve, the CLI help, the one-shot runner, the protocols, the
 /// diagnostics), which this fold never touches. Order is kept.
-#[must_use]
+///
+/// The ENGINE is not the plane axis: a legacy row that is the fallback plane carries the routing
+/// tables the core's own readers walk (the `/metrics` lane gauges, `/v1/models`, the provider
+/// merge), so a door taking its key takes them over ([`with_the_engine_of`]) rather than leaving the
+/// node with none.
+///
+/// # Errors
+///
+/// A door taking an engine past the [`CARRIED`] table's last slot, named (see [`carry_into`]).
 pub fn doors_own_their_plane_keys(
     rows: Vec<&'static PlaneDecl>,
     doors: &[&'static PlaneDecl],
-) -> Vec<&'static PlaneDecl> {
-    rows.into_iter()
-        .filter(|row| {
-            doors.iter().any(|d| std::ptr::eq(*d, *row)) || !doors.iter().any(|d| d.key == row.key)
+) -> Result<Vec<&'static PlaneDecl>, String> {
+    doors_own_their_plane_keys_into(&CARRIED, rows, doors)
+}
+
+/// [`doors_own_their_plane_keys`], carrying engines into `table`.
+pub(crate) fn doors_own_their_plane_keys_into(
+    table: &'static [std::sync::OnceLock<PlaneDecl>],
+    rows: Vec<&'static PlaneDecl>,
+    doors: &[&'static PlaneDecl],
+) -> Result<Vec<&'static PlaneDecl>, String> {
+    let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
+    let legacy_of = |key: &str| rows.iter().copied().find(|r| r.key == key && !is_door(r));
+    let mut kept: Vec<&'static PlaneDecl> = rows
+        .iter()
+        .copied()
+        .filter(|row| is_door(row) || !doors.iter().any(|d| d.key == row.key))
+        .collect();
+    for row in &mut kept {
+        if let Some(legacy) = legacy_of(row.key).filter(|_| is_door(row)) {
+            if let Some(carried) = carry_into(table, row, legacy)? {
+                *row = carried;
+            }
+        }
+    }
+    Ok(kept)
+}
+
+/// The door rows a carried engine rides: one slot per door plane a process folds, the shape of table
+/// the kernel keeps its own folded rows in (`busbar_kernel::plane::door`), so a row lives as long as
+/// the process with no allocation leaked for it.
+static CARRIED: [std::sync::OnceLock<PlaneDecl>; busbar_kernel::plane::door::MAX_DOOR_PLANES] =
+    [const { std::sync::OnceLock::new() }; busbar_kernel::plane::door::MAX_DOOR_PLANES];
+
+/// THE DOOR ROW, CARRYING THE ENGINE ITS KEY'S LEGACY ROW HELD, kept in `table`: the fallback flag
+/// and the hooks the kernel builds and reads the fallback plane's routing tables through
+/// (`build_runtime`, `viewer`, `resolve_provider`, `on_swap`), each the legacy row's; every other
+/// word stays the door's. `None` when the legacy row holds none of them: the door's row stands as it
+/// is. Carrying the same key again answers the row the first carry built, as the kernel's fold
+/// answers a key it already folded.
+///
+/// # Errors
+///
+/// Every slot of `table` already holds another key's row: the engine has nowhere to ride, and the
+/// boot refuses rather than serve the door's key without the fallback plane's tables.
+fn carry_into(
+    table: &'static [std::sync::OnceLock<PlaneDecl>],
+    door: &PlaneDecl,
+    legacy: &PlaneDecl,
+) -> Result<Option<&'static PlaneDecl>, String> {
+    let holds_an_engine = legacy.fallback
+        || legacy.build_runtime.is_some()
+        || legacy.viewer.is_some()
+        || legacy.resolve_provider.is_some()
+        || legacy.on_swap.is_some();
+    if !holds_an_engine {
+        return Ok(None);
+    }
+    let carried = || PlaneDecl {
+        declaration: PlaneDeclaration {
+            fallback: legacy.fallback,
+            ..door.declaration
+        },
+        build_runtime: legacy.build_runtime,
+        viewer: legacy.viewer,
+        resolve_provider: legacy.resolve_provider,
+        on_swap: legacy.on_swap,
+        ..*door
+    };
+    table
+        .iter()
+        .find_map(|slot| match slot.get() {
+            Some(row) => (row.key == door.key).then_some(row),
+            None => Some(slot.get_or_init(carried)).filter(|row| row.key == door.key),
         })
-        .collect()
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "the plane door `{}` takes the engine its legacy row holds, and {} door planes \
+                 already carry one, the most one process carries",
+                door.key,
+                table.len()
+            )
+        })
 }
 
 /// TWO DOORS ON ONE AXIS: a plane key registered by two door rows (each `(row name, key)`) is a
@@ -544,7 +646,7 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
                         Arc::new(crate::root::loader::dispatch::NoSink),
                         probe.adopter(),
                         u32::MAX,
-                        None,
+                        crate::root::loader::dispatch::ConnTable::Probe,
                     )?
                     .into_iter()
                     .next()
@@ -1081,13 +1183,10 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// every `kind: export` row the plugin registry's one registration admitted, linked and dropped in
 /// ([`crate::root::boot::dropped_from_config`]) — kept for the root's export axis
 /// ([`crate::root::exports`], installed with the root rows by [`register_stores`]). The kernel serves
-/// no export module of its own, so every module is a row here, and a linked row answers its module
-/// ahead of any dropped-in row spelling it.
+/// no export module of its own, so every module is a row here; a linked row and a different
+/// dropped-in plugin spelling one module refuse the boot (ARCHITECT Q-P4-12).
 pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
     crate::root::loader::observe::install_host_series(host_series);
-    // The host's egress, which every cold sink's outbound request rides (K9a S5) — whatever else
-    // this build links (M6-COLD-DELETE, with the cold export lane).
-    crate::root::loader::install_egress_carrier(&crate::root::boot::HostEgressCarrier);
     if let Some(registry) = dropped {
         let _ = DROPPED.set(registry);
     }
@@ -1096,6 +1195,60 @@ pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegi
 /// The registry [`register_exports`] kept; `None` before it ran, or with nothing to keep.
 pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> {
     DROPPED.get().copied()
+}
+
+/// THE BREAKER FACTS A DOOR PLANE DECLARES (`declares.breaker`, ARCHITECT Q4), found by the plane's
+/// Statement name: a linked door's in its row's `declares.json` ([`Linked::plane_door_declares`]),
+/// a dropped-in plane's in its signed manifest (`dropped`). `None`: it declares none, and its
+/// members' cells keep the host's default posture. The root names no plane: whichever plane states
+/// the fact, it reads it.
+///
+/// # Errors
+///
+/// A linked door whose Statement or `declares` section does not read, or a dropped-in manifest
+/// whose Statement does not read.
+pub fn door_breaker(
+    linked: &Linked,
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+    plane: &str,
+) -> Result<Option<crate::root::loader::sign::BreakerDecl>, String> {
+    for (row, door, json) in linked.plane_door_declares {
+        let stated = crate::root::loader::dispatch::LinkedRow::of(*door)
+            .map_err(|e| format!("plugin '{row}': {e}"))?;
+        let name = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
+            .map_err(|e| {
+                format!(
+                    "plugin '{row}': its Statement rendering does not read back at byte {}",
+                    e.at
+                )
+            })?
+            .name;
+        if name != plane {
+            continue;
+        }
+        let declares: crate::root::loader::sign::Declares =
+            serde_json::from_str(json).map_err(|e| {
+                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+            })?;
+        return Ok(declares.breaker);
+    }
+    let Some(registry) = dropped else {
+        return Ok(None);
+    };
+    let planes = registry.loadable().iter();
+    for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE) {
+        let Some(stated) = p
+            .manifest
+            .stated()
+            .map_err(|e| format!("plugin '{}': {e}", p.manifest.name))?
+        else {
+            continue;
+        };
+        if stated.name == plane {
+            return Ok(p.manifest.declares.breaker);
+        }
+    }
+    Ok(None)
 }
 
 /// The configured `plugins.logs`, or its defaults: where every opened plugin instance logs.
@@ -1108,36 +1261,37 @@ pub(crate) fn logs() -> &'static crate::root::loader::dispatch::PluginLogConfig 
 /// the host's writes). The composition root is the one place that names it; the root's tests hold
 /// it to every `busbar_*` series constant the kernel's metric modules define, so it cannot drift.
 pub const HOST_SERIES: &[&str] = &[
-    busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
-    busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
-    busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL,
-    busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL,
-    busbar_kernel::metrics::JOURNAL_QUARANTINED_TOTAL,
-    busbar_kernel::metrics::REQUESTS_TOTAL,
-    busbar_kernel::metrics::BREAKER_TRIPS_TOTAL,
-    busbar_kernel::metrics::FAILOVERS_TOTAL,
-    busbar_kernel::metrics::REQUEST_DURATION_SECONDS,
-    busbar_kernel::metrics::TRANSLATIONS_TOTAL,
-    busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
-    busbar_kernel::metrics::PLANE_REQUEST_DURATION_SECONDS,
-    busbar_kernel::metrics::ADMISSION_DENIED_TOTAL,
-    busbar_kernel::metrics::METERING_PENDING_COALESCED_TOTAL,
-    busbar_kernel::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
-    busbar_kernel::metrics::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
-    busbar_kernel::metrics::KEY_SPEND_CENTS,
-    busbar_kernel::metrics::KEY_TOKENS_TOTAL,
-    busbar_kernel::metrics::BUCKET_TOKENS,
-    busbar_kernel::metrics::BUCKET_SPEND_CENTS,
-    busbar_kernel::metrics::BUCKET_BUDGET_REMAINING_CENTS,
-    busbar_kernel::metrics::LANE_STATE,
-    busbar_kernel::metrics::LANE_AVAILABLE,
-    busbar_kernel::metrics::LANE_RECOVERY_HINT_MS,
-    busbar_kernel::metrics::LANE_INFLIGHT,
-    busbar_kernel::metrics::LANE_AVAILABLE_PERMITS,
-    busbar_kernel::metrics::POOL_QUEUED,
+    busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
+    busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
+    busbar_kernel::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL,
+    busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
+    busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
+    busbar_kernel::snapshot::REQUESTS_TOTAL,
+    busbar_kernel::snapshot::BREAKER_TRIPS_TOTAL,
+    busbar_kernel::snapshot::FAILOVERS_TOTAL,
+    busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
+    busbar_kernel::snapshot::TRANSLATIONS_TOTAL,
+    busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
+    busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
+    busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL,
+    busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
+    busbar_kernel::snapshot::KEY_SPEND_CENTS,
+    busbar_kernel::snapshot::KEY_TOKENS_TOTAL,
+    busbar_kernel::snapshot::BUCKET_TOKENS,
+    busbar_kernel::snapshot::BUCKET_SPEND_CENTS,
+    busbar_kernel::snapshot::BUCKET_BUDGET_REMAINING_CENTS,
+    busbar_kernel::snapshot::LANE_STATE,
+    busbar_kernel::snapshot::LANE_AVAILABLE,
+    busbar_kernel::snapshot::LANE_RECOVERY_HINT_MS,
+    busbar_kernel::snapshot::LANE_INFLIGHT,
+    busbar_kernel::snapshot::LANE_AVAILABLE_PERMITS,
+    busbar_kernel::snapshot::POOL_QUEUED,
     busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
-    busbar_kernel::metrics::BILLING_TAP_DECODE_FAIL_TOTAL,
+    busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL,
     // `proxy_vocab`'s crate-private constant, spelled here as it renders.
     "busbar_tap_notifications_dropped_total",
 ];
@@ -1247,10 +1401,11 @@ pub fn register_ws_arrivals(linked: &Linked) {
 
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
 /// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
-/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host, the parse-time section
-/// list a cross-plane hook refusal reads, and the envelope a self-enveloping admin verb replies
-/// through. Each backing is a ZST unit struct, so it promotes to `'static`. The egress-trust host
-/// is installed by `run` once the configuration loads, over the destination guard.
+/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host and the parse-time section
+/// list a cross-plane hook refusal reads. The envelope a self-enveloping admin verb replies through
+/// is the admin crate's, bound by its `install()`. Each backing is a ZST unit struct, so it promotes
+/// to `'static`. The egress-trust host is installed by `run` once the configuration loads, over the
+/// destination guard.
 pub fn register_seams() {
     #[cfg(linked_egress)]
     {
@@ -1262,10 +1417,8 @@ pub fn register_seams() {
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::config_sections,
     );
-    #[cfg(linked_admin_envelope)]
-    busbar_kernel::admin_verbs::install_plane_admin_envelope(
-        &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
-    );
+    // `admin-envelope`: the self-enveloping plane-verb backing is the admin crate's own, bound by
+    // its `install()` (main.rs), which the composition root calls unconditionally.
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a
@@ -1286,10 +1439,6 @@ mod tests;
 #[cfg(all(test, feature = "auth-admin-tokens", linked_axis_body_ingress))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
-
-#[cfg(test)]
-#[path = "tests/metric_family_conformance.rs"]
-mod metric_family_conformance;
 
 #[cfg(all(test, linked_every_plane))]
 #[path = "tests/linked_protocols.rs"]

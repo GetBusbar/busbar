@@ -120,6 +120,19 @@ pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
     unsafe { render(&st) }.map_err(|e| LoadError::Rendering(format!("{} is too long", e.0)))
 }
 
+/// THE KIND A DOOR STATES, from its head alone: the door's head checks ([`read_door`]: not NULL, the
+/// magic, the mechanism version, a size that reaches `ops`, a kind the host has at this host's ABI
+/// version for it) and nothing past them. The loader-mechanism paths that ask a mapped library
+/// which kind it is (the upload vet, the plugins inventory, the kind gates) read a memory-ABI
+/// image's kind here: its `busbar_plugin_kind` answers for no door it registered.
+///
+/// # Errors
+///
+/// The refusal the door's head earns.
+pub(crate) fn kind_of_door(door_fn: DoorFn) -> Result<KindCode, LoadError> {
+    read_door(door_fn(), None).map(|(_, kind)| kind)
+}
+
 /// THE PACK-TIME RENDERING: `path`'s door, if the library exports one, rendered
 /// ([`rendering_of`]) for the pack tool to sign into the manifest. `None` for a library with no
 /// door (a pre-1.6.0 artifact keeps today's handling). Runs on the publisher's machine, never in the
@@ -252,6 +265,15 @@ pub enum LoadError {
         /// The need's unserved scheme.
         scheme: String,
     },
+    /// A door whose Statement declares a need was bound to SERVE with no connection table
+    /// ([`ConnTable::NoNeeds`](super::ConnTable::NoNeeds)): it could never dial or listen, so it is
+    /// refused at bind (Q-P4-3), never at its first open.
+    NoConnectionTable {
+        /// The plugin the Statement names.
+        plugin: String,
+        /// How many needs it declares.
+        needs: usize,
+    },
 }
 
 /// What every refusal of a plugin built against an older contract tells the operator to do.
@@ -322,6 +344,10 @@ impl fmt::Display for LoadError {
                 f,
                 "plugin `{plugin}` declares an {} need over `{scheme}`, and no loaded transport serves `{scheme}`",
                 if *inbound { "inbound" } else { "outbound" }
+            ),
+            Self::NoConnectionTable { plugin, needs } => write!(
+                f,
+                "plugin '{plugin}' declares {needs} connection need(s) and was bound with no connection table"
             ),
         }
     }

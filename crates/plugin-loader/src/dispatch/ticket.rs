@@ -53,6 +53,17 @@ pub(crate) trait WakeRoute: Send + Sync {
     fn services(&self) -> Option<super::services::Served> {
         None
     }
+
+    /// The host's I/O this route's instances are served from; `None` = none.
+    fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
+        None
+    }
+
+    /// The waker of an INLINE ticket's task (`super::inline`); `None` for any other ticket.
+    fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
+        let _ = t;
+        None
+    }
 }
 
 /// What an instance's `HostCtx` points to: the dispatcher its tickets live in, and who the instance
@@ -72,6 +83,12 @@ pub(crate) struct InstanceWake {
         busbar_contract::conn::InstanceId,
         std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
     )>,
+    /// The settings keys the instance's manifest declares DESTINATIONS (granted once, by the
+    /// opener that read the manifest): `disk.append` serves this instance those only.
+    pub(crate) destinations: OnceLock<Vec<String>>,
+    /// Each granted key bound to the file the instance's settings give it, re-bound by every
+    /// `open` and `refresh` (`disk.append` maps a key through it).
+    pub(crate) bound: std::sync::RwLock<Vec<busbar_contract::services::DiskDest>>,
 }
 
 impl std::fmt::Debug for InstanceWake {
@@ -81,7 +98,8 @@ impl std::fmt::Debug for InstanceWake {
             .field("caller", &self.caller)
             .field("credential_kinds", &self.credential_kinds)
             .field("conn", &self.conn.get().map(|(id, _)| id))
-            .finish()
+            .field("destinations", &self.destinations)
+            .finish_non_exhaustive()
     }
 }
 

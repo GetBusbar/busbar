@@ -9,11 +9,14 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
-    check_clock_now, check_dest_judge, check_random_fill, ContentScanIn, EntitlementCheckIn,
-    ItemSpan, RandomFillIn, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
+    check_clock_now, check_content_scan, check_dest_judge, check_hook_call, check_random_fill,
+    check_verify_lookup, check_verify_store, ContentScanIn, EntitlementCheckIn, HookCallIn,
+    ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn, DEST_ALLOWED, DEST_INTERNAL,
+    DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
+use busbar_contract::services::DiskDest;
 
 use super::*;
 
@@ -34,6 +37,10 @@ struct Provider {
     filled: AtomicUsize,
     /// Every `records.secret` read that reached the provider, as `kind:id`.
     secrets: Mutex<Vec<String>>,
+    /// Every `disk.append` that reached the provider: the destination and the bytes.
+    appended: Mutex<Vec<(DiskDest, Vec<u8>)>>,
+    /// Whether `snapshot.read` answers NOT READY (the recorder is not installed).
+    snapshot_not_ready: std::sync::atomic::AtomicBool,
 }
 
 impl Provider {
@@ -132,6 +139,54 @@ impl HostServices for Provider {
     fn trust_due(&self, c: &Caller) -> Stored {
         self.saw(c, "trust.due", b"");
         Stored::ready(0)
+    }
+
+    /// Records `<counterparty>/<item> <digest>`; answers a new sighting.
+    fn trust_sight_item(&self, c: &Caller, counterparty: &str, item: &str, digest: &str) -> Stored {
+        let arg = format!("{counterparty}/{item} {digest}");
+        self.saw(c, "trust.sight_item", arg.as_bytes());
+        Stored::ready(svc::TRUST_NEW)
+    }
+
+    /// Records `<counterparty>/<item>@<digest>`; answers that it serves.
+    fn trust_serves(
+        &self,
+        c: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        let arg = format!(
+            "{counterparty}/{}@{}",
+            item.unwrap_or("-"),
+            digest.unwrap_or("-")
+        );
+        self.saw(c, "trust.serves", arg.as_bytes());
+        Stored::ready(svc::DISTRUST_NONE)
+    }
+
+    /// Records `<counterparty>/<item>@<expected> <approve>`; answers serving.
+    fn trust_decide(
+        &self,
+        c: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        let arg = format!(
+            "{}/{}@{} {approve}",
+            key.counterparty,
+            key.item.unwrap_or("-"),
+            expected.unwrap_or("-")
+        );
+        self.saw(c, "trust.decide", arg.as_bytes());
+        Stored::ready(svc::TRUST_DECIDED_SERVING)
+    }
+
+    /// The last verdict, never a sighting: `TRUST_SAME`.
+    fn trust_unreached(&self, c: &Caller, counterparty: &str) -> Stored {
+        self.saw(c, "trust.unreached", counterparty.as_bytes());
+        Stored::ready(svc::TRUST_SAME)
     }
 
     /// Answers the payload's length as the verdict, and the counterparty as the bytes.
@@ -234,6 +289,79 @@ impl HostServices for Provider {
     fn work_resume(&self, c: &Caller, unit: Option<u64>, handle: u64, _: Later) -> Ran {
         self.saw(c, "work.resume", format!("{unit:?} {handle}").as_bytes());
         Ran::Now(Stored::ready(0))
+    }
+
+    /// Records the key; answers a hit whose entry is `entry`, in span 0, through `later`.
+    fn verify_lookup(&self, c: &Caller, key: &[u8], later: Later) -> Ran {
+        self.saw(c, "verify.lookup", key);
+        let mut stored = Stored::ready(svc::VERIFY_HIT);
+        stored.bytes = b"entry".to_vec();
+        stored.spans = vec![ItemSpan {
+            key: Span {
+                offset: check::SPAN_ABSENT,
+                len: 0,
+            },
+            value: Span { offset: 0, len: 5 },
+        }];
+        later(stored);
+        Ran::Later
+    }
+
+    /// Records `<key> <entry> <ttl>`.
+    fn verify_store(&self, c: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        let arg = [key, b" ", entry, format!(" {ttl_ms}").as_bytes()].concat();
+        self.saw(c, "verify.store", &arg);
+        Stored::ready(0)
+    }
+
+    /// Records `<unit> <content>`; blocks it.
+    fn content_scan(&self, c: &Caller, unit: Option<u64>, content: &[u8], _: Later) -> Ran {
+        let arg = [format!("{unit:?} ").as_bytes(), content].concat();
+        self.saw(c, "content.scan", &arg);
+        Ran::Now(Stored::ready(svc::CONTENT_BLOCK))
+    }
+
+    /// Records `<unit> <stage> <from> <system> <role>=<text>...`; answers `1 + from`, the bytes
+    /// `rw`.
+    fn hook_call(&self, c: &Caller, unit: Option<u64>, ask: HookAsk, _: Later) -> Ran {
+        let mut arg = format!("{unit:?} {} {} {:?}", ask.stage, ask.from, ask.system);
+        for (role, text) in &ask.messages {
+            arg.push_str(&format!(" {role}={text}"));
+        }
+        self.saw(c, "hook.call", arg.as_bytes());
+        Ran::Now(Stored {
+            bytes: b"rw".to_vec(),
+            ..Stored::ready(1 + u64::from(ask.from))
+        })
+    }
+
+    /// The disk-lane double: records the append and answers through `later` — READY with the
+    /// file rotated first, or, for a path ending `.fail`, FAILED at the open step.
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        self.appended.lock().unwrap().push((dest.clone(), bytes));
+        let failing = dest.path.ends_with(".fail");
+        later(
+            DiskReport {
+                step: if failing { svc::DISK_OPEN_FAILED } else { 0 },
+                rotated: true,
+                faults: 0,
+                error: if failing {
+                    "No such file or directory"
+                } else {
+                    ""
+                },
+            }
+            .stored(),
+        );
+        Ran::Later
+    }
+
+    fn snapshot_read(&self, c: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        self.saw(c, "snapshot.read", scope.to_string().as_bytes());
+        if self.snapshot_not_ready.load(Ordering::Relaxed) {
+            return busbar_contract::services::Snapshot::NotReady;
+        }
+        busbar_contract::services::Snapshot::Families(snapshot_families())
     }
 }
 
@@ -423,6 +551,11 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.need_admit,
         HOST_SLOTS.trust_verify,
         HOST_SLOTS.records_secret,
+        HOST_SLOTS.disk_append,
+        HOST_SLOTS.snapshot_read,
+        HOST_SLOTS.trust_sight_item,
+        HOST_SLOTS.trust_serves,
+        HOST_SLOTS.trust_decide,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     for (service, f) in (0..SERVICES).zip(slots) {
@@ -444,38 +577,282 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 busbar_contract::conn::ConnError::UndeclaredNeed.text(),
                 "service {service}"
             );
-        } else if !matches!(
-            service,
-            op::CLOCK_NOW
-                | op::SIGN
-                | op::TRUST_DUE
-                | op::ENTITLEMENT_CHECK
-                | op::RANDOM_FILL
-                | op::TRUST_VERIFY
-        ) {
+        } else if service == op::VERIFY_STORE {
+            // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
-            assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
+            assert_eq!(error(&o), NO_VERIFY_KEY, "service {service}");
+        } else if matches!(
+            service,
+            op::TRUST_SIGHT_ITEM | op::TRUST_SERVES | op::TRUST_DECIDE
+        ) {
+            // Served, with no ticket: the zeroed `in` names empty texts, which reach the kernel.
+            assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
+        } else {
+            assert!(
+                matches!(
+                    service,
+                    op::CLOCK_NOW
+                        | op::SIGN
+                        | op::TRUST_DUE
+                        | op::ENTITLEMENT_CHECK
+                        | op::RANDOM_FILL
+                        | op::TRUST_VERIFY
+                        | op::SNAPSHOT_READ
+                ),
+                "service {service}"
+            );
+        }
+        // No slot of the table is left unserved.
+        if !o.error.ptr.is_null() {
+            assert_ne!(error(&o), UNIMPLEMENTED, "service {service}");
         }
     }
 }
 
+fn no_bufs() -> ServiceBufs {
+    ServiceBufs {
+        buf: std::ptr::null_mut(),
+        cap: 0,
+        spans: std::ptr::null_mut(),
+        spans_cap: 0,
+    }
+}
+
+fn over(b: &[u8]) -> AbiStr {
+    AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    }
+}
+
+fn blob_over(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
+    busbar_contract::abi::mechanism::call::Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        fmt: 0,
+        flags: 0,
+    }
+}
+
+/// `verify.lookup` reaches the kernel with the caller and the key, and the entry it answers is
+/// written into the caller's buffers; a lookup that names no key is REFUSED before the cache is
+/// read (RED arm).
 #[test]
-fn every_other_slot_answers_unimplemented_on_a_ticket() {
+fn verify_lookup_answers_the_callers_cache_and_refuses_an_empty_key() {
     let d = double();
-    let i = ContentScanIn {
-        head: head(op::CONTENT_SCAN, TICKET, 0, size_of::<ContentScanIn>()),
-        content: busbar_contract::abi::mechanism::call::Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: 0,
-            flags: 0,
-        },
-        into: bufs(&mut [], &mut []),
+    let (mut buf, mut spans) = ([0u8; 8], [NO_SPAN; 1]);
+    let mut i = VerifyLookupIn {
+        head: head(op::VERIFY_LOOKUP, TICKET, 0, size_of::<VerifyLookupIn>()),
+        key: over(b"card:a"),
+        into: bufs(&mut buf, &mut spans),
     };
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::VERIFY_HIT);
+    assert_eq!(&buf[..o.len as usize], b"entry");
+    assert!(check_verify_lookup(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some(("double".to_string(), "verify.lookup", b"card:a".to_vec()))
+    );
+
+    i.key = over(b"");
+    i.head = head(op::VERIFY_LOOKUP, TICKET, 1, size_of::<VerifyLookupIn>());
+    let before = d.route.provider.scoped.lock().unwrap().len();
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_VERIFY_KEY);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
+}
+
+/// `verify.store` never pends: it is served with no ticket, with the caller, key, entry and ttl;
+/// an empty key is REFUSED before the cache is written (RED arm).
+#[test]
+fn verify_store_is_served_without_a_ticket_and_refuses_an_empty_key() {
+    let d = double();
+    let mut i = VerifyStoreIn {
+        head: head(
+            op::VERIFY_STORE,
+            Ticket::NONE,
+            0,
+            size_of::<VerifyStoreIn>(),
+        ),
+        key: over(b"k"),
+        entry: blob_over(b"e"),
+        ttl_ms: 9,
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert!(check_verify_store(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some(("double".to_string(), "verify.store", b"k e 9".to_vec()))
+    );
+    i.key = over(b"");
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_VERIFY_KEY);
+}
+
+/// `content.scan` reaches the kernel with the unit the crossing serves and the content; called
+/// with no ticket it is REFUSED (it may pend) and never runs (RED arm).
+#[test]
+fn content_scan_scans_for_the_unit_the_crossing_serves() {
+    let d = double();
+    let content = b"tool result";
+    let mut i = ContentScanIn {
+        head: head(op::CONTENT_SCAN, TICKET, 0, size_of::<ContentScanIn>()),
+        content: blob_over(content),
+        into: no_bufs(),
+    };
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(7));
+        HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+    };
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::CONTENT_BLOCK);
+    assert!(check_content_scan(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some((
+            "double".to_string(),
+            "content.scan",
+            b"Some(7) tool result".to_vec()
+        ))
+    );
+    i.head = head(
+        op::CONTENT_SCAN,
+        Ticket::NONE,
+        0,
+        size_of::<ContentScanIn>(),
+    );
+    let before = d.route.provider.scoped.lock().unwrap().len();
     let mut o = blank();
     let ret = HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
     assert_eq!(ret.outcome(), Outcome::Refused);
-    assert_eq!(error(&o), UNIMPLEMENTED);
+    assert_eq!(error(&o), UNTICKETED);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
+}
+
+fn hook_in(
+    stage: u32,
+    from: u32,
+    prompt: *const busbar_contract::abi::hook::PromptView,
+    seq: u32,
+    into: ServiceBufs,
+) -> HookCallIn {
+    HookCallIn {
+        head: head(op::HOOK_CALL, TICKET, seq, size_of::<HookCallIn>()),
+        stage,
+        from,
+        prompt,
+        into,
+    }
+}
+
+/// `hook.call` copies the caller's prompt view and runs the stage for the unit the crossing
+/// serves; the rewrite it answers is written into the caller's buffers.
+#[test]
+fn hook_call_runs_the_stage_over_the_copied_prompt() {
+    use busbar_contract::abi::hook::{MessageView, PromptView};
+    let d = double();
+    let messages = [MessageView {
+        role: over(b"user"),
+        text: over(b"hi"),
+    }];
+    let view = PromptView {
+        system: over(b"sys"),
+        message_count: 1,
+        body: busbar_contract::abi::mechanism::call::Blob::ABSENT,
+        messages: messages.as_ptr(),
+        messages_len: 1,
+    };
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
+    let i = hook_in(svc::HOOK_REWRITE, 2, &view, 0, bufs(&mut buf, &mut spans));
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(4));
+        HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+    };
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!((o.value, &buf[..o.len as usize]), (3, &b"rw"[..]));
+    assert!(check_hook_call(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some((
+            "double".to_string(),
+            "hook.call",
+            b"Some(4) 1 2 Some(\"sys\") user=hi".to_vec()
+        ))
+    );
+}
+
+/// RED, one arm each: an unknown stage, a chain resumed past the cap, a resumed gate and a missing
+/// prompt are each REFUSED in their own words before any hook runs; a prompt view that breaks its
+/// own rules is FAULT.
+#[test]
+fn hook_call_refuses_each_malformed_in_before_any_hook_runs() {
+    use busbar_contract::abi::hook::PromptView;
+    let d = double();
+    let view = PromptView {
+        system: over(b""),
+        message_count: 0,
+        body: busbar_contract::abi::mechanism::call::Blob::ABSENT,
+        messages: std::ptr::null(),
+        messages_len: 0,
+    };
+    let broken = PromptView {
+        message_count: 2,
+        messages_len: 2,
+        ..view
+    };
+    let cases: [(HookCallIn, Outcome, &str); 5] = [
+        (
+            hook_in(7, 0, &view, 0, no_bufs()),
+            Outcome::Refused,
+            HOOK_UNKNOWN_STAGE,
+        ),
+        (
+            hook_in(
+                svc::HOOK_REWRITE,
+                svc::HOOK_FROM_MAX + 1,
+                &view,
+                1,
+                no_bufs(),
+            ),
+            Outcome::Refused,
+            HOOK_FROM_PAST_CAP,
+        ),
+        (
+            hook_in(svc::HOOK_GATE, 1, &view, 2, no_bufs()),
+            Outcome::Refused,
+            HOOK_GATE_RESUMED,
+        ),
+        (
+            hook_in(svc::HOOK_GATE, 0, std::ptr::null(), 3, no_bufs()),
+            Outcome::Refused,
+            HOOK_NO_PROMPT,
+        ),
+        (
+            hook_in(svc::HOOK_GATE, 0, &broken, 4, no_bufs()),
+            Outcome::Fault,
+            "",
+        ),
+    ];
+    for (i, outcome, why) in cases {
+        let mut o = blank();
+        let ret = HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        assert_eq!(ret.outcome(), outcome, "{why}");
+        if outcome == Outcome::Refused {
+            assert_eq!(error(&o), why);
+        }
+    }
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -594,6 +971,7 @@ fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
         wake: None,
         conns: std::ptr::null(),
         services: &HOST_SLOTS,
+        io: std::ptr::null(),
     };
     busbar_contract::abi::sdk::Services::of(&tables).expect("the table is handed")
 }
@@ -1310,5 +1688,336 @@ fn unit_nest_reaches_the_kernel_with_the_unit_its_crossing_serves() {
             "unit.nest",
             b"Some(11) POST /child ask".to_vec()
         )]
+    );
+}
+
+/// A `disk.append` `in` naming `key`, appending `bytes`, its result into `result`.
+fn disk_in(
+    key: &'static str,
+    bytes: &'static [u8],
+    seq: u32,
+    result: &mut svc::DiskWritten,
+) -> svc::DiskAppendIn {
+    svc::DiskAppendIn {
+        head: head(op::DISK_APPEND, TICKET, seq, size_of::<svc::DiskAppendIn>()),
+        dest_key: AbiStr {
+            ptr: key.as_ptr(),
+            len: key.len(),
+        },
+        bytes: Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+            flags: 0,
+        },
+        result: std::ptr::from_mut(result),
+    }
+}
+
+fn call_disk(ctx: HostCtx, i: &svc::DiskAppendIn) -> (RawOutcome, ServiceOut) {
+    let mut o = blank();
+    let ret = HOST_SLOTS.disk_append.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    (ret, o)
+}
+
+fn blank_written() -> svc::DiskWritten {
+    svc::DiskWritten {
+        size: 0,
+        rotated: 0,
+        faults: 0,
+        _reserved: [0; 2],
+        written: 0,
+    }
+}
+
+/// THE DESTINATION RULE (THE DESIGN §11.12 `disk.append`): an instance appends only to the
+/// destinations its manifest declares (granted by the opener), at the path its settings bound; a key
+/// it was not granted, or one its settings leave unset, is REFUSED before the kernel sees anything.
+/// A granted, bound key reaches the kernel's disk lane with the bound path and the bytes unchanged,
+/// and the lane's report lands in the caller's result slot (READY: the whole of the bytes; FAILED:
+/// the step in `value`, nothing written). RED: before the slot, `disk.append` was no slot at all.
+#[test]
+fn disk_append_writes_only_to_a_granted_bound_destination() {
+    let d = double();
+    let mut w = blank_written();
+    // The double's instance was granted no destination.
+    let (ret, o) = call_disk(d.ctx, &disk_in("path", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    assert!(d.route.provider.appended.lock().unwrap().is_empty());
+
+    // An instance granted `path`, its settings binding it.
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake.destinations.set(vec!["path".to_string()]).is_ok());
+    let ctx = HostCtx {
+        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
+    };
+    // Granted, not yet bound (its settings set no path): refused.
+    let (ret, o) = call_disk(ctx, &disk_in("path", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    let bound = DiskDest {
+        key: "path".into(),
+        path: "/var/log/busbar/requests.jsonl".into(),
+        rotate_at: Some(1024 * 1024),
+        keep: busbar_contract::services::DISK_KEEP,
+    };
+    wake.bound.write().unwrap().push(bound.clone());
+    // A key the instance was not granted, even with a path under it.
+    let (ret, o) = call_disk(ctx, &disk_in("other", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    assert!(d.route.provider.appended.lock().unwrap().is_empty());
+
+    let i = disk_in("path", b"line\n", 0, &mut w);
+    let (ret, o) = call_disk(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert_eq!((w.rotated, w.faults, w.written), (svc::DISK_ROTATED, 0, 5));
+    assert_eq!(
+        d.route.provider.appended.lock().unwrap().as_slice(),
+        &[(bound, b"line\n".to_vec())]
+    );
+
+    // The lane's FAILED report: the step in `value`, nothing appended, the rotation reported.
+    wake.bound.write().unwrap()[0].path = "/nowhere/requests.fail".into();
+    let mut w = blank_written();
+    let i = disk_in("path", b"line\n", 1, &mut w);
+    let (ret, o) = call_disk(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert_eq!(o.value, svc::DISK_OPEN_FAILED);
+    assert_eq!(error(&o), "No such file or directory");
+    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
+}
+
+/// `trust.sight` WITH `TRUST_UNREACHABLE` (ARCHITECT 2026-10-06): the plane could not reach the
+/// counterparty; the kernel answers its last verdict and nothing is sighted (the hash is unread,
+/// and may be empty). RED: an outcome the vocabulary does not hold is FAULT, and reaches nothing.
+#[test]
+fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fault() {
+    let d = double();
+    let sight = |outcome: u32| svc::TrustSightIn {
+        head: head(op::TRUST_SIGHT, TICKET, 0, size_of::<svc::TrustSightIn>()),
+        counterparty: text("peer"),
+        catalogue_hash: text(""),
+        outcome,
+        _outcome_reserved: 0,
+    };
+    let call = |i: &svc::TrustSightIn| {
+        let mut o = blank();
+        let ret = HOST_SLOTS.trust_sight.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+        (ret, o)
+    };
+    let unreached = sight(svc::TRUST_UNREACHABLE);
+    let (ret, o) = call(&unreached);
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::TRUST_SAME));
+    assert!(svc::check_trust_sight(&unreached, ret, &o).is_ok());
+    let (ret, _) = call(&sight(svc::TRUST_UNREACHABLE + 1));
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![("double".to_string(), "trust.unreached", b"peer".to_vec())]
+    );
+}
+
+/// The handle of an unticketed op's `seq`th service call.
+const fn unticketed(seq: u32) -> CompletionHandle {
+    CompletionHandle {
+        ticket: Ticket::NONE,
+        seq,
+        _reserved: 0,
+    }
+}
+
+/// `trust.decide` OVER THE SDK (ARCHITECT 2026-10-06): the key, the expected fingerprint and the
+/// decision reach the kernel as the caller's, with no ticket; RED: a decision the vocabulary does
+/// not hold is FAULT and reaches nothing.
+#[test]
+fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
+    let d = double();
+    let s = sdk(&d);
+    assert_eq!(
+        s.trust_decide(unticketed(0), "peer", Some("t"), Some("d1"), true),
+        Ok(svc::TRUST_DECIDED_SERVING)
+    );
+    assert_eq!(
+        s.trust_decide(unticketed(1), "peer", None, None, false),
+        Ok(svc::TRUST_DECIDED_SERVING)
+    );
+    let bad = svc::TrustDecideIn {
+        head: head(
+            op::TRUST_DECIDE,
+            Ticket::NONE,
+            0,
+            size_of::<svc::TrustDecideIn>(),
+        ),
+        counterparty: text("peer"),
+        item: text(""),
+        expected: text(""),
+        decision: svc::TRUST_DECIDE_REVOKE + 1,
+        _reserved: 0,
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_decide.unwrap()(d.ctx, std::ptr::from_ref(&bad).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "double".to_string(),
+                "trust.decide",
+                b"peer/t@d1 true".to_vec()
+            ),
+            (
+                "double".to_string(),
+                "trust.decide",
+                b"peer/-@- false".to_vec()
+            ),
+        ]
+    );
+}
+
+/// The families the double's `snapshot.read` answers: every shape the scrape layout carries (a
+/// labelled histogram's legs, a family with help and unit, one with neither, one with no samples).
+fn snapshot_families() -> Vec<busbar_contract::export_calls::Family> {
+    use busbar_contract::abi::export::{
+        SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE, SCRAPE_KIND_HISTOGRAM,
+    };
+    use busbar_contract::export_calls::{Family, Sample};
+    let sample = |name: &str, labels: &[(&str, &str)], value: &str| Sample {
+        name: name.into(),
+        labels: labels
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+        value: value.into(),
+    };
+    vec![
+        Family {
+            name: "x_requests_total".into(),
+            help: None,
+            unit: None,
+            kind: SCRAPE_KIND_COUNTER,
+            samples: vec![sample(
+                "x_requests_total",
+                &[("hook", "a\\\"b"), ("ok", "1")],
+                "3",
+            )],
+        },
+        Family {
+            name: "x_depth".into(),
+            help: Some("queue depth".into()),
+            unit: Some("items".into()),
+            kind: SCRAPE_KIND_GAUGE,
+            samples: Vec::new(),
+        },
+        Family {
+            name: "x_seconds".into(),
+            help: Some(String::new()),
+            unit: None,
+            kind: SCRAPE_KIND_HISTOGRAM,
+            samples: vec![
+                sample("x_seconds_bucket", &[("le", "0.5")], "1"),
+                sample("x_seconds_bucket", &[("le", "+Inf")], "2"),
+                sample("x_seconds_sum", &[], "0.75"),
+                sample("x_seconds_count", &[], "2"),
+            ],
+        },
+    ]
+}
+
+/// THE HOST SNAPSHOT SERVICE through the SDK, ticketless as an export `serve` calls it: a short
+/// buffer earns the bytes the layout needs; the re-call reads every family back exactly as the
+/// kernel answered it, the scope reaching the kernel as the caller's; NOT READY is `None`, never an
+/// empty snapshot.
+#[test]
+fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
+    use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
+    use busbar_contract::abi::sdk::ServiceError;
+    let d = double();
+    let none = CompletionHandle {
+        ticket: Ticket::NONE,
+        seq: 0,
+        _reserved: 0,
+    };
+    let services = sdk(&d);
+    let mut small = [0u64; 4];
+    let needed = match services.snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut small) {
+        Err(ServiceError::Short { bytes, items: 0 }) => bytes,
+        other => panic!("a short buffer earns its size: {other:?}"),
+    };
+    let mut buf = vec![0u64; usize::try_from(needed).unwrap().div_ceil(8)];
+    let read = services
+        .snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut buf)
+        .expect("the re-call reads");
+    assert_eq!(read, Some(snapshot_families()), "read back exactly");
+    d.route
+        .provider
+        .snapshot_not_ready
+        .store(true, Ordering::Relaxed);
+    assert_eq!(
+        services.snapshot_read(none, SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        Ok(None),
+        "not ready is NONE, never an empty success"
+    );
+    let seen: Vec<_> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(i, w, a)| (i.clone(), *w, String::from_utf8_lossy(a).into_owned()))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("double".to_string(), "snapshot.read", "1".to_string()),
+            ("double".to_string(), "snapshot.read", "1".to_string()),
+            ("double".to_string(), "snapshot.read", "0".to_string()),
+        ]
+    );
+}
+
+/// RED: an unknown scope, or a buffer without the layout's alignment, is FAULT before the kernel
+/// is asked.
+#[test]
+fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
+    use busbar_contract::abi::host::service::{SnapshotReadIn, SNAPSHOT_SCOPES};
+    let d = double();
+    let mut words = [0u64; 512];
+    let at = words.as_mut_ptr().cast::<u8>();
+    let call = |scope: u32, buf: *mut u8, cap: usize| {
+        let i = SnapshotReadIn {
+            head: head(
+                op::SNAPSHOT_READ,
+                Ticket::NONE,
+                0,
+                size_of::<SnapshotReadIn>(),
+            ),
+            scope,
+            _reserved: 0,
+            into: ServiceBufs {
+                buf,
+                cap,
+                spans: std::ptr::null_mut(),
+                spans_cap: 0,
+            },
+        };
+        let mut o = blank();
+        HOST_SLOTS.snapshot_read.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o).outcome()
+    };
+    assert_eq!(call(SNAPSHOT_SCOPES, at, 4096), Outcome::Fault);
+    assert_eq!(call(0, at.wrapping_add(1), 4095), Outcome::Fault);
+    assert_eq!(call(0, at, 4096), Outcome::Ready);
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().len(),
+        1,
+        "only the well-formed call reached the kernel"
     );
 }

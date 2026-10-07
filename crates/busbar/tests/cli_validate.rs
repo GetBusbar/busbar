@@ -348,6 +348,57 @@ fn validate_trust_gate_matches_boot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE SIGNING GATE'S REFERENCE reaches the dropped-in tarball under test, even when this build links
+/// a plugin answering to the same alias. scripts/signing-gate.sh writes `store: { module: <ref> }`
+/// and expects an UNSIGNED tarball to be refused. busbar links busbar-store-memory (alias `memory`),
+/// and the registry keeps the first row registered for a name or alias (the linked one), so a gate
+/// that spells the reference by ALIAS resolves the linked store: the unsigned tarball validates
+/// clean and the gate's "unsigned refused" case passes nothing. The reference is read from the
+/// gate's own store arm, so this test fails while the gate spells it by alias.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn the_signing_gate_reference_reaches_the_dropped_in_tarball_past_a_linked_alias() {
+    const CRATE: &str = "busbar-store-memory-plugin";
+    const ALIAS: &str = "memory";
+    let gate = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/signing-gate.sh"),
+    )
+    .expect("read scripts/signing-gate.sh");
+    let arm = gate
+        .lines()
+        .find(|l| l.trim_start().starts_with("store)") && l.contains("REF="))
+        .expect("the gate has a store arm writing REF");
+    let reference = match (arm.contains("$PLUGIN_CRATE"), arm.contains("$PLUGIN_ALIAS")) {
+        (true, false) => CRATE,
+        (false, true) => ALIAS,
+        _ => panic!("the store arm names neither or both of PLUGIN_CRATE/PLUGIN_ALIAS: {arm}"),
+    };
+
+    let dir = fixture_dir("signing-gate-ref");
+    let mut m = plugins::manifest("store", CRATE, "busbar");
+    m.alias = ALIAS.into();
+    std::fs::write(dir.join("plugins/p.tar.gz"), plugins::seal(m, b"lib")).unwrap();
+    write_configs(
+        &dir,
+        &format!(
+            "{}store:\n  module: {reference}\n",
+            plugins_block(&dir, true, false)
+        ),
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    let out = format!("{stdout}{stderr}");
+    assert_eq!(
+        code, 1,
+        "the gate's reference `{reference}` let an unsigned tarball validate: {out}"
+    );
+    assert!(
+        out.contains("was not loaded")
+            && (out.contains("manifest carries no signature") || out.contains("allow_unsigned")),
+        "the refusal is the trust verdict on the tarball: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// FAIL-CLOSED (conflict): two plugins claiming the same alias fail --validate naming BOTH.
 #[cfg(linked_axis_body_ingress)]
 #[test]
@@ -1333,7 +1384,8 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 //
 // `providers.yaml`'s `protocol:` selects the WIRE dialect (`anthropic`/`openai`/…/`jev`); a `mock`
 // provider on `protocol: jev` is what a genuine decisions deployment configures — the decision
-// plane's own `PlaneCfg::known_dialects` (`root/plane_decisions.rs`) is unioned into the provider
+// plane's door states it as its one dialect and consumes `providers:`, so its folded section's
+// `PlaneCfg::known_dialects` (`busbar_kernel::plane::door`) is unioned into the provider
 // wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
 // is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
 
@@ -1511,6 +1563,40 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
         "the refusal names the dialect the plane speaks (`{dialect}`): {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE SECTION IS JUDGED BY THE PLANE'S OWN DOOR (FLIP-DECISIONS): the plane's registry row is its
+/// door's Statement, folded, and its section parses through the door's `validate`. A `decisions:`
+/// that is a scalar where a mapping belongs, or that carries a member the plane does not declare,
+/// fails `--validate` naming the block, rather than landing as an untyped capture that does
+/// nothing. The control is `validate_ok_on_a_good_decisions_config`.
+#[cfg(feature = "plane-decisions")]
+#[test]
+fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
+    for (case, block, member) in [
+        ("scalar", "decisions: \"hello\"\n", None),
+        (
+            "typo",
+            "decisions:\n  modles:\n    verdicts:\n      provider: mock\n",
+            Some("modles"),
+        ),
+    ] {
+        let dir = fixture_dir(&format!("decisions-door-{case}"));
+        write_decisions_configs(&dir, &decision_dialect(), block);
+        let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 1, "{case}: the door refuses the block: {stderr}");
+        assert!(
+            stderr.contains("decisions"),
+            "{case}: the refusal names the block: {stderr}"
+        );
+        if let Some(member) = member {
+            assert!(
+                stderr.contains(member),
+                "{case}: the refusal names the member: {stderr}"
+            );
+        }
+    }
 }
 
 // ── LAW 7: AN UNCONFIGURED PLANE CONTRIBUTES NO PROVIDER DIALECT (oracle cell BOOT-020) ───────────

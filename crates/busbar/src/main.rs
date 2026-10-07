@@ -45,10 +45,10 @@ use axum::Router;
 // checks without booting, and the last two are the config/providers path precedence the scanners
 // there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_serving_sessions, load_config_from_disk,
-    LoadedConfig, ENV_CONFIG,
+    build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
+    ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
+use busbar_kernel::{config, config_validate, diagnostics, export, snapshot, tls};
 // The root's own binds listen through the connector's listener (the one listener source).
 #[cfg(unix)]
 use busbar_core_connector::listen::{AcceptLimits, Listening, DEFAULT_HANDSHAKE_TIMEOUT};
@@ -296,8 +296,9 @@ fn register_planes() {
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors
     // `install_planes` immediately above for the same reason: one composition root, one
-    // registration, before the first `App` is built.
-    busbar_core_oauth2::install();
+    // registration, before the first `App` is built. Its document fetch rides the one connector,
+    // read when a fetch needs it (`root::connector::AuthServerConns`).
+    busbar_core_oauth2::install::<root::connector::AuthServerConns>();
     // Register the admin API service's mount seam (`busbar_kernel::admin::seam`) — the composition
     // root is the one place entitled to name `busbar-admin`, exactly as it names `busbar-core-oauth2`
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
@@ -333,6 +334,12 @@ static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
     std::sync::LazyLock::new(resolve_worker_threads);
 
 fn main() {
+    // THE `log` BRIDGE, before anything can run a compiled-in plugin's door: that door's call
+    // capture installs the same `LogTracer` in this image on first use, so the host takes the one
+    // `log` logger slot first (`observability::init_log_bridge`). The subscriber goes up in `run()`.
+    if let Err(e) = busbar_kernel::observability::init_log_bridge() {
+        eprintln!("busbar: the `log` bridge is not installed: {e}");
+    }
     // THE PROCESS'S ONE DISPATCHER, first: full-size (one plugin worker per data worker) before any
     // plugin of any kind binds — the planes and transports registered just below included — and
     // handed to the transport doors (`root::doors`), which bind on it.
@@ -593,7 +600,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // duplicate singleton — is reported and FATAL a few lines down in `config::resolve`, which runs
     // the same lowering; discarding the error list here just avoids reporting it twice.
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
-    metrics::configure(
+    snapshot::configure(
         resolved_export
             .recorder
             .as_ref()
@@ -617,7 +624,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // request-path logging is captured.
     // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
     // `init_logging`'s `stdout_reserved`.
-    busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()));
+    if let Err(e) =
+        busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()))
+    {
+        eprintln!("busbar: tracing subscriber already initialized: {e}");
+    }
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
@@ -863,7 +874,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         root::dispatch::dispatcher(),
         LINKED.auths,
         root::boot::dropped_registry(),
-        Some(Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>),
+        root::loader::dispatch::ConnTable::Host(
+            Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>
+        ),
     );
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
@@ -969,17 +982,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Every config apply refreshes each served door plane onto the generation it installed
     // (ARCHITECT Q-DEL-A2A-APPLY), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
-    let (doors, sessions) = root::serve::data_mounts(
+    let (doors, sessions, refusals) = root::serve::data_mounts(
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
         &root::serve::upgrade_carriers(LINKED.transports),
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_serving_sessions(
+    let (data_router, admin_router, app_handle) = build_split_routers_serving_doors(
         app,
         doors,
         sessions,
+        refusals,
         req_body_max,
         max_inbound,
         response_headers_cfg.server_timing,
@@ -1102,6 +1116,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 units.admin.records = Some(root::units_admin::live_records(std::sync::Arc::clone(
                     &app_handle,
                 )));
+                // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
+                // book — the composed services, reached through the late install.
+                let late = std::sync::Arc::clone(&late_services);
+                units.admin.trust = std::sync::Arc::new(move || late.kernel());
                 // The root breaker is the kernel's own: one cell set on the node, read through the
                 // live snapshot so an apply's rebuilt store is the one it observes into.
                 units.breaker = root::adapters::BreakerAdapter::over_kernel(
@@ -1262,9 +1280,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             &shutdown_tx,
             worker_shutdown_rx,
         );
-        let admin_listener = Listening::bind_stream(&admin_at, ROOT_BIND_LIMITS)
-            .unwrap_or_else(|e| die(format!("cannot bind listen address '{admin_listen}': {e}")));
-        tracing::debug!(listen = %admin_listen, "admin listening through the connector");
+        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
+        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
+        let admin_via = root::connector::the().address_via();
+        let admin_listener =
+            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
+                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
+            );
+        tracing::debug!(
+            listen = %admin_listen,
+            carrier = %root::connector::carrier_name(admin_via.as_ref()),
+            "admin listening through the connector"
+        );
         serve_listener(
             admin_listener,
             admin_router,
@@ -1468,14 +1495,19 @@ fn serve_thread_per_core(
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
                     // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
-                    let listener = Listening::bind_stream(&bind_at, ROOT_BIND_LIMITS)
+                    let via = crate::root::connector::the().address_via();
+                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {
                             die(format!(
                                 "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
                              runtime {i}): {e}"
                             ))
                         });
-                    tracing::debug!(listen = %listen, "data door listening through the connector");
+                    tracing::debug!(
+                        listen = %listen,
+                        carrier = %crate::root::connector::carrier_name(via.as_ref()),
+                        "data door listening through the connector"
+                    );
                     serve_listener(
                         listener,
                         router,

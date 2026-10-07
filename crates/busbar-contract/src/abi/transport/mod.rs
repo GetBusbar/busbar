@@ -46,12 +46,13 @@
 //! continuing where it stopped. A framer that answers any byte or piece twice is wrong. A framer op
 //! never pends.
 //!
-//! STREAMS END BY PIECE. A frame is one or more pieces on one stream; the last carries
-//! [`PIECE_END_OF_FRAME`]. A stream's frames END with an EMPTY piece (length `0`) carrying
-//! [`PIECE_END_OF_FRAME`]; a stream that FAILED ends instead with a piece carrying
+//! STREAMS END BY FLAG. A frame is one or more pieces on one stream; the last carries
+//! [`PIECE_END_OF_FRAME`]. A stream's frames END with a piece carrying [`PIECE_END`] (with
+//! [`PIECE_END_OF_FRAME`], and no bytes); a stream that FAILED ends instead with a piece carrying
 //! [`PIECE_STREAM_FAILED`] and [`PIECE_END_OF_FRAME`], its bytes the reason (never secret material).
-//! A failed stream fails alone: its siblings on the connection carry on. [`YIELD_ENDED`] ends the
-//! CONNECTION, never one stream.
+//! Nothing else ends a stream: an EMPTY piece is an empty frame (a wire's empty message, text or
+//! binary), never the stream's end. A failed stream fails alone: its siblings on the connection
+//! carry on. [`YIELD_ENDED`] ends the CONNECTION, never one stream.
 //!
 //! FIELDS BY PIECE. A frame whose pieces carry [`PIECE_FIELDS`] is a FIELD BLOCK, never payload: the
 //! far end's HEAD (a response's head fields, a call's initial metadata) is ONE such frame, the
@@ -78,6 +79,12 @@
 //!   host calls again once it has drained the sink.
 //!
 //! The tokens an `out` carries (`listener`, `conn`, `framing`) are names, not results.
+//!
+//! A CARRIER MOVES BYTES OVER THE HOST'S HANDLES. It opens, binds, accepts, reads, writes, shuts
+//! and spawns through the host's I/O table (`abi::host::io`, `io.*`): it never holds a descriptor,
+//! and the host opens only what it admitted for the dial that asked. Its frames: a carrier carried
+//! as ITSELF (a need over its own claim, no framer above it) delimits them with
+//! [`READ_END_OF_FRAME`] and [`WRITE_END_OF_FRAME`]; under a framer, its bytes are a stream.
 //!
 //! WHAT THE HOT-LANE `TransportDecl` BECOMES (a mechanical re-heading):
 //!
@@ -419,15 +426,33 @@ pub const PIECE_CONTINUED: u16 = 32;
 
 /// [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire
 /// whose messages are one or the other (ws's TEXT and BINARY opcodes). Absent means binary, the
-/// meaning every framer that never sets it keeps. On every message-bearing piece (`len > 0`) of a
-/// text message; never on an empty piece, a field block or a failed stream's reason. The host reads
-/// it into `FrameMeta::text`, the bit's one home above the ABI.
+/// meaning every framer that never sets it keeps. On every piece of a text message, an EMPTY text
+/// message's one piece too; never on a field block, a failed stream's reason or a stream's
+/// [`PIECE_END`]. The host reads it into `FrameMeta::text`, the bit's one home above the ABI.
 pub const PIECE_TEXT: u16 = 64;
+
+/// [`FramePiece::flags`]: the stream ENDS whole here; no piece of it follows. The ONLY way a
+/// stream ends whole (an empty piece without it is an empty frame, never the end). Always with
+/// [`PIECE_END_OF_FRAME`] and on an EMPTY piece (`len == 0`): an end that carried bytes would make
+/// them a message the end swallows. Never with [`PIECE_STREAM_FAILED`] (a failed stream's piece
+/// ends it failed), [`PIECE_FIELDS`] (an empty fields piece is an empty head) or [`PIECE_TEXT`].
+pub const PIECE_END: u16 = 128;
 
 /// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
 /// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
 pub const EMIT_TEXT: u32 = 1;
+
+/// [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that
+/// delimits frames itself (a carrier carried as itself, with no framer above it). A carrier that
+/// carries an undelimited byte stream ignores it.
+pub const WRITE_END_OF_FRAME: u32 = 1;
+
+/// [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier
+/// whose wire is an undelimited byte stream sets it on every read: each read is a frame, the
+/// degenerate case. A frame longer than the host's buffer comes in several reads, the last one
+/// carrying it.
+pub const READ_END_OF_FRAME: u32 = 1;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
@@ -828,6 +853,10 @@ pub struct WriteIn {
     pub bytes: *const u8,
     /// How many.
     pub len: usize,
+    /// `WRITE_*` bits: [`WRITE_END_OF_FRAME`].
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `read`'s and `write`'s `out`.
@@ -838,6 +867,10 @@ pub struct IoOut {
     pub head: OutHead,
     /// Bytes read (`0` = the end) or taken.
     pub len: u64,
+    /// `READ_*` bits on a `read`: [`READ_END_OF_FRAME`]. `0` on a `write`.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `flush`'s `in`.

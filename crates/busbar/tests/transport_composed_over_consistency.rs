@@ -35,8 +35,11 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
     let shipped = shipped_fold();
     // Every linked transport row is built: the fold's rows plus the rows this build leaves unlinked
     // are the shipped table, so a row dropped from the manifest is a row missing here.
+    // A row registers every scheme its entry claims (ONE ENTRY PER PLUGIN: `sse` is the http
+    // entry's), so the shipped fold has one row per CLAIM of a linked row.
+    let claimed: usize = LINKED_TRANSPORTS.iter().map(|r| (r.claims)().len()).sum();
     assert_eq!(
-        LINKED_TRANSPORTS.len() + LINKED_TRANSPORTS_OFF,
+        claimed + LINKED_TRANSPORTS_OFF,
         shipped.len(),
         "the linked transport table and the shipped fold disagree on how many wires there are"
     );
@@ -81,11 +84,12 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
             }
         }
     }
-    // The composed half is not vacuous: every composed row of the shipped fold this build links.
-    let shipped_composed = shipped
-        .iter()
-        .filter(|(key, over)| over.is_some() && LINKED_TRANSPORTS.iter().any(|r| r.key == *key))
-        .count();
-    assert_eq!(composed, shipped_composed, "a composed wire answered None");
-    assert!(composed > 0, "the fold composed no wire over another");
+    // NO TRANSPORT NAMES ANOTHER (ARCHITECT ruling Q128 U7; TRANSPORT-STACK (2), :4721): the carrier
+    // is the connector's choice from the target's scheme, so no shipped wire is built over another
+    // and the shipped fold names no layer.
+    assert_eq!(composed, 0, "a wire was built over another");
+    assert!(
+        shipped.iter().all(|(_, over)| over.is_none()),
+        "the shipped fold names a layer"
+    );
 }

@@ -74,8 +74,7 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, ResourceLocator, ScopeFacts, Unit, UnitEnd,
-    UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -553,22 +552,6 @@ impl Plane for StreamingPlane {
                 lane: busbar_contract::ids::LaneId::new("streaming"),
             },
         }
-    }
-
-    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        let mut resources = busbar_contract::bounded::BoundedVec::new();
-        let _ = resources.push(ResourceLocator {
-            kind: "streaming_operation",
-            name: u.op().as_str(),
-        });
-        ScopeFacts { resources }
-    }
-
-    fn admit<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        // No client-located lane name and no client response ceiling on a duplex session: the lane
-        // is this plane's own configuration (`Upstream::lane`), and the response is unbounded audio,
-        // not a single JSON body the kernel would clamp.
-        AdmitFacts::default()
     }
 
     fn route<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {

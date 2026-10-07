@@ -137,13 +137,13 @@ fn every_plane_registration_item_is_contract_data_naming_no_kernel_type() {
         offenders.join("\n")
     );
 
-    // NON-VACUITY: the engine planes and the composition root's decisions plane register through the
-    // contract type. Fewer than five read means the scan read nothing, and zero offenders over zero
-    // items is not a pass.
+    // NON-VACUITY: the engine planes register through the contract type (the decisions plane has no
+    // such item: its row is its door's Statement, folded by the kernel, FLIP-DECISIONS). Fewer than
+    // four read means the scan read nothing, and zero offenders over zero items is not a pass.
     let contract_typed = items.iter().filter(|i| i.ty == CONTRACT_TYPE).count();
     assert!(
-        contract_typed >= 5,
-        "expected at least five `{CONTRACT_TYPE}` registration items under crates/, found \
+        contract_typed >= 4,
+        "expected at least four `{CONTRACT_TYPE}` registration items under crates/, found \
          {contract_typed}: {:?}",
         items.iter().map(|i| &i.at).collect::<Vec<_>>()
     );

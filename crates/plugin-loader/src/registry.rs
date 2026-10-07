@@ -78,8 +78,8 @@ impl LoadablePlugin {
         matches!(self.entry, Some(LinkedEntry::Store { .. }))
     }
 
-    /// M6-COLD-DELETE residue: whether this row is a LINKED JSON-lane export sink
-    /// (`BUSBAR_COLD_ENTRY`), the request-log file and webhook sinks until their door re-pins.
+    /// M6-COLD-DELETE residue: whether this row is a LINKED JSON-lane auth plugin
+    /// (`BUSBAR_COLD_ENTRY`), until the auth plugin's door re-pin.
     pub fn image_is_cold_linked(&self) -> bool {
         matches!(self.entry, Some(LinkedEntry::Boundary(_)))
     }
@@ -97,8 +97,8 @@ impl LoadablePlugin {
         self.entry.is_some()
     }
 
-    /// What a JSON-lane load runs over (M6-COLD-DELETE residue: the hosted login and the two
-    /// request-log sinks): the linked boundary, or the verified bytes.
+    /// What a JSON-lane load runs over (M6-COLD-DELETE residue: the auth plugin's verify and hosted
+    /// login): the linked boundary, or the verified bytes.
     pub fn image(&self) -> crate::Image<'_> {
         match self.entry {
             Some(LinkedEntry::Boundary(entry)) => crate::Image::Linked(entry),
@@ -160,13 +160,28 @@ pub enum LinkedEntry {
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
     Door(busbar_contract::abi::mechanism::door::DoorFn),
-    /// M6-COLD-DELETE residue: a linked JSON-lane export sink's SDK boundary (`BUSBAR_COLD_ENTRY`),
-    /// the request-log file and webhook sinks until their door re-pins land.
+    /// M6-COLD-DELETE residue: a linked JSON-lane auth plugin's SDK boundary (`BUSBAR_COLD_ENTRY`),
+    /// until the auth plugin's door re-pin.
     Boundary(&'static ColdEntry),
 }
 
 impl LinkedPlugin {
-    /// M6-COLD-DELETE residue: a linked JSON-lane export sink, `manifest` and its boundary.
+    /// This row, answering also to `former` — the names its earlier releases' manifests carried
+    /// ([`Manifest::former_names`]), so a configuration naming one resolves to the linked row exactly
+    /// as it does to the same plugin dropped in (compiled in = dropped in). Names already on the row
+    /// are not repeated.
+    #[must_use]
+    pub fn with_former_names<S: AsRef<str>>(mut self, former: impl IntoIterator<Item = S>) -> Self {
+        for word in former {
+            let word = word.as_ref();
+            if !self.manifest.answers_to(word) {
+                self.manifest.former_names.push(word.to_string());
+            }
+        }
+        self
+    }
+
+    /// M6-COLD-DELETE residue: a linked JSON-lane auth plugin, `manifest` and its boundary.
     pub fn boundary(manifest: Manifest, entry: &'static ColdEntry) -> Self {
         LinkedPlugin {
             manifest,
@@ -245,6 +260,7 @@ impl LinkedPlugin {
                 host: None,
                 declares: Default::default(),
                 statement: None,
+                former_names: Vec::new(),
             },
             entry,
             ephemeral,
@@ -272,7 +288,8 @@ pub struct PluginRegistry {
     /// How many of `rows` are linked (they lead).
     linked: usize,
     skipped: Vec<SkippedPlugin>,
-    /// name -> index into `rows`; alias -> index (aliases equal to the own name are fine).
+    /// name -> index into `rows`; alias or former name -> index (aliases equal to the own name are
+    /// fine).
     by_name: HashMap<String, usize>,
     by_alias: HashMap<String, usize>,
 }
@@ -320,14 +337,17 @@ impl PluginRegistry {
     }
 
     /// THE REGISTRATION of one row on the axis — the ONE function both doors call (DECISIONS #2
-    /// rule (1)): the row becomes resolvable by its name and by its alias. The FIRST row to register
-    /// a name or alias holds it, so a linked row (registered first) is not displaced by a dropped-in
-    /// one spelling the same name, and two dropped-in rows never share one: phase 3 refused that set
-    /// before any of it got here.
+    /// rule (1)): the row becomes resolvable by its name, by its alias and by each of its former
+    /// names ([`Manifest::former_names`]). No word reaches here claimed by two different plugins:
+    /// phase 3 refused that among the dropped-in rows, and [`Self::link`] refuses it between a linked
+    /// row and any other ([`cross_claim`]; Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")). The first row to register a word keeps it only for
+    /// the SAME plugin arriving by both doors, which the one-version-per-kind rule governs.
     fn admit(&mut self, row: LoadablePlugin) {
         let i = self.rows.len();
         self.by_name.entry(row.manifest.name.clone()).or_insert(i);
-        self.by_alias.entry(row.manifest.alias.clone()).or_insert(i);
+        for word in row.manifest.config_names() {
+            self.by_alias.entry(word.to_string()).or_insert(i);
+        }
         self.rows.push(row);
     }
 
@@ -366,12 +386,17 @@ impl PluginRegistry {
                 entry: Some(entry),
             });
         }
-        let n = rows.len() + self.linked;
+        let new = rows.len();
+        let n = new + self.linked;
         rows.extend(self.rows);
+        if let Some(refusal) = cross_claim(&rows, new) {
+            return Err(refusal);
+        }
         Ok(Self::of(rows, n, self.skipped))
     }
 
-    /// Resolve `name_or_alias` (canonical name first, then alias) to a loadable plugin.
+    /// Resolve `name_or_alias` (canonical name first, then alias or former name) to a loadable
+    /// plugin.
     pub fn resolve(&self, name_or_alias: &str) -> Option<&LoadablePlugin> {
         self.by_name
             .get(name_or_alias)
@@ -390,7 +415,7 @@ impl PluginRegistry {
     pub fn unresolved_reason(&self, name_or_alias: &str) -> Option<&SkippedPlugin> {
         self.skipped
             .iter()
-            .find(|s| s.manifest.name == name_or_alias || s.manifest.alias == name_or_alias)
+            .find(|s| s.manifest.answers_to(name_or_alias))
     }
 
     /// Every plugin the plugins DIRECTORY admitted (for logging / catalog / its own conflict and
@@ -659,9 +684,9 @@ impl PluginRegistry {
             let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
             match p.manifest.stated_rendering().map_err(named)? {
                 Some(stated) => set.doors.push(
-                    crate::boot::Candidate::from_rendering(
+                    crate::boot::Candidate::from_manifest(
                         stated,
-                        Some(&p.manifest.alias),
+                        &p.manifest,
                         crate::boot::Origin::Dropped {
                             file: p.file.clone(),
                             bytes: std::sync::Arc::new(p.lib_bytes.clone()),
@@ -674,6 +699,32 @@ impl PluginRegistry {
         }
         Ok(set)
     }
+}
+
+/// THE ONE-OWNER RULE across the doors (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): a name, alias or former name config may reference
+/// resolves to exactly one plugin, and an ambiguity is never resolved by picking a winner: compiled
+/// in = dropped in, so neither door outranks the other. `rows` is the registry about to be built, its
+/// first `new` rows the ones being linked; each is checked against every row after it (the other
+/// linked rows and every row already admitted: the plugins directory's). Two DIFFERENT plugins
+/// (different canonical names) claiming one word refuse the boot, naming both and the word. Two
+/// DROPPED-IN rows were already held to this by phase 3 ([`conflicts`]). The SAME plugin arriving by
+/// both doors (one canonical name) is not a claim conflict: the one-version-per-kind rule governs it.
+fn cross_claim(rows: &[LoadablePlugin], new: usize) -> Option<String> {
+    for (i, a) in rows.iter().enumerate().take(new) {
+        for b in &rows[i + 1..] {
+            if a.manifest.name == b.manifest.name {
+                continue;
+            }
+            if let Some(word) = a.manifest.identities().find(|w| b.manifest.answers_to(w)) {
+                return Some(format!(
+                    "plugin claim conflict: '{word}' is claimed by both {} ({}) and {} ({}) - \
+                     a name, alias or former name must resolve to one plugin; remove one",
+                    a.file, a.manifest.name, b.file, b.manifest.name
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// The transports a plugins directory contributes, by the lane each image speaks
@@ -802,14 +853,30 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
     // Phase 2: trust. A rejection here is a SKIP (logged, never dlopen'ed) - unless the plugin is
     // actually referenced, in which case resolution fails loudly with this reason attached.
     match evaluate(&unpacked.lib_bytes, &unpacked.manifest, policy) {
-        Ok(verdict) => FileOutcome::Loadable(LoadablePlugin {
-            file,
-            manifest: unpacked.manifest,
-            verdict,
-            lib_bytes: unpacked.lib_bytes,
-            ephemeral: false,
-            entry: None,
-        }),
+        Ok(verdict) => {
+            let plugin = LoadablePlugin {
+                file,
+                manifest: unpacked.manifest,
+                verdict,
+                lib_bytes: unpacked.lib_bytes,
+                ephemeral: false,
+                entry: None,
+            };
+            // Phase 2b: the egress-class grant (§5): a plugin that is not first-party declaring a
+            // need in a first-party class is never admitted.
+            match plugin.first_party() {
+                true => FileOutcome::Loadable(plugin),
+                false => match crate::sign::egress_grant(&plugin.manifest) {
+                    Ok(()) => FileOutcome::Loadable(plugin),
+                    Err(reason) => FileOutcome::Skipped(SkippedPlugin {
+                        file: plugin.file,
+                        manifest: plugin.manifest,
+                        reason,
+                        kind: crate::sign::RejectKind::EgressGrant,
+                    }),
+                },
+            }
+        }
         Err(rejected) => FileOutcome::Skipped(SkippedPlugin {
             file,
             manifest: unpacked.manifest,
@@ -835,8 +902,8 @@ pub struct Conflict {
     pub files: Vec<String>,
 }
 
-/// Phase 3: cross-plugin conflict detection over the LOADABLE set. Any name/alias collision is a
-/// hard error naming BOTH plugins and the colliding identifier.
+/// Phase 3: cross-plugin conflict detection over the LOADABLE set. Any name/alias/former-name
+/// collision is a hard error naming BOTH plugins and the colliding identifier.
 fn conflicts(loadable: &[LoadablePlugin]) -> Vec<Conflict> {
     let mut errors = Vec::new();
     let mut name_owner: HashMap<&str, &LoadablePlugin> = HashMap::new();
@@ -877,6 +944,31 @@ fn conflicts(loadable: &[LoadablePlugin]) -> Vec<Conflict> {
                         p.manifest.alias, p.file, p.manifest.name, other.file, other.manifest.name
                     ),
                     files: vec![p.file.clone(), other.file.clone()],
+                });
+            }
+        }
+    }
+    // A FORMER NAME is a reference the registry resolves like the alias, so it collides like one:
+    // with another plugin's name, alias or former name. A former name two plugins share is reported
+    // once, at the later of the two.
+    for (i, p) in loadable.iter().enumerate() {
+        for word in &p.manifest.former_names {
+            for (j, q) in loadable.iter().enumerate() {
+                let shared_earlier = j > i && q.manifest.former_names.contains(word);
+                if j == i
+                    || q.manifest.name == p.manifest.name
+                    || shared_earlier
+                    || !q.manifest.answers_to(word)
+                {
+                    continue;
+                }
+                errors.push(Conflict {
+                    message: format!(
+                        "plugin former-name conflict: former name '{word}' of {} ({}) is also \
+                         claimed by {} ({}) - remove one",
+                        p.file, p.manifest.name, q.file, q.manifest.name
+                    ),
+                    files: vec![p.file.clone(), q.file.clone()],
                 });
             }
         }
@@ -978,12 +1070,15 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::UnknownPublisher => "unknown-publisher",
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
+                    RejectKind::EgressGrant => "third-party (egress grant)",
                 }
                 .to_string();
                 let status = match s.kind {
                     // Only a TRUSTED-but-below-floor artifact is a hard REJECTED row; every untrusted
                     // reject (including a floored untrusted one) is a SKIP.
-                    RejectKind::AntiDowngrade => format!("REJECTED: {}", s.reason),
+                    RejectKind::AntiDowngrade | RejectKind::EgressGrant => {
+                        format!("REJECTED: {}", s.reason)
+                    }
                     _ => format!("SKIPPED: {}", s.reason),
                 };
                 rows.push(InventoryEntry {

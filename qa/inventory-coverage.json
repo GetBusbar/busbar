@@ -4,7 +4,7 @@
     "Answers, for every row id in qa/evidence/inventory/*.md, whether an oracle cell",
     "(testing/shadow-oracle/cells.json, checked against the golden ledger) covers it."
   ],
-  "generated_at": "2026-09-10",
+  "generated_at": "2026-10-05",
   "family_summary": {
     "ADM": {
       "covered": 66,
@@ -13,10 +13,10 @@
       "total": 66
     },
     "BOOT": {
-      "covered": 217,
+      "covered": 219,
       "partial": 10,
       "none": 0,
-      "total": 227
+      "total": 229
     },
     "CONF": {
       "covered": 1,
@@ -2800,10 +2800,28 @@
         "boot.refusal|BOOT-101|validate"
       ]
     },
-    "BOOT-105a": {
+    "BOOT-102": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
       "line": 669,
+      "status": "covered",
+      "citers": [
+        "boot.refusal|BOOT-102|validate"
+      ]
+    },
+    "BOOT-103": {
+      "family": "BOOT",
+      "file": "qa/evidence/inventory/1.5.5-config.md",
+      "line": 670,
+      "status": "covered",
+      "citers": [
+        "boot.refusal|BOOT-103|validate"
+      ]
+    },
+    "BOOT-105a": {
+      "family": "BOOT",
+      "file": "qa/evidence/inventory/1.5.5-config.md",
+      "line": 671,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-105a|validate"
@@ -2812,7 +2830,7 @@
     "BOOT-105b": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 670,
+      "line": 672,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-105b|validate"
@@ -2821,7 +2839,7 @@
     "BOOT-105c": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 671,
+      "line": 673,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-105c|validate"
@@ -2830,7 +2848,7 @@
     "BOOT-106": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 672,
+      "line": 674,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-106|validate"
@@ -2839,7 +2857,7 @@
     "BOOT-107": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 673,
+      "line": 675,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-107|validate"
@@ -2848,7 +2866,7 @@
     "BOOT-108": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 674,
+      "line": 676,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-108|validate"
@@ -2857,7 +2875,7 @@
     "BOOT-109a": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 675,
+      "line": 677,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-109a|validate"
@@ -2866,7 +2884,7 @@
     "BOOT-109b": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 676,
+      "line": 678,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-109b|validate"
@@ -2875,7 +2893,7 @@
     "BOOT-110": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 677,
+      "line": 679,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-110|validate"
@@ -2884,7 +2902,7 @@
     "BOOT-120": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 686,
+      "line": 688,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-120|validate"
@@ -2893,7 +2911,7 @@
     "BOOT-121": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 687,
+      "line": 689,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-121|validate"
@@ -2902,7 +2920,7 @@
     "BOOT-122": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 688,
+      "line": 690,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-122|validate"
@@ -2911,7 +2929,7 @@
     "BOOT-123": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 689,
+      "line": 691,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-123|validate"
@@ -2920,7 +2938,7 @@
     "BOOT-124": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 690,
+      "line": 692,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-124|validate"
@@ -2929,7 +2947,7 @@
     "BOOT-125": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 691,
+      "line": 693,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-125|validate"
@@ -2938,7 +2956,7 @@
     "BOOT-130": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 692,
+      "line": 694,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-130|boot"
@@ -2947,7 +2965,7 @@
     "BOOT-131": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 693,
+      "line": 695,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-131|boot"
@@ -2956,7 +2974,7 @@
     "BOOT-132": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 694,
+      "line": 696,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-132|boot"
@@ -2965,7 +2983,7 @@
     "BOOT-133": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 695,
+      "line": 697,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-133|boot"
@@ -2974,7 +2992,7 @@
     "BOOT-134": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 696,
+      "line": 698,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-134|boot"
@@ -2983,7 +3001,7 @@
     "BOOT-135": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 697,
+      "line": 699,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-135|boot"
@@ -2992,7 +3010,7 @@
     "BOOT-136": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 698,
+      "line": 700,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-136|boot"
@@ -3001,7 +3019,7 @@
     "BOOT-137a": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 699,
+      "line": 701,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-137a|boot"
@@ -3010,7 +3028,7 @@
     "BOOT-137b": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 700,
+      "line": 702,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-137b|boot"
@@ -3019,7 +3037,7 @@
     "BOOT-137c": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 701,
+      "line": 703,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-137c|boot"
@@ -3028,7 +3046,7 @@
     "BOOT-138a": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 702,
+      "line": 704,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-138a|boot"
@@ -3037,7 +3055,7 @@
     "BOOT-138b": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 703,
+      "line": 705,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-138b|boot"
@@ -3046,7 +3064,7 @@
     "BOOT-138c": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 704,
+      "line": 706,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-138c|boot"
@@ -3055,7 +3073,7 @@
     "BOOT-139a": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 705,
+      "line": 707,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-139a|boot"
@@ -3064,7 +3082,7 @@
     "BOOT-139b": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 706,
+      "line": 708,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-139b|boot"
@@ -3073,7 +3091,7 @@
     "BOOT-140": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 707,
+      "line": 709,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-140|boot"
@@ -3082,7 +3100,7 @@
     "BOOT-141": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 708,
+      "line": 710,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-141|boot"
@@ -3091,7 +3109,7 @@
     "BOOT-150": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 709,
+      "line": 711,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-150|validate"
@@ -3100,7 +3118,7 @@
     "BOOT-151": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 710,
+      "line": 712,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-151|validate"
@@ -3109,7 +3127,7 @@
     "BOOT-152": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 711,
+      "line": 713,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-152|validate"
@@ -3118,7 +3136,7 @@
     "BOOT-153": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 712,
+      "line": 714,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-153|boot"
@@ -3127,7 +3145,7 @@
     "BOOT-160": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 713,
+      "line": 715,
       "status": "partial",
       "citers": [
         "boot.refusal|BOOT-160|boot"
@@ -3136,7 +3154,7 @@
     "BOOT-161": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 714,
+      "line": 716,
       "status": "partial",
       "citers": [
         "boot.refusal|BOOT-161|boot"
@@ -3145,7 +3163,7 @@
     "BOOT-162": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 715,
+      "line": 717,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-162|boot"
@@ -3154,7 +3172,7 @@
     "BOOT-170": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 716,
+      "line": 718,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-170|boot"
@@ -3163,7 +3181,7 @@
     "BOOT-171": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 717,
+      "line": 719,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-171|boot"
@@ -3172,7 +3190,7 @@
     "BOOT-172": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 718,
+      "line": 720,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-172|boot"
@@ -3181,7 +3199,7 @@
     "BOOT-173": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 719,
+      "line": 721,
       "status": "partial",
       "citers": [
         "boot.refusal|BOOT-173|boot"
@@ -3190,7 +3208,7 @@
     "BOOT-174": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 720,
+      "line": 722,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-174|boot"
@@ -3199,7 +3217,7 @@
     "BOOT-175": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 721,
+      "line": 723,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-175|boot"
@@ -3208,7 +3226,7 @@
     "BOOT-180": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 722,
+      "line": 724,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-180|boot"
@@ -3217,7 +3235,7 @@
     "BOOT-181": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 723,
+      "line": 725,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-181|boot"
@@ -3226,7 +3244,7 @@
     "BOOT-182": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 724,
+      "line": 726,
       "status": "partial",
       "citers": [
         "boot.refusal|BOOT-182|boot"
@@ -3235,7 +3253,7 @@
     "BOOT-183": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 725,
+      "line": 727,
       "status": "partial",
       "citers": [
         "boot.refusal|BOOT-183|boot"
@@ -3244,7 +3262,7 @@
     "BOOT-184": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 726,
+      "line": 728,
       "status": "covered",
       "citers": [
         "boot.refusal|BOOT-184|boot"
@@ -3253,7 +3271,7 @@
     "BOOT-W01": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 732,
+      "line": 734,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W01|validate"
@@ -3262,7 +3280,7 @@
     "BOOT-W02": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 733,
+      "line": 735,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W02|validate"
@@ -3271,7 +3289,7 @@
     "BOOT-W03": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 734,
+      "line": 736,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W03|validate"
@@ -3280,7 +3298,7 @@
     "BOOT-W04": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 735,
+      "line": 737,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W04|validate"
@@ -3289,7 +3307,7 @@
     "BOOT-W10": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 736,
+      "line": 738,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W10|boot"
@@ -3298,7 +3316,7 @@
     "BOOT-W11": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 737,
+      "line": 739,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W11|boot"
@@ -3307,7 +3325,7 @@
     "BOOT-W12": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 738,
+      "line": 740,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W12|boot"
@@ -3316,7 +3334,7 @@
     "BOOT-W13": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 739,
+      "line": 741,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W13|boot"
@@ -3325,7 +3343,7 @@
     "BOOT-W14": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 740,
+      "line": 742,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W14|boot"
@@ -3334,7 +3352,7 @@
     "BOOT-W15": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 741,
+      "line": 743,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W15|boot"
@@ -3343,7 +3361,7 @@
     "BOOT-W16": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 742,
+      "line": 744,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W16|boot"
@@ -3352,7 +3370,7 @@
     "BOOT-W17": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 743,
+      "line": 745,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W17|boot"
@@ -3361,7 +3379,7 @@
     "BOOT-W18": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 744,
+      "line": 746,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W18|boot"
@@ -3370,7 +3388,7 @@
     "BOOT-W19": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 745,
+      "line": 747,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W19|boot"
@@ -3379,7 +3397,7 @@
     "BOOT-W20": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 746,
+      "line": 748,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W20|boot"
@@ -3388,7 +3406,7 @@
     "BOOT-W21": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 747,
+      "line": 749,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W21|boot"
@@ -3397,7 +3415,7 @@
     "BOOT-W22": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 748,
+      "line": 750,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W22|boot"
@@ -3406,7 +3424,7 @@
     "BOOT-W23": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 749,
+      "line": 751,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W23|boot"
@@ -3415,7 +3433,7 @@
     "BOOT-W24": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 750,
+      "line": 752,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W24|boot"
@@ -3424,7 +3442,7 @@
     "BOOT-W25": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 751,
+      "line": 753,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W25|boot"
@@ -3433,7 +3451,7 @@
     "BOOT-W26": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 752,
+      "line": 754,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W26|boot"
@@ -3442,7 +3460,7 @@
     "BOOT-W30": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 753,
+      "line": 755,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W30|validate"
@@ -3451,7 +3469,7 @@
     "BOOT-W31": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 754,
+      "line": 756,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W31|boot"
@@ -3460,7 +3478,7 @@
     "BOOT-W32": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 755,
+      "line": 757,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W32|boot"
@@ -3469,7 +3487,7 @@
     "BOOT-W33": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 756,
+      "line": 758,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W33|boot"
@@ -3478,7 +3496,7 @@
     "BOOT-W34": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 757,
+      "line": 759,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W34|boot",
@@ -3488,7 +3506,7 @@
     "BOOT-W35": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 758,
+      "line": 760,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W35|boot"
@@ -3497,7 +3515,7 @@
     "BOOT-W36": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 759,
+      "line": 761,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W36|boot"
@@ -3506,7 +3524,7 @@
     "BOOT-W40": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 760,
+      "line": 762,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W40|boot"
@@ -3515,7 +3533,7 @@
     "BOOT-W41": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 761,
+      "line": 763,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W41|boot"
@@ -3524,7 +3542,7 @@
     "BOOT-W42": {
       "family": "BOOT",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 762,
+      "line": 764,
       "status": "covered",
       "citers": [
         "boot.warning|BOOT-W42|boot"
@@ -3533,105 +3551,105 @@
     "SEC-001": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1131,
+      "line": 1133,
       "status": "none",
       "citers": []
     },
     "SEC-002": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1132,
+      "line": 1134,
       "status": "none",
       "citers": []
     },
     "SEC-003": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1133,
+      "line": 1135,
       "status": "none",
       "citers": []
     },
     "SEC-004": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1134,
+      "line": 1136,
       "status": "none",
       "citers": []
     },
     "SEC-010": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1135,
+      "line": 1137,
       "status": "none",
       "citers": []
     },
     "SEC-011": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1136,
+      "line": 1138,
       "status": "none",
       "citers": []
     },
     "SEC-012": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1137,
+      "line": 1139,
       "status": "none",
       "citers": []
     },
     "SEC-013": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1138,
+      "line": 1140,
       "status": "none",
       "citers": []
     },
     "SEC-014": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1139,
+      "line": 1141,
       "status": "none",
       "citers": []
     },
     "SEC-015": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1140,
+      "line": 1142,
       "status": "none",
       "citers": []
     },
     "SEC-016": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1141,
+      "line": 1143,
       "status": "none",
       "citers": []
     },
     "SEC-017": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1142,
+      "line": 1144,
       "status": "none",
       "citers": []
     },
     "SEC-018": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1143,
+      "line": 1145,
       "status": "none",
       "citers": []
     },
     "SEC-019": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1144,
+      "line": 1146,
       "status": "none",
       "citers": []
     },
     "SEC-020": {
       "family": "SEC",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1145,
+      "line": 1147,
       "status": "none",
       "citers": []
     },

@@ -210,3 +210,102 @@ fn a_statement_names_one_window_and_never_sums_two() {
         "both statements are real figures, not two empty ones agreeing"
     );
 }
+
+/// **A LANE THE CARD DOES NOT NAME IS UNPRICEABLE, NOT FEE-ONLY** (#42, `BUSBAR-1.6.0.md:2222`:
+/// *"a hit class not priced ⇒ REFUSE … FAILS if billing-on & unpriced"*).
+///
+/// The read lookup used to answer such a line with its fee alone, and the statement summed that
+/// onto the row as if it were the bill: the card present, the lane absent, every token the line
+/// carried priced at nothing and not one of them named. The line is now listed under the lane it
+/// was served on, and the row carries nothing of it.
+#[test]
+fn a_lane_the_card_does_not_name_is_listed_unpriceable_and_moves_no_row() {
+    let archive = archive_of(opening());
+    let view = archive.view_at(archive.head().unwrap()).unwrap();
+    let mut lines = book();
+    lines[1].lane = "lane-unnamed".to_string();
+
+    let statement = totals_as_of(&view, WINDOW, lines.iter());
+    assert_eq!(
+        statement.unpriceable,
+        vec![crate::totals::Unpriced {
+            node: 1,
+            node_seq: 2,
+            why: Divergence::LaneUnpriced {
+                card_seq: HistorySeq::OPENING,
+                lane: "lane-unnamed".to_string(),
+            },
+        }],
+        "the unnamed lane is a refusal, named, and never a line of fees"
+    );
+    let row = statement.row(&key("b"));
+    assert_eq!(row.lines, 1, "only the priced line is on the row");
+    assert_eq!(
+        row.fee_count, 1,
+        "the unpriceable line's fee is not counted on the row"
+    );
+}
+
+/// **EVERY CLASS THE CARD CANNOT PRICE IS LISTED** — none of them dropped, and the line that hit
+/// them moves no row.
+///
+/// Two classes the card names no price for, on a lane it does name: the statement used to price
+/// the line at its fee and its priced classes and drop the other two without a word, so the served
+/// totals view (which trusts this list) published a smaller bill. Both are named now, one entry
+/// each.
+#[test]
+fn every_class_the_card_cannot_price_is_listed_and_the_line_moves_no_row() {
+    let archive = archive_of(opening());
+    let view = archive.view_at(archive.head().unwrap()).unwrap();
+    let mut lines = book();
+    lines[1].lines.push(PricedLine {
+        class: MeterClassId::new("class-x"),
+        quantity: 7,
+    });
+    lines[1].lines.push(PricedLine {
+        class: MeterClassId::new("class-y"),
+        quantity: 9,
+    });
+
+    let statement = totals_as_of(&view, WINDOW, lines.iter());
+    let named: Vec<&Divergence> = statement.unpriceable.iter().map(|u| &u.why).collect();
+    assert_eq!(
+        named,
+        vec![
+            &Divergence::ClassUnpriced {
+                card_seq: HistorySeq::OPENING,
+                lane: LANE.to_string(),
+                class: "class-x".to_string(),
+            },
+            &Divergence::ClassUnpriced {
+                card_seq: HistorySeq::OPENING,
+                lane: LANE.to_string(),
+                class: "class-y".to_string(),
+            },
+        ],
+        "both unpriced classes are named, in the order the line carried them"
+    );
+    assert!(statement
+        .unpriceable
+        .iter()
+        .all(|u| u.node == 1 && u.node_seq == 2));
+    assert_eq!(
+        statement.row(&key("b")).lines,
+        1,
+        "the line that hit an unpriced class is not summed onto the row"
+    );
+}
+
+/// The one silent zero #42 allows: NO card at all. A deployment that configured no rate card is
+/// not billed, so its lines price at their fee and nothing is unpriceable.
+#[test]
+fn with_no_card_at_all_nothing_is_unpriceable() {
+    let archive = archive_of(History::opening(RateCard::absent(1), 0));
+    let view = archive.view_at(archive.head().unwrap()).unwrap();
+    let mut lines = book();
+    lines[1].lane = "lane-unnamed".to_string();
+
+    let statement = totals_as_of(&view, WINDOW, lines.iter());
+    assert!(statement.unpriceable.is_empty());
+    assert_eq!(statement.row(&key("b")).lines, 2);
+}

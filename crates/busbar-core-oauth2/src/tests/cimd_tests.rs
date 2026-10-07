@@ -16,8 +16,8 @@ use oauth_as::scope::ScopeSet;
 use oauth_as::store::{MemoryStorage, Storage as _};
 
 use super::{
-    fetch_policy, is_cimd_client_id, materialize, CimdFetch, CimdStore, GuardedFetch,
-    FETCH_TIMEOUT, MAX_DOCUMENT_BYTES,
+    document_need, is_cimd_client_id, materialize, CimdFetch, CimdStore, ConnectorFetch,
+    DOCUMENT_NEED, FETCH_TIMEOUT, MAX_DOCUMENT_BYTES,
 };
 
 const URL: &str = "https://client.example/oauth-client";
@@ -239,134 +239,347 @@ async fn the_store_wins_and_every_cimd_failure_reads_as_an_unknown_client() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
-// THE PRODUCTION FETCH ITSELF. Everything above drives a STUB fetch, which is right — the
-// document checks are the property under test and a real socket would only add flakiness. But it
-// means the stub is the only `CimdFetch` any test has ever constructed, and [`GuardedFetch`] —
-// the one production actually installs at `plane.rs` — is reached by no test at all. The two
-// tests below are the ones that notice if its bounds or its guard call are changed: neither the
-// stub-driven tests here nor `net_guard`'s own tests (which judge the guard given a policy, never
-// this policy) go red for either edit.
+// THE PRODUCTION FETCH ITSELF: one GET over the document need on the root Connector. The guard is
+// the connector's (`busbar-core-connector/src/guard.rs`, proven there); what is proven HERE is the
+// wiring that puts every fetch in front of it — the need it declares (outbound, `https`, the
+// `open-web` class, no configured target), the URL it opens verbatim, and that this crate decides
+// no destination itself: a refusal comes from the table or not at all. The table below is a
+// recording stand-in for the connector, so no socket is opened.
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-/// THE BOUNDS THE PRODUCTION FETCH RUNS UNDER, asserted rather than assumed. Each of the five is
-/// load-bearing and none is reachable from configuration — there is deliberately no operator knob
-/// on this path, because a CIMD `client_id` is a STRANGER'S URL by definition and there is no
-/// operator intent for a knob to carry.
-///
-/// This is the test that goes red if `allow_private` is ever flipped true here. `net_guard`'s
-/// tests would not: they prove the guard refuses internal addresses *when the policy says so*, and
-/// this function is where this path says so.
+use std::sync::Mutex;
+use std::task::{Context, Poll};
+
+use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
+use busbar_contract::abi::mechanism::rendering::ReadNeed;
+use busbar_contract::conn::{
+    ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece, PieceKind,
+    PollConns, Ticket,
+};
+use busbar_contract::ids::StreamId;
+use busbar_contract::transport::ConnFacts;
+
+const OWNER: InstanceId = InstanceId(0);
+
+/// What one exchange answers: the open's verdict, then the pieces, in order.
+struct Script {
+    open: Result<(), ConnError>,
+    pieces: Vec<(PieceKind, Option<u32>, Vec<u8>)>,
+}
+
+/// One need the fetch declared: owner, need, spec, configured target.
+type Declared = (InstanceId, NeedId, ReadNeed, Option<String>);
+
+/// One open the fetch made: owner, need, target, method, head target.
+type Opened = (InstanceId, NeedId, String, Vec<u8>, Vec<u8>);
+
+/// A connection table that records what the fetch asked of it and answers from a [`Script`].
+#[derive(Default)]
+struct Recorder {
+    script: Mutex<Option<Script>>,
+    declared: Mutex<Vec<Declared>>,
+    opened: Mutex<Vec<Opened>>,
+    closed: Mutex<Vec<ConnId>>,
+    refuse_declare: bool,
+}
+
+impl Recorder {
+    fn answering(
+        open: Result<(), ConnError>,
+        pieces: Vec<(PieceKind, Option<u32>, Vec<u8>)>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            script: Mutex::new(Some(Script { open, pieces })),
+            ..Self::default()
+        })
+    }
+
+    fn ok(status: u32, body: &[u8]) -> Arc<Self> {
+        Self::answering(
+            Ok(()),
+            vec![
+                (
+                    PieceKind::Fields,
+                    Some(status),
+                    b"content-type: application/json\r\n".to_vec(),
+                ),
+                (PieceKind::Body, None, body.to_vec()),
+                (PieceKind::Completion, None, Vec::new()),
+            ],
+        )
+    }
+}
+
+impl Conns for Recorder {
+    fn open(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+    ) -> Result<ConnId, ConnError> {
+        self.opened.lock().unwrap().push((
+            caller,
+            need,
+            desc.target.to_string(),
+            desc.method.to_vec(),
+            desc.head_target.to_vec(),
+        ));
+        let script = self.script.lock().unwrap();
+        script
+            .as_ref()
+            .map_or(Err(ConnError::Refused), |s| s.open)
+            .map(|()| ConnId(7))
+    }
+    fn write(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
+        Err(ConnError::Closed)
+    }
+    fn read(&self, _: InstanceId, _: ConnId, _: Ticket, _: &mut [u8]) -> Result<Piece, ConnError> {
+        Err(ConnError::Closed)
+    }
+    fn wait(&self, _: InstanceId, _: &[ConnId], _: Ticket) -> Result<usize, ConnError> {
+        Err(ConnError::Closed)
+    }
+    fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
+        Err(ConnError::Closed)
+    }
+    fn close(&self, _: InstanceId, conn: ConnId) -> Result<(), ConnError> {
+        self.closed.lock().unwrap().push(conn);
+        Ok(())
+    }
+}
+
+impl DeclaredConns for Recorder {
+    fn declare(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        target: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<(), ConnError> {
+        self.declared
+            .lock()
+            .unwrap()
+            .push((owner, need, spec.clone(), target.map(str::to_string)));
+        if self.refuse_declare {
+            Err(ConnError::Refused)
+        } else {
+            Ok(())
+        }
+    }
+    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
+        let declared = self.declared.lock().unwrap();
+        declared
+            .iter()
+            .any(|(o, n, _, _)| *o == owner && *n == need)
+            .then_some(if self.refuse_declare {
+                Err(ConnError::Refused)
+            } else {
+                Ok(())
+            })
+    }
+    fn serves_scheme(&self, _: &str) -> bool {
+        true
+    }
+}
+
+impl PollConns for Recorder {
+    fn poll_read(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+        _: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<Piece, ConnError>> {
+        let mut script = self.script.lock().unwrap();
+        let Some(script) = script.as_mut() else {
+            return Poll::Ready(Err(ConnError::Closed));
+        };
+        if script.pieces.is_empty() {
+            return Poll::Ready(Err(ConnError::Closed));
+        }
+        let (kind, status_code, bytes) = script.pieces.remove(0);
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Poll::Ready(Ok(Piece {
+            kind,
+            stream: StreamId(0),
+            len: bytes.len(),
+            end: true,
+            status: None,
+            status_code,
+            status_namespace: None,
+            retry_after_secs: None,
+            fault: None,
+            reason: None,
+        }))
+    }
+}
+
+thread_local! {
+    /// The table the next `fetch_over` hands the fetch: `ConnectorFetch` reads its table through
+    /// a plain `fn`, as production's `Connections::table` is one.
+    static TABLE: std::cell::RefCell<Option<Arc<Recorder>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn current_table() -> Option<crate::Table> {
+    TABLE.with(|t| {
+        t.borrow().as_ref().map(|r| crate::Table {
+            owner: OWNER,
+            declared: Arc::clone(r) as Arc<dyn DeclaredConns>,
+            conns: Arc::clone(r) as Arc<dyn PollConns>,
+        })
+    })
+}
+
+/// Fetch `url` over `table` through the PRODUCTION fetch.
+async fn fetch_over(table: &Arc<Recorder>, url: &str) -> Result<Vec<u8>, String> {
+    TABLE.with(|t| *t.borrow_mut() = Some(Arc::clone(table)));
+    let got = ConnectorFetch {
+        table: current_table,
+    }
+    .fetch(url)
+    .await;
+    TABLE.with(|t| *t.borrow_mut() = None);
+    got
+}
+
+/// THE NEED THE FETCH DECLARES, asserted rather than assumed: outbound, over `https`, in the
+/// `open-web` class (public HTTPS only, private and metadata refused by the connector's guard),
+/// with no configured target (a configured target would lift the dial into operator
+/// infrastructure, where private addresses are allowed) and no auth.
 #[test]
-fn the_production_fetch_policy_is_the_bounded_one() {
-    let policy = fetch_policy();
+fn the_document_need_is_outbound_https_in_the_open_web_class() {
+    let need = document_need();
+    assert_eq!(need.direction, DIRECTION_OUTBOUND);
+    assert_eq!(need.transport, "https");
+    assert_eq!(
+        need.egress_class, EGRESS_OPEN_WEB,
+        "a CIMD `client_id` is a stranger's URL: its dial is judged as request data, public HTTPS \
+         only"
+    );
     assert!(
-        !policy.allow_private,
-        "the CIMD fetch reaches a URL a stranger chose; opting it into private addressing turns \
-         an unauthenticated endpoint into an internal-network probe"
+        need.target_from.is_empty(),
+        "a configured target is judged as operator infrastructure, where private addresses pass"
     );
-    assert!(
-        !policy.allow_plaintext,
-        "the document IS the client's identity; one fetched over plaintext is rewritable in flight"
-    );
-    assert_eq!(
-        policy.max_redirects, 0,
-        "a 3xx is a fresh, unvalidated URL: the document lives at the `client_id` or it is not \
-         that client's document"
-    );
-    assert_eq!(
-        policy.max_body_bytes, MAX_DOCUMENT_BYTES,
-        "the fetch must run under the document ceiling, not some other one"
-    );
-    assert_eq!(
-        MAX_DOCUMENT_BYTES,
-        5 * 1024,
-        "a metadata document is a few kilobytes; anything larger is an allocation whose size the \
-         URL's owner chose"
-    );
-    assert_eq!(
-        policy.timeout, FETCH_TIMEOUT,
-        "the fetch sits on an interactive authorization request and must fail the one login \
-         rather than park a handler"
-    );
+    assert!(need.auth.is_empty() && need.trust_from.is_empty());
+    assert_eq!(MAX_DOCUMENT_BYTES, 5 * 1024);
     assert_eq!(FETCH_TIMEOUT, std::time::Duration::from_secs(10));
 }
 
-/// THE GUARD IS ACTUALLY WIRED IN. Every value here is refused STRUCTURALLY — by name, by literal,
-/// or by scheme — so this test opens no socket and consults no resolver, which is the guard's own
-/// design and the reason a loopback name cannot be won by a rebinding attacker.
-///
-/// The point is the WIRING, not the ranges: `net_guard`'s tests already prove the predicate. This
-/// one proves [`GuardedFetch`] calls it, and goes red if the `judge_scheme` /
-/// `resolve_and_pin` pair is ever dropped from the fetch — an edit that leaves every other
-/// test in the tree green while pointing an unauthenticated endpoint at IMDS.
+/// THE FETCH IS THE CONNECTOR'S: it declares the document need on the table under the table's
+/// owner, opens the `client_id` URL VERBATIM as a GET for its path, reads the document, and closes
+/// the connection.
 #[tokio::test]
-async fn the_production_fetch_refuses_the_addresses_the_guard_exists_for() {
-    for (client_id, expected) in [
-        // Loopback, by name and by literal, v4 and v6.
-        ("https://localhost/oauth-client", "loopback name"),
-        ("https://127.0.0.1/oauth-client", "internal address"),
-        ("https://[::1]/oauth-client", "internal address"),
-        // Cloud metadata, by address and by name. Refused unconditionally.
-        (
-            "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
-            "cloud-metadata address",
-        ),
-        (
-            "https://100.100.100.200/latest/meta-data/",
-            "cloud-metadata address",
-        ),
-        (
-            "https://metadata.google.internal/computeMetadata/v1/",
-            "cloud-metadata name",
-        ),
-        // Plaintext, refused at the scheme before anything is resolved.
-        ("http://app.example.com/oauth-client", "plaintext"),
+async fn the_fetch_declares_its_need_and_opens_the_client_id_on_the_table() {
+    let table = Recorder::ok(200, br#"{"client_id":"x"}"#);
+    let body = fetch_over(&table, URL)
+        .await
+        .expect("a 200 document is fetched");
+    assert_eq!(body, br#"{"client_id":"x"}"#);
+
+    let declared = table.declared.lock().unwrap();
+    assert_eq!(declared.len(), 1, "the need is declared once");
+    assert_eq!(declared[0].0, OWNER);
+    assert_eq!(declared[0].1, DOCUMENT_NEED);
+    assert_eq!(declared[0].2, document_need());
+    assert_eq!(declared[0].3, None, "no configured target");
+
+    let opened = table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].0, OWNER);
+    assert_eq!(opened[0].1, DOCUMENT_NEED);
+    assert_eq!(
+        opened[0].2, URL,
+        "the URL is opened exactly as the request spelled it"
+    );
+    assert_eq!(opened[0].3, b"GET");
+    assert_eq!(opened[0].4, b"/oauth-client");
+    assert_eq!(
+        *table.closed.lock().unwrap(),
+        vec![ConnId(7)],
+        "the connection is closed"
+    );
+}
+
+/// NO DESTINATION IS JUDGED HERE. The addresses the old local guard refused reach the TABLE, whose
+/// guard decides: the connector refusing the open is the refusal, and the client is unknown. A
+/// local check put back in front of the table would leave these unopened, and this goes red.
+#[tokio::test]
+async fn every_destination_is_the_tables_to_refuse() {
+    for client_id in [
+        "https://localhost/oauth-client",
+        "https://127.0.0.1/oauth-client",
+        "https://[::1]/oauth-client",
+        "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        "https://metadata.google.internal/computeMetadata/v1/",
+        "https://100.64.1.1/oauth-client",
     ] {
-        let why = GuardedFetch
-            .fetch(client_id)
+        let table = Recorder::answering(Err(ConnError::Refused), Vec::new());
+        let why = fetch_over(&table, client_id)
             .await
-            .expect_err("the authorization server fetched `{client_id}`");
+            .expect_err("the connector refused the open");
         assert!(
-            why.contains(expected),
-            "`{client_id}` was refused, but not as `{expected}`: {why}"
+            why.contains(ConnError::Refused.text()),
+            "{client_id}: {why}"
+        );
+        let opened = table.opened.lock().unwrap();
+        assert_eq!(
+            opened.iter().map(|o| o.2.as_str()).collect::<Vec<_>>(),
+            vec![client_id],
+            "`{client_id}` must be put to the connector's guard, not judged here"
         );
     }
 }
 
-/// POSITIVE CONTROL (call site 3/5: `busbar-core-oauth2/src/cimd.rs`, the CIMD document fetch).
-///
-/// The sibling above planted `metadata.google.internal` — one of the TWO names the dialing guard
-/// already knew, which is why it passed throughout the drift. These are the four it did NOT, plus
-/// CGNAT. Driven through the REAL `GuardedFetch`, the production door.
+/// A table that will not carry the need (no transport serves `https`) refuses at declaration, and
+/// nothing is opened; with no table at all, the fetch fails closed.
 #[tokio::test]
-async fn planted_blocked_targets_are_refused_by_the_cimd_fetch() {
-    for (client_id, expected) in [
-        (
-            "https://metadata.platformequinix.com/metadata",
-            "cloud-metadata name",
-        ),
-        (
-            "https://metadata.tencentyun.com/latest/meta-data/",
-            "cloud-metadata name",
-        ),
-        (
-            "https://instance-data/latest/meta-data/",
-            "cloud-metadata name",
-        ),
-        (
-            "https://instance-data.ec2.internal/latest/meta-data/",
-            "cloud-metadata name",
-        ),
-        ("https://100.64.1.1/oauth-client", "internal address"),
+async fn no_carried_need_and_no_table_both_fail_closed() {
+    let table = Arc::new(Recorder {
+        refuse_declare: true,
+        ..Recorder::default()
+    });
+    fetch_over(&table, URL)
+        .await
+        .expect_err("the need was refused");
+    assert!(table.opened.lock().unwrap().is_empty());
+
+    let why = super::unconnected()
+        .fetch(URL)
+        .await
+        .expect_err("no table, no fetch");
+    assert!(why.contains("no connection table"), "{why}");
+}
+
+/// THE ANSWER'S BOUNDS: a redirect is refused (the document lives at its `client_id`), a non-2xx
+/// is refused, and a body past the document ceiling is refused while it arrives. Each one still
+/// closes the connection.
+#[tokio::test]
+async fn redirects_failures_and_oversized_documents_are_refused() {
+    let big = vec![b'x'; MAX_DOCUMENT_BYTES + 1];
+    for (table, expected) in [
+        (Recorder::ok(302, b""), "a redirect"),
+        (Recorder::ok(404, b""), "HTTP 404"),
+        (Recorder::ok(200, &big), "document ceiling"),
     ] {
-        let why = GuardedFetch
-            .fetch(client_id)
-            .await
-            .expect_err("the authorization server fetched a planted blocked target");
-        assert!(
-            why.contains(expected),
-            "`{client_id}` was refused, but not as `{expected}`: {why}"
-        );
-        println!("oauth2::cimd::GuardedFetch       REFUSED  {client_id}  -> {why}");
+        let why = fetch_over(&table, URL).await.expect_err("refused");
+        assert!(why.contains(expected), "expected `{expected}`: {why}");
+        assert_eq!(*table.closed.lock().unwrap(), vec![ConnId(7)]);
     }
+    // At the ceiling exactly, the document is kept.
+    let at = vec![b'x'; MAX_DOCUMENT_BYTES];
+    assert_eq!(
+        fetch_over(&Recorder::ok(200, &at), URL)
+            .await
+            .unwrap()
+            .len(),
+        MAX_DOCUMENT_BYTES
+    );
 }

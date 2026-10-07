@@ -17,7 +17,7 @@
       "fields": [["content-type", "application/json"]],
       "answer": "{\"request_id\":\"req_1\",\"usage\":{\"units\":42},\"answers\":{}}",
       "answer_out": "{\"request_id\":\"req_1\",\"usage\":{\"units\":42},\"answers\":{}}",
-      "units": [[0, 42]]
+      "units": [[0, 42], [1, 1]]
     },
     "narrow": { "unit": 9, "reply_cap": 16, "more": 3 },
     "short": { "unit": 11 },

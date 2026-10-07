@@ -12,6 +12,11 @@
 //!
 //! - `retired.<kind root>.<word>` → the alias a retired `module:` spelling now answers to;
 //! - `manifest.<alias>` / `asset.<alias>` → that plugin's manifest name and release-asset stem;
+//! - `former.<alias>` → the manifest names the plugin's earlier releases carried (plugins.yaml
+//!   `former_names:`, space-separated), which a LINKED row answers to as its dropped-in copy's
+//!   signed manifest does ([`former_names`]);
+//! - `name_1_5_5.<repo>` → the frozen manifest name a plugin repo's 1.5.5-era release carried (the
+//!   table `former.<alias>` is gated against; read by no runtime code);
 //! - every other key is frozen 1.5.5 operator text, verbatim.
 //!
 //! [`rewrite_retired`] is the ONE rewrite over the table: boot's 1.x detector and
@@ -77,6 +82,15 @@ pub fn text(key: &str) -> &'static str {
         .iter()
         .find(|(k, _)| *k == key)
         .map_or("", |(_, v)| v)
+}
+
+/// The FORMER NAMES the plugin config names `alias` by is declared to answer to (its
+/// `former.<alias>` row, space-separated); none when the table has no such row.
+pub fn former_names(alias: &str) -> Vec<String> {
+    text(&["former.", alias].concat())
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
 }
 
 /// THE ONE REWRITE over the legacy table: when the `module:` of the `kind_root` section `section` is

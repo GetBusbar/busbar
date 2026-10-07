@@ -35,30 +35,64 @@ pub fn exe() -> &'static str {
     path
 }
 
-/// A LOOPBACK PORT NO OTHER BUSBAR TEST IN ANY PROCESS WILL BE HANDED, for this process's lifetime.
+/// A LOOPBACK PORT THIS PROCESS OWNS FROM THE MOMENT IT IS CHOSEN, for the child busbar to listen on.
 ///
-/// Picking a port by binding `:0` and dropping the socket leaves a window before the child busbar
-/// binds it, and the DATA door binds with `SO_REUSEPORT` (one listener per worker), so a second test
-/// that was handed the same number did not fail to bind: both busbars listened on one port and
-/// the kernel spread connections across the two. A scrape then reached the other test's node, which
-/// is how `/metrics never settled` read after 80-120 s under a full workspace run. So each port is
-/// also claimed by an exclusive lock on a per-port file shared by every test process on the machine,
-/// held until this process exits (the OS releases it even on a crash); a number another process has
-/// claimed is skipped. Busbar's boot output is not read and not changed: the listen line logs the
-/// CONFIGURED address, so binding `:0` there would report nothing.
+/// A port picked by binding `:0` and DROPPING the socket is not owned by anyone until the child
+/// binds it, and the child is a process spawn and a boot away. In that window any socket on the
+/// machine may take the number: an outbound connection's ephemeral source port, a TIME_WAIT left by
+/// one, any listener bound to `:0` next — the test's own loopback upstream among them (the kernel
+/// handed a just-dropped number straight back to it). The child then refuses to boot (BUSBAR-9007,
+/// `cannot bind ... Address already in use`) with nothing of the test's wrong.
+/// Busbar cannot be told to bind `:0` and report the port back (its listen line logs the CONFIGURED
+/// address, 1.5.5's line, and each data worker binds the address itself), and it takes no inherited
+/// listener. So the port is never released instead: the socket that chose it stays BOUND, never
+/// listening, for this process's lifetime, with `SO_REUSEADDR` and `SO_REUSEPORT` — the options every
+/// root listener binds with (`busbar_core_connector::socket::listen`). The child's listeners bind
+/// beside it; nothing else can: an ephemeral bind or an outbound connection is never handed a port
+/// a socket is bound to. Never listening, it takes no connection and a connect before the child
+/// listens is refused as it was.
+///
+/// That holds on Linux, where every test run that gates this tree runs. On other unixes a bound,
+/// non-listening socket swallows a SYN instead of refusing it (a poll that connects before the child
+/// listens would hang for the OS connect timeout), so there the socket is dropped as before.
+///
+/// Each number is also claimed by an exclusive lock on a per-port file shared by every test process
+/// on the machine, held until this process exits, and a claimed number is skipped: where the socket
+/// is not kept, that claim is what stops two busbars from being handed one number (the data door's
+/// `SO_REUSEPORT` would let both listen and split the connections between them).
 pub fn free_port() -> u16 {
-    static HELD: std::sync::Mutex<Vec<std::fs::File>> = std::sync::Mutex::new(Vec::new());
+    static HELD: std::sync::Mutex<Vec<(std::fs::File, Option<socket2::Socket>)>> =
+        std::sync::Mutex::new(Vec::new());
     for _ in 0..512 {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|l| l.local_addr())
-            .expect("bind an ephemeral loopback port")
-            .port();
+        let (socket, port) = held_ephemeral_port();
         if let Some(lock) = try_reserve(port) {
-            HELD.lock().unwrap_or_else(|p| p.into_inner()).push(lock);
+            let socket = cfg!(target_os = "linux").then_some(socket);
+            HELD.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((lock, socket));
             return port;
         }
     }
     panic!("no loopback port could be reserved in 512 tries");
+}
+
+/// A loopback socket bound to an ephemeral port as a root listener binds (`SO_REUSEADDR` and
+/// `SO_REUSEPORT`), never listening, and the port the kernel chose for it.
+fn held_ephemeral_port() -> (socket2::Socket, u16) {
+    use socket2::{Domain, Socket, Type};
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).expect("a TCP socket");
+    socket.set_reuse_address(true).expect("SO_REUSEADDR");
+    socket.set_reuse_port(true).expect("SO_REUSEPORT");
+    socket
+        .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .expect("bind an ephemeral loopback port");
+    let port = socket
+        .local_addr()
+        .ok()
+        .and_then(|a| a.as_socket())
+        .expect("the bound address")
+        .port();
+    (socket, port)
 }
 
 /// The exclusive, cross-process claim on `port`, or `None` when another holder has it.

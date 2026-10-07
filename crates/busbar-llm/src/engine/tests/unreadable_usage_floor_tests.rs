@@ -23,7 +23,7 @@ fn floor_for(delivered: usize) -> u64 {
 /// the tokens the key's ledger holds afterwards.
 async fn billed_tokens_for(body: &str) -> u64 {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)

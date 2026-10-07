@@ -1268,7 +1268,7 @@ impl GovState {
                  credential."
             )));
         }
-        let token = material.signer.mint(&key.id, exp, Some(&generation));
+        let token: Redacted<String> = material.signer.mint(&key.id, exp, Some(&generation)).into();
         Ok(Some(RotatedCredential { key, token, exp }))
     }
 

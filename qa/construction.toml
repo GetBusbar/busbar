@@ -922,8 +922,8 @@ known_sites = [
   "crates/busbar-kernel/src/door.rs :: no configured rate for model '{name}'",
   "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
   "crates/busbar-kernel/src/ingress/mod.rs :: /{provider}/{model}/v1/messages",
-  "crates/busbar-kernel/src/metrics/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
-  "crates/busbar-kernel/src/metrics/money.rs :: model",
+  "crates/busbar-kernel/src/snapshot/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
+  "crates/busbar-kernel/src/snapshot/money.rs :: model",
   "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
   "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
   "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
@@ -1103,7 +1103,6 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
-  "hooks-ranking",
 ]
 known_missing_deny = [ "plugin-loader",
 ]
@@ -1248,7 +1247,6 @@ known_sites = [
   "crates/busbar-kernel/src/proto/installed.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
-  "crates/plane-example/src/",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
   # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
   # ONE per (code, level, field-name list) and interns it, so the allocation is bounded by the
@@ -1258,6 +1256,33 @@ known_sites = [
   # catalogue, whose entries are `&'static Diagnostic` with `&'static str` text by the catalogue's
   # type; one allocation per declared code, once, at boot, before the catalogue is first read.
   "crates/busbar/src/root/linked.rs::declared_diagnostics",
+  # REVIEWED 2026-10-05 (disk.append, ARCHITECT ruling Q-C1-FILE): a host service's error text is
+  # `'static` by the service's type (`DiskReport::error`), so the disk lane interns each distinct
+  # operating-system failure text ONCE and answers `OS_REFUSED` past `MAX_WORDS` of them — the
+  # leak-once intern shape of ids.rs `key` above, its allocation bounded by the cap.
+  "crates/busbar-kernel/src/host_disk.rs::os_words",
+  # REVIEWED 2026-10-07 (`Vec::leak`/`String::leak`/`.leak()` joined the symbol list; every site
+  # below was read then). Each is a boot- or load-time, fixed-size allocation of non-hold data
+  # (names, registry rows, declaration tables, interned path patterns), made once per plane, plugin
+  # load or distinct pattern, never per request, and none of them can carry a hold. Sites already
+  # inside a reviewed entry above were read too: `plugin-loader/src/` (a plane's Statement words
+  # and tail tables copied once per load: `kinds/plane.rs` `tail_facts`, `kept`, `declared`,
+  # `registration`), `proto/installed.rs` (the protocol registry's process-singleton tables) and
+  # `diagnostics/emit.rs::site` (the interned field set).
+  #   The plane axis's installed row list: one slice of row references, made once at boot.
+  "crates/busbar/src/root/linked.rs::register_planes",
+  #   The HOT-lane planes and the rows read off them, kept once at boot for the process's life.
+  "crates/busbar/src/root/linked.rs::plane_rows",
+  #   A HOT-lane plane's declaration words and tables, copied once per plane as its row is built.
+  "crates/busbar/src/root/linked.rs::hot_plane_row",
+  #   The declared-diagnostics catalogue, installed once at boot.
+  "crates/busbar/src/root/linked.rs::register_diagnostics",
+  #   A door plane's registration words, folded once per key (bounded by MAX_DOOR_PLANES).
+  "crates/busbar-kernel/src/plane/door.rs::fold",
+  "crates/busbar-kernel/src/plane/door.rs::declaration_of",
+  #   A path pattern's segments, interned once per distinct pattern (the interner answers a pattern
+  #   it already holds), the leak-once intern shape of ids.rs `key` above.
+  "crates/busbar-contract/src/abi/transport/route.rs::intern_pattern",
 ]
 
 # The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
@@ -1291,6 +1316,24 @@ symbol = "Box::leak"
 confined_to = ""
 confined_to_paths = []
 because = "a leaked hold never reaches the exit path"
+
+[rules.hold-escapes.symbols.vec-leak]
+symbol = "Vec::leak"
+confined_to = ""
+confined_to_paths = []
+because = "the same as Box::leak, spelled differently"
+
+[rules.hold-escapes.symbols.string-leak]
+symbol = "String::leak"
+confined_to = ""
+confined_to_paths = []
+because = "the same as Box::leak, spelled differently"
+
+[rules.hold-escapes.symbols.leak-method]
+symbol = ".leak()"
+confined_to = ""
+confined_to_paths = []
+because = "the same as Box::leak, spelled differently"
 
 [rules.hold-escapes.symbols.process-abort]
 symbol = "process::abort"
@@ -1859,7 +1902,9 @@ forbidden = [
 ]
 max_unlisted = 0
 # RATCHETED DOWN 5 -> 3, AT THE MEASUREMENT (K2f): the three main.rs `RecordingRows` sites remain.
-max_doubles = 3
+# RATCHETED DOWN 3 -> 0 (p6-ledger-fix, Q128 audit): the boot book's three `RecordingRows` sites now
+# bind `SummedRows`, the production dual write that holds one row per cell rather than every posting.
+max_doubles = 0
 
 # THE REVIEWED SITES. `verdict = "real"` means the review found this to be the shipped node's own
 # value at this composition — a null shipper on a node with no `peers:`, a memory-buffered book on a
@@ -1878,23 +1923,14 @@ max_doubles = 3
 # BOOT-TAIL (TODO step 11): the boot book moved whole into root/boot.rs as stage 4 Book
 # (`root::boot::compose_book`), so the row follows the same two sites there. A path re-point, not a
 # new review: symbol, verdict and reason unchanged, and the doubles count is unchanged.
-[rules.no-test-doubles-in-production.known_sites.voice-calls-rows-boot-book]
-file = "crates/busbar/src/root/boot.rs"
-symbol = "RecordingRows"
-verdict = "double"
-because = "the same node's rows: a recorder nothing reads, beside the node book the process already opened"
-
+# p6-ledger-fix (Q128): struck, with the node-book and admin-only `RecordingRows` rows. Every
+# production dual write binds `SummedRows` now; `RecordingRows` is a test recorder no shipped line
+# constructs, and the only production spelling left is the read-half impl below.
 [rules.no-test-doubles-in-production.known_sites.bindings-constructor]
 file = "crates/busbar/src/root/auth_bindings.rs"
 symbol = "without_directory("
 verdict = "real"
 because = "this is where the unbound posture is declared; declaring it is not composing a node out of it"
-
-[rules.no-test-doubles-in-production.known_sites.node-book-rows]
-file = "crates/busbar/src/root/durability/mod.rs"
-symbol = "RecordingRows"
-verdict = "real"
-because = "the one book a process settles onto keeps the previous release's rows, and a view reads that same value"
 
 [rules.no-test-doubles-in-production.known_sites.node-book-shipper]
 file = "crates/busbar/src/root/durability/mod.rs"
@@ -1907,12 +1943,6 @@ file = "crates/busbar/src/root/kernel.rs"
 symbol = "without_directory("
 verdict = "real"
 because = "the posture the assembly starts from; a boot with governance state binds the directory over it"
-
-[rules.no-test-doubles-in-production.known_sites.admin-only-rows]
-file = "crates/busbar/src/root/kernel.rs"
-symbol = "RecordingRows"
-verdict = "real"
-because = "an admin-only node's two halves of one rows value, which is what its dual write and its views share"
 
 [rules.no-test-doubles-in-production.known_sites.admin-only-shipper]
 file = "crates/busbar/src/root/kernel.rs"
@@ -2102,9 +2132,14 @@ plane_crates = 4
 # transport 2 -> 1 (EXTRACT-15, item ws, #214): the ws transport crate MOVED OUT with its history to
 # GetBusbar/busbar-transport-ws and busbar pulls it at one pinned rev (root Cargo.toml). Its gates run
 # in that repo's plugin CI. `crates/busbar-transport-*` now matches one: stdio.
+# hook 1 -> 0 (P5 item hook-ranking): the ranking hook crate MOVED OUT with its history to
+# GetBusbar/busbar-hook-ranking, renamed busbar-hooks-ranking -> busbar-hook-ranking (the singular kind
+# name, Part 2 #3; its rename row below), and busbar pulls the logic crate at one pinned rev (root
+# Cargo.toml). Its gates run in that repo's plugin CI. `crates/hook*` now matches no directory: the
+# kind's documented zero in this repo (kind-isolation reads it from its pinned checkout).
 [gate.census.plugin_kinds]
 plane = 5
-hook = 1
+hook = 0
 auth = 0
 secret = 0
 store = 1
@@ -2119,3 +2154,17 @@ abi = 1
 # an unlisted vanished dir stays RED.
 [gate.census.deleted]
 "crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"
+"crates/plane-example" = "TODO P5: delete plane-example (Q128 audit BLOCK 11/12: a fixture plane plugin riding the HOT lane with C-unwind doors)"
+
+# THE RENAME ROWS (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). A moved-out crate excuses its kind's floor
+# drop only when the root pins it as a git dependency at a rev under the package name it had at the
+# base. A crate whose package name changed with the move counts ONLY with BOTH the git pin under the
+# NEW name AND a row here naming old -> new, the commit that moved it and why. A rename with no row
+# stays RED: nothing else says the new crate is the old one. A broken row (a field missing or empty,
+# a commit that does not resolve) is itself a census problem.
+
+[[gate.census.renamed]]
+from = "busbar-hooks-ranking"
+to = "busbar-hook-ranking"
+commit = "3b74ca71fb716fed371b7592b9c445c6a8863630"
+reason = "P5 item hook-ranking: the crate moved to GetBusbar/busbar-hook-ranking under the singular kind name (Part 2 #3, busbar-<kind>-<name>); the root pins busbar-hook-ranking at one rev"

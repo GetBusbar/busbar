@@ -94,10 +94,17 @@ impl Hit {
 /// hits land in the list its scope names. The partition is the same one — a hit is test-scope
 /// exactly when it was, production exactly when it was — at half the reads.
 pub fn scan(files: &[SourceFile], mode: Mode, vocab: &Vocab) -> (Vec<Hit>, Vec<Hit>) {
+    // Each file's hits are its own (the scanner's state is per file), so the files are scanned
+    // across the cores and their hits concatenated in walk order — the serial loop's order.
     let mut prod = Vec::new();
     let mut test = Vec::new();
-    for f in files {
-        scan_file(&f.rel_str(), &f.text, mode, vocab, &mut prod, &mut test);
+    for (p, t) in crate::par::par_map(files, |f| {
+        let (mut p, mut t) = (Vec::new(), Vec::new());
+        scan_file(&f.rel_str(), &f.text, mode, vocab, &mut p, &mut t);
+        (p, t)
+    }) {
+        prod.extend(p);
+        test.extend(t);
     }
     (prod, test)
 }
