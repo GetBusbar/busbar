@@ -2239,12 +2239,8 @@ impl DataRoutes {
                     };
                 }
             };
-            let arrival = Arrival {
-                body: Arc::from(messages.concat()),
-                ..arrival
-            };
+            let (arrival, inner, reply) = deframed_arrival(arrival, &messages);
             let stream: serve_framed::Shared = Arc::new(Mutex::new(Some(stream)));
-            let (inner, reply) = IngressCaller::arriving(body);
             let (trailers, trailed) = oneshot::channel();
             let caller = serve_framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
             let unit = async move {
@@ -2637,6 +2633,23 @@ impl busbar_kernel::plane_driver::SessionCaller for PipeCaller {
     async fn read(&self) -> Option<Vec<u8>> {
         self.from.lock().await.recv().await
     }
+}
+
+/// A FRAMED CLAIM'S ARRIVAL AND CALLER, over the messages its framer read out of the request body:
+/// the unit arrives with the messages and its caller leg reads the same messages, never the framing
+/// bytes the host strips (audit root-R1 L15; `serve_framed`: "the request body goes in and comes
+/// back as the messages the unit arrives with").
+fn deframed_arrival(
+    arrival: Arrival,
+    messages: &[Vec<u8>],
+) -> (Arrival, IngressCaller, IngressReply) {
+    let deframed = Bytes::from(messages.concat());
+    let arrival = Arrival {
+        body: Arc::from(&deframed[..]),
+        ..arrival
+    };
+    let (caller, reply) = IngressCaller::arriving(deframed);
+    (arrival, caller, reply)
 }
 
 // ── the driver's caller side over today's ingress ────────────────────────────────────────────────
