@@ -26,7 +26,7 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
 use busbar_contract::abi::plane::{
     AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, RecordChain, TrustKey,
-    CHAIN_DIGESTS_SCOPE, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
+    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
     INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_PEER_KEY, MECHANISM_ROOT,
     PIN_FINGERPRINT, SHAPE_PIECEWISE, TAIL_HOOKS_GATED, TRUST_PIN, TRUST_PRIVATE_REACH,
     TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
@@ -156,13 +156,15 @@ const RECORD_KINDS: &[AbiStr] = &[
 ];
 
 /// THE TASK CHAIN (ARCHITECT ruling B1, 2026-10-07; `BUSBAR-1.6.0.md` Part 3, the chain section, and THE
-/// DESIGN's route pump): the task-event kind is chained, pipe-separated with its scope in the digest, the
-/// framing the engine's per-task chain was sealed under (`prev|task|seq|ts|kind|context|principal|
-/// agent|state`). The host frames the prelude and keeps and verifies the chain; the plane writes
-/// only each event's own fields ([`crate::tasks::suffix`]).
+/// DESIGN's route pump): the task-event kind is chained, LENGTH-PREFIXED with its scope in the
+/// digest (B1 ruling 1, coordinator 2026-10-07): the engine's own fields in the engine's order
+/// (`prev, task, seq, ts, kind, context, principal, agent, state`), each framed by its length, so
+/// no byte can move from one field to its neighbour unseen; the engine left its pipe-join for the
+/// same reason (its v2 framing, F-A2A2). The host frames the prelude and keeps and verifies the
+/// chain; the plane writes only each event's own fields ([`crate::tasks::suffix`]).
 const RECORD_CHAINS: &[RecordChain] = &[RecordChain {
     kind: crate::records::TASK_EVENT_INDEX,
-    framing: CHAIN_PIPE_SEPARATED,
+    framing: CHAIN_LENGTH_PREFIXED,
     flags: CHAIN_DIGESTS_SCOPE,
     _reserved: 0,
 }];

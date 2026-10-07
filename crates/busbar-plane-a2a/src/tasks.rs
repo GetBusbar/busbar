@@ -16,9 +16,11 @@
 //!   sequence is won with `records.claim` on `<caller>/<task>/<seq>` before anything is written. A
 //!   writer that loses re-reads and tries the next one.
 //! * THE HASH CHAIN IS THE HOST'S (ARCHITECT ruling B1, 2026-10-07; `BUSBAR-1.6.0.md` Part 3, the chain section):
-//!   the task-event kind is declared chained, pipe-separated with its scope digested
-//!   (`crate::door`'s `RECORD_CHAINS`). An event is an APPEND to the chain keyed `<caller>/<task>`
-//!   carrying only its own fields ([`suffix`]); the host frames `prev|scope|seq` ahead of them,
+//!   the task-event kind is declared chained, length-prefixed with its scope digested
+//!   (`crate::door`'s `RECORD_CHAINS`; B1 ruling 1, coordinator 2026-10-07). An event is an APPEND
+//!   to the chain keyed `<caller>/<task>` (`<caller>` the kernel's opaque caller reference, never
+//!   the principal) carrying only its own fields ([`suffix`]); the host frames `prev, scope, seq`
+//!   ahead of them,
 //!   seals, keeps and verifies the chain. The task record carries the chain's next sequence, which
 //!   a change claims to stay race-safe.
 //! * RESTORE ([`restore`]) is the engine's boot rehydrate over the records: the tasks counted
@@ -34,7 +36,7 @@ use busbar_contract::vocab::{EV_ARTIFACT, EV_DELEGATED, EV_SUBMITTED};
 use serde::{Deserialize, Serialize};
 
 use crate::a2a::task::{plan_transition, readable_row, TaskState};
-use crate::record::DIGEST_VERSION_LEGACY_PIPE;
+use crate::record::DIGEST_VERSION_LEN_PREFIXED;
 use crate::records::{KIND_PUSH_CONFIG, KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
 
@@ -208,18 +210,30 @@ fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>, Halt> {
     serde_json::to_vec(v).map_err(|e| Halt::Failed(e.to_string()))
 }
 
-/// ONE EVENT'S OWN BYTES on its task's chain, in the declared pipe-separated framing: each field
-/// after a `|`, `ts`, `kind`, `context_id`, `principal`, `agent_id`, `state`. The host frames
-/// `prev_hash|scope|seq` ahead of them, so the digest input is the engine's pipe-join
-/// `prev|task|seq|ts|kind|context|principal|agent|state` with the chain's scope (`<caller>/<task>`)
-/// as the task. `request_id` is a join key and stays out.
+/// ONE EVENT'S OWN BYTES on its task's chain, in the declared length-prefixed framing (B1 ruling
+/// 1, coordinator 2026-10-07): `ts` (its eight big-endian bytes), `kind`, `context_id`,
+/// `principal`, `agent_id`, `state`, each after its length as eight big-endian bytes. The host
+/// frames `prev_hash`, the chain's scope (`<caller>/<task>`) and `seq` the same way ahead of them,
+/// so the digest covers the engine's fields in the engine's order and no byte can cross a field
+/// boundary unseen. `request_id` is a join key nothing reads back, and is not kept (B1 ruling 2).
 #[must_use]
 pub fn suffix(ev: &TaskEventRow) -> Vec<u8> {
-    format!(
-        "|{}|{}|{}|{}|{}|{}",
-        ev.ts, ev.kind, ev.context_id, ev.principal, ev.agent_id, ev.state
-    )
-    .into_bytes()
+    let mut out = Vec::new();
+    let mut field = |bytes: &[u8]| {
+        out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        out.extend_from_slice(bytes);
+    };
+    field(&ev.ts.to_be_bytes());
+    for text in [
+        &ev.kind,
+        &ev.context_id,
+        &ev.principal,
+        &ev.agent_id,
+        &ev.state,
+    ] {
+        field(text.as_bytes());
+    }
+    out
 }
 
 /// Event `kind` over `row` at `held`'s chain position, stamped `ts`; its chain fields are the
@@ -237,7 +251,7 @@ fn seal(held: &Held, row: &TaskRow, kind: &str, request_id: &str, ts: u64) -> Ta
         request_id: request_id.to_string(),
         prev_hash: String::new(),
         hash: String::new(),
-        digest_version: DIGEST_VERSION_LEGACY_PIPE,
+        digest_version: DIGEST_VERSION_LEN_PREFIXED,
     }
 }
 

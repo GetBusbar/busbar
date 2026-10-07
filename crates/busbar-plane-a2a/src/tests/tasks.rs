@@ -4,7 +4,7 @@
 //! The task store over host records, against [`Book`]: a map that answers `records.get/list/claim`
 //! as the kernel does (a tombstone reads as absent) and applies an answer's writes, the chained
 //! task-event kind as the host keeps a declared chain: an append sealed in the declared
-//! pipe-separated framing with its scope digested, a list that announces a chain that does not
+//! length-prefixed framing with its scope digested, a list that announces a chain that does not
 //! verify, an empty value that drops the chain.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,12 +20,33 @@ pub(crate) struct Book {
     race: Option<Vec<Write>>,
 }
 
-/// The host's digest of event `e` on the chain `scope`: the pipe-separated prelude
-/// `prev_hash|scope|seq` the host frames, then the door's own bytes ([`suffix`]).
+/// One length-prefixed field: its length as eight big-endian bytes, then the bytes.
+fn framed(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// The host's digest of event `e` on the chain `scope`: the length-prefixed prelude
+/// (`prev_hash`, `scope`, `seq`) the host frames, then the door's own bytes ([`suffix`]).
 pub(crate) fn host_digest(scope: &str, e: &TaskEventRow) -> String {
-    let mut input = format!("{}|{scope}|{}", e.prev_hash, e.seq).into_bytes();
+    let mut input = Vec::new();
+    framed(&mut input, e.prev_hash.as_bytes());
+    framed(&mut input, scope.as_bytes());
+    framed(&mut input, &e.seq.to_be_bytes());
     input.extend_from_slice(&suffix(e));
     busbar_contract::redacted::sha256_hex(&input)
+}
+
+/// The fields of the door's own length-prefixed bytes, in order.
+fn unframed(mut own: &[u8]) -> Vec<Vec<u8>> {
+    let mut fields = Vec::new();
+    while !own.is_empty() {
+        let (len, rest) = own.split_at(8);
+        let len = u64::from_be_bytes(len.try_into().unwrap()) as usize;
+        fields.push(rest[..len].to_vec());
+        own = &rest[len..];
+    }
+    fields
 }
 
 /// The chain a held event key belongs to and its sequence.
@@ -71,26 +92,26 @@ impl Book {
             return;
         }
         let last = held.last().map(|at| self.event_at(at));
-        let text = String::from_utf8(own.to_vec()).unwrap();
-        let fields: Vec<&str> = text.split('|').collect();
+        let fields = unframed(own);
         assert_eq!(
             fields.len(),
-            7,
-            "the door's own bytes: |ts|kind|ctx|principal|agent|state"
+            6,
+            "the door's own bytes: ts, kind, context, principal, agent, state"
         );
+        let text = |i: usize| String::from_utf8(fields[i].clone()).unwrap();
         let mut ev = TaskEventRow {
             task_id: scope.split_once('/').unwrap().1.to_string(),
             seq: last.as_ref().map_or(1, |e| e.seq + 1),
-            ts: fields[1].parse().unwrap(),
-            kind: fields[2].to_string(),
-            context_id: fields[3].to_string(),
-            principal: fields[4].to_string(),
-            agent_id: fields[5].to_string(),
-            state: fields[6].to_string(),
+            ts: u64::from_be_bytes(fields[0].as_slice().try_into().unwrap()),
+            kind: text(1),
+            context_id: text(2),
+            principal: text(3),
+            agent_id: text(4),
+            state: text(5),
             request_id: String::new(),
             prev_hash: last.map(|e| e.hash).unwrap_or_default(),
             hash: String::new(),
-            digest_version: DIGEST_VERSION_LEGACY_PIPE,
+            digest_version: DIGEST_VERSION_LEN_PREFIXED,
         };
         assert_eq!(suffix(&ev), own, "the door's bytes read back whole");
         ev.hash = host_digest(scope, &ev);
@@ -245,33 +266,6 @@ fn event(book: &Book, caller: &str, task: &str, seq: u64) -> TaskEventRow {
             .unwrap(),
     )
     .unwrap()
-}
-
-/// Ported from busbar-a2a a2a/tests/chain_golden.rs::the_frozen_a2a_chain_recomputes_from_its_own_bytes.
-/// The engine's frozen chain (its legacy pipe-join, rows as a pre-fix deployment persisted them):
-/// the door's own bytes for each event, under the host's pipe-separated prelude with the scope
-/// digested, recompute the frozen digests, so the declared framing is the engine's.
-#[test]
-fn the_frozen_engine_chain_recomputes_from_the_doors_own_bytes() {
-    const A2A_1: &[u8] = br#"{"task_id":"task-1","seq":1,"ts":1700000000,"kind":"task.submitted","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"submitted","request_id":"req-1","prev_hash":"","hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1"}"#;
-    const A2A_2: &[u8] = br#"{"task_id":"task-1","seq":2,"ts":1700000060,"kind":"task.working","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"working","request_id":"req-2","prev_hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1","hash":"6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19"}"#;
-    let mut prev = String::new();
-    for bytes in [A2A_1, A2A_2] {
-        let ev: TaskEventRow = serde_json::from_slice(bytes).unwrap();
-        assert_eq!(ev.prev_hash, prev, "seq {} links", ev.seq);
-        assert_eq!(
-            host_digest("task-1", &ev),
-            ev.hash,
-            "seq {} drifted",
-            ev.seq
-        );
-        prev = ev.hash;
-    }
-    assert_eq!(
-        suffix(&serde_json::from_slice(A2A_1).unwrap()),
-        b"|1700000000|task.submitted|ctx-1|vk_alice|planner|submitted".to_vec(),
-        "the door's own bytes, as the host's golden holds them"
-    );
 }
 
 /// A real inbound task leaves a chain that RECOMPUTES from the persisted rows: opening a relayed
@@ -656,7 +650,7 @@ fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() 
         request_id: "req-2".into(),
         prev_hash: "07d3b2028b0729c42fdaae5f4d59c3a98749aa88db89caabcacb5ebe3981ec28".into(),
         hash: String::new(),
-        digest_version: DIGEST_VERSION_LEGACY_PIPE,
+        digest_version: DIGEST_VERSION_LEN_PREFIXED,
     };
     // Exhaustive by construction: a field added to `TaskEventRow` fails to compile here until
     // somebody decides whether it belongs in the digest.
@@ -917,4 +911,106 @@ fn the_sweep_drops_an_expired_tasks_chain_whole() {
         (dropped[0].key.as_str(), dropped[0].value.is_empty()),
         (task_key(ALICE, "t1").as_str(), true)
     );
+}
+
+/// B1 RULING 1 (coordinator 2026-10-07): MOVING BYTES BETWEEN CONTEXT, PRINCIPAL AND AGENT BREAKS
+/// THE CHAIN (predev's F-A2A2, the reason its v2 framing exists). Two tuples that differ only in
+/// where a `|` falls across those fields are two different records, and a store edit that moves
+/// the boundary is reported at restore. RED under the pipe-separated framing (shown on Latchkey
+/// before the switch): the moved tuple joins to the same bytes, digests the same, and verifies.
+#[test]
+fn moving_bytes_between_context_principal_and_agent_breaks_verification() {
+    let at = |context: &str, principal: &str, agent: &str| TaskEventRow {
+        task_id: "t".into(),
+        seq: 1,
+        ts: 1,
+        kind: "task.submitted".into(),
+        context_id: context.into(),
+        principal: principal.into(),
+        agent_id: agent.into(),
+        state: "submitted".into(),
+        request_id: String::new(),
+        prev_hash: String::new(),
+        hash: String::new(),
+        digest_version: DIGEST_VERSION_LEN_PREFIXED,
+    };
+    assert_ne!(
+        suffix(&at("a|b", "c", "ag")),
+        suffix(&at("a", "b|c", "ag")),
+        "context and principal: two tuples, two records"
+    );
+    assert_ne!(
+        suffix(&at("a", "b|c", "ag")),
+        suffix(&at("a", "b", "c|ag")),
+        "principal and agent: two tuples, two records"
+    );
+    let mut book = Book::default();
+    let mut first = row("t1", 100);
+    first.context_id = "ctx|a".into();
+    let mut out = Vec::new();
+    submit(&mut book, &step(ALICE, 100), first, &mut out).unwrap();
+    book.apply(&out);
+    assert!(restore(&mut book).unwrap().chain_breaks.is_empty());
+    book.tamper(ALICE, "t1", 1, |e| {
+        e.context_id = "ctx".into();
+        e.principal = format!("a|{}", e.principal);
+    });
+    assert_eq!(
+        restore(&mut book).unwrap().chain_breaks.len(),
+        1,
+        "the moved boundary is an edit, and the host reports it"
+    );
+}
+
+/// B1 RULING 3 (coordinator 2026-10-07; `BUSBAR-1.6.0.md` Part 3, the piece frame: "a plane never
+/// sees the raw principal"): the chain scope a unit writes is `<caller_ref>/<task>`, the kernel's
+/// opaque reference and the task, and nothing the door writes for it carries the principal or the
+/// key id. The door holds a task only under a reference shaped as the kernel mints it (lower-case
+/// hex), so a raw principal or key id is refused outright. (The kernel half, that the reference is
+/// the node's keyed digest and never the principal, is `busbar-kernel` `plane_driver` route tests'
+/// `the_caller_reference_is_never_the_principal`; `task_door::on_piece` holds tasks under the
+/// piece's `caller_ref`.)
+#[test]
+fn the_chain_scope_is_the_callers_opaque_reference_and_the_task() {
+    const PRINCIPAL: &str = "acct:alice@example.com";
+    const KEY_ID: &str = "vk_alice";
+    // A stand-in for the kernel's reference: 64 lower-case hex characters, as it mints them.
+    let caller_ref = busbar_contract::redacted::sha256_hex(b"keyed digest of the principal");
+    let mut book = Book::default();
+    let mut out = Vec::new();
+    open(
+        &mut book,
+        &step(&caller_ref, 100),
+        row("t1", 100),
+        "planner",
+        &mut out,
+    )
+    .unwrap();
+    let scopes: Vec<&str> = out
+        .iter()
+        .filter(|w| w.kind == KIND_TASK_EVENT)
+        .map(|w| w.key.as_str())
+        .collect();
+    let want = format!("{caller_ref}/t1");
+    assert_eq!(
+        scopes,
+        [want.as_str(), want.as_str()],
+        "submitted, delegated"
+    );
+    for w in &out {
+        for leak in [PRINCIPAL, KEY_ID, "alice"] {
+            assert!(!w.key.contains(leak), "{} key names {leak}", w.kind);
+            assert!(
+                !String::from_utf8_lossy(&w.value).contains(leak),
+                "{} value names {leak}",
+                w.kind
+            );
+        }
+    }
+    for raw in [PRINCIPAL, KEY_ID] {
+        assert!(
+            submit(&mut book, &step(raw, 100), row("t2", 100), &mut Vec::new()).is_err(),
+            "{raw} is no caller reference: no task is held under it"
+        );
+    }
 }

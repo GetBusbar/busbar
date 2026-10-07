@@ -67,7 +67,8 @@ fn the_tail_passes_the_dispatchers_check() {
 }
 
 /// RED before ruling B1: the door declared no chain, so the host framed none. The task-event kind
-/// is declared chained, pipe-separated with its scope digested, and passes the loader's check.
+/// is declared chained, length-prefixed with its scope digested (B1 ruling 1, coordinator
+/// 2026-10-07), and passes the loader's check.
 #[test]
 fn the_tail_declares_the_task_chain() {
     assert_eq!(TAIL.record_chains_len, 1);
@@ -85,7 +86,7 @@ fn the_tail_declares_the_task_chain() {
     assert_eq!(
         (chain.framing, chain.flags),
         (
-            busbar_contract::abi::plane::CHAIN_PIPE_SEPARATED,
+            busbar_contract::abi::plane::CHAIN_LENGTH_PREFIXED,
             busbar_contract::abi::plane::CHAIN_DIGESTS_SCOPE
         )
     );

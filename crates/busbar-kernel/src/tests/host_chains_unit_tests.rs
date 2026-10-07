@@ -2,123 +2,150 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host's half of a plane record chain (`host_chains.rs`): the declaration, the stored body, and
-//! the verified read, over GENUINE pre-change bytes.
+//! the verified read.
 //!
-//! THE FROZEN PER-TASK CHAIN below is the one a plane's task store sealed before this ABI (its
-//! pipe-joined `prev|task|seq|ts|kind|context|principal|agent|state` digest), byte for byte: the
-//! hashes are the ones that store persisted, never regenerated. Declared pipe-separated with its
-//! scope digested, the host's framing recomputes them. DO NOT regenerate these bytes to make a
-//! failing test pass.
+//! The chain these tests read is sealed by the ONE chain mechanism in the framing a plane's task
+//! chain declares (length-prefixed, its scope digested). The frozen pipe-joined chain a plane's task
+//! store sealed before this ABI is not shipped: B1 ruling 1 (coordinator 2026-10-07) declares the
+//! length-prefixed framing, so the goldens that pinned those pipe-joined bytes are retired.
 
 use super::*;
 
-const SCOPE: &str = "task-1";
-const SUFFIX_1: &[u8] = b"|1700000000|task.submitted|ctx-1|vk_alice|planner|submitted";
-const HASH_1: &str = "1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1";
-const SUFFIX_2: &[u8] = b"|1700000060|task.working|ctx-1|vk_alice|planner|working";
-const HASH_2: &str = "6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19";
+const SCOPE: &str = "a11ce/task-1";
 
-const PIPE_SCOPED: ChainFraming = ChainFraming {
-    framing: Framing::PipeSeparated,
+/// Length-prefixed own bytes of one event: `ts`, then the text fields.
+fn own(ts: u64, fields: &[&str]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut field = |bytes: &[u8]| {
+        out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        out.extend_from_slice(bytes);
+    };
+    field(&ts.to_be_bytes());
+    for f in fields {
+        field(f.as_bytes());
+    }
+    out
+}
+
+fn own_1() -> Vec<u8> {
+    own(
+        1_700_000_000,
+        &["task.submitted", "ctx-1", "a11ce", "planner", "submitted"],
+    )
+}
+
+fn own_2() -> Vec<u8> {
+    own(
+        1_700_000_060,
+        &["task.working", "ctx-1", "a11ce", "planner", "working"],
+    )
+}
+
+const LP_SCOPED: ChainFraming = ChainFraming {
+    framing: Framing::LengthPrefixed,
     digests_scope: true,
 };
 
 const EV: RecordSchemaId = RecordSchemaId::new("ev");
 
-fn frozen(seq: u64, prev: &str, hash: &str, suffix: &[u8]) -> PlaneJournalRecord {
-    PlaneJournalRecord::from_parts(
-        SCOPE.to_string(),
-        seq,
-        prev.to_string(),
-        hash.to_string(),
-        suffix.to_vec(),
-        Framing::PipeSeparated,
-        true,
-    )
+/// Two records sealed by the chain mechanism, as the flush seals them.
+fn sealed() -> (PlaneJournalRecord, PlaneJournalRecord) {
+    let mut chain = Chain::<PlaneJournalRecord>::new();
+    let input = |b: Vec<u8>| PlaneJournalInput::new(b, Framing::LengthPrefixed, true);
+    let e1 = chain.append(SCOPE, input(own_1()));
+    let e2 = chain.append(SCOPE, input(own_2()));
+    (e1, e2)
 }
 
-/// The frozen chain as the store would hold it: `(chain key, stored body)`.
+/// The sealed chain as the store would hold it: `(chain key, stored body)`.
 fn stored() -> Vec<(Vec<u8>, Vec<u8>)> {
+    let (e1, e2) = sealed();
     vec![
-        (
-            chain_key(SCOPE.as_bytes(), 1),
-            encode(&frozen(1, "", HASH_1, SUFFIX_1)).unwrap(),
-        ),
-        (
-            chain_key(SCOPE.as_bytes(), 2),
-            encode(&frozen(2, HASH_1, HASH_2, SUFFIX_2)).unwrap(),
-        ),
+        (chain_key(SCOPE.as_bytes(), 1), encode(&e1).unwrap()),
+        (chain_key(SCOPE.as_bytes(), 2), encode(&e2).unwrap()),
     ]
 }
 
-/// Ported from the plane engine's chain golden (`chain_golden.rs`, the frozen chain recomputing
-/// from its own bytes).
-/// The host's prelude (`prev`, then the scope, then the sequence, pipe-joined, the genesis's empty
-/// `prev` still owing its `|`) joined to the plane's own bytes recomputes each frozen digest.
+/// The digest the host seals is the length-prefixed prelude (`prev`, the scope, the sequence as
+/// eight big-endian bytes, each after its length) joined to the plane's own bytes.
 #[test]
-fn the_frozen_per_task_chain_recomputes_from_its_own_bytes() {
-    let (e1, e2) = (
-        frozen(1, "", HASH_1, SUFFIX_1),
-        frozen(2, HASH_1, HASH_2, SUFFIX_2),
-    );
-    assert_eq!(crate::audit::digest(&e1), HASH_1, "genesis digest drifted");
-    assert_eq!(crate::audit::digest(&e2), HASH_2, "tail digest drifted");
-    verify_chain(&[e1, e2]).expect("the frozen chain must verify");
+fn the_host_seals_the_length_prefixed_prelude_and_the_planes_bytes() {
+    let (e1, e2) = sealed();
+    let expect = |prev: &str, seq: u64, own: &[u8]| {
+        let mut input = Vec::new();
+        let seq = seq.to_be_bytes();
+        for f in [prev.as_bytes(), SCOPE.as_bytes(), &seq[..]] {
+            input.extend_from_slice(&(f.len() as u64).to_be_bytes());
+            input.extend_from_slice(f);
+        }
+        input.extend_from_slice(own);
+        busbar_contract::redacted::sha256_hex(&input)
+    };
+    assert_eq!(e1.hash(), expect("", 1, &own_1()));
+    assert_eq!(e2.hash(), expect(e1.hash(), 2, &own_2()));
+    verify_chain(&[e1, e2]).expect("the sealed chain verifies");
 }
 
-/// Ported from the plane engine's chain golden (`chain_golden.rs`, a boot restore of the frozen
-/// chain reporting no tamper).
-/// Stored and read back through the host's verified read, the frozen chain announces no break and
-/// answers both records with the plane's own bytes.
+/// Ported from the plane engine's chain golden (`chain_golden.rs`, a boot restore of the chain
+/// reporting no tamper), over a sealed chain (B1 ruling 1). Stored and read back through the host's
+/// verified read, the chain announces no break and answers both records with the plane's bytes.
 #[test]
-fn a_read_of_the_frozen_chain_reports_no_tamper() {
+fn a_read_of_a_sealed_chain_reports_no_tamper() {
     assert_eq!(
-        verified("inst", EV, stored(), PIPE_SCOPED),
+        verified("inst", EV, stored(), LP_SCOPED),
         vec![
-            (chain_key(SCOPE.as_bytes(), 1), SUFFIX_1.to_vec()),
-            (chain_key(SCOPE.as_bytes(), 2), SUFFIX_2.to_vec()),
+            (chain_key(SCOPE.as_bytes(), 1), own_1()),
+            (chain_key(SCOPE.as_bytes(), 2), own_2()),
         ],
         "a persisted chain reported TAMPERED means the host's framing drifted"
     );
 }
 
 /// Ported from the plane engine's chain golden (`chain_golden.rs`, one undecodable record not
-/// dropping the others on restore).
-/// One undecodable record wedged between the two frozen ones is skipped (and reported), the others
-/// still answered, and they still verify: no break is announced.
+/// dropping the others on restore). One undecodable record wedged between the two sealed ones is
+/// skipped (and reported), the others still answered, and they still verify.
 #[test]
 fn one_undecodable_record_does_not_drop_the_others() {
     let mut rows = stored();
     rows[1].0 = chain_key(SCOPE.as_bytes(), 3);
     rows.push((chain_key(SCOPE.as_bytes(), 2), b"{not an event".to_vec()));
-    let read = verified("inst", EV, rows, PIPE_SCOPED);
     assert_eq!(
-        read,
+        verified("inst", EV, rows, LP_SCOPED),
         vec![
-            (chain_key(SCOPE.as_bytes(), 1), SUFFIX_1.to_vec()),
-            (chain_key(SCOPE.as_bytes(), 3), SUFFIX_2.to_vec()),
+            (chain_key(SCOPE.as_bytes(), 1), own_1()),
+            (chain_key(SCOPE.as_bytes(), 3), own_2()),
         ],
         "the undecodable record is skipped, the surviving chain intact"
     );
 }
 
 /// Ported from the plane engine's task store tests (`taskstore_tests.rs`, the verifier detecting a
-/// tampered link in the persisted chain).
-/// The frozen chain verified untouched; one field of its second record rewritten in the store, the
-/// read names the chain, the record, and the kind of break.
+/// tampered link in the persisted chain). One field of the second record rewritten in the store,
+/// the read names the chain, the record, and the kind of break.
 #[test]
 fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let mut rows = stored();
-    assert_eq!(verified("inst", EV, rows.clone(), PIPE_SCOPED).len(), 2);
-    let edited = encode(&frozen(
+    let (_, e2) = sealed();
+    let edited = PlaneJournalRecord::from_parts(
+        SCOPE.into(),
         2,
-        HASH_1,
-        HASH_2,
-        b"|1700000060|task.working|ctx-1|vk_alice|attacker-agent|working",
-    ))
-    .unwrap();
-    rows[1].1 = edited;
-    let read = verified("inst", EV, rows, PIPE_SCOPED);
+        e2.prev_hash().into(),
+        e2.hash().into(),
+        own(
+            1_700_000_060,
+            &[
+                "task.working",
+                "ctx-1",
+                "a11ce",
+                "attacker-agent",
+                "working",
+            ],
+        ),
+        Framing::LengthPrefixed,
+        true,
+    );
+    rows[1].1 = encode(&edited).unwrap();
+    let read = verified("inst", EV, rows, LP_SCOPED);
     assert_eq!(read[0].0, SCOPE.as_bytes(), "the broken chain is named");
     let words = String::from_utf8(read[0].1.clone()).unwrap();
     assert!(
@@ -133,8 +160,18 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
 #[test]
 fn a_relinked_record_is_a_link_break() {
     let mut rows = stored();
-    rows[1].1 = encode(&frozen(2, HASH_2, HASH_2, SUFFIX_2)).unwrap();
-    let read = verified("inst", EV, rows, PIPE_SCOPED);
+    let (_, e2) = sealed();
+    let relinked = PlaneJournalRecord::from_parts(
+        SCOPE.into(),
+        2,
+        e2.hash().into(),
+        e2.hash().into(),
+        own_2(),
+        Framing::LengthPrefixed,
+        true,
+    );
+    rows[1].1 = encode(&relinked).unwrap();
+    let read = verified("inst", EV, rows, LP_SCOPED);
     let words = String::from_utf8(read[0].1.clone()).unwrap();
     assert!(words.contains("prev_hash"), "{words}");
 }
@@ -142,19 +179,19 @@ fn a_relinked_record_is_a_link_break() {
 /// The stored body round-trips, and a body of another layout is no record.
 #[test]
 fn a_stored_body_round_trips_and_a_foreign_one_is_none() {
-    let r = frozen(2, HASH_1, HASH_2, SUFFIX_2);
-    let body = encode(&r).unwrap();
-    assert!(body.len() <= CHAIN_OVERHEAD + SUFFIX_2.len());
-    let back = decode(SCOPE, &body, PIPE_SCOPED).unwrap();
+    let (e1, e2) = sealed();
+    let body = encode(&e2).unwrap();
+    assert!(body.len() <= CHAIN_OVERHEAD + own_2().len());
+    let back = decode(SCOPE, &body, LP_SCOPED).unwrap();
     assert_eq!(
         (back.seq(), back.prev_hash(), back.hash(), back.content()),
-        (2, HASH_1, HASH_2, SUFFIX_2)
+        (2, e1.hash(), e2.hash(), own_2().as_slice())
     );
     let mut foreign = body.clone();
     foreign[0] = 2;
-    assert!(decode(SCOPE, &foreign, PIPE_SCOPED).is_none());
-    assert!(decode(SCOPE, &body[..20], PIPE_SCOPED).is_none());
-    assert!(decode(SCOPE, b"", PIPE_SCOPED).is_none());
+    assert!(decode(SCOPE, &foreign, LP_SCOPED).is_none());
+    assert!(decode(SCOPE, &body[..20], LP_SCOPED).is_none());
+    assert!(decode(SCOPE, b"", LP_SCOPED).is_none());
 }
 
 /// The declaration maps to the framing it names; a code this build does not know is none.
@@ -167,13 +204,13 @@ fn the_declaration_names_its_framing() {
         _reserved: 0,
     };
     assert_eq!(
-        ChainFraming::of(&chain(CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE)),
-        Some(PIPE_SCOPED)
+        ChainFraming::of(&chain(CHAIN_LENGTH_PREFIXED, CHAIN_DIGESTS_SCOPE)),
+        Some(LP_SCOPED)
     );
     assert_eq!(
-        ChainFraming::of(&chain(CHAIN_LENGTH_PREFIXED, 0)),
+        ChainFraming::of(&chain(CHAIN_PIPE_SEPARATED, 0)),
         Some(ChainFraming {
-            framing: Framing::LengthPrefixed,
+            framing: Framing::PipeSeparated,
             digests_scope: false,
         })
     );
