@@ -419,7 +419,7 @@ slot!(
 
 // ── the request path ──────────────────────────────────────────────────────────────────────────
 
-/// The most units the instance keeps state for at once; past it, the oldest is dropped first.
+/// The most units the instance keeps state for at once; past it, a new arrival is refused.
 pub const MAX_UNITS: usize = 4096;
 
 /// One unit's state, from its arrival to its end.
@@ -747,18 +747,6 @@ const CLASS_TOOL_CALLS_INDEX: u32 = 0;
 /// The tail index of the byte class (the second of [`door::TAIL`]'s billable classes).
 const CLASS_BYTES_INDEX: u32 = 1;
 
-/// Keep `value` under `key` in `map`, dropping the smallest keys first past `cap`.
-fn keep<V>(map: &Keyed<u64, V>, cap: usize, key: u64, value: V) {
-    map.with_all(|m| {
-        while m.len() >= cap && !m.contains_key(&key) {
-            if m.pop_first().is_none() {
-                break;
-            }
-        }
-        m.insert(key, value);
-    });
-}
-
 /// The operation class a disposition is counted under: its row's, or the notification class. A
 /// refused arrival is counted under none.
 fn op_class(disposition: &Disposition) -> Option<u32> {
@@ -805,6 +793,9 @@ const NOT_ALLOWED_TEXT: &str = r#"{"allow":"POST"}"#;
 
 /// The status a line naming no carrier session is refused with.
 const STATUS_BAD_REQUEST: u32 = 400;
+
+/// The status an arrival is refused with when the unit table is full.
+const STATUS_BUSY: u32 = 429;
 
 /// A line that names no carrier session: the host states one on every line it opens a unit for.
 const NO_SESSION_TEXT: &str = r#"{"status":400,"id":null,"code":-32600,"message":"a line of the line carrier names no carrier session"}"#;
@@ -1101,7 +1092,29 @@ slot!(
             line: line_unit,
             child_work: ChildWork::default(),
         };
-        keep(&plane.units, MAX_UNITS, input.get().unit, unit);
+        // ADMISSION BOUNDS LIVE WORK; NOTHING EVICTS IT: a full table refuses the new arrival, and
+        // every unit it holds goes on.
+        let key = input.get().unit;
+        let admitted = plane.units.with_all(|held| {
+            let full = held.len() >= MAX_UNITS && !held.contains_key(&key);
+            if !full {
+                held.insert(key, unit);
+            }
+            !full
+        });
+        if !admitted {
+            let refusal = crate::tool_arrival::Refusal {
+                status: STATUS_BUSY,
+                id: None,
+                code: crate::codec::CODE_REFUSED,
+                message: format!(
+                    "this server holds {MAX_UNITS} requests in flight, the most it will; retry \
+                     when some have finished"
+                ),
+                data: Some(serde_json::json!({ "reason": "capacity" })),
+            };
+            return refused_arrival(&mut out, refusal.status, refusal_text(&refusal));
+        }
         Outcome::Ready
     }
 );
