@@ -632,7 +632,7 @@ fn an_internal_callback_is_refused_on_the_hosts_verdict_and_the_host_is_asked() 
     );
     assert_eq!(desk.judged, vec![url.to_string()], "the host decided it");
 
-    let mut admitted = desk();
+    let mut admitted = self::desk();
     let (status, body) = call(
         &mut admitted,
         "CreateTaskPushNotificationConfig",
