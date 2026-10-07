@@ -161,7 +161,10 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
     let door: Arc<dyn FramerDoor> = Arc::new(Claims(DoorFacts {
         name: "claims-the-line".into(),
         claims: vec![line, "framed"],
+        // A FRAMER that claims the line carrier's name: the hazard this cell names.
+        role: busbar_contract::abi::transport::ROLE_FRAMER,
         composes_over: Vec::new(),
+        ported: false,
         status_rows: Vec::new(),
     }));
     let any = |_: &str| Some(Arc::clone(&door));

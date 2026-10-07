@@ -110,7 +110,7 @@ mod auth;
 mod carrier;
 mod export;
 
-pub use auth::{red_outbound_double_fetch, red_outbound_wrong_byte};
+pub use auth::{red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte};
 mod hook;
 pub mod host_io;
 mod plane;
@@ -1622,6 +1622,13 @@ macro_rules! conformance_suite {
         #[test]
         fn red_an_outbound_field_byte_off_is_refused() {
             $crate::conformance::red_outbound_wrong_byte(&__busbar_conformance_subject());
+        }
+
+        /// RED: an outbound auth door whose `fields` writes nothing fails the outbound script
+        /// (nothing to plant for a door with no outbound family).
+        #[test]
+        fn red_an_outbound_door_writing_no_field_is_refused() {
+            $crate::conformance::red_outbound_writes_nothing(&__busbar_conformance_subject());
         }
 
         /// RED: an outbound auth door fetching its token twice fails the outbound script
