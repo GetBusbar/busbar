@@ -75,6 +75,9 @@ fn a_planted_store_crate_coupling_is_found_exactly_as_the_serial_gate_found_it()
         .split("undeclared-crate-path")
         .filter(|f| f.contains(PLANT))
         .collect();
+    // Three: with the pinned plugin crates in the census (`kind_isolation::pinned`, mounted at
+    // `crates/<package>`), `busbar-transport-http` is a crate of the tree, so the plant naming it
+    // undeclared is the finding the serial gate makes too.
     assert_eq!(planted.len(), 3, "{}", vocab.detail);
     for (line, owner) in [
         (2, "busbar-plane-llm"),

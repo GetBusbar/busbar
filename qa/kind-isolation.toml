@@ -514,10 +514,6 @@ crate = "busbar-plane-streaming"
 kind = "transport"
 
 [[cell]]
-crate = "busbar-plugin-example-plane"
-kind = "plugin-tooling"
-
-[[cell]]
 crate = "busbar-plugin-loader"
 kind = "hooks"
 
@@ -773,16 +769,6 @@ drain   = "delete the busbar-plane-mcp dependency from busbar-mcp's Cargo.toml �
 
 
 [[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-plugin-example-plane"
-half    = "test"
-count   = "1"
-verdict = "tcb"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"`loader` and `abi` are TCB crates, not kinds.\" The loader's drop-in conformance test dev-depends on the fixture's rlib for the COMPILED-IN PLANE_DECL reference it compares the DROPPED-IN decl against; a plugin-tooling-to-plugin-tooling test edge inside the trusted computing base."
-why     = "busbar-plugin-loader names busbar-plugin-example-plane: declared dev in the test graph so plane_conformance_tests can link the compiled-in PLANE_DECL, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (BUSBAR-1.6.0.md THE DESIGN, §2: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
 from    = "busbar"
 to      = "busbar-llm"
 half    = "test"
@@ -818,13 +804,13 @@ drain   = "none: the architecture grants cleanliness -> kernel. What this row ho
 
 [[dep]]
 from    = "busbar-kernel"
-to      = "busbar-hooks-ranking"
+to      = "busbar-hook-ranking"
 half    = "shipped"
 count   = "1"
 verdict = "not-allowed"
 cite    = "ARCHITECT K5/K5b/K5c/K5d rulings (b17f0a2c1, 0ade205df): the composition root links the build's ranking hooks as a row of its linked tables (roster def 1); the kernel names neither crate in production. `kernel -> hooks` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict stays the one the architecture implies; the row holds a TEST-SUPPORT stand-in edge, not a shipped coupling."
-why     = "busbar-kernel names busbar-hooks-ranking as `fixture-hook`: declared normal, optional in the shipped graph, enabled ONLY by the kernel's `test-support` feature (`dep:fixture-hook`) — a test build has no root, so this fixture stands in for the row the root links (`preflight::install_linked_rows`); no kernel source names the plugin, and no default or shipped feature turns the edge on. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "delete the `fixture-hook` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their linked rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-hooks-ranking)."
+why     = "busbar-kernel names busbar-hook-ranking as `fixture-hook`: declared normal, optional in the shipped graph, enabled ONLY by the kernel's `test-support` feature (`dep:fixture-hook`) — a test build has no root, so this fixture stands in for the row the root links (`preflight::install_linked_rows`); no kernel source names the plugin, and no default or shipped feature turns the edge on. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "delete the `fixture-hook` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their linked rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-hook-ranking)."
 
 [[dep]]
 from    = "busbar-kernel"
@@ -1334,12 +1320,12 @@ drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this ro
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-hooks-ranking"
+to      = "busbar-hook-ranking"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECT 2026-09-25 \"K5d residue\" (decisions.md): roster def 1 — the composition root is 'the only place that names which crates exist and wires them at boot', so root -> every plugin-kind crate it links is a granted class (ARCHITECTURE_ALLOWED root -> hooks). K5d (b17f0a2c1, 0ade205df) moved the ranking hooks onto the root's linked tables ([package.metadata.busbar.linked] hooks-ranking)."
-why     = "busbar names busbar-hooks-ranking: declared normal, optional (feature hooks-ranking, default on) in the shipped graph, so the composition root links the ranking hooks as a row of the hooks axis, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar names busbar-hook-ranking: declared normal, optional (feature hooks-ranking, default on) in the shipped graph, so the composition root links the ranking hooks as a row of the hooks axis, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class (roster def 1). What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -1351,16 +1337,6 @@ verdict = "allowed"
 cite    = "ARCHITECT 2026-09-25 \"K5d residue\" (decisions.md): roster def 1 — the composition root is 'the only place that names which crates exist and wires them at boot', so root -> every plugin-kind crate it links is a granted class (ARCHITECTURE_ALLOWED root -> store). K5d (b17f0a2c1, 0ade205df) moved the default store onto the root's linked tables ([package.metadata.busbar.linked] store-memory)."
 why     = "busbar names busbar-store-memory: declared normal in the shipped graph, so the composition root links the build's default store as a row of the store axis, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class (roster def 1). What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-plugin-example-plane"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECT 2026-09-25 (K4 residue, decisions.md, L5 intake): \"busbar -> busbar-plugin-example-plane test edge [[dep]] row\"; BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes (`root -> plugin-tooling` is granted)."
-why     = "busbar names busbar-plugin-example-plane: declared dev in the test graph so the root's tests load the example plane plugin through the plugin path, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-plugin-loader"
@@ -1421,16 +1397,6 @@ verdict = "allowed"
 cite    = "DECISIONS #36 (BUSBAR-1.6.0.md:2196, OWNER-LOCKED): the kernel workflow is 8 busbar-kernel-<name> crates in 4 groups serving the loop in busbar-kernel; an edge between two kernel-tier crates crosses no kind boundary (ARCHITECTURE_ALLOWED kernel -> kernel)."
 why     = "busbar-kernel names busbar-kernel-wal: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this row holds is the NUMBER."
-
-[[dep]]
-from    = "busbar-plugin-example-plane"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "DECISIONS #40(a) (BUSBAR-1.6.0.md:2200, OWNER-LOCKED): \"a plugin crate's entire workspace dependency closure = `busbar-contract` and nothing else\"; BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140-1141): busbar-contract is \"the shapes and the author SDK\". The example plane resolves as plugin-tooling by its busbar-plugin- name, so its one edge is read by ARCHITECTURE_TCB plugin-tooling -> contract."
-why     = "busbar-plugin-example-plane names busbar-contract: declared normal in the shipped graph (crates/plane-example), 1 declaration(s) at this commit — the whole of its workspace closure. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the example plane resolves as plugin-tooling: the contract is the one edge #40(a) leaves a plugin. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-core-admin"
@@ -1745,7 +1711,7 @@ half    = "test"
 count   = "1"
 verdict = "not-allowed"
 cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED) and #11 (ARCHITECT ruling EXP2-PROOF 2026-10-03: the spec's working proof of the plugin model): the export kind's both-ways proofs are the REAL sinks, each LINKED by its logic crate's door and DROPPED IN as its -plugin cdylib (`export_axis_tests`, `export_conformance_tests`). `plugin-tooling -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the proof orders, it does not grant a class. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-plugin-loader names busbar-export-file: declared dev in the test graph so the export proofs link the sink's COMPILED-IN door and compare it against the same repo's DROPPED-IN cdylib, at the rev the composition root links. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
+why     = "busbar-plugin-loader names busbar-export-file: declared dev in the test graph so the #11 test (`export_conformance_tests`) links the request-log file sink's COMPILED-IN door and compares it against the same repo's DROPPED-IN cdylib, at the rev the composition root links. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "none while #2 (OWNER-LOCKED) names the real sinks as the export kind's both-ways proof: deleting it deletes that proof. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[dep]]
@@ -1755,7 +1721,7 @@ half    = "test"
 count   = "1"
 verdict = "not-allowed"
 cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED) and #11 (ARCHITECT ruling EXP2-PROOF 2026-10-03: the spec's working proof of the plugin model): the export kind's both-ways proofs are the REAL sinks, each LINKED by its logic crate's door and DROPPED IN as its -plugin cdylib (`export_axis_tests`, `export_conformance_tests`). `plugin-tooling -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the proof orders, it does not grant a class. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-plugin-loader names busbar-export-webhook: declared dev in the test graph so the export proofs link the sink's COMPILED-IN door and compare it against the same repo's DROPPED-IN cdylib, at the rev the composition root links. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
+why     = "busbar-plugin-loader names busbar-export-webhook: declared dev in the test graph so the #11 test (`export_conformance_tests`) links the request-log webhook sink's COMPILED-IN door and compares it against the same repo's DROPPED-IN cdylib, at the rev the composition root links. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "none while #2 (OWNER-LOCKED) names the real sinks as the export kind's both-ways proof: deleting it deletes that proof. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[dep]]
