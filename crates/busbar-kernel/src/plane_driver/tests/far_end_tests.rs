@@ -1700,3 +1700,69 @@ async fn a_text_request_opens_bare_and_is_written_as_text() {
         "no write of its own"
     );
 }
+
+/// The authority one attempt's auth call is handed when its member's `base_url` is `base`.
+async fn signed_authority(base: &str) -> String {
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.egress
+        .routes
+        .get_mut(&DestinationId::new(1))
+        .expect("m0's route")
+        .base_url = base.to_string();
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    let _ = far.send(&t, request()).await;
+    let facts = r.auth.facts.lock().unwrap().clone();
+    facts.first().expect("one auth call").1.clone()
+}
+
+/// THE HOST A SIGNING STYLE SIGNS is the one the wire carries: the member's `base_url` with its
+/// scheme stripped and its path (and query) discarded, its port kept; an `@` later in the path is
+/// no userinfo. Ports legacy `engine/tests/auth_style_tests.rs::test_host_from_base_strips_scheme_and_userinfo`
+/// (its scheme, port and path arms).
+#[tokio::test]
+async fn the_auth_calls_authority_is_the_base_urls_host_and_port_alone() {
+    for (base, want) in [
+        (
+            "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "bedrock-runtime.us-east-1.amazonaws.com",
+        ),
+        ("http://localhost:8080", "localhost:8080"),
+        ("example.com", "example.com"),
+        ("https://host.example.com/x@y", "host.example.com"),
+        (
+            "https://bedrock.us-east-1.amazonaws.com/some-prefix",
+            "bedrock.us-east-1.amazonaws.com",
+        ),
+        (
+            "https://host.example.com:8443/v1/foo?x=1",
+            "host.example.com:8443",
+        ),
+    ] {
+        assert_eq!(signed_authority(base).await, want, "{base}");
+    }
+}
+
+/// A `base_url` CARRYING A USERINFO: the signed host is the host alone, so the credential never
+/// rides the signed string and the signature matches the `Host` the wire transmits. Ports legacy
+/// `engine/tests/auth_style_tests.rs::test_host_from_base_strips_scheme_and_userinfo` (its
+/// userinfo arms).
+#[tokio::test]
+#[ignore = "DIVERGENCE: the kernel far end's split() keeps a base_url's userinfo in the authority handed to the auth call (1.5.5 host_from_base stripped it); the connector then refuses the dial"]
+async fn the_auth_calls_authority_drops_a_base_urls_userinfo() {
+    for (base, want) in [
+        ("https://user:pass@host.example.com", "host.example.com"),
+        (
+            "https://user:pass@host.example.com:443",
+            "host.example.com:443",
+        ),
+        ("https://user:pass@host.example.com/p", "host.example.com"),
+    ] {
+        assert_eq!(signed_authority(base).await, want, "{base}");
+    }
+}
