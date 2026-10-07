@@ -392,7 +392,7 @@ fn a_sweep_settles_a_handle_whose_units_have_ended() {
     assert_eq!((swept.outcome, swept.value), (Outcome::Ready, 0));
     let swept = settle(&r, "inst", Some(3), resumed, b"lapsed");
     assert_eq!((swept.outcome, swept.value), (Outcome::Ready, 0));
-    // Alice, in a later unit, reads what the sweep wrote; it settles once.
+    // Alice, in a new unit, reads what the sweep wrote; it settles once.
     r.s.units().admitted(
         4,
         UnitRecord {
