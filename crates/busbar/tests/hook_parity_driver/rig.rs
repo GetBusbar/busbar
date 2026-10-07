@@ -46,6 +46,8 @@ pub struct Member {
     pub provider: &'static str,
     pub tags: Vec<String>,
     pub dead: bool,
+    /// The output tokens its far end reports in the answer's usage.
+    pub output_tokens: u64,
 }
 
 /// A member served by the anthropic far end.
@@ -56,6 +58,7 @@ pub fn member(model: &'static str, label: &'static str) -> Member {
         provider: "ant",
         tags: Vec::new(),
         dead: false,
+        output_tokens: 1,
     }
 }
 
@@ -70,6 +73,10 @@ impl Member {
     }
     pub fn provider(mut self, p: &'static str) -> Self {
         self.provider = p;
+        self
+    }
+    pub fn output_tokens(mut self, n: u64) -> Self {
+        self.output_tokens = n;
         self
     }
 }
@@ -115,13 +122,14 @@ fn answer_of(m: &Member) -> Vec<FarPiece> {
             "id": "chatcmpl-1", "object": "chat.completion", "model": m.label,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"},
                          "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            "usage": {"prompt_tokens": 1, "completion_tokens": m.output_tokens,
+                      "total_tokens": 1 + m.output_tokens}
         }),
         _ => json!({
             "id": "msg_1", "type": "message", "role": "assistant", "model": m.label,
             "content": [{"type": "text", "text": "hi"}],
             "stop_reason": "end_turn",
-            "usage": {"input_tokens": 1, "output_tokens": 1}
+            "usage": {"input_tokens": 1, "output_tokens": m.output_tokens}
         }),
     };
     vec![FarPiece {
@@ -413,6 +421,8 @@ pub struct Hooks {
     pub policy: Option<ResolvedPolicy>,
     pub taps: StageTaps,
     pub callers: Callers,
+    /// The catalog signals the deployment's hooks declare.
+    pub requested: RequestedSignals,
 }
 
 /// The process's one request-id counter, as the binder is handed it.
@@ -436,7 +446,7 @@ impl Hooks {
                 .into_iter()
                 .collect(),
             taps: self.taps,
-            requested: RequestedSignals::default(),
+            requested: self.requested,
             next_request_id: counter(),
             caller: Arc::new(self.callers),
             dialects,

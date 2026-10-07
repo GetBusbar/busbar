@@ -109,6 +109,8 @@ struct SeatProbe {
     last_payload: Mutex<Option<Vec<u8>>>,
     /// Gate seat: each candidate the last decide was shown, as one line.
     candidates: Mutex<Vec<String>>,
+    /// Gate seat: each candidate's signal bag, as the last decide was shown it.
+    bags: Mutex<Vec<busbar_contract::SignalBag>>,
 }
 
 impl SeatProbe {
@@ -120,6 +122,7 @@ impl SeatProbe {
             reject: None,
             last_payload: Mutex::new(None),
             candidates: Mutex::new(Vec::new()),
+            bags: Mutex::new(Vec::new()),
         }
     }
 }
@@ -134,6 +137,7 @@ impl RoutingPolicy for SeatProbe {
         _budget: std::time::Duration,
     ) -> PolicyResult {
         self.log.lock().unwrap().push(self.seat.to_string());
+        *self.bags.lock().unwrap() = candidates.iter().map(|c| c.signals.clone()).collect();
         *self.candidates.lock().unwrap() = candidates
             .iter()
             .map(|c| {
@@ -440,6 +444,9 @@ pub(super) struct RigOpts<'a> {
     pub affinity_header: Option<&'a str>,
     /// Each member's lifetime request budget (`None`: unlimited).
     pub lane_budget: Option<i64>,
+    /// Pool `p` is ranked by an abstaining policy that is shown the candidates, and the generation
+    /// declares exactly these catalog signals (`None`: as [`Self::described`] says).
+    pub signals: Option<&'a [busbar_contract::Signal]>,
     /// The plane's owned webhook section configures its `openai` receiver, its callers verified under the
     /// `webhook-signature` scheme by a Standard Webhooks instance holding [`WEBHOOK_SECRET`].
     pub webhook: bool,
@@ -520,6 +527,11 @@ impl DoorRig {
     /// Each candidate the pool's ranking policy was last shown, one line each.
     pub fn gate_saw(&self) -> Vec<String> {
         self.gate_seat.candidates.lock().unwrap().clone()
+    }
+
+    /// Each candidate's signal bag, as the pool's ranking policy was last shown it.
+    pub fn ranker_bags(&self) -> Vec<busbar_contract::SignalBag> {
+        self.gate_seat.bags.lock().unwrap().clone()
     }
 
     /// One request through the door as the keyed caller: its status, head and body.
@@ -867,16 +879,17 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         a.tap_hooks_candidate =
             vec![(std::time::Duration::from_millis(500), false, ct, Vec::new())];
         a.global_gates = vec![(0u16, gate(Arc::new(gate_probe)))];
-        if opts.described {
+        if opts.described || opts.signals.is_some() {
             let r: Arc<dyn RoutingPolicy> = ranker.clone();
             a.pool_orderings.insert("p".to_string(), gate(r));
             use busbar_contract::Signal;
-            for s in [
+            let declared = opts.signals.unwrap_or(&[
                 Signal::CandidateBreakerState,
                 Signal::CandidateErrorRate,
                 Signal::CandidateLatencyP95Ms,
-            ] {
-                a.requested_signals.insert(s);
+            ]);
+            for s in declared {
+                a.requested_signals.insert(*s);
             }
         }
     }

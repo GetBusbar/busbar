@@ -5,8 +5,11 @@
 //! One read, through the operation's own reader, as the previous release's hook seam read it: the
 //! size signals (turns, characters, tools), the end user the dialect spells, and the prompt view
 //! (the system field and one `(role, text)` entry per wire turn, an in-band system turn at its wire
-//! position, a turn with nothing readable still an entry). A body the reader refuses is the
-//! request's failure ([`Unreadable`]); a body there is no reader for projects the zeroed shape.
+//! position, a turn with nothing readable still an entry). A JSON object body is projected as far
+//! as the reader can read it, a turn or block it cannot read contributing nothing (never refused,
+//! as the previous release's projection never refused one); a non-object body the byte reader
+//! refuses is the request's failure ([`Unreadable`]); a body there is no reader for projects the
+//! zeroed shape.
 //!
 //! The output-cap signal is the previous release's own read (`max_tokens_for` at `v1.5.5`): the
 //! dialect's cap key off the caller's body, an out-of-range cap saturated to `u32::MAX`, never
@@ -76,12 +79,74 @@ fn facts(arrived: &Arrived) -> Result<Option<Box<dyn IrFacts + Send + Sync>>, Un
         return Ok(None);
     };
     let read = match &arrived.parsed {
-        Some(v) if v.is_object() => handler.read_facts_value(v),
+        Some(v) if v.is_object() => return Ok(readable_facts(handler, v)),
         _ if arrived.body.is_empty() => return Ok(None),
         // A body that is not a JSON object (a multipart upload) is read by the byte reader.
         _ => handler.read_facts(&arrived.body, &arrived.content_type),
     };
     read.map(Some).map_err(|_| Unreadable)
+}
+
+/// THE PROJECTION OF WHAT BUSBAR CAN READ of a JSON object body. The previous release's hook
+/// projection was read straight off the request and never refused one: a turn or block it could not
+/// read contributed nothing, and the request went on. The reader is a tap here: when it refuses the
+/// whole body, each top-level array's elements are tried one at a time (and, for an element it
+/// refuses, that element's own array members one at a time), the ones it cannot read are left out,
+/// and what remains is projected. A body none of whose content reads is `None` (the zeroed shape).
+fn readable_facts(
+    handler: &dyn busbar_contract::codec::OperationHandler,
+    v: &Value,
+) -> Option<Box<dyn IrFacts + Send + Sync>> {
+    if let Ok(facts) = handler.read_facts_value(v) {
+        return Some(facts);
+    }
+    let obj = v.as_object()?;
+    // Every array emptied: the frame each element is tried in alone.
+    let mut frame = obj.clone();
+    for value in frame.values_mut() {
+        if value.is_array() {
+            *value = Value::Array(Vec::new());
+        }
+    }
+    let reads_alone = |key: &str, item: &Value| {
+        let mut probe = frame.clone();
+        probe.insert(key.to_string(), Value::Array(vec![item.clone()]));
+        handler.read_facts_value(&Value::Object(probe)).is_ok()
+    };
+    let mut kept = obj.clone();
+    for (key, value) in obj {
+        let Some(items) = value.as_array() else {
+            continue;
+        };
+        let readable: Vec<Value> = items
+            .iter()
+            .filter_map(|item| {
+                if reads_alone(key, item) {
+                    return Some(item.clone());
+                }
+                let mut pruned = item.as_object()?.clone();
+                for (inner, inner_value) in item.as_object()? {
+                    let Some(parts) = inner_value.as_array() else {
+                        continue;
+                    };
+                    let parts: Vec<Value> = parts
+                        .iter()
+                        .filter(|part| {
+                            let mut one = item.as_object().cloned().unwrap_or_default();
+                            one.insert(inner.clone(), Value::Array(vec![(*part).clone()]));
+                            reads_alone(key, &Value::Object(one))
+                        })
+                        .cloned()
+                        .collect();
+                    pruned.insert(inner.clone(), Value::Array(parts));
+                }
+                let pruned = Value::Object(pruned);
+                reads_alone(key, &pruned).then_some(pruned)
+            })
+            .collect();
+        kept.insert(key.clone(), Value::Array(readable));
+    }
+    handler.read_facts_value(&Value::Object(kept)).ok()
 }
 
 /// One bucket's pieces joined with a newline.

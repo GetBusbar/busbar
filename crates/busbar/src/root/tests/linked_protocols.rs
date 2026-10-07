@@ -344,3 +344,46 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
         );
     }
 }
+
+// ══ THE FALLBACK ═════════════════════════════════════════════════════════════════════════════════
+
+/// A 404 fallback on a dialect's path no plane mounts answers in that dialect's native envelope
+/// (`application/json`, the envelope's own key) with the vendor head fields a real endpoint always
+/// emits — never an empty body, which is a proxy tell. The path, key and fields are the fixture's.
+///
+/// Ports legacy `engine/tests/dialect_registry_facts_tests.rs::test_fallback_bedrock_404_is_native_envelope_with_amzn_headers`.
+#[tokio::test]
+async fn the_fallback_404_on_a_dialects_path_is_its_native_envelope_with_its_head_fields() {
+    registered();
+    let case = &FIXTURE["fallback_native_404"];
+    let resp = busbar_kernel::router::fallback_error_response(
+        &busbar_kernel::plane::PlaneDispatch::default(),
+        case["path"].as_str().expect("path"),
+        axum::http::StatusCode::NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
+        "missing",
+    );
+    assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok()),
+        Some("application/json"),
+        "fallback must be application/json, not bare text"
+    );
+    for name in strs(&case["headers"]) {
+        assert!(
+            resp.headers().get(name).is_some(),
+            "the fallback must carry {name}"
+        );
+    }
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("the body");
+    let v: Value = serde_json::from_slice(&body).expect("a JSON body");
+    assert!(
+        v.get(case["body_key"].as_str().expect("body_key"))
+            .is_some(),
+        "the native envelope: {v}"
+    );
+}
