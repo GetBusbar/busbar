@@ -786,8 +786,8 @@ fn recv_side_from_std_failure_releases_the_sender_increment() {
 /// Binding: the ingress server posture is a hyper HTTP/1 header-read timeout of 30s, a
 /// `tls_handshake_timeout_secs` default of 10, and a `request_body_read_timeout_secs` default of
 /// 30, asserted against the real default-limits accessors (uninstalled state), not a re-typed copy
-/// of the literals. Its ALPN half — `http/1.1` only, never h2, since axum's server here does not
-/// speak it — is the connector's `build_server_config`, asserted on its real output by
+/// of the literals. Its ALPN half — `h2, http/1.1` (owner ruling Q137, 2026-10-04; 1.5.5 offered
+/// `http/1.1` alone) — is the connector's `build_server_config`, asserted on its real output by
 /// `busbar_core_connector::tls::tests::build_server_config_and_prepare_build_from_operator_config`
 /// (TLS stays in the connector).
 #[tokio::test]

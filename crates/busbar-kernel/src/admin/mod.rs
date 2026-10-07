@@ -3,39 +3,22 @@
 
 //! The CORE-RESIDENT half of the admin API surface.
 //!
-//! ## 1.6.0: the admin API SERVICE was extracted to `busbar-admin`
+//! ## 1.6.0: the admin API SERVICE and CONTRACT live in `busbar-core-admin`
 //!
-//! The `/api/v1/admin/*` JSON-REST service — the route table, every handler (keys, groups, hooks,
-//! plugins, config, overlay, openapi), the committed `openapi.json`, the transport port and the
-//! test-support recording layer — moved out to the `busbar-admin` sibling crate, which depends on
-//! busbar-core ONE-WAY (Cargo hard-refuses the reverse edge). busbar-core mounts that service through
-//! the fn-pointer seam in [`seam`] (registered once by the composition root, exactly like
-//! `oauth_as::seam`), so `router.rs` names no `busbar_admin` type.
+//! The `/api/v1/admin/*` JSON-REST service — the route table, every handler, the committed
+//! `openapi.json`, the transport port, the test-support recording layer — and the v1 CONTRACT (the
+//! typed views, the full `AdminError` taxonomy, the JSON envelope helpers and the plane-verb
+//! envelope; P2 D4, ARCHITECT Q-D4-ADMIN (b) 2026-10-04) are `busbar-core-admin`'s, which depends on
+//! the kernel ONE-WAY. The kernel mounts that service through the fn-pointer seam in [`seam`]
+//! (registered once by the composition root, exactly like `oauth_as::seam`), so `router.rs` names no
+//! core-admin type.
 //!
-//! What STAYS here is the CONTRACT + a little state the rest of busbar-core still reaches directly:
+//! What STAYS here is what the kernel answers itself, before any admin handler runs:
 //!
-//! * [`v1::contract`] — the frozen typed views + the stable [`v1::contract::AdminError`] taxonomy and
-//!   the `PATH_*`/`ADMIN_PREFIX`/`required_scope` constants. `auth`, `ratelimit`, `router` and the
-//!   config transaction all reference these, so they cannot move without the forbidden cycle (the
-//!   remaining core↔admin contract coupling; the eventual target is `busbar-contract::SurfaceError`).
-//! * [`v1::json`] — the ENVELOPE PRIMITIVES (`err_json`/`ok_json`/`err_json_cond`) only.
-//!   `router::fallback_error_response` and [`planeverbs::CorePlaneAdminEnvelope`] render through them.
-//! * [`planeverbs`] — [`planeverbs::CorePlaneAdminEnvelope`], the core backing for the self-enveloping
-//!   plane-verb seam. `busbar-a2a`/`busbar-mcp` name it at
-//!   `busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope`, so it stays in core.
+//! * [`gate`] — the admin gate's scope matrix (`required_scope`) and the paths it and the
+//!   mutation-rate classifier key off, and ONE small neutral `/api` error envelope for exactly the
+//!   answers the kernel gives itself (the gate's 401/429/503, the router fallback's 404/405/500, the
+//!   plane-driver serve's 405).
 
+pub mod gate;
 pub mod seam;
-
-/// THE PLANE TRUST VERB SURFACE, written once and parameterised by plane. Every plane that fronts a
-/// registered upstream resolves it, looks at it and audits what it found in the same order; that
-/// order lives here, and the plane supplies only the look.
-// The surface is mounted only by the trust-fronting planes (MCP, A2A); with every such plane compiled
-// out nothing mounts it, so its items read dead in that config alone. The allowance is UNCONDITIONAL
-// rather than gated on the concrete plane features: a `feature = "plane-mcp"`/`"plane-a2a"` attribute
-// names plane vocabulary, which this neutral crate must not — the same reason `planeverbs.rs`'s own
-// ratchet test forbids `mcp`/`a2a` in its source. When a plane IS compiled in the module is used, so
-// the allowance is a harmless no-op; only in the all-planes-off build does it silence the otherwise
-// unavoidable dead-code warnings.
-#[allow(dead_code)]
-pub mod planeverbs;
-pub mod v1;

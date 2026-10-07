@@ -138,6 +138,16 @@ legacy:
   gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
   # v1.5.5:crates/busbar/src/config_validate/mod.rs:1656 (the empty `store.module` refusal)
   module_examples: "sqlite | postgres | valkey"
+  # v1.5.5:crates/busbar/src/export/projection.rs:134 (`module_streams`: the streams each built-in exporter carried, `module:stream`)
+  export_module_streams: "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
+  # v1.5.5:crates/busbar/src/config/mod.rs:3359 (`EXPORT_MODULES`: the order the unknown-exporter refusal lists the built-in exporters in)
+  export_modules: "prometheus | request-log-webhook | request-log-file | otlp"
+  # v1.5.5:crates/busbar/src/config/migrate_export.rs:245 (the instance `observability.otlp_url` folds into)
+  export_trace_instance: "traces"
+  # v1.5.5:crates/busbar/src/config/migrate_export.rs:249 (the module `observability.otlp_url` folds into)
+  export_trace_module: "otlp"
+  # v1.5.5:crates/busbar/src/config/migrate_export.rs:31 (`EXPORT_TYPE_KEY_TO_INSTANCE_NAME`: type key, instance name, module)
+  export_type_keys: "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
   # THE 1.5.5 MANIFEST NAMES (`name_1_5_5.<repo>`): the signed manifest `name` each plugin repo's
   # release beside busbar v1.5.5 carried, read off that release's published tarball (manifest.json
   # `name`; every asset is digest-pinned in testing/shadow-oracle/plugin-digests.tsv). An entry whose

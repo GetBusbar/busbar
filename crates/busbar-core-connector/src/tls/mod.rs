@@ -39,7 +39,7 @@
 //! [`install_crypto_provider`] are relocated byte-for-byte (only the module path each name is
 //! reached through changed) from `busbar-kernel`'s own `tls` module, where the SAME native inbound
 //! TLS termination has built its `rustls::ServerConfig` this way since before this crate existed.
-//! `busbar_kernel::tls` keeps `read_pem` (an outbound TLS-identity reader in `busbar-a2a` also calls
+//! `busbar_kernel::tls` keeps `read_pem` (an outbound TLS-identity reader in a plane crate also calls
 //! it) and the accept-loop/hyper-serving machinery — a LISTENER concern this crate does not touch —
 //! but no longer builds a `ServerConfig` itself.
 
@@ -182,17 +182,105 @@ fn load_client_roots(
     Ok(roots)
 }
 
+/// The ALPN ids a TLS listener offers, in its order of preference (OWNER RULING Q137, 2026-10-04).
+/// The listener's hyper builder serves both: it reads an `h2` connection's preface and serves HTTP/2.
+const ALPN_OFFER: [&[u8]; 2] = [ALPN_H2, b"http/1.1"];
+
+/// The ALPN id of HTTP/2 over TLS (RFC 9113 §3.3).
+const ALPN_H2: &[u8] = b"h2";
+
+/// The HTTP/2 client connection preface (RFC 9113 §3.4).
+const H2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// A connection whose ALPN is `h2` is KNOWN to be HTTP/2, so RFC 9113 §3.4 governs its first bytes
+/// (RFC 9113 §3.4; the ALPN offer is OWNER RULING Q137): anything but the connection preface is a connection
+/// error. No h2 frame layer exists yet to send a GOAWAY on, so the error closes the connection with
+/// no bytes; it is never handed on to be read as an HTTP/1 request line. Reads at most the preface's
+/// 24 bytes and stops at the first one that differs; the bytes read are the preface, which
+/// [`Preface`] hands back first.
+async fn expect_h2_preface<S: futures::io::AsyncRead + Unpin>(io: &mut S) -> std::io::Result<()> {
+    let mut got = [0u8; 24];
+    let mut n = 0;
+    while n < got.len() {
+        let read = futures::io::AsyncReadExt::read(io, &mut got[n..]).await?;
+        n += read;
+        if read == 0 || got[..n] != H2_PREFACE[..n] {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "an ALPN h2 connection did not open with the HTTP/2 connection preface \
+                 (RFC 9113 §3.4); connection closed",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// An ALPN-h2 stream whose preface [`expect_h2_preface`] has read: reads hand the preface back
+/// first, then the stream's own bytes; writes go straight through.
+struct Preface<S> {
+    io: S,
+    replayed: usize,
+}
+
+impl<S: futures::io::AsyncRead + Unpin> futures::io::AsyncRead for Preface<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let rest = &H2_PREFACE[self.replayed..];
+        if rest.is_empty() {
+            return std::pin::Pin::new(&mut self.io).poll_read(cx, buf);
+        }
+        let n = rest.len().min(buf.len());
+        buf[..n].copy_from_slice(&rest[..n]);
+        self.replayed += n;
+        std::task::Poll::Ready(Ok(n))
+    }
+}
+
+impl<S: futures::io::AsyncWrite + Unpin> futures::io::AsyncWrite for Preface<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.io).poll_write_vectored(cx, bufs)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_flush(cx)
+    }
+    fn poll_close(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_close(cx)
+    }
+}
+
 /// Construct the rustls [`ServerConfig`] from the operator's [`TlsCfg`].
 ///
 /// * `client_ca` present ⇒ a [`WebPkiClientVerifier`] is installed: the client MUST present a
 ///   certificate chaining to that CA or the handshake fails (mTLS required).
 /// * `client_ca` absent ⇒ `with_no_client_auth()` (server-only TLS).
 ///
-/// ALPN advertises only `http/1.1` — busbar's axum server speaks http/1.1, so we must not advertise
-/// h2. Returns a clear, source-named error on any load/parse problem (the caller turns it into `die`).
+/// ALPN offers [`ALPN_OFFER`], `h2` first then `http/1.1` (OWNER RULING Q137, 2026-10-04, a
+/// signed customer-visible change from 1.5.5, which offered `http/1.1` alone): a client that offers
+/// `h2` speaks HTTP/2 over TLS, one that offers only `http/1.1` (or no ALPN) is served as in 1.5.5.
+/// Returns a clear, source-named error on any load/parse problem (the caller turns it into `die`).
 ///
-/// Relocated verbatim from `busbar_kernel::tls::build_server_config` (DECISIONS #40): every field,
-/// default and error message is unchanged — only the module this function lives in moved.
+/// Relocated verbatim from `busbar_kernel::tls::build_server_config` (DECISIONS #40): every other
+/// field, default and error message is unchanged — only the module this function lives in moved.
 pub fn build_server_config(
     tls: &TlsCfg,
     resolver: &SecretResolver,
@@ -226,8 +314,7 @@ pub fn build_server_config(
         )
     })?;
 
-    // http/1.1 only — busbar's axum 0.7 server does not serve h2.
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = ALPN_OFFER.iter().map(|p| p.to_vec()).collect();
 
     Ok(config)
 }
@@ -275,8 +362,13 @@ impl ConnectionSecurity for Tls {
             let tokio_io = FuturesAsyncReadCompatExt::compat(io);
             let acceptor = tokio_rustls::TlsAcceptor::from(self.config.clone());
             let tls_stream = acceptor.accept(tokio_io).await?;
-            let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(tls_stream));
-            Ok(raw)
+            let known_h2 = tls_stream.get_ref().1.alpn_protocol() == Some(ALPN_H2);
+            let mut io = TokioAsyncReadCompatExt::compat(tls_stream);
+            if !known_h2 {
+                return Ok(Box::new(io) as Box<dyn RawIo>);
+            }
+            expect_h2_preface(&mut io).await?;
+            Ok(Box::new(Preface { io, replayed: 0 }) as Box<dyn RawIo>)
         })
     }
 }

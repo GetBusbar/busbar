@@ -57,7 +57,7 @@ pub(crate) fn mount<T: AdminTransport>(
 ) -> Router<Arc<AppHandle>> {
     let prefix = format!(
         "{}/{}/{}",
-        busbar_kernel::admin::v1::contract::API_ROOT,
+        crate::v1::contract::API_ROOT,
         transport.version(),
         transport.area()
     );

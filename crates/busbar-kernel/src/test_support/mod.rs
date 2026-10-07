@@ -764,14 +764,14 @@ impl LaneSpec {
     }
 }
 
-/// The plugin route table a test `App` carries: the host's scrape route `GET /metrics` when the
-/// recorder is installed (`metrics::init()`), else empty. Mirrors production, where the route is the
-/// scrape sink's — here the recorder handle is the stand-in switch (the harness has no `export:`
-/// config surface) and nothing renders but the recorder itself.
+/// The plugin route table a test `App` carries: the scrape routes `GET /metrics` and
+/// `GET /metrics/hooks` when the recorder is installed (`metrics::init()`), else empty. Mirrors
+/// production, where the routes are the scrape sink's — here the recorder handle is the stand-in
+/// switch (the harness has no `export:` config surface) and the neutral
+/// [`export_axis::LinesSink`] answers them.
 fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
-    if crate::metrics::recorder_installed() {
-        let decl = crate::export::scrape::decl("metrics", None);
-        crate::plugin_routes::build_route_table(vec![decl])
+    if crate::snapshot::recorder_installed() {
+        crate::plugin_routes::build_route_table(export_axis::lines_scrape_routes())
             .unwrap_or_else(|_| crate::plugin_routes::PluginRouteTable::empty())
     } else {
         crate::plugin_routes::PluginRouteTable::empty()
@@ -1695,11 +1695,15 @@ impl TestApp {
         // UNCONDITIONALLY under the interned `runtime_slot_key(<llm plane key>)`: a fixture always
         // configures its lanes/pools and expects them readable through `engine_tables`, exactly as the
         // always-present flat field guaranteed, so `build()` seeds the slot for every `TestApp` whose
-        // process actually has an LLM (fallback) plane. GATED on `is_fallback` because `fallback_key()`
-        // degrades to the FIRST registered plane's key when no plane flags itself fallback (the plane
-        // suites' dependency-copy of core, which registers only MCP/A2A) — inserting there would key the
-        // LLM runtime under a sibling's `runtime_slot_key` and clobber that sibling's own runtime slot.
-        let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
+        // process actually has an LLM (fallback) plane. The key AND the `build_runtime` come from ONE
+        // resolved decl ([`crate::plane::fallback_decl`]), never from `fallback_key()`: that degrades to
+        // the FIRST registered plane's key when no plane flags itself fallback (the plane suites'
+        // dependency-copy of core, which registers only MCP/A2A), and this test binary's registry GROWS
+        // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
+        // registers and a decl read after it named two different planes — the LLM runtime then landed
+        // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
+        let fallback = crate::plane::fallback_decl();
+        let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
         // default (a surface with no LLM plane never routes through `engine_tables` anyway).
@@ -1708,7 +1712,7 @@ impl TestApp {
         // (a door plane), and reads the empty default when no fallback plane is registered.
         let mut config_tables =
             std::sync::Arc::<busbar_kernel::plane_host::ConfigTables>::default();
-        if crate::plane::is_fallback(crate::plane::fallback_key()) {
+        if let Some(decl) = fallback {
             // Assemble the NEUTRAL `PlaneBuildInput` (money-path Phase 3-4 C) exactly as production
             // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
             // fn-pointer — so the fixture names no `Lane`/`NativeRuntime` and exercises the SAME in-plane
@@ -1811,10 +1815,10 @@ impl TestApp {
                 reasoning_budgets: [1024, 4096, 8192, 16384],
                 default_failover: Some(default_failover),
             };
-            if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-                .and_then(|d| d.build_runtime)
-            {
-                let slot = f(&build_input as &dyn std::any::Any, None);
+            // A fallback plane that contributes no runtime of its own (a door plane) is read through
+            // the kernel's own tables above.
+            if let Some(build_runtime) = decl.build_runtime {
+                let slot = build_runtime(&build_input as &dyn std::any::Any, None);
                 plane_slots.insert(fallback_runtime_key, slot);
             }
         }
@@ -2220,9 +2224,9 @@ fn hook_double_env(
 /// exact metric name (the char after the name must open the label set / value, so a name never
 /// matches a longer neighbor it happens to prefix).
 pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
-    crate::metrics::init();
+    crate::snapshot::init();
     let frags: Vec<String> = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect();
-    crate::metrics::render()
+    crate::snapshot::render()
         .lines()
         .filter(|l| {
             l.strip_prefix(name)

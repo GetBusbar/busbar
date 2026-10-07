@@ -672,7 +672,7 @@ impl DoorRig {
 pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     // The registry rows that own the `pools:`/`models:` sections the deployment writes.
     node_plane::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()
