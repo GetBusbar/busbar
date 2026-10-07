@@ -214,7 +214,16 @@ pub(crate) struct Lifted {
     /// registered plane requires. A key is struck as the document is seen to carry it, so what is
     /// left once the document is read is what it omitted.
     watch: Vec<&'static str>,
+    /// The document writes the model-serving verb's section ([`WRITTEN_WATCH`]), empty or not.
+    model_sections_written: bool,
 }
+
+/// The top-level keys the key reader notes the PRESENCE of without requiring them: the
+/// model-serving verb's two sections (Law 7: present, not non-empty, loads the plane).
+const WRITTEN_WATCH: [&str; 2] = [
+    busbar_contract::section::RESERVED_MODELS_KEY,
+    busbar_contract::section::RESERVED_POOLS_KEY,
+];
 
 impl Lifted {
     /// Install what was lifted onto the freshly parsed frozen struct. Absent keys leave the
@@ -225,6 +234,7 @@ impl Lifted {
         deploy.plane_raw = self.plane_raw;
         deploy.declared_raw = self.declared_raw;
         deploy.declared = self.declared;
+        deploy.model_sections_written = self.model_sections_written;
         if let Some(v) = self.endpoint {
             deploy.endpoint = v;
         }
@@ -445,6 +455,9 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
                 None => return Ok(None),
                 Some(KeyOutcome::Forward(v)) => {
                     self.pending_nested = watched == Some(NESTED_TOP_LEVEL_KEY);
+                    if watched.is_some_and(|k| WRITTEN_WATCH.contains(&k)) {
+                        self.lifted.model_sections_written = true;
+                    }
                     self.lifted.watch.retain(|k| Some(*k) != watched);
                     return Ok(Some(v));
                 }
@@ -583,6 +596,9 @@ impl<'de> Visitor<'de> for DocumentVisitor {
         for d in crate::plane::registry::plane_decls() {
             lifted.watch.extend(d.required_config_sections);
         }
+        // What the document must carry, before the keys only noted when present join the watch.
+        let required = lifted.watch.clone();
+        lifted.watch.extend(WRITTEN_WATCH);
         let table = lift_table();
         let mut deploy = DeployCfg::deserialize(MapAccessDeserializer::new(LiftingMap {
             inner: map,
@@ -594,7 +610,11 @@ impl<'de> Visitor<'de> for DocumentVisitor {
         // A section a registered plane requires and the document omits: serde's own refusal for it,
         // raised where the frozen struct raised it (after the document's keys), so its bytes are the
         // ones 1.5.5 printed. The first in declaration order, as the derive reports the first.
-        if let Some(s) = lifted.watch.iter().find(|k| **k != NESTED_TOP_LEVEL_KEY) {
+        if let Some(s) = lifted
+            .watch
+            .iter()
+            .find(|k| **k != NESTED_TOP_LEVEL_KEY && required.contains(k))
+        {
             return Err(M::Error::missing_field(s));
         }
         lifted.install(&mut deploy);

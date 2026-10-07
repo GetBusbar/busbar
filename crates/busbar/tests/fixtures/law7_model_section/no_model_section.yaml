@@ -1,0 +1,18 @@
+listen: "127.0.0.1:{data_port}"
+admin_listen: "127.0.0.1:{admin_port}"
+store: {module: memory}
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+auth:
+  chain: [keys]
+  signing_key: { file: "{signing}" }
+  admin_auth: [admin-tokens]
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+  verdicts:
+    api_key: { env: MOCK_KEY }
+decisions:
+  models:
+    verdicts:
+      provider: verdicts

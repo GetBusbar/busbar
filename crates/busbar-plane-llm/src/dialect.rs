@@ -56,6 +56,9 @@ pub struct Dialect {
     /// THE DEFAULT STYLE'S PARAMETERS for this dialect, a JSON object (`""`: none), stated in the
     /// plane tail's `dialect_auth.params` and handed the auth plugin's `open_outbound` as its
     /// settings at seal, under the provider's own (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
+    /// Its `protocol` is the name the auth plugin's line for a credential it cannot present carries
+    /// as that line's `protocol` field — stated where 1.5.5's builder named it (the bearer
+    /// dialects and the credential-family one), and nowhere else.
     pub egress_params: &'static str,
     /// The request headers busbar GOVERNS for this dialect (lower-case): its credential headers and
     /// its tenant selectors. A same-dialect route forwards every other client header unchanged; these
@@ -108,7 +111,7 @@ const OPENAI_GOVERNED: &[&str] = &[
 /// trimmed, an oauth token as a bearer, the operator's own key in `x-api-key`, a passthrough caller's
 /// as a bearer.
 pub(crate) const KEY_FAMILY_PARAMS: &str = concat!(
-    r#"{"header":"x-api-key","#,
+    r#"{"protocol":"anthropic","header":"x-api-key","#,
     r#""families":[{"prefix":"sk-ant-api","header":"x-api-key","trim_start":true},"#,
     r#"{"prefix":"sk-ant-oat"}],"#,
     r#""own":{"header":"x-api-key"},"passthrough":{}}"#,
@@ -161,7 +164,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         egress_style: "bearer",
-        egress_params: "",
+        egress_params: r#"{"protocol":"openai"}"#,
         governed_headers: OPENAI_GOVERNED,
         governed_query: &[],
         tenant_headers: OPENAI_TENANT,
@@ -222,7 +225,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         egress_style: "bearer",
-        egress_params: "",
+        egress_params: r#"{"protocol":"responses"}"#,
         governed_headers: OPENAI_GOVERNED,
         governed_query: &[],
         tenant_headers: OPENAI_TENANT,
@@ -241,7 +244,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         egress_style: "bearer",
-        egress_params: "",
+        egress_params: r#"{"protocol":"cohere"}"#,
         governed_headers: &["authorization"],
         governed_query: &[],
         tenant_headers: &[],

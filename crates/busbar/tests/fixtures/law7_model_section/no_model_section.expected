@@ -1,0 +1,9 @@
+0	200	-	{}
+1	200	-	{}
+2	200	-	{}
+3	404	-	{"error":{"message":"the requested resource was not found","type":"not_found_error"}}
+4	404	-	{"error":{"message":"the requested resource was not found","type":"not_found_error"}}
+5	401	-	{"error":{"message":"authentication failed","type":"authentication_error"}}
+6	401	-	{"error":{"message":"authentication failed","type":"authentication_error"}}
+7	404	-	{"error":{"message":"the requested resource was not found","type":"not_found_error"}}
+8	404	-	{"error":{"message":"the requested resource was not found","type":"not_found_error"}}

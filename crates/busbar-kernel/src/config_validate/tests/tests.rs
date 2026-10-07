@@ -15,6 +15,7 @@ fn make_root_cfg(
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         plane_sections: Default::default(),
+        model_sections_written: false,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         // No endpoint plane configured.
         endpoint_resources: Default::default(),

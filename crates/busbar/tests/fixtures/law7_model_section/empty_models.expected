@@ -1,0 +1,9 @@
+0	200	-	{"data":[],"object":"list"}
+1	200	-	{"data":[],"first_id":null,"has_more":false,"last_id":null}
+2	200	-	{"models":[]}
+3	404	-	{"error":{"message":"The model 'm' does not exist or you do not have access to it.","type":"not_found_error"},"request_id":"req_X","type":"error"}
+4	404	-	{"error":{"code":null,"message":"The model 'm' does not exist or you do not have access to it.","param":null,"type":"not_found_error"}}
+5	401	-	{"error":{"message":"invalid x-api-key","type":"authentication_error"},"request_id":"req_X","type":"error"}
+6	403	AccessDeniedException	{"__type":"AccessDeniedException","message":""}
+7	404	-	{"error":{"code":null,"message":"the requested resource was not found","param":null,"type":"not_found_error"}}
+8	405	-	{"error":{"message":"method not allowed for this resource","type":"invalid_request_error"},"request_id":"req_X","type":"error"}

@@ -76,7 +76,10 @@ fn a_keyless_or_unencodable_credential_presents_nothing() {
     assert!(notes.is_empty());
     let (r, notes) = open(BEARER, Some("sk\r\nx"), "{}");
     assert!(own(r).is_empty());
-    assert_eq!(notes, [OpenNote::Bearer]);
+    assert_eq!(notes, [OpenNote::Bearer(None)]);
+    let (r, notes) = open(BEARER, Some("sk\r\nx"), r#"{"protocol":"cohere"}"#);
+    assert!(own(r).is_empty());
+    assert_eq!(notes, [OpenNote::Bearer(Some("cohere".to_string()))]);
     let (r, notes) = open(API_KEY, Some("k\u{0}"), "{}");
     assert!(own(r).is_empty());
     assert_eq!(notes, [OpenNote::Header("api-key".to_string())]);

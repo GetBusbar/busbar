@@ -1279,7 +1279,8 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
 /// health or token endpoint), `models`, `pools` (each pool's members and its fallback pool) and
 /// `limits` (the output-cap default and the effort budgets). The previous release kept these in the
 /// kernel; they are the root's to hand a door plane whose Statement names them. `pools` is present
-/// whenever `models` is: a deployment with models and no pools routes to its models directly.
+/// whenever `models` is: a deployment with models and no pools routes to its models directly. Both
+/// are present whenever the document writes either, empty or not (Law 7: present loads).
 #[must_use]
 pub fn kernel_sections(
     cfg: &busbar_kernel::config::RootCfg,
@@ -1430,7 +1431,10 @@ pub fn kernel_sections(
             yaml(Value::Object(providers)),
         );
     }
-    if !models.is_empty() || !pools.is_empty() {
+    // PRESENT, NOT NON-EMPTY (spec Part 1 Law 7: a plugin loads iff its configuration section is
+    // present): a document that writes `models: {}` or `pools: {}` configures the model-serving
+    // plane over empty maps, as the previous release served it.
+    if cfg.model_sections_written || !models.is_empty() || !pools.is_empty() {
         out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
         out.insert(RESERVED_POOLS_KEY, yaml(Value::Object(pools)));
     }

@@ -83,6 +83,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         plane_fees: Default::default(),
         plane_raw: Default::default(),
         declared_raw: Default::default(),
+        model_sections_written: false,
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
@@ -4388,4 +4389,22 @@ fn the_provider_tenant_merges_deployment_over_catalog() {
     let merged = merge_provider_fallback(&def, &deploy);
     assert_eq!(merged.organization.as_deref(), Some("org-deploy"));
     assert_eq!(merged.project.as_deref(), Some("proj-catalog"));
+}
+
+/// LAW 7, PRESENT NOT NON-EMPTY (spec Part 1 Law 7; coordinator ruling 2026-10-07): the key reader
+/// records that the document writes the model-serving verb's section, `models:` or `pools:`, even
+/// written empty, which the typed maps cannot tell from absent. (A `models:` nested inside another
+/// plane's section is not that verb's: `tests/law7_model_section_present.rs`, `no_model_section`.)
+#[test]
+fn the_model_serving_sections_are_recorded_when_written_even_empty() {
+    crate::test_support::register_neutral_test_plane();
+    let written = |doc: &str| {
+        crate::config::deploy_from_yaml_str(doc)
+            .expect("the document parses")
+            .model_sections_written
+    };
+    assert!(written("providers: {}\nmodels: {}\n"));
+    assert!(written("providers: {}\npools: {}\n"));
+    assert!(written("providers: {}\nmodels:\n  m:\n    provider: p\n"));
+    assert!(!written("providers: {}\n"));
 }

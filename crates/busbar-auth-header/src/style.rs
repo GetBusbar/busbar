@@ -68,10 +68,13 @@ impl Refusal {
 pub enum OpenNote {
     /// A static header omitted for invalid bytes (`EGRESS_APIKEY_INVALID_BYTES`), naming the header.
     Header(String),
-    /// A bearer omitted for invalid bytes (`PROTO_AUTH_INVALID_HEADER_BYTES`).
-    Bearer,
-    /// A credential-family table's credential omitted for invalid bytes, naming the header.
-    Family(String),
+    /// A bearer omitted for invalid bytes (`PROTO_AUTH_INVALID_HEADER_BYTES`), naming the
+    /// `protocol` its settings state (the declaring plane's word for the binding; 1.5.5's bearer
+    /// line named the protocol).
+    Bearer(Option<String>),
+    /// A credential-family table's credential omitted for invalid bytes, naming the `protocol` its
+    /// settings state and the header.
+    Family(Option<String>, String),
 }
 
 /// One open binding: the scheme, and the fields its own credential presents, built once.
@@ -170,18 +173,23 @@ fn static_scheme(style: &str, m: &Map<String, Value>) -> Result<StaticScheme, Re
 }
 
 /// The note for a credential a static scheme could not present, in the line its builder logged.
-fn unpresented(scheme: &StaticScheme, credential: &str, mode: Mode) -> OpenNote {
+fn unpresented(
+    scheme: &StaticScheme,
+    credential: &str,
+    mode: Mode,
+    protocol: Option<String>,
+) -> OpenNote {
     let p = scheme.presentation(credential, mode);
     let header = p
         .header
         .clone()
         .unwrap_or_else(|| "authorization".to_string());
     if !scheme.families.is_empty() {
-        OpenNote::Family(header)
+        OpenNote::Family(protocol, header)
     } else if p.header.is_some() {
         OpenNote::Header(header)
     } else {
-        OpenNote::Bearer
+        OpenNote::Bearer(protocol)
     }
 }
 
@@ -208,6 +216,8 @@ pub fn open_binding(
         }
     };
     let scheme = static_scheme(style, &m).map_err(|r| vec![r])?;
+    // The name the settings give the binding's protocol, for the omitted-credential line only.
+    let protocol = text(&m, "protocol").map_err(|r| vec![r])?;
     // NO CREDENTIAL ⇒ NO AUTH HEADER (1.5.5's `prebuild_auth`): an empty key is a keyless upstream
     // (`api_key: none`), and an empty `Authorization: Bearer ` is strictly worse than nothing.
     let credential_text = credential_text.unwrap_or("");
@@ -217,7 +227,7 @@ pub fn open_binding(
         scheme.present(credential_text, Mode::Own)
     };
     if !credential_text.is_empty() && own.is_empty() {
-        notes.push(unpresented(&scheme, credential_text, Mode::Own));
+        notes.push(unpresented(&scheme, credential_text, Mode::Own, protocol));
     }
     Ok(Binding {
         scheme,

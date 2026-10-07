@@ -24,8 +24,7 @@ pub(crate) mod diag {
     pub const CREDENTIAL_INVALID_BYTES: u32 = 2;
 }
 
-/// `0` info, `1` warn (the `Diag::severity` scale).
-const INFO: u8 = 0;
+/// `1` warn (the `Diag::severity` scale).
 const WARN: u8 = 1;
 
 /// One op's envelope storage: the diagnostics and the texts they point into, kept until the next
@@ -123,7 +122,9 @@ impl Header {
             .retain(|_, (g, _)| *g != generation);
     }
 
-    /// Report an open's notes into `env`, in the lines 1.5.5's builders logged.
+    /// Report an open's notes into `env`, in the lines 1.5.5's builders logged: each at warning
+    /// severity, its text the builder's message followed by its fields as the log formatter wrote
+    /// them (`name="value"`, in the builder's order).
     pub(crate) fn note_open(env: &mut EnvStore, notes: &[OpenNote]) {
         for n in notes {
             match n {
@@ -132,29 +133,41 @@ impl Header {
                     WARN,
                     format!(
                         "egress credential contains invalid header bytes (ASCII control \
-                         character); omitting auth header — upstream will reject with 401 \
-                         header={header}"
+                         character); omitting auth header — upstream will reject with 401{}",
+                        fields(&[("header", Some(header))])
                     ),
                 ),
-                OpenNote::Bearer => env.push(
+                OpenNote::Bearer(protocol) => env.push(
                     diag::AUTH_INVALID_HEADER_BYTES,
-                    INFO,
-                    "authorization credential contains invalid header bytes (ASCII control \
-                     character); omitting auth header — upstream will reject with 401"
-                        .to_string(),
+                    WARN,
+                    format!(
+                        "authorization credential contains invalid header bytes (ASCII control \
+                         character); omitting auth header — upstream will reject with 401{}",
+                        fields(&[("protocol", protocol.as_ref())])
+                    ),
                 ),
-                OpenNote::Family(header) => env.push(
+                OpenNote::Family(protocol, header) => env.push(
                     diag::CREDENTIAL_INVALID_BYTES,
                     WARN,
                     format!(
                         "auth credential contains bytes invalid for an HTTP header value (e.g. a \
                          trailing newline); omitting the credential header — upstream will return \
-                         401, check the key configuration header={header}"
+                         401, check the key configuration{}",
+                        fields(&[("protocol", protocol.as_ref()), ("header", Some(header))])
                     ),
                 ),
             }
         }
     }
+}
+
+/// A line's fields as the log formatter renders a string field after the message: ` name="value"`
+/// each, the value quoted and escaped as its debug form; a field with no value is not written.
+fn fields(named: &[(&str, Option<&String>)]) -> String {
+    named
+        .iter()
+        .filter_map(|(name, value)| value.map(|v| format!(" {name}={v:?}")))
+        .collect()
 }
 
 #[cfg(test)]

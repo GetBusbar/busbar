@@ -542,6 +542,9 @@ pub struct RootCfg {
     /// `is_present()`). A linked plane whose section is absent hydrates, starts, builds and serves
     /// nothing; see `state::App::plane_configured`.
     pub plane_sections: std::collections::BTreeSet<&'static str>,
+    /// LAW 7 — the document writes the model-serving verb's section (`models:` or `pools:`), empty
+    /// or not ([`DeployCfg::model_sections_written`]): the plane that serves it loads.
+    pub model_sections_written: bool,
 }
 
 impl RootCfg {
@@ -1277,6 +1280,12 @@ pub struct DeployCfg {
     /// its door, beside the parse its grammar made. See [`DeployCfg::door_sections`].
     #[serde(skip)]
     pub declared_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    /// THE MODEL-SERVING VERB'S SECTIONS THE DOCUMENT WRITES (`models:` / `pools:`), present even
+    /// when empty (spec Part 1 Law 7: a plugin loads iff its configuration section is PRESENT, not
+    /// non-empty). Recorded by the key reader ([`prepass`]); the typed maps above cannot tell an
+    /// empty section from an absent one.
+    #[serde(skip)]
+    pub model_sections_written: bool,
     /// The durable store as `{ module, settings }`. Required: absent is refused at validation
     /// ([`store_required`], Q-STORE = (B)).
     #[serde(default)]
@@ -2682,6 +2691,7 @@ pub fn resolve(
             export_defs: deploy.export.clone(),
             agent_defs: deploy.agents.0.clone_box(),
             plane_sections,
+            model_sections_written: deploy.model_sections_written,
         })
     } else {
         Err(errors)

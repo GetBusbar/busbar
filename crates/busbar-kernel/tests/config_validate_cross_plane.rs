@@ -32,6 +32,7 @@ fn make_root_cfg(
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         plane_sections: Default::default(),
+        model_sections_written: false,
         listen: config::DEFAULT_LISTEN_ADDR.into(),
         endpoint_resources: Default::default(),
         oauth_as: None,

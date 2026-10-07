@@ -123,6 +123,8 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         upstream_credentials: _,
         // The configured plane section NAMES (Law 7): `&'static str` keys, no credential.
         plane_sections: _,
+        // Whether the model-serving verb's section is written (Law 7): a flag, no credential.
+        model_sections_written: _,
         // ── OPAQUE MODULE SETTINGS BAGS (`serde_json::Value` trees, not typed config): `store`,
         // `secrets`, `hooks`, `export` and `export_defs` all carry a plugin's own `settings:`, which
         // MAY contain `SecretRef`-SHAPED documents. Those are NOT `SecretRef`-typed values and are

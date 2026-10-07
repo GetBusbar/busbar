@@ -1,0 +1,8 @@
+mock:
+  protocol: anthropic
+  base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY
+verdicts:
+  protocol: jev
+  base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY

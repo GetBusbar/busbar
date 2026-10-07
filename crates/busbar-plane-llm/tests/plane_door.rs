@@ -552,3 +552,40 @@ fn every_open_class_becomes_one_reported_count_at_its_tail_index() {
         );
     }
 }
+
+/// THE PROTOCOL EACH DIALECT'S AUTH PARAMETERS NAME (coordinator ruling B21, 2026-10-07: log lines
+/// are customer-visible). An auth plugin's line for a credential it cannot present carries the
+/// `protocol` field 1.5.5's builder wrote, and the plane states it in the dialect's own parameters:
+/// the bearer dialects (1.5.5 `proto/mod.rs` `bearer_auth_headers`, `protocol = proto`) and the
+/// credential-family dialect (`proto/anthropic/mod.rs`, `protocol = "anthropic"`) name themselves;
+/// the static-header and signing dialects' 1.5.5 lines carried no protocol, so theirs state none.
+#[test]
+fn each_dialects_auth_parameters_name_the_protocol_its_1_5_5_line_carried() {
+    let stated: Vec<(&str, Option<String>)> = DIALECTS
+        .iter()
+        .map(|d| {
+            let protocol = if d.egress_params.is_empty() {
+                None
+            } else {
+                let v: serde_json::Value =
+                    serde_json::from_str(d.egress_params).expect("the parameters are JSON");
+                v.get("protocol")
+                    .and_then(|p| p.as_str())
+                    .map(str::to_string)
+            };
+            (d.name, protocol)
+        })
+        .collect();
+    let named = |n: &str| Some(n.to_string());
+    assert_eq!(
+        stated,
+        [
+            ("anthropic", named("anthropic")),
+            ("openai", named("openai")),
+            ("gemini", None),
+            ("bedrock", None),
+            ("responses", named("responses")),
+            ("cohere", named("cohere")),
+        ]
+    );
+}
