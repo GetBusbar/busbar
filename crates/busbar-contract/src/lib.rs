@@ -91,6 +91,7 @@ pub mod operation;
 pub mod plane;
 pub mod plane_calls;
 pub mod plugin;
+pub mod plugin_rows;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod protocol;
 pub mod redacted;

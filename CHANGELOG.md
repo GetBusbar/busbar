@@ -407,6 +407,9 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   series by their labels; a histogram's or summary's lines stay together in their usual order
   (buckets ascending, then `_sum`, then `_count`). Every name, label and value is unchanged, and
   the order served is one 1.5.5 could already print.
+- **A wedged hook comes back.** A hook that wedged is no longer lost until restart: it is
+  quarantined, backed off from 1 s doubling to 30 s, and then given one trial call on a fresh
+  instance, and a successful trial returns it to service.
 
 ### Breaking
 
