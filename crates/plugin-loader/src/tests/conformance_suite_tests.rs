@@ -694,6 +694,8 @@ fn the_declares_file_is_found_beside_the_plugin_crate() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("logic")).unwrap();
     std::fs::create_dir_all(root.join("logic-plugin")).unwrap();
+    // A plugin repo's root is its workspace (`Cargo.toml` beside `logic/` and `logic-plugin/`).
+    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
     std::fs::write(root.join("logic/declares.json"), "{}").unwrap();
     let found = super::declares_file(root.join("logic-plugin").to_str().unwrap());
     assert_eq!(found, Some(root.join("logic/declares.json")));
@@ -703,4 +705,89 @@ fn the_declares_file_is_found_beside_the_plugin_crate() {
         None
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// A crate in busbar's own tree (its parent, `crates/`, is no plugin repo's workspace root) is
+/// judged by its OWN declares file: a sibling crate's `declares.json` is that crate's. RED before
+/// the workspace-root rule: the sibling's file was found as this crate's, and two siblings holding
+/// one each panicked every in-tree conformance subject.
+#[test]
+fn a_sibling_crates_declares_file_is_never_this_crates() {
+    let tree = std::env::temp_dir().join(format!("declares-tree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tree);
+    let crates = tree.join("crates");
+    for c in ["plane-one", "plane-two", "plane-three"] {
+        std::fs::create_dir_all(crates.join(c)).unwrap();
+    }
+    std::fs::write(tree.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(crates.join("plane-one/declares.json"), "{}").unwrap();
+    std::fs::write(crates.join("plane-two/declares.json"), "{}").unwrap();
+    let at = |c: &str| super::declares_file(crates.join(c).to_str().unwrap());
+    assert_eq!(
+        at("plane-three"),
+        None,
+        "a sibling's declares file is not this crate's"
+    );
+    assert_eq!(
+        at("plane-one"),
+        Some(crates.join("plane-one/declares.json"))
+    );
+    assert_eq!(
+        at("plane-two"),
+        Some(crates.join("plane-two/declares.json"))
+    );
+    std::fs::remove_dir_all(&tree).unwrap();
+}
+
+/// The host's secret lending, as the suite lends it: each secret-ref key (a dotted path) is taken
+/// out of the settings and its string lent, in the Statement's order; an absent key lends empty
+/// bytes; settings with no refs pass through byte for byte.
+#[test]
+fn the_suite_lends_the_statements_secret_refs_out_of_the_settings() {
+    use super::lend_secrets;
+    let refs = [
+        "token".to_owned(),
+        "auth.key".to_owned(),
+        "absent".to_owned(),
+    ];
+    let raw = br#"{"addr":"https://localhost:1","token":"s.t","auth":{"key":"k","x":1}}"#;
+    let (settings, secrets) = lend_secrets(&refs, raw, false);
+    let v: serde_json::Value = serde_json::from_slice(&settings).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({"addr": "https://localhost:1", "auth": {"x": 1}})
+    );
+    assert_eq!(secrets, [b"s.t".to_vec(), b"k".to_vec(), Vec::new()]);
+    // The secret kind's host leaves the keys in the settings, and lends the same material.
+    let (kept, lent) = lend_secrets(&refs, raw, true);
+    assert_eq!(kept, raw.to_vec());
+    assert_eq!(lent, secrets);
+    assert_eq!(
+        lend_secrets(&[], b"{ \"a\": 1 }", false),
+        (b"{ \"a\": 1 }".to_vec(), Vec::new())
+    );
+}
+
+/// RED (store-mysql #16): the store script meters only keys it has put, so a store whose metering
+/// rows reference its keys (MySQL's fk_metering_key) holds every metering write: no `meter(..)` call
+/// in the script names a literal key id.
+#[test]
+fn red_the_store_script_meters_only_keys_it_has_put() {
+    let script = include_str!("../conformance/store.rs");
+    let literal = regex_lite_meter(script);
+    assert!(
+        literal.is_empty(),
+        "metering names keys it never put: {literal:?}"
+    );
+}
+
+/// Every `meter("<literal>", ..)` call in `script`.
+fn regex_lite_meter(script: &str) -> Vec<String> {
+    script
+        .match_indices("meter(\"")
+        .map(|(at, _)| {
+            let rest = &script[at + 7..];
+            rest[..rest.find('"').unwrap_or(0)].to_owned()
+        })
+        .collect()
 }

@@ -233,6 +233,7 @@ pub fn vocabulary(
     crates: &[CrateInfo],
     files: &[(String, String)],
     core: &[super::super::CoreName],
+    registry: &str,
 ) -> Vocab {
     let axes = axes();
     let mut v = Vocab::default();
@@ -257,6 +258,26 @@ pub fn vocabulary(
             .push(Source {
                 owner: Some(c.name.clone()),
                 from: c.name.clone(),
+            });
+    }
+
+    // 1b. THE REGISTRY (BUSBAR-1.6.0.md: "the instance census must read plugins.yaml aliases and
+    // manifest names, so it can see external plugins"). An out-of-tree plugin has no crate here to
+    // teach the census its name; `plugins.yaml` files it under its kind with the `module:` word an
+    // operator writes (`alias`). Owned by its plugin crate, so it is never counted against itself.
+    for (kind, alias, krate) in registry_aliases(registry) {
+        let Some(k) = axes.iter().copied().find(|k| *k == kind) else {
+            continue;
+        };
+        census.entry(alias.clone()).or_default().insert(k);
+        v.names
+            .entry(k)
+            .or_default()
+            .entry(alias)
+            .or_default()
+            .push(Source {
+                owner: Some(krate.clone()),
+                from: format!("plugins.yaml {krate}"),
             });
     }
 
@@ -770,6 +791,43 @@ pub fn render(measured: &Instances, vocab: &Vocab) -> String {
     s
 }
 
+/// The plugin registry the census also reads.
+pub const REGISTRY: &str = "plugins.yaml";
+
+/// Every `plugins.yaml` entry that states a `kind:`, an `alias:` and a `crate:`, as
+/// `(kind, alias, crate)`.
+pub fn registry_aliases(text: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut cur: [Option<String>; 3] = [None, None, None];
+    let flush = |cur: &mut [Option<String>; 3], out: &mut Vec<(String, String, String)>| {
+        if let [Some(k), Some(a), Some(c)] = std::mem::take(cur) {
+            out.push((k, a, c));
+        }
+    };
+    for raw in text.lines() {
+        let t = raw.trim();
+        if t.starts_with('#') {
+            continue;
+        }
+        let entry = t.strip_prefix("- ");
+        if entry.is_some() {
+            flush(&mut cur, &mut out);
+        }
+        let Some((key, val)) = entry.unwrap_or(t).split_once(':') else {
+            continue;
+        };
+        let val = val.trim().trim_matches('"').to_string();
+        match key.trim() {
+            "kind" => cur[0] = Some(val),
+            "alias" => cur[1] = Some(val),
+            "crate" => cur[2] = Some(val),
+            _ => {}
+        }
+    }
+    flush(&mut cur, &mut out);
+    out
+}
+
 /// ONE INSTANCE NAME PER AXIS, read off the tree's own vocabulary — never typed into a fixture.
 /// A module-name constant is preferred (it is the compiled-in name the breach is made of); an axis
 /// with none falls back to its first census id.
@@ -779,7 +837,8 @@ fn one_name_per_axis(cx: &crate::ctx::Ctx) -> Result<Vec<(&'static str, String)>
     super::super::assign_instances(&mut crates, &planes, &ports);
     let (files, _) = super::scan_set(cx)?;
     let reg = super::super::load_registry(cx)?;
-    let vocab = vocabulary(&crates, &files, &reg.core_names);
+    let registry = cx.read(REGISTRY).unwrap_or_default();
+    let vocab = vocabulary(&crates, &files, &reg.core_names, &registry);
     let mut out = Vec::new();
     for k in axes() {
         let names = vocab.names.get(k).cloned().unwrap_or_default();
@@ -964,6 +1023,7 @@ pub fn selftest<'a>(
             format!("{CORE}/src/planted-schema.snapshot.json"),
             schema.to_string(),
         );
+        // qa-names: crates/busbar-auth-header/Cargo.toml -- xtask/src/gates/kind_isolation/matrix/instances.rs -- the header auth plugin's manifest at its census mount: the crate left for GetBusbar/busbar-auth-header (P5) and is read from its pinned checkout, so the plant writes the manifest into the virtual tree only when nothing is there
         const AUTH_HEADER: &str = "crates/busbar-auth-header/Cargo.toml";
         if !cx.exists(AUTH_HEADER) {
             ov.set(

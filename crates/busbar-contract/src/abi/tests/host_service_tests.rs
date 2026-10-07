@@ -289,6 +289,8 @@ fn a_ready_value_outside_the_service_range_is_fault() {
         head: head(op::TRUST_SIGHT, TICKET, 0),
         counterparty: none(),
         catalogue_hash: none(),
+        outcome: TRUST_REACHED,
+        _outcome_reserved: 0,
     };
     o.value = TRUST_QUARANTINED + 1;
     assert_eq!(
@@ -412,7 +414,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_eight() {
+fn the_services_that_never_pend_are_exactly_the_stated_fourteen() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -424,7 +426,13 @@ fn the_services_that_never_pend_are_exactly_the_stated_eight() {
             op::ENTITLEMENT_CHECK,
             op::RANDOM_FILL,
             op::NEED_ADMIT,
-            op::TRUST_VERIFY
+            op::TRUST_VERIFY,
+            op::SNAPSHOT_READ,
+            op::TRUST_SIGHT_ITEM,
+            op::TRUST_SERVES,
+            op::TRUST_DECIDE,
+            op::TRUST_STATE,
+            op::SESSION_EMIT
         ]
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
@@ -486,6 +494,15 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, trust_verify), op::TRUST_VERIFY),
         (offset_of!(HostSlots, records_secret), op::RECORDS_SECRET),
         (offset_of!(HostSlots, disk_append), op::DISK_APPEND),
+        (offset_of!(HostSlots, snapshot_read), op::SNAPSHOT_READ),
+        (
+            offset_of!(HostSlots, trust_sight_item),
+            op::TRUST_SIGHT_ITEM,
+        ),
+        (offset_of!(HostSlots, trust_serves), op::TRUST_SERVES),
+        (offset_of!(HostSlots, trust_decide), op::TRUST_DECIDE),
+        (offset_of!(HostSlots, trust_state), op::TRUST_STATE),
+        (offset_of!(HostSlots, session_emit), op::SESSION_EMIT),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -932,4 +949,62 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     assert!(check(written(0, 0, 0), &pending, TICKET).is_ok());
     assert!(check(written(0, 0, 0), &pending, Ticket::NONE).is_err());
     assert!(may_pend(op::DISK_APPEND));
+}
+
+/// `trust.decide` (ARCHITECT 2026-10-06): it never pends, and its value is a `TRUST_DECIDED_*`
+/// verdict or an `UNDECIDED_*` refusal code; RED: a value past the vocabulary, and a PENDING
+/// answer even on a ticket, are FAULT.
+#[test]
+fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
+    let i = TrustDecideIn {
+        head: head(
+            op::TRUST_DECIDE,
+            TICKET,
+            core::mem::size_of::<TrustDecideIn>(),
+        ),
+        counterparty: none(),
+        item: none(),
+        expected: none(),
+        decision: TRUST_DECIDE_APPROVE,
+        _reserved: 0,
+    };
+    assert!(!may_pend(op::TRUST_DECIDE));
+    let mut o = out(Outcome::Ready);
+    for value in [
+        TRUST_DECIDED_SERVING,
+        TRUST_DECIDED_PENDING,
+        TRUST_DECIDED_QUARANTINED,
+        UNDECIDED_UNPINNED,
+        UNDECIDED_STALE,
+        UNDECIDED_UNKNOWN,
+        UNDECIDED_ROOTLESS,
+    ] {
+        o.value = value;
+        assert!(check_trust_decide(&i, ready(&o), &o).is_ok(), "{value}");
+    }
+    for value in [0, UNDECIDED_ROOTLESS + 1] {
+        o.value = value;
+        assert_eq!(
+            rule(check_trust_decide(&i, ready(&o), &o)),
+            Rule::UnknownCode
+        );
+    }
+    let pending = out(Outcome::Pending);
+    assert!(check_trust_decide(&i, ready(&pending), &pending).is_err());
+}
+
+/// `snapshot.read`'s buffer alignment is the scrape layout's: every record the host lays out in
+/// it (family, sample, label) is aligned at it and is a whole multiple of it.
+#[test]
+fn the_snapshot_alignment_is_the_scrape_layouts() {
+    use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
+    use core::mem::{align_of, size_of};
+    for (align, size) in [
+        (align_of::<ScrapeFamily>(), size_of::<ScrapeFamily>()),
+        (align_of::<ScrapeSample>(), size_of::<ScrapeSample>()),
+        (align_of::<ScrapeLabel>(), size_of::<ScrapeLabel>()),
+    ] {
+        assert!(align <= SNAPSHOT_ALIGN && SNAPSHOT_ALIGN.is_multiple_of(align));
+        assert_eq!(size % SNAPSHOT_ALIGN, 0);
+    }
 }

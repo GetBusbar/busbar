@@ -8,7 +8,7 @@ use super::*;
 
 // ── SHARED CONFIG-BUILD FIXTURES (relocated from src/tests/tests.rs) ─────────────────────────────
 // `pub` so BOTH the in-crate unit tests and busbar-core's OWN integration-test target
-// (`tests/plane_integration.rs`, where the plane crates link as ONE busbar_kernel) can build a RootCfg
+// (`crates/busbar/tests/plane_integration.rs`, where the plane crates link as ONE busbar_kernel) can build a RootCfg
 // and drive it through the real `build_app_from_config`.
 /// The `store:` block a test config names: the stand-in linked store row. A config names its store
 /// (owner ruling Q-STORE = (B), 2026-09-27: a config with no `store:` block is refused), so every
@@ -363,6 +363,6 @@ impl busbar_kernel::test_support::BuiltAppSeam for crate::state::App {
     }
 
     fn refresh_scrape_gauges(&self) {
-        crate::metrics::refresh_scrape_gauges(self);
+        crate::snapshot::refresh_scrape_gauges(self);
     }
 }

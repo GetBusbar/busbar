@@ -780,11 +780,31 @@ if not isinstance(rec, int) or rec <= 0 or not passed:
     print("the golden owes NOTHING (meta recorded=%r, %d PASS rows) — every replay against it is vacuously green" % (rec, len(passed))); sys.exit(1)
 if len(passed) != rec:
     print("the golden is NOT WHOLE: ledger.tsv has %d PASS rows, meta.json records %d" % (len(passed), rec)); sys.exit(1)
-missing = [c for c in passed if not os.path.isfile(os.path.join(g, "cells", c.replace("|", "__") + ".json"))]
+# The cell file name is the engine's own `safe_name` (busbar-release differ.rs): `|` -> `__`, then
+# every byte outside [A-Za-z0-9._+-] -> `_`. A variant id's `@` is one of those bytes
+# (`…|ok@hooks-webrequest` lives in `…__ok_hooks-webrequest.json`); reading it as `@` made the 44
+# variant cells look absent from a golden that holds every one.
+import re
+safe = lambda c: re.sub(r"[^A-Za-z0-9._+-]", "_", c.replace("|", "__"))
+missing = [c for c in passed if not os.path.isfile(os.path.join(g, "cells", safe(c) + ".json"))]
 if missing:
     print("the golden is NOT WHOLE: %d PASS row(s) have no recorded cell file, e.g. %s" % (len(missing), missing[0])); sys.exit(1)
 print("golden whole: %d PASS rows = meta recorded %d, every one with its cell file" % (len(passed), rec))
 PY
+}
+
+# The engine every PARITY step judges with: bin/oracle fetches busbar-release at the pinned ref into
+# target/oracle/rust/<ref>/checkout and builds it (`tool-dir` is the cheapest subcommand that resolves
+# it). Fails naming the two ways to provide it, so a missing judge reads as that, not as a red cell.
+parity_resolve_judge() {  # $1 = the pinned busbar-release ref
+  local ref="${1:-}"
+  [ -n "$ref" ] || { echo "testing/shadow-oracle/oracle-rust.pin names no release_ref — there is no judge to build"; return 1; }
+  if ./bin/oracle tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
+  tail -6 /tmp/done-parity-judge.$$; rm -f /tmp/done-parity-judge.$$
+  echo "the judge could not be fetched or built. busbar-release is private: give the run a token"
+  echo "(BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN; bin/oracle never stores it), or place a git"
+  echo "checkout holding commit $ref at target/oracle/rust/$ref/checkout before running"
+  return 1
 }
 
 parity_install_golden() {  # $1 = committed golden dir ; $2 = destination
@@ -1004,6 +1024,14 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_expect refuse "a TRUNCATED golden (fewer PASS rows than meta recorded)"               assert_golden_whole "$st_tmp/g-short"
   st_expect refuse "a golden whose PASS row has no recorded cell file"                     assert_golden_whole "$st_tmp/g-nocell"
   st_expect refuse "a golden that owes nothing"                                            assert_golden_whole "$st_tmp/g-empty"
+  # A variant cell's file is named as the engine names it (`@` -> `_`), not by its raw id.
+  mkdir -p "$st_tmp/g-variant/cells"
+  printf 'a|x|ok@hooks-w\tPASS\t\t\n' > "$st_tmp/g-variant/ledger.tsv"
+  printf '{"binary_sha256":"%s","recorded":1}\n' "$st_sha" > "$st_tmp/g-variant/meta.json"
+  printf '{}\n' > "$st_tmp/g-variant/cells/a__x__ok_hooks-w.json"
+  st_expect accept "a whole golden holding a variant cell (its file under the engine's safe name)" assert_golden_whole "$st_tmp/g-variant"
+  mv "$st_tmp/g-variant/cells/a__x__ok_hooks-w.json" "$st_tmp/g-variant/cells/a__x__ok@hooks-w.json"
+  st_expect refuse "a variant cell whose file is under its raw id, not the engine's safe name" assert_golden_whole "$st_tmp/g-variant"
   st_expect refuse "installing a committed golden that is not there"                       parity_install_golden "$st_tmp/no-such-golden" "$st_tmp/g-dst"
   st_expect accept "the COMMITTED $PARITY_BASELINE_VERSION golden is whole"                assert_golden_whole "$PARITY_COMMITTED_GOLDEN"
   st_expect accept "the COMMITTED golden names a digest this repository pins"              assert_golden_is_pinned "$PARITY_COMMITTED_GOLDEN" testing/shadow-oracle/golden-digests.tsv "$PARITY_BASELINE_VERSION"
@@ -1350,8 +1378,8 @@ sys.exit(1 if m else 0)
 # actually RUNS and passes (the summary's own runner, which refuses a run that executed a different
 # set). The remaining "none" cells are the switch-over queue and are PRINTED, not fatal — the same
 # honest-ledger posture the missing set has.
-step "capability_equality gate, five legs on" \
-  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm --quiet --test capability_equality
+step "capability_equality gate, six legs on" \
+  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,proto-llm --quiet --test capability_equality
 step "every root-leg proof cell RUNS and passes" python3 scripts/capability-equality-summary.py --root-legs
 printf '  \033[36m[info]\033[0m '
 python3 scripts/capability-equality-summary.py 2>/dev/null | grep -E "^ROOT-EQUALITY:" || echo "root-equality count unavailable"
@@ -1379,6 +1407,13 @@ if ! assert_bless_env_empty >/tmp/done-parity-env.$$ 2>&1; then
 elif [ -x bin/oracle ]; then
   rm -f /tmp/done-parity-env.$$
   printf '  \033[32m[ok]\033[0m   bless/repoint env is empty — the golden is the pinned 1.5.5 recording, not an operator-chosen path\n'
+  # THE JUDGE FIRST, ONCE. Every oracle step below runs the engine bin/oracle builds from its pinned
+  # source (testing/shadow-oracle/oracle-rust.pin) in target/oracle/rust/<ref>/checkout. When that
+  # cannot be obtained (busbar-release is private: a runner with no token and no checkout of the
+  # pinned commit), say so here, by name, instead of as three unrelated-looking reds below.
+  PARITY_JUDGE_REF="$(awk -F= '$1=="release_ref"{print $2; exit}' testing/shadow-oracle/oracle-rust.pin 2>/dev/null)"
+  step "the pinned judge (busbar-release ${PARITY_JUDGE_REF:-<no pin>}) is fetched and built from its source" \
+    parity_resolve_judge "$PARITY_JUDGE_REF"
   step "replay-selftest (the differ can see a diff)" ./bin/oracle replay-selftest
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran

@@ -633,10 +633,15 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
         };
         gated.push((name.to_string(), feature.clone()));
     }
+    // Two today: the admin units (`root-admin`) and the test harness. There were four (the node, the
+    // decisions plane's module, the admin units and the harness); the node now compiles in every
+    // build (ARCHITECT Q1), and a plane served through its door has no root module (FLIP-DECISIONS
+    // deleted the decisions plane's). The floor counts what is left and still refuses a scan that
+    // read none.
     assert!(
-        gated.len() >= 4,
-        "the root declares one feature-gated module per switched plane, or this test is reading \
-         the wrong file: found {gated:?}"
+        gated.len() >= 2,
+        "the root declares its feature-gated modules, or this test is reading the wrong file: \
+         found {gated:?}"
     );
 
     let mut files = Vec::new();
@@ -823,7 +828,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = BookDir::new("real-path");
     assert!(
         dir.entries().is_empty(),
@@ -1177,7 +1182,7 @@ fn one_seal_after_two_reloads() {
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = BookDir::new("two-reloads");
     let _env = data_dir_env(&dir.0);
     let cfg = || {

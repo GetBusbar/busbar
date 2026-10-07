@@ -21,7 +21,7 @@ use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
 
-use crate::guard::{Guard, Resolve, SystemResolver};
+use crate::guard::{is_loopback, Guard, Resolve, SystemResolver};
 use crate::pool::PoolPosture;
 use crate::registry::{Entry, Transports};
 use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
@@ -115,20 +115,25 @@ impl GuardJudge {
     }
 }
 
-/// Loopback-allowed's scheme rule over a pinned address: plaintext to loopback only.
+/// Loopback-allowed's scheme rule over a pinned address: plaintext to loopback only (loopback as
+/// 1.5.5 read it, [`is_loopback`]).
 fn plaintext_to_loopback(class: u32, https: bool, ip: IpAddr) -> Result<(), u64> {
-    if class == EGRESS_LOOPBACK_ALLOWED && !https && !ip.is_loopback() {
+    if class == EGRESS_LOOPBACK_ALLOWED && !https && !is_loopback(ip) {
         return Err(DEST_PLAINTEXT);
     }
     Ok(())
 }
 
 /// A destination as `(host, port, https)`: an `http(s)` URL (any other scheme refused, userinfo
-/// refused), or a bare `host[:port]` authority (secure, port 443 unless named).
+/// refused), or a bare `host[:port]` authority (secure, port 443 unless named). The scheme is read
+/// without case, as RFC 3986 reads it and as 1.5.5 read every URL it judged (`scheme_is`: v1.5.5
+/// `crates/busbar/src/observability.rs:180-183`, `config_validate/mod.rs:1857`; `HTTP://` and
+/// `HTTPS://` were accepted wherever their lower-case spelling was; ARCHITECT parity ruling A3).
 fn split(dest: &str) -> Result<(String, u16, bool), u64> {
-    if dest.contains("://") {
+    if let Some((scheme, rest)) = dest.split_once("://") {
+        let lowered = format!("{}://{rest}", scheme.to_ascii_lowercase());
         // The one http(s) URL reader (scheme allowlist, userinfo refused, the scheme's port).
-        return match busbar_kernel::net_guard::split_url(dest) {
+        return match busbar_kernel::net_guard::split_url(&lowered) {
             Ok((https, host, port, _)) => Ok((host, port, https)),
             Err(busbar_kernel::net_guard::AddressRefusal::Scheme { .. }) => Err(DEST_SCHEME),
             Err(_) => Err(DEST_NO_HOST),
@@ -299,6 +304,11 @@ impl DialJudge for OneJudge {
             self.dest.judge_reaching(dest, class, pended)
         })
     }
+
+    /// The guard's name arm, the one every dial's judgement opens with ([`DestJudge::judge_name`]).
+    fn judge_static(&self, dest: &str, class: u32) -> Option<Verdict> {
+        self.dest.judge_name(dest, class, false).err()
+    }
 }
 
 /// A loopback-allowed pin on one of the node's own ports, refused (`DEST_INTERNAL`); any other
@@ -311,7 +321,7 @@ fn not_the_node(
     match v {
         Ok(at)
             if class == EGRESS_LOOPBACK_ALLOWED
-                && (at.ip().is_loopback() || at.ip().is_unspecified())
+                && (is_loopback(at.ip()) || at.ip().is_unspecified())
                 && own.contains(&at.port()) =>
         {
             Err(DEST_INTERNAL)
@@ -337,3 +347,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/dest_judge_tests.rs"]
 mod dest_judge_tests;
+
+#[cfg(test)]
+#[path = "tests/collector_class_tests.rs"]
+mod collector_class_tests;

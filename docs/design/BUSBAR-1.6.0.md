@@ -3682,7 +3682,7 @@ The loader checks in this order:
   - `deliver{stream u8, batch jsonl}`, built at batch time with the `fields:` projection applied kernel-side;
   - `scrape(families)` over the host snapshot service;
   - `status` (1.5.5 blob), `check`, `serve`.
-- **Listener.** `/metrics` is served on the **data listener** through the export route exception, with confinement to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap. `/metrics/hooks` stays a core route.
+- **Listener.** ~~`/metrics` is served on the **data listener** through the export route exception, with confinement to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap. `/metrics/hooks` stays a core route. (SUPERSEDED 2026-10-04, ARCHITECT Q-D4-HOOKS, by the owner law at the kernel<>plugins synthesis: "the kernel owns no route that exists for one plugin: /metrics and /metrics/hooks leave core": `/metrics/hooks` is rendered by the scrape sink over the existing `scrape(families)` slot, the snapshot service handing the hook families with `SCRAPE_FLAG_HOOK_FAMILIES` set; no new op.)~~ (SUPERSEDED 2026-10-05, ARCHITECT Q-U2-4, by the owner law at the kernel<>plugins synthesis, 2026-09-27: "the kernel owns no route that exists for one plugin: /metrics and /metrics/hooks leave core" and "the data a plugin needs arrives through a kind-neutral host service".) `/metrics` and `/metrics/hooks` are the scrape sink's own listener needs: declared in its `routes` list, served on the **data listener** behind the data key, and answered by its `serve`, which reads the families through the host snapshot service `snapshot.read` (`abi/host/service.rs`; scope `SNAPSHOT_SCOPE_WHOLE` | `SNAPSHOT_SCOPE_HOOKS`, a kind-neutral argument, never a plugin name), lent only to the scrape sink's crossing (#65); not ready is `503`, `Retry-After: 1`. Confinement: `/metrics` or `/exports/<name>/*`, `/metrics/hooks` to the scrape sink alone, the reserved paths and the 64-header cap. A reload that removes the scrape sink leaves 1.5.5's behaviour: `/metrics` `404`s (it followed the configuration) while `/metrics/hooks` keeps answering until restart (1.5.5's core route answered for the process's life), and the restart report names `/metrics` only (ARCHITECT 2026-10-05).
 - **Behaviour.** Webhook and otlp use driver tickets. The `Host` and `Started` variants are retired.
 
 ##### B.6 plane (v1)
@@ -4988,6 +4988,23 @@ Other rulings:
   walk's counters. The write-ahead dispatch record (`Journal`) writes onto the money book's journal
   (the node's `journal_dispatch`: a recovery reads it to tell a unit that sent something from one
   that never did), so it is `$` and is composed with the money steps.
+
+### 2026-10-04 — OWNER RULING Q137: the TLS listener offers ALPN `h2, http/1.1`
+- OWNER (Q137, "offers h2 on the TLS listener. yes why not?"): a `tls:` listener offers ALPN `h2, http/1.1` (1.5.5: `http/1.1` alone), a signed customer-visible change; a client offering only `http/1.1`, or no ALPN, is served byte-identically to 1.5.5, and an ALPN-`h2` connection that does not open with the connection preface is closed with no bytes (RFC 9113 §3.4), in the connector. Parity binding PB-69 cites it.
+
+### 2026-10-07 — ARCHITECT RULING: `kind-isolation:control-path` keeps `data-path-step` and drops its upstream word list
+- The `upstream` check (`egress`, `pool`, `routing`, `failover`, `breaker`, `provider`, refused on every
+  cleanliness line) was written for the `control` plugin kind (65542ca51b), which is cancelled: Part 2 #5,
+  "There is no "control" plugin kind." The cleanliness crates' rule is THE DESIGN §8: each "depends one way
+  on the kernel, names no plugin, and gets its listeners through the connector"; admin owns "the operator
+  surface", oauth2 the authorization server. Those six words name no plugin: route and pools are KERNEL
+  (§5 table, "KERNEL | route (pool walk, member, breaker)"), and the 1.5.5 pools/providers/routing admin API
+  is a customer-visible operator surface over kernel tables, not a plane's. The CIMD document fetch dials
+  through the root connector under an open-web need (Q128), so its egress class is correct vocabulary.
+- So the word check and the connector's in-role carve-out are deleted. `data-path-step` stays: no `fn route`
+  and no `fn meter` in a cleanliness crate (admin and oauth2 are off the hot path, #5). "Names no plugin" is
+  held by `kind-isolation:matrix`'s armed `law0-neutral-instance` class, at zero for every `Family::Neutral`
+  crate on the ship twin, with a red plant of a plane instance noun in core-admin.
 
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 

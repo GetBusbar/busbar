@@ -472,7 +472,7 @@ impl Gate for PlanePurityGate {
             "a #[path] dual-compile of plane source into a neutral crate",
             &[ROW_PATH_INCLUDE],
             &plant_at,
-            "#[path = \"../../../busbar-mcp/src/witness.rs\"]\nmod mcp_witness;\n",
+            "#[path = \"../../../busbar-plane-mcp/src/witness.rs\"]\nmod mcp_witness;\n",
             &[ROW_PATH_INCLUDE, "planted_plane_purity.rs:1"],
         ));
 
@@ -1206,7 +1206,7 @@ fn strict_plants() -> Vec<(&'static str, String, &'static str)> {
         (
             "PATH-INCLUDE",
             neutral_test("planted_strict_path.rs"),
-            "#[path = \"../../../busbar-mcp/src/witness.rs\"]\nmod w;\n",
+            "#[path = \"../../../busbar-plane-mcp/src/witness.rs\"]\nmod w;\n",
         ),
         (
             "SYMBOL",

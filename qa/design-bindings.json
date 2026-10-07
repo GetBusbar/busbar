@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 455
+   "test": 450
   }
  },
  "dropped_since_last_write": [],
@@ -2940,7 +2940,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix",
+     "ref": "crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix",
      "proves": "reads are read-only, mutations full, config/validate and plugins/inspect read-only",
      "source": "curated",
      "status": "mapped"
@@ -2961,7 +2961,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
+   "verdict_detail": "test:crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
   },
   {
    "id": "PB-63",
@@ -3362,7 +3362,7 @@
   {
    "id": "PB-69",
    "surface": "ingress server posture",
-   "binding": "ALPN `http/1.1` only (no h2 served); hyper `header_read_timeout` 30 s; `limits.request_body_read_timeout_secs` 30; `tls_handshake_timeout_secs` 10; header size and count limits as hyper's defaults; the 64 KiB cursor / credential budgets never refuse a request 1.5.5 accepted (PB-18)",
+   "binding": "ALPN `h2, http/1.1` (OWNER RULING Q137, 2026-10-04: a signed change from 1.5.5's `http/1.1` only; an `h2` connection is served HTTP/2, a client offering only `http/1.1` or no ALPN is served as in 1.5.5); hyper `header_read_timeout` 30 s; `limits.request_body_read_timeout_secs` 30; `tls_handshake_timeout_secs` 10; header size and count limits as hyper's defaults; the 64 KiB cursor / credential budgets never refuse a request 1.5.5 accepted (PB-18)",
    "inventory": "auth-secrets :2171; routes-admin :511; config :272-273",
    "status": "mapped",
    "checks": [
@@ -4545,41 +4545,6 @@
     },
     {
      "kind": "test",
-     "ref": "least_busy_prefers_most_headroom",
-     "proves": "least_busy native",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "least_busy_all_saturated_ranks_by_idx",
-     "proves": "least_busy never abstains",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "cheapest_all_unknown_abstains",
-     "proves": "cheapest abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "usage_all_unknown_abstains",
-     "proves": "usage abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "fastest_orders_by_latency",
-     "proves": "fastest native",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
      "ref": "from_ranked_never_produces_reject",
      "proves": "reply precedence: an order never becomes a reject",
      "source": "curated",
@@ -4601,7 +4566,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, test:least_busy_prefers_most_headroom, test:least_busy_all_saturated_ranks_by_idx, test:cheapest_all_unknown_abstains, test:usage_all_unknown_abstains, test:fastest_orders_by_latency, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
+   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
   },
   {
    "id": "PB-99",
@@ -4661,7 +4626,7 @@
      "ref": "admin.ops",
      "status": "mapped",
      "cites": 44,
-     "family_size": 323,
+     "family_size": 329,
      "source": "cells.json why"
     },
     {

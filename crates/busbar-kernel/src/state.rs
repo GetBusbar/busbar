@@ -72,11 +72,13 @@ pub struct App {
     /// slots, so counts accumulate monotonically across generations. Observation only — THE RULE:
     /// enforcement counts never go through the bank.
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
-    /// THE FALLBACK PLANE'S RUNTIME SLOT KEY — the interned `runtime_slot_key(fallback_key())` under
-    /// which THIS config generation's runtime object rides in [`App::plane_slots`], the same opaque
-    /// slot every other registered plane carries its own runtime object in. Resolved ONCE at build
-    /// (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables_view`]) is a
-    /// single cheap `plane_slots` lookup + ONE downcast, never the interning `runtime_slot_key` call.
+    /// THE FALLBACK PLANE'S RUNTIME SLOT KEY — the interned `runtime_slot_key` of the plane that
+    /// DECLARES itself fallback ([`crate::plane::fallback_decl`]; a key naming no plane when none
+    /// does), under which THIS config generation's runtime object rides in [`App::plane_slots`], the
+    /// same opaque slot every other registered plane carries its own runtime object in. Resolved ONCE
+    /// at build (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables_view`])
+    /// is a single cheap `plane_slots` lookup + ONE downcast, never the interning `runtime_slot_key`
+    /// call.
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
@@ -109,9 +111,7 @@ pub struct App {
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
     /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its own resolved pool-member set (member selection derives lanes from member position).
-    /// Read on the plane's submission/route path through [`App::plane_pools`]. (The other container
-    /// plane's own dedicated pool field above keeps its own 3-tuple `pool_members_repeatable` seam,
-    /// which also carries that pool's repeatable-member list.)
+    /// Read on the plane's submission/route path through [`App::plane_pools`].
     // Read on a plane's route/admission path; with one plane's feature off (and another's on) it is
     // never read.
     #[allow(dead_code)]
@@ -604,10 +604,11 @@ impl App {
         self.plane_slots.get_mut(key)
     }
 
-    /// The INTERNED runtime-slot key for the fallback plane, precomputed ONCE at build
-    /// (`runtime_slot_key(fallback_key())`). The relocated engine reads its runtime slot through this
-    /// cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` + mutex-guarded intern)
-    /// on every own-runtime accessor call — the hot-path allocation the alloc gate pins.
+    /// The INTERNED runtime-slot key for the fallback plane, precomputed ONCE at build from the
+    /// declared fallback plane (`crate::plane::fallback_decl`). The relocated engine reads its runtime
+    /// slot through this cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` +
+    /// mutex-guarded intern) on every own-runtime accessor call — the hot-path allocation the alloc
+    /// gate pins.
     pub fn fallback_runtime_key(&self) -> &'static str {
         self.fallback_runtime_key
     }

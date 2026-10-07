@@ -19,32 +19,12 @@ busbar-a2a	std::net
 busbar-a2a	tokio (net)
 busbar-a2a	tokio-rustls
 busbar-a2a	tokio::net
-busbar-auth-oidc	hyper-util
-busbar-auth-oidc	reqwest
-busbar-auth-oidc	rustls
-busbar-auth-oidc	socket2
-busbar-auth-oidc	tokio (net)
-busbar-auth-oidc	tokio-rustls
-busbar-auth-oidc-plugin	hyper-util
-busbar-auth-oidc-plugin	reqwest
-busbar-auth-oidc-plugin	rustls
-busbar-auth-oidc-plugin	socket2
-busbar-auth-oidc-plugin	tokio (net)
-busbar-auth-oidc-plugin	tokio-rustls
 busbar-llm	hyper-util
 busbar-llm	reqwest
 busbar-llm	rustls
 busbar-llm	socket2
 busbar-llm	tokio (net)
 busbar-llm	tokio-rustls
-busbar-mcp	hyper-util
-busbar-mcp	reqwest
-busbar-mcp	rustls
-busbar-mcp	socket2
-busbar-mcp	std::net
-busbar-mcp	tokio (net)
-busbar-mcp	tokio-rustls
-busbar-mcp	tokio::net
 # busbar-transport-grpc reaches socket2 only as socket2 <- tokio <- hyper: tokio's `net` feature is on by
 # workspace feature unification, and the door opens no socket (it frames the host's bytes through
 # hyper_io!). Same precedent as the http and ws doors. ARCHITECT ruling GRPC-DOOR Q2 2026-10-01.

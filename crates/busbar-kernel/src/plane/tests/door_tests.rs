@@ -23,6 +23,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         key,
         section,
         owns: Vec::new(),
+        consumes: Vec::new(),
         admin_routes: Vec::new(),
         admin_openapi: None,
         secret_refs: vec!["settings.*.token.secret", "settings.*.env.*"],
@@ -61,8 +62,13 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
             if bytes.is_empty() {
                 return Ok(());
             }
-            let doc: serde_json::Value =
+            // The blob is dealt as stage 3g deals it: `{<section>: <section as written>}`.
+            let dealt: serde_json::Value =
                 serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+            let doc = dealt.get(section).cloned().unwrap_or_default();
+            if doc.is_null() {
+                return Ok(());
+            }
             let Some(map) = doc.as_object() else {
                 return Err("expected a map".to_string());
             };
@@ -227,10 +233,10 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
     let decl = fold(registration("door-fold-facing", NAMED)).expect("folds");
     let reg = registration("door-fold-facing", NAMED);
     let slot = DoorSlot {
-        section: DoorSection {
-            section: NAMED,
-            value: serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
-        },
+        section: DoorSection::new(
+            NAMED,
+            serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+        ),
         facing: (reg.facing)(b"{}", b"", Some("https://gw.example")).expect("faces"),
     };
     assert_eq!(
@@ -255,6 +261,31 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
         (decl.admission)(&unbound).is_none(),
         "no public base, no audience"
     );
+    // R2, ADMITTED BY THE KEY CHAIN: a door that binds no audience still mounts its claims, and
+    // the kernel's key-verify chain admits them; with no key chain there is no admission path at
+    // all, and the boot is refused.
+    assert!(
+        !(decl.claims)(&unbound).is_empty(),
+        "an unbound door mounts its claims"
+    );
+    let slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> =
+        [(decl.key, &unbound as &dyn std::any::Any)]
+            .into_iter()
+            .collect();
+    let keyed = crate::plane::registry::build_dispatch(&[decl], &slots, true);
+    assert!(
+        keyed.is_ok(),
+        "the key chain admits a door claim: {keyed:?}"
+    );
+    let keyed = keyed.unwrap();
+    assert!(
+        keyed.admission_for("/fleet").is_none(),
+        "admitted by the key chain, the claim binds no audience"
+    );
+    // RED ARM: no audience and no key chain is no admission path at all.
+    let refused = crate::plane::registry::build_dispatch(&[decl], &slots, false)
+        .expect_err("a door claim with no admission path refuses the boot");
+    assert!(refused.contains("bound no admission"), "{refused}");
     assert!((decl.claims)(&"not a door slot").is_empty());
 }
 
@@ -284,10 +315,10 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     let parsed = (decl.parse_endpoint.expect("its endpoint parses"))(&block).expect("carried");
     assert!(parsed.is_present());
     let lowered = (decl.lower_endpoint.expect("and lowers"))(&*parsed).expect("as written");
-    let section = DoorSection {
-        section: NAMED,
-        value: serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
-    };
+    let section = DoorSection::new(
+        NAMED,
+        serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+    );
     let ctx = BuildCtx {
         endpoint_slot: Some(lowered),
         agent_defs: &(),

@@ -184,7 +184,7 @@ async fn rig_billed(fixture: Fixture) -> Rig {
 
 async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     plane::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..8 {
@@ -281,7 +281,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
     let app = TestApp::new()
-        // THE CONFIGURED AUTH CHAIN, so `identity_admit` runs the same resolution the HTTP
+        // THE CONFIGURED AUTH CHAIN, so `identity_admit_over` runs the same resolution the HTTP
         // middleware runs rather than falling through an open front door.
         .keys_chain()
         .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
@@ -2338,11 +2338,15 @@ async fn admit(
     rig: &Rig,
     cred: Credential,
 ) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
-    rig.host()
-        .identity_admit(Some(cred.present(rig)), String::new(), String::new())
-        .await
-        .map(|(_, gov)| gov)
-        .map_err(|refusal| format!("{refusal:?}"))
+    busbar_kernel::plane_host::identity_admit_over(
+        Arc::clone(&rig.app),
+        Some(cred.present(rig)),
+        String::new(),
+        String::new(),
+    )
+    .await
+    .map(|(_, gov)| gov)
+    .map_err(|refusal| format!("{refusal:?}"))
 }
 
 /// WHO THE LOOP DECIDED THIS UNIT IS, taken from the far end of the loop rather than from the
@@ -2407,11 +2411,11 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
 /// ELSE.**
 ///
 /// The plane's authenticate step is a READ of an outcome the auth middleware already produced —
-/// every 401 this plane could raise is raised upstream of it. A cell that hand-built a context
-/// and handed it to the loop would prove nothing about that, because it would be asserting the
-/// fixture. So every credential here goes through the deployment's OWN door
-/// (`EngineHost::identity_admit`: the configured chain plus the one verdict resolution the HTTP
-/// middleware runs) and the loop is driven with whatever the door left behind.
+/// every 401 this plane could raise is raised upstream of it. A cell that hand-built a context and
+/// handed it to the loop would prove nothing about that, because it would be asserting the fixture.
+/// So every credential here goes through the deployment's OWN door
+/// (`plane_host::identity_admit_over`: the configured chain plus the one verdict resolution the
+/// HTTP middleware runs) and the loop is driven with whatever the door left behind.
 ///
 /// Three credentials, and the door's answer decides which half of the cell runs:
 ///
@@ -3238,7 +3242,7 @@ fn invoice_micros(
     let at = invoice::row_priced_at_ms(bucket_start_secs, era);
     let (_, card) = view.card_at(at).expect("a card covers every instant");
     let unit = |k: &str| report.usage.usage_units.get(k).copied().unwrap_or(0);
-    let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
+    let row = invoice::UsageBreakdown {
         tokens_input: unit(busbar_contract::records::UNIT_INPUT),
         tokens_output: unit(busbar_contract::records::UNIT_OUTPUT),
         tokens_cache_read: unit(busbar_contract::records::UNIT_CACHE_READ),
@@ -3508,7 +3512,7 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     use busbar_core_admin::v1::service::read_path_money as invoice;
     let view = history.view();
     let (_, card) = view.card_at(at.ms()).expect("the card is in force");
-    let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
+    let row = invoice::UsageBreakdown {
         tokens_input: 1_000,
         tokens_output: 250,
         tokens_cache_read: 10_000_000,
@@ -4125,7 +4129,7 @@ const RERANK_UNITS: u64 = 50;
 async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     declare_test_classes();
     plane::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..4 {

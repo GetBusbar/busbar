@@ -84,8 +84,8 @@ pub(crate) async fn list_groups(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(crate::v1::contract::LIST_LIMIT_DEFAULT)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -555,7 +555,7 @@ pub(crate) async fn rollback_plugin(
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
-                    &busbar_kernel::admin::v1::contract::PluginRollbackView {
+                    &crate::v1::contract::PluginRollbackView {
                         name: manifest.name,
                         file: req.file,
                         version: manifest.version,
@@ -1719,8 +1719,8 @@ pub(crate) async fn get_audit(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(crate::v1::contract::LIST_LIMIT_DEFAULT)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -1750,8 +1750,8 @@ pub(crate) async fn list_config_versions(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(busbar_kernel::admin::v1::contract::VERSIONS_LIMIT_DEFAULT)
-        .clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(crate::v1::contract::VERSIONS_LIMIT_DEFAULT)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -2062,7 +2062,7 @@ pub(crate) async fn put_auth(
         let operator = busbar_kernel::config::operator_provider();
         for name in &req.admin_auth {
             let known = current.admin_modules.operator.is(name)
-                || (cfg!(test) && name == "test-scope-module");
+                || (cfg!(any(test, feature = "test-support")) && name == "test-scope-module");
             if !known {
                 return Err(AdminError::Validation(format!(
                     "admin_auth names unknown module '{name}'; the built-in admin module is \
@@ -2099,7 +2099,7 @@ pub(crate) async fn put_auth(
         next.admin_chain = req.admin_auth;
         // DRY-RUN GUARD: this very request's credential, evaluated under the CANDIDATE chain.
         let survives = busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
-            .contains(busbar_kernel::admin::v1::contract::Scope::Full);
+            .contains(crate::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
                 "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
@@ -3382,7 +3382,7 @@ pub(crate) async fn plugin_schema(
         let kind = loadable.map(|p| p.manifest.kind.clone());
         let restart_required_default = kind
             .as_deref()
-            .map(busbar_plugin_loader::sign::kind_restart_default);
+            .map(busbar_kernel::plugin_admission::sign::kind_restart_default);
         if described.is_some() {
             return ok_json(
                 StatusCode::OK,
@@ -3414,7 +3414,7 @@ pub(crate) async fn plugin_schema(
             "trust": trust,
             "source": "manifest",
             "kind": loadable.manifest.kind,
-            "restart_required_default": busbar_plugin_loader::sign::kind_restart_default(&loadable.manifest.kind),
+            "restart_required_default": busbar_kernel::plugin_admission::sign::kind_restart_default(&loadable.manifest.kind),
         }),
     )
 }
@@ -3441,14 +3441,14 @@ fn manifest_schema(settings_schema: Option<&str>) -> (Option<serde_json::Value>,
 
 /// The catalog's own trust vocabulary (`"trusted" | "unverified" | "rejected"` — see
 /// `docs/admin-api.md`'s plugin catalog and `service.rs`'s `evaluate()` mapping), applied to a
-/// the loader's `sign::Verdict`. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
+/// [`busbar_kernel::plugin_admission::sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
 /// is never `"rejected"` — a rejected artifact is a `SkippedPlugin`, not a load candidate — but
 /// the mapping stays total (not a partial match on `Trusted`/`Allowed` alone) so a future verdict
 /// variant is a compile error here, not a silently-missing label.
-fn verdict_trust(v: &busbar_plugin_loader::sign::Verdict) -> &'static str {
+fn verdict_trust(v: &busbar_kernel::plugin_admission::sign::Verdict) -> &'static str {
     match v {
-        busbar_plugin_loader::sign::Verdict::Trusted { .. } => "trusted",
-        busbar_plugin_loader::sign::Verdict::Allowed { .. } => "unverified",
+        busbar_kernel::plugin_admission::sign::Verdict::Trusted { .. } => "trusted",
+        busbar_kernel::plugin_admission::sign::Verdict::Allowed { .. } => "unverified",
     }
 }
 
@@ -3511,7 +3511,7 @@ pub(crate) async fn hook_status(
                 .metrics
                 .as_ref()
                 .map(|m| {
-                    busbar_kernel::hooks::wire::parse_status_metrics(m)
+                    busbar_contract::hook_wire::reply::parse_status_metrics(m)
                         .into_iter()
                         .map(|metric| {
                             let mut entry =
@@ -4241,7 +4241,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
 
-    use busbar_kernel::admin::v1::contract::taxonomy;
+    use crate::v1::contract::taxonomy;
 
     // ── THE 4xx RESPONSE SET IS A PROJECTION, NOT PROSE (design D) ────────────────────────────
     // Every body-specific 400 / 403-escalation / 404 / 409 is ENUMERATED from the ONE declaration
@@ -4257,7 +4257,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             continue;
         };
         let rel = path
-            .strip_prefix(busbar_kernel::admin::v1::contract::ADMIN_PREFIX)
+            .strip_prefix(crate::v1::contract::ADMIN_PREFIX)
             .unwrap_or(path)
             .to_string();
         for (method, op) in obj.iter_mut() {
@@ -4290,7 +4290,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     _ => continue,
                 };
                 if let Some(op) = op.as_object_mut() {
-                    let scope = busbar_kernel::admin::v1::contract::required_scope(&m, path);
+                    let scope = crate::v1::contract::required_scope(&m, path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
                     // Both accepted credential carriers, on every op.
                     op.insert(
@@ -4629,7 +4629,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }};
     }
 
-    use busbar_kernel::admin::v1::contract::{
+    use crate::v1::contract::{
         AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
         HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
         PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
@@ -4674,7 +4674,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/groups/{name}/usage",
         "get",
         "200",
-        busbar_kernel::admin::v1::contract::GroupUsageView
+        crate::v1::contract::GroupUsageView
     );
     // Auth & credentials.
     typed!("/auth", "get", "200", AuthView);
@@ -4700,7 +4700,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/plugins/rollback",
         "post",
         "200",
-        busbar_kernel::admin::v1::contract::PluginRollbackView
+        crate::v1::contract::PluginRollbackView
     );
     typed!("/usage", "get", "200", UsageView);
     typed!("/config", "get", "200", EffectiveConfigView);

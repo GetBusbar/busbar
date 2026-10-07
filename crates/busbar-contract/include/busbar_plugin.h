@@ -323,6 +323,7 @@ extern "C" {
 #define BB_EXPORT_SCRAPE_KIND_HISTOGRAM UINT8_C(2) /* [`ScrapeFamily::kind`]: a histogram (`_bucket`/`_sum`/`_count` legs as separate */
 #define BB_EXPORT_SCRAPE_KIND_SUMMARY UINT8_C(3) /* [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate [`ScrapeSample`]s). */
 #define BB_EXPORT_SCRAPE_KIND_UNTYPED UINT8_C(4) /* [`ScrapeFamily::kind`]: untyped. */
+#define BB_EXPORT_SCRAPE_FLAG_HOOK_FAMILIES UINT32_C(2) /* [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families. */
 #define BB_EXPORT_CHECK_PHASE_LIMITS UINT32_C(0) /* [`CheckIn::phase`]: among the operational limits' checks (a bound this sink's instances */
 #define BB_EXPORT_CHECK_PHASE_INSTANCES UINT32_C(1) /* [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD */
 #define BB_EXPORT_ROUTE_AUTH_NONE UINT32_C(0) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`. */
@@ -381,6 +382,7 @@ extern "C" {
 #define BB_PLANE_ROUTE_SCOPE_SEPARATOR ", " /* What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names. */
 #define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4 */
 #define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
+#define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
 #define BB_PLANE_FROM_CALLER UINT32_C(0) /* [`OnPieceIn::from`]: the piece is the caller's. */
 #define BB_PLANE_FROM_FAR_END UINT32_C(1) /* [`OnPieceIn::from`]: the piece is the far end's. */
 #define BB_PLANE_FROM_KERNEL UINT32_C(2) /* [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it */
@@ -420,6 +422,7 @@ extern "C" {
 #define BB_PLANE_TRUST_REVERIFY_TTL UINT32_C(2) /* [`TrustKey::role`]: the key holds the longest a verification may be reused before the */
 #define BB_PLANE_TRUST_RECOVERY_BACKOFF UINT32_C(3) /* [`TrustKey::role`]: the key holds how long after a drift a clean answer is disbelieved, a */
 #define BB_PLANE_TRUST_PRIVATE_REACH UINT32_C(4) /* [`TrustKey::role`]: the key holds a boolean, the registration's PRIVATE REACH: `true` admits a */
+#define BB_PLANE_TRUST_ITEM_APPROVALS UINT32_C(5) /* [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to */
 #define BB_PLANE_PIN_FINGERPRINT UINT32_C(1) /* [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`. */
 #define BB_PLANE_MECHANISM_ROOT UINT32_C(1) /* [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key */
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */
@@ -464,6 +467,7 @@ extern "C" {
 #define BB_TRANSPORT_FACT_DECODES_PAYLOAD UINT32_C(2) /* [`TransportTail::facts`]: the framer decodes the payload. */
 #define BB_TRANSPORT_SIDE_ACCEPT UINT32_C(0) /* `side`: the accepting end. */
 #define BB_TRANSPORT_SIDE_DIAL UINT32_C(1) /* `side`: the dialing end. */
+#define BB_TRANSPORT_SIDE_ACCEPT_STREAM UINT32_C(2) /* `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries */
 #define BB_TRANSPORT_CLOSE_NORMAL UINT32_C(0) /* Close reason: normal. */
 #define BB_TRANSPORT_CLOSE_PEER_CLOSED UINT32_C(1) /* Close reason: the far end closed. */
 #define BB_TRANSPORT_CLOSE_DRAIN UINT32_C(2) /* Close reason: drain. */
@@ -477,6 +481,10 @@ extern "C" {
 #define BB_TRANSPORT_STATUS_CALLER_FAULT UINT8_C(2) /* Status class: the caller's fault. */
 #define BB_TRANSPORT_STATUS_FAR_END_FAULT UINT8_C(3) /* Status class: the far end's fault. */
 #define BB_TRANSPORT_STATUS_OTHER UINT8_C(4) /* Status class: other. */
+#define BB_TRANSPORT_FAULT_NONE UINT8_C(0) /* Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's */
+#define BB_TRANSPORT_FAULT_CALLER UINT8_C(1) /* Fault reading: the caller's own fault. The destination is healthy and nothing is recorded. */
+#define BB_TRANSPORT_FAULT_TRANSIENT UINT8_C(2) /* Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the */
+#define BB_TRANSPORT_FAULT_HARD UINT8_C(3) /* Fault reading: the destination itself is down for every caller (its credential or its account */
 #define BB_TRANSPORT_STATUS_AT_NONE UINT8_C(0) /* [`Claim::status_at`]: no status. */
 #define BB_TRANSPORT_STATUS_AT_FIRST_FRAME UINT8_C(1) /* [`Claim::status_at`]: the first frame carries the status. */
 #define BB_TRANSPORT_STATUS_AT_TERMINAL UINT8_C(2) /* [`Claim::status_at`]: the terminal frame carries the status. */
@@ -592,7 +600,13 @@ extern "C" {
 #define BB_HSVC_OP_TRUST_VERIFY UINT32_C(20) /* `trust.verify`. */
 #define BB_HSVC_OP_RECORDS_SECRET UINT32_C(21) /* `records.secret`. */
 #define BB_HSVC_OP_DISK_APPEND UINT32_C(22) /* `disk.append`. */
-#define BB_HSVC_SERVICES UINT32_C(23) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_SNAPSHOT_READ UINT32_C(23) /* `snapshot.read`. */
+#define BB_HSVC_OP_TRUST_SIGHT_ITEM UINT32_C(24) /* `trust.sight_item`. */
+#define BB_HSVC_OP_TRUST_SERVES UINT32_C(25) /* `trust.serves`. */
+#define BB_HSVC_OP_TRUST_DECIDE UINT32_C(26) /* `trust.decide`. */
+#define BB_HSVC_OP_TRUST_STATE UINT32_C(27) /* `trust.state`. */
+#define BB_HSVC_OP_SESSION_EMIT UINT32_C(28) /* `session.emit`. */
+#define BB_HSVC_SERVICES UINT32_C(29) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -615,10 +629,33 @@ extern "C" {
 #define BB_HSVC_MAX_WORK_RECORD ((size_t)256) /* The most bytes a work handle's record carries (the body lives in the plugin's own records; the */
 #define BB_HSVC_WORK_LIVE UINT8_C(1) /* `work.find`'s state byte: the handle is live. */
 #define BB_HSVC_WORK_SETTLED UINT8_C(2) /* `work.find`'s state byte: the handle is settled. */
+#define BB_HSVC_TRUST_REACHED UINT32_C(0) /* [`TrustSightIn::outcome`]: the plane reached the counterparty and reports what it serves. */
+#define BB_HSVC_TRUST_UNREACHABLE UINT32_C(1) /* [`TrustSightIn::outcome`]: the plane could not reach the counterparty; nothing is sighted. */
 #define BB_HSVC_TRUST_NEW UINT64_C(1) /* `trust.sight` verdict: never seen before. */
 #define BB_HSVC_TRUST_SAME UINT64_C(2) /* `trust.sight` verdict: the pinned catalogue. */
 #define BB_HSVC_TRUST_DRIFTED UINT64_C(3) /* `trust.sight` verdict: the catalogue moved from its pin. */
 #define BB_HSVC_TRUST_QUARANTINED UINT64_C(4) /* `trust.sight` verdict: the counterparty is quarantined. */
+#define BB_HSVC_DISTRUST_NONE UINT64_C(0) /* THE ONE TRUST VOCABULARY (`trust.serves`'s value, and `abi::plane::RefusalIn::trust`): it serves. */
+#define BB_HSVC_DISTRUST_UNKNOWN UINT64_C(1) /* The instance declares no such counterparty. */
+#define BB_HSVC_DISTRUST_UNSIGHTED UINT64_C(2) /* The counterparty was never sighted: nothing is pinned to judge by. */
+#define BB_HSVC_DISTRUST_QUARANTINED UINT64_C(3) /* The counterparty is quarantined: its last sighting drifted from its pin. */
+#define BB_HSVC_DISTRUST_NOT_APPROVED UINT64_C(4) /* The item is known (sighted) and was never approved: a known item ungranted (a 403's case). */
+#define BB_HSVC_DISTRUST_CHANGED UINT64_C(5) /* The item is offered at another digest than the one approved (or at none). */
+#define BB_HSVC_DISTRUST_UNKNOWN_ITEM UINT64_C(6) /* The item was never sighted at this counterparty: an unknown item (a 404's case). */
+#define BB_HSVC_TRUST_DECIDE_APPROVE UINT32_C(0) /* [`TrustDecideIn::decision`]: approve the key at what it was last sighted at. */
+#define BB_HSVC_TRUST_DECIDE_REVOKE UINT32_C(1) /* [`TrustDecideIn::decision`]: revoke the key: refused until approved again. */
+#define BB_HSVC_TRUST_DECIDED_SERVING UINT64_C(1) /* `trust.decide`'s verdict: the key serves. */
+#define BB_HSVC_TRUST_DECIDED_PENDING UINT64_C(2) /* `trust.decide`'s verdict: the key is not approved (new, or revoked): refused. */
+#define BB_HSVC_TRUST_DECIDED_QUARANTINED UINT64_C(3) /* `trust.decide`'s verdict: the key's sighting moved from its approval: refused until re-approved. */
+#define BB_HSVC_UNDECIDED_UNPINNED UINT64_C(4) /* `trust.decide` refused: the key was never sighted at anything to approve. */
+#define BB_HSVC_UNDECIDED_STALE UINT64_C(5) /* `trust.decide` refused: the fingerprint the caller expects is not the key's current sighting. */
+#define BB_HSVC_UNDECIDED_UNKNOWN UINT64_C(6) /* `trust.decide` refused: the calling instance has no such key. */
+#define BB_HSVC_UNDECIDED_ROOTLESS UINT64_C(7) /* `trust.decide` refused: the counterparty declares no authenticity root; nothing at it is */
+#define BB_HSVC_KEY_NEW UINT64_C(1) /* `trust.state`'s value: sighted (or declared) and never approved, or revoked: refused. */
+#define BB_HSVC_KEY_SAME UINT64_C(2) /* `trust.state`'s value: approved, and its last sighting is what was approved. */
+#define BB_HSVC_KEY_DRIFTED UINT64_C(3) /* `trust.state`'s value: approved, and its last sighting moved from it: refused until re-approved. */
+#define BB_HSVC_KEY_QUARANTINED UINT64_C(4) /* `trust.state`'s value: quarantined: refused until re-approved (or its pin is seen again). */
+#define BB_HSVC_KEY_APPROVED UINT64_C(5) /* `trust.state`'s value: approved, and not sighted since. */
 #define BB_HSVC_SIGNED_VERIFIED UINT64_C(0) /* `trust.verify` verdict: a signature verified against the root key. */
 #define BB_HSVC_SIGNED_NONE UINT64_C(1) /* `trust.verify` verdict: the document carries no signature. */
 #define BB_HSVC_SIGNED_TOO_MANY UINT64_C(2) /* `trust.verify` verdict: more signatures than one document needs. */
@@ -642,6 +679,10 @@ extern "C" {
 #define BB_HSVC_HOOK_FROM_MAX UINT32_C(255) /* The furthest a rewrite chain resumes (`HookCallIn::from`), and the most hooks one chain runs. */
 #define BB_HSVC_HOOK_STOP_MIN UINT64_C(400) /* The least status a stopping hook answers `hook.call` with. */
 #define BB_HSVC_HOOK_STOP_MAX UINT64_C(599) /* The greatest status a stopping hook answers `hook.call` with. */
+#define BB_HSVC_SNAPSHOT_SCOPE_WHOLE UINT32_C(0) /* [`SnapshotReadIn::scope`]: the host recorder's WHOLE snapshot, in its order (kind, then name), */
+#define BB_HSVC_SNAPSHOT_SCOPE_HOOKS UINT32_C(1) /* [`SnapshotReadIn::scope`]: the families the configured hooks REPORT (each hook's own metrics, */
+#define BB_HSVC_SNAPSHOT_SCOPES UINT32_C(2) /* How many scopes there are; a scope at or past it is REFUSED. */
+#define BB_HSVC_SNAPSHOT_ALIGN ((size_t)8) /* The alignment [`SnapshotReadIn::into`]'s `buf` holds (the scrape layout's: every record of it */
 #define BB_HSVC_DISK_ROTATED UINT8_C(1) /* [`DiskWritten::rotated`]: the host rotated the file before appending. */
 #define BB_HSVC_DISK_RETENTION_FAILED UINT8_C(1) /* [`DiskWritten::faults`]: dropping the oldest archive failed (the archive series may exceed the */
 #define BB_HSVC_DISK_SHIFT_FAILED UINT8_C(2) /* [`DiskWritten::faults`]: shifting an archive up one slot failed (it was left in place). */
@@ -649,6 +690,7 @@ extern "C" {
 #define BB_HSVC_DISK_FAULTS UINT8_C(7) /* Every [`DiskWritten::faults`] bit. */
 #define BB_HSVC_DISK_OPEN_FAILED UINT64_C(1) /* A FAILED `disk.append`'s `ServiceOut::value`: the file could not be opened for the append. */
 #define BB_HSVC_DISK_APPEND_FAILED UINT64_C(2) /* A FAILED `disk.append`'s `ServiceOut::value`: the file opened, and writing the bytes failed. */
+#define BB_HSVC_CARRIER_SESSION_FIELD "busbar-carrier-session" /* The head field a CARRIER SESSION's arrivals carry, naming the session they arrived over: the */
 
 /* ---- enumerations ---- */
 /* What an op answered. */
@@ -734,6 +776,7 @@ typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_Superseded ((bb_plane_RefusalCode)39)
 #define BB_PLANE_RefusalCode_ClientGone ((bb_plane_RefusalCode)40)
 #define BB_PLANE_RefusalCode_DeadlineExceeded ((bb_plane_RefusalCode)41)
+#define BB_PLANE_RefusalCode_Untrusted ((bb_plane_RefusalCode)42)
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;
@@ -992,6 +1035,10 @@ typedef struct bb_hsvc_WorkSettleIn bb_hsvc_WorkSettleIn;
 typedef struct bb_hsvc_WorkResumeIn bb_hsvc_WorkResumeIn;
 typedef struct bb_hsvc_TrustSightIn bb_hsvc_TrustSightIn;
 typedef struct bb_hsvc_TrustDueIn bb_hsvc_TrustDueIn;
+typedef struct bb_hsvc_TrustSightItemIn bb_hsvc_TrustSightItemIn;
+typedef struct bb_hsvc_TrustServesIn bb_hsvc_TrustServesIn;
+typedef struct bb_hsvc_TrustDecideIn bb_hsvc_TrustDecideIn;
+typedef struct bb_hsvc_TrustStateIn bb_hsvc_TrustStateIn;
 typedef struct bb_hsvc_TrustVerifyIn bb_hsvc_TrustVerifyIn;
 typedef struct bb_hsvc_VerifyLookupIn bb_hsvc_VerifyLookupIn;
 typedef struct bb_hsvc_VerifyStoreIn bb_hsvc_VerifyStoreIn;
@@ -999,9 +1046,11 @@ typedef struct bb_hsvc_EntitlementCheckIn bb_hsvc_EntitlementCheckIn;
 typedef struct bb_hsvc_RandomFillIn bb_hsvc_RandomFillIn;
 typedef struct bb_hsvc_ContentScanIn bb_hsvc_ContentScanIn;
 typedef struct bb_hsvc_HookCallIn bb_hsvc_HookCallIn;
+typedef struct bb_hsvc_SnapshotReadIn bb_hsvc_SnapshotReadIn;
 typedef struct bb_hsvc_NeedAdmitIn bb_hsvc_NeedAdmitIn;
 typedef struct bb_hsvc_DiskAppendIn bb_hsvc_DiskAppendIn;
 typedef struct bb_hsvc_DiskWritten bb_hsvc_DiskWritten;
+typedef struct bb_hsvc_SessionEmitIn bb_hsvc_SessionEmitIn;
 typedef struct bb_hsvc_HostSlots bb_hsvc_HostSlots;
 
 /* ---- scalar and function-pointer types ---- */
@@ -2616,6 +2665,10 @@ struct bb_plane_ArriveOut {
     uint8_t route;
     uint8_t route_flags;
     uint8_t _route_reserved[6];
+    bb_mech_AbiStr affinity;
+    bb_mech_AbiStr trust_counterparty;
+    bb_mech_AbiStr trust_item;
+    bb_mech_AbiStr trust_digest;
 };
 
 /* `on_piece`'s `in`. */
@@ -2670,7 +2723,8 @@ struct bb_plane_OnPieceOut {
     bb_mech_Span verb;
     bb_mech_Span target;
     uint32_t need;
-    uint32_t _need_reserved;
+    uint8_t fault;
+    uint8_t _fault_reserved[3];
     bb_mech_Span lane;
     uint32_t final_status;
     uint32_t _final_reserved;
@@ -2699,6 +2753,8 @@ struct bb_plane_RefusalIn {
     bb_plane_RecordWrite *records_buf;
     size_t records_cap;
     bb_mech_AbiStr hook;
+    uint32_t trust;
+    uint32_t _trust_reserved;
 };
 
 /* `refusal`'s `out`. */
@@ -3164,6 +3220,12 @@ struct bb_transport_FinishIn {
     uint32_t reason;
     uint32_t _reserved;
     bb_transport_FramerSink sink;
+    uint32_t final_status;
+    uint32_t _final_reserved;
+    bb_mech_Span final_message;
+    bb_mech_Span final_details;
+    const uint8_t *final_bytes;
+    size_t final_bytes_len;
 };
 
 /* `detach`'s and `timer`'s `in`. */
@@ -3509,11 +3571,46 @@ struct bb_hsvc_TrustSightIn {
     bb_hsvc_ServiceHead head;
     bb_mech_AbiStr counterparty;
     bb_mech_AbiStr catalogue_hash;
+    uint32_t outcome;
+    uint32_t _outcome_reserved;
 };
 
 /* [`op::TRUST_DUE`]'s `in`: the counterparties the kernel's `tick` marked for re-verification, */
 struct bb_hsvc_TrustDueIn {
     bb_hsvc_ServiceHead head;
+    bb_hsvc_ServiceBufs into;
+};
+
+/* [`op::TRUST_SIGHT_ITEM`]'s `in`: report the digest ONE ITEM of a counterparty (a tool, a skill: */
+struct bb_hsvc_TrustSightItemIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr counterparty;
+    bb_mech_AbiStr item;
+    bb_mech_AbiStr digest;
+};
+
+/* [`op::TRUST_SERVES`]'s `in`: the KERNEL'S APPROVE as a query (ARCHITECT 2026-10-06: trust is */
+struct bb_hsvc_TrustServesIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr counterparty;
+    bb_mech_AbiStr item;
+    bb_mech_AbiStr digest;
+};
+
+/* [`op::TRUST_DECIDE`]'s `in`: THE OPERATOR'S DECISION about one of the calling instance's trust */
+struct bb_hsvc_TrustDecideIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr counterparty;
+    bb_mech_AbiStr item;
+    bb_mech_AbiStr expected;
+    uint32_t decision;
+    uint32_t _reserved;
+};
+
+/* [`op::TRUST_STATE`]'s `in`: the KERNEL'S TRUST STATE of one counterparty and its items, as the */
+struct bb_hsvc_TrustStateIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr counterparty;
     bb_hsvc_ServiceBufs into;
 };
 
@@ -3570,6 +3667,14 @@ struct bb_hsvc_HookCallIn {
     bb_hsvc_ServiceBufs into;
 };
 
+/* [`op::SNAPSHOT_READ`]'s `in`: THE HOST SNAPSHOT SERVICE (kind-neutral; `BUSBAR-1.6.0.md` owner */
+struct bb_hsvc_SnapshotReadIn {
+    bb_hsvc_ServiceHead head;
+    uint32_t scope;
+    uint32_t _reserved;
+    bb_hsvc_ServiceBufs into;
+};
+
 /* [`op::NEED_ADMIT`]'s `in`: the host's verdict on the calling instance's declared need `need` (its */
 struct bb_hsvc_NeedAdmitIn {
     bb_hsvc_ServiceHead head;
@@ -3592,6 +3697,13 @@ struct bb_hsvc_DiskWritten {
     uint8_t faults;
     uint8_t _reserved[2];
     uint64_t written;
+};
+
+/* [`op::SESSION_EMIT`]'s `in`: write `bytes`, UNSOLICITED, on the open carrier session `session` */
+struct bb_hsvc_SessionEmitIn {
+    bb_hsvc_ServiceHead head;
+    uint64_t session;
+    bb_mech_Blob bytes;
 };
 
 /* THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service */
@@ -3621,9 +3733,15 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn trust_verify;
     bb_hsvc_ServiceFn records_secret;
     bb_hsvc_ServiceFn disk_append;
+    bb_hsvc_ServiceFn snapshot_read;
+    bb_hsvc_ServiceFn trust_sight_item;
+    bb_hsvc_ServiceFn trust_serves;
+    bb_hsvc_ServiceFn trust_decide;
+    bb_hsvc_ServiceFn trust_state;
+    bb_hsvc_ServiceFn session_emit;
 };
 
-/* ---- layout proof: 264 of 267 structures are pinned by the golden ---- */
+/* ---- layout proof: 270 of 273 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4864,7 +4982,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveIn, body) == 136, "bb_plane_ArriveIn.body: off
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_buf) == 160, "bb_plane_ArriveIn.units_buf: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_cap) == 168, "bb_plane_ArriveIn.units_cap: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, method) == 176, "bb_plane_ArriveIn.method: offset");
-BB_ASSERT(sizeof(bb_plane_ArriveOut) == 168, "bb_plane_ArriveOut: size");
+BB_ASSERT(sizeof(bb_plane_ArriveOut) == 232, "bb_plane_ArriveOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ArriveOut) == 8, "bb_plane_ArriveOut: alignment");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, head) == 0, "bb_plane_ArriveOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, op_class) == 96, "bb_plane_ArriveOut.op_class: offset");
@@ -4881,6 +4999,10 @@ BB_ASSERT(offsetof(bb_plane_ArriveOut, pool) == 144, "bb_plane_ArriveOut.pool: o
 BB_ASSERT(offsetof(bb_plane_ArriveOut, route) == 160, "bb_plane_ArriveOut.route: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, route_flags) == 161, "bb_plane_ArriveOut.route_flags: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, _route_reserved) == 162, "bb_plane_ArriveOut._route_reserved: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, affinity) == 168, "bb_plane_ArriveOut.affinity: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_counterparty) == 184, "bb_plane_ArriveOut.trust_counterparty: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_item) == 200, "bb_plane_ArriveOut.trust_item: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_digest) == 216, "bb_plane_ArriveOut.trust_digest: offset");
 BB_ASSERT(sizeof(bb_plane_OnPieceIn) == 312, "bb_plane_OnPieceIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceIn) == 8, "bb_plane_OnPieceIn: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head) == 0, "bb_plane_OnPieceIn.head: offset");
@@ -4931,13 +5053,14 @@ BB_ASSERT(offsetof(bb_plane_OnPieceOut, arena_needed) == 152, "bb_plane_OnPieceO
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, verb) == 160, "bb_plane_OnPieceOut.verb: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, target) == 168, "bb_plane_OnPieceOut.target: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, need) == 176, "bb_plane_OnPieceOut.need: offset");
-BB_ASSERT(offsetof(bb_plane_OnPieceOut, _need_reserved) == 180, "bb_plane_OnPieceOut._need_reserved: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, fault) == 180, "bb_plane_OnPieceOut.fault: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, _fault_reserved) == 181, "bb_plane_OnPieceOut._fault_reserved: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, lane) == 184, "bb_plane_OnPieceOut.lane: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_status) == 192, "bb_plane_OnPieceOut.final_status: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, _final_reserved) == 196, "bb_plane_OnPieceOut._final_reserved: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_message) == 200, "bb_plane_OnPieceOut.final_message: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_details) == 208, "bb_plane_OnPieceOut.final_details: offset");
-BB_ASSERT(sizeof(bb_plane_RefusalIn) == 232, "bb_plane_RefusalIn: size");
+BB_ASSERT(sizeof(bb_plane_RefusalIn) == 240, "bb_plane_RefusalIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RefusalIn) == 8, "bb_plane_RefusalIn: alignment");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, head) == 0, "bb_plane_RefusalIn.head: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, cause) == 88, "bb_plane_RefusalIn.cause: offset");
@@ -4958,6 +5081,8 @@ BB_ASSERT(offsetof(bb_plane_RefusalIn, target) == 184, "bb_plane_RefusalIn.targe
 BB_ASSERT(offsetof(bb_plane_RefusalIn, records_buf) == 200, "bb_plane_RefusalIn.records_buf: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, records_cap) == 208, "bb_plane_RefusalIn.records_cap: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, hook) == 216, "bb_plane_RefusalIn.hook: offset");
+BB_ASSERT(offsetof(bb_plane_RefusalIn, trust) == 232, "bb_plane_RefusalIn.trust: offset");
+BB_ASSERT(offsetof(bb_plane_RefusalIn, _trust_reserved) == 236, "bb_plane_RefusalIn._trust_reserved: offset");
 BB_ASSERT(sizeof(bb_plane_RefusalOut) == 152, "bb_plane_RefusalOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RefusalOut) == 8, "bb_plane_RefusalOut: alignment");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, head) == 0, "bb_plane_RefusalOut.head: offset");
@@ -5330,13 +5455,19 @@ BB_ASSERT(offsetof(bb_transport_RefuseIn, len) == 120, "bb_transport_RefuseIn.le
 BB_ASSERT(offsetof(bb_transport_RefuseIn, sink) == 128, "bb_transport_RefuseIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, status) == 208, "bb_transport_RefuseIn.status: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, _reserved2) == 212, "bb_transport_RefuseIn._reserved2: offset");
-BB_ASSERT(sizeof(bb_transport_FinishIn) == 184, "bb_transport_FinishIn: size");
+BB_ASSERT(sizeof(bb_transport_FinishIn) == 224, "bb_transport_FinishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FinishIn) == 8, "bb_transport_FinishIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FinishIn, head) == 0, "bb_transport_FinishIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, framing) == 88, "bb_transport_FinishIn.framing: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, reason) == 96, "bb_transport_FinishIn.reason: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, _reserved) == 100, "bb_transport_FinishIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, sink) == 104, "bb_transport_FinishIn.sink: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_status) == 184, "bb_transport_FinishIn.final_status: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, _final_reserved) == 188, "bb_transport_FinishIn._final_reserved: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_message) == 192, "bb_transport_FinishIn.final_message: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_details) == 200, "bb_transport_FinishIn.final_details: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes) == 208, "bb_transport_FinishIn.final_bytes: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes_len) == 216, "bb_transport_FinishIn.final_bytes_len: offset");
 BB_ASSERT(sizeof(bb_transport_FramingIn) == 176, "bb_transport_FramingIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramingIn) == 8, "bb_transport_FramingIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FramingIn, head) == 0, "bb_transport_FramingIn.head: offset");
@@ -5583,15 +5714,42 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_WorkResumeIn) == 8, "bb_hsvc_WorkResumeIn: alignmen
 BB_ASSERT(offsetof(bb_hsvc_WorkResumeIn, head) == 0, "bb_hsvc_WorkResumeIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_WorkResumeIn, handle) == 24, "bb_hsvc_WorkResumeIn.handle: offset");
 BB_ASSERT(offsetof(bb_hsvc_WorkResumeIn, into) == 32, "bb_hsvc_WorkResumeIn.into: offset");
-BB_ASSERT(sizeof(bb_hsvc_TrustSightIn) == 56, "bb_hsvc_TrustSightIn: size");
+BB_ASSERT(sizeof(bb_hsvc_TrustSightIn) == 64, "bb_hsvc_TrustSightIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustSightIn) == 8, "bb_hsvc_TrustSightIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, head) == 0, "bb_hsvc_TrustSightIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, counterparty) == 24, "bb_hsvc_TrustSightIn.counterparty: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, catalogue_hash) == 40, "bb_hsvc_TrustSightIn.catalogue_hash: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, outcome) == 56, "bb_hsvc_TrustSightIn.outcome: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, _outcome_reserved) == 60, "bb_hsvc_TrustSightIn._outcome_reserved: offset");
 BB_ASSERT(sizeof(bb_hsvc_TrustDueIn) == 56, "bb_hsvc_TrustDueIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustDueIn) == 8, "bb_hsvc_TrustDueIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TrustDueIn, head) == 0, "bb_hsvc_TrustDueIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustDueIn, into) == 24, "bb_hsvc_TrustDueIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_TrustSightItemIn) == 72, "bb_hsvc_TrustSightItemIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustSightItemIn) == 8, "bb_hsvc_TrustSightItemIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TrustSightItemIn, head) == 0, "bb_hsvc_TrustSightItemIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustSightItemIn, counterparty) == 24, "bb_hsvc_TrustSightItemIn.counterparty: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustSightItemIn, item) == 40, "bb_hsvc_TrustSightItemIn.item: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustSightItemIn, digest) == 56, "bb_hsvc_TrustSightItemIn.digest: offset");
+BB_ASSERT(sizeof(bb_hsvc_TrustServesIn) == 72, "bb_hsvc_TrustServesIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustServesIn) == 8, "bb_hsvc_TrustServesIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TrustServesIn, head) == 0, "bb_hsvc_TrustServesIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustServesIn, counterparty) == 24, "bb_hsvc_TrustServesIn.counterparty: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustServesIn, item) == 40, "bb_hsvc_TrustServesIn.item: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustServesIn, digest) == 56, "bb_hsvc_TrustServesIn.digest: offset");
+BB_ASSERT(sizeof(bb_hsvc_TrustDecideIn) == 80, "bb_hsvc_TrustDecideIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustDecideIn) == 8, "bb_hsvc_TrustDecideIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, head) == 0, "bb_hsvc_TrustDecideIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, counterparty) == 24, "bb_hsvc_TrustDecideIn.counterparty: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, item) == 40, "bb_hsvc_TrustDecideIn.item: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, expected) == 56, "bb_hsvc_TrustDecideIn.expected: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, decision) == 72, "bb_hsvc_TrustDecideIn.decision: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, _reserved) == 76, "bb_hsvc_TrustDecideIn._reserved: offset");
+BB_ASSERT(sizeof(bb_hsvc_TrustStateIn) == 72, "bb_hsvc_TrustStateIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustStateIn) == 8, "bb_hsvc_TrustStateIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TrustStateIn, head) == 0, "bb_hsvc_TrustStateIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustStateIn, counterparty) == 24, "bb_hsvc_TrustStateIn.counterparty: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustStateIn, into) == 40, "bb_hsvc_TrustStateIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_TrustVerifyIn) == 120, "bb_hsvc_TrustVerifyIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustVerifyIn) == 8, "bb_hsvc_TrustVerifyIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, head) == 0, "bb_hsvc_TrustVerifyIn.head: offset");
@@ -5631,6 +5789,12 @@ BB_ASSERT(offsetof(bb_hsvc_HookCallIn, stage) == 24, "bb_hsvc_HookCallIn.stage: 
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, from) == 28, "bb_hsvc_HookCallIn.from: offset");
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, prompt) == 32, "bb_hsvc_HookCallIn.prompt: offset");
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, into) == 40, "bb_hsvc_HookCallIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_SnapshotReadIn) == 64, "bb_hsvc_SnapshotReadIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_SnapshotReadIn) == 8, "bb_hsvc_SnapshotReadIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_SnapshotReadIn, head) == 0, "bb_hsvc_SnapshotReadIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_SnapshotReadIn, scope) == 24, "bb_hsvc_SnapshotReadIn.scope: offset");
+BB_ASSERT(offsetof(bb_hsvc_SnapshotReadIn, _reserved) == 28, "bb_hsvc_SnapshotReadIn._reserved: offset");
+BB_ASSERT(offsetof(bb_hsvc_SnapshotReadIn, into) == 32, "bb_hsvc_SnapshotReadIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_NeedAdmitIn) == 32, "bb_hsvc_NeedAdmitIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_NeedAdmitIn) == 4, "bb_hsvc_NeedAdmitIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, head) == 0, "bb_hsvc_NeedAdmitIn.head: offset");
@@ -5649,7 +5813,12 @@ BB_ASSERT(offsetof(bb_hsvc_DiskWritten, rotated) == 4, "bb_hsvc_DiskWritten.rota
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, faults) == 5, "bb_hsvc_DiskWritten.faults: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, _reserved) == 6, "bb_hsvc_DiskWritten._reserved: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, written) == 8, "bb_hsvc_DiskWritten.written: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 192, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_SessionEmitIn) == 56, "bb_hsvc_SessionEmitIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_SessionEmitIn) == 8, "bb_hsvc_SessionEmitIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, head) == 0, "bb_hsvc_SessionEmitIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, session) == 24, "bb_hsvc_SessionEmitIn.session: offset");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, bytes) == 32, "bb_hsvc_SessionEmitIn.bytes: offset");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 240, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5676,6 +5845,12 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 160, "bb_hsvc_HostSlots.nee
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 168, "bb_hsvc_HostSlots.trust_verify: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 176, "bb_hsvc_HostSlots.records_secret: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, disk_append) == 184, "bb_hsvc_HostSlots.disk_append: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, snapshot_read) == 192, "bb_hsvc_HostSlots.snapshot_read: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_sight_item) == 200, "bb_hsvc_HostSlots.trust_sight_item: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_serves) == 208, "bb_hsvc_HostSlots.trust_serves: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_decide) == 216, "bb_hsvc_HostSlots.trust_decide: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_state) == 224, "bb_hsvc_HostSlots.trust_state: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, session_emit) == 232, "bb_hsvc_HostSlots.session_emit: offset");
 #endif
 
 #ifdef __cplusplus

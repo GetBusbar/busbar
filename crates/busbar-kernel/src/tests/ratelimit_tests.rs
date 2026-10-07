@@ -111,7 +111,7 @@ fn only_the_first_denial_in_a_window_is_audited() {
 /// during a fleet-wide plugin upgrade would starve real mutating work in the same window.
 #[test]
 fn plugin_inspect_is_classified_into_its_own_dedicated_bucket() {
-    use crate::admin::v1::contract::PATH_PLUGINS_INSPECT;
+    use crate::admin::gate::PATH_PLUGINS_INSPECT;
     let class = classify_mutation(PATH_PLUGINS_INSPECT);
     assert!(matches!(class, MutationClass::PluginInspect));
     assert_ne!(class.label(), MutationClass::Crud.label());
@@ -142,7 +142,7 @@ fn plugin_inspect_is_classified_into_its_own_dedicated_bucket() {
 /// its own dedicated class.
 #[test]
 fn config_validate_and_plugin_inspect_do_not_share_a_bucket() {
-    use crate::admin::v1::contract::{PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
+    use crate::admin::gate::{PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
     assert!(matches!(
         classify_mutation(PATH_CONFIG_VALIDATE),
         MutationClass::Crud
@@ -162,7 +162,7 @@ fn config_validate_and_plugin_inspect_do_not_share_a_bucket() {
 /// the table's own doc is held to naming all three.
 #[test]
 fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decides() {
-    use crate::admin::v1::contract::{PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
+    use crate::admin::gate::{PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
     let table_alone = |rel: &str| {
         CONFIG_CLASS_RULES.iter().any(|rule| match rule {
             PathRule::Exact(p) => rel == *p,

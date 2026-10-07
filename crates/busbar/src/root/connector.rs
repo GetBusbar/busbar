@@ -165,6 +165,10 @@ pub fn boot(
     // ruling 2026-10-03 on Q-L16-1); a remote store's socket on that runtime's reactor would never
     // be driven while it waits.
     busbar_core_connector::io::install_process_reactor(io_reactor());
+    // The process's dispatcher runs every worker's crossings inside the same runtime, installed
+    // here and never taken from a submitter: the first submit is made on the control runtime,
+    // whose thread then waits synchronously on worker ops (the boot's `ready`).
+    crate::root::dispatch::dispatcher().install_runtime(io_reactor());
     let built = process::build(
         || entries(doors, settings),
         dest,
@@ -189,6 +193,15 @@ pub fn boot(
 // TRANSITIONAL: the connector's own I/O thread exists because synchronous governance callers wait
 // on the control runtime's thread (ARCHITECT ruling 2026-10-03 on Q-L16-3, the Q-L16-1 row); drains
 // with that wait (D2/D3; 1.6.0-TODO.md).
+/// A ROOT TEST'S OWN DISPATCHER on the connector's I/O runtime, as [`boot`] installs the process's:
+/// its workers' crossings run inside that runtime, and a socket armed off a task goes on its
+/// reactor. Without it a worker enters no runtime, and a dial made on a worker is refused.
+#[cfg(test)]
+pub(crate) fn install_io(dispatcher: &crate::root::loader::dispatch::Dispatcher) {
+    busbar_core_connector::io::install_process_reactor(io_reactor());
+    let _ = dispatcher.install_runtime(io_reactor());
+}
+
 /// THE CONNECTOR'S I/O THREAD: a single-threaded runtime of its own whose reactor drives every
 /// socket a plugin opens from a dispatcher worker, and nothing else. Built once.
 fn io_reactor() -> tokio::runtime::Handle {

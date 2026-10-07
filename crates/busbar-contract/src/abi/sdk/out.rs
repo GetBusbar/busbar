@@ -264,6 +264,47 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
         let flags = self.get().route_flags | crate::abi::plane::ROUTE_SESSION;
         self.set(|o| &o.route_flags, flags);
     }
+
+    /// THE CALLER ASKED FOR ITS ANSWER STREAMED ([`crate::abi::plane::ROUTE_STREAM`]): the kernel
+    /// bounds the send by the stream ceiling, and a cut after the first byte is not a refund.
+    pub fn stream(&mut self) {
+        let flags = self.get().route_flags | crate::abi::plane::ROUTE_STREAM;
+        self.set(|o| &o.route_flags, flags);
+    }
+
+    /// THE UNIT'S STICKY-ROUTING KEY ([`crate::abi::plane::ArriveOut::affinity`]), opaque to the
+    /// kernel and kept until the instance's next call. An empty key states none.
+    pub fn affinity(&mut self, key: &str) {
+        if key.is_empty() {
+            return;
+        }
+        if let Some(kept) = self.kept {
+            let key = kept.text(key.to_string());
+            self.put(|o| &o.affinity, key);
+        }
+    }
+
+    /// THE UNIT'S TRUST FACTS ([`crate::abi::plane::ArriveOut::trust_counterparty`], and the item
+    /// there and the digest it is offered at), kept until the instance's next call; the kernel's
+    /// Approve judges them. An empty counterparty states none; an empty item or digest states no
+    /// item or no digest.
+    pub fn trust(&mut self, counterparty: &str, item: Option<&str>, digest: Option<&str>) {
+        if counterparty.is_empty() {
+            return;
+        }
+        if let Some(kept) = self.kept {
+            let c = kept.text(counterparty.to_string());
+            self.put(|o| &o.trust_counterparty, c);
+            if let Some(item) = item.filter(|s| !s.is_empty()) {
+                let i = kept.text(item.to_string());
+                self.put(|o| &o.trust_item, i);
+            }
+            if let Some(digest) = digest.filter(|s| !s.is_empty()) {
+                let d = kept.text(digest.to_string());
+                self.put(|o| &o.trust_digest, d);
+            }
+        }
+    }
 }
 
 impl Out<'_, crate::abi::plane::ServeOut> {
@@ -570,6 +611,13 @@ impl<'a, T: AbiOut> Out<'a, T> {
                 len: text.len(),
             },
         );
+    }
+
+    /// Hold `owned` under this answer's lease (named in `head.lease`) until the host's `release`
+    /// of it. An answer whose only material is program memory ([`Out::list`], [`Out::text`]) still
+    /// names a lease where its kind's check requires one of every answer that names material.
+    pub fn keep<O: Send + Sync + 'static>(&mut self, leases: &Leases, owned: O) {
+        leases.keep(self.head(), owned);
     }
 
     /// Set the list `ptr`/`len` name to `items`, which live for the program (NULL when empty).

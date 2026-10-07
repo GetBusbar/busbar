@@ -314,7 +314,7 @@ fn wired_metrics_emit_reaches_the_recorder() {
 
 /// THE HOST BOUNDS THE HOT LANE TOO (DECISIONS #85). A plane REPORTS a sample; what it is allowed to
 /// have said is the host's decision, and it is the SAME decision the cold lane's envelope fold makes
-/// — `crate::metrics::observe::admits_metric_name`, asked once and answered once.
+/// — `crate::snapshot::observe::admits_metric_name`, asked once and answered once.
 ///
 /// Every rejection here was reachable before: the slot took the name verbatim, invented
 /// `busbar_plane_metric` when given none, and never looked at the value. So a plane could shadow a
@@ -374,14 +374,14 @@ fn metrics_emit_refuses_what_the_host_does_not_admit() {
 /// asks — asserted directly, so the two can never be "fixed" apart.
 #[test]
 fn both_abi_lanes_ask_the_same_metric_name_question() {
-    assert!(crate::metrics::observe::admits_metric_name(
+    assert!(crate::snapshot::observe::admits_metric_name(
         "plane_host_test"
     ));
-    assert!(!crate::metrics::observe::admits_metric_name(
+    assert!(!crate::snapshot::observe::admits_metric_name(
         "busbar_anything"
     ));
-    assert!(!crate::metrics::observe::admits_metric_name("Bad-Name"));
-    assert!(!crate::metrics::observe::admits_metric_name(""));
+    assert!(!crate::snapshot::observe::admits_metric_name("Bad-Name"));
+    assert!(!crate::snapshot::observe::admits_metric_name(""));
 }
 
 /// **PROVENANCE IS NOT OPTIONAL.** A handle minted for the HOST's own use — `calllog`, `auditlog`,
@@ -418,13 +418,13 @@ fn metrics_emit_refuses_a_handle_with_no_host_attributed_emitter() {
 #[test]
 fn metrics_emit_admits_a_bounded_emitter_and_refuses_an_unbounded_one() {
     const PLANE: &str = "cardinality-series-plane";
-    crate::metrics::observe::forget_cardinality(PLANE);
+    crate::snapshot::observe::forget_cardinality(PLANE);
     with_test_state_as(PLANE, |host, vt, _scope| {
         let emit = vt.metrics_emit.unwrap();
         // BOUNDED: the same series, over and over, is admitted every time — a well-behaved emitter
         // never runs out of budget.
         let steady = sample_of(b"steady_total", 1.0);
-        for _ in 0..(crate::metrics::observe::MAX_SERIES_PER_PLUGIN * 4) {
+        for _ in 0..(crate::snapshot::observe::MAX_SERIES_PER_PLUGIN * 4) {
             assert_eq!(
                 emit(host, &steady as *const MetricSample),
                 StatusClass::Ok,
@@ -434,7 +434,7 @@ fn metrics_emit_admits_a_bounded_emitter_and_refuses_an_unbounded_one() {
         // UNBOUNDED: a fresh series name every call. The budget admits up to the ceiling (one slot
         // is already spent on `steady_total`) and refuses past it.
         let mut admitted = 1usize;
-        for i in 0..(crate::metrics::observe::MAX_SERIES_PER_PLUGIN * 2) {
+        for i in 0..(crate::snapshot::observe::MAX_SERIES_PER_PLUGIN * 2) {
             let name = format!("churn_{i}_total");
             let s = sample_of(name.as_bytes(), 1.0);
             if emit(host, &s as *const MetricSample) == StatusClass::Ok {
@@ -443,7 +443,7 @@ fn metrics_emit_admits_a_bounded_emitter_and_refuses_an_unbounded_one() {
         }
         assert_eq!(
             admitted,
-            crate::metrics::observe::MAX_SERIES_PER_PLUGIN,
+            crate::snapshot::observe::MAX_SERIES_PER_PLUGIN,
             "the budget must be a hard ceiling, not a suggestion"
         );
         // And the ESTABLISHED series is untouched by the flood — a misbehaving shape must not evict
@@ -462,11 +462,11 @@ fn metrics_emit_admits_a_bounded_emitter_and_refuses_an_unbounded_one() {
 #[test]
 fn metrics_emit_bounds_distinct_label_sets_under_one_series() {
     const PLANE: &str = "cardinality-label-plane";
-    crate::metrics::observe::forget_cardinality(PLANE);
+    crate::snapshot::observe::forget_cardinality(PLANE);
     with_test_state_as(PLANE, |host, vt, _scope| {
         let emit = vt.metrics_emit.unwrap();
         let mut admitted = 0usize;
-        for i in 0..(crate::metrics::observe::MAX_LABEL_SETS_PER_SERIES * 3) {
+        for i in 0..(crate::snapshot::observe::MAX_LABEL_SETS_PER_SERIES * 3) {
             let labels = format!("request_id\u{1}{i}");
             let s = labelled_sample(b"one_series_total", 1.0, labels.as_bytes());
             if emit(host, &s as *const MetricSample) == StatusClass::Ok {
@@ -475,7 +475,7 @@ fn metrics_emit_bounds_distinct_label_sets_under_one_series() {
         }
         assert_eq!(
             admitted,
-            crate::metrics::observe::MAX_LABEL_SETS_PER_SERIES,
+            crate::snapshot::observe::MAX_LABEL_SETS_PER_SERIES,
             "labelling by request id must hit a ceiling, not explode the registry"
         );
         // A label set ALREADY inside the budget keeps being admitted.
@@ -492,23 +492,23 @@ fn metrics_emit_bounds_distinct_label_sets_under_one_series() {
 #[test]
 fn both_abi_lanes_ask_the_same_cardinality_question() {
     const PLANE: &str = "shared-budget-plane";
-    crate::metrics::observe::forget_cardinality(PLANE);
+    crate::snapshot::observe::forget_cardinality(PLANE);
     // Spend the whole series budget through the shared predicate...
-    for i in 0..crate::metrics::observe::MAX_SERIES_PER_PLUGIN {
-        assert!(crate::metrics::observe::admits_cardinality(
+    for i in 0..crate::snapshot::observe::MAX_SERIES_PER_PLUGIN {
+        assert!(crate::snapshot::observe::admits_cardinality(
             PLANE,
             &format!("s_{i}_total"),
             0
         ));
     }
     // ...and the HOT lane's entry point sees the same exhausted budget, because it is the same one.
-    assert!(!crate::metrics::observe::admits_cardinality_opaque(
+    assert!(!crate::snapshot::observe::admits_cardinality_opaque(
         PLANE,
         "one_more_total",
         &[]
     ));
     // An established series still passes on either entry point.
-    assert!(crate::metrics::observe::admits_cardinality_opaque(
+    assert!(crate::snapshot::observe::admits_cardinality_opaque(
         PLANE,
         "s_0_total",
         &[]
@@ -694,16 +694,12 @@ fn a_committed_invoke_rewrite_installs_any_json_object_verbatim() {
     );
 }
 
-/// THE HOST RE-ASK READS THE BINDINGS IN FORCE NOW. `role_bindings` is per-snapshot (rebuilt from
-/// the applied config on every apply), so a host that re-checked against the snapshot it was minted
-/// on would keep a role-bound subscription alive after its binding was removed. Stands before the
-/// swap (the binding is there), lapses after it (the binding is gone).
-///
-/// RED at HEAD: the re-ask re-resolved the synthesized key by id against the registry, so the FIRST
-/// ask already lapsed — the "stands" half fails.
+/// THE LIVE RE-RESOLUTION READS THE BINDINGS IN FORCE NOW. `role_bindings` is per-snapshot (rebuilt
+/// from the applied config on every apply), so a re-check against the snapshot the principal was
+/// admitted on would keep a role-bound subscription alive after its binding was removed. Stands
+/// before the swap (the binding is there), lapses after it (the binding is gone).
 #[test]
 fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
-    use crate::trust::validate::{Lapsed, Refusal, Snapshot, Standing};
     let mut roles = std::collections::BTreeMap::new();
     roles.insert("eng".to_string(), crate::config::RoleBindingCfg::default());
     let mut rb = crate::config::RoleBindings::new();
@@ -720,26 +716,16 @@ fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
             .role_bindings(rb)
             .build(),
     ));
-    let host = EngineHostImpl::from_handle(Arc::clone(&handle));
-    let standing = Standing::opened(
-        Some(&key),
-        Snapshot::Watching,
-        std::time::Duration::from_secs(300),
-    );
+    let standing = live_standing(Arc::clone(&handle));
 
-    let now = host
-        .principal_standing(&standing, 1, 1_700_000_000)
-        .expect("the binding stands")
-        .expect("governed");
+    let now = standing(&key, 1_700_000_000).expect("the binding stands");
     assert_eq!(now.id, "alice@example.com");
 
     // A config apply that removes the binding swaps in a snapshot without it.
     handle.swap(crate::test_support::TestApp::new().build());
-    assert_eq!(
-        host.principal_standing(&standing, 1, 1_700_000_000),
-        Err(Lapsed::Identity(Refusal::IdentityNotLive {
-            principal: "alice@example.com".to_string()
-        }))
+    assert!(
+        standing(&key, 1_700_000_000).is_none(),
+        "the binding is gone from the live snapshot, so the principal no longer stands"
     );
 }
 
@@ -879,7 +865,7 @@ fn add(
 /// A declared family renders exactly its declared name and keys — no provenance label — and adds.
 #[test]
 fn counter_add_renders_a_declared_family_as_declared() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let v = values(&["widget", "ok"]);
     assert_eq!(
         add("counting-plane", "counting_plane_units_total", &v, 3),
@@ -893,7 +879,7 @@ fn counter_add_renders_a_declared_family_as_declared() {
         add("counting-plane", "counting_plane_bare_total", &[], 1),
         StatusClass::Ok
     );
-    let scrape = crate::metrics::render();
+    let scrape = crate::snapshot::render();
     for line in [
         "counting_plane_units_total{unit=\"widget\",outcome=\"ok\"} 5",
         "counting_plane_bare_total 1",

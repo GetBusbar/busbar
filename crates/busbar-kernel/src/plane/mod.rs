@@ -173,6 +173,16 @@ pub(crate) fn is_fallback(key: &str) -> bool {
         .any(|d| d.key == key && d.fallback)
 }
 
+/// The plane that DECLARES itself the fallback, resolved from ONE read of the plane list, or `None`
+/// when no registered plane flags itself fallback. Unlike [`fallback_key`] it never degrades to a
+/// sibling's key, so App composition derives the fallback runtime's slot key AND the `build_runtime`
+/// that fills it from the same decl: the runtime under `runtime_slot_key(K)` is always plane `K`'s
+/// own state (BUSBAR-1.6.0.md §6). Reading the list once is what makes that hold where the list can
+/// grow between reads (a test binary's `register_test_plane`); production's list is frozen at boot.
+pub(crate) fn fallback_decl() -> Option<&'static registry::PlaneDecl> {
+    registry::plane_decls().iter().copied().find(|d| d.fallback)
+}
+
 /// Every built-in plane's registry key, in layering order. Iterated by dispatch, the config
 /// validator and the candidate projection, so a plane absent from here is a plane that silently
 /// does not exist.
@@ -651,10 +661,10 @@ fn path_is_under(path: &str, mount: &str) -> bool {
 /// error.
 ///
 /// The TYPE (and [`RefError`], [`Self::insert`], [`Self::resolve`]) are `pub` rather than
-/// `pub(crate)` so `tests/plane_config_cross_plane.rs::the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary`
+/// `pub(crate)` so `crates/busbar/tests/plane_config_cross_plane.rs::the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary`
 /// can drive the resolve-time refusal directly, over the REAL plane roster, exactly as the sibling
 /// parse-time refusal in that file already does — the same "internal-only `busbar-kernel` crate
-/// (`publish = false`) pays that cost" reasoning `registry_cross_plane.rs`'s header gives for its own
+/// (`publish = false`) pays that cost" reasoning `crates/busbar/tests/registry_cross_plane.rs`'s header gives for its own
 /// widened seams.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaneSections<T> {
@@ -786,7 +796,7 @@ impl<T> PlaneSections<T> {
     }
 }
 
-// `plane_tests` MOVED to `tests/plane_dispatch_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
+// `plane_tests` MOVED to `crates/busbar/tests/plane_dispatch_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
 // cleanup): it hard-codes the real `"llm"`/`"mcp"`/`"a2a"` keys and asserts against their REAL
 // declared wire formats (the actual dialect/plane registries), which only type-checks/behaves
 // correctly with ONE `busbar_kernel` in the graph and a real roster registered — an integration-test
@@ -866,7 +876,7 @@ const fn neutral_sibling_decl(
 /// `neutral-no-dialect` rule, ceiling 0, enforces this). `"alpha"`/`"beta"`/`"gamma"` are three
 /// registry keys and nothing else. The one test in this file that DID need a real plane's own
 /// section-name prose (`the_refusal_message_is_actionable`) moved to
-/// `tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
+/// `crates/busbar/tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
 ///
 /// Returns the [`registry::TestRegistryIsolation`] guard, which the caller holds for its test body's
 /// lifetime: the registered set stays exactly these three regardless of what ran before it or runs

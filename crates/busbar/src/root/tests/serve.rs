@@ -87,6 +87,10 @@ impl HostServices for Judges {
     fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
         Ran::Now(Stored::ready(12))
     }
+
+    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
+        busbar_contract::services::Snapshot::NotReady
+    }
 }
 
 fn judged(s: &LateServices) -> Stored {
@@ -446,12 +450,20 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     let k = Arc::new(kernel(&[], false));
     late.install_kernel(Arc::clone(&k), k).expect("the install");
     let k = late.kernel().expect("kept");
+    // A declared pin: a first sighting pins nothing (ARCHITECT 2026-10-06).
     let entry = TrustEntry {
-        pin: None,
+        pin: Some(busbar_kernel::trust::section::DeclaredPin {
+            mechanism: "fingerprint".into(),
+            root: false,
+            peer_key: false,
+            key: None,
+            fingerprint: Some("h1".into()),
+        }),
         policy: Policy {
             ttl_ms: 0,
             recovery_backoff_ms: 0,
         },
+        approved: Default::default(),
     };
     let facts = InstanceFacts {
         signing: Some(Signing {
@@ -485,7 +497,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
         }
     };
     assert_eq!(late.sign(&caller, b"data").outcome, Outcome::Refused);
-    assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
+    assert_eq!(sight("h1"), (svc::TRUST_SAME, false));
     assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
     let demotions = Arc::new(DemotionRecord::default());
     attach(
