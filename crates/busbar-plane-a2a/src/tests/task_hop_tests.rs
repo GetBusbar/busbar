@@ -446,8 +446,8 @@ fn opened_writing(desk: &mut Desk, envelope: &Value) -> (Opened, Vec<Write>) {
 #[test]
 fn a_task_ended_without_the_host_is_written_as_the_host_would_end_it() {
     // MINTED: the opening wrote it.
-    let mut desk = desk();
-    let (fresh, writes) = opened_writing(&mut desk, &send(json!({})));
+    let mut d = desk();
+    let (fresh, writes) = opened_writing(&mut d, &send(json!({})));
     let Opened::Hop { task, read, .. } = fresh else {
         panic!("refused");
     };
@@ -458,7 +458,7 @@ fn a_task_ended_without_the_host_is_written_as_the_host_would_end_it() {
     let (unhosted, moved) = fail_unhosted(&task, &writes, ALICE, 300);
     let mut hosted = Vec::new();
     let row = settle(
-        &mut desk.book,
+        &mut d.book,
         &task,
         &Settled::Failed,
         ALICE,
@@ -476,10 +476,10 @@ fn a_task_ended_without_the_host_is_written_as_the_host_would_end_it() {
     assert_eq!(row.state, "failed");
 
     // ADDRESSED: the opening wrote nothing; the row it read holds the task.
-    let mut desk = desk();
+    let mut d = desk();
     let get_task =
         json!({ "jsonrpc": "2.0", "id": 7, "method": "GetTask", "params": { "id": "t1" } });
-    let (addressed, writes) = opened_writing(&mut desk, &get_task);
+    let (addressed, writes) = opened_writing(&mut d, &get_task);
     let Opened::Hop { task, read, .. } = addressed else {
         panic!("refused");
     };
@@ -491,7 +491,7 @@ fn a_task_ended_without_the_host_is_written_as_the_host_would_end_it() {
     assert_eq!(fail_unhosted(&task, &[], ALICE, 300), (Vec::new(), None));
     let mut hosted = Vec::new();
     settle(
-        &mut desk.book,
+        &mut d.book,
         &task,
         &Settled::Failed,
         ALICE,
@@ -503,9 +503,9 @@ fn a_task_ended_without_the_host_is_written_as_the_host_would_end_it() {
     assert_eq!(moved.expect("it moved").state, "failed");
 
     // TERMINAL: already ended, so nothing moves and nothing is written.
-    desk.book.apply(&hosted);
+    d.book.apply(&hosted);
     let mut read_again = Vec::new();
-    let held = get(&mut desk.book, ALICE, "t1", 300).unwrap().unwrap();
+    let held = get(&mut d.book, ALICE, "t1", 300).unwrap().unwrap();
     read_again.extend(crate::tasks::as_read(ALICE, &held));
     assert_eq!(
         fail_unhosted(&task, &read_again, ALICE, 301),
