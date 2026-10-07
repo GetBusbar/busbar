@@ -135,7 +135,7 @@ fn bind(sink: Arc<Recorder>) -> Bind {
         max_inflight_cap: 64,
         sink,
         dispatcher: crate::dispatch::Adopter::unwatched(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
     }
 }
 
@@ -1659,7 +1659,7 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
         &row(),
         Bind {
             dispatcher: d.adopter(),
-            conns: None,
+            conns: crate::dispatch::ConnTable::NoNeeds,
             ..bind(sink)
         },
     )

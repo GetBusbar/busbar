@@ -54,11 +54,13 @@ use busbar_contract::abi::mechanism::call::{
 };
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    release, tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, release,
+    tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::export::Export;
-use crate::dispatch::{Bind, Diagnostic, Dropped, EnvelopeSink, Frame, Metric, Plugin, NO_BLOB};
+use crate::dispatch::{
+    Bind, Diagnostic, Dispatcher, Dropped, EnvelopeSink, Frame, Metric, Plugin, NO_BLOB,
+};
 
 /// This kind's section of the plugin's `conformance.json`, and its instance label: the kind's
 /// config root key, read off the kind list (`busbar_contract::plugin::Kind::verb`).
@@ -262,13 +264,22 @@ fn snapshot(families: &serde_json::Value) -> Snapshot {
     }
 }
 
-/// One `deliver` of `batch` on `stream`.
-fn deliver(p: &Plugin<Export>, stream: u8, batch: &[u8], n: u8) -> String {
+/// One `deliver` of `batch` on `stream`, AS THE KERNEL'S EXPORT FLUSHER OFFERS IT
+/// (`export_door`): on a ticket of `d`'s, write-behind, so a delivery that waits on the network
+/// answers PENDING and is RESUMED on its wake.
+fn deliver(p: &Plugin<Export>, d: &Dispatcher, stream: u8, batch: &[u8], n: u8) -> String {
     let mut f: Frame<DeliverIn, OutHead> = Frame::new(input(), output());
     f.input.op_id = [n; 16];
     f.input.stream = stream;
     f.input.batch = blob(batch, BLOB_JSONL);
-    called(&p.call(export::slot::DELIVER, &mut f))
+    called(&super::on_ticket(
+        p,
+        d,
+        export::slot::DELIVER,
+        f,
+        busbar_contract::abi::mechanism::call::DeadlineClass::WriteBehind,
+        0,
+    ))
 }
 
 /// One `scrape` over `families` into a host buffer of `cap` bytes, and the ONE re-call a short
@@ -371,7 +382,7 @@ fn stream(d: &serde_json::Value) -> u8 {
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs(ROOT);
     assert!(k.is_object(), "conformance.json has no `export` inputs");
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let empty = Vec::new();
     let arr = |key: &str| {
         k.get(key)
@@ -401,7 +412,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 .iter()
                 .map(|i| (field(i, "name").to_string(), text(&i["settings"])))
                 .collect(),
-            None => vec![("conformance".to_string(), settings.clone())],
+            None => vec![("conformance".to_string(), settings.to_vec())],
         };
     let instances: Vec<CheckInstance> = instance_settings
         .iter()
@@ -415,7 +426,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let tape = Arc::new(Tape::default());
     let b = Bind {
         sink: tape.clone(),
-        ..bind(&d, ROOT)
+        ..s.bind(&d, ROOT)
     };
     let p = load::<Export>(s, leg, b).expect("the export door loads");
     let mut r = Recorder::new(crossings(&p));
@@ -438,13 +449,19 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // The host refuses an unopened instance's kind op before any crossing.
     r.line("deliver unopened", 0, || {
         let d0 = &delivers[0];
-        host(deliver(&p, stream(d0), &text(&d0["batch"]), 0))
+        host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0))
     });
     r.line("open", 1, || host(called(&open(&p, &settings))));
     ready_step(&mut r, s, &p, &d);
     for (i, dl) in delivers.iter().enumerate() {
         r.line(&format!("deliver #{i}"), 1, || {
-            host(deliver(&p, stream(dl), &text(&dl["batch"]), i as u8 + 1))
+            host(deliver(
+                &p,
+                &d,
+                stream(dl),
+                &text(&dl["batch"]),
+                i as u8 + 1,
+            ))
         });
     }
     for (i, (sc, snap)) in scrapes.iter().zip(&snapshots).enumerate() {
@@ -501,13 +518,13 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("refresh", 1, || host(called(&refresh(&p, &settings))));
     r.line("deliver after refresh", 1, || {
         let d0 = &delivers[0];
-        host(deliver(&p, stream(d0), &text(&d0["batch"]), 0xfe))
+        host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0xfe))
     });
     r.line("close", 1, || host(called(&close(&p))));
     // A closed instance answers FAULT without a crossing.
     r.line("deliver after close", 0, || {
         let d0 = &delivers[0];
-        host(deliver(&p, stream(d0), &text(&d0["batch"]), 0xff))
+        host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0xff))
     });
     let fold = r.fold();
     contract(&fold, k);

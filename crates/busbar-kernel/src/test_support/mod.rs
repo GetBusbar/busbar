@@ -2425,7 +2425,7 @@ pub fn store_axis_stand_in() -> std::sync::Arc<dyn busbar_contract::store_calls:
         dispatcher: std::sync::Arc::clone(dispatcher),
         logs: PluginLogConfig::from_words(None, None, &none, None, None)
             .expect("the plugins.logs defaults resolve"),
-        conns: None,
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
         mint: crate::door::op_id,
     })
 }
