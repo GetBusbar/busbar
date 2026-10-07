@@ -292,18 +292,36 @@ impl Gate for ShipReadyGate {
         // The two gates that OWN the evidence, run once each. Their `--selftest` is the expensive
         // half; a single `run()` over the tree is not, which is what makes reading them here
         // affordable rather than a second implementation of the same rules.
-        let construction = crate::gates::execute(
-            &crate::gates::construction::ConstructionGate as &dyn Gate,
-            cx,
-        );
+        //
+        // THEY ARE INDEPENDENT, SO THEY RUN AT ONCE. Neither reads the other's verdict and both only
+        // read the tree, so this gate's wall clock is the slower of the two rather than their sum.
+        // The rows below are built from the two verdicts in the same order as before.
+        let (construction, ship) = std::thread::scope(|scope| {
+            // The construction gate drives `rx`, whose general repeat path recurses once per
+            // iteration: its thread gets the main thread's stack, not a spawned thread's default.
+            let construction = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn_scoped(scope, || {
+                    crate::gates::execute(
+                        &crate::gates::construction::ConstructionGate as &dyn Gate,
+                        cx,
+                    )
+                })
+                .expect("spawn the construction gate's thread");
+            let ship_gate = crate::gates::kind_isolation::KindIsolationGate::ship();
+            let ship = crate::gates::execute(&ship_gate as &dyn Gate, cx);
+            (
+                construction
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                ship,
+            )
+        });
         let mut rows = vec![standing_row(
             &target,
             CONSTRUCTION_STANDING_REDS,
             &construction,
         )];
-
-        let ship_gate = crate::gates::kind_isolation::KindIsolationGate::ship();
-        let ship = crate::gates::execute(&ship_gate as &dyn Gate, cx);
         rows.push(ship_twin_row(&ship));
 
         Verdict::of(rows)

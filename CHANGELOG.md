@@ -689,10 +689,20 @@ each dialect translates, field by field, is listed in the generated
   config with none of the three new keys boots and behaves exactly as it did under 1.5.5 (see
   [Behaviour identical to 1.5.5](#behaviour-identical-to-155) above), with one exception below.
 - **A `rate_card` must price every billable class the build declares, or boot refuses.** An unpriced
-  class never silently bills 0. A 1.5.5 config with a `rate_card` needs each entry to gain
-  `units: { search_units: 0 }` (0 keeps search free), and a rate card written through
-  `PUT /api/v1/admin/config/settings` needs the same key or the write answers 400. `--validate`
+  class never silently bills 0. A 1.5.5 config with a `rate_card` needs each entry to gain a
+  `units:` map pricing every LLM open class (`search_units`, `classifications`,
+  `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms` and the nine Bedrock
+  `guardrail_*` units; 0 keeps each free, as 1.5.5 billed them), and a rate card written through
+  `PUT /api/v1/admin/config/settings` needs the same keys or the write answers 400. `--validate`
   names every class it wants.
+- **Every count a provider reports is ledgered under its own class** (owner ruling LEDGER-100).
+  Beside its tokens, a turn now ledgers Cohere's billed `classifications`, Anthropic's
+  `web_fetch_requests`, the tokens a provider's stated total counts above its itemized buckets
+  (`unitemized_tokens`), a per-image answer's `images`, a transcription's reported duration
+  (`audio_ms`, whole milliseconds) and each Bedrock guardrail policy-unit count (`guardrail_*`),
+  each priced by the rate card (absent card: 0). The token classes, their figures and every
+  `tokens:` cap count exactly what 1.5.5 counted. A Bedrock guardrail usage count that is present
+  but not a count is refused, like every other billed count.
 - **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
   retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
   provider or model block is touched.
@@ -732,8 +742,8 @@ each dialect translates, field by field, is listed in the generated
   "expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, or `export`"
   (`tools` and `agents` join the list when their plane is configured). **Migration:** none.
 - 1.6.0 Added: a rate-card entry takes a `units:` map that prices each billable class a plane declares beyond the four `*_utok` token tiers.
-  A rate card must configure every billable class its plane declares, so a 1.5.5 card adds
-  `units: { search_units: 0 }` (0 keeps search free). A rate-card entry with a key busbar does not
+  A rate card must configure every billable class its plane declares, so a 1.5.5 card adds a
+  `units:` map with every LLM open class at 0 (0 keeps each free). A rate-card entry with a key busbar does not
   know is still refused in 1.5.5's sentence, with `units` now among the expected fields. Money stays
   unitless: a `currency` key is refused, as in 1.5.5.
 - 1.6.0 Added: a provider entry takes four lane-capability keys, `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`.
@@ -862,6 +872,12 @@ each dialect translates, field by field, is listed in the generated
 
 ### Changed
 
+- **The TLS listener now offers h2 via ALPN** (owner-signed, 2026-10-04, Q137). A `tls:` listener offers
+  ALPN `h2, http/1.1`; 1.5.5 offered `http/1.1` alone. A client that offers `h2` (curl, browsers, gRPC
+  clients) speaks HTTP/2 to Busbar over TLS; a client that offers only `http/1.1`, or no ALPN, is served
+  exactly as before. On an HTTP/2 connection a client that does not open with the HTTP/2 connection preface
+  is disconnected, as RFC 9113 requires. **Migration:** none; a client that must stay on HTTP/1.1 offers
+  only `http/1.1`.
 - **The data plane is thread-per-core on unix.** `advanced.worker_threads` (default: one per core,
   cap 128) now sizes N pinned single-threaded runtimes, each with its own `SO_REUSEPORT` listener
   on the data port; the admin plane and background tasks run on a separate control-runtime thread.

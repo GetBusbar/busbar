@@ -2366,3 +2366,102 @@ fn a_torn_settlement_is_cut_and_its_hold_recovers() {
         restarted.open_quarantined
     );
 }
+
+/// **EVERY OPEN CLASS THE FALLBACK PLANE DECLARES PRICES AT THE CARD AND REPLAYS IDEMPOTENTLY** (owner
+/// LEDGER-100, 2026-10-03: every reported unit is a ledger line under its meter class; money =
+/// f(ledger, ratecard)). The classes are read off the plane's own declaration, never spelled here,
+/// and the plane off the linked table by its `fallback` flag (the plane a `models:` lane falls
+/// through to), never by name:
+/// for each, one unit reporting 7 of it settles as ONE record carrying `{class: 7}` and no figure;
+/// a restart over a card pricing the class at 3,000 nano-units rebuilds 21,000; a second restart
+/// rebuilds the identical book (replay is idempotent); and a restart over the card with no cell for
+/// the class (the absent-rate rule, #42) refuses the read rather than pricing it at 0.
+#[cfg(linked_every_plane)]
+#[test]
+fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
+    use busbar_kernel_ledger::cost::LaneClass;
+    const RATE: u64 = 3_000;
+    let fallback = crate::LINKED
+        .planes
+        .iter()
+        .find(|decl| decl.fallback)
+        .expect("every plane linked: one declares itself the fallback");
+    let open: Vec<&str> = fallback
+        .billable_classes
+        .iter()
+        .map(|c| c.class)
+        .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+        .collect();
+    assert!(
+        open.len() > 1,
+        "the plane declares its open classes: {open:?}"
+    );
+    let mut registration = crate::root::kernel::new_registration();
+    for class in &open {
+        let _ = registration.key(class);
+    }
+    for class in open {
+        let scratch = ScratchDir::new(&format!("ledger-100-{class}"));
+        let cfg = DurabilityConfig {
+            data_dir: Some(scratch.path.clone()),
+        };
+        let key = totals_key(&format!("vk_{class}"));
+        let counts = UnitCounts {
+            lane: LANE.to_string(),
+            fee_count: 0,
+            classes: std::collections::BTreeMap::from([(class.to_string(), 7)]),
+        };
+        {
+            let mut durability = boot(&cfg, 7).expect("the directory is writable");
+            let written = late_counted(&mut durability, &key, 7 * RATE, &counts);
+            assert_eq!(written.counts, Some(counts.clone()), "{class}");
+        }
+        let card =
+            pinned_history(one_nano_card().with_unit_rates([(LaneClass::new(LANE, class), RATE)]));
+        let reopen = || {
+            let card = card.clone();
+            build_priced(
+                &cfg,
+                7,
+                Box::new(NullShipper::new()),
+                rows(),
+                Box::new(move || Some(card.clone())),
+            )
+            .expect("the journal reopens")
+        };
+        let first = reopen();
+        assert!(
+            first.restart_findings.is_empty(),
+            "{class}: {:?}",
+            first.restart_findings
+        );
+        assert_eq!(
+            first.ledger.book().get(&key, 86_400).settled,
+            i128::from(7 * RATE),
+            "{class}: the rebuilt book prices the counts at the card"
+        );
+        let settlements: Vec<Posting> = first
+            .read_back()
+            .into_iter()
+            .filter(|p| p.kind == PostingKind::Settlement)
+            .collect();
+        assert_eq!(settlements.len(), 1, "{class}: one ledger line");
+        assert_eq!(settlements[0].counts, Some(counts.clone()), "{class}");
+        let snapshot = first.ledger.book().snapshot();
+        drop(first);
+        let second = reopen();
+        assert_eq!(
+            second.ledger.book().snapshot(),
+            snapshot,
+            "{class}: a second replay rebuilds the identical book"
+        );
+        drop(second);
+        // The absent-rate rule (#42): a present card with no cell for the class refuses the read.
+        let silent = build_priced(&cfg, 7, Box::new(NullShipper::new()), rows(), priced())
+            .expect("the journal reopens");
+        assert!(
+            silent.settled_read(&key, 86_400).is_err(),
+            "{class}: a card silent about the class refuses, never prices it at 0"
+        );
+    }
+}

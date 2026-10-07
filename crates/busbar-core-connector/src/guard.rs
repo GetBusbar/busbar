@@ -19,7 +19,9 @@
 //! `block_private_addresses` says; then, where `block_private_addresses` holds and the dial's class
 //! refuses private addresses ([`PRIVATE_REFUSED_IN`]: the provider class, and a destination from
 //! request data or the network), every private address (`busbar_contract::net::ip_is_internal`: RFC 1918, loopback, link-local, CGNAT,
-//! unique-local, unspecified and the rest of that list).
+//! unique-local, unspecified and the rest of that list); in the loopback-allowed class, where
+//! `block_private_addresses` holds, every private address but loopback ([`is_loopback`]: the class
+//! is named for it, and 1.5.5 reached a loopback collector with no configuration).
 //! A HOST allowlist entry never admits a metadata answer (owner Q8): it is how internal DNS is
 //! admitted, and it must not become a way to reach IMDS by a rebinding answer. An IP or CIDR entry
 //! that covers a metadata address does admit it, because it names it.
@@ -59,9 +61,13 @@ use busbar_kernel::config::Destinations;
 /// - the default class and `open-web`: a destination from request data or the network.
 ///
 /// Not here: `operator-infrastructure` (THE DESIGN §5 egress-class table, owner 2026-09-27:
-/// private, loopback and plaintext allowed; pinned) and `loopback-allowed`. Cloud metadata is
-/// refused in every class whatever this table says, a configured NAME rebinding to it included,
-/// unless an IP/CIDR allowlist entry names it (or, for a provider dial only, a 1.5.5 carve-out).
+/// private, loopback and plaintext allowed; pinned) and `loopback-allowed`, which the guard's
+/// address arm holds to the same refusal LOOPBACK EXCEPTED (ARCHITECT parity ruling A2: https to
+/// any host, the destination guard still applying; 1.5.5 refused a private, CGNAT, unique-local or
+/// link-local collector and admitted a loopback one, v1.5.5
+/// `crates/busbar/src/observability.rs:620-633`, `:676-728`). Cloud metadata is refused in every
+/// class whatever this table says, a configured NAME rebinding to it included, unless an IP/CIDR
+/// allowlist entry names it (or, for a provider dial only, a 1.5.5 carve-out).
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
     connector::EGRESS_DEFAULT,
     CARVE_OUT_CLASS,
@@ -72,6 +78,24 @@ pub const PRIVATE_REFUSED_IN: &[u32] = &[
 /// class, as 1.5.5 read them for provider URLs only. The guard speaks in classes; this is the
 /// class's one spelling here.
 const CARVE_OUT_CLASS: u32 = connector::EGRESS_PROVIDER;
+
+/// The loopback-allowed class: private addresses refused but loopback, and an alternate IPv4
+/// spelling of loopback judged as the loopback address it spells ([`Guard::judge_name_with`]).
+const LOOPBACK_CLASS: u32 = connector::EGRESS_LOOPBACK_ALLOWED;
+
+/// LOOPBACK AS 1.5.5'S COLLECTOR GUARD READ IT (v1.5.5 `crates/busbar/src/observability.rs:620-633`
+/// `otlp_addr_is_internal`, `:643-664` `otlp_host_is_loopback`): IPv4 `127.0.0.0/8`, IPv6 `::1`,
+/// and the IPv4-mapped and -compatible spellings of a `127.0.0.0/8` address (`::ffff:127.0.0.1`,
+/// `::127.0.0.1`). `::1` is asked first: it reads as `0.0.0.1` through `to_ipv4`. The
+/// loopback-allowed class's plaintext rule and private refusal, and the node's own ports, all read
+/// loopback through this one predicate.
+#[must_use]
+pub fn is_loopback(addr: IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4().is_some_and(|v4| v4.is_loopback()),
+    }
+}
 
 /// The classes a need whose config names its target is lifted out of, to operator infrastructure:
 /// the request-data classes. Never `provider`: a provider dial is refused a private address unless
@@ -405,6 +429,12 @@ impl Guard {
         strict || (self.block_private && PRIVATE_REFUSED_IN.contains(&class))
     }
 
+    /// Whether private address `addr` is refused in the loopback-allowed class: where
+    /// `block_private_addresses` holds, every one but loopback ([`is_loopback`]).
+    fn refuses_off_loopback(&self, class: u32, addr: IpAddr) -> bool {
+        self.block_private && class == LOOPBACK_CLASS && !is_loopback(addr)
+    }
+
     /// The name arm, before any resolution, under egress class `class`. `Ok(Some(ip))`: the host
     /// is an IP literal, judged as its own answer; `Ok(None)`: a name to resolve and then judge
     /// with [`Guard::judge_answer`].
@@ -463,7 +493,15 @@ impl Guard {
         if m.blocked.iter().any(|e| e.names(&name)) && !lifted {
             return refuse(DEST_METADATA);
         }
-        if is_alternate_ipv4_encoding(&name) {
+        // An alternate IPv4 spelling names no address the guard reads, so it is refused; but in
+        // the loopback-allowed class, a spelling of a loopback address is that address, as 1.5.5's
+        // collector guard read it (its URL parser canonicalized `127.1`, `2130706433`,
+        // `0x7f000001`, `017700000001`, `0177.0.0.1` to `127.0.0.1` before the guard looked, and
+        // `is_alternate_loopback_v4` admitted them besides: v1.5.5
+        // `crates/busbar/src/observability.rs:695-710`, `:738-764`). ARCHITECT parity ruling A3.
+        if is_alternate_ipv4_encoding(&name)
+            && !(class == LOOPBACK_CLASS && host_ip(&name).is_some_and(is_loopback))
+        {
             return refuse(DEST_OBFUSCATED);
         }
         if let Some(ip) = host_ip(&name) {
@@ -564,7 +602,8 @@ impl Guard {
         if metadata || listed(&m.blocked) {
             return refuse(DEST_METADATA);
         }
-        if self.refuses_private(class, strict) && ip_is_internal(&addr) {
+        let refused = self.refuses_private(class, strict) || self.refuses_off_loopback(class, addr);
+        if refused && ip_is_internal(&addr) {
             return refuse(DEST_INTERNAL);
         }
         Ok(())

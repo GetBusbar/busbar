@@ -8,7 +8,7 @@ use super::*;
 impl BearerToken {
     pub(crate) fn with_token_for_test(token: &str) -> Self {
         BearerToken {
-            token: RwLock::new(Arc::new(CachedToken::new(token.to_string(), 0))),
+            token: RwLock::new(Arc::new(CachedToken::new(token.to_string().into(), 0))),
             _alive: None,
         }
     }
@@ -28,7 +28,7 @@ fn ctx() -> SigningContext<'static> {
 /// `[REDACTED]`, never the token bytes — even though the pre-built header still carries them.
 #[test]
 fn cached_token_field_is_redacted_in_debug() {
-    let c = CachedToken::new("tok-super-secret-abc".to_string(), 0);
+    let c = CachedToken::new("tok-super-secret-abc".to_string().into(), 0);
     let dbg = format!("{:?}", c.token);
     assert_eq!(dbg, "[REDACTED]");
     assert!(!dbg.contains("tok-super-secret-abc"));
@@ -57,7 +57,7 @@ fn headers_for_reflects_prebuilt_header_after_a_refresh() {
         "Bearer tok-old"
     );
 
-    *c.token.write().unwrap() = Arc::new(CachedToken::new("tok-new".to_string(), 0));
+    *c.token.write().unwrap() = Arc::new(CachedToken::new("tok-new".to_string().into(), 0));
 
     let h = c.headers_for("k", &ctx());
     assert_eq!(h.len(), 1);
@@ -72,7 +72,7 @@ fn headers_for_reflects_prebuilt_header_after_a_refresh() {
 fn cached_token_new_omits_header_for_bytes_invalid_in_a_header_value() {
     let bad = BearerToken {
         token: RwLock::new(Arc::new(CachedToken::new(
-            "tok\nwith-newline".to_string(),
+            "tok\nwith-newline".to_string().into(),
             0,
         ))),
         _alive: None,
@@ -169,8 +169,12 @@ fn now_epoch_returns_the_real_current_time() {
 async fn dropping_the_provider_ends_its_refresher() {
     let minter: Minter = Arc::new(|| {
         // A long-lived token: the refresher settles into a wait measured in most of an hour.
-        Box::pin(async { Ok(CachedToken::new("tok-live".to_string(), now_epoch() + 3600)) })
-            as MintFuture
+        Box::pin(async {
+            Ok(CachedToken::new(
+                "tok-live".to_string().into(),
+                now_epoch() + 3600,
+            ))
+        }) as MintFuture
     });
     let refresher_holds = Arc::downgrade(&minter);
     let provider = spawn(minter);

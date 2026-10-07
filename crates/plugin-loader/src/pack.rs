@@ -638,8 +638,20 @@ fn pack(args: &[String]) -> ExitCode {
         // Sign with $BUSBAR_SIGN_KEY, or package unsigned only under the explicit dev flag.
         let manifest = match std::env::var(SIGN_KEY_ENV) {
             Ok(hex_seed) => {
-                let seed = hex::decode(hex_seed.trim())
-                    .map_err(|e| format!("{SIGN_KEY_ENV} is not valid hex: {e}"))?;
+                // The CLASS of the failure, never `FromHexError`'s own `Display`: that names the
+                // offending character of the SIGNING SEED and its position. Matched exhaustively
+                // with no `_` arm, so a new variant in a `hex` upgrade fails the build and is
+                // classified by hand rather than falling through to a printing catch-all.
+                let seed = hex::decode(hex_seed.trim()).map_err(|e| {
+                    let why = match e {
+                        hex::FromHexError::InvalidHexCharacter { .. } => {
+                            "it contains a character outside 0-9, a-f and A-F"
+                        }
+                        hex::FromHexError::OddLength => "it has an odd number of hex digits",
+                        hex::FromHexError::InvalidStringLength => "its length is not a key's",
+                    };
+                    format!("{SIGN_KEY_ENV} is not valid hex: {why} (the seed itself is withheld)")
+                })?;
                 let seed: [u8; 32] = seed
                     .as_slice()
                     .try_into()

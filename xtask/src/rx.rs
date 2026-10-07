@@ -121,6 +121,12 @@ impl Class {
     fn has(&self, b: u8) -> bool {
         self.bits[b as usize]
     }
+
+    fn union(&mut self, other: &Class) {
+        for (mine, theirs) in self.bits.iter_mut().zip(other.bits.iter()) {
+            *mine |= *theirs;
+        }
+    }
 }
 
 fn is_word(b: u8) -> bool {
@@ -662,10 +668,13 @@ pub struct Regex {
     node: Node,
     ngroups: usize,
     names: BTreeMap<String, usize>,
-    /// A literal every match must contain, used to skip a subject outright. Purely an optimisation
-    /// — a wrong hint would change the answer, so it is derived only from a concatenation's own
-    /// mandatory literal run.
-    required: Option<Vec<u8>>,
+    /// Literals one of which every match must contain, used to skip a subject outright. Purely an
+    /// optimisation — a wrong hint would change the answer, so it is derived only from what the
+    /// pattern's structure makes mandatory (see [`required_set`]).
+    required: Option<Vec<Vec<u8>>>,
+    /// The bytes a match can begin with, when every match consumes at least one byte: a start
+    /// position holding any other byte is skipped without entering the matcher. See [`first_set`].
+    first: Option<Box<Class>>,
     anchored: bool,
     src: String,
 }
@@ -698,13 +707,18 @@ impl Regex {
         } else {
             (node, p.ngroups, p.names)
         };
-        let required = required_literal(&node);
+        let required = required_set(&node).filter(|set| shortest(set) >= 2);
         let anchored = first_is_start(&node);
+        let first = match first_set(&node) {
+            Some((class, false)) => Some(Box::new(class)),
+            _ => None,
+        };
         Ok(Regex {
             node,
             ngroups,
             names,
             required,
+            first,
             anchored,
             src: pattern.to_string(),
         })
@@ -720,8 +734,9 @@ impl Regex {
 
     /// `re.search`: the leftmost match at or after `from`.
     pub fn search_at(&self, subject: &[u8], from: usize) -> Option<Match> {
-        if let Some(req) = &self.required {
-            if !contains(&subject[from.min(subject.len())..], req) {
+        if let Some(set) = &self.required {
+            let rest = &subject[from.min(subject.len())..];
+            if !set.iter().any(|lit| contains(rest, lit)) {
                 return None;
             }
         }
@@ -738,6 +753,13 @@ impl Regex {
             // char boundary, which is also an offset no caller can slice a `&str` at.
             if subject.get(start).is_some_and(|b| (0x80..0xC0).contains(b)) {
                 continue;
+            }
+            // A match that must consume a byte consumes `subject[start]` first, so a start whose
+            // byte no match can begin with (or the end of the subject) cannot start one.
+            if let Some(first) = &self.first {
+                if !subject.get(start).is_some_and(|b| first.has(*b)) {
+                    continue;
+                }
             }
             caps.iter_mut().for_each(|c| *c = None);
             if let Some(end) = self.m_one(&self.node, subject, start, &mut caps, &Cont::Done) {
@@ -1076,52 +1098,152 @@ fn first_is_start(node: &Node) -> bool {
     }
 }
 
-/// The longest run of mandatory literal bytes in a top-level concatenation. Conservative by
-/// construction: anything that is not a plain byte ends the run, and an alternation contributes
-/// nothing.
-fn required_literal(node: &Node) -> Option<Vec<u8>> {
-    let items: &[Node] = match node {
-        Node::Concat(items) => items,
-        other => std::slice::from_ref(other),
-    };
-    let mut best: Vec<u8> = Vec::new();
-    let mut cur: Vec<u8> = Vec::new();
-    for it in items {
-        match it {
-            Node::Byte(b) => cur.push(*b),
-            Node::Group(_, inner) => {
-                if let Node::Byte(b) = &**inner {
-                    cur.push(*b);
-                } else {
-                    if cur.len() > best.len() {
-                        best = std::mem::take(&mut cur);
-                    }
-                    cur.clear();
-                }
-            }
-            _ => {
-                if cur.len() > best.len() {
-                    best = std::mem::take(&mut cur);
-                }
-                cur.clear();
-            }
+/// THE BYTES A MATCH CAN BEGIN WITH, and whether the node can match without consuming any byte.
+///
+/// `None` means "cannot say" (a backreference can match anything, including nothing). Every other
+/// arm is exact about what the matcher consumes first: a byte, `.` or a class is its own first
+/// byte; anchors, word boundaries and lookarounds consume nothing, so they contribute no byte and
+/// are passed over (nullable); a concatenation's first bytes are its items' up to and including the
+/// first item that must consume; an alternation's are the union of its branches'; a repeat's are
+/// its body's, and it is nullable when its body is or when it may run zero times. The set is only
+/// ever used when the whole pattern is NOT nullable — a pattern that can match the empty string
+/// can match at a position holding any byte at all.
+fn first_set(node: &Node) -> Option<(Class, bool)> {
+    match node {
+        Node::Empty | Node::Start | Node::End | Node::WordBoundary(_) | Node::Look { .. } => {
+            Some((Class::empty(), true))
         }
-    }
-    if cur.len() > best.len() {
-        best = cur;
-    }
-    if best.len() >= 2 {
-        Some(best)
-    } else {
-        None
+        Node::Byte(b) => {
+            let mut c = Class::empty();
+            c.add(*b);
+            Some((c, false))
+        }
+        Node::Any => {
+            let mut c = Class::empty();
+            c.negate();
+            Some((c, false))
+        }
+        Node::Class(c) => Some(((**c).clone(), false)),
+        Node::BackRef(_) => None,
+        Node::Group(_, inner) => first_set(inner),
+        Node::Repeat { node, min, .. } => {
+            let (c, nullable) = first_set(node)?;
+            Some((c, nullable || *min == 0))
+        }
+        Node::Concat(items) => {
+            let mut acc = Class::empty();
+            for it in items {
+                let (c, nullable) = first_set(it)?;
+                acc.union(&c);
+                if !nullable {
+                    return Some((acc, false));
+                }
+            }
+            Some((acc, true))
+        }
+        Node::Alt(branches) => {
+            let mut acc = Class::empty();
+            let mut any_nullable = false;
+            for b in branches {
+                let (c, nullable) = first_set(b)?;
+                acc.union(&c);
+                any_nullable |= nullable;
+            }
+            Some((acc, any_nullable))
+        }
     }
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.len() > haystack.len() {
-        return false;
+/// LITERALS ONE OF WHICH EVERY MATCH MUST CONTAIN, or `None` when the structure promises none.
+///
+/// Conservative by construction, and every arm is a fact about what a match CONSUMES:
+/// * a plain byte is itself;
+/// * a group, or a repeat that must run at least once, contains what its body contains;
+/// * an alternation contains one of what its branches contain, so it promises something only when
+///   EVERY branch does (one branch that promises nothing — an empty one, a class — voids it);
+/// * a concatenation contains everything each of its items contains, so it may pick whichever
+///   candidate is most selective: a maximal run of adjacent plain bytes, or one item's own set.
+///
+/// Anything else — a class, `.`, an anchor, a word boundary, a lookaround (it consumes nothing), a
+/// backreference — promises no byte and contributes nothing. Before this was a set, an alternation
+/// contributed nothing at all, so every `a|b|c` rule paid the backtracking matcher at every byte
+/// of every line; the one-literal case is the single-member set and reads exactly as it did.
+fn required_set(node: &Node) -> Option<Vec<Vec<u8>>> {
+    match node {
+        Node::Byte(b) => Some(vec![vec![*b]]),
+        Node::Group(_, inner) => required_set(inner),
+        Node::Repeat { node, min, .. } if *min >= 1 => required_set(node),
+        Node::Alt(branches) => {
+            let mut all = Vec::new();
+            for branch in branches {
+                all.extend(required_set(branch)?);
+            }
+            Some(all)
+        }
+        Node::Concat(items) => {
+            let mut best: Option<Vec<Vec<u8>>> = None;
+            let mut consider = |cand: Vec<Vec<u8>>| {
+                if best.as_ref().is_none_or(|b| shortest(&cand) > shortest(b)) {
+                    best = Some(cand);
+                }
+            };
+            let mut run: Vec<u8> = Vec::new();
+            for it in items {
+                let byte = match it {
+                    Node::Byte(b) => Some(*b),
+                    Node::Group(_, inner) => match &**inner {
+                        Node::Byte(b) => Some(*b),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match byte {
+                    Some(b) => run.push(b),
+                    None => {
+                        if !run.is_empty() {
+                            consider(vec![std::mem::take(&mut run)]);
+                        }
+                        if let Some(set) = required_set(it) {
+                            consider(set);
+                        }
+                    }
+                }
+            }
+            if !run.is_empty() {
+                consider(vec![run]);
+            }
+            best
+        }
+        _ => None,
     }
-    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// How selective a [`required_set`] is: the length of its shortest member.
+fn shortest(set: &[Vec<u8>]) -> usize {
+    set.iter().map(Vec::len).min().unwrap_or(0)
+}
+
+/// Does `haystack` contain `needle`? Jumps between occurrences of the needle's first byte rather
+/// than comparing a window at every offset.
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    let Some((&first, rest)) = needle.split_first() else {
+        return true;
+    };
+    let mut at = 0;
+    while at + needle.len() <= haystack.len() {
+        let Some(off) = haystack[at..=haystack.len() - needle.len()]
+            .iter()
+            .position(|&b| b == first)
+        else {
+            return false;
+        };
+        at += off;
+        if &haystack[at + 1..at + needle.len()] == rest {
+            return true;
+        }
+        at += 1;
+    }
+    false
 }
 
 /// `re.escape` for the many rules that take a literal out of the ceilings file and build a pattern

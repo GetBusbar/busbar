@@ -104,7 +104,7 @@ fn bind(folds: &Arc<Folds>, dispatcher: &Dispatcher) -> Bind {
         max_inflight_cap: 64,
         sink: folds.clone(),
         dispatcher: dispatcher.adopter(),
-        conns: None,
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     }
 }
 

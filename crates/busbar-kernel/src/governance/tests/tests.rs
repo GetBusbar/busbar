@@ -3415,7 +3415,7 @@ mod signed_token {
             "the PRE-ROTATION token must be rejected immediately after rotate"
         );
         assert!(
-            g.verify_token(&token, 1_500, None).is_some(),
+            g.verify_token(token.expose_secret(), 1_500, None).is_some(),
             "the re-minted token authenticates"
         );
     }

@@ -20,11 +20,11 @@ use busbar_contract::abi::mechanism::call::{Outcome, BLOB_SECRET};
 use busbar_contract::abi::secret::{self, ResolveIn, ResolveOut};
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, json, load, open, output, ready_step,
-    refresh, release, tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, json, load, open, output, ready_step, refresh,
+    release, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::secret::Secret;
-use crate::dispatch::{Frame, Plugin};
+use crate::dispatch::{Dispatcher, Frame, Plugin};
 
 fn text(v: &serde_json::Value) -> Vec<u8> {
     match v {
@@ -34,13 +34,25 @@ fn text(v: &serde_json::Value) -> Vec<u8> {
     }
 }
 
-/// One `resolve`: its line (outcome, error kind, whether the material is the expected one and
-/// flagged secret) and its lease, still held.
-fn resolve(p: &Plugin<Secret>, settings: &[u8], material: &[u8]) -> (String, u64) {
+/// One `resolve`, AS THE HOST'S SECRET ROWS RESOLVE (`secret_calls`): on a ticket of `d`'s, so a
+/// networked secret's resolve (a vault read through the host's exchange) that waits on the network
+/// answers PENDING and is RESUMED on its wake. Its line (outcome, error kind, whether the material
+/// is the expected one and flagged secret) and its lease, still held.
+fn resolve(p: &Plugin<Secret>, d: &Dispatcher, settings: &[u8], material: &[u8]) -> (String, u64) {
     let mut f: Frame<ResolveIn, ResolveOut> = Frame::new(input(), output());
     f.input.settings = json(settings);
-    let c = p.call(secret::slot::RESOLVE, &mut f);
-    let blob = f.out.secret;
+    let deadline = crate::dispatch::now_ns().saturating_add(RESOLVE_DEADLINE.as_nanos() as u64);
+    let (c, f) = super::on_ticket_frame(
+        p,
+        d,
+        secret::slot::RESOLVE,
+        f,
+        busbar_contract::abi::mechanism::call::DeadlineClass::Call,
+        deadline,
+    );
+    let (blob, error_kind) = f.map_or((crate::dispatch::NO_BLOB, 0), |f| {
+        (f.out.secret, f.out.error_kind)
+    });
     let got = if c.outcome == Outcome::Ready && !blob.ptr.is_null() {
         // SAFETY: a READY resolve's blob is the plugin's, live until `release` of its lease, which
         // has not run; the dispatcher's kind check judged its pointer/length pairing.
@@ -59,17 +71,20 @@ fn resolve(p: &Plugin<Secret>, settings: &[u8], material: &[u8]) -> (String, u64
         format!(
             "{} kind={} material={what} secret_flag={}",
             called(&c),
-            f.out.error_kind,
+            error_kind,
             blob.flags & BLOB_SECRET != 0
         ),
         c.lease,
     )
 }
 
+/// How long the suite waits for one resolve: the host's call deadline.
+const RESOLVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("secret");
     assert!(k.is_object(), "conformance.json has no `secret` inputs");
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let bad: Vec<Vec<u8>> = k["bad_settings"]
         .as_array()
         .expect("conformance.json: secret.bad_settings must be an array")
@@ -86,7 +101,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let malformed = text(&k["malformed"]);
 
     let d = dispatcher();
-    let p = load::<Secret>(s, leg, bind(&d, "secret")).expect("the secret door loads");
+    let p = load::<Secret>(s, leg, s.bind(&d, "secret")).expect("the secret door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(
@@ -103,19 +118,25 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     r.line("validate", 1, || called(&validate(&p, &settings)));
     // The host refuses an op on an unopened instance before the crossing (`Instance::refuse`).
-    r.line("resolve unopened", 0, || resolve(&p, &known, &material).0);
+    r.line("resolve unopened", 0, || {
+        resolve(&p, &d, &known, &material).0
+    });
     r.line("open", 1, || called(&open(&p, &settings)));
     // The host refuses a second `open` of an open instance before the crossing.
     r.line("open again", 0, || called(&open(&p, &settings)));
     ready_step(&mut r, s, &p, &d);
-    let first = r.step("resolve known", 1, || resolve(&p, &known, &material));
-    let second = r.step("resolve known again", 1, || resolve(&p, &known, &material));
+    let first = r.step("resolve known", 1, || resolve(&p, &d, &known, &material));
+    let second = r.step("resolve known again", 1, || {
+        resolve(&p, &d, &known, &material)
+    });
     r.line("own leases", 0, || {
         format!("distinct={}", first != 0 && second != 0 && first != second)
     });
-    r.line("resolve unknown", 1, || resolve(&p, &unknown, &material).0);
+    r.line("resolve unknown", 1, || {
+        resolve(&p, &d, &unknown, &material).0
+    });
     r.line("resolve malformed", 1, || {
-        resolve(&p, &malformed, &material).0
+        resolve(&p, &d, &malformed, &material).0
     });
     r.line("release", 1, || called(&release(&p, first)));
     r.line("release again", 1, || called(&release(&p, first)));
@@ -127,12 +148,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("refresh bad", 1, || called(&refresh(&p, &bad[0])));
     r.line("refresh", 1, || called(&refresh(&p, &settings)));
     let after = r.step("resolve after refresh", 1, || {
-        resolve(&p, &known, &material)
+        resolve(&p, &d, &known, &material)
     });
     r.line("release after refresh", 1, || called(&release(&p, after)));
     r.line("close", 1, || called(&close(&p)));
     r.line("resolve after close", 0, || {
-        resolve(&p, &known, &material).0
+        resolve(&p, &d, &known, &material).0
     });
     let fold = r.fold();
     contract(&fold);

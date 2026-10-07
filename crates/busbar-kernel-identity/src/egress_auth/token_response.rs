@@ -5,6 +5,43 @@
 //! the tolerant parse the self-minting egress credentials (JWT bearer, client credentials) read it
 //! with. Pure token-response semantics — the minting itself, which dials the token endpoint, stays
 //! with the kernel's engine.
+//!
+//! The success body both self-minting credentials read, [`TokenResponse`], lives here too: it is the
+//! same two fields for both, and its `access_token` is a secret VALUE, so it is held
+//! [`Redacted`] from the moment it is decoded (secret-hygiene #53: a secret is a TYPE, not a
+//! `String`).
+
+use busbar_contract::Redacted;
+
+/// An OAuth token endpoint's success body (RFC 6749 section 5.1), as far as a minter reads it.
+///
+/// Deserialize-only: there is no `Serialize`, and `access_token` is [`Redacted`], so the minted
+/// bearer cannot reach a log line, a `{:?}` or a JSON payload from here.
+#[derive(serde::Deserialize)]
+pub struct TokenResponse {
+    /// The minted bearer, redacted from the moment it is decoded.
+    #[serde(deserialize_with = "deserialize_redacted")]
+    pub access_token: Redacted<String>,
+    /// The token's lifetime in seconds, read tolerantly (see [`deserialize_expires_in`]).
+    #[serde(
+        default = "default_expires_in",
+        deserialize_with = "deserialize_expires_in"
+    )]
+    pub expires_in: u64,
+}
+
+/// Deserialize a secret string STRAIGHT into [`Redacted`], for a `#[serde(deserialize_with)]` field.
+///
+/// `Redacted` deliberately implements neither `Serialize` nor `Deserialize` (its serde fence), so a
+/// secret-bearing field of a decoded document names this helper instead: the plaintext exists as a
+/// bare `String` only for the instant between the decoder and the wrapper. Narrowly the READ
+/// direction — nothing here can write a secret back out.
+pub fn deserialize_redacted<'de, D>(d: D) -> Result<Redacted<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <String as serde::Deserialize>::deserialize(d).map(Redacted::new)
+}
 
 /// Default token TTL when a token endpoint omits `expires_in` (RFC 6749 section 5.1 makes it
 /// RECOMMENDED, not required): a conservative 1 h so the token still refreshes on schedule.

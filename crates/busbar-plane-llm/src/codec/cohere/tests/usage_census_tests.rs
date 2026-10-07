@@ -12,7 +12,9 @@
 //! truncated-body recovery and the stream tap, through both ledger projections.
 
 use super::*;
-use crate::codec::usage_census::{bump, class_of, ledgered, lock_counts, moved, Ledgered};
+use crate::codec::usage_census::{
+    at, bump, class_of, ledgered, lock_counts, moved, plus, slot, Ledgered, CR, IN, OUT,
+};
 
 /// Which turn a count is measured on. Cohere invoices `billed_units`, whose token counts WIN the
 /// reserved input/output classes over the raw `tokens` (`IrUsage::to_token_usage`), so a raw count
@@ -26,23 +28,23 @@ enum Turn {
 }
 
 /// What each Cohere `usage` count IS, as the move one more of it makes on the ledgered units
-/// (input, output, cache read, cache write, `search_units`), and the turn it is measured on. The
-/// billed token counts are the reserved input/output classes; the cache hit is a cache read out of
-/// the input; `search_units` is the open class `search_units`. `classifications` is a RESIDUAL: no
-/// meter class the LLM plane declares carries it, so the reader WARNs it and it moves nothing.
+/// (the four token tiers and every open class), and the turn it is measured on. The billed token
+/// counts are the reserved input/output classes; the cache hit is a cache read out of the input;
+/// `search_units` is the open class `search_units`; `classifications` is the open class
+/// `classifications` (owner LEDGER-100: every reported unit is a ledger line).
 const COHERE_COUNT_CLASSES: &[(&str, (Turn, Ledgered))] = &[
-    ("tokens.input_tokens", (Turn::Raw, [1, 0, 0, 0, 0])),
-    ("tokens.output_tokens", (Turn::Raw, [0, 1, 0, 0, 0])),
-    ("cached_tokens", (Turn::Billed, [-1, 0, 1, 0, 0])),
-    ("billed_units.input_tokens", (Turn::Billed, [1, 0, 0, 0, 0])),
+    ("tokens.input_tokens", (Turn::Raw, at(IN, 1))),
+    ("tokens.output_tokens", (Turn::Raw, at(OUT, 1))),
+    ("cached_tokens", (Turn::Billed, plus(at(IN, -1), at(CR, 1)))),
+    ("billed_units.input_tokens", (Turn::Billed, at(IN, 1))),
+    ("billed_units.output_tokens", (Turn::Billed, at(OUT, 1))),
     (
-        "billed_units.output_tokens",
-        (Turn::Billed, [0, 1, 0, 0, 0]),
+        "billed_units.search_units",
+        (Turn::Billed, at(slot("search_units"), 1)),
     ),
-    ("billed_units.search_units", (Turn::Billed, [0, 0, 0, 0, 1])),
     (
         "billed_units.classifications",
-        (Turn::Billed, [0, 0, 0, 0, 0]),
+        (Turn::Billed, at(slot("classifications"), 1)),
     ),
 ];
 
@@ -122,7 +124,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
                 moved(*a, *b),
                 class.map(|c| 7 * c),
                 "{path}: 7 more `usage.{field}` must move (input, output, cache read, cache write, \
-                 search_units) by its class"
+                 every open class) by its class"
             );
         }
     }
@@ -142,35 +144,35 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
             moved(streamed(&usage), before),
             class.map(|c| 7 * c),
             "stream: 7 more `message-end.delta.usage.{field}` must move (input, output, cache read, \
-             cache write, search_units) by its class"
+             cache write, every open class) by its class"
         );
     }
 }
 
-/// A chat's billed search units reach the ledger as `search_units` on every read path; a residual
-/// `classifications` count is ledgered under no class at all.
+/// A chat's billed search units reach the ledger as `search_units` and its billed classifications
+/// as `classifications`, one line each, on every read path (owner LEDGER-100). RED before this
+/// lane: the reader only WARNed the classifications and they were ledgered nowhere.
 #[test]
-fn chat_search_units_ledger_and_classifications_ledger_nowhere() {
+fn chat_search_units_and_classifications_each_ledger_one_line() {
     let usage = base_usage(Turn::Billed);
     let [buffered, truncated] = buffered_and_truncated(&usage);
-    assert_eq!(buffered[4], 2, "buffered: 2 search units ledgered");
-    assert_eq!(truncated[4], 2, "truncated: 2 search units ledgered");
-    assert_eq!(streamed(&usage)[4], 2, "stream: 2 search units ledgered");
-    let u = CohereReader
-        .read_response(&serde_json::json!({
-            "id": "c1", "finish_reason": "COMPLETE",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
-            "usage": usage
-        }))
-        .expect("read")
-        .usage
-        .to_token_usage();
-    let classes: Vec<String> = crate::codec::wire_shim::tier_usage(&u)
-        .usage_units
-        .into_keys()
-        .collect();
-    assert!(
-        !classes.iter().any(|c| c.contains("classif")),
-        "classifications is a residual, never a ledger class: {classes:?}"
-    );
+    let streamed = streamed(&usage);
+    for (path, l) in [
+        ("buffered", buffered),
+        ("truncated", truncated),
+        ("stream", streamed),
+    ] {
+        assert_eq!(
+            l[slot("search_units")],
+            2,
+            "{path}: 2 search units ledgered"
+        );
+        assert_eq!(
+            l[slot("classifications")],
+            1,
+            "{path}: 1 classification ledgered"
+        );
+        let lines = l[4..].iter().filter(|n| **n != 0).count();
+        assert_eq!(lines, 2, "{path}: one line per open class: {l:?}");
+    }
 }

@@ -413,7 +413,7 @@ fn render_committed_openapi() -> String {
 }
 
 /// SEAM PRECONDITION for every openapi test: `openapi_doc()` reads the process-global plane registry,
-/// which is populated by `crate::ensure_seam()` (the LLM/MCP/A2A plane decls that contribute the
+/// which is populated by `crate::ensure_seam()` (the linked plane decls that contribute the
 /// `tools:`/`agents:` admin trust-verb operations). Only `openapi_json_matches_committed_file` used to
 /// install it, so any OTHER openapi test that read the document before that test's `ensure_seam()`
 /// happened to run first saw a PLANE-LESS document (5 operations short) — deterministic single-threaded

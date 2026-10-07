@@ -412,18 +412,29 @@ pools:
 # configured model needs an entry (--validate prints a paste-ready stub otherwise), AND every
 # billable class the LLM plane declares must be configured on some entry — the four reserved
 # *_utok tiers below count as configured just by the card's presence (an omitted tier is 0), but
-# the open `search_units` class (billed searches: a rerank's search units, an Anthropic turn's web
-# searches) is NOT reserved and needs an
-# explicit `units: { search_units: <rate> }` on at least one entry; `0` makes it free but still
-# counts as configured. A card silent about a declared class fails boot naming it. Keys are the
-# CONFIG model names above.
+# the OPEN classes are not reserved and each needs an explicit `units: { <class>: <rate> }` on at
+# least one entry; `0` makes one free but still counts as configured. The LLM plane ledgers every
+# count a provider reports beside its tokens under its own open class: `search_units` (a rerank's
+# search units, an Anthropic turn's web searches), `classifications` (Cohere), `web_fetch_requests`
+# (Anthropic), `unitemized_tokens` (the tokens a provider's stated total counts above its itemized
+# buckets), `images` (per-image answers), `audio_ms` (a transcription's reported duration) and the
+# nine Bedrock `guardrail_*` policy-unit classes. A card silent about a declared class fails boot
+# naming it. Keys are the CONFIG model names above.
 #
 # UPGRADING FROM 1.5.5: a card that priced only the four reserved tiers (no `units:` at all) now
-# fails boot. Add `units: { search_units: 0 }` to any one entry, as below.
+# fails boot. Add the `units:` below to any one entry (0 keeps each free, as 1.5.5 billed them).
 # rate_card:
 #   claude-sonnet: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
-#                    units: { search_units: 0 } }
-#   gpt-4o:        { input_utok: 2.5, output_utok: 10.0, units: { search_units: 0 } }
+#                    units: { search_units: 0, classifications: 0, web_fetch_requests: 0,
+#                             unitemized_tokens: 0, images: 0, audio_ms: 0,
+#                             guardrail_automated_reasoning_policies: 0,
+#                             guardrail_automated_reasoning_policy_units: 0,
+#                             guardrail_content_policy_image_units: 0, guardrail_content_policy_units: 0,
+#                             guardrail_contextual_grounding_policy_units: 0,
+#                             guardrail_sensitive_information_policy_free_units: 0,
+#                             guardrail_sensitive_information_policy_units: 0,
+#                             guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }
+#   gpt-4o:        { input_utok: 2.5, output_utok: 10.0 }
 # per_request_fee: 0                       # flat per-request budget charge (default 0)
 #
 # Non-LLM planes take the SAME reserved `rate_card` key under their OWN section instead — e.g.

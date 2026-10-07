@@ -34,6 +34,15 @@ use busbar_contract::records::{
 
 use crate::config::groups::{AdmissionMode, LimitMetric};
 
+/// THE KERNEL'S FACADE OVER THE LEDGER'S MONEY TYPES (#36): the cleanliness crates reach the dated
+/// rate-card history, the card, the row read and the one pricing function by THIS path, never by
+/// naming the ledger crate. Each name is the ledger's own item re-exported as it is: the same type
+/// and the same function, so a figure priced through this path is the ledger's figure.
+pub use busbar_kernel_ledger::cost::{
+    plane_fee_lane, price_ledger, Author, CardEntryDraft, History, HistorySeq, HistoryView,
+    LedgerEntry, MeteredRow, MoneyError, PlaneFees, RateCard, TierRates, PER_SESSION,
+};
+
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
 /// collide with a real key's bucket. Key buckets use the bare key id. A group's per-window buckets
 /// are `group:<name>@<window>` - one ledger row per (group, window granularity), so a group with

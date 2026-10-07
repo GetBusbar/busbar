@@ -874,7 +874,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         root::dispatch::dispatcher(),
         LINKED.auths,
         root::boot::dropped_registry(),
-        Some(Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>),
+        root::loader::dispatch::ConnTable::Host(
+            Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>
+        ),
     );
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,

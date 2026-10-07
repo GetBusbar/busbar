@@ -263,7 +263,8 @@ resolving to PEM bytes. The same shape configures the admin listener under `admi
 refuses to boot unless `admin_require_mtls: false` is set deliberately).
 
 Certs/keys are loaded once at startup; any missing or unparseable file is a fatal
-startup error naming the file. ALPN advertises http/1.1. Rotate certs by replacing
+startup error naming the file. ALPN offers `h2, http/1.1`: a client that offers h2 speaks
+HTTP/2, one that offers only http/1.1 is served HTTP/1.1. Rotate certs by replacing
 the files and restarting. Full operational guide:
 [`operations.md`](operations.md#inbound-tls--mutual-tls-mtls).
 
@@ -616,7 +617,14 @@ other limit's.
 ### `rate_card` and `per_request_fee`
 
 The ONLY cost source. Every billable class a plane declares is the ledger (the four reserved LLM
-token tiers, plus any OPEN class a plane counts — a rerank's `search_units`, an A2A hop's `bytes`);
+token tiers, plus any OPEN class a plane counts — a rerank's `search_units`, an A2A hop's `bytes`).
+Every count a provider reports is a ledger line under its class (owner ruling LEDGER-100): beside
+its tokens the LLM plane ledgers `search_units` (rerank search units, Anthropic web searches),
+`classifications` (Cohere `billed_units.classifications`), `web_fetch_requests` (Anthropic),
+`unitemized_tokens` (the tokens a provider's stated total counts above its itemized buckets),
+`images` (per-image answers: dall-e, Imagen, Titan, SDXL), `audio_ms` (a transcription's reported
+duration, in whole milliseconds) and one class per Bedrock guardrail policy-unit count
+(`guardrail_*`). None of these counts toward a `tokens:` cap;
 every dollar figure is DERIVED at read time as `sum(class_count x class_rate) + requests x
 per_request_fee`, so correcting a rate is a config edit + reload with no re-billing and no data
 migration.
@@ -624,8 +632,16 @@ migration.
 ```yaml
 rate_card:
   sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
-                       units: { search_units: 0 } }     # open class: free, but explicitly configured
-  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0, units: { search_units: 0 } }
+                       units: { search_units: 0, classifications: 0, web_fetch_requests: 0,
+                               unitemized_tokens: 0, images: 0, audio_ms: 0,
+                               guardrail_automated_reasoning_policies: 0,
+                               guardrail_automated_reasoning_policy_units: 0,
+                               guardrail_content_policy_image_units: 0, guardrail_content_policy_units: 0,
+                               guardrail_contextual_grounding_policy_units: 0,
+                               guardrail_sensitive_information_policy_free_units: 0,
+                               guardrail_sensitive_information_policy_units: 0,
+                               guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }   # open classes: free, but explicitly configured
+  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0 }
 per_request_fee: 0
 ```
 
@@ -674,9 +690,10 @@ rate card in force names no price for class \`<class>\` of \`<lane>\`"}}`) inste
 internal`; no figure moves, only the status and code the caller sees change.
 
 > **Upgrading from 1.5.5.** Every 1.5.5 deployment with a `rate_card:` now FAILS BOOT until the card
-> configures every class its plane declares — in practice, add `units: { search_units: 0 }` to any
-> one entry of the flat/`pools` card (or price it, if you bill reranks). The declared classes per
-> plane are: `pools` (LLM) = `input`, `output`, `cache_read`, `cache_write`, `search_units`; `tools`
+> configures every class its plane declares — in practice, add the `units:` map above (every LLM
+> open class at `0`) to any one entry of the flat/`pools` card, and price the ones you bill. The
+> declared classes per plane are: `pools` (LLM) = `input`, `output`, `cache_read`, `cache_write`,
+> `search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, `guardrail_automated_reasoning_policies`, `guardrail_automated_reasoning_policy_units`, `guardrail_content_policy_image_units`, `guardrail_content_policy_units`, `guardrail_contextual_grounding_policy_units`, `guardrail_sensitive_information_policy_free_units`, `guardrail_sensitive_information_policy_units`, `guardrail_topic_policy_units`, `guardrail_word_policy_units`; `tools`
 > (MCP) = `tool_calls`, `bytes`; `agents` (A2A) = `bytes`; `decisions` = `decision`; `streams`
 > (voice) = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`, `text_tokens_out`,
 > `audio_seconds_in`, `tool_calls`. (`cached_tokens` is reported by both duplex dialects but is

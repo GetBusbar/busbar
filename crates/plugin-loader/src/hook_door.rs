@@ -51,8 +51,8 @@ use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pend
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, Dispatcher, EnvelopeSink,
-    Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig, NO_BLOB,
+    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
+    EnvelopeSink, Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig, NO_BLOB,
 };
 use crate::PluginRegistry;
 
@@ -909,14 +909,14 @@ impl HookRows {
         self.candidates.iter().find(|c| answers(c, module))
     }
 
-    /// Bind `c` under `label`: an instance only probed binds with no log sink and no connection
-    /// table; one opened to serve binds with both.
+    /// Bind `c` under `label`: an instance only probed binds with no log sink and as a probe
+    /// ([`ConnTable::Probe`]); one opened to serve binds with both.
     fn bind(
         c: &Candidate,
         dispatcher: &Dispatcher,
         label: &str,
         sink: Arc<dyn EnvelopeSink>,
-        conns: Option<Arc<dyn DeclaredConns>>,
+        conns: ConnTable,
     ) -> Result<Plugin<Hook>, String> {
         let bind = Bind {
             instance: Arc::from(label),
@@ -938,7 +938,14 @@ impl HookRows {
 impl HookAxis for HookRows {
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed> {
         let c = self.find(module)?;
-        let Ok(p) = Self::bind(c, &self.dispatcher, instance, Arc::new(NoSink), None) else {
+        // A PROBE: validated and read for its facts, never opened; bound with no table.
+        let Ok(p) = Self::bind(
+            c,
+            &self.dispatcher,
+            instance,
+            Arc::new(NoSink),
+            ConnTable::Probe,
+        ) else {
             // It will not load here: its open refuses the boot naming the instance.
             return Some((None, Vec::new()));
         };
@@ -967,7 +974,7 @@ impl HookAxis for HookRows {
                 None => Arc::new(NoSink),
             })
         };
-        let conns = self.conns.map(|table| table());
+        let conns = ConnTable::serving(self.conns.map(|table| table()));
         let plugin = Self::bind(&c, &self.dispatcher, label, sink(label)?, conns.clone())?;
         let rebind = {
             let (dispatcher, label) = (Arc::clone(&self.dispatcher), label.to_string());

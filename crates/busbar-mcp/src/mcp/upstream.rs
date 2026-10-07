@@ -848,7 +848,7 @@ mod roots_satisfy_tests;
 // witnesses are the same recording peer plus a recording fake provider.
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/sampling_satisfy_tests.rs"]
-mod sampling_satisfy_tests;
+pub(crate) mod sampling_satisfy_tests;
 
 // THE STDIO ARM, driven through the same front door. It hangs here rather than under `client/`
 // because the claim is about the JOIN — an inbound `tools/call` reaching a child process — and the

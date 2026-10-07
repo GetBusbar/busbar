@@ -1067,9 +1067,14 @@ impl Connection {
         text: bool,
         cx: &mut Context<'_>,
     ) -> Result<usize, Failure> {
+        // The far side's FRAMES ended (`YIELD_ENDED`: no frame follows), not this side's writes:
+        // while the framing stands, an answer to a frame handed up before the end still goes out,
+        // ahead of the close the framing writes when the connection closes (a ws peer that broke
+        // the protocol right after a message hears that message answered first; Autobahn 3.2,
+        // 4.1.3, 5.15). Only a closed or failed connection refuses.
         match &self.phase {
             Phase::Failed(f) => return Err(f.clone()),
-            Phase::Ended => return Err(Failure::Closed),
+            Phase::Ended if self.framing.is_none() => return Err(Failure::Closed),
             _ => {}
         }
         // Let the socket take what it can before measuring the room.
@@ -1086,8 +1091,7 @@ impl Connection {
         let (bytes, end) = (&bytes[..take], end && take == bytes.len());
         match &self.phase {
             Phase::Failed(f) => return Err(f.clone()),
-            Phase::Ended => return Err(Failure::Closed),
-            Phase::Open => {
+            Phase::Open | Phase::Ended => {
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
                 let y = framing.emit(stream, bytes, end, text).map_err(failed)?;
                 self.absorb(y)?;

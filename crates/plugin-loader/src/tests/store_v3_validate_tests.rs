@@ -67,7 +67,7 @@ fn load() -> (Plugin<Store>, Arc<Dispatcher>) {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: None,
+            conns: crate::dispatch::ConnTable::NoNeeds,
         },
     )
     .expect("the door loads");

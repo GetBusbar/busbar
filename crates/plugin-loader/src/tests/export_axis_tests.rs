@@ -127,7 +127,10 @@ fn the_trace_sink_answers_the_same_through_either_door() {
         return;
     };
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher());
+        // The OTLP sink declares an http need: opened to deliver, it binds over a table (one that
+        // declares it and opens nothing; this row never delivers).
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = "busbar-export-otlp";
         let good = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
         let (streams, clean) = rows.probe(module, "trace", &good).expect("an export row");
@@ -161,7 +164,10 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
         return;
     };
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher());
+        // The webhook sink declares an http need: opened to deliver, it binds over a table (one that
+        // declares it and opens nothing; this row never delivers).
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = "busbar-export-webhook";
         let good = serde_json::json!({ "url": "https://collector.example.com/v1/logs" });
         let (streams, clean) = rows.probe(module, "audit", &good).expect("an export row");

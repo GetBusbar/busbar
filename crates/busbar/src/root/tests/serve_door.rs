@@ -200,7 +200,7 @@ mod decisions_door {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+                conns: crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
             },
         )
         .expect("the linked door binds");
@@ -258,7 +258,7 @@ mod decisions_door {
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
             None,
-            Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
         );
         let reach = DoorReach {
             providers: &providers,
@@ -396,7 +396,7 @@ mod decisions_door {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: None,
+                conns: crate::root::loader::dispatch::ConnTable::Probe,
             },
         )
         .expect("the linked door binds");
@@ -491,7 +491,7 @@ mod decisions_door {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+                conns: crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
             },
         )
         .expect("the linked door binds");
@@ -547,7 +547,7 @@ mod decisions_door {
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
             None,
-            Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
         );
         let reach = DoorReach {
             providers: &providers,
@@ -731,7 +731,7 @@ mod decisions_door {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: None,
+                conns: crate::root::loader::dispatch::ConnTable::Probe,
             },
         )
         .expect("the linked door binds");
@@ -864,7 +864,7 @@ mod agent_door {
                         max_inflight_cap: 64,
                         sink: Arc::new(NoSink),
                         dispatcher: dispatcher.adopter(),
-                        conns: None,
+                        conns: crate::root::loader::dispatch::ConnTable::Probe,
                     },
                 )
                 .is_ok_and(|plane| plane.served().owns.contains(&section))
@@ -1075,7 +1075,7 @@ mod agent_door {
                 crate::root::loader::dispatch::DispatchConfig::default(),
             )),
             logs: crate::root::boot::plugin_logs().clone(),
-            conns: None,
+            conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
             mint: busbar_kernel::door::op_id,
         };
         let opened = busbar_contract::store_calls::StoreAxis::open(
@@ -1171,7 +1171,7 @@ mod agent_door {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+                conns: crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
             },
         )
         .expect("the linked door binds");
@@ -1216,7 +1216,7 @@ mod agent_door {
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
             None,
-            Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
         );
         let reach = crate::root::door_steps::DoorReach {
             providers: &providers,

@@ -124,7 +124,7 @@ pub(crate) struct CreateKeyReq {
 }
 
 // `MintPolicy`/`RoleCeiling`/`MintRequest`/`apply_mint_ttl_ceiling`/`DEFAULT_KEY_TTL_SECS`
-// RELOCATED to `busbar_kernel::governance::mint_policy` (1.6.0 de-alias, stage 2a): core mint-decision
+// RELOCATED to `busbar_kernel::governance::mint_policy` (1.6.0 de-alias, stage 2a): core mint-policy
 // infrastructure read on the hot mint path (`state.rs`'s `App::mint_policy`, `auth/exchange.rs`,
 // `auth/token.rs`), never admin-surface vocabulary. Imported below so the mint-handler call sites in
 // this file are unchanged; byte-identical move (same values, same decisions, same messages).
@@ -1585,7 +1585,7 @@ pub(crate) async fn rotate_key(
             body["state"] = json!(state);
             // Shown exactly once, exactly like mint. 1.5.0 has exactly one bearer-credential shape,
             // so rotation always re-issues a signed token.
-            body["token"] = json!(rotated.token);
+            body["token"] = json!(rotated.token.expose_secret());
             body["expires_at"] = json!(rotated.exp);
             // COMMIT the idempotency slot with the real response (replaces the reservation) and
             // disarm the drop-guard — a retry inside the window replays THIS body verbatim.

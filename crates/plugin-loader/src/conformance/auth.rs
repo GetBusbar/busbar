@@ -52,8 +52,8 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick,
+    validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{now_ns, Dispatcher, Frame, Plugin};
@@ -319,7 +319,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
          suite fails rather than pass a family it did not run",
         st.caps
     );
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let bad: Vec<Vec<u8>> = k["bad_settings"]
         .as_array()
         .expect("conformance.json: auth.bad_settings must be an array")
@@ -360,7 +360,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .expect("an identity case");
 
     let d = dispatcher();
-    let p = load::<Auth>(s, leg, bind(&d, "auth")).expect("the auth door loads");
+    let p = load::<Auth>(s, leg, s.bind(&d, "auth")).expect("the auth door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(
@@ -432,7 +432,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
 
     // THE ROTATED CREDENTIAL, on an instance of its own: no identity case identifies there.
-    let q = load::<Auth>(s, leg, bind(&d, "auth-rotated")).expect("the auth door loads");
+    let q = load::<Auth>(s, leg, s.bind(&d, "auth-rotated")).expect("the auth door loads");
     let mut rq = Recorder::new(crossings(&q));
     rq.line("open rotated", 1, || called(&open(&q, &rotated)));
     for (i, c) in cases.iter_mut().enumerate() {
