@@ -1327,7 +1327,8 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
 /// `Verbs` per request, and each used to build its own limiter, so every call saw an empty window
 /// and none was ever refused. Walked over the real mount, which is the production construction: a
 /// new verb past the node's `Crud` budget inside one window is refused with the kernel's own admin
-/// rate-limit answer, the same bytes a legacy mutation's limiter gives.
+/// rate-limit answer, the same bytes a legacy mutation's limiter gives. `trust/revoke` is the verb
+/// walked because no other cell counts its audit rows on the shared ring.
 ///
 /// The window is the wall clock's minute, so a run that happens to cross a boundary has its count
 /// reset once. That can only delay the refusal, never bring it forward: the first `budget` calls
@@ -1337,23 +1338,23 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
 async fn a_new_verb_past_the_nodes_mutation_budget_is_refused() {
     let (node, _) = a_q71_node(a_door_that_identifies_the_operator(), Some([7u8; 32]));
     let op = Some(THE_OPERATORS_CREDENTIAL);
-    let approve = || {
+    let revoke = || {
         over_as(
             &node,
             "POST",
-            "/api/v1/admin/trust/approve",
+            "/api/v1/admin/trust/revoke",
             r#"{"key":"inst/stranger"}"#,
             op,
         )
     };
     let budget = busbar_core_admin::rate::MutationClass::Crud.limit();
     for i in 0..budget {
-        let (status, body) = approve().await;
+        let (status, body) = revoke().await;
         assert_ne!(status, 429, "call {i} is inside the budget: {body}");
     }
     let mut refused = None;
     for _ in 0..=budget {
-        let answer = approve().await;
+        let answer = revoke().await;
         if answer.0 == 429 {
             refused = Some(answer);
             break;
