@@ -1990,12 +1990,12 @@ impl Gate for NoFloatMoneyGate {
         // RED; a float inside the named conversion fn stays green.
         for (what, boundary, stmt) in [
             (
-                "the u128 accumulation (`nanos_sum`)",
+                "u128 accumulation (`nanos_sum`)",
                 "nanos_sum",
                 format!("let _planted_sum = (q as {float_ty} * r as {float_ty}) as u128;"),
             ),
             (
-                "a runtime price read (`fee_of`)",
+                "runtime price read (`fee_of`)",
                 "fee_of",
                 format!("let _planted_fee = self.fee as {float_ty} * 1.5;"),
             ),
@@ -2004,7 +2004,7 @@ impl Gate for NoFloatMoneyGate {
                 Ok(ov) => report.push(prove_red(
                     cx,
                     self,
-                    &format!("a float in the card-build file's {what} is flagged"),
+                    format!("a float in the card-build file's {what} is flagged"),
                     &[ROW_NO_FLOAT],
                     ov,
                     &[&float_ty, "cost/rate.rs"],
