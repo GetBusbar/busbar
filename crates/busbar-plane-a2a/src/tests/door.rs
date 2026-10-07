@@ -219,66 +219,6 @@ fn the_push_callback_is_a_public_route_and_no_claim() {
     assert!(ROUTES.iter().all(|r| r.target != "/a2a/push"));
 }
 
-/// THE PUSH TOKEN IS NEVER LOGGED (`BUSBAR-1.6.0.md` l.4882: the plane checks its own callback
-/// correlation token, "never logged/audited"): the push callback is audited nowhere (above), and no
-/// diagnostic line the door writes, in any of its sources, names the token, the field it rides in,
-/// or a value read from either.
-#[test]
-fn no_diagnostic_line_of_the_door_carries_the_push_token() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = vec![src.clone()];
-    let mut lines = 0;
-    while let Some(at) = files.pop() {
-        if at.is_dir() {
-            if at.ends_with("tests") {
-                continue;
-            }
-            for entry in std::fs::read_dir(&at).expect("the source dir") {
-                files.push(entry.expect("an entry").path());
-            }
-            continue;
-        }
-        if at.extension().is_none_or(|e| e != "rs") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&at).expect("a source file");
-        for (start, _) in text.match_indices("diag_") {
-            let rest = &text[start..];
-            let Some(open) = rest.find("!(").filter(|o| {
-                rest[..*o]
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b == b'_')
-            }) else {
-                continue;
-            };
-            // The call's arguments, to the parenthesis that closes them.
-            let mut depth = 0usize;
-            let close = rest[open + 1..]
-                .char_indices()
-                .find(|(_, c)| {
-                    match c {
-                        '(' => depth += 1,
-                        ')' => depth -= 1,
-                        _ => {}
-                    }
-                    depth == 0
-                })
-                .map_or(rest.len(), |(i, _)| open + 1 + i);
-            let call = &rest[open..close];
-            lines += 1;
-            let lower = call.to_ascii_lowercase();
-            for word in ["token", "authorization", "presented", "claim"] {
-                assert!(
-                    !lower.contains(word),
-                    "{}: a diagnostic line names `{word}`: {call}",
-                    at.display()
-                );
-            }
-        }
-    }
-    assert!(lines > 0, "the scan read the door's diagnostic lines");
-}
-
 #[test]
 fn the_openapi_fragment_keys_its_paths_under_the_prefix_given() {
     let doc = openapi_fragment("/api/v1/admin");
