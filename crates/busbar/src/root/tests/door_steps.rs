@@ -358,6 +358,7 @@ fn resolve_upgrading(
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
+    crate::root::connector::install_io(&dispatcher);
     let auths = super::OutboundAuths::new(
         dispatcher,
         crate::LINKED.auths,
@@ -742,6 +743,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
+    crate::root::connector::install_io(&dispatcher);
     let linked: [busbar_kernel::preflight::LinkedAuth; 1] =
         [("busbar-auth-oauth", busbar_auth_oauth::door)];
     let auths = super::OutboundAuths::new(
@@ -947,6 +949,7 @@ pub(crate) mod tool_door {
         *DOOR.get_or_init(|| {
             let section = endpoint_section();
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+            crate::root::connector::install_io(&dispatcher);
             crate::LINKED
                 .plane_doors
                 .iter()
@@ -1289,6 +1292,7 @@ pub(crate) mod tool_door {
                 DispatchConfig::default(),
                 Arc::clone(&late) as Arc<dyn busbar_contract::services::HostServices>,
             ));
+            crate::root::connector::install_io(&dispatcher);
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
             let connector = busbar_core_connector::process::build(
                 || {
@@ -2489,6 +2493,7 @@ pub(crate) mod tool_door {
         let _one = PUBLISHING.lock().await;
         let compose = |instance: &'static str, public_url: Option<&str>| {
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+            crate::root::connector::install_io(&dispatcher);
             let plane = bound(
                 instance,
                 &dispatcher,
@@ -2524,6 +2529,7 @@ pub(crate) mod tool_door {
             let block = "serve-door-tools-claims-block";
             let _block = Published(block);
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+            crate::root::connector::install_io(&dispatcher);
             let plane = bound(
                 block,
                 &dispatcher,

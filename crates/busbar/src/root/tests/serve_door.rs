@@ -215,6 +215,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     // THE DECISIONS DOOR, linked, bound through the loader's one load, its need declared on the
     // connector.
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    crate::root::connector::install_io(&dispatcher);
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
@@ -410,6 +411,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     assert_ne!(send(&bare, CLAIMED, None).await.status().as_u16(), refused);
 
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    crate::root::connector::install_io(&dispatcher);
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
@@ -484,6 +486,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let _published = Published(instance);
     let app = busbar_kernel::test_support::TestApp::new().build();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    crate::root::connector::install_io(&dispatcher);
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
@@ -1894,6 +1897,7 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
     )
     .expect("the connector builds");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    crate::root::connector::install_io(&dispatcher);
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
