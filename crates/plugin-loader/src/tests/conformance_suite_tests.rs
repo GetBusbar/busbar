@@ -704,3 +704,56 @@ fn the_declares_file_is_found_beside_the_plugin_crate() {
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// The host's secret lending, as the suite lends it: each secret-ref key (a dotted path) is taken
+/// out of the settings and its string lent, in the Statement's order; an absent key lends empty
+/// bytes; settings with no refs pass through byte for byte.
+#[test]
+fn the_suite_lends_the_statements_secret_refs_out_of_the_settings() {
+    use super::lend_secrets;
+    let refs = [
+        "token".to_owned(),
+        "auth.key".to_owned(),
+        "absent".to_owned(),
+    ];
+    let raw = br#"{"addr":"https://localhost:1","token":"s.t","auth":{"key":"k","x":1}}"#;
+    let (settings, secrets) = lend_secrets(&refs, raw, false);
+    let v: serde_json::Value = serde_json::from_slice(&settings).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({"addr": "https://localhost:1", "auth": {"x": 1}})
+    );
+    assert_eq!(secrets, [b"s.t".to_vec(), b"k".to_vec(), Vec::new()]);
+    // The secret kind's host leaves the keys in the settings, and lends the same material.
+    let (kept, lent) = lend_secrets(&refs, raw, true);
+    assert_eq!(kept, raw.to_vec());
+    assert_eq!(lent, secrets);
+    assert_eq!(
+        lend_secrets(&[], b"{ \"a\": 1 }", false),
+        (b"{ \"a\": 1 }".to_vec(), Vec::new())
+    );
+}
+
+/// RED (store-mysql #16): the store script meters only keys it has put, so a store whose metering
+/// rows reference its keys (MySQL's fk_metering_key) holds every metering write: no `meter(..)` call
+/// in the script names a literal key id.
+#[test]
+fn red_the_store_script_meters_only_keys_it_has_put() {
+    let script = include_str!("../conformance/store.rs");
+    let literal = regex_lite_meter(script);
+    assert!(
+        literal.is_empty(),
+        "metering names keys it never put: {literal:?}"
+    );
+}
+
+/// Every `meter("<literal>", ..)` call in `script`.
+fn regex_lite_meter(script: &str) -> Vec<String> {
+    script
+        .match_indices("meter(\"")
+        .map(|(at, _)| {
+            let rest = &script[at + 7..];
+            rest[..rest.find('"').unwrap_or(0)].to_owned()
+        })
+        .collect()
+}

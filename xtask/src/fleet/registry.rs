@@ -217,6 +217,27 @@ pub fn parse(text: &str) -> Result<Fleet, String> {
             index,
         });
     }
+    // ONE row per repo, alias and crate: a second row would render, release and resolve the same
+    // plugin twice (the registry gate's duplicate rule, here at parse so every fleet verb refuses it).
+    for (what, key) in [
+        (
+            "repo",
+            (|p: &Plugin| p.repo.clone()) as fn(&Plugin) -> String,
+        ),
+        ("alias", |p: &Plugin| format!("{}:{}", p.kind, p.alias)),
+        ("crate", |p: &Plugin| p.crate_name.clone()),
+    ] {
+        let mut seen = std::collections::BTreeMap::new();
+        for p in &plugins {
+            if let Some(first) = seen.insert(key(p), p.index) {
+                return Err(format!(
+                    "{REGISTRY}: duplicate {what} `{}` (entries #{first} and #{}); one row per plugin",
+                    key(p),
+                    p.index
+                ));
+            }
+        }
+    }
     let legacy = match doc.get("legacy") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Object(m)) => m

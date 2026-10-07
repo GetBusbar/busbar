@@ -28,3 +28,22 @@ fn an_export_sinks_registry_alias_is_its_module_name() {
         assert_eq!(fleet.plugin(repo).unwrap().alias, module, "{repo}");
     }
 }
+
+/// RED: a second row for one repo (the duplicated busbar-secret-env/-file rows predev carried) is
+/// refused by name; the committed registry has one row per repo, alias and crate.
+#[test]
+fn a_duplicate_repo_row_is_refused() {
+    let text = Ctx::workspace().unwrap().read("plugins.yaml").unwrap();
+    parse(&text).expect("the committed plugins.yaml has one row per repo");
+    let start = text
+        .find("  - repo: busbar-secret-env\n")
+        .expect("the env row");
+    let end = text[start + 1..]
+        .find("\n  - repo: ")
+        .map(|i| start + 1 + i + 1)
+        .expect("a row after it");
+    let row = &text[start..end];
+    let doubled = format!("{text}{}", row.trim_end_matches('\n').to_string() + "\n");
+    let err = parse(&doubled).unwrap_err();
+    assert!(err.contains("duplicate repo `busbar-secret-env`"), "{err}");
+}

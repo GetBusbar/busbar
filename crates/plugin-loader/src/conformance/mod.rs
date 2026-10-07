@@ -765,6 +765,61 @@ pub fn called(c: &Called) -> String {
     format!("{:?} lease={} {text}", c.outcome, c.lease != 0)
 }
 
+/// THE HOST'S SECRET LENDING, as the suite's host does it: each key the plugin's Statement names as a
+/// secret reference (`Plugin::secret_refs`, a `.`-separated settings path) has its value lent in
+/// `open`/`refresh`'s `secrets`, in the Statement's order: a string's bytes (the suite's test
+/// material stands in for the material the kernel would resolve the reference to); an absent or
+/// non-string value lends empty bytes, which the plugin refuses. `keep`: the key stays in the
+/// settings, as the secret kind's host (`secret_calls`) leaves it; otherwise it is taken out, as
+/// the boot's and the auth axis's hosts take it (`boot::resolve_secrets`,
+/// `auth_door::split_secrets`). Settings with no such key pass through unchanged.
+#[must_use]
+pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, Vec<Vec<u8>>) {
+    if refs.is_empty() {
+        return (settings.to_vec(), Vec::new());
+    }
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(settings) else {
+        return (settings.to_vec(), vec![Vec::new(); refs.len()]);
+    };
+    let secrets = refs
+        .iter()
+        .map(|path| {
+            let (parent, last) = match path.rsplit_once('.') {
+                Some((head, last)) => (head.split('.').try_fold(&mut v, |v, k| v.get_mut(k)), last),
+                None => (Some(&mut v), path.as_str()),
+            };
+            let object = parent.and_then(serde_json::Value::as_object_mut);
+            let value = if keep {
+                object.and_then(|o| o.get(last).cloned())
+            } else {
+                object.and_then(|o| o.remove(last))
+            };
+            match value {
+                Some(serde_json::Value::String(s)) => s.into_bytes(),
+                _ => Vec::new(),
+            }
+        })
+        .collect();
+    if keep {
+        return (settings.to_vec(), secrets);
+    }
+    (v.to_string().into_bytes(), secrets)
+}
+
+/// The blobs `open`/`refresh` lend over `secrets`.
+fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
+    use busbar_contract::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
+    secrets
+        .iter()
+        .map(|s| Blob {
+            ptr: s.as_ptr(),
+            len: s.len(),
+            fmt: BLOB_OCTETS,
+            flags: BLOB_SECRET,
+        })
+        .collect()
+}
+
 /// `validate` over `settings`.
 pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     let mut err = [0_u8; 512];
@@ -779,15 +834,24 @@ pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// `open` is `PlaneOpenIn`/`PlaneOpenOut` (its `out` carries the first generation's snapshot, and
 /// the kind's check FAULTs an `open` whose `out` cannot hold it); every other kind's is the
 /// lifecycle's `OpenIn`/`OpenOut`.
+///
+/// The keys the Statement names as secret references are taken out of the settings and their
+/// material lent in `secrets` ([`lend_secrets`]), as the host lends them.
 pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
+    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let blobs = secret_blobs(&secrets);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
-        f.input.open.settings = json(settings);
+        f.input.open.settings = json(&settings);
+        f.input.open.secrets = blobs.as_ptr();
+        f.input.open.secrets_len = blobs.len();
         f.input.open.generation = 1;
         return p.call(life::OPEN, &mut f);
     }
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
-    f.input.settings = json(settings);
+    f.input.settings = json(&settings);
+    f.input.secrets = blobs.as_ptr();
+    f.input.secrets_len = blobs.len();
     f.input.generation = 1;
     p.call(life::OPEN, &mut f)
 }
@@ -797,14 +861,20 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// it answers; the frame [`open`]'s.
 pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
     let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
+    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let blobs = secret_blobs(&secrets);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
-        f.input.open.settings = json(settings);
+        f.input.open.settings = json(&settings);
+        f.input.open.secrets = blobs.as_ptr();
+        f.input.open.secrets_len = blobs.len();
         f.input.open.generation = 1;
         return on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline);
     }
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
-    f.input.settings = json(settings);
+    f.input.settings = json(&settings);
+    f.input.secrets = blobs.as_ptr();
+    f.input.secrets_len = blobs.len();
     f.input.generation = 1;
     on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline)
 }
@@ -858,8 +928,12 @@ const OPEN_DEADLINE: Duration = Duration::from_secs(30);
 
 /// `refresh` over `settings`, generation 2.
 pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
+    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let blobs = secret_blobs(&secrets);
     let mut f: Frame<RefreshIn, OutHead> = Frame::new(input(), output());
-    f.input.settings = json(settings);
+    f.input.settings = json(&settings);
+    f.input.secrets = blobs.as_ptr();
+    f.input.secrets_len = blobs.len();
     f.input.generation = 2;
     p.call(life::REFRESH, &mut f)
 }
