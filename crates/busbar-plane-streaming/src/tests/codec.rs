@@ -347,6 +347,76 @@ fn a_tool_call_dispatches_on_close_with_its_arguments() {
     assert_eq!(args["city"], "Paris");
 }
 
+/// P-ITEM: VOICE TOOL-ARGS through the plane's own `decode_response` (spec DONE item 2; the drive
+/// log's P5, commit 470351a480: "streamed tool-call arguments are discarded"). The arguments arrive
+/// ONLY as fragments and the close states none of its own, so nothing but accumulation can deliver
+/// them: the dispatched `tool_call` unit carries the fragments concatenated in order.
+///
+/// The 1.5.5 behaviour matched is the llm surface's streamed tool call (owner correction
+/// 2026-09-28): every argument fragment of an open tool block accumulated, the call emitted once on
+/// its block stop with the fully reassembled arguments (v1.5.5
+/// `crates/busbar/src/proto/gemini/writer.rs:734-780`).
+#[test]
+fn p_item_voice_tool_args_fragments_alone_reach_the_dispatched_call_whole() {
+    let plane = openai_plane();
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut upstream_state = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let mut events = vec![json!({
+        "type": "response.output_item.added",
+        "item": { "type": "function_call", "call_id": "call_9", "name": "weather" },
+    })];
+    for fragment in ["{\"lo", "c\":\"S", "F\"}"] {
+        events.push(json!({
+            "type": "response.function_call_arguments.delta",
+            "call_id": "call_9",
+            "delta": fragment,
+        }));
+    }
+    for event in events {
+        let bytes = serde_json::to_vec(&event).unwrap();
+        let frames = [frame(&bytes)];
+        let mut cursor = FrameCursor::new(&frames);
+        assert!(
+            matches!(
+                plane
+                    .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+                    .expect("a tool-call frame decodes"),
+                Progress::Discard { .. }
+            ),
+            "no unit before the call closes"
+        );
+    }
+    let done = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_9",
+    }))
+    .unwrap();
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::OneShot(draft) = plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+        .expect("a tool-call close decodes")
+    else {
+        panic!("a completed tool call is dispatched as its own unit");
+    };
+    assert_eq!(draft.op.as_str(), "tool_call");
+    assert_eq!(
+        draft.facts.get(crate::meta::FACT_TOOL_NAME),
+        Some(busbar_contract::bounded::FactValue::Str("weather"))
+    );
+    assert_eq!(
+        draft.body_ir.body(),
+        b"{\"loc\":\"SF\"}",
+        "the fragments reach the call whole, in order"
+    );
+}
+
 /// Two tool calls open at once are two different things to wait on.
 ///
 /// A turn that asks for two tools opens two units, and each waits for its own reply. The reply leg

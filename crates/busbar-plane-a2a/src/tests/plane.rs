@@ -208,14 +208,20 @@ fn the_codec_state_counts_events() {
     assert_eq!(codec.events_read, 1);
 }
 
-/// A unary answer closes its unit exactly once, and an empty envelope closes nothing.
+/// P-ITEM: UNARY/EMPTY TERMINALITY (spec DONE item 2, "All P-item behaviours match 1.5.5"; the
+/// drive log's P3, commit 470351a480). A unary answer closes its unit exactly once, and an empty
+/// envelope closes nothing.
 ///
 /// This is the money boundary the old `!has("/result/kind")` predicate had backwards: a real Task or
 /// Message answer carries a `kind`, so it never ended its metering unit, while an empty envelope
 /// carried none and billed `Complete` for nothing. The unary path ends on a `result` (or `error`)
-/// and never on an envelope carrying neither.
+/// and never on an envelope carrying neither. The 1.5.5 behaviour this plane matches is its one
+/// surface's (the llm surface; owner correction 2026-09-28): a delivered answer is billed once, at
+/// its end, and a response the caller cannot use is not billed as a delivered one (v1.5.5
+/// `crates/busbar/src/proxy/response_body.rs:415-440`, the token-billing gate on an aborted
+/// stream; `crates/busbar/src/proxy/usage.rs:57-103`, the one accrual site per delivered response).
 #[test]
-fn a_unary_answer_closes_once_and_an_empty_envelope_does_not() {
+fn p_item_unary_empty_terminality_a_unary_answer_closes_once_and_an_empty_envelope_does_not() {
     // A real unary Task answer carries a result (with a kind) and is the whole answer: terminal.
     let task = br#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t1"}}"#;
     assert!(
