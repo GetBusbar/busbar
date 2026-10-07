@@ -1946,6 +1946,18 @@ mod tests {
         }
     }
 
+    /// The loader keys its `supported_abi` arms by the kind constants (`kind::STORE =>`); the declares
+    /// gate reads every kind's version off the REAL tree (RED before the arm reader took that form:
+    /// "supported_abi has no arm for kind `store`", which turned every plugin's declares step red).
+    #[test]
+    fn the_declares_gate_reads_the_real_trees_kind_constant_arms() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for kind in KINDS {
+            let v = kind_abi(&root, kind).unwrap_or_else(|e| panic!("{kind}: {e}"));
+            assert!(v >= 1, "{kind}: {v}");
+        }
+    }
+
     #[test]
     fn toml_reader_reads_the_real_policy() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
