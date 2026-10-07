@@ -629,7 +629,7 @@ impl Node {
         late: Late,
         history: Option<crate::root::kernel::PinnedHistory>,
         parent: Option<&Parent>,
-    ) -> bool {
+    ) -> Option<Outcome> {
         self.sweep(arrived);
         post.open(key, principal.clone(), arrived, history.clone());
         let meter = Arc::new(AccrualMeter::new());
@@ -646,7 +646,7 @@ impl Node {
             now: arrived.ms(),
         }) else {
             post.close(key);
-            return false;
+            return None;
         };
         self.open_on_book(principal, arrived);
         let mut occupied = Occupied {
@@ -679,6 +679,12 @@ impl Node {
             &borrowed,
         )
         .await;
+        // How the unit ended, for the caller's close (a framed stream's final status); `None` when
+        // the node's sweep settled it first.
+        let outcome = match &ended {
+            Ended::Settled { end, .. } => Some(end.outcome()),
+            Ended::AlreadySettled => None,
+        };
         // The unit returned: its facts close here, and its record is sealed with its one line.
         let seal = post.take(key).map(|(facts, pass)| UnitSeal {
             facts,
@@ -695,7 +701,7 @@ impl Node {
             None => self.settle_end(principal, arrived, history.as_ref(), ended, seal),
         }
         occupied.reached_end = true;
-        true
+        outcome
     }
 
     /// THE BORROWED SESSION OPEN (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03): one duplex session

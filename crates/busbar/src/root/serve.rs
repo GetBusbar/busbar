@@ -2457,7 +2457,7 @@ impl DataRoutes {
         let facts = served.facts.clone();
         let late: crate::root::linked::node::Late =
             Box::new(move || report_of(&money, unit, &facts));
-        let _taken = node
+        let ended = node
             .drive_borrowed(
                 unit,
                 arrived,
@@ -2469,6 +2469,9 @@ impl DataRoutes {
                 nesting.as_ref().map(|n| &n.parent),
             )
             .await;
+        // The caller hears how the unit ended (a framed stream closes a cut or failed unit with a
+        // refusal, never as whole).
+        caller.ended(ended);
         let rendered = units.take_rendered();
         let status = rendered
             .as_ref()
@@ -2713,6 +2716,10 @@ impl IngressCaller {
 pub(crate) trait Stated {
     /// The status, once the unit stated its head.
     fn stated(&self) -> Option<u32>;
+
+    /// How the unit ended, once it ended (`None`: the node's sweep settled it first, or the node
+    /// never admitted it). A caller with nothing to close ignores it.
+    fn ended(&self, _outcome: Option<busbar_contract::caps::Outcome>) {}
 }
 
 impl Stated for IngressCaller {
