@@ -219,6 +219,9 @@ pub(crate) fn refused_answer(
             if let (true, Some(request)) = (is_scope_refusal(end.outcome()), request) {
                 return scope_answer(request);
             }
+            if is_rate_refusal(end.outcome()) {
+                return rate_limited_answer();
+            }
             answer_for(end.outcome())
         }
         // The node's own sweep took the hold first, which means this unit is not going to produce an
@@ -249,6 +252,41 @@ pub(crate) fn is_scope_refusal(outcome: Outcome) -> bool {
         outcome,
         Outcome::Refused(_, ReasonCode::ScopeDenied) | Outcome::Failed(_, ReasonCode::ScopeDenied)
     )
+}
+
+/// Whether this ending is the verbs unit spending past the node's mutation budget.
+#[cfg(feature = "root-admin")]
+pub(crate) fn is_rate_refusal(outcome: Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Refused(_, ReasonCode::RateLimited) | Outcome::Failed(_, ReasonCode::RateLimited)
+    )
+}
+
+/// What a principal past its mutation budget is answered, whichever limiter refused it.
+///
+/// A legacy mutation is refused by the mounted surface's own limiter and a new verb by the verbs
+/// unit's, and the caller must not be able to tell which: the status, the `Retry-After` window,
+/// the code and the message are the kernel's admin rate-limit answer, read from the kernel's own
+/// words rather than written a second time here.
+#[cfg(feature = "root-admin")]
+pub(crate) fn rate_limited_answer() -> AdminAnswer {
+    let refused = busbar_kernel::admin::gate::ApiError::RateLimited;
+    AdminAnswer {
+        status: refused.http_status(),
+        headers: vec![
+            (
+                "retry-after".to_string(),
+                busbar_core_admin::rate::MUTATION_RATE_WINDOW_SECS.to_string(),
+            ),
+            ("content-type".to_string(), "application/json".to_string()),
+        ],
+        body: busbar_core_admin::admin_codec::refusal::envelope_of(
+            refused.code(),
+            &refused.message(),
+        )
+        .into_bytes(),
+    }
 }
 
 /// What the previous release answers a caller whose grant does not reach the operation.
