@@ -2916,6 +2916,22 @@ mod agent_door {
             pin
         }
 
+        /// The acceptor serving whatever key is current, and REQUIRING a client certificate that
+        /// chains to `client_root` (a DER root): a mutual-TLS peer that admits one client CA only.
+        fn mutual_acceptor(&self, client_root: &[u8]) -> tokio_rustls::TlsAcceptor {
+            let mut roots = rustls::RootCertStore::empty();
+            roots
+                .add(rustls_pki_types::CertificateDer::from(client_root.to_vec()))
+                .expect("a client root");
+            let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+                .build()
+                .expect("a client verifier");
+            let config = rustls::ServerConfig::builder()
+                .with_client_cert_verifier(verifier)
+                .with_cert_resolver(Arc::new(Serving(Arc::clone(&self.serving))));
+            tokio_rustls::TlsAcceptor::from(Arc::new(config))
+        }
+
         /// The acceptor serving whatever key is current.
         fn acceptor(&self) -> tokio_rustls::TlsAcceptor {
             let config = rustls::ServerConfig::builder()
@@ -6023,6 +6039,398 @@ mod agent_door {
                 StatusCode::UNAUTHORIZED,
                 "a token for an ended task authorised a `{state}` report: {body}"
             );
+        }
+    }
+
+    // ── PORTED FROM THE ENGINE'S `serve_tests`, `sign_tests` AND `relay_leg_metrics_tests` ─────────
+
+    /// Ported from busbar-a2a a2a/tests/serve_tests.rs::an_agent_outside_this_callers_catalogue_appears_nowhere_in_the_extended_card.
+    /// Two agents are configured and only one is approved: the one outside the caller's catalogue
+    /// is named nowhere in the serialised extended card (checked over the whole document, because
+    /// the hazard is a member nobody thought to check).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_outside_this_callers_catalogue_appears_nowhere_in_the_extended_card() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-extended-outside";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let section = format!(
+            "{}\n{}",
+            agent.entry("planner", "1h"),
+            agent.entry("scheduler", "1h")
+        );
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("", "GetExtendedAgentCard", "{}", Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an answer");
+        let ids: Vec<&str> = doc["result"]["skills"]
+            .as_array()
+            .expect("skills")
+            .iter()
+            .filter_map(|k| k["id"].as_str())
+            .collect();
+        assert_eq!(ids, ["planner"], "{body}");
+        assert!(body.contains("planner"), "{body}");
+        assert!(
+            !body.contains("scheduler"),
+            "an agent outside this caller's catalogue is named in its extended card: {body}"
+        );
+        assert!(
+            !agent.relayed(),
+            "the extended card is busbar's, never relayed"
+        );
+    }
+
+    /// Ported from busbar-a2a a2a/tests/serve_tests.rs::a_caller_entitled_to_no_agent_gets_an_empty_extended_card_rather_than_a_refusal.
+    /// A caller whose grant names no agent gets a card with nothing in it, not a refusal: "you may
+    /// reach no agent here" is a statement about the caller, while the refusal is reserved for a
+    /// deployment that fronts nothing at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_caller_entitled_to_no_agent_gets_an_empty_extended_card_rather_than_a_refusal() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-extended-empty";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(
+            instance,
+            &agent.entry("planner", "1h"),
+            false,
+            Some(Vec::new()),
+        );
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("", "GetExtendedAgentCard", "{}", Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an answer");
+        assert_eq!(doc["result"]["skills"], serde_json::json!([]), "{body}");
+        assert_eq!(doc["result"]["capabilities"]["extendedAgentCard"], true);
+        assert!(!body.contains("planner"), "{body}");
+        assert!(
+            !agent.relayed(),
+            "the extended card is busbar's, never relayed"
+        );
+    }
+
+    /// Verify `card`'s one signature as an outside caller does: the signing input is
+    /// `protected.b64url(canonical card minus signatures)`, checked under busbar's published card
+    /// key (the deployment's signer, derived for the door's signing domain).
+    fn card_signature_verifies(card: &serde_json::Value) -> Result<String, &'static str> {
+        use base64::Engine as _;
+        use ed25519_dalek::Verifier as _;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+        let key = ed25519_dalek::SigningKey::from_bytes(
+            &signer.derived_subkey_seed(surface("card_signing_domain")),
+        )
+        .verifying_key();
+        let sig = card["signatures"].get(0).ok_or("no signature")?;
+        let protected = sig["protected"].as_str().ok_or("no protected header")?;
+        let raw: [u8; 64] = b64
+            .decode(sig["signature"].as_str().ok_or("no signature value")?)
+            .map_err(|_| "signature is not base64url")?
+            .try_into()
+            .map_err(|_| "signature is not 64 bytes")?;
+        let input = format!("{protected}.{}", b64.encode(signing_payload(card)));
+        key.verify(
+            input.as_bytes(),
+            &ed25519_dalek::Signature::from_bytes(&raw),
+        )
+        .map_err(|_| "signature does not verify")?;
+        let header: serde_json::Value =
+            serde_json::from_slice(&b64.decode(protected).map_err(|_| "header")?)
+                .map_err(|_| "header")?;
+        Ok(header["kid"].as_str().unwrap_or_default().to_string())
+    }
+
+    /// Ported from busbar-a2a a2a/tests/sign_tests.rs::the_signature_is_taken_over_the_document_that_is_actually_served.
+    /// The fronted card as SERVED (busbar's endpoints and scheme, the backend nowhere in it) carries
+    /// exactly one signature, it verifies under busbar's published key over that document, and one
+    /// changed character breaks it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_signature_is_taken_over_the_document_that_is_actually_served() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-signed-card";
+        let _published = Published(instance);
+        let agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            get(&format!("{}/agents/planner", mount()), Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let card: serde_json::Value = serde_json::from_str(&body).expect("a card");
+        assert!(
+            !body.contains(&format!("127.0.0.1:{}", agent.port)),
+            "the backend must not appear in the served card at all: {body}"
+        );
+        assert_eq!(
+            card["url"],
+            format!("https://gw.example{}/agents/planner", mount()),
+            "{body}"
+        );
+        assert!(card["securitySchemes"].get("busbarA2aInbound").is_some());
+        assert_eq!(
+            card["signatures"].as_array().map(Vec::len),
+            Some(1),
+            "the vendor's signature is gone and busbar's is the only one: {body}"
+        );
+        let kid = card_signature_verifies(&card)
+            .unwrap_or_else(|why| panic!("the served card must verify: {why}: {body}"));
+        assert!(kid.starts_with("busbar-a2a-card-"), "{kid}");
+
+        let mut tampered = card.clone();
+        let name = tampered["name"].as_str().expect("a name").to_string();
+        tampered["name"] = serde_json::Value::String(format!("{name}x"));
+        assert_eq!(
+            card_signature_verifies(&tampered),
+            Err("signature does not verify"),
+            "the signature covers the document that is served"
+        );
+    }
+
+    /// The exposition lines of `family` whose `lane` label is `lane`.
+    fn series_on_lane(family: &str, lane: &str) -> Vec<String> {
+        busbar_kernel::snapshot::render()
+            .lines()
+            .filter(|l| l.starts_with(&format!("{family}{{")))
+            .filter(|l| l.contains(&format!("lane=\"{lane}\"")))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The sum of the values of `lines`.
+    fn total(lines: &[String]) -> f64 {
+        lines
+            .iter()
+            .filter_map(|l| l.rsplit(' ').next()?.parse::<f64>().ok())
+            .sum()
+    }
+
+    /// Ported from busbar-a2a a2a/tests/relay_leg_metrics_tests.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to.
+    /// A relayed agent unit counts `busbar_upstream_attempts_total{pool,lane}` for the agent it was
+    /// issued to (the lane is the registration's member name), in the model plane's series shape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to() {
+        busbar_kernel::snapshot::init();
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-metered";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("metered", "1h"), false, None);
+        approve(&s, "metered").await;
+        let family = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
+        let before = total(&series_on_lane(family, "metered"));
+        let (status, body) = answered(
+            &s.router,
+            rpc("metered", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(agent.relayed(), "the unit reached the agent");
+        let lines = series_on_lane(family, "metered");
+        assert!(
+            !lines.is_empty(),
+            "a relayed unit left no `{family}` series naming the agent it was issued to"
+        );
+        assert!(
+            total(&lines) > before,
+            "the relayed unit was not counted as an attempt: {lines:?}"
+        );
+        for line in &lines {
+            assert!(
+                line.contains("pool=\"") && !line.contains("disposition="),
+                "the model plane's series shape is pool and lane alone: {line}"
+            );
+        }
+    }
+
+    /// Ported from busbar-a2a a2a/tests/relay_leg_metrics_tests.rs::a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure.
+    /// An agent that stops answering lands on `busbar_upstream_failures_total` under the model
+    /// plane's own `transient` disposition, so a dead agent is not 100% healthy on a rate panel.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure() {
+        busbar_kernel::snapshot::init();
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-unreachable";
+        let _published = Published(instance);
+        let agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("unreached", "1h"), false, None);
+        approve(&s, "unreached").await;
+        agent.go_down();
+        let family = busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL;
+        let before = total(&series_on_lane(family, "unreached"));
+        let (status, body) = answered(
+            &s.router,
+            rpc("unreached", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "a hop that never reached the agent: {body}"
+        );
+        let lines = series_on_lane(family, "unreached");
+        assert!(
+            total(&lines) > before,
+            "the backend was unreachable and left no `{family}` count for its lane: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "disposition=\"{}\"",
+                busbar_kernel::proxy::DISPOSITION_TRANSIENT
+            ))),
+            "the failure carries the model plane's own disposition word: {lines:?}"
+        );
+        assert!(lines.iter().all(|l| l.contains("pool=\"")), "{lines:?}");
+    }
+
+    /// A CLIENT CERTIFICATE for registration `who`, issued by a root of its own: that root's DER
+    /// (what the registration's peer admits), and the paths of the certificate and key it is
+    /// written to as PEM files (what the registration's `client_identity:` references).
+    fn client_identity_files(instance: &str, who: &str) -> (Vec<u8>, String, String) {
+        let ca_key = rcgen::KeyPair::generate().expect("a key");
+        let mut ca = rcgen::CertificateParams::new(Vec::new()).expect("params");
+        ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let root = ca.self_signed(&ca_key).expect("the root").der().to_vec();
+        let issuer = rcgen::Issuer::new(ca, ca_key);
+        let key = rcgen::KeyPair::generate().expect("a key");
+        let leaf = rcgen::CertificateParams::new(vec!["busbar.example".to_string()])
+            .expect("params")
+            .signed_by(&key, &issuer)
+            .expect("the client leaf");
+        let dir = std::env::temp_dir();
+        let cert_path = dir.join(format!("{instance}-{who}-cert.pem"));
+        let key_path = dir.join(format!("{instance}-{who}-key.pem"));
+        std::fs::write(&cert_path, leaf.pem()).expect("the certificate file");
+        std::fs::write(&key_path, key.serialize_pem()).expect("the key file");
+        (
+            root,
+            cert_path.to_string_lossy().into_owned(),
+            key_path.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// The `agents:` entry registering `name` at `agent`'s secure path, pinned at the transport by
+    /// `mtls` to the far end's key `pin`, presenting the certificate and key in the two PEM files.
+    fn mutual_entry(agent: &Agent, name: &str, pin: &str, cert: &str, key: &str) -> String {
+        format!(
+            "{name}: {{url: 'https://127.0.0.1:{}/{name}', allow_private: true, reverify_ttl: \
+             '1h', pin: {{mechanism: mtls, key: '{pin}'}}, client_identity: {{cert: {{file: \
+             '{cert}'}}, key: {{file: '{key}'}}}}}}",
+            agent.port
+        )
+    }
+
+    /// Ported from busbar-a2a a2a/tests/transport_mutual_tls_tests.rs::the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registrations_certificate.
+    /// `connect` (the verb layer's card look) reaches a mutual-TLS vendor with THAT registration's
+    /// client certificate: the peer admits one client root only, the registration's own certificate
+    /// chains to it, and the card comes back sighted. The control is the same peer registered with
+    /// no client identity, which the peer refuses.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registrations_certificate(
+    ) {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mtls-probe";
+        let _published = Published(instance);
+        let tls = AgentTls::new();
+        let pin = tls.rekey();
+        let (client_root, cert, key) = client_identity_files(instance, "planner");
+        let agent = Agent::start_over(200, ANSWER, Some(tls.mutual_acceptor(&client_root))).await;
+        let section = format!(
+            "{}\n{}",
+            mutual_entry(&agent, "planner", &pin, &cert, &key),
+            agent.entry_pinned("bare", "cert_spki", &pin)
+        );
+        let s = served_trusting(instance, &section, false, None, Some(tls.root.clone()));
+
+        let (status, preview) = admin(&s, "/agents/planner/connect", "").await;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(preview["failure"], serde_json::Value::Null, "{preview}");
+        assert_eq!(preview["state"], "pending", "{preview}");
+        assert_eq!(preview["pin_mechanism"], "mtls", "{preview}");
+        assert_eq!(
+            preview["fingerprint"],
+            agent.fingerprint().as_str(),
+            "the card came back whole and sighted: {preview}"
+        );
+
+        let (status, bare) = admin(&s, "/agents/bare/connect", "").await;
+        assert_eq!(status, StatusCode::OK, "{bare}");
+        assert!(
+            bare["failure"].is_string(),
+            "a registration presenting no certificate is refused by the mutual-TLS peer: {bare}"
+        );
+        assert_eq!(bare["state"], "error", "{bare}");
+        let _ = (std::fs::remove_file(&cert), std::fs::remove_file(&key));
+    }
+
+    /// Ported from busbar-a2a a2a/tests/transport_mutual_tls_tests.rs::each_registration_presents_its_own_certificate_and_not_another_registrations.
+    /// Two registrations, two client certificates, two peers that each admit only their own
+    /// registration's client root: each registration is admitted at its own peer, and a third
+    /// presenting the other's certificate at the first peer is refused, so the certificate each hop
+    /// carries is its own registration's and never another's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn each_registration_presents_its_own_certificate_and_not_another_registrations() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mtls-isolation";
+        let _published = Published(instance);
+        let tls = AgentTls::new();
+        let pin = tls.rekey();
+        let (planner_root, planner_cert, planner_key) = client_identity_files(instance, "planner");
+        let (payments_root, payments_cert, payments_key) =
+            client_identity_files(instance, "payments");
+        let planner_peer =
+            Agent::start_over(200, ANSWER, Some(tls.mutual_acceptor(&planner_root))).await;
+        let payments_peer =
+            Agent::start_over(200, ANSWER, Some(tls.mutual_acceptor(&payments_root))).await;
+        let section = [
+            mutual_entry(&planner_peer, "planner", &pin, &planner_cert, &planner_key),
+            mutual_entry(
+                &payments_peer,
+                "payments",
+                &pin,
+                &payments_cert,
+                &payments_key,
+            ),
+            // The payments certificate, at the planner's peer.
+            mutual_entry(
+                &planner_peer,
+                "stranger",
+                &pin,
+                &payments_cert,
+                &payments_key,
+            ),
+        ]
+        .join("\n");
+        let s = served_trusting(instance, &section, false, None, Some(tls.root.clone()));
+
+        for own in ["planner", "payments"] {
+            let (status, preview) = admin(&s, &format!("/agents/{own}/connect"), "").await;
+            assert_eq!(status, StatusCode::OK, "{preview}");
+            assert_eq!(
+                preview["failure"],
+                serde_json::Value::Null,
+                "a registration's own certificate is admitted by its own peer: {preview}"
+            );
+        }
+        let (status, foreign) = admin(&s, "/agents/stranger/connect", "").await;
+        assert_eq!(status, StatusCode::OK, "{foreign}");
+        assert!(
+            foreign["failure"].is_string(),
+            "another registration's certificate must not authenticate at this peer: {foreign}"
+        );
+        for path in [&planner_cert, &planner_key, &payments_cert, &payments_key] {
+            let _ = std::fs::remove_file(path);
         }
     }
 }

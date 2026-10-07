@@ -158,3 +158,66 @@ fn test_sse_data_splits_on_bare_cr() {
         Some("line1\nline2".to_string())
     );
 }
+
+/// A minimal warn capture: every WARN event's fields, rendered, sent down a channel. The door
+/// holds no subscriber dependency, so the capture is the `tracing` trait implemented by hand, and
+/// holds no lock or cell (the plane keeps no interior state).
+struct WarnCapture(std::sync::mpsc::Sender<String>);
+
+struct Render<'a>(&'a mut String);
+
+impl tracing::field::Visit for Render<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write as _;
+        let _ = write!(self.0, "{}={value:?} ", field.name());
+    }
+}
+
+impl tracing::Subscriber for WarnCapture {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() == tracing::Level::WARN
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut line = String::new();
+        event.record(&mut Render(&mut line));
+        let _ = self.0.send(line);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// Ported from busbar-a2a tests/sse_tests.rs::test_non_utf8_frame_drop_carries_diag_code.
+/// A dropped non-UTF-8 frame is an operator-facing warn on a served path, so it carries a
+/// registered `BUSBAR-NNNN` code an operator can look up; the drop itself is unchanged. Emitted
+/// twice because a warn callsite's interest is cached process-wide and a concurrent test's
+/// dispatcher can make the FIRST emission through this scoped subscriber invisible.
+#[test]
+fn test_non_utf8_frame_drop_carries_diag_code() {
+    let (sent, heard) = std::sync::mpsc::channel();
+    let out = tracing::subscriber::with_default(WarnCapture(sent), || {
+        let mut r = SseReader::default();
+        let first = r.feed(b"data: \xff\xfe\n\n");
+        let _ = r.feed(b"data: \xff\xfe\n\n");
+        first
+    });
+    assert!(
+        out.is_empty(),
+        "a non-UTF-8 frame is still dropped, not relayed"
+    );
+    let banner = PLANE_SSE_FRAME_NOT_UTF8.banner().to_string();
+    let seen: Vec<String> = heard.try_iter().collect();
+    assert!(
+        seen.iter().any(|line| line.contains(&banner)),
+        "the dropped-frame warning must carry diag={banner}; captured: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|line| line.contains("dropping a non-UTF-8 SSE frame")),
+        "the message text is preserved; captured: {seen:?}"
+    );
+}

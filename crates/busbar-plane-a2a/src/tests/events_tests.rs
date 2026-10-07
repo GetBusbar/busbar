@@ -137,3 +137,22 @@ fn the_target_line_answers_each_events_bare_result() {
         "data: {\"a\":1}\r\n\r\n: ping\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1}}\n\n"
     );
 }
+
+/// Ported from busbar-a2a a2a/tests/rest_tests.rs::non_response_frames_are_passed_through.
+/// Keep-alives, comments and a backend's own frames are passed through: content busbar does not
+/// read is content busbar does not rewrite.
+#[test]
+fn non_response_frames_are_passed_through() {
+    for frame in [
+        &b": keep-alive\n\n"[..],
+        &b"event: ping\ndata: {\"hello\":1}\n\n"[..],
+        &b"data: not json at all\n\n"[..],
+    ] {
+        assert_eq!(
+            reframe_events(frame),
+            frame.to_vec(),
+            "{}",
+            String::from_utf8_lossy(frame)
+        );
+    }
+}

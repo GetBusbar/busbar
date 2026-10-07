@@ -479,3 +479,167 @@ fn the_sweep_holds_the_cap_with_terminal_tasks_only() {
         "no active task goes"
     );
 }
+
+/// Apply `to` for ALICE's `task` at `now` through [`transition`] and the book.
+fn moved_to(book: &mut Book, task: &str, to: TaskState, now: u64) {
+    let mut out = Vec::new();
+    transition(book, &step(ALICE, now), task, to, &mut out).unwrap();
+    book.apply(&out);
+}
+
+/// Ported from busbar-a2a a2a/tests/taskstore_tests.rs::an_interrupt_resumes_after_a_restart_and_its_chain_continues.
+/// The door keeps no task in memory: a "restart" is the same records read afresh, so the rehydrated
+/// interrupt is the held row, and the resume chains onto its stored tail.
+#[test]
+fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
+    let mut book = Book::default();
+    submitted(&mut book, ALICE, "t-paused", 100);
+    moved_to(&mut book, "t-paused", TaskState::Working, 110);
+    moved_to(&mut book, "t-paused", TaskState::AuthRequired, 120);
+    let before = get(&mut book, ALICE, "t-paused", 130).unwrap().unwrap();
+    assert_eq!(before.row.state, "auth-required");
+    assert_eq!(before.next_seq, 4, "process 1 wrote a real chain");
+
+    // THE RESTART: nothing but the records survive.
+    let mut after_restart = book.clone();
+    moved_to(&mut after_restart, "t-paused", TaskState::Working, 200);
+
+    let held = get(&mut after_restart, ALICE, "t-paused", 200)
+        .unwrap()
+        .unwrap();
+    assert_eq!(held.row.state, "working");
+    assert_eq!(held.next_seq, 5, "exactly one event was appended");
+    let last = event(&after_restart, ALICE, "t-paused", 4);
+    assert_eq!(last.seq, 4, "the sequence CONTINUED");
+    assert_eq!(
+        last.kind, "task.resumed",
+        "resuming from an interrupt is its own event kind, not a plain `working`"
+    );
+    assert_eq!(
+        last.prev_hash,
+        event(&after_restart, ALICE, "t-paused", 3).hash,
+        "the chain links across the restart boundary"
+    );
+    assert_eq!(digest(&last), last.hash);
+    assert_eq!(held.tail_hash, last.hash);
+}
+
+/// Ported from busbar-a2a a2a/tests/taskstore_tests.rs::the_task_event_digest_covers_every_content_field_and_excludes_the_join_key.
+#[test]
+fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() {
+    let base = TaskEventRow {
+        task_id: "task-1".into(),
+        seq: 2,
+        ts: 1_700_000_060,
+        kind: "task.working".into(),
+        context_id: "ctx-1".into(),
+        principal: "vk_alice".into(),
+        agent_id: "planner".into(),
+        state: "working".into(),
+        request_id: "req-2".into(),
+        prev_hash: "07d3b2028b0729c42fdaae5f4d59c3a98749aa88db89caabcacb5ebe3981ec28".into(),
+        hash: String::new(),
+        digest_version: DIGEST_VERSION_LEN_PREFIXED,
+    };
+    // Exhaustive by construction: a field added to `TaskEventRow` fails to compile here until
+    // somebody decides whether it belongs in the digest.
+    {
+        let TaskEventRow {
+            task_id: _,
+            seq: _,
+            ts: _,
+            kind: _,
+            context_id: _,
+            principal: _,
+            agent_id: _,
+            state: _,
+            request_id: _,
+            prev_hash: _,
+            hash: _,
+            digest_version: _,
+        } = &base;
+    }
+    let reference = digest(&base);
+    let mut chained = BTreeSet::new();
+    let mut ignored = BTreeSet::new();
+    let mut mutate = |name: &'static str, edit: fn(&mut TaskEventRow)| {
+        let mut e = base.clone();
+        edit(&mut e);
+        if digest(&e) == reference {
+            ignored.insert(name);
+        } else {
+            chained.insert(name);
+        }
+    };
+    mutate("ts", |e| e.ts += 1);
+    mutate("kind", |e| e.kind.push('x'));
+    mutate("context_id", |e| e.context_id.push('x'));
+    mutate("principal", |e| e.principal.push('x'));
+    mutate("agent_id", |e| e.agent_id.push('x'));
+    mutate("state", |e| e.state.push('x'));
+    mutate("request_id", |e| e.request_id = "req-other".to_string());
+    assert_eq!(
+        chained,
+        ["ts", "kind", "context_id", "principal", "agent_id", "state"]
+            .into_iter()
+            .collect::<BTreeSet<&str>>(),
+        "exactly these content fields are inside the digest"
+    );
+    assert_eq!(
+        ignored,
+        ["request_id"].into_iter().collect::<BTreeSet<&str>>(),
+        "request_id is the ONLY content field outside the digest: a join key absent on paths with \
+         no inbound request must not make an intact chain unverifiable"
+    );
+}
+
+/// Ported from busbar-a2a a2a/tests/taskstore_tests.rs::a_mutation_against_an_unknown_task_is_refused.
+#[test]
+fn a_mutation_against_an_unknown_task_is_refused() {
+    let mut book = Book::default();
+    let at = step(ALICE, 100);
+    let mut out = Vec::new();
+    for refused in [
+        transition(&mut book, &at, "nope", TaskState::Working, &mut out).map(|_| ()),
+        dispatch(&mut book, &at, "nope", "a", &mut out).map(|_| ()),
+        advance_cursor(&mut book, &at, "nope", 1, &mut out).map(|_| ()),
+    ] {
+        match refused {
+            Err(Halt::Failed(why)) => assert!(why.contains("no such task"), "{why}"),
+            other => panic!("an unknown task id must be refused, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        set_callback(&mut book, &at, "nope", "https://cb.example/", &mut out).unwrap(),
+        None,
+        "a callback for a task nobody holds registers nothing"
+    );
+    assert!(out.is_empty(), "nothing was written: {out:?}");
+    assert_eq!(book.rows.len(), 0, "and nothing was created");
+}
+
+/// Ported from busbar-a2a a2a/tests/taskstore_tests.rs::an_illegal_transition_writes_neither_a_row_nor_an_event.
+#[test]
+fn an_illegal_transition_writes_neither_a_row_nor_an_event() {
+    let mut book = Book::default();
+    submitted(&mut book, ALICE, "t-work", 100);
+    moved_to(&mut book, "t-work", TaskState::Working, 110);
+    moved_to(&mut book, "t-work", TaskState::Completed, 120);
+    let rows_before = book.rows.clone();
+
+    let mut out = Vec::new();
+    let err = transition(
+        &mut book,
+        &step(ALICE, 130),
+        "t-work",
+        TaskState::Working,
+        &mut out,
+    )
+    .expect_err("terminal is terminal");
+    match err {
+        Halt::Failed(why) => assert!(why.contains("illegal task transition"), "{why}"),
+        other => panic!("expected a refusal in the state machine's words, got {other:?}"),
+    }
+    assert!(out.is_empty(), "a refused move wrote {out:?}");
+    assert_eq!(book.rows, rows_before, "the store is untouched");
+}

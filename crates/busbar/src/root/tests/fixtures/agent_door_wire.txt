@@ -29,3 +29,5 @@ grpc_service = /lf.a2a.v1.A2AService
 grpc_binding = GRPC
 # The callback an agent reports a task's move to (lib.rs MOUNT_PATH + PUSH_PATH_SUFFIX).
 push_path = /a2a/push
+# The domain busbar's card-signing key is derived under (door.rs CARD_SIGNING_DOMAIN).
+card_signing_domain = a2a/agent-card-signing/v1
