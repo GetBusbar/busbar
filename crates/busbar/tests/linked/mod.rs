@@ -146,3 +146,8 @@ pub fn seam(decl: &PlaneDecl) -> &'static TestPlaneSeam {
         .find(|s| s.name == decl.key)
         .unwrap_or_else(|| panic!("the `{}` plane registered no test seam", decl.key))
 }
+
+/// Every test-linked door plane's door, by its crate's label.
+pub fn doors() -> &'static [(&'static str, busbar_contract::abi::mechanism::door::DoorFn)] {
+    TEST_LINKED_DOORS
+}

@@ -2062,7 +2062,7 @@ pub(crate) async fn put_auth(
         let operator = busbar_kernel::config::operator_provider();
         for name in &req.admin_auth {
             let known = current.admin_modules.operator.is(name)
-                || (cfg!(test) && name == "test-scope-module");
+                || (cfg!(any(test, feature = "test-support")) && name == "test-scope-module");
             if !known {
                 return Err(AdminError::Validation(format!(
                     "admin_auth names unknown module '{name}'; the built-in admin module is \

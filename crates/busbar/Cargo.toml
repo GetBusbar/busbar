@@ -505,12 +505,17 @@ node = "plane_node"
 # so the tests' sources name no plane. The list is the install order (the planes' layering order).
 [package.metadata.busbar.test-linked]
 planes = ["busbar-llm", "door:busbar-plane-mcp", "busbar-a2a"]
+# The operator credential's auth plugin the admin tests (`tests/admin_cross_plane/`) authenticate
+# through: the one the root links for it (`auth-admin-tokens`), so that test requires the feature.
+operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dev-dependencies]
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
 # `tests/plane_integration.rs` reads a plane's admission audience as a URL.
 url = { workspace = true }
+# The admin tests' OpenAPI drift guard writes the committed document's deterministic gz twin.
+flate2 = { workspace = true }
 # root_listeners_are_the_connectors.rs: the TLS data door's certificate, generated per run.
 rcgen = { workspace = true, features = ["pem"] }
 # root/tests/connector_h2.rs: the TLS far end the connector dials with the http door's protocol
@@ -640,6 +645,11 @@ harness = false
 
 # The linked door this binary proves is the export axis's optional edge; without the feature there is
 # no linked row to prove, so the target is not built.
+[[test]]
+name = "admin_cross_plane"
+path = "tests/admin_cross_plane/main.rs"
+required-features = ["auth-admin-tokens"]
+
 [[test]]
 name = "traces_stream_both_doors"
 path = "tests/traces_stream_both_doors.rs"
