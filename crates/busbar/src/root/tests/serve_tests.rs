@@ -2029,10 +2029,12 @@ mod tools_door {
             body,
             format!(
                 "{{\"error\":{{\"code\":-32030,\"data\":{{\"reason\":\"upstream_unavailable\",\
-                 \"retry_after_ms\":{},\"server\":\"flaky\"}},\"message\":\"MCP server `flaky` is \
-                 unavailable: its circuit breaker is open after repeated failures; busbar did not \
-                 dispatch this call. Retry after {wait}s.\"}},\"id\":41,\"jsonrpc\":\"2.0\"}}",
-                wait * 1000
+                 \"retry_after_ms\":{},\"server\":\"flaky\"}},\"message\":\"{}\"}},\"id\":41,\
+                 \"jsonrpc\":\"2.0\"}}",
+                wait * 1000,
+                surface("tripped_server_message")
+                    .replace("{server}", "flaky")
+                    .replace("{wait}", &wait.to_string())
             ),
             "{headers:?}"
         );
@@ -2129,7 +2131,7 @@ mod tools_door {
         assert_eq!(settled["result"]["status"], "failed", "{settled}");
         assert_eq!(
             settled["result"]["error"].to_string(),
-            r#"{"code":-32603,"message":"the MCP upstream call failed: breaker_open"}"#,
+            surface("continuation_refused_error"),
             "{settled}"
         );
     }
@@ -2172,7 +2174,7 @@ mod tools_door {
         assert_eq!(settled["result"]["status"], "failed", "{settled}");
         assert_eq!(
             settled["result"]["error"].to_string(),
-            r#"{"code":-32603,"message":"the MCP upstream call failed: breaker_open"}"#,
+            surface("continuation_refused_error"),
             "{settled}"
         );
         assert!(drain(&mut heard).is_empty(), "nothing reached the server");

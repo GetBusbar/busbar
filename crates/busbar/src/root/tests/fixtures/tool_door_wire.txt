@@ -39,3 +39,8 @@ plane_key = mcp
 # resource noun AuditRow::tool names a tool by: `<noun>:<published name>`).
 audit_action_tool_call = mcp_tool.call
 audit_resource_tool = mcp_tool
+# The plane's refusal words for an exhausted walk, byte for byte as predev served them (tool_door.rs
+# RefusalSlot; the `*_in_predevs_bytes` cells in serve_tests.rs): a tripped server's sentence
+# ({server} and {wait} filled by the cell), and a task continuation the walk refused.
+tripped_server_message = MCP server `{server}` is unavailable: its circuit breaker is open after repeated failures; busbar did not dispatch this call. Retry after {wait}s.
+continuation_refused_error = {"code":-32603,"message":"the MCP upstream call failed: breaker_open"}
