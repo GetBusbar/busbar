@@ -1198,6 +1198,13 @@ pub struct PlaneSnapshot {
     /// RFC 9728 document at [`PlaneSnapshot::resource_metadata`] (no unit, no audit row); absent =
     /// none stated. A tail addition.
     pub resource_facts: Blob,
+    /// THE NAMES IT LISTS for this generation (THE DESIGN section 2: `/v1/models` appends each
+    /// plane generation's listed names, filtered by the caller's grant of the plane's scope kind),
+    /// each non-empty UTF-8; NULL/0 = none. A tail addition: a snapshot whose `size` ends before it
+    /// lists none, and the host reads nothing past that `size`.
+    pub listed: *const AbiStr,
+    /// How many.
+    pub listed_len: usize,
 }
 
 /// The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL.

@@ -881,6 +881,7 @@ fn facing(
             })
             .collect(),
         admission: snapshot.audience.zip(snapshot.resource_metadata),
+        listed: snapshot.listed,
     })
 }
 
@@ -1416,22 +1417,33 @@ fn project(a: &Answer) -> Result<(), Fault> {
     )
 }
 
-/// A READY `open`'s or `refresh`'s generation snapshot: present, of this host's size, then
-/// `check_snapshot` against the generation the `in` names. The size is read before the whole
-/// struct, so a smaller foreign snapshot is never read past its end.
+/// A READY `open`'s or `refresh`'s generation snapshot: present, then `check_snapshot` (its size
+/// among them) against the generation the `in` names, on the host's copy of its own bytes.
 fn snapshot(s: *const PlaneSnapshot, generation: u64, field: &'static str) -> Result<(), Fault> {
     if s.is_null() {
         return Err(fault(Rule::Missing, field));
     }
+    check_snapshot(&as_written(s), generation)
+}
+
+/// THE SNAPSHOT AT `p` AS ITS PUBLISHER WROTE IT (the append rule: data structs grow by append
+/// under `honoured_size`): its leading `size` is read alone first, then that many bytes, never more
+/// than this host's struct, are copied over zeros. A field appended after the publisher was built
+/// reads as none, and nothing past the publisher's own `size` is read. `p` is non-NULL.
+fn as_written(p: *const PlaneSnapshot) -> PlaneSnapshot {
     // SAFETY: a non-NULL snapshot is the plugin's generation data, valid until `retire` of its
     // generation; its leading `size` is read alone first.
-    let size = unsafe { s.cast::<u32>().read_unaligned() };
-    if size as usize != std::mem::size_of::<PlaneSnapshot>() {
-        return Err(fault(Rule::Foreign, "snapshot.size"));
+    let size = unsafe { p.cast::<u32>().read_unaligned() };
+    let n =
+        busbar_contract::abi::honoured_size(size, std::mem::size_of::<PlaneSnapshot>()) as usize;
+    let mut s = std::mem::MaybeUninit::<PlaneSnapshot>::zeroed();
+    // SAFETY: the plugin states `size` bytes of snapshot at `p`, and `n` is at most that and at
+    // most the host's own struct, which `s` is; all-zero is a valid `PlaneSnapshot` (integers, raw
+    // pointers, plain structs of both), so every byte the copy does not reach is a valid none.
+    unsafe {
+        std::ptr::copy_nonoverlapping(p.cast::<u8>(), s.as_mut_ptr().cast::<u8>(), n);
+        s.assume_init()
     }
-    // SAFETY: as above; the snapshot states this host's full size.
-    let snap = unsafe { s.read_unaligned() };
-    check_snapshot(&snap, generation)
 }
 
 // ── the host's copy of a generation snapshot ─────────────────────────────────────────────────────
@@ -1484,6 +1496,9 @@ pub struct OwnedSnapshot {
     pub resource_metadata: Option<String>,
     /// Its protected-resource facts (JSON); `None` = none.
     pub resource_facts: Option<Vec<u8>>,
+    /// The names it lists, in its order; empty = none (and none from a snapshot published before
+    /// the list was appended).
+    pub listed: Vec<String>,
 }
 
 impl crate::dispatch::Plugin<Plane> {
@@ -1527,17 +1542,17 @@ fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<
 }
 
 /// Copy the snapshot a READY `open`/`refresh` published: the loader's own `check_snapshot` has
-/// passed (its size, generation, lists and strings), and the claims and admin routes are judged
-/// here by the contract's element checks before any element string is read: a claim's refusal
-/// dialect against the `dialects` its tail declares.
-fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
-    use busbar_contract::abi::plane::check::{check_admin_routes, check_claims};
+/// passed (its size, generation, lists and strings), and the claims, admin routes and listed names
+/// are judged here by the contract's element checks before any element string is read: a claim's
+/// refusal dialect against the `dialects` its tail declares.
+pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
+    use busbar_contract::abi::plane::check::{check_admin_routes, check_claims, check_listed};
     if p.is_null() {
         return None;
     }
-    // SAFETY: a READY answer's snapshot, whose size and lists this crossing's check accepted;
-    // valid until `retire` of its generation.
-    let s = unsafe { &*p };
+    // A READY answer's snapshot, whose size and lists this crossing's check accepted; valid until
+    // `retire` of its generation. Read as its publisher wrote it.
+    let s = &as_written(p);
     // SAFETY: the check refused a list counted over a NULL pointer; each names `*_len` entries.
     let claims = if s.claims_len == 0 {
         &[][..]
@@ -1550,8 +1565,15 @@ fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot
     } else {
         unsafe { std::slice::from_raw_parts(s.admin_routes, s.admin_routes_len) }
     };
+    // SAFETY: as above; a snapshot from before the list was appended reads NULL with `0`.
+    let listed = if s.listed_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(s.listed, s.listed_len) }
+    };
     check_claims(claims, dialects).ok()?;
     check_admin_routes(routes).ok()?;
+    check_listed(listed).ok()?;
     let text = |a| owned_str(a)?.or(Some(String::new()));
     Some(OwnedSnapshot {
         generation: s.generation,
@@ -1589,5 +1611,9 @@ fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot
             unsafe { std::slice::from_raw_parts(s.resource_facts.ptr, s.resource_facts.len) }
                 .to_vec()
         }),
+        listed: listed
+            .iter()
+            .map(|n| owned_str(*n).flatten())
+            .collect::<Option<_>>()?,
     })
 }
