@@ -757,30 +757,34 @@ async fn every_credential_carrier_is_admitted_and_a_bad_one_reads_the_native_401
 
 // ── the whole-path allocation gate ──────────────────────────────────────────────────────────────
 
-/// COMMITTED BOUND, carried over unchanged from the legacy gate: the allocations of one warmed
-/// same-dialect request, end to end.
-const FORWARD_PASSTHROUGH_MAX_ALLOCS: u64 = 107;
-
-/// The process's allocation requests so far, as jemalloc counts them (every arena, small and large).
-#[cfg(not(target_env = "msvc"))]
-fn allocation_requests() -> Result<u64, String> {
-    use tikv_jemalloc_ctl::{epoch, Access as _, AsName as _};
-    epoch::advance().map_err(|e| format!("epoch: {e}"))?;
-    let read = |name: &'static [u8]| -> Result<u64, String> {
-        name.name().read().map_err(|e| format!("{e}"))
-    };
-    Ok(read(b"stats.arenas.4096.small.nrequests\0")?
-        + read(b"stats.arenas.4096.large.nrequests\0")?)
-}
-
-/// One warmed same-dialect request through the door, end to end, stays under the committed
-/// allocation bound.
+/// THE DOOR'S WHOLE-PATH ALLOCATION BOUND, A RATCHET: the 691 allocations measured on one warmed
+/// same-dialect request through the WHOLE door path (router, auth, money steps, plane driver, egress
+/// walk, connector, loopback far end, reply), minimum over four warmed requests on one thread. It
+/// may only go DOWN: when the measured number falls, lower this constant to it in the same commit;
+/// never raise it (a raise is the regression). The perf phase ("a zero-allocation hot path") owns
+/// cutting it (ARCHITECT RULING U11 Q5 2026-10-06: set at 694; lowered to 692 when the far end's
+/// target cut borrowed its words and a clean success's unread record kept its attempt's own; to
+/// 691 when the route leg read its pool's name alone, not its members' facts, for a unit no hook
+/// binds to, and a session stage read its dialect's name only when a view is shown it).
 ///
-/// Ports legacy `crates/busbar-llm/src/engine/tests/alloc_gate_tests.rs::alloc_gate_openai_passthrough_forward`.
+/// NOT COMPARABLE WITH THE LEGACY GATE'S 87 (bound 107): that gate measured only the retired
+/// engine's forward (`forward_with_pool`: its walk, attempt and relay over an in-process mock), never
+/// the router, the auth or the money steps this bound spans.
+const DOOR_WHOLE_PATH_MAX_ALLOCS: u64 = 691;
+
+/// One warmed same-dialect request through the whole door path allocates no more than the ratchet
+/// [`DOOR_WHOLE_PATH_MAX_ALLOCS`]. Measured deterministically, as the legacy gate measured: this
+/// test binary's global allocator is the kernel's per-thread allocation counter over jemalloc
+/// (`main.rs`, `cfg(test)` only), the runtime is one thread (so the far end and the egress run on
+/// the measured thread), the front door is open and no hook is bound (the legacy gate drove the
+/// engine with neither), and the minimum over four warmed requests is the measure.
+///
+/// Ports legacy `crates/busbar-llm/src/engine/tests/alloc_gate_tests.rs::alloc_gate_openai_passthrough_forward`
+/// at the door's own scope (its bound is the door's measure, not the legacy 107).
 #[cfg(not(target_env = "msvc"))]
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "DIVERGENCE: the root binary has no allocation counter (its jemalloc is built without stats, so stats.arenas.*.nrequests is unknown); the 107-allocation whole-path bound cannot be measured on the door path until the root arms one"]
 async fn one_warmed_same_dialect_request_stays_under_the_allocation_bound() {
+    use busbar_kernel::test_support::counting_alloc;
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "door-ported-alloc";
     let _published = Withdrawn(instance);
@@ -789,21 +793,44 @@ async fn one_warmed_same_dialect_request_stays_under_the_allocation_bound() {
         instance,
         RigOpts {
             members: &[(far.port, 1)],
+            open: true,
+            hookless: true,
             ..RigOpts::default()
         },
     )
     .await;
-    assert_eq!(rig.chat().await.0, 200, "the warm-up");
+    let body = || {
+        serde_json::to_vec(&serde_json::json!({"model": "p", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]}))
+        .expect("json")
+    };
+    let ct = ("content-type", "application/json");
+    let (status, _, answer) = raw(&rig, "/v1/chat/completions", &[ct], body()).await;
+    assert_eq!(
+        status,
+        200,
+        "the warm-up: {}",
+        String::from_utf8_lossy(&answer)
+    );
     let mut min = u64::MAX;
     for _ in 0..4 {
-        let before = allocation_requests().expect("the allocator counts its allocations");
-        assert_eq!(rig.chat().await.0, 200);
-        let after = allocation_requests().expect("the allocator counts its allocations");
-        min = min.min(after - before);
+        counting_alloc::reset();
+        let (status, _, _) = raw(&rig, "/v1/chat/completions", &[ct], body()).await;
+        let allocations = counting_alloc::count();
+        assert_eq!(status, 200);
+        min = min.min(allocations);
     }
-    println!("door same-dialect request: min allocations = {min}");
+    println!(
+        "door whole path, one warmed same-dialect request: min allocations = {min} \
+         (ratchet {DOOR_WHOLE_PATH_MAX_ALLOCS})"
+    );
     assert!(
-        min <= FORWARD_PASSTHROUGH_MAX_ALLOCS,
-        "one warmed request allocated {min} times, over the bound {FORWARD_PASSTHROUGH_MAX_ALLOCS}"
+        min <= DOOR_WHOLE_PATH_MAX_ALLOCS,
+        "THE DOOR'S WHOLE-PATH ALLOCATION RATCHET REGRESSED: one warmed same-dialect request through \
+         the whole door path (router, auth, money steps, plane driver, egress walk, connector, \
+         loopback far end, reply) allocated {min} times, over the ratchet \
+         {DOOR_WHOLE_PATH_MAX_ALLOCS}. The bound is a ratchet: it may only go down (lower it when \
+         the number falls); never raise it. Find the new per-request allocation and remove it. Not \
+         comparable with the legacy forward-only gate's 87/107."
     );
 }

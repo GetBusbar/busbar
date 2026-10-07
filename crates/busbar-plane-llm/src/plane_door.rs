@@ -63,9 +63,10 @@ use busbar_contract::abi::plane::{
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT,
-    ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR,
-    UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    PIECE_CUT, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE,
+    ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK,
+    TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, AUDIT_NONE, RECORD_AUDIT};
@@ -483,9 +484,6 @@ struct UnitState {
     started: Option<u64>,
     /// The answer the driver's re-call is owed.
     pending: Option<Pending>,
-    /// `project` found the body unreadable: the unit's refusal reads the previous release's
-    /// unreadable-body sentence.
-    unreadable: bool,
     /// The far end's last cumulative counts, as the unit last reported them.
     reported: Vec<UnitCount>,
     /// The caller was answered under a success status: the request's fee unit was incurred.
@@ -505,7 +503,6 @@ impl UnitState {
             reply: None,
             started: None,
             pending: None,
-            unreadable: false,
             reported: Vec::new(),
             fee: false,
         }
@@ -817,6 +814,9 @@ fn at(clock: Option<ClockReading>, started: Option<u64>) -> At {
 /// One piece of a unit, as `on_piece` lends it.
 struct PieceIn<'a> {
     last: bool,
+    /// The far end ended before its end (`PIECE_CUT`): its transfer failed, or ran past its
+    /// ceiling, before the answer was complete.
+    cut: bool,
     status: Option<u32>,
     fields: Vec<(&'a [u8], &'a [u8])>,
     bytes: &'a [u8],
@@ -915,7 +915,28 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     let Some(reply) = unit.reply.as_mut() else {
         return Answer::hard();
     };
-    let mut fed = reply.feed(&ctx, piece.bytes, piece.last, at(piece.clock, unit.started));
+    let now = at(piece.clock, unit.started);
+    let mut fed = if piece.cut {
+        // A CUT: the bytes it carries are relayed, then the answer ends as the caller's dialect ends
+        // one cut short (v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-345`): a stream after
+        // its first byte on its in-band error, anything else with no further byte.
+        let before = reply.feed(&ctx, piece.bytes, false, now);
+        let mut cut = reply.cut(&ctx, true);
+        if cut.head.is_none() {
+            cut.head = before.head;
+        }
+        if !before.bytes.is_empty() {
+            let mut bytes = before.bytes.into_owned();
+            bytes.extend_from_slice(&cut.bytes);
+            cut.bytes = std::borrow::Cow::Owned(bytes);
+        }
+        let mut dropped = before.dropped;
+        dropped.append(&mut cut.dropped);
+        cut.dropped = dropped;
+        cut
+    } else {
+        reply.feed(&ctx, piece.bytes, piece.last, now)
+    };
     // An answer member the caller's dialect has no form for, one degraded row each (`<path> from
     // <dialect>`, the row 1.5.5 wrote as it delivered the translated answer).
     let dropped = std::mem::take(&mut fed.dropped);
@@ -1242,6 +1263,9 @@ slot!(
             Err(declined) => {
                 out.set(|o| &o.refusal, declined.why.code());
                 out.set(|o| &o.refusal_status, u32::from(declined.status));
+                if declined.counted() {
+                    out.set(|o| &o.route_flags, ROUTE_COUNTED);
+                }
                 unit.declined = Some(declined);
                 guard(&door.units).insert(given.unit, unit);
                 out.fail(Refusal::bare())
@@ -1267,6 +1291,8 @@ slot!(
         if unit.pending.is_none() {
             let piece = PieceIn {
                 last: given.flags & PIECE_LAST != 0,
+                cut: given.from == FROM_FAR_END && given.flags & (PIECE_CUT | PIECE_LAST)
+                    == PIECE_CUT | PIECE_LAST,
                 status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
                 fields: input
                     .head_fields()
@@ -1324,9 +1350,7 @@ slot!(
                 // A model that resolved to no destination reads the previous release's not-found
                 // sentence, which names the model the caller asked for; every other refusal reads
                 // the kernel's own text.
-                let unreadable = held.as_ref().is_some_and(|u| u.unreadable);
                 let text = match arrived {
-                    _ if unreadable => project::UNREADABLE_BODY_MESSAGE.to_string(),
                     Some(a) if given.reason == crate::refusal::reason::NO_DESTINATION => {
                         refuse::model_not_found(
                             &a.model,
@@ -1412,8 +1436,8 @@ slot!(
     /// the host's arena and its turns in the host's turn buffer; with a request-stage hook's
     /// rewrite, the rewrite applied to the unit's request first (kept as the unit's request, so
     /// every attempt is written from it), the rewritten body answered and THAT body projected. A
-    /// body the operation's reader refuses is REFUSED, and the unit's refusal then reads the
-    /// previous release's unreadable-body sentence.
+    /// body the operation's reader cannot read projects nothing: an arrived unit is never refused
+    /// here.
     Project, ProjectIn, ProjectOut, |instance, input, mut out| {
         let Some(door) = instance.get() else {
             return Outcome::Failed;
@@ -1430,15 +1454,7 @@ slot!(
         } else {
             project::apply_rewrite(arrived, rewrite)
         };
-        let view = match project::project(arrived) {
-            Ok(view) => view,
-            Err(project::Unreadable) => {
-                if let Some(unit) = units.get_mut(&given.unit) {
-                    unit.unreadable = true;
-                }
-                return Outcome::Refused;
-            }
-        };
+        let view = project::project(arrived);
         let dialect = arrived.dialect;
         let pool = arrived.model.clone();
         drop(units);

@@ -28,13 +28,15 @@ use super::{
     RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
     CLAIM_PATTERN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
-    EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT,
-    MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
-    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE,
-    ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN, TRUST_PRIVATE_REACH,
-    UNITS_ESTIMATED, VERDICT_HARD,
+    EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
+    PIECE_CATALOGUE_MOVED, PIECE_CUT, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_STATUS,
+    PIECE_LAST, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
+    REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL,
+    ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE,
+    TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED,
+    VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -223,8 +225,12 @@ pub fn check_arrive(
         if ![ROUTE_POOL, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_SCOPE].contains(&out.route) {
             return Err(fault(Rule::UnknownCode, "arrive.route"));
         }
-        if out.route_flags & !(ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM) != 0 {
+        if out.route_flags & !(ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM | ROUTE_COUNTED) != 0 {
             return Err(fault(Rule::UnknownCode, "arrive.route_flags"));
+        }
+        // An admitted unit is counted as served: the counted bit belongs to a refusal alone.
+        if out.route_flags & ROUTE_COUNTED != 0 {
+            return Err(fault(Rule::Contradiction, "arrive.route_flags"));
         }
         text(out.affinity, "arrive.affinity")?;
         if out.affinity.len > MAX_TEXT {
@@ -245,13 +251,13 @@ pub fn check_arrive(
         if out.route != ROUTE_POOL && out.route != ROUTE_DIRECT {
             return Err(fault(Rule::UnknownCode, "arrive.route"));
         }
-        if out.route_flags != 0 {
+        if out.route_flags & !ROUTE_COUNTED != 0 {
             return Err(fault(Rule::Contradiction, "arrive.route_flags"));
         }
     } else if out.pool.len != 0
         || !out.pool.ptr.is_null()
         || out.route != ROUTE_POOL
-        || out.route_flags != 0
+        || out.route_flags & !counted(outcome) != 0
     {
         // The pool names where an admitted unit routes: an answer that admits nothing names none.
         return Err(fault(Rule::Contradiction, "arrive.pool"));
@@ -265,6 +271,45 @@ pub fn check_arrive(
         if out.head.error.len as u64 > MAX_REFUSAL_TEXT {
             return Err(fault(Rule::OverMax, "arrive.refusal_text"));
         }
+    }
+    Ok(())
+}
+
+/// The route flags a non-READY `arrive` may state: [`ROUTE_COUNTED`] on a REFUSED one (its
+/// dialect read the request), none on any other.
+const fn counted(outcome: Outcome) -> u8 {
+    if matches!(outcome, Outcome::Refused) {
+        ROUTE_COUNTED
+    } else {
+        0
+    }
+}
+
+/// `on_piece`'s `in`, as the kernel lends it: a known `from`, known `PIECE_*` bits, and a cut
+/// ([`PIECE_CUT`]) only on the far end's last piece (ARCHITECT RULING U11 Q1 2026-10-06).
+///
+/// # Errors
+///
+/// [`Rule::UnknownCode`] for an unknown `from` or bit; [`Rule::Contradiction`] for a cut that is
+/// not the far end's last piece.
+pub const fn check_piece_in(from: u32, flags: u32) -> Result<(), Fault> {
+    if from != FROM_CALLER && from != FROM_FAR_END && from != FROM_KERNEL {
+        return Err(fault(Rule::UnknownCode, "on_piece_in.from"));
+    }
+    if let Err(e) = bits(
+        flags as u64,
+        (PIECE_END_OF_FRAME
+            | PIECE_LAST
+            | PIECE_HAS_STATUS
+            | PIECE_FIELDS
+            | PIECE_CATALOGUE_MOVED
+            | PIECE_CUT) as u64,
+        "on_piece_in.flags",
+    ) {
+        return Err(e);
+    }
+    if flags & PIECE_CUT != 0 && (from != FROM_FAR_END || flags & PIECE_LAST == 0) {
+        return Err(fault(Rule::Contradiction, "on_piece_in.cut"));
     }
     Ok(())
 }

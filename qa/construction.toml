@@ -1866,7 +1866,9 @@ forbidden = [
 ]
 max_unlisted = 0
 # RATCHETED DOWN 5 -> 3, AT THE MEASUREMENT (K2f): the three main.rs `RecordingRows` sites remain.
-max_doubles = 3
+# RATCHETED DOWN 3 -> 0 (p6-ledger-fix, Q128 audit): the boot book's three `RecordingRows` sites now
+# bind `SummedRows`, the production dual write that holds one row per cell rather than every posting.
+max_doubles = 0
 
 # THE REVIEWED SITES. `verdict = "real"` means the review found this to be the shipped node's own
 # value at this composition — a null shipper on a node with no `peers:`, a memory-buffered book on a
@@ -1885,23 +1887,14 @@ max_doubles = 3
 # BOOT-TAIL (TODO step 11): the boot book moved whole into root/boot.rs as stage 4 Book
 # (`root::boot::compose_book`), so the row follows the same two sites there. A path re-point, not a
 # new review: symbol, verdict and reason unchanged, and the doubles count is unchanged.
-[rules.no-test-doubles-in-production.known_sites.voice-calls-rows-boot-book]
-file = "crates/busbar/src/root/boot.rs"
-symbol = "RecordingRows"
-verdict = "double"
-because = "the same node's rows: a recorder nothing reads, beside the node book the process already opened"
-
+# p6-ledger-fix (Q128): struck, with the node-book and admin-only `RecordingRows` rows. Every
+# production dual write binds `SummedRows` now; `RecordingRows` is a test recorder no shipped line
+# constructs, and the only production spelling left is the read-half impl below.
 [rules.no-test-doubles-in-production.known_sites.bindings-constructor]
 file = "crates/busbar/src/root/auth_bindings.rs"
 symbol = "without_directory("
 verdict = "real"
 because = "this is where the unbound posture is declared; declaring it is not composing a node out of it"
-
-[rules.no-test-doubles-in-production.known_sites.node-book-rows]
-file = "crates/busbar/src/root/durability/mod.rs"
-symbol = "RecordingRows"
-verdict = "real"
-because = "the one book a process settles onto keeps the previous release's rows, and a view reads that same value"
 
 [rules.no-test-doubles-in-production.known_sites.node-book-shipper]
 file = "crates/busbar/src/root/durability/mod.rs"
@@ -1914,12 +1907,6 @@ file = "crates/busbar/src/root/kernel.rs"
 symbol = "without_directory("
 verdict = "real"
 because = "the posture the assembly starts from; a boot with governance state binds the directory over it"
-
-[rules.no-test-doubles-in-production.known_sites.admin-only-rows]
-file = "crates/busbar/src/root/kernel.rs"
-symbol = "RecordingRows"
-verdict = "real"
-because = "an admin-only node's two halves of one rows value, which is what its dual write and its views share"
 
 [rules.no-test-doubles-in-production.known_sites.admin-only-shipper]
 file = "crates/busbar/src/root/kernel.rs"

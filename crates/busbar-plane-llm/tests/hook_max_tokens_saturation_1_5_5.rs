@@ -19,7 +19,7 @@ fn hook_max_tokens(target: &str, body: serde_json::Value) -> Option<u32> {
     let bytes = serde_json::to_vec(&body).expect("body serializes");
     let fields: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
     let arrived = arrive("POST", target, fields, &bytes, &()).expect("the request arrives");
-    project(&arrived).expect("the request reads").max_tokens
+    project(&arrived).max_tokens
 }
 
 #[test]

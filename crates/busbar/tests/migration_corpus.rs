@@ -309,8 +309,11 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> 
     // Point the copy under test at a real temp file so the gate checks the migration, not this
     // machine's filesystem layout.
     let yaml = if yaml.contains("file:") {
-        let dir = tmp.parent().unwrap_or(Path::new("."));
-        let stand_in = dir.join("corpus-secret");
+        // ONE STAND-IN PER CALLER'S TEMP CONFIG, never one shared name: the corpus tests run side by
+        // side, and a shared file one test rewrote (truncate, then write) while another's
+        // `--validate` read it resolved as an EMPTY secret and dropped that config from the count
+        // (hop run 37300700141: 77 of 78 compared).
+        let stand_in = tmp.with_extension("secret");
         std::fs::write(&stand_in, "a".repeat(64)).map_err(|e| format!("write stand-in: {e}"))?;
         let out = rewrite_file_secret_paths(yaml, &stand_in.display().to_string());
         std::fs::write(tmp, &out).map_err(|e| format!("rewrite temp config: {e}"))?;
@@ -399,6 +402,7 @@ fn every_shipped_config_migrates_to_a_valid_current_config() {
         }
     }
     let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(tmp.with_extension("secret"));
 
     assert!(
         failures.is_empty(),
@@ -570,6 +574,7 @@ fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
         }
     }
     let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(tmp.with_extension("secret"));
 
     // A run that compared nothing must never read as green. Without this, a renamed golden
     // directory or a corpus that stopped migrating would silently turn the whole test into a

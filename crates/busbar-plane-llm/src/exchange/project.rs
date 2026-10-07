@@ -6,10 +6,11 @@
 //! size signals (turns, characters, tools), the end user the dialect spells, and the prompt view
 //! (the system field and one `(role, text)` entry per wire turn, an in-band system turn at its wire
 //! position, a turn with nothing readable still an entry). A JSON object body is projected as far
-//! as the reader can read it, a turn or block it cannot read contributing nothing (never refused,
-//! as the previous release's projection never refused one); a non-object body the byte reader
-//! refuses is the request's failure ([`Unreadable`]); a body there is no reader for projects the
-//! zeroed shape.
+//! as the reader can read it, a turn or block it cannot read contributing nothing; any other body (a
+//! multipart upload, a binary payload) is read by the operation's byte reader, and one it refuses
+//! projects the zeroed shape. A projection never refuses a request: the previous release showed a
+//! hook the null body for every request body that was not JSON (`v1.5.5`
+//! `crates/busbar/src/proxy/engine/mod.rs:955-961`) and served the request.
 //!
 //! The output-cap signal is the previous release's own read (`max_tokens_for` at `v1.5.5`): the
 //! dialect's cap key off the caller's body, an out-of-range cap saturated to `u32::MAX`, never
@@ -49,15 +50,6 @@ pub struct HookView {
     pub end_user: Option<String>,
 }
 
-/// The operation's reader refused the body: the request fails (the previous release's 400).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Unreadable;
-
-/// The client-facing message for a body the operation's reader refuses: content-free, it names the
-/// failure, never the field or the value.
-pub const UNREADABLE_BODY_MESSAGE: &str =
-    "request body could not be read as a valid request for this endpoint";
-
 /// The previous release's output-cap signal: the dialect's cap key (`max_output_tokens` for the
 /// responses dialect, `max_tokens` for every other) off the caller's body, saturated.
 #[must_use]
@@ -72,19 +64,19 @@ pub fn max_tokens_for(v: &Value, dialect: &str) -> Option<u32> {
         .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
 }
 
-/// The facts the operation's reader reads off `arrived`; `Ok(None)` when there is no reader or no
-/// body to read.
-fn facts(arrived: &Arrived) -> Result<Option<Box<dyn IrFacts + Send + Sync>>, Unreadable> {
-    let Some(handler) = handler_of(arrived) else {
-        return Ok(None);
-    };
-    let read = match &arrived.parsed {
-        Some(v) if v.is_object() => return Ok(readable_facts(handler, v)),
-        _ if arrived.body.is_empty() => return Ok(None),
-        // A body that is not a JSON object (a multipart upload) is read by the byte reader.
-        _ => handler.read_facts(&arrived.body, &arrived.content_type),
-    };
-    read.map(Some).map_err(|_| Unreadable)
+/// The facts the operation's reader reads off `arrived`; `None` when there is no reader, no body to
+/// read, or nothing the reader can read.
+fn facts(arrived: &Arrived) -> Option<Box<dyn IrFacts + Send + Sync>> {
+    let handler = handler_of(arrived)?;
+    match &arrived.parsed {
+        Some(v) if v.is_object() => readable_facts(handler, v),
+        _ if arrived.body.is_empty() => None,
+        // A body that is not a JSON object (a multipart upload) is read by the byte reader; one it
+        // refuses projects nothing and the request goes on, as the previous release served it.
+        _ => handler
+            .read_facts(&arrived.body, &arrived.content_type)
+            .ok(),
+    }
 }
 
 /// THE PROJECTION OF WHAT BUSBAR CAN READ of a JSON object body. The previous release's hook
@@ -187,12 +179,10 @@ fn prompt(ir: &dyn IrFacts) -> (Option<String>, Vec<(String, String)>) {
     )
 }
 
-/// PROJECT one arrival for the hooks.
-///
-/// # Errors
-///
-/// [`Unreadable`] when the operation's reader refuses the body.
-pub fn project(arrived: &Arrived) -> Result<HookView, Unreadable> {
+/// PROJECT one arrival for the hooks. Never refuses: what the operation's reader cannot read is not
+/// shown.
+#[must_use]
+pub fn project(arrived: &Arrived) -> HookView {
     let stream = handler_of(arrived)
         .map(|h| stream_intent(h, arrived.parsed.as_ref()).wants_stream)
         .unwrap_or(false);
@@ -200,20 +190,20 @@ pub fn project(arrived: &Arrived) -> Result<HookView, Unreadable> {
         .parsed
         .as_ref()
         .and_then(|v| max_tokens_for(v, arrived.dialect));
-    let Some(ir) = facts(arrived)? else {
+    let Some(ir) = facts(arrived) else {
         let shape = Shape::EMPTY;
-        return Ok(HookView {
+        return HookView {
             turn_count: shape.turn_count,
             text_chars: shape.text_chars,
             has_tools: shape.has_tools,
             max_tokens,
             stream,
             ..HookView::default()
-        });
+        };
     };
     let shape = ir.shape();
     let (system, turns) = prompt(&*ir);
-    Ok(HookView {
+    HookView {
         turn_count: shape.turn_count,
         text_chars: shape.text_chars,
         has_tools: shape.has_tools,
@@ -222,7 +212,7 @@ pub fn project(arrived: &Arrived) -> Result<HookView, Unreadable> {
         system,
         turns,
         end_user: ir.end_user().map(str::to_string),
-    })
+    }
 }
 
 /// A rewrite as it crosses: the hook's `{messages, tools}`.

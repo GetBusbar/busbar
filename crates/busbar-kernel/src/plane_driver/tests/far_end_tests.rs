@@ -42,6 +42,8 @@ enum Script {
     Answer(u32, Option<u64>, Vec<&'static [u8]>),
     /// An answer whose body is followed by the far end's trailers.
     Trailed(u32, Vec<&'static [u8]>, &'static [u8]),
+    /// An answer whose connection fails after its body pieces, before its end.
+    Cut(u32, Vec<&'static [u8]>),
     Silent,
     Refused,
 }
@@ -69,6 +71,8 @@ struct Table {
     texts: Mutex<Vec<bool>>,
     /// Every write: the connection, the bytes, and whether they completed the caller's message.
     written: Mutex<Vec<(u64, Vec<u8>, bool)>>,
+    /// The connections whose transfer fails once their scripted pieces are read.
+    cut: Mutex<Vec<u64>>,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -136,6 +140,17 @@ impl Conns for Table {
                 bytes.push_back(Vec::new());
                 (pieces, bytes)
             }
+            Script::Cut(status, chunks) => {
+                self.cut.lock().unwrap().push(id);
+                let mut pieces = VecDeque::new();
+                let mut bytes = VecDeque::new();
+                for (k, c) in chunks.iter().enumerate() {
+                    let s = (k == 0).then_some((status, None));
+                    pieces.push_back(piece(PieceKind::Body, c.len(), s));
+                    bytes.push_back(c.to_vec());
+                }
+                (pieces, bytes)
+            }
             Script::Answer(status, retry, chunks) => {
                 let mut pieces = VecDeque::new();
                 let mut bytes = VecDeque::new();
@@ -195,6 +210,10 @@ impl PollConns for Table {
             .get_mut(&conn.0)
             .and_then(VecDeque::pop_front)
         else {
+            // A cut far end's transfer fails once its pieces are read.
+            if self.cut.lock().unwrap().contains(&conn.0) {
+                return Poll::Ready(Err(ConnError::Closed));
+            }
             // A silent far end never answers (and never wakes).
             return Poll::Pending;
         };
@@ -1163,6 +1182,56 @@ async fn trailers_are_handed_to_the_plane() {
     assert!(pieces.last().unwrap().last);
 }
 
+/// THE CUT (ARCHITECT RULING U11 Q1 2026-10-06): a far end whose transfer fails after its first
+/// piece ends its answer on a last piece flagged CUT, and the cut is recorded against its member
+/// (the compensating transient, v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-306`); an
+/// answer that completes ends on a last piece that is not cut.
+#[tokio::test]
+async fn a_transfer_that_fails_before_its_end_ends_on_a_cut_piece() {
+    let r = rig(
+        &[("a.test", Script::Cut(200, vec![b"hel"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    let last = pieces.last().expect("a last piece");
+    assert!(last.last && last.cut, "{pieces:?}");
+    assert!(last.bytes.is_empty(), "{pieces:?}");
+    assert!(
+        pieces[..pieces.len() - 1].iter().all(|p| !p.cut),
+        "{pieces:?}"
+    );
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![
+            (DestinationId::new(1), Outcome::Success),
+            (
+                DestinationId::new(1),
+                Outcome::Transient { retry_after: None }
+            ),
+        ],
+        "the head's success, then the cut's compensating failure"
+    );
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"hel", b"lo"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    assert!(pieces.last().unwrap().last);
+    assert!(
+        pieces.iter().all(|p| !p.cut),
+        "a whole answer is never cut: {pieces:?}"
+    );
+}
+
 /// THE PER-CALL SCOPE (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): a plane's attempt that states its
 /// scope in the host's own request field has that field taken out of the request before anything
 /// is encoded (the far end never hears it) and its value lent to the member's ONE auth call in the
@@ -1753,7 +1822,6 @@ async fn the_auth_calls_authority_is_the_base_urls_host_and_port_alone() {
 /// `engine/tests/auth_style_tests.rs::test_host_from_base_strips_scheme_and_userinfo` (its
 /// userinfo arms).
 #[tokio::test]
-#[ignore = "DIVERGENCE: the kernel far end's split() keeps a base_url's userinfo in the authority handed to the auth call (1.5.5 host_from_base stripped it); the connector then refuses the dial"]
 async fn the_auth_calls_authority_drops_a_base_urls_userinfo() {
     for (base, want) in [
         ("https://user:pass@host.example.com", "host.example.com"),

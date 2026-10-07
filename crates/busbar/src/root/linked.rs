@@ -211,6 +211,7 @@ pub fn linked_exports(
             host: None,
             declares,
             statement: None,
+            former_names: Vec::new(),
         })
     };
     doors
@@ -218,6 +219,7 @@ pub fn linked_exports(
         .map(|d| {
             manifest(d.name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
+                .map(busbar_kernel::preflight::answering_former_names)
         })
         .collect()
 }
@@ -331,6 +333,7 @@ pub fn link_secrets(
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
     }
+    rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 
@@ -1012,8 +1015,8 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// every `kind: export` row the plugin registry's one registration admitted, linked and dropped in
 /// ([`crate::root::boot::dropped_from_config`]) — kept for the root's export axis
 /// ([`crate::root::exports`], installed with the root rows by [`register_stores`]). The kernel serves
-/// no export module of its own, so every module is a row here, and a linked row answers its module
-/// ahead of any dropped-in row spelling it.
+/// no export module of its own, so every module is a row here; a linked row and a different
+/// dropped-in plugin spelling one module refuse the boot (ARCHITECT Q-P4-12).
 pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
     crate::root::loader::observe::install_host_series(host_series);
     if let Some(registry) = dropped {

@@ -635,6 +635,7 @@ impl Rig {
             ("pools", &serde_yaml::Value::Null),
         )
         .expect("the plane instance is admitted")
+        .with_billable_classes(served.billable_classes.iter().map(|c| (*c).to_string()))
         .with_hooks(Arc::new(hooks.bound(primary.name, dialects)));
         Rig {
             driver,

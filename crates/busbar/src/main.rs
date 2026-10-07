@@ -29,9 +29,16 @@
 // background_thread`), so operators get it with zero configuration. NOT on windows-msvc: tikv-jemalloc-sys's
 // C build does not compile under native `cl.exe`, so MSVC (a shipped release target + CI gate) falls back
 // to the system allocator — the dep is target-gated in Cargo.toml and these two sites match.
-#[cfg(not(target_env = "msvc"))]
+#[cfg(all(not(target_env = "msvc"), not(test)))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+// The TEST binary runs on the same jemalloc, wrapped in the kernel's per-thread allocation counter
+// (the whole-path allocation gate reads it); the shipped binary above is untouched.
+#[cfg(all(not(target_env = "msvc"), test))]
+#[global_allocator]
+static GLOBAL: busbar_kernel::test_support::counting_alloc::Counting<tikv_jemallocator::Jemalloc> =
+    busbar_kernel::test_support::counting_alloc::Counting(tikv_jemallocator::Jemalloc);
 
 // The engine. Everything below composes busbar-core; the module imports keep the boot code's
 // paths reading the way they did when these modules were this crate's own.

@@ -346,6 +346,14 @@ fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRe
     }
 }
 
+/// Whether the key may be routed onto `pool` by a budget downgrade (the walk's `reach`,
+/// [`crate::ingress::admit_downgrading`]): guards one and two, the pool's grant and the grant of
+/// every fallback pool beyond it, as the requested pool was judged.
+#[must_use]
+pub fn may_reach(view: &dyn PoolView, pool: &str) -> bool {
+    pool_authorized(view, pool).is_none() && fallback_pools_authorized(view, pool).is_none()
+}
+
 /// Guard three: with a card present, every governed request must resolve to a priced destination.
 ///
 /// With no card configured [`PoolView::is_unpriced`] is `false` for every name, so the guard is inert

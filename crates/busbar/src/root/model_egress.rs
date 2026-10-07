@@ -47,9 +47,11 @@ struct ModelPool {
     passthrough: bool,
 }
 
-/// One model's own bounds: its concurrency cap, its attempt timeout and its context window.
+/// One model's own bounds: its concurrency cap, its attempt timeout and its context window; and
+/// the provider serving it.
 #[derive(Debug, Clone, Default)]
 struct ModelLane {
+    provider: String,
     max_concurrent: Option<usize>,
     attempt_timeout_ms: Option<u64>,
     context_max: Option<usize>,
@@ -88,6 +90,7 @@ impl ModelPools {
                 (
                     name.clone(),
                     ModelLane {
+                        provider: m.provider.clone(),
                         max_concurrent: m.max_concurrent,
                         attempt_timeout_ms: m.attempt_timeout_ms,
                         context_max: None,
@@ -218,6 +221,27 @@ impl ModelPools {
 }
 
 impl ModelServing {
+    /// THE LANE TABLE the health-probe schedule's deadlines are indexed by: each lane's index, its
+    /// model and the provider serving it, in lane order. Two generations whose tables are equal may
+    /// share one schedule; another table means another member at some index.
+    #[must_use]
+    pub fn lane_table(&self) -> Vec<(usize, String, String)> {
+        let mut table: Vec<(usize, String, String)> = self
+            .lanes
+            .iter()
+            .map(|(model, lane)| {
+                let provider = self
+                    .pools
+                    .lanes
+                    .get(model)
+                    .map_or_else(String::new, |l| l.provider.clone());
+                (*lane, model.clone(), provider)
+            })
+            .collect();
+        table.sort();
+        table
+    }
+
     /// THE MEMBERS THE HEALTH-PROBE SERVICE SCHEDULES (K7), in lane order: each model with a
     /// probing mode, at its lane's index and destination, under its resolved settings.
     #[must_use]

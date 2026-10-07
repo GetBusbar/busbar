@@ -426,6 +426,9 @@ struct DoorUnit {
     recorded: Option<u64>,
     /// A `ROUTE_SCOPE` unit several entries reach: those entries, named in its refusal's words.
     reachable: Vec<String>,
+    /// The end its plane reported for a reply the far end cut (abi/plane `PIECE_CUT`); `None`
+    /// when the unit's outcome decides.
+    reported: Option<busbar_contract::FinishClass>,
 }
 
 /// ONE UNIT'S KERNEL STEPS (see the module doc), lent to the plane driver for the unit's life.
@@ -587,6 +590,12 @@ impl<'s> DoorSteps<'s> {
     /// named, its expected units the estimate (`admission: estimate`) priced at the highest of the
     /// sealed members; on a pass, its money facts open on the money steps. `Ok(false)` when this
     /// composition keeps no governance book (nothing is charged, nothing is refunded).
+    ///
+    /// A BUDGET BLOCK THAT DOWNGRADES re-admits the unit on its `downgrade_to` pool through the
+    /// kernel's one walk (`busbar_kernel::ingress::admit_downgrading`; v1.5.5
+    /// `ingress/mod.rs:169-225` `admit_check`), each hop's pool judged by the key's grants as the
+    /// route as named was; the unit is then served by the pool it was charged on, as 1.5.5
+    /// dispatched through the effective pool (v1.5.5 `ingress/dispatch.rs:206`).
     fn charge(&self, ctx: &UnitCtx, key: &Arc<VirtualKey>) -> Result<bool, Refusal> {
         let (Some(gov), Some(money)) = (self.app.governance.as_ref(), self.money) else {
             return Ok(false);
@@ -596,25 +605,84 @@ impl<'s> DoorSteps<'s> {
             (u.routed.clone(), u.expected.clone())
         };
         let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
-        let pool = self.charged_pool(label);
-        let lanes: Vec<String> = routed
-            .iter()
-            .flat_map(|(_, members)| members)
-            .map(|m| plane_lane(&self.facts.plane, m))
-            .collect();
-        let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
+        // The lanes a pool's members are sealed on: the route as named (`label`) reads its own
+        // routed members, a pool a downgrade reaches its resolved ones.
+        let lanes_of = |at: &str| -> Vec<String> {
+            let lanes = |members: &[String]| -> Vec<String> {
+                members
+                    .iter()
+                    .map(|m| plane_lane(&self.facts.plane, m))
+                    .collect()
+            };
+            if at == label {
+                routed
+                    .as_ref()
+                    .map_or_else(Vec::new, |(_, m)| lanes(m.as_slice()))
+            } else {
+                self.pools
+                    .resolve(ROUTE_POOL, Some(at.as_bytes()))
+                    .map_or_else(Vec::new, |(_, m)| lanes(m.as_slice()))
+            }
+        };
+        // The route as named, read once: the pool it is charged on and its lanes, which the first
+        // admission and (with no downgrade) the money facts share.
+        let named = (self.charged_pool(label), lanes_of(label));
         let units = self.expected_units(&expected);
-        let grant = gov
-            .try_admit_estimated(&self.app.cost, key, &pool, self.arrived, &models, &units)
-            .map_err(|blocked| {
-                // The plane serving the `pools` map answers a blocked admission in the previous
-                // release's words (`busbar_kernel::ingress::limit_refusal`).
-                if self.facts.plane.is_empty() {
-                    self.lock().refused.1 =
-                        Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+        let view = DoorPoolView {
+            pools: self.pools,
+            key: Some(key.as_ref()),
+            app: &self.app,
+        };
+        let configured = self.pools.pools();
+        let (grant, effective) = busbar_kernel::ingress::admit_downgrading(
+            &key.id,
+            label,
+            configured.len(),
+            |to| configured.contains_key(to),
+            // A downgrade pool is judged as the route as named was: the grant `approve` reads, and
+            // for the plane serving the `pools` map the destination guard `verify` reads.
+            |to| {
+                self.pools.granted(
+                    self.facts.scope_kind.as_deref(),
+                    Some(key.as_ref()),
+                    ROUTE_POOL,
+                    Some(to.as_bytes()),
+                ) && (!self.facts.plane.is_empty() || busbar_kernel::door::may_reach(&view, to))
+            },
+            |at| {
+                let admit = |pool: &str, lanes: &[String]| {
+                    let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
+                    gov.try_admit_estimated(
+                        &self.app.cost,
+                        key,
+                        pool,
+                        self.arrived,
+                        &models,
+                        &units,
+                    )
+                };
+                if at == label {
+                    admit(named.0.as_str(), named.1.as_slice())
+                } else {
+                    admit(self.charged_pool(at).as_str(), lanes_of(at).as_slice())
                 }
-                refusal_for(&blocked)
-            })?;
+            },
+        )
+        .map_err(|blocked| {
+            // The plane serving the `pools` map answers a blocked admission in the previous
+            // release's words (`busbar_kernel::ingress::limit_refusal`).
+            if self.facts.plane.is_empty() {
+                self.lock().refused.1 = Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+            }
+            refusal_for(&blocked)
+        })?;
+        if let Some(to) = &effective {
+            self.lock().routed = self.pools.resolve(ROUTE_POOL, Some(to.as_bytes()));
+        }
+        let (pool, lanes) = match effective.as_deref() {
+            Some(at) if at != label => (self.charged_pool(at), lanes_of(at)),
+            _ => named,
+        };
         money.open(
             ctx.key,
             UnitMoney {
@@ -623,7 +691,7 @@ impl<'s> DoorSteps<'s> {
                 pool,
                 // The first member until one answers; the money steps take the serving member's
                 // own key when its answer commits (`MoneySeam::served`).
-                model: lanes.first().cloned().unwrap_or_default(),
+                model: lanes.into_iter().next().unwrap_or_default(),
                 classes: Arc::clone(&self.facts.classes),
                 arrived: self.arrived,
                 mode: exhaustion_of(&self.app, key),
@@ -652,16 +720,16 @@ impl Drop for DoorSteps<'_> {
     }
 }
 
-/// The record's facts for a unit of these steps.
-fn facts(op: OpClassId, outcome: &Outcome) -> busbar_contract::AuditFacts {
-    busbar_contract::AuditFacts {
-        op_class: op,
-        finish: if outcome.is_completed() {
-            busbar_contract::FinishClass::Complete
-        } else {
-            busbar_contract::FinishClass::Error
-        },
-    }
+/// The record's facts for a unit of these steps: a completed unit seals the end its plane
+/// reported where it reported one (a reply the far end cut: `Partial`, or `Error` when nothing of
+/// it reached the caller), `Complete` where it did not; any other outcome seals `Error`.
+fn facts(
+    op: OpClassId,
+    outcome: &Outcome,
+    reported: Option<busbar_contract::FinishClass>,
+) -> busbar_contract::AuditFacts {
+    let completed = outcome.is_completed();
+    busbar_kernel::door::admitted_facts(op, reported.filter(|_| completed), completed)
 }
 
 impl DriverSteps for DoorSteps<'_> {
@@ -708,6 +776,10 @@ impl DriverSteps for DoorSteps<'_> {
 
     fn affinity(&self, _ctx: &UnitCtx, hash: u64) {
         self.lock().affinity = Some(hash);
+    }
+
+    fn reported_finish(&self, _ctx: &UnitCtx, finish: busbar_contract::FinishClass) {
+        self.lock().reported = Some(finish);
     }
 }
 
@@ -985,8 +1057,11 @@ impl Units for DoorSteps<'_> {
     }
 
     fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        let op = self.lock().op.unwrap_or(self.facts.audit_kind);
-        SeatVerdict::proceed(token, facts(op, outcome))
+        let (op, reported) = {
+            let u = self.lock();
+            (u.op.unwrap_or(self.facts.audit_kind), u.reported)
+        };
+        SeatVerdict::proceed(token, facts(op, outcome, reported))
     }
 
     fn audit_refused(
@@ -999,7 +1074,10 @@ impl Units for DoorSteps<'_> {
         let step = refusal
             .step()
             .unwrap_or(busbar_contract::caps::StepName::Admit);
-        SeatVerdict::proceed(token, facts(op, &Outcome::Refused(step, refusal.reason())))
+        SeatVerdict::proceed(
+            token,
+            facts(op, &Outcome::Refused(step, refusal.reason()), None),
+        )
     }
 
     fn encode(

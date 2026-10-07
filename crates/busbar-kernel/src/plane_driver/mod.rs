@@ -72,7 +72,8 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
-    REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION,
+    REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_COUNTED, ROUTE_LOCAL,
+    ROUTE_SESSION,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -93,7 +94,8 @@ pub use far_end::{
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, EngineCaller,
     GroupScope, HookBinder, HookRead, HostHooks, HostSource, Projection, Restrict, RewriteChain,
-    StageTaps, UnitHooks,
+    SessionStage, StageTaps, UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS,
+    STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
@@ -222,8 +224,13 @@ pub struct PlaneDriver {
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
     /// Which hooks bind to a unit of this plane; `None` = none ever does.
     hooks: Option<Arc<dyn HookBinder>>,
+    /// The instance's label, as admitted to the services.
+    label: Arc<str>,
     /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
     audit: Arc<dyn AuditSink>,
+    /// The plane's billable class names, in its tail's order: a [`UnitCount::class`] indexes
+    /// them. Empty until the root states them ([`PlaneDriver::with_billable_classes`]).
+    billable_classes: Arc<[String]>,
 }
 
 /// WHERE A DOOR UNIT'S AUDIT ROW GOES (ARCHITECT SEAM-L(k)): a plane writes its unit's audit row
@@ -346,7 +353,9 @@ impl PlaneDriver {
             services,
             sessions: Mutex::default(),
             hooks: None,
+            label: Arc::from(&*d.label),
             audit: Arc::new(CoreAudit),
+            billable_classes: Arc::from(Vec::new()),
         })
     }
 
@@ -377,6 +386,15 @@ impl PlaneDriver {
     #[must_use]
     pub fn with_hooks(mut self, binder: Arc<dyn HookBinder>) -> Self {
         self.hooks = Some(binder);
+        self
+    }
+
+    /// The plane's billable class names, in its tail's order (the Statement's billable classes):
+    /// what a reported [`UnitCount::class`] names, so a response-stage signal reads the count of
+    /// the class it is about.
+    #[must_use]
+    pub fn with_billable_classes(mut self, classes: impl IntoIterator<Item = String>) -> Self {
+        self.billable_classes = classes.into_iter().collect();
         self
     }
 
@@ -481,6 +499,33 @@ impl PlaneDriver {
 /// A head's fields, name and value, in order.
 pub type HeadFields = Vec<(Vec<u8>, Vec<u8>)>;
 
+/// THE CALLER'S HEAD AS IT CROSSES TO THE PLANE: its fields in order, but the contract's
+/// `NEVER_KEPT` ones (the credentials, and the caller's connection's own fields, `connection` among
+/// them) and every field the caller's `connection` field nominates, which is per-connection like it
+/// (RFC 9110 section 7.6.1). They go where `connection` goes: once it is struck, nothing downstream
+/// can tell a field it nominated from any other, and that field would be forwarded to a far end.
+#[must_use]
+pub fn caller_head(headers: &axum::http::HeaderMap) -> HeadFields {
+    use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
+    let nominated: Vec<&[u8]> = headers
+        .get_all(axum::http::header::CONNECTION)
+        .iter()
+        .map(axum::http::HeaderValue::as_bytes)
+        .collect();
+    headers
+        .iter()
+        .filter(|(n, _)| {
+            let n = n.as_str();
+            !NEVER_KEPT.contains(&n)
+                && !busbar_contract::abi::transport::fields::hop_by_hop(
+                    n,
+                    nominated.iter().copied(),
+                )
+        })
+        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect()
+}
+
 /// What arrived: the claim it matched and the caller's request, as the kernel keeps it.
 #[derive(Debug, Clone)]
 pub struct Arrival {
@@ -570,6 +615,13 @@ pub trait DriverSteps: Units {
     fn refusal_words(&self, _reason: ReasonCode) -> Option<Vec<u8>> {
         None
     }
+
+    /// THE END THE PLANE REPORTED for a reply the far end cut (abi/plane `PIECE_CUT`, ARCHITECT
+    /// RULING U11 Q1 2026-10-06): [`busbar_contract::FinishClass::Partial`] when a byte of it
+    /// reached the caller before the cut, [`busbar_contract::FinishClass::Error`] when none did.
+    /// Told when the route step ends with the reply done, before the audit seat; untold, the
+    /// reply's status decides the end the audit seals.
+    fn reported_finish(&self, _ctx: &UnitCtx, _finish: busbar_contract::FinishClass) {}
 }
 
 /// A refusal or failure the plane rendered, for the caller.
@@ -592,6 +644,8 @@ pub(crate) struct UnitState {
     declined: Option<(u32, u32)>,
     /// A REFUSED `arrive`'s own words (its `head.error`), for the plane's `refusal`.
     declined_words: Option<Vec<u8>>,
+    /// A REFUSED `arrive` stated `ROUTE_COUNTED`: a dialect read the request.
+    declined_counted: bool,
     rendered: Option<Rendered>,
     facts: cancel::Facts,
     bill: Option<CancelBill>,
@@ -678,6 +732,13 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         self.lock().declined.map(|(_, status)| status)
     }
 
+    /// The plane's `arrive` refused the arrival stating `ROUTE_COUNTED` (abi/plane "A refused
+    /// arrival", rule 7): a dialect read the request, so it is counted whatever its status.
+    pub fn declined_counted(&self) -> bool {
+        let st = self.lock();
+        st.declined.is_some() && st.declined_counted
+    }
+
     /// The status a refusal for `reason` goes out under, as [`Self::render`] chooses it.
     fn status_for(&self, reason: ReasonCode) -> u32 {
         let st = self.lock();
@@ -745,6 +806,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             let mut st = self.lock();
             st.declined = Some((o.refusal, o.refusal_status));
             st.declined_words = words;
+            st.declined_counted = o.route_flags & ROUTE_COUNTED != 0;
         }
         // A REFUSAL ABOUT AN ENTRY (abi/plane "A refused arrival", rule 6; ARCHITECT
         // Q-DEL-A2A-GATE) decodes as the entry it names: the caller's grant over it is judged
@@ -965,6 +1027,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     async fn route_async(&self, token: &Pass<Route>, ctx: &UnitCtx) -> StepAnswer<Route> {
         let d = self.driver;
         d.sweep();
+        self.state_stage(token);
         if let Err(stopped) = self.request_stage(token).await {
             let reason = self.stopped(stopped);
             d.money.finished(ctx);
@@ -993,6 +1056,13 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             run.lend_unit(self.arrival.claim, dialect, &caller_ref, 0);
         }
         let end = self.attempts(&mut run, None).await;
+        // THE END A CUT REACHED, as the plane reported it, for the audit seat to seal.
+        if matches!(end, route::End::Done) {
+            let finish = self.lock().facts.finish;
+            if let Some(finish) = finish {
+                self.steps.reported_finish(ctx, finish);
+            }
+        }
         // THE `response` STAGE TAP of a unit whose answer never reached the caller's head (the
         // head itself fires it, in the pump): the status the caller is answered under.
         match &end {

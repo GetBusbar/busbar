@@ -325,7 +325,6 @@ async fn with_no_card_no_name_is_unpriced_and_the_request_is_served() {
 ///
 /// Ports legacy `engine/tests/ingress_integration_tests.rs::test_budget_exhaustion_downgrades_pool`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: the door's admission (root door_steps DoorSteps::charge) refuses a budget block naming downgrade_to; it never re-admits on the downgrade pool (1.5.5 ingress::admit_check did)"]
 async fn an_exhausted_pool_budget_downgrades_onto_its_downgrade_pool() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-ported-downgrade";
@@ -671,7 +670,6 @@ async fn an_unresolved_model_is_counted_as_unresolved_never_its_raw_name() {
 ///
 /// Ports legacy `engine/tests/ingress_integration_tests.rs::test_gemini_unsupported_action_is_observable`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: root serve.rs counts a declined arrival only when its status is not 404/405, so the plane's 404 for an unsupported action is never on busbar_requests_total (1.5.5 counted it unresolved/client_error)"]
 async fn an_unsupported_path_action_is_a_counted_404() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-ported-count-tokens";
@@ -701,6 +699,36 @@ async fn an_unsupported_path_action_is_a_counted_404() {
         after > before,
         "the unsupported action is counted (pool=unresolved, outcome=client_error): \
          before={before} after={after}"
+    );
+    assert_eq!(far.served(), 0);
+}
+
+/// A REFUSAL NO DIALECT READ STAYS UNCOUNTED: a path no dialect claims (its 404) and a verb a
+/// dialect path does not take (its 405) never reached a dialect's own reading, so neither is on
+/// `busbar_requests_total`, as 1.5.5's router answered them before its ingress handlers ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusal_no_dialect_read_is_not_counted() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-ported-uncounted";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let before = requests_total(&scrape(), "unresolved", "client_error");
+    let (status, _, _) = call(&rig, "POST", "/nowhere-at-all", b"{}", &[], true).await;
+    assert_eq!(status, 404, "an unknown path is a 404");
+    let (status, _, _) = call(&rig, "GET", "/v1/chat/completions", b"", &[], true).await;
+    assert_eq!(status, 405, "a dialect path takes POST only");
+    let after = requests_total(&scrape(), "unresolved", "client_error");
+    assert_eq!(
+        after, before,
+        "neither refusal reached a dialect's reading, so neither is counted"
     );
     assert_eq!(far.served(), 0);
 }
@@ -1046,7 +1074,6 @@ async fn a_percent_encoded_converse_model_is_decoded_and_streamed_as_an_event_st
 ///
 /// Ports legacy `engine/tests/ingress_integration_tests.rs::test_real_mid_stream_failure_does_not_fail_over_to_second_member`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: the plane ABI hands the plane no cut signal for a far end's failed transfer (on_piece has no such flag), so Reply::cut never runs and no in-band error frame ends the caller's stream"]
 async fn a_stream_cut_after_its_first_byte_is_not_failed_over() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-ported-mid-stream";
@@ -1513,7 +1540,6 @@ async fn streamed_end(instance: &'static str, script: Script) -> (u16, FinishCla
 ///
 /// Ports legacy `unit/tests/chain.rs::the_tap_reports_the_end_a_status_line_cannot`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: the door's audit step (root door_steps facts()) seals Complete/Error from the unit outcome alone and no cut reaches it (no ABI cut signal), so a cut stream seals Complete, never Partial"]
 async fn a_cut_stream_seals_partial_and_a_failed_transfer_error_billing_nothing() {
     let _one = ONE_PUBLISHER.lock().await;
     let (status, finish, tokens) =
@@ -1541,7 +1567,6 @@ async fn a_cut_stream_seals_partial_and_a_failed_transfer_error_billing_nothing(
 ///
 /// Ports legacy `unit/tests/chain.rs::a_stream_audited_at_its_end_seals_the_class_the_tap_reported`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: the door's audit step (root door_steps facts()) seals Complete/Error from the unit outcome alone and no cut reaches it (no ABI cut signal), so a cut stream seals Complete, never Partial"]
 async fn a_stream_sealed_at_its_end_seals_the_class_its_relay_reported() {
     let _one = ONE_PUBLISHER.lock().await;
     for (instance, script, want) in [
@@ -1573,7 +1598,6 @@ async fn a_stream_sealed_at_its_end_seals_the_class_its_relay_reported() {
 ///
 /// Ports legacy `unit/tests/audit.rs::the_sealed_end_is_the_taps_where_there_is_one_and_the_status_where_there_is_not`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: the door's audit step (root door_steps facts()) seals Complete/Error from the unit outcome alone and no cut reaches it (no ABI cut signal), so a cut stream seals Complete, never Partial"]
 async fn the_sealed_end_is_the_relays_where_there_is_one_and_the_statuss_where_not() {
     let _one = ONE_PUBLISHER.lock().await;
     for (instance, script, want) in [
@@ -1703,7 +1727,11 @@ fn apply(rig: &DoorRig, instance: &str, members: &[u16], upstream_secs: u64) -> 
 
 /// The probe schedule the rig's door shares across its generations.
 fn probe_schedule(rig: &DoorRig) -> Arc<busbar_kernel::probe::ProbeSchedule> {
-    Arc::clone(&rig.appliers.0[0].probe_schedule)
+    let probes = rig.appliers.0[0]
+        .probes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(&probes.1)
 }
 
 /// AN APPLY THAT KEEPS THE MEMBER SET CARRIES THE PROBE SCHEDULE (the same one), so a mutation
@@ -1744,7 +1772,6 @@ async fn an_apply_over_the_same_members_carries_the_probe_schedule() {
 /// Ports legacy `engine/tests/runtime_carry_tests.rs::a_rebuild_carries_the_probe_schedule` (its
 /// changed-member-set half).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: root serve.rs mints the door's probe schedule once at compose (DoorApply.probe_schedule) and carries it across every apply, a changed member set included"]
 async fn an_apply_that_changes_the_members_mints_a_fresh_probe_schedule() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-ported-probe-fresh";
@@ -1801,43 +1828,7 @@ async fn an_unrelated_apply_reuses_the_warm_connector() {
     assert_eq!(rig.chat().await.0, 200);
 }
 
-/// AN APPLY THAT CHANGES `limits.upstream_request_timeout_secs` TAKES EFFECT: under two seconds a
-/// far end that answers after three is cut; once the apply raises it to ten, the same far end's
-/// answer is the caller's.
-///
-/// Ports legacy `engine/tests/runtime_carry_tests.rs::a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it`
-/// (its rebuild half).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: a config apply re-seals the door over the boot connector (main.rs apply hook, connector::the()), whose transports keep the boot request_timeout_secs; the raised timeout is not in force until restart"]
-async fn an_apply_that_raises_the_upstream_timeout_takes_effect() {
-    let _one = ONE_PUBLISHER.lock().await;
-    let instance = "serve-door-ported-client-rebuild";
-    let _published = Withdrawn(instance);
-    let slow = far_end_recording(Some(3_000), json_reply(200, SERVED)).await;
-    let rig = rig(
-        instance,
-        RigOpts {
-            members: &[(slow.port, 1)],
-            upstream_request_timeout_secs: Some(2),
-            ..RigOpts::default()
-        },
-    )
-    .await;
-    let (status, _, _) = rig.chat().await;
-    assert!(
-        status >= 500,
-        "under two seconds the slow answer is cut: {status}"
-    );
-    let generation = rig.appliers.0[0].current().generation;
-    assert_eq!(apply(&rig, instance, &[slow.port], 10), generation + 1);
-    let (status, _, body) = rig.chat().await;
-    assert_eq!(
-        status,
-        200,
-        "the raised timeout is in force after the apply: {}",
-        String::from_utf8_lossy(&body)
-    );
-}
+// retired: v1.5.5 main.rs:3128-3130 reused the client on every apply; upstream_request_timeout_secs is restart-to-apply (ARCHITECT RULING U11 Q4 2026-10-06)
 
 // ── the kernel router's served-traffic tests, on the door ───────────────────────────────────────
 

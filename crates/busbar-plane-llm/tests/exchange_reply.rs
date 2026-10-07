@@ -876,6 +876,33 @@ fn a_reply_that_is_cut_says_so() {
     assert_eq!(cut.fault, Some(Fault::Transient("transport")));
 }
 
+/// A same-dialect non-stream answer cut before its usage states zero units, replacing the floor
+/// it stated while relaying: a transfer the far end failed bills only what it reported (owner
+/// ruling Q31), never a floor over the bytes relayed.
+#[test]
+fn a_cut_replaces_the_floor_it_relayed_with_the_far_ends_report() {
+    let arrived = arrival("openai", false);
+    let lane = lane("openai");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let mut reply = Reply::new(&ctx, 200, JSON_HEAD);
+    let relayed = reply.feed(
+        &ctx,
+        br#"{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hello there"}}]"#,
+        false,
+        AT,
+    );
+    assert!(relayed.units.floor, "a floor while relaying");
+    let cut = reply.cut(&ctx, true);
+    assert!(cut.done);
+    assert!(cut.units.stated && !cut.units.floor, "{:?}", cut.units);
+    assert_eq!(cut.units.tokens_in + cut.units.tokens_out, 0);
+}
+
 // ── the stream's one drop path (design F3 "Drops", DF-MAP-IR-GAPS section E) ─────────────────────
 
 /// A far end's stream of `far`, relayed to a caller of `caller`: the paths the relay dropped.

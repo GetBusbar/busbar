@@ -27,7 +27,7 @@ use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{
-    Caller, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
@@ -49,8 +49,6 @@ use crate::root::loader::dispatch::plane_calls::PlaneInstance;
 use crate::root::door_steps::{egress_pool, DoorCaller, DoorSteps};
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
 #[cfg(linked_axis_node)]
-use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
-#[cfg(linked_axis_node)]
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 #[cfg(linked_axis_node)]
 use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
@@ -60,7 +58,7 @@ use busbar_contract::auth::AuthPrincipal;
 use busbar_contract::caps::{Pass, PrincipalId, Route};
 #[cfg(linked_axis_node)]
 use busbar_kernel::plane_driver::{
-    Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
+    caller_head, Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
 };
 #[cfg(linked_axis_node)]
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
@@ -379,6 +377,40 @@ impl HostServices for LateServices {
             Err(r) => Ran::Now(r),
         }
     }
+
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.verify_lookup(caller, key, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        match self.served() {
+            Ok(s) => s.verify_store(caller, key, entry, ttl_ms),
+            Err(r) => r,
+        }
+    }
+
+    fn content_scan(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        content: &[u8],
+        later: Later,
+    ) -> Ran {
+        match self.served() {
+            Ok(s) => s.content_scan(caller, unit, content, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.hook_call(caller, unit, ask, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
 }
 
 // ── the door planes, composed ─────────────────────────────────────────────────────────────────────
@@ -458,13 +490,44 @@ pub struct DoorApply {
     live: std::sync::RwLock<Arc<DoorLive>>,
     /// The plane's driver, which a generation's health probes run their units on (K7).
     driver: Arc<PlaneDriver>,
-    /// The health-probe schedule its generations share, phase-stable across a config apply.
-    probe_schedule: Arc<busbar_kernel::probe::ProbeSchedule>,
+    /// The health-probe schedule its generations share, phase-stable across a config apply that
+    /// keeps the lane table it is indexed by, and that lane table.
+    probes: std::sync::Mutex<(LaneTable, Arc<busbar_kernel::probe::ProbeSchedule>)>,
     /// The scope kinds its Statement declares.
     scope_kinds: Vec<&'static str>,
 }
 
+/// The lane table a probe schedule's deadlines are indexed by
+/// ([`crate::root::model_egress::ModelServing::lane_table`]).
+type LaneTable = Vec<(usize, String, String)>;
+
 impl DoorApply {
+    /// THE PROBE SCHEDULE A GENERATION SEALED OVER `models` RUNS ON (1.5.5 `build`, v1.5.5
+    /// main.rs:3596-3606): the current one, carried, when its lane table is the same; else a fresh
+    /// one, since its deadlines are kept by lane index and another table puts another member at an
+    /// index.
+    fn schedule_for(
+        &self,
+        models: Option<&crate::root::model_egress::ModelServing>,
+    ) -> (LaneTable, Arc<busbar_kernel::probe::ProbeSchedule>) {
+        let table = models.map_or_else(
+            Vec::new,
+            crate::root::model_egress::ModelServing::lane_table,
+        );
+        let held = self
+            .probes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.0 == table {
+            return (table, Arc::clone(&held.1));
+        }
+        let lanes = models.map_or(0, |m| m.probe_members().0);
+        (
+            table,
+            Arc::new(busbar_kernel::probe::ProbeSchedule::new(lanes)),
+        )
+    }
+
     /// The current generation's pools and egress.
     #[must_use]
     pub fn current(&self) -> Arc<DoorLive> {
@@ -632,7 +695,11 @@ impl DoorAppliers {
                 p.facts.bench_below_trip_threshold,
             ) {
                 Ok(mut live) => {
-                    arm_probes(&p.driver, facts, &mut live, Some(egress), &p.probe_schedule);
+                    let (table, schedule) = p.schedule_for(egress.reach.models);
+                    arm_probes(&p.driver, facts, &mut live, Some(egress), &schedule);
+                    *p.probes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = (table, schedule);
                     *p.live
                         .write()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(live);
@@ -1027,7 +1094,14 @@ pub(crate) fn compose_planes_over(
             (served_facts.section, section),
         )
         .map_err(|e| format!("{instance}: {e}"))?
-        .with_records(Arc::clone(&kernel), caller.clone());
+        .with_records(Arc::clone(&kernel), caller.clone())
+        // What a reported count's class names, for the response-stage signals.
+        .with_billable_classes(
+            served_facts
+                .billable_classes
+                .iter()
+                .map(|c| (*c).to_string()),
+        );
         // THE HOOK STAGE IN THE PLANE'S OWN ORDER (spec Part 3 section 12 "Hooks": the hook stages
         // run at the head of the route leg, in the hook order 1.5.5 used for that plane): a plane
         // whose tail states the gate-first order has its entries' gates and rewrites bound, filed
@@ -1124,10 +1198,13 @@ pub(crate) fn compose_planes_over(
             );
         }
         let driver = Arc::new(driver);
+        let models = egress.and_then(|e| e.reach.models);
+        let lane_table = models.map_or_else(
+            Vec::new,
+            crate::root::model_egress::ModelServing::lane_table,
+        );
         let probe_schedule = Arc::new(busbar_kernel::probe::ProbeSchedule::new(
-            egress
-                .and_then(|e| e.reach.models)
-                .map_or(0, |m| m.probe_members().0),
+            models.map_or(0, |m| m.probe_members().0),
         ));
         arm_probes(&driver, &served_facts, &mut live, egress, &probe_schedule);
         let facts = live.facts.clone();
@@ -1146,7 +1223,7 @@ pub(crate) fn compose_planes_over(
             reach,
             live: std::sync::RwLock::new(Arc::new(live)),
             driver: Arc::clone(&driver),
-            probe_schedule,
+            probes: std::sync::Mutex::new((lane_table, probe_schedule)),
             scope_kinds: declared.scope_kinds.clone(),
         });
         served.planes.push(ServedPlane {
@@ -2189,11 +2266,7 @@ impl DataRoutes {
             credential,
             app,
         } = req;
-        let fields: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
+        let fields: HeadFields = caller_head(&headers);
         let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
         let arrival = Arrival {
             claim,
@@ -2342,11 +2415,7 @@ impl DataRoutes {
             credential,
             app,
         } = req;
-        let fields: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
+        let fields: HeadFields = caller_head(&headers);
         let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
         let arrival = Arrival {
             claim,
@@ -2667,12 +2736,15 @@ impl DataRoutes {
         served.money.settle_end(unit, status);
         // THE REQUEST FAMILIES of the plane serving the `pools` map (the flat card's plane), as the
         // previous release's `ingress::finish_inner` emitted them: for every request its dialect
-        // read (decoded, or refused for its body; a path it does not serve, or a verb it does not
-        // take, never reached a dialect), under the dialect it arrived in and the pool or model it
-        // named ("unresolved" when it named none the configuration holds).
+        // read (decoded, refused for its body, or refused by a dialect that read it and said so,
+        // abi/plane `ROUTE_COUNTED`, whatever its status: v1.5.5 `ingress/mod.rs:843`, `:864`,
+        // `:913`, `:931`; a path it does not serve, or a verb it does not take, never reached a
+        // dialect), under the dialect it arrived in and the pool or model it named ("unresolved"
+        // when it named none the configuration holds).
         if live.facts.plane.is_empty() {
             let decoded = units.decoded();
             let counted = decoded.is_some()
+                || units.declined_counted()
                 || units
                     .declined_status()
                     .is_some_and(|s| s != 404 && s != 405);
@@ -2687,8 +2759,13 @@ impl DataRoutes {
                     },
                     |d| d.dialect,
                 );
-                let pool = decoded
-                    .and_then(|d| d.pool)
+                // A pool route is counted under the pool that served it: a budget downgrade's, as
+                // 1.5.5 counted the effective pool (v1.5.5 ingress/dispatch.rs:206, :275).
+                let served_pool = steps.routed().map(|(label, _)| label);
+                let pool = served_pool
+                    .filter(|label| !label.is_empty())
+                    .map(String::into_bytes)
+                    .or_else(|| decoded.and_then(|d| d.pool))
                     .map(|p| String::from_utf8_lossy(&p).into_owned())
                     .filter(|name| {
                         live.pools.pools().contains_key(name)
@@ -2843,8 +2920,18 @@ impl FarEnd for DoorFar<'_, '_> {
         self.far().and_then(|far| far.failure(token))
     }
 
+    fn judged(&self, token: &Pass<Route>, fault: u8, billed: bool, done: bool) {
+        if let Some(far) = self.far() {
+            far.judged(token, fault, billed, done);
+        }
+    }
+
     fn candidates(&self, token: &Pass<Route>) -> Option<busbar_kernel::plane_driver::Candidates> {
         self.far().and_then(|far| far.candidates(token))
+    }
+
+    fn pool(&self, token: &Pass<Route>) -> Option<String> {
+        self.far().and_then(|far| far.pool(token))
     }
 
     fn constrain(&self, token: &Pass<Route>, constraint: busbar_kernel::plane_driver::Constraint) {

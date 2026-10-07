@@ -136,7 +136,7 @@ fn a_gemini_assistant_turn_round_trips_through_a_rewrite() {
             {"role": "model", "parts": [{"text": "hello"}]}
         ]}),
     );
-    let view = project(&a).expect("readable");
+    let view = project(&a);
     assert_eq!(view.turns[1].0, "assistant", "{:?}", view.turns);
 
     let mut g = arrived(
@@ -181,7 +181,7 @@ fn the_size_signal_and_the_projection_agree_on_tool_content() {
             {"role": "tool", "tool_call_id": "c1", "content": "TOOL RESULT PAYLOAD"}
         ]}),
     );
-    let view = project(&a).expect("readable");
+    let view = project(&a);
     assert_eq!(view.turns.len(), 3, "no turn is dropped");
     assert_eq!(
         view.turns[2],
@@ -199,7 +199,7 @@ fn the_size_signal_and_the_projection_agree_on_tool_content() {
         &json!({"model": "m", "messages": [{"role": "tool", "tool_call_id": "c1",
             "content": [{"type": "text", "text": "TOOL RESULT PAYLOAD"}]}]}),
     );
-    let view = project(&a).expect("readable");
+    let view = project(&a);
     assert_eq!(view.turns[0].1, "TOOL RESULT PAYLOAD");
     assert_eq!(view.text_chars, 19);
 }

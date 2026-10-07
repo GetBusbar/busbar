@@ -26,14 +26,17 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE, EMIT_DONE,
-    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, RECORD_AUDIT, VERDICT_RETRY,
+    units_bill, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE,
+    EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    RECORD_AUDIT, VERDICT_HARD, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::abi::transport::FAULT_NONE;
 use busbar_contract::caps::{Pass, ReasonCode, Route};
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
+use busbar_contract::FinishClass;
 use tokio::sync::watch;
 
 use super::cancel::{Buried, CancelBill, Checkpoint};
@@ -65,6 +68,10 @@ pub struct FarPiece {
     /// dispatch: a spill, the least-bad bypass, a queued slot), so it is never failed over: a
     /// retry verdict renders it, as 1.5.5 relayed a degraded dispatch's answer.
     pub relayed: bool,
+    /// With `last`: the far end ENDED BEFORE ITS END (its transfer failed or ran past its ceiling
+    /// before its framing said the answer was complete): pushed with `PIECE_CUT`, and the plane
+    /// ends the caller's reply as its dialect ends one cut short.
+    pub cut: bool,
 }
 
 /// What the walk answers for an attempt: the member to try, or the pool's exhaustion terminal.
@@ -169,11 +176,28 @@ pub trait FarEnd: Sync {
         None
     }
 
+    /// THE PLANE'S READING of the current attempt's answer: its breaker fault reading
+    /// (`OnPieceOut::fault`, one of the transport kind's `FAULT_*`; `FAULT_NONE` = none), whether
+    /// the answer reported a count that bills (`billed`: the far end served something the unit is
+    /// charged for), and whether its reply to the caller is complete (`done`), possibly before the
+    /// far end's last piece. Called once per answer that carries a reading or completes the reply.
+    /// The walk settles the attempt's breaker record and budget unit by it; the default reads
+    /// nothing.
+    fn judged(&self, token: &Pass<Route>, fault: u8, billed: bool, done: bool) {
+        let _ = (token, fault, billed, done);
+    }
+
     /// The candidates of the pool the walk routes the unit over, as the hooks are shown them;
     /// `None` when the walk names none (the hooks then see no candidate).
     fn candidates(&self, token: &Pass<Route>) -> Option<super::hooks::Candidates> {
         let _ = token;
         None
+    }
+
+    /// The name of the pool the walk routes the unit over, as [`Self::candidates`] names it, read
+    /// without reading its members; `None` when the walk names none.
+    fn pool(&self, token: &Pass<Route>) -> Option<String> {
+        self.candidates(token).map(|c| c.pool)
     }
 
     /// The hooks' constraint on the walk: the members it may pick, the order it tries them in, and
@@ -471,6 +495,7 @@ struct Answer {
     units_written: u32,
     records_written: u32,
     verdict: u32,
+    fault: u8,
     verb: Span,
     target: Span,
     need: u32,
@@ -495,6 +520,7 @@ impl Answer {
             units_written: o.units_written,
             records_written: o.records_written,
             verdict: o.verdict,
+            fault: o.fault,
             verb: o.verb,
             target: o.target,
             need: o.need,
@@ -1008,6 +1034,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 let far = Piece {
                     from: FROM_FAR_END,
                     flags: if piece.last { PIECE_LAST } else { 0 }
+                        | if piece.last && piece.cut {
+                            PIECE_CUT
+                        } else {
+                            0
+                        }
                         | if piece.fields { PIECE_FIELDS } else { 0 }
                         | if status.is_some() {
                             PIECE_HAS_STATUS
@@ -1035,6 +1066,16 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// Push one piece: the crossing, the one short re-call, the backpressure loop, the units, and
     /// the delivery of what the plane emitted.
     async fn push(&self, run: &mut Pumping<'_>, mut piece: Piece, toward: &mut Toward<'_>) -> Step {
+        // The plane's fault reading of a far-end answer, written on one window of it, and whether
+        // the answer reported a count that bills.
+        let (mut fault, mut billed) = (FAULT_NONE, false);
+        debug_assert!(
+            busbar_contract::abi::plane::check::check_piece_in(piece.from, piece.flags).is_ok(),
+            "the kernel lends only a well-formed piece"
+        );
+        // A CUT piece: whether a byte of the reply had reached the caller before it, which the
+        // plane's reading of the cut seals as the end it reached.
+        let cut_after_bytes = (piece.flags & PIECE_CUT != 0).then(|| run.lock().facts.streamed);
         loop {
             let (done, out, cause) = run.cross(&piece).await;
             if let Some(cause) = cause {
@@ -1060,6 +1101,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             };
             let bufs = &run.bufs;
             let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
+            billed |= units.iter().any(|u| units_bill(u.source) && u.amount > 0);
             let checkpoint = if units.is_empty() || !run.billed() {
                 Checkpoint::Continue
             } else {
@@ -1171,7 +1213,9 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         self.caller.head(out.reply_status, fields);
                         // The answer's head is the `response` stage (1.5.5 fires it at head time,
                         // a streamed body still flowing).
-                        self.response_tap(false, out.reply_status);
+                        let units =
+                            &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
+                        self.response_tap_with(false, out.reply_status, units);
                     }
                     let message_end = out.flags & EMIT_MESSAGE_END != 0;
                     if n != 0 || message_end {
@@ -1206,11 +1250,36 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     bufs.arena(out.final_details),
                 );
             }
+            if out.fault != FAULT_NONE {
+                fault = out.fault;
+            }
             if out.more == 1 {
                 piece = piece.continuation();
                 continue;
             }
-            return Step::Answered(out.flags & EMIT_DONE != 0);
+            let done = out.flags & EMIT_DONE != 0;
+            // THE END A CUT REACHED, as the plane reads it (abi/plane `PIECE_CUT`): a failure
+            // verdict on its closing answer is a reply cut short, PARTIAL when a byte of it had
+            // reached the caller before the cut and an ERROR when none had; a success verdict
+            // leaves the end to the reply's status.
+            if let Some(delivered) = cut_after_bytes {
+                if matches!(out.verdict, VERDICT_RETRY | VERDICT_HARD) {
+                    run.lock().facts.finish = Some(if delivered {
+                        FinishClass::Partial
+                    } else {
+                        FinishClass::Error
+                    });
+                }
+            }
+            // THE PLANE'S READING of the far end's answer settles the attempt's breaker record and
+            // budget unit (the walk's one rule, [`FarEnd::judged`]).
+            if piece.from == FROM_FAR_END
+                && matches!(toward, Toward::Caller)
+                && (fault != FAULT_NONE || done)
+            {
+                self.far.judged(run.token, fault, billed, done);
+            }
+            return Step::Answered(done);
         }
     }
 }

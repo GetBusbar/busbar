@@ -1477,40 +1477,58 @@ fn overflow() -> Vec<u8> {
     vec![b'x'; busbar_plane_llm::codec::eventstream::MAX_FRAME_BYTES + 16]
 }
 
+/// The counts the door is handed for `units`: what the money steps keep as the unit's last report.
+fn door_counts(units: &Units) -> Vec<(u32, u64)> {
+    busbar_plane_llm::plane_door::counts(units)
+        .iter()
+        .map(|u| (u.class, u.amount))
+        .collect()
+}
+
 /// A reframed stream whose translator gives up after its first byte (its reassembly overran) ends
-/// as a failure the breaker records (a transient), and still reports the 1000 tokens that streamed
-/// before it, which bill. Ports legacy
+/// as a failure the breaker records (a transient), and bills NOTHING: the 1000 tokens reported
+/// before the abort are replaced by a stated zero at the stream's natural end. A translator abort is
+/// busbar failing to produce the answer, not a cut (ARCHITECT RULING U11 Q2 2026-10-06; 1.5.5's
+/// stream end, v1.5.5 `crates/busbar/src/proxy/response_body.rs:563-575`, `billing_failed`). Ports
+/// legacy
 /// `ingress_indistinguishability_tests.rs::test_streaming_translate_abort_trips_breaker_and_skips_billing`.
 #[test]
-fn a_reframed_stream_whose_translator_gives_up_faults_and_still_reports_what_streamed() {
+fn a_reframed_stream_whose_translator_gives_up_faults_and_bills_nothing() {
     entropy();
-    let big = overflow();
-    let r = answer(
-        &arrival("anthropic", true),
-        "openai",
-        200,
-        SSE_HEAD,
-        &[USAGE_CHUNK, &big],
-        false,
+    let arrived = arrival("anthropic", true);
+    let lane = lane("openai");
+    let ctx = ctx(&arrived, &lane);
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
+    let mut reply = Reply::new(&ctx, 200, head);
+    let first = reply.feed(&ctx, USAGE_CHUNK, false, AT);
+    assert_eq!(
+        first.units.tokens_in + first.units.tokens_out,
+        1000,
+        "before the abort the stream reports what it read"
     );
+    let big = overflow();
+    let _ = reply.feed(&ctx, &big, false, AT);
+    let r = reply.feed(&ctx, &[], true, AT);
     assert!(r.done);
     assert_eq!(r.verdict, Verdict::Hard);
     assert_eq!(r.fault, Some(Fault::Transient("stream-translate-abort")));
     assert_eq!(breaker_fault(r.fault.as_ref()), FAULT_TRANSIENT);
+    assert_eq!(r.units, Units::withheld(), "nothing bills: {:?}", r.units);
     assert_eq!(
-        r.units.tokens_in + r.units.tokens_out,
-        1000,
-        "what streamed before the abort bills: {:?}",
-        r.units
+        door_counts(&r.units),
+        vec![(0, 0), (1, 0), (2, 0), (3, 0)],
+        "the zero is stated, so it replaces the 1000 reported before the abort"
     );
 }
 
-/// A caller that leaves a reframed stream after its translator gave up still bills the 1000 tokens
-/// that streamed: the cancel finds a partial answer and its last reported units stand. Ports legacy
+/// A caller that leaves a reframed stream after its translator gave up bills NOTHING: the units
+/// fall to a stated zero at the abort, and the cancel finds no partial answer (it answers ABORTED).
+/// The abort takes precedence over the caller's leaving (ARCHITECT RULING U11 Q2 2026-10-06; 1.5.5's
+/// drop arm, v1.5.5 `crates/busbar/src/proxy/response_body.rs:641-647`). The legacy test pinned that
+/// the streamed tokens bill; the ruling restates it to 0. Ports legacy
 /// `ingress_indistinguishability_tests.rs::test_cancel_drop_bills_streamed_tokens_on_aborted_translate`.
 #[test]
-#[ignore = "DIVERGENCE: the plane's cancel reads a stream whose translator gave up as no partial (CANCEL_ABORTED, bills nothing), as 1.5.5's drop arm did; the legacy test pins the later #62 rule that it bills what streamed"]
-fn a_caller_leaving_a_stream_whose_translator_gave_up_bills_what_streamed() {
+fn a_caller_leaving_a_stream_whose_translator_gave_up_bills_nothing() {
     entropy();
     let arrived = arrival("anthropic", true);
     let lane = lane("openai");
@@ -1522,13 +1540,37 @@ fn a_caller_leaving_a_stream_whose_translator_gave_up_bills_what_streamed() {
     let big = overflow();
     let second = reply.feed(&ctx, &big, false, AT);
     assert_eq!(
-        second.units.tokens_in + second.units.tokens_out,
-        1000,
-        "the units reported so far stand"
+        second.units,
+        Units::withheld(),
+        "the abort states zero over what streamed"
+    );
+    assert_eq!(
+        door_counts(&second.units),
+        vec![(0, 0), (1, 0), (2, 0), (3, 0)]
     );
     assert!(
+        !reply.partial(),
+        "the caller leaves no partial answer: its cancel bills nothing"
+    );
+}
+
+/// A caller that leaves a reframed stream mid-relay, with no abort, leaves a partial answer whose
+/// streamed units stand: its cancel bills what streamed (Part 2 #62, a mid-stream cut is not a
+/// refund). The door's own cell is `serve_door.rs`
+/// `the_pools_door_bills_a_stream_the_caller_dropped_what_its_readers_counted`.
+#[test]
+fn a_caller_leaving_a_reframed_stream_with_no_abort_bills_what_streamed() {
+    entropy();
+    let arrived = arrival("anthropic", true);
+    let lane = lane("openai");
+    let ctx = ctx(&arrived, &lane);
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
+    let mut reply = Reply::new(&ctx, 200, head);
+    let first = reply.feed(&ctx, USAGE_CHUNK, false, AT);
+    assert_eq!(first.units.tokens_in + first.units.tokens_out, 1000);
+    assert!(
         reply.partial(),
-        "the caller leaves a partial answer: its cancel bills what streamed"
+        "the caller leaves a partial answer: its cancel bills the 1000 that streamed"
     );
 }
 

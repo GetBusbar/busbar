@@ -2115,7 +2115,7 @@ fn compute_layout() -> String {
     record!(s, hsvc::VerifyStoreIn, [head, key, entry, ttl_ms]);
     record!(s, hsvc::EntitlementCheckIn, [head, target]);
     record!(s, hsvc::ContentScanIn, [head, content, into]);
-    record!(s, hsvc::HookCallIn, [head, stage, _reserved, view, into]);
+    record!(s, hsvc::HookCallIn, [head, stage, from, prompt, into]);
     record!(s, hsvc::RandomFillIn, [head, len, into]);
     record!(
         s,

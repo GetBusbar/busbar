@@ -485,6 +485,8 @@ pub(super) struct RigOpts<'a> {
     /// The deployment's `limits.upstream_request_timeout_secs`: the transports' wait for a far
     /// end's head, and (unless `stream_ceiling_secs` says otherwise) the stream ceiling.
     pub upstream_request_timeout_secs: Option<u64>,
+    /// No hook is bound: the four probed seats (and a ranker) are left out of the generation.
+    pub hookless: bool,
 }
 
 /// The Standard Webhooks signing secret the rig's `webhook-signature` instance holds (`whsec_` +
@@ -980,7 +982,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     if opts.reject_at_gate {
         gate_probe.reject = Some((451, "the gate says no"));
     }
-    {
+    if !opts.hookless {
         let a = Arc::get_mut(&mut app).expect("sole owner");
         a.rewrite_hooks = vec![(std::time::Duration::from_millis(500), Arc::new(rewrite))];
         // The request tap holds the prompt grant so its payload carries the (rewritten) messages.

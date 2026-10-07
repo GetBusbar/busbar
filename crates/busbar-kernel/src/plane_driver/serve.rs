@@ -11,8 +11,9 @@
 //! - A route that overlaps another instance's, or a reserved kernel admin route, is refused when
 //!   the snapshot is published (boot and refresh). The table is the router's fallback, so a
 //!   kernel route always matches first and is never shadowed.
-//! - The credentials the auth gate consumed ([`ConsumedCredentials`]) and the contract's
-//!   [`NEVER_KEPT`] fields never cross to the plane.
+//! - The credentials the auth gate consumed ([`ConsumedCredentials`]), the contract's
+//!   `NEVER_KEPT` fields and the fields the caller's `connection` nominates never cross to the
+//!   plane ([`super::caller_head`]).
 //! - The plane reports the audit outcome ([`ServeOut::audit`]); the kernel writes the row under
 //!   the route's `audit_verb`, as the admin shim writes a plane verb's.
 //! - One short answer is re-called once; a second short answer or a FAULT answers 502. An index
@@ -28,7 +29,6 @@ use axum::body::{Body, Bytes};
 use axum::extract::{FromRequest, Request};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
@@ -205,11 +205,7 @@ pub async fn answer(req: Request) -> Option<Response> {
         Ok(body) => body,
         Err(refused) => return Some(refused.into_response()),
     };
-    let head: HeadFields = headers
-        .iter()
-        .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-        .collect();
+    let head: HeadFields = super::caller_head(&headers);
     let target = match uri.query() {
         Some(q) => format!("{path}?{q}"),
         None => path.to_string(),
@@ -280,11 +276,7 @@ pub async fn answer_public(
     let Some((table, index, name)) = found else {
         return status_only(404);
     };
-    let head: HeadFields = headers
-        .iter()
-        .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-        .collect();
+    let head: HeadFields = super::caller_head(headers);
     let route = &table.routes[index];
     let served = serve(
         &*table.calls,
@@ -339,11 +331,7 @@ pub async fn served_at(
             })
         })
     }?;
-    let head: HeadFields = headers
-        .iter()
-        .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-        .collect();
+    let head: HeadFields = super::caller_head(headers);
     let calls = &*table.calls;
     let served = serve(
         calls,

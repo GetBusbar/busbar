@@ -34,13 +34,16 @@ use busbar_contract::abi::hook::{
     MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome as AbiOutcome, Span};
-use busbar_contract::abi::plane::{ProjectIn, ProjectOut, CLAIM_PROBE, SPAN_ABSENT};
+use busbar_contract::abi::plane::{
+    units_bill, ProjectIn, ProjectOut, UnitCount, CLAIM_PROBE, SPAN_ABSENT,
+};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
+use busbar_contract::records::UNIT_OUTPUT;
 use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 
 use super::{blob, FarEnd, PlaneUnits};
@@ -88,6 +91,13 @@ pub trait HookBinder: Send + Sync {
     /// dialects) the refusal was written in.
     fn denied(&self, dialect: u32, status: u16) {
         let _ = (dialect, status);
+    }
+
+    /// The name of dialect `dialect` (the index into the plane's dialects), the label a hook of an
+    /// in-session sub-operation is told; empty when the binder names none.
+    fn dialect(&self, dialect: u32) -> String {
+        let _ = dialect;
+        String::new()
     }
 }
 
@@ -406,6 +416,13 @@ fn denied_taps(
 }
 
 impl HookBinder for BoundHooks {
+    fn dialect(&self, dialect: u32) -> String {
+        self.dialects
+            .get(dialect as usize)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
         let parts = Parts::of(
             (&self.rewrites, &self.gates),
@@ -456,6 +473,13 @@ pub struct HostHooks {
 }
 
 impl HookBinder for HostHooks {
+    fn dialect(&self, dialect: u32) -> String {
+        self.dialects
+            .get(dialect as usize)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
         let host = (self.host)();
         let h = &*host;
@@ -1257,6 +1281,49 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         })
     }
 
+    /// THE UNIT'S IN-SESSION HOOK STAGE, stated on the kernel's unit records as its route leg
+    /// starts ([`SessionStage`]): the instance, the pool the walk routes it over (never one the
+    /// plane names), its verified principal and dialect, and this generation's binder. A health
+    /// probe states none (the kernel's own unit; no hook screens it).
+    pub(crate) fn state_stage(&self, token: &Pass<Route>) {
+        if self.arrival.claim == CLAIM_PROBE {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let d = self.driver;
+        // A unit reaches its route leg only through the decode step, which refuses every unit
+        // its plane did not decode (`DecodeFailed`), so its dialect is always known here; a unit
+        // with none would state no stage, and the in-session services refuse a unit they do not
+        // hold by name, never binding it under some other dialect.
+        let (unit, principal, arrived_in) = {
+            let st = self.lock();
+            let Some(arrived_in) = st.decoded.as_ref().map(|x| x.dialect) else {
+                return;
+            };
+            (
+                st.unit,
+                st.principal.as_ref().map(|p| p.as_str().to_string()),
+                arrived_in,
+            )
+        };
+        // The pool's name alone (not its members' facts), and the dialect's name read from the
+        // binder only when a sub-operation's view is shown it.
+        let pool = match &d.hooks {
+            Some(_) => self.far.pool(token).unwrap_or_default(),
+            None => String::new(),
+        };
+        let stage = SessionStage::of_binder(
+            Arc::clone(&d.label),
+            runtime,
+            d.hooks.clone(),
+            (pool, principal),
+            arrived_in,
+        );
+        let _held = d.services.units().staged(unit, Arc::new(stage));
+    }
+
     /// THE REQUEST STAGE, at the head of the route leg (module doc, steps 1-5).
     pub(crate) async fn request_stage(&self, token: &Pass<Route>) -> Result<(), Stopped> {
         let Some(binder) = self.driver.hooks.as_ref() else {
@@ -1275,9 +1342,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             return self.gated_stage(&**binder).await;
         }
-        let facts = self.far.candidates(token);
-        let named = facts.is_some();
-        let walk_pool = facts.as_ref().map(|c| c.pool.clone()).unwrap_or_default();
+        // The pool's name binds the hooks; its members' facts are read only for a unit some hook
+        // binds to (below, before anything is awaited).
+        let walk = self.far.pool(token);
+        let named = walk.is_some();
+        let walk_pool = walk.unwrap_or_default();
         let principal = self
             .lock()
             .principal
@@ -1291,6 +1360,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         }) else {
             return Ok(());
         };
+        let facts = self.far.candidates(token);
         self.lock().hooked_pool.clone_from(&walk_pool);
         // The unit's correlation id, a native `u64` on its span (never a formatted string), the
         // same value every hook payload and tap of the unit carries.
@@ -1688,8 +1758,15 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     }
 
     /// THE `response` STAGE TAP, once per unit: `gate` = the hooks refused it (the synthetic
-    /// `rejected_by_gate`), else a 2xx is `ok` and anything else `failed`.
+    /// `rejected_by_gate`), else a 2xx is `ok` and anything else `failed`. An answer with no
+    /// reported units carries no response-phase signal.
     pub(crate) fn response_tap(&self, gate: bool, status: u32) {
+        self.response_tap_with(gate, status, &[]);
+    }
+
+    /// The `response` stage tap of an answer whose head carried `units` (the plane's reported
+    /// counts on that answer): the declared response-phase signals are read from them.
+    pub(crate) fn response_tap_with(&self, gate: bool, status: u32, units: &[UnitCount]) {
         let mut st = self.lock();
         if st.responded {
             return;
@@ -1718,12 +1795,39 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     Some(outcome),
                     Some(status),
                 ),
-                SignalBag::default(),
+                response_signals(hooks.requested, &self.driver.billable_classes, units),
                 &*hooks.groups,
             );
         }
         st.responded = true;
     }
+}
+
+/// THE RESPONSE-PHASE CATALOG SIGNALS of an answer, read off the units the plane reported on it
+/// (THE DESIGN, Money: the plane reports the units). `response_tokens_out` is the billing count
+/// reported under the plane's billable class named [`UNIT_OUTPUT`], pushed only when some hook
+/// declared it and the answer reported one: a buffered answer's head carries its whole report, a
+/// stream still flowing at head time has reported none, and a transfer that read no usage reported
+/// none, so on those the key is absent (the catalog's absent-when-unknown rule). The default,
+/// nothing-declared path returns the empty bag.
+fn response_signals(wants: RequestedSignals, classes: &[String], units: &[UnitCount]) -> SignalBag {
+    let mut signals = SignalBag::default();
+    if wants.wants(Signal::ResponseTokensOut) {
+        let output = classes
+            .iter()
+            .position(|c| c == UNIT_OUTPUT)
+            .and_then(|i| u32::try_from(i).ok())
+            .and_then(|class| {
+                units
+                    .iter()
+                    .find(|u| u.class == class && units_bill(u.source))
+            })
+            .map(|u| u.amount);
+        if let Some(output) = output {
+            signals.push(Signal::ResponseTokensOut, SignalValue::U64(output));
+        }
+    }
+    signals
 }
 
 /// Step 2: the global request-stage taps, fire-and-forget; a `prompt: ro` tap is handed the
@@ -1753,5 +1857,329 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
         let policy = Arc::clone(hook);
         let budget = *timeout;
         spawn_bounded_tap(async move { policy.notify(tap, budget).await });
+    }
+}
+
+// ── the unit's hook stage, for its in-session sub-operations ────────────────────────────────────
+
+/// The role an in-session piece of content is shown to a gate under (`content.scan`).
+pub const CONTENT_ROLE: &str = "content";
+/// The words a gate whose `on_error: reject` could not answer stops a sub-operation with (the
+/// previous release's request gate, `hooks::gate`).
+pub const GATE_UNAVAILABLE: &str =
+    "A required gate could not complete, so this request was refused.";
+/// The status that stop wears.
+pub const GATE_UNAVAILABLE_STATUS: u16 = 403;
+/// The FAILED answer of a stage whose runtime is gone.
+pub const STAGE_GONE: &str = "the unit's hook stage is no longer running";
+
+/// THE HOOK STAGE ONE UNIT BINDS FOR ITS IN-SESSION SUB-OPERATIONS (`hook.call`, `content.scan`;
+/// THE DESIGN §11.12, ARCHITECT H2 ruling on op 17): stated by the driver when the unit's route leg
+/// starts, from what the KERNEL recorded of the unit (its plane instance, the pool the walk routes
+/// it over, its verified principal) and the binder of the generation the unit runs under. It binds
+/// the unit's hooks once, on first use, and every later call (a resumed chain included) runs over
+/// that one binding: a reload never moves a unit to another generation's hooks.
+///
+/// A gate here is the previous release's request gate for a protocol that routes to one upstream
+/// (`hooks::gate`): the gates in priority order, the first reject stopping it (clamped to the 4xx
+/// band), a gate that cannot answer deciding by its own `on_error`, the candidate-set verbs having
+/// nothing to act on. A rewrite is the request stage's rewrite chain, one hook at a time: the
+/// rewrite goes back to the plane, which applies it in its own dialect and resumes after it.
+pub struct SessionStage {
+    instance: Arc<str>,
+    runtime: tokio::runtime::Handle,
+    binder: Option<Arc<dyn HookBinder>>,
+    pool: String,
+    principal: Option<String>,
+    /// The dialect's name a sub-operation's hook is told; `None` = the binder's name for
+    /// `arrived_in`, read when a view is shown it (empty with no binder).
+    dialect: Option<String>,
+    /// The dialect the unit arrived in, as the index into the plane's dialects (what its hooks
+    /// are bound under).
+    arrived_in: u32,
+    bound: std::sync::OnceLock<Option<UnitHooks>>,
+}
+
+impl std::fmt::Debug for SessionStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionStage")
+            .field("instance", &self.instance)
+            .field("pool", &self.pool)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A stage's owed answer: dropped unanswered (its task never ran) it answers FAILED.
+struct OwedStage(Option<crate::host_units::StageDone>);
+
+impl OwedStage {
+    fn answer(mut self, a: crate::host_units::StageAnswer) {
+        if let Some(done) = self.0.take() {
+            done(a);
+        }
+    }
+}
+
+impl Drop for OwedStage {
+    fn drop(&mut self) {
+        if let Some(done) = self.0.take() {
+            done(crate::host_units::StageAnswer::Failed(STAGE_GONE));
+        }
+    }
+}
+
+impl SessionStage {
+    /// The stage of a unit of instance `instance`, routed over `pool` for `principal`, its hooks
+    /// bound by `binder` (none = no hook binds), run on `runtime`; the unit arrived in dialect
+    /// `arrived_in` (the index into the plane's dialects; its name is `dialect`), and its hooks bind
+    /// there. There is no default dialect: a stage is stated only for a unit its plane decoded.
+    #[must_use]
+    pub fn new(
+        instance: Arc<str>,
+        runtime: tokio::runtime::Handle,
+        binder: Option<Arc<dyn HookBinder>>,
+        (pool, principal, dialect): (String, Option<String>, String),
+        arrived_in: u32,
+    ) -> Self {
+        Self {
+            instance,
+            runtime,
+            binder,
+            pool,
+            principal,
+            dialect: Some(dialect),
+            arrived_in,
+            bound: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// [`Self::new`] for a unit whose dialect's name is the binder's own for `arrived_in` (empty
+    /// with no binder), read when a sub-operation's view is shown it rather than when the stage is
+    /// stated.
+    pub(crate) fn of_binder(
+        instance: Arc<str>,
+        runtime: tokio::runtime::Handle,
+        binder: Option<Arc<dyn HookBinder>>,
+        (pool, principal): (String, Option<String>),
+        arrived_in: u32,
+    ) -> Self {
+        Self {
+            instance,
+            runtime,
+            binder,
+            pool,
+            principal,
+            dialect: None,
+            arrived_in,
+            bound: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The dialect's name a sub-operation's hook is told.
+    fn dialect_name(&self) -> String {
+        match &self.dialect {
+            Some(name) => name.clone(),
+            None => self
+                .binder
+                .as_ref()
+                .map_or_else(String::new, |b| b.dialect(self.arrived_in)),
+        }
+    }
+
+    /// The unit's hooks, bound once.
+    fn hooks(&self) -> Option<&UnitHooks> {
+        self.bound
+            .get_or_init(|| {
+                self.binder.as_ref().and_then(|b| {
+                    b.bind(&Bind {
+                        pool: &self.pool,
+                        principal: self.principal.as_deref(),
+                        dialect: self.arrived_in,
+                    })
+                })
+            })
+            .as_ref()
+    }
+
+    /// The view a hook is shown of one sub-operation.
+    fn view(&self, system: Option<String>, turns: Vec<(String, String)>) -> Projection {
+        let total_chars = turns.iter().map(|(_, t)| t.chars().count()).sum::<usize>()
+            + system.as_deref().map_or(0, |s| s.chars().count());
+        Projection {
+            pool: self.pool.clone(),
+            dialect: self.dialect_name(),
+            message_count: turns.len(),
+            total_chars,
+            system,
+            turns,
+            ..Projection::default()
+        }
+    }
+
+    /// Run `job` over the unit's hooks on the stage's runtime and answer through `done`.
+    fn spawn<Fut>(
+        self: Arc<Self>,
+        done: crate::host_units::StageDone,
+        job: impl FnOnce(Arc<Self>) -> Fut + Send + 'static,
+    ) where
+        Fut: std::future::Future<Output = crate::host_units::StageAnswer> + Send + 'static,
+    {
+        let owed = OwedStage(Some(done));
+        let runtime = self.runtime.clone();
+        drop(runtime.spawn(async move {
+            let answer = job(self).await;
+            owed.answer(answer);
+        }));
+    }
+
+    /// THE GATES over `view`, in priority order: the first reject stops it.
+    async fn gate(&self, view: &Projection) -> crate::host_units::StageAnswer {
+        use crate::host_units::StageAnswer;
+        let Some(hooks) = self.hooks() else {
+            return StageAnswer::Pass;
+        };
+        let identity = CallerIdentity {
+            key_id: hooks.key.as_ref().map(|k| k.id.clone()),
+            key_name: hooks.key.as_ref().map(|k| k.name.clone()),
+            user: None,
+        };
+        for (
+            _,
+            ResolvedPolicy::Policy {
+                policy,
+                on_error,
+                timeout,
+                send_prompt,
+                send_user,
+                ..
+            },
+        ) in &hooks.gates
+        {
+            let req = view.request(
+                hooks.request_id,
+                &self.pool,
+                *send_prompt,
+                send_user.then(|| identity.clone()),
+            );
+            if req.prompt.is_some() {
+                (hooks.reads)(
+                    policy.name(),
+                    self.principal.as_deref(),
+                    &view.dialect,
+                    req.identity.is_some(),
+                );
+            }
+            let ctx = RoutingContext {
+                pool: &self.pool,
+                budget_remaining: None,
+                budget: &[],
+            };
+            let decided =
+                tokio::time::timeout(*timeout, policy.decide(&req, &[], &ctx, *timeout)).await;
+            match decided {
+                Ok(Ok(RoutingDecision::Reject { status, message })) => {
+                    return StageAnswer::Stop {
+                        status: status.clamp(400, 499),
+                        words: sanitize_reject_message(&message),
+                    };
+                }
+                // Nothing to rank or restrict for one sub-operation; only a reject applies.
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => {
+                    tracing::warn!(
+                        hook = policy.name(),
+                        pool = %self.pool,
+                        "in-session gate could not answer; applying its on_error"
+                    );
+                    if matches!(on_error, PolicyOnError::Reject) {
+                        return StageAnswer::Stop {
+                            status: GATE_UNAVAILABLE_STATUS,
+                            words: GATE_UNAVAILABLE.to_string(),
+                        };
+                    }
+                }
+            }
+        }
+        StageAnswer::Pass
+    }
+
+    /// THE REWRITE CHAIN over `view`, from hook `from`: the first hook that rewrites answers its
+    /// index and the rewrite; a reject stops it; a hook that cannot answer is passed over, as the
+    /// request stage passes it over.
+    async fn rewrite(&self, from: u32, view: &Projection) -> crate::host_units::StageAnswer {
+        use crate::host_units::StageAnswer;
+        let Some(hooks) = self.hooks() else {
+            return StageAnswer::Pass;
+        };
+        let most = busbar_contract::abi::host::service::HOOK_FROM_MAX as usize;
+        for (i, (timeout, hook)) in hooks
+            .rewrites
+            .iter()
+            .enumerate()
+            .take(most)
+            .skip(from as usize)
+        {
+            let req = view.request(hooks.request_id, &self.pool, true, None);
+            if req.prompt.is_some() {
+                (hooks.reads)(hook.name(), None, &view.dialect, false);
+            }
+            match hook.transform(&req, *timeout).await {
+                TransformOutcome::Rewrite(rw) => {
+                    return StageAnswer::Rewrote {
+                        index: u32::try_from(i).unwrap_or(u32::MAX),
+                        rewrite: serde_json::to_vec(&serde_json::json!({
+                            "messages": rw.messages,
+                            "tools": rw.tools,
+                        }))
+                        .unwrap_or_default(),
+                    };
+                }
+                TransformOutcome::Reject { status, message } => {
+                    return StageAnswer::Stop {
+                        status: clamp_reject_status(status),
+                        words: sanitize_reject_message(&message),
+                    };
+                }
+                TransformOutcome::Abstain => {}
+                TransformOutcome::Failed { message } => {
+                    tracing::warn!(
+                        hook = hook.name(),
+                        pool = %self.pool,
+                        error = %message,
+                        "in-session rewrite hook could not answer; proceeding unchanged"
+                    );
+                }
+            }
+        }
+        StageAnswer::Pass
+    }
+}
+
+impl crate::host_units::UnitHookStage for SessionStage {
+    fn instance(&self) -> &str {
+        &self.instance
+    }
+
+    fn call(
+        self: Arc<Self>,
+        ask: busbar_contract::services::HookAsk,
+        done: crate::host_units::StageDone,
+    ) {
+        self.spawn(done, move |stage| async move {
+            let view = stage.view(ask.system, ask.messages);
+            if ask.stage == busbar_contract::abi::host::service::HOOK_REWRITE {
+                stage.rewrite(ask.from, &view).await
+            } else {
+                stage.gate(&view).await
+            }
+        });
+    }
+
+    fn scan(self: Arc<Self>, content: Vec<u8>, done: crate::host_units::StageDone) {
+        self.spawn(done, move |stage| async move {
+            let text = String::from_utf8_lossy(&content).into_owned();
+            let view = stage.view(None, vec![(CONTENT_ROLE.to_string(), text)]);
+            stage.gate(&view).await
+        });
     }
 }

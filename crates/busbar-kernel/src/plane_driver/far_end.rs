@@ -42,6 +42,7 @@
 //! [`PollConns`], the auth binding the contract's [`OutboundAuth`], and both are handed in by the
 //! composition root.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -58,7 +59,8 @@ use crate::proxy::egress_unit::{
 };
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::transport::{
-    STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
+    FAULT_HARD, FAULT_TRANSIENT, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER,
+    STATUS_SUCCESS,
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{Pass, Route};
@@ -316,6 +318,7 @@ impl Egress {
                 live: None,
                 probe: None,
                 failed: None,
+                unread: None,
             }),
             probe_of: None,
             described: None,
@@ -351,6 +354,7 @@ impl Egress {
                 live: None,
                 probe: Some(member),
                 failed: None,
+                unread: None,
             }),
             probe_of: Some(destination),
             described: None,
@@ -402,6 +406,21 @@ struct State {
     /// Why the last attempt failed over, in the walk's failover vocabulary (the `routing` stage
     /// tap's `previous_failure`).
     failed: Option<&'static str>,
+    /// A success answer the far end ended cleanly, whose last piece the plane has not yet read:
+    /// the plane's reading of it ([`FarEnd::judged`]) still decides its breaker record and its
+    /// budget unit.
+    unread: Option<Unread>,
+}
+
+/// A success answer that ended at the far end before the plane read its last piece: the settled
+/// attempt's pool and member, kept (not copied) for the plane's reading of it.
+struct Unread {
+    pool: String,
+    member: Member,
+    /// One unit of lifetime budget was spent on the success.
+    spent: bool,
+    /// A byte of the streamed answer was delivered.
+    delivered: bool,
 }
 
 /// ONE UNIT'S FAR END over its [`Egress`].
@@ -583,12 +602,19 @@ fn join(base: &str, target: &[u8]) -> String {
     )
 }
 
-/// The authority (`host[:port]`) and the path of a joined target.
-fn split(url: &str) -> (&str, &str) {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    match rest.find('/') {
-        Some(at) => (&rest[..at], &rest[at..]),
-        None => (rest, "/"),
+/// The authority (`host[:port]`, as written) and the path of a joined target, cut by the
+/// contract's one dial-target reader (`busbar_contract::net::cut_target`), the cut the connector's
+/// endpoint check reads the same target's host through. The authority a member's auth binding signs
+/// is the one the dial reaches: it ends where the dialled host ends (a `\` is a `/`, so
+/// `https://a.example\@b.example/` names `a.example`) and it never carries a userinfo, as 1.5.5's
+/// signing host did (v1.5.5 `crates/busbar/src/proxy/egress.rs:18-52`). Empty when the target cuts
+/// to no authority, which the connector refuses to dial. Both borrow `url` wherever the cut reads
+/// them as written there.
+fn split(url: &str) -> (Cow<'_, str>, Cow<'_, str>) {
+    match busbar_contract::net::cut_target(url) {
+        Ok(cut) if !cut.path.is_empty() => (cut.host_port, cut.path),
+        Ok(cut) => (cut.host_port, Cow::Borrowed("/")),
+        Err(_) => (Cow::Borrowed(""), Cow::Borrowed("/")),
     }
 }
 
@@ -649,9 +675,13 @@ impl EgressFarEnd<'_> {
     /// still owns, a budget unit a delivery that did not complete spent, and a dispatch record no
     /// answer settled.
     fn settle(&self, w: &mut State) {
-        let Some(mut live) = w.live.take() else {
-            return;
-        };
+        drop(self.settled(w));
+    }
+
+    /// [`Self::settle`], answering what is left of the settled attempt (its pool and member among
+    /// it) to a caller that keeps some of it.
+    fn settled(&self, w: &mut State) -> Option<Live> {
+        let mut live = w.live.take()?;
         let e = self.egress;
         if let Some(conn) = live.conn.take() {
             let _closed = e.conns.close(e.caller, conn);
@@ -674,6 +704,7 @@ impl EgressFarEnd<'_> {
             e.journal.abandoned(&live.record);
         }
         drop(live.permit.take());
+        Some(live)
     }
 
     fn metric_pool<'m>(pool: &'m str, member: &'m Member) -> &'m str {
@@ -726,6 +757,7 @@ impl EgressFarEnd<'_> {
                 .and_then(|r| r.auth.as_ref())
                 .is_some_and(|a| a.passthrough);
         let provider = route.map(|r| r.provider.clone()).unwrap_or_default();
+        w.unread = None;
         w.live = Some(Live {
             pool: pool.clone(),
             member,
@@ -852,10 +884,9 @@ impl EgressFarEnd<'_> {
         &self,
         binding: &AuthBinding,
         request: &OutboundRequest,
-        url: &str,
+        (authority, path_query): (&str, &str),
         extensions: Vec<u8>,
     ) -> Option<Vec<AuthField>> {
-        let (authority, path_query) = split(url);
         let (path, query) = match path_query.split_once('?') {
             Some((p, q)) => (p, Some(q.as_bytes().to_vec())),
             None => (path_query, None),
@@ -978,10 +1009,21 @@ impl EgressFarEnd<'_> {
             return false;
         }
         let url = join(&base_url, &request.target);
+        // ONE CUT of the target: the authority the auth call signs and the path the head carries
+        // are the dial's own. A target that cuts to no authority names no host the connector would
+        // dial: refused as its open refuses it, before any auth call.
+        let (authority, path) = split(&url);
+        if authority.is_empty() {
+            let _ = self.no_answer(token, NoAnswer::Connect);
+            return false;
+        }
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = &route.auth {
-            match self.auth_fields(binding, &request, &url, extensions).await {
+            match self
+                .auth_fields(binding, &request, (&authority, &path), extensions)
+                .await
+            {
                 Some(fields) => auth = fields,
                 None => {
                     // Not the destination's fault: nothing recorded against it; the next member.
@@ -994,7 +1036,6 @@ impl EgressFarEnd<'_> {
         // The method and the path (with its query) are the request's head words
         // (`OpenDesc::method`, `OpenDesc::head_target`), never fields: the framer writes its own
         // wire head from them.
-        let (_, path) = split(&url);
         // The head's fields the framer encodes: the auth fields, then the plane's. It holds the
         // auth values, so it wipes itself when the open has taken it.
         let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len()));
@@ -1265,12 +1306,18 @@ impl EgressFarEnd<'_> {
                 }
             }
         }
-        self.end(false)
+        FarPiece {
+            cut: true,
+            ..self.end(false)
+        }
     }
 
-    /// The answer ended: `clean` keeps the budget unit its success spent.
+    /// The answer ended: `clean` keeps the budget unit its success spent, until the plane's
+    /// reading of the answer says otherwise ([`Self::judge`]).
     fn end(&self, clean: bool) -> FarPiece {
         let mut w = self.lock();
+        // A clean success's budget standing, kept for the plane's reading of it.
+        let mut unread = None;
         if let Some(live) = w.live.as_mut() {
             if !clean && live.spent && !live.delivered {
                 // A delivery that did not complete gives its budget unit back unless a byte of a
@@ -1278,13 +1325,107 @@ impl EgressFarEnd<'_> {
                 // #77(2)); a buffered answer delivered nothing (v1.5.5 `engine/mod.rs:329-353`).
                 self.egress.breaker.refund_budget(live.member.destination);
             }
+            if clean && live.answered && live.error_left.is_none() && self.probe_of.is_none() {
+                unread = Some((live.spent, live.delivered));
+            }
             live.spent = false;
             live.ended = true;
         }
-        self.settle(&mut w);
+        let settled = self.settled(&mut w);
+        w.unread = match (unread, settled) {
+            (Some((spent, delivered)), Some(live)) => Some(Unread {
+                pool: live.pool,
+                member: live.member,
+                spent,
+                delivered,
+            }),
+            _ => None,
+        };
         FarPiece {
             last: true,
             ..FarPiece::default()
+        }
+    }
+
+    /// THE PLANE'S READING OF A SUCCESS ANSWER (`OnPieceOut::fault`, one of the transport kind's
+    /// `FAULT_*`), whether the answer reported a count that bills (`billed`), and whether its reply
+    /// to the caller is complete (`done`). The head's success was recorded and its budget unit spent
+    /// when the head arrived; the plane's reading of the whole answer settles both, by ONE rule:
+    ///
+    /// * a transient or hard fault is the destination's, so a COMPENSATING outcome is recorded
+    ///   against the member; and an answer the destination failed that came to nothing (no byte of
+    ///   a streamed answer delivered, spec Part 2 #62, and no count billed) gives its budget unit
+    ///   back. 1.5.5 did exactly this for a 2xx it could not translate (v1.5.5
+    ///   `crates/busbar/src/proxy/engine/mod.rs:575-588`) and recorded the fault, keeping the unit,
+    ///   for a stream's terminal error after its first byte
+    ///   (`crates/busbar/src/proxy/response_body.rs:451-480`); a failed generation the far end
+    ///   charged for keeps its unit too (owner ruling Q31: the far end served);
+    /// * no fault (or the caller's) leaves the success standing and keeps the unit, even when the
+    ///   plane ends the reply before the far end's last byte: the far end served, and an answer the
+    ///   plane could not hand on (one over its translation cap) is not the destination's fault
+    ///   (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:358-377`).
+    ///
+    /// A non-success answer was recorded on its head and a cut answer when it was cut: neither is
+    /// read again here.
+    fn judge(&self, token: &Pass<Route>, fault: u8, billed: bool, done: bool) {
+        if self.probe_of.is_some() {
+            return;
+        }
+        let failed = match fault {
+            FAULT_TRANSIENT => Some(Outcome::Transient { retry_after: None }),
+            FAULT_HARD => Some(Outcome::HardDown),
+            _ => None,
+        };
+        let mut w = self.lock();
+        match w.live.as_mut() {
+            Some(live) if live.answered && !live.ended && live.error_left.is_none() => {
+                let (spent, delivered) = (live.spent, live.delivered);
+                if failed.is_some() || done {
+                    // Settled here: the unit given back below on a fault, kept otherwise.
+                    live.spent = false;
+                }
+                if done {
+                    // The plane's reply is complete: the rest of the far end's answer is never read.
+                    live.ended = true;
+                }
+                if let Some(outcome) = failed {
+                    let refund = spent && !delivered && !billed;
+                    self.fault_read(token, &live.pool, &live.member, outcome, refund);
+                }
+            }
+            Some(_) => {}
+            None => {
+                if let (Some(u), Some(outcome)) = (w.unread.take(), failed) {
+                    let refund = u.spent && !u.delivered && !billed;
+                    self.fault_read(token, &u.pool, &u.member, outcome, refund);
+                }
+            }
+        }
+        if done && w.live.as_ref().is_some_and(|l| l.ended) {
+            self.settle(&mut w);
+        }
+    }
+
+    /// A fault the plane read on `member`'s success answer through `pool` ([`Self::judge`]): the
+    /// compensating outcome recorded against the member, and the budget unit given back when the
+    /// answer came to nothing (`refund`).
+    fn fault_read(
+        &self,
+        token: &Pass<Route>,
+        pool: &str,
+        member: &Member,
+        outcome: Outcome,
+        refund: bool,
+    ) {
+        let e = self.egress;
+        if e.breaker
+            .observe(pool, member.destination, outcome, e.clock.now_secs(), token)
+        {
+            e.telemetry
+                .breaker_trip(Self::metric_pool(pool, member), member.destination);
+        }
+        if refund {
+            e.breaker.refund_budget(member.destination);
         }
     }
 
@@ -1357,6 +1498,7 @@ impl EgressFarEnd<'_> {
                 fields: false,
                 head: Vec::new(),
                 relayed: live.degraded,
+                cut: false,
             };
         }
         let classified = e.breaker.classify(destination, status);
@@ -1400,6 +1542,7 @@ impl EgressFarEnd<'_> {
                     fields: false,
                     head: Vec::new(),
                     relayed,
+                    cut: false,
                 },
             );
             if piece.last {
@@ -1453,6 +1596,13 @@ impl FarEnd for EgressFarEnd<'_> {
         token: &'a Pass<Route>,
     ) -> impl Future<Output = Option<FarPiece>> + Send + 'a {
         self.next_piece(token)
+    }
+
+    fn pool(&self, _token: &Pass<Route>) -> Option<String> {
+        self.egress
+            .pools
+            .get(&self.route.pool)
+            .map(|pool| pool.name.clone())
     }
 
     fn candidates(&self, _token: &Pass<Route>) -> Option<Candidates> {
@@ -1518,6 +1668,10 @@ impl FarEnd for EgressFarEnd<'_> {
 
     fn failure(&self, _token: &Pass<Route>) -> Option<&'static str> {
         self.lock().failed
+    }
+
+    fn judged(&self, token: &Pass<Route>, fault: u8, billed: bool, done: bool) {
+        self.judge(token, fault, billed, done);
     }
 
     fn constrain(&self, _token: &Pass<Route>, constraint: Constraint) {
