@@ -79,25 +79,26 @@ fn item_183_the_axis_ban_judges_the_money_path_and_the_contract() {
     );
 }
 
-/// Item 184: a concern duplicated between two planes that are not mcp+a2a is seen.
+/// Item 184: a concern duplicated between two planes that are not mcp+a2a is seen. (Planted beside
+/// the MCP plane since FLIP-LLM deleted the engine crate the first copy used to sit in.)
 #[test]
-fn item_184_a_duplicate_between_llm_and_voice_is_seen() {
+fn item_184_a_duplicate_between_mcp_and_voice_is_seen() {
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-llm/src/planted_llm_voice_copy.rs",
-        "pub fn planted_llm_voice_copy() {}\n",
+        "crates/busbar-mcp/src/mcp/planted_mcp_voice_copy.rs",
+        "pub fn planted_mcp_voice_copy() {}\n",
     );
     ov.set(
-        "crates/busbar-voice/src/planted_llm_voice_copy.rs",
-        "pub fn planted_llm_voice_copy() {}\n",
+        "crates/busbar-voice/src/planted_mcp_voice_copy.rs",
+        "pub fn planted_mcp_voice_copy() {}\n",
     );
     names(
         &run(ov),
         UNLEDGERED,
         &[
-            "`planted_llm_voice_copy`",
-            "llm:crates/busbar-llm/src/planted_llm_voice_copy.rs:1",
-            "voice:crates/busbar-voice/src/planted_llm_voice_copy.rs:1",
+            "`planted_mcp_voice_copy`",
+            "mcp:crates/busbar-mcp/src/mcp/planted_mcp_voice_copy.rs:1",
+            "voice:crates/busbar-voice/src/planted_mcp_voice_copy.rs:1",
         ],
     );
 }

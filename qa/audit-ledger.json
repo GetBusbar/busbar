@@ -670,24 +670,6 @@
    ]
   },
   {
-   "id": "crates/busbar-llm/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-llm/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-llm/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-mcp/src",
    "kind": "production",
    "paths": [
@@ -1715,68 +1697,6 @@
       "LOW": 2
      },
      "report": "Kind-neutral doubles, SHA-256 checked against an independent implementation, good durable-publish fault matrix; but two module docs describe batteries living in another crate, and the edit-every-byte test cannot reach the frame-version downgrade or tell a torn verdict from a corrupt one. Read fully."
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-llm/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-llm/src/tests"
-   ],
-   "tree_hash": "e2812772368412392f6bdc4b8cd18c777e103096f4c51e78d678640e51b37fdc",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "LOW": 1
-   },
-   "report": "Breaks Law 1 and Law 5: the legacy plane's tests pin its dialect list to the kernel's dialect registry and ask the kernel for a default dialect and a dialect-specific stream shim key. The webhook tests cover a receiver no build constructs and accept a years-old signed timestamp because the verifier has no replay window. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "e2812772368412392f6bdc4b8cd18c777e103096f4c51e78d678640e51b37fdc",
-     "counts": {
-      "HIGH": 1,
-      "LOW": 1
-     },
-     "report": "Breaks Law 1 and Law 5: the legacy plane's tests pin its dialect list to the kernel's dialect registry and ask the kernel for a default dialect and a dialect-specific stream shim key. The webhook tests cover a receiver no build constructs and accept a years-old signed timestamp because the verifier has no replay window. Read fully."
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-llm/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-llm/tests"
-   ],
-   "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 2
-   },
-   "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
-     "counts": {
-      "LOW": 2
-     },
-     "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully."
     }
    ]
   },

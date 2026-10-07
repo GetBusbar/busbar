@@ -1028,11 +1028,11 @@ mod tests {
     fn only_a_rust_literal_that_begins_with_cargo_is_a_command() {
         let mut out = Vec::new();
         let prose = "the alloc gate. (It read '-p busbar-core' here for as long as ci.yml did.)";
-        let line = format!("    (\"cargo test -p busbar-llm --lib alloc_gate\", \"{prose}\"),");
+        let line = format!("    (\"cargo test -p busbar-kernel --lib alloc_gate\", \"{prose}\"),");
         scan_rust_commands("full_gate.rs", &line, &mut out);
         assert_eq!(
             out.iter().map(|s| s.pkg.as_str()).collect::<Vec<_>>(),
-            vec!["busbar-llm"],
+            vec!["busbar-kernel"],
             "prose that quotes a dead selector is not a command: {out:?}"
         );
         // ...and a doc comment is not scanned at all. THE PACKAGE HERE IS A LIVE ONE ON PURPOSE:

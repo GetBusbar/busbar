@@ -44,7 +44,9 @@
 # for their crate/wiring counterpart to land; until then, PLANE_KEYS states what is TRUE ON DISK, and
 # PLANE_KEYS_LOCKED (below) states what is true IN DOCTRINE, so no caller can mistake one for the
 # other by reading only this line.
-PLANE_KEYS="llm mcp a2a voice"
+# `llm` is struck: FLIP-LLM deleted crates/busbar-llm; the LLM plane is crates/busbar-plane-llm
+# (plane_ondisk_key below), served through its memory-ABI door and scanned by the plane-kind regime.
+PLANE_KEYS="mcp a2a voice"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
 # one place flows here automatically.
@@ -78,7 +80,8 @@ plane_ondisk_key() {
   case "$1" in
     streaming) printf 'voice' ;;
     decisions) printf 'plane-decisions' ;;
-    llm | mcp | a2a) printf '%s' "$1" ;;
+    llm) printf 'plane-llm' ;;
+    mcp | a2a) printf '%s' "$1" ;;
     *) printf '' ;;
   esac
 }

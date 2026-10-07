@@ -443,21 +443,6 @@ crate = "busbar-kernel-egress"
 kind = "plane"
 
 [[cell]]
-crate = "busbar-llm"
-kind = "contract"
-
-[[cell]]
-crate = "busbar-llm"
-kind = "plane"
-
-[[cell]]
-crate = "busbar-llm"
-kind = "transport"
-
-
-
-
-[[cell]]
 crate = "busbar-mcp"
 kind = "cleanliness"
 
@@ -542,8 +527,6 @@ crate = "busbar-store-memory"
 kind = "plane"
 
 
-
-
 [[cell]]
 crate = "busbar-transport-stdio"
 kind = "plane"
@@ -623,8 +606,8 @@ to      = "busbar-auth-oauth"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 / §6 step 3 — the composition root is the one thing that names all three axes; the auth plugin that serves a door plane's outbound style is linked on the `auths` axis (ARCHITECT Q-L1-AUTH (A) 2026-10-03); Part 3 §12 \"The switch\" (the llm fold's development-only `llm-on-driver` carries it)."
-why     = "busbar names busbar-auth-oauth: declared optional (feature `auth-oauth`, carried by the llm fold's `llm-on-driver` switch, not in `default`) in the shipped graph, 1 declaration(s) at this commit — the root compiles in the auth plugin serving the token styles (jwt-bearer, oauth-client-credentials) that a door-served llm member's egress binds its style through (door_steps `OutboundAuths`). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 / §6 step 3 — the composition root is the one thing that names all three axes; the auth plugin that serves a door plane's outbound style is linked on the `auths` axis (ARCHITECT Q-L1-AUTH (A) 2026-10-03); the llm plane's default switch `proto-llm` carries it since FLIP-LLM deleted the legacy engine and the development-only `llm-on-driver` switch (Part 3 §12 \"The switch\": deleted when the fold completes)."
+why     = "busbar names busbar-auth-oauth: declared optional (feature `auth-oauth`, carried by the llm plane's `proto-llm` switch, in `default` since FLIP-LLM) in the shipped graph, 1 declaration(s) at this commit — the root compiles in the auth plugin serving the token styles (jwt-bearer, oauth-client-credentials) that a door-served llm member's egress binds its style through (door_steps `OutboundAuths`). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
 drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -633,8 +616,8 @@ to      = "busbar-auth-sigv4"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 / §6 step 3 — the composition root is the one thing that names all three axes; the auth plugin that serves a door plane's outbound style is linked on the `auths` axis (ARCHITECT Q-L1-AUTH (A) 2026-10-03); Part 3 §12 \"The switch\" (the llm fold's development-only `llm-on-driver` carries it)."
-why     = "busbar names busbar-auth-sigv4: declared optional (feature `auth-sigv4`, carried by the llm fold's `llm-on-driver` switch, not in `default`) in the shipped graph, 1 declaration(s) at this commit — the root compiles in the auth plugin serving the signing style (sigv4) that a door-served llm member's egress binds its style through (door_steps `OutboundAuths`). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 / §6 step 3 — the composition root is the one thing that names all three axes; the auth plugin that serves a door plane's outbound style is linked on the `auths` axis (ARCHITECT Q-L1-AUTH (A) 2026-10-03); the llm plane's default switch `proto-llm` carries it since FLIP-LLM deleted the legacy engine and the development-only `llm-on-driver` switch (Part 3 §12 \"The switch\": deleted when the fold completes)."
+why     = "busbar names busbar-auth-sigv4: declared optional (feature `auth-sigv4`, carried by the llm plane's `proto-llm` switch, in `default` since FLIP-LLM) in the shipped graph, 1 declaration(s) at this commit — the root compiles in the auth plugin serving the signing style (sigv4) that a door-served llm member's egress binds its style through (door_steps `OutboundAuths`). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
 drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -643,8 +626,8 @@ to      = "busbar-auth-webhook-signature"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 / §6 step 3 — the composition root is the one thing that names all three axes; the auth plugin whose inbound verify a door plane's public route names by scheme is linked on the `auths` axis (Part 3 \"Inbound webhooks\"; ARCHITECT Q2 webhook receiver, 2026-10-06); Part 2 #2 rule 1 (compiled-in = dropped-in, same table): the root linking a plugin is Law, a measured re-measure and not an unplanned edge (ARCHITECT ruling KIND-ISOLATION, 2026-10-06, the same allowance as the Q-L1-AUTH rows); Part 3 §12 \"The switch\" (the llm fold's development-only `llm-on-driver` carries it)."
-why     = "busbar names busbar-auth-webhook-signature: declared optional (feature `auth-webhook-signature`, carried by the llm fold's `llm-on-driver` switch, not in `default`) in the shipped graph, 1 declaration(s) at this commit — the root compiles in the auth plugin serving the `webhook-signature` scheme the llm plane's webhook receiver names (root public_verify over the App's InboundSchemes). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 / §6 step 3 — the composition root is the one thing that names all three axes; the auth plugin whose inbound verify a door plane's public route names by scheme is linked on the `auths` axis (Part 3 \"Inbound webhooks\"; ARCHITECT Q2 webhook receiver, 2026-10-06); Part 2 #2 rule 1 (compiled-in = dropped-in, same table): the root linking a plugin is Law, a measured re-measure and not an unplanned edge (ARCHITECT ruling KIND-ISOLATION, 2026-10-06, the same allowance as the Q-L1-AUTH rows); the llm plane's default switch `proto-llm` carries it since FLIP-LLM deleted the legacy engine and the development-only `llm-on-driver` switch (Part 3 §12 \"The switch\": deleted when the fold completes)."
+why     = "busbar names busbar-auth-webhook-signature: declared optional (feature `auth-webhook-signature`, carried by the llm plane's `proto-llm` switch, in `default` since FLIP-LLM) in the shipped graph, 1 declaration(s) at this commit — the root compiles in the auth plugin serving the `webhook-signature` scheme the llm plane's webhook receiver names (root public_verify over the App's InboundSchemes). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
 drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -695,16 +678,6 @@ count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-llm"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-llm: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -769,18 +742,6 @@ why     = "busbar-core-oauth2 names busbar-contract: declared normal in the ship
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-llm"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 manifest allow-list — busbar-contract is the face every kind is written against."
-why     = "busbar-llm names busbar-contract: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-
-
-[[dep]]
 from    = "busbar-a2a"
 to      = "busbar-plane-a2a"
 half    = "shipped"
@@ -801,7 +762,6 @@ why     = "busbar-mcp names busbar-plane-mcp: declared normal in the shipped gra
 drain   = "delete the busbar-plane-mcp dependency from busbar-mcp's Cargo.toml — which happens when busbar-mcp itself folds into busbar-plane-mcp and is deleted (#19; BUSBAR-1.6.0.md THE DESIGN, §11.11), because the dialect is already where it belongs and it is the ENGINE that is still in the wrong crate."
 
 
-
 [[dep]]
 from    = "busbar-plugin-loader"
 to      = "busbar-plugin-example-plane"
@@ -811,30 +771,6 @@ verdict = "tcb"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"`loader` and `abi` are TCB crates, not kinds.\" The loader's drop-in conformance test dev-depends on the fixture's rlib for the COMPILED-IN PLANE_DECL reference it compares the DROPPED-IN decl against; a plugin-tooling-to-plugin-tooling test edge inside the trusted computing base."
 why     = "busbar-plugin-loader names busbar-plugin-example-plane: declared dev in the test graph so plane_conformance_tests can link the compiled-in PLANE_DECL, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the loader and the plugin tooling are outside the kind system (BUSBAR-1.6.0.md THE DESIGN, §2: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-llm"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-llm: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-
-
-
-[[dep]]
-from    = "busbar-mcp"
-to      = "busbar-llm"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-mcp names busbar-llm: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-llm dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
 
 [[dep]]
 from    = "busbar-core-oauth2"
@@ -958,16 +894,6 @@ why     = "busbar-a2a names busbar-kernel: declared normal in the shipped graph,
 drain   = "delete the busbar-kernel dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-llm"
-to      = "busbar-kernel"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-llm names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-kernel dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
 from    = "busbar-mcp"
 to      = "busbar-kernel"
 half    = "shipped"
@@ -986,9 +912,6 @@ verdict = "not-allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
 why     = "busbar-voice names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-kernel dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-
-
 
 
 # busbar-core-connector (formerly busbar-core-connsec) is the core-side connection-security seam carved out of busbar-kernel
@@ -1049,13 +972,23 @@ drain   = "delete the busbar-a2a dependency from busbar-kernel's Cargo.toml. A c
 
 [[dep]]
 from    = "busbar-kernel"
-to      = "busbar-llm"
+to      = "busbar-plane-llm"
 half    = "test"
 count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-kernel names busbar-llm: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-llm dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+verdict = "test-linked-door"
+cite    = "P3 FLIP-LLM deletion; ARCHITECT 2026-10-03 L3B-MCP round 4 Q-L3B-GATES (1): a test-only row for a test-linked door, no production edge. BUSBAR-1.6.0.md THE DESIGN, §1 / §9 grants no production pair. It replaces the kernel's test edge onto the deleted busbar-llm: the kernel's cross-plane harness folds a test-linked door's Statement into its registry (`test-linked` row `door:busbar-plane-llm`) and installs its protocol declarations (`test-linked-protocols`), so the one test plane carrying the protocol registry is the llm door, bound through the loader's one load. The number does not grow: one test edge onto the llm plane before, one after."
+why     = "busbar-kernel names busbar-plane-llm: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "test-only: the test-linked door moves to the plugin repo in W4 (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge"
+
+[[dep]]
+from    = "busbar-core-admin"
+to      = "busbar-plane-llm"
+half    = "test"
+count   = "1"
+verdict = "test-linked-door"
+cite    = "P3 FLIP-LLM deletion; ARCHITECT 2026-10-03 L3B-MCP round 4 Q-L3B-GATES (1): a test-only row for a test-linked door, no production edge. BUSBAR-1.6.0.md THE DESIGN, §1 / §9 grants no production pair. Moved, not added: the admin harness drove the deleted busbar-llm; it now folds the llm door's Statement (`test-linked` row `door:busbar-plane-llm`) and its protocol declarations."
+why     = "busbar-core-admin names busbar-plane-llm: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "test-only: the test-linked door moves to the plugin repo in W4 (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge"
 
 [[dep]]
 from    = "busbar-kernel"
@@ -1067,16 +1000,6 @@ cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair.
 why     = "busbar-kernel names busbar-mcp: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-mcp dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
-
-[[dep]]
-from    = "busbar-llm"
-to      = "busbar-kernel"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-llm names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-kernel dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar"

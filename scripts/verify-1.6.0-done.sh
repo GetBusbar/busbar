@@ -1574,7 +1574,9 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 if [ -d crates/busbar-kernel ]; then
   step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
   step "caps fixtures (busbar-contract)" cargo test -p busbar-contract --quiet
-  step "attempt identity (busbar-llm)"   filtered_cargo_test 2 cargo test -p busbar-llm --quiet attempt_identity
+  # The attempt-identity harness compared the legacy engine's two twins; it left with the engine
+  # (FLIP-LLM U11: busbar-llm is deleted, its two tests verified legacy-internal in the per-test
+  # coverage map), so there is no `-p busbar-llm` to run.
 else
   absent_step "kernel battery" "crates/busbar-kernel"
 fi

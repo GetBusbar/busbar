@@ -1370,7 +1370,7 @@ impl Gate for TellerStepsGate {
                         "meter",
                         "test",
                         Json::Str(format!(
-                            "{ROOT_DIR}tests/plane_node.rs::a_fn_that_was_renamed_away"
+                            "{ROOT_DIR}tests/serve_door.rs::a_fn_that_was_renamed_away"
                         )),
                     );
                 }),

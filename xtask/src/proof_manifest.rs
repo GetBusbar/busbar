@@ -601,28 +601,29 @@ fn verdict_byte_identity(root: &Path, run_cargo: bool) -> Json {
             ]),
         ),
     ])];
-    // The five money-path oracle tests (byte-identity of the delivery/billing/egress path).
+    // The five money-path oracle tests (byte-identity of the delivery/billing/egress path). Each
+    // names the file its legacy engine suite was ported into when FLIP-LLM deleted the engine crate
+    // (the per-test retire list in that commit names every test's own cover).
     let oracles = [
         (
             "egress-differential",
-            "crates/busbar-llm/src/engine/tests/egress_differential_tests.rs",
+            "crates/busbar/src/root/tests/serve_door_kernel_ported.rs",
         ),
         (
             "crossproto-billing",
-            "crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs",
+            "crates/busbar-plane-llm/tests/exchange_reply_ported.rs",
         ),
         (
             "on-exhausted",
-            "crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs",
+            "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs",
         ),
         (
             "pool-upstream-creds",
-            "crates/busbar-llm/src/engine/tests/pool_upstream_creds_tests.rs",
+            "crates/busbar-kernel/src/config/tests/tests.rs",
         ),
-        // busbar-core's ingress suite, relocated whole into busbar-llm (03ee7227c, a git rename).
         (
             "usage-decode-tap",
-            "crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs",
+            "crates/busbar/src/root/tests/serve_door_ported.rs",
         ),
     ];
     for (oid, opath) in oracles {

@@ -362,7 +362,7 @@ static KINDS: &[KindDef] = &[
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-a2a", "=busbar-voice"],
+        matchers: &["=busbar-mcp", "=busbar-a2a", "=busbar-voice"],
     },
 ];
 
@@ -440,7 +440,7 @@ const PENDING_EDGES: &[(&str, &str)] = &[
 ];
 
 /// The retiring 1.5.x crates, named so the ratchet can check they still exist.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+const LEGACY_CRATES: &[&str] = &["busbar-mcp", "busbar-a2a", "busbar-voice"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -744,7 +744,18 @@ const ARCHITECTURE_TCB: &[(&str, &str)] = &[
 ];
 
 /// The verdict a `[[dep]]` row must carry, and the whole vocabulary of them.
-const DEP_VERDICTS: &[&str] = &["allowed", "tcb", "not-allowed", "owner-ruling-pending"];
+const DEP_VERDICTS: &[&str] = &[
+    "allowed",
+    "tcb",
+    "not-allowed",
+    "owner-ruling-pending",
+    TEST_LINKED_DOOR_VERDICT,
+];
+
+/// A TEST-LINKED DOOR's verdict ([`test_linked_door_edges`]; ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1); ported from lane-dg-mcp dd0d4438ba at P3 DEL-MCP): a row claims it only for such
+/// an edge, and such an edge's row claims nothing else.
+const TEST_LINKED_DOOR_VERDICT: &str = "test-linked-door";
 
 /// The two halves of the build graph a `[[dep]]` or `[[question]]` row can be about.
 const DEP_HALVES: &[&str] = &["shipped", "test"];
@@ -2485,6 +2496,13 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         Half::Shipped => BTreeSet::new(),
     };
     let measured = measure_edges_granting(crates, half, &granted);
+    // A TEST-LINKED DOOR (`test_linked_door_edges`) is a test edge with its own verdict; the shipped
+    // half excuses nothing.
+    let doors = match half {
+        Half::Test => test_linked_door_edges(cx, crates, reg),
+        Half::Shipped => BTreeSet::new(),
+    };
+    let is_door = |from: &str, to: &str| doors.contains(&(from.to_owned(), to.to_owned()));
     // A ROW REFUSED AT LOAD IS REPORTED, NOT DROPPED. A table that quietly skips what it cannot
     // understand is a table that says yes to it, and the row it skipped is the one somebody wrote
     // to get an edge past this rule. Only the shipped row carries them, so one bad row is one
@@ -2677,6 +2695,10 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 if witness.contains(&(e.from.clone(), e.to.clone())) {
                     continue;
                 }
+                // A TEST-LINKED DOOR is excused on the test half only (`doors` is empty shipped).
+                if is_door(&e.from, &e.to) {
+                    continue;
+                }
                 // THE DRAIN IS THE ONE EDGE THAT IS SUPPOSED TO BE NEW.
                 //
                 // A `[[transitional]]` row is not a `[[dep]]` row wearing a different hat, and the
@@ -2817,8 +2839,27 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         // A ROW MAY NOT GRANT ITSELF AN EDGE THE ARCHITECTURE DOES NOT. `allowed` and `tcb` are
         // readings of the architecture, not opinions a row is entitled to hold: the class tables
         // are in this file precisely so the ledger cannot edit them.
-        let implied = verdict_for(&e.class);
+        let implied = if is_door(&e.from, &e.to) {
+            TEST_LINKED_DOOR_VERDICT
+        } else {
+            verdict_for(&e.class)
+        };
         match row.verdict.as_str() {
+            v if v == TEST_LINKED_DOOR_VERDICT && implied != TEST_LINKED_DOOR_VERDICT => offenders
+                .push(format!(
+                    "unsupported-verdict\t{} -> {}\tthe row claims `{TEST_LINKED_DOOR_VERDICT}`, \
+                     and the edge is not a test-linked door: a [dev-dependencies] edge on a plane \
+                     crate the crate's `test-linked` list names as `door:<crate>`, never shipped, \
+                     whose row states the drain `{TEST_LINKED_DOOR_DRAIN}` (the architecture \
+                     implies `{implied}`).",
+                    e.from, e.to
+                )),
+            v if v != TEST_LINKED_DOOR_VERDICT && implied == TEST_LINKED_DOOR_VERDICT => offenders
+                .push(format!(
+                    "unsupported-verdict\t{} -> {}\tthe edge is a test-linked door and the row \
+                     calls it `{v}`: its verdict is `{TEST_LINKED_DOOR_VERDICT}`.",
+                    e.from, e.to
+                )),
             "allowed" if implied != "allowed" => offenders.push(format!(
                 "unsupported-verdict\t{} -> {}\tthe row claims `allowed`, and the architecture \
                  grants no {} -> {} edge (it implies `{implied}`). A ledger row cannot grant an \
@@ -5333,6 +5374,60 @@ const COLD_WITNESS_KINDS: &[(&str, &str)] = &[
     ("secret", "secret"),
 ];
 
+/// The drain a test-linked door's test edge must state (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)).
+pub const TEST_LINKED_DOOR_DRAIN: &str =
+    "moves to the plugin repo in W4 (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC)";
+
+/// The `(from, to)` TEST edges that are a TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)): a crate's harness folds a plane door's Statement into its registry, which links
+/// the door's crate into the test binary and nothing else. Exempt from `new-forbidden-edge` only
+/// when ALL hold: the crate's `[package.metadata.busbar] test-linked` list names `door:<to>`; `to`
+/// is a `[dev-dependencies]` entry and NOT a shipped one; `to` is of kind `plane`; and a `[[dep]]`
+/// row for exactly that edge, half `test`, states the drain [`TEST_LINKED_DOOR_DRAIN`]. The shipped
+/// half excuses nothing: there is no production edge.
+fn test_linked_door_edges(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &KindRegistry,
+) -> BTreeSet<(String, String)> {
+    let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut out = BTreeSet::new();
+    for c in crates {
+        let Ok(manifest) = cx.read(&c.manifest) else {
+            continue;
+        };
+        let doors: Vec<String> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("test-linked") && l.contains('='))
+            .flat_map(|l| {
+                l.split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .filter_map(|e| e.strip_prefix("door:"))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for door in doors {
+            let dev = c.dev_deps.iter().any(|d| d.pkg == door);
+            let shipped = c.deps.iter().any(|d| d.pkg == door);
+            let plane = by_name.get(door.as_str()).and_then(|t| t.kind) == Some("plane");
+            let row = reg.dep_edges.iter().any(|r| {
+                r.from == c.name
+                    && r.to == door
+                    && r.half == "test"
+                    && r.drain.contains(TEST_LINKED_DOOR_DRAIN)
+            });
+            if dev && !shipped && plane && row {
+                out.insert((c.name.clone(), door));
+            }
+        }
+    }
+    out
+}
+
 /// The `(from, to)` TEST edges that are a cold kind's both-ways witness, and so are not a
 /// `new-forbidden-edge`: a `plugin-tooling` crate's `[dev-dependencies]` edge to EXACTLY the crate
 /// its own `[package.metadata.busbar.both-ways]` table names for a cold kind, that crate being of
@@ -6911,6 +7006,50 @@ impl Gate for KindIsolationGate {
                 ],
             ));
 
+            // A TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4 Q-L3B-GATES (1)) is exempt
+            // only while its row states the drain and its crate's `test-linked` list names the
+            // door: the kernel's row with its drain struck, or the kernel no longer naming the door,
+            // is the edge's own verdict again, and red.
+            let door_row =
+                "drain   = \"test-only: the test-linked door moves to the plugin repo in W4 \
+                            (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge\"";
+            let mut ov = Overlay::new();
+            ov.set(
+                REGISTRY_FILE,
+                cx.read(REGISTRY_FILE).unwrap_or_default().replacen(
+                    door_row,
+                    "drain   = \"none\"",
+                    1,
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a test-linked door's row that states no drain is not a test-linked door",
+                &[ROW_TEST_DEPS],
+                ov,
+                &["unsupported-verdict", "busbar-kernel -> busbar-plane-llm"],
+            ));
+            let mut ov = Overlay::new();
+            let kernel = "crates/busbar-kernel/Cargo.toml";
+            ov.set(
+                kernel,
+                cx.read(kernel).unwrap_or_default().replacen(
+                    "\"door:busbar-plane-llm\"",
+                    "\"busbar-plane-llm\"",
+                    1,
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plane crate the kernel's `test-linked` list does not name as a door is no \
+                 test-linked door",
+                &[ROW_TEST_DEPS],
+                ov,
+                &["unsupported-verdict", "busbar-kernel -> busbar-plane-llm"],
+            ));
+
             // THE COLD KINDS' BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-STORE queue). The
             // loader re-points its `hook` both-ways row at a real hook crate the base never named,
             // takes it as a `[dev-dependencies]` edge, and records the row: the conformance test is
@@ -7178,7 +7317,7 @@ impl Gate for KindIsolationGate {
                 subject,
                 "a `count` field on a `[[cell]]` row is refused at load — the row is presence only",
                 &[ROW_DEPS],
-                matrix::cell_subst(cx, "busbar-llm", "contract", "count = \"1\""),
+                matrix::cell_subst(cx, "busbar-voice", "contract", "count = \"1\""),
                 &["unknown-field", "`[[cell]]` declares `count`"],
             ));
 
@@ -8700,7 +8839,7 @@ impl Gate for KindIsolationGate {
 
         // ── THE LEGACY DRAIN, NAMED ──────────────────────────────────────────────────────────────
 
-        // AN UNLISTED DRAIN EDGE IS RED. `busbar-llm` is a legacy crate and [`PLANTED_DRAIN_TARGET`]
+        // AN UNLISTED DRAIN EDGE IS RED. `busbar-mcp` is a legacy crate and [`PLANTED_DRAIN_TARGET`]
         // is a crate of a drain-target kind, so this is exactly the shape the owner's ruling
         // permits — and no row names it. (It was a unit; that kind retired, fold F14 2/2.)
         // Before the transitional table this edge was invisible: `legacy` was an unscored source,
@@ -8714,8 +8853,8 @@ impl Gate for KindIsolationGate {
             subject,
             "a legacy crate reaching a drain target with no transitional row naming the edge",
             &[ROW_DEPS],
-            manifest_plant("crates/busbar-llm", "busbar-llm", &[PLANTED_DRAIN_TARGET]),
-            &["unlisted-transitional", "busbar-llm", PLANTED_DRAIN_TARGET],
+            manifest_plant("crates/busbar-mcp", "busbar-mcp", &[PLANTED_DRAIN_TARGET]),
+            &["unlisted-transitional", "busbar-mcp", PLANTED_DRAIN_TARGET],
         ));
 
         // THE TABLE CANNOT EXEMPT A CRATE THAT IS NOT RETIRING. A row whose source is a live,
@@ -8761,7 +8900,7 @@ impl Gate for KindIsolationGate {
             ),
             (
                 "a [[transitional]] glob that is not a trailing `*` is refused",
-                "[[transitional]]\nfrom = \"busbar-llm\"\nto = \"busbar-unit-*-x\"\nreason = \
+                "[[transitional]]\nfrom = \"busbar-mcp\"\nto = \"busbar-unit-*-x\"\nreason = \
                  \"planted\"\n",
                 &["bad-glob", "busbar-unit-*-x"][..],
             ),
@@ -9132,24 +9271,24 @@ impl Gate for KindIsolationGate {
             // transitional row says the EDGE CLASS is the drain rather than the fusion; the `[[dep]]`
             // row says how many declarations there are, exactly, so the drain cannot quietly grow a
             // second one. The plant APPENDS to the real manifest rather than rewriting it, because
-            // a rewrite would strike busbar-llm's real edges and the dead-row findings that
+            // a rewrite would strike busbar-mcp's real edges and the dead-row findings that
             // produced are the ones a reader would mistake for this case's own. The transitional row
-            // itself is planted alongside it, on `busbar-llm` — still a live LEGACY_CRATES member —
-            // rather than on the now-retired `busbar-core`.
+            // itself is planted alongside it, on `busbar-mcp` — still a live LEGACY_CRATES member —
+            // rather than on the now-retired `busbar-core` or `busbar-llm`.
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-llm/Cargo.toml",
+                "crates/busbar-mcp/Cargo.toml",
                 manifest_plus(
                     cx,
-                    "crates/busbar-llm/Cargo.toml",
+                    "crates/busbar-mcp/Cargo.toml",
                     &format!("\n[dependencies]\n{PLANTED_DRAIN_TARGET} = {{ workspace = true }}\n"),
                 ),
             );
             ov.set(
                 REGISTRY_FILE,
                 format!(
-                    "{}\n\n[[transitional]]\nfrom = \"busbar-llm\"\nto = \"{PLANTED_DRAIN_TARGET}\"\n\
-                     reason = \"planted\"\n\n[[dep]]\nfrom    = \"busbar-llm\"\n\
+                    "{}\n\n[[transitional]]\nfrom = \"busbar-mcp\"\nto = \"{PLANTED_DRAIN_TARGET}\"\n\
+                     reason = \"planted\"\n\n[[dep]]\nfrom    = \"busbar-mcp\"\n\
                      to      = \"{PLANTED_DRAIN_TARGET}\"\nhalf    = \"shipped\"\ncount   = \"1\"\n\
                      verdict = \"not-allowed\"\ncite    = \"the legacy drain: BUSBAR-1.6.0.md THE DESIGN, §1 \
                      grants a legacy crate no cleanliness edge, and the [[transitional]] row above names \
@@ -10889,11 +11028,11 @@ mod plant_tests {
         );
         assert_red_naming(
             &deps_over(manifest_plant(
-                "crates/busbar-llm",
-                "busbar-llm",
+                "crates/busbar-mcp",
+                "busbar-mcp",
                 &[PLANTED_DRAIN_TARGET],
             )),
-            &["unlisted-transitional", "busbar-llm", PLANTED_DRAIN_TARGET],
+            &["unlisted-transitional", "busbar-mcp", PLANTED_DRAIN_TARGET],
         );
         assert_red_naming(
             &deps_over(announced_reaching_drain_target(&ws())),

@@ -43,19 +43,21 @@ pub const ROW_SITES: &str = "response-header:sanctioned-sites";
 // server-timing sanctioned site) landed at `crates/busbar-kernel/src/router.rs`.
 const CORE: &str = "crates/busbar-kernel/src";
 const BIN: &str = "crates/busbar/src";
-/// The LLM plane's front door. `busbar-llm` has no self-named `llm/` subdirectory (its code is
-/// `engine/`, `arrival.rs`, …), so it is named by path rather than resolved like mcp and a2a.
-const LLM: &str = "crates/busbar-llm/src";
+/// The LLM plane's front door: the plane crate its door serves from (FLIP-LLM deleted the
+/// `busbar-llm` engine). It has no self-named `llm/` subdirectory, so it is named by path rather
+/// than resolved like mcp and a2a.
+const LLM: &str = "crates/busbar-plane-llm/src";
 const FIXED_ROOTS: &[&str] = &[CORE, BIN, LLM];
 const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 // THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 
 /// The `x-busbar-route-*` NAME literals and their `HDR_ROUTE_*` consts live in the kernel's
-/// `proxy`; the ONE emission call lives in the LLM plane's wire; `server-timing` stayed in core's
+/// `proxy`; the ONE emission lives in the kernel plane driver's route leg, gated on the operator's
+/// opt-in (the engine wire that held it left with its crate); `server-timing` stayed in core's
 /// router. The table names where they ACTUALLY are, or its allow column stops describing reality.
 const HDR_ROUTE_POLICY_FILE: &str = "crates/busbar-kernel/src/proxy/mod.rs";
-const HDR_ROUTE_WIRE_FILE: &str = "crates/busbar-llm/src/engine/wire.rs";
+const HDR_ROUTE_WIRE_FILE: &str = "crates/busbar-kernel/src/plane_driver/route.rs";
 const HDR_SERVER_TIMING_FILE: &str = "crates/busbar-kernel/src/router.rs";
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";

@@ -205,10 +205,6 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     // and runtime/metering.rs decide admission and price - that is defs 5/6, not a plane." THIS
     // GATE IS THAT SENTENCE. These four are where the money actually is.
     PlaneCrate {
-        dir: "busbar-llm",
-        placement: "#83 SPLIT -> def 16-20",
-    },
-    PlaneCrate {
         dir: "busbar-mcp",
         placement: "#83 SPLIT -> def 16-20",
     },
@@ -1331,7 +1327,7 @@ impl Gate for PlanePricingBlindnessGate {
                 format!("a plane crate that {} reds its census row", cat.act()),
                 &[cat.row()],
                 FIX,
-                &["crates/busbar-llm/src/unit/money.rs"],
+                &["crates/busbar-mcp/src/unit/money.rs"],
             ));
         }
 
@@ -1421,7 +1417,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_CARD, ROW_PRICE, ROW_HOLD],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-mcp/src/unit/money.rs",
                     "//! This plane never reads a rate_card, never computes a price and holds no\n\
                      //! nanos. A Hold, an AccrualMeter and a PostingStamp are all kernel-side.\n\
                      /* block comment: cost_settle, settled_nanos, UnitKey::new, pricing_enabled */\n\
@@ -1443,7 +1439,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_CARD, ROW_PRICE, ROW_HOLD],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-mcp/src/unit/money.rs",
                     "pub fn why() -> &'static str {\n\
                      \x20   \"no rate_card is configured for this model, so the \\\n\
                      \x20     Hold and its settled_nanos and every PostingStamp are \\\n\
@@ -1463,7 +1459,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_PRICE],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-mcp/src/unit/money.rs",
                     "pub fn stamp(clock: &Clock) -> u128 {\n\
                      \x20   let a = clock.monotonic_nanos;\n\
                      \x20   let b = std::time::SystemTime::now().elapsed().unwrap().as_nanos();\n\
@@ -1485,7 +1481,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_CARD, ROW_SWITCH, ROW_PRICE, ROW_UNIT_KEY, ROW_HOLD],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-mcp/src/unit/money.rs",
                     "const CLASSES: &[MeterClassDecl] = &[MeterClassDecl {\n\
                      \x20   key: MeterClassId::new(\"audio_seconds_in\"),\n\
                      \x20   family: \"duration\",\n\
@@ -1515,7 +1511,7 @@ impl Gate for PlanePricingBlindnessGate {
             &[ROW_CARD, ROW_SWITCH, ROW_PRICE, ROW_UNIT_KEY, ROW_HOLD],
             |ov| {
                 ov.set(
-                    "crates/busbar-llm/src/unit/money.rs",
+                    "crates/busbar-mcp/src/unit/money.rs",
                     "pub fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {\n\
                      \x20   match reason {\n\
                      \x20       RefusalReason::OverBudget\n\
@@ -1602,11 +1598,11 @@ fn switch_is_narrower(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str)
     };
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-llm/src/unit/plain.rs",
+        "crates/busbar-mcp/src/unit/plain.rs",
         "pub fn pricing_enabled(&self) -> bool { self.flag }\n",
     );
     ov.set(
-        "crates/busbar-llm/src/unit/branch.rs",
+        "crates/busbar-mcp/src/unit/branch.rs",
         "pub fn go(&self) { if host.cost_pricing_enabled(&self.cost) { self.meter(); } }\n",
     );
     let verdict = execute(gate, &fcx.with_overlay(ov));
@@ -1886,7 +1882,7 @@ fn scope_is_the_roster(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str
         .find(|r| r.id == ROW_HOLD)
         .map(|r| r.detail.clone())
         .unwrap_or_default();
-    let names_plane = detail.contains("busbar-llm/src/unit/money.rs");
+    let names_plane = detail.contains("busbar-mcp/src/unit/money.rs");
     let names_kernel = detail.contains("busbar-kernel");
     Case {
         name,

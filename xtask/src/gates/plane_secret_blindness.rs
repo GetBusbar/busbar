@@ -33,7 +33,7 @@ pub const NEEDLES: &[&str] = &[
 ];
 
 /// The crates that still carry plane code beside the `busbar-plane-*` crates.
-pub const PLANE_HOMES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+pub const PLANE_HOMES: &[&str] = &["busbar-mcp", "busbar-a2a", "busbar-voice"];
 
 pub const SPEC: Spec = Spec {
     gate: "plane-secret-blindness",

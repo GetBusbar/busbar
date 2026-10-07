@@ -53,7 +53,7 @@ scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
 # another plane" means. The two collapse into one definition when the legacy engines are deleted;
 # until then a reader must not take either as "the plane kind".
-plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
+plane_crates = ["busbar-mcp", "busbar-a2a", "busbar-voice"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
@@ -196,12 +196,16 @@ why = """Exactly one function in the workspace may send the egress request for a
 (the pooled hot path and the degraded walk path) mean every fix to the attempt — a timeout arm, a \
 breaker recording, a header rule — has to be made twice and is made once. The architecture's loop \
 has one ROUTE step and one dispatch; the code should have one too."""
-# The egress client's send verb: the call that turns an assembled request into an upstream
-# round trip. Every occurrence in non-test code outside `allowed_function` is a finding.
-send_verb = '\.client\(\)\.get\(\)\.request\('
-# The seam moved from the pooled hot loop to `engine/attempt/mod.rs::attempt` when the degraded
-# walk twin was deleted; the hot loop now calls `attempt()` too, so no extra site remains.
-allowed_function = "attempt"
+# The far end's send verb: the call that opens a unit's assembled request on the connector, the
+# judged, pinned dial and the framer's encode. Every occurrence in non-test code outside
+# `allowed_function` is a finding.
+# RE-POINTED (FLIP-LLM U11): the legacy engine's `engine/attempt/mod.rs::attempt` and its
+# `.client().get().request(` verb left with the deleted `busbar-llm`; a unit's upstream attempt is
+# the kernel plane driver's far end, `plane_driver/far_end.rs::send_attempt`, which opens it on the
+# connector as `e.conns.open(` (a plugin's own exchange through the contract's SDK is spelled
+# `host.conns.open(` and is not a unit's walk attempt).
+send_verb = '\be\.conns\.open\('
+allowed_function = "send_attempt"
 max_extra_sites = 0
 
 # ── 2. request-path-fn-size ──────────────────────────────────────────────────────────────────────
@@ -210,19 +214,8 @@ why = """A function on the request path that runs to four figures of lines canno
 tested at its seams, or diffed with confidence. The loop is eight named steps; a function should \
 be one of them, not all of them."""
 files = [
-  "crates/busbar-llm/src/engine/pipeline.rs",
-  "crates/busbar-llm/src/engine/attempt/mod.rs",
-  "crates/busbar-llm/src/engine/attempt/assemble.rs",
-  "crates/busbar-llm/src/engine/attempt/send.rs",
-  "crates/busbar-llm/src/engine/attempt/classify.rs",
-  "crates/busbar-llm/src/engine/attempt/respond.rs",
-  "crates/busbar-llm/src/engine/attempt/buffered.rs",
-  "crates/busbar-llm/src/engine/exhaustion/mod.rs",
-  "crates/busbar-llm/src/engine/exhaustion/queue.rs",
-  "crates/busbar-llm/src/engine/exhaustion/fallback.rs",
-  "crates/busbar-llm/src/engine/exhaustion/least_bad.rs",
-  "crates/busbar-llm/src/native_ingress.rs",
-  "crates/busbar-llm/src/arrival.rs",
+  # The llm engine's thirteen request-path files left with the crate (FLIP-LLM U11: the legacy
+  # busbar-llm engine is deleted; the plane is served through its door).
   # busbar-core's ingress/admission moved into busbar-kernel when the crate was absorbed; re-pointed
   # here rather than dropped (see the crate's own `qa/construction.toml` history for the absorption).
   "crates/busbar-kernel/src/ingress/mod.rs",
@@ -244,7 +237,8 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 226
+# busbar-llm is GONE (FLIP-LLM U11: the legacy engine is deleted; the plane is served through its
+# door), and its row went with the crate.
 # LOWERED 244 -> 226 by the llm plane reply fold: the answer path's byte steps moved into
 # busbar_plane_llm::exchange::reply and the engine calls the plane's copy. Downward only.
 # LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
@@ -280,7 +274,7 @@ counts can trend to zero at their own pace."""
 # no longer mint their own tokens (a mint is legal only in the kernel) and take them from
 # `busbar_kernel::test_support::tokens`, 47 added `busbar_kernel::` lines across the engine and unit
 # tests (RESOLVE c4, ARCHITECT to re-read).
-busbar-llm = 1027
+# busbar-llm is GONE (FLIP-LLM U11), and its row went with the crate.
 busbar-mcp = 185
 busbar-a2a = 98
 busbar-voice = 43
@@ -642,16 +636,20 @@ loop_verb = "run_unit"
 loop_root = "crates/busbar-kernel/src"
 max_callers_per_plane_crate = 1
 legacy_verb = "run_gauntlet"
-# Today: the LLM, MCP and A2A planes plus the host-seam adapter body. Down to 0 when the planes move.
-max_legacy_sites = 4
+# Today: the MCP and A2A planes plus the host-seam adapter body (4 -> 3 at the engine crate's
+# deletion, FLIP-LLM 2026-10-06: its native ingress site left with it). Down to 0 when the planes move.
+max_legacy_sites = 3
 
 # ── 11. no-response-escapes-audit ────────────────────────────────────────────────────────────────
 [rules.no-response-escapes-audit]
 why = """A plane's step files decide; only its Audit step answers. A function under the plane's \
 step directory that returns a `Response` from anywhere but `audit.rs` is a way for a unit to end \
 without being posted — the exact hole the loop exists to close."""
-root = "crates/busbar-llm/src/unit"
-allowed_files = ["audit.rs"]
+# RE-POINTED (FLIP-LLM U11): the legacy engine's step directory (`busbar-llm/src/unit`) left with
+# the crate; the llm plane's units are its door's exchange, which is sans-I/O and answers through the
+# plane ABI, the root's audited exit turning it into the served response. No file of it is exempt.
+root = "crates/busbar-plane-llm/src/exchange"
+allowed_files = []
 # THE SCOPE'S ONE EXEMPTION (spec #28; ARCHITECT RULING, SLOT NODE-AUDIT): a plane's unit answers with
 # the two-variant `PlaneAnswer` — `Unary(status, headers, body)`, turned into a response only on the
 # root's audited exit, or `Live(Response)`, a live body governed at admit. `PlaneAnswer::Live` is the
@@ -667,17 +665,21 @@ why = """The terminal doors (`finish_admitted` / `finish_rejected`) seal and pos
 rebuilt plane they are called from its Audit step and nowhere else, so every unit is posted exactly \
 once by the one step whose job that is. Red by design until that step exists: every call from the \
 legacy ingress is a site the rebuild must move."""
-crate = "busbar-llm"
+# RE-POINTED (FLIP-LLM U11): the legacy engine (`busbar-llm`, its Audit step `unit/audit.rs`) left
+# with the crate; the llm plane is its door, which reports its end to the kernel's audited exit and
+# calls no terminal door anywhere. The door module is the one file a call could be argued in.
+crate = "busbar-plane-llm"
 doors = ["finish_admitted", "finish_rejected"]
-allowed_file = "crates/busbar-llm/src/unit/audit.rs"
+allowed_file = "crates/busbar-plane-llm/src/plane_door.rs"
 max_extra_sites = 0
 
 # ── 13. one-pick-site ────────────────────────────────────────────────────────────────────────────
 [rules.one-pick-site]
-why = """The lane pick has two legitimate callers: the Route loop and the fallback-pool re-entry. \
-A third is a second selection policy growing beside the first."""
+why = """The lane pick has one caller: the egress walk, which the Route loop and the fallback-pool \
+re-entry both run. A second is a second selection policy growing beside the first. Lowered 2 -> 1 at \
+the engine crate's deletion (FLIP-LLM, 2026-10-06): its fallback and pipeline sites left with it."""
 verb = "pick_among"
-max_sites = 2
+max_sites = 1
 
 # ── 14. no-unit-crates (BUSBAR-1.6.0.md THE DESIGN, §1; fold F14) ──────────────────────────────────
 # The section 1.1 LINE-COUNT ceilings that lived here (`kernel_ceiling`, `caps_contract_ceiling`,
@@ -747,7 +749,7 @@ busbar-plane-mcp = ["base64"]
 # is still there. Delete it (BUSBAR-1.6.0.md THE DESIGN, §2) — noted here, not done here, because a rule
 # change is not this commit's business.
 [rules.manifest-allowlist.known_red_deps]
-busbar-plane-llm = ["busbar-llm"]
+# busbar-plane-llm HAS NO ROW: the engine crate it named for the codecs is deleted (FLIP-LLM U11).
 # busbar-plane-a2a HAS NO ROW, for the same reason busbar-plane-mcp lost its one: the codec fold
 # left its manifest at `busbar-contract` plus two third-party crates, and it names no engine crate
 # in either spelling. The edge that exists now runs the other way.
@@ -921,11 +923,9 @@ known_sites = [
   "crates/busbar-kernel/src/ingress/mod.rs :: governance: no configured rate for model; rejecting (rate_card is authoritative and complete)",
   "crates/busbar-kernel/src/door.rs :: no configured rate for model '{name}'",
   "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
-  "crates/busbar-kernel/src/ingress/mod.rs :: /{provider}/{model}/v1/messages",
   "crates/busbar-kernel/src/metrics/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
   "crates/busbar-kernel/src/metrics/money.rs :: model",
   "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
-  "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
   "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
   "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
 ]
@@ -1391,12 +1391,11 @@ max_sites = 0
 #   so it is the second place that legitimately holds a seal: durability, the ledger identity, the
 #   migration and the per-dialect unit wirings are all root-side construction, not unit code.
 #
-#   busbar-llm's unit modules and busbar-kernel-breaker's port carry the same seal spelling in
-#   fixtures that build a sealed token to show a step's shape.
+#   busbar-kernel-breaker's port carries the same seal spelling in fixtures that build a sealed token
+#   to show a step's shape (the llm engine's unit modules left with the crate, FLIP-LLM U11).
 known_sites = [
   "crates/busbar-contract/src/caps/",
   "crates/busbar/src/root/",
-  "crates/busbar-llm/src/unit/",
   "crates/busbar-kernel-breaker/src/port.rs",
 ]
 
@@ -1558,7 +1557,6 @@ which is the row that can name the home the call belongs in, so one site is neve
 # 2026-09-22 repoint above this row already fixed once.
 scope_globs = [
   "crates/busbar-plane-*/src/*",
-  "crates/busbar-llm/src/unit/*",
   "crates/busbar-mcp/src/*",
   "crates/busbar-a2a/src/*",
 ]
@@ -1973,7 +1971,9 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 # silent as deleting the table alone was.
 [gate.census]
 legacy_reach_prefixes = 4
-plane_crates = 4
+# 4 -> 3: crates/busbar-llm deleted by the P3 llm flip, named in [gate.census.deleted] (the
+# plane_crates floor drops only by ledgered deletions, ARCHITECT 2026-10-05).
+plane_crates = 3
 
 # HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
 #
@@ -2128,3 +2128,4 @@ abi = 1
 # an unlisted vanished dir stays RED.
 [gate.census.deleted]
 "crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"
+"crates/busbar-llm" = "FLIP-LLM U11 (BUSBAR-1.6.0.md Part 1 F25 per-test coverage map; ki-zero deletion strikes, ARCHITECT): the legacy llm engine is deleted; the plane is served through its door, busbar-plane-llm, in default"

@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 455
+   "test": 442
   }
  },
  "dropped_since_last_write": [],
@@ -63,21 +63,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::enforce_restricts_reapplies_compliance_tags_across_pools",
      "proves": "a Reject restrict with no eligible lane fails closed; the Weighted arm passes candidates unchanged",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::multi_restrict_disjoint_intersection_fails_closed",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::multi_restrict_disjoint_intersection_fails_closed",
      "proves": "two restricts intersecting to empty produce a 503 (status only, not the literal body)",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::multi_restrict_disjoint_intersection_fails_closed"
+   "verdict_detail": "test:crates/busbar/tests/hook_parity_driver/seam.rs::enforce_restricts_reapplies_compliance_tags_across_pools, test:crates/busbar/tests/hook_parity_driver/seam.rs::multi_restrict_disjoint_intersection_fails_closed"
   },
   {
    "id": "PB-2",
@@ -88,35 +88,35 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "excluded_reasons_records_at_capacity",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_member_at_capacity_is_recorded_as_such",
      "proves": "a saturated lane's try_admit yields no pick and records AtCapacity",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "at_capacity_reject_sheds_503_not_queued",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second",
      "proves": "a saturated reject pool sheds 503 at once, never parks",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "queue_dispatches_when_permit_frees_before_deadline",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_wait_dispatches_on_the_member_that_freed_a_slot",
      "proves": "waiting only under on_exhausted queue, on the lane semaphore",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "queue_times_out_to_503_when_capacity_never_frees",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_wait_sheds_when_no_slot_frees_and_the_gauge_balances",
      "proves": "queue max_ms elapses to a 503",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:excluded_reasons_records_at_capacity, test:at_capacity_reject_sheds_503_not_queued, test:queue_dispatches_when_permit_frees_before_deadline, test:queue_times_out_to_503_when_capacity_never_frees"
+   "verdict_detail": "test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_member_at_capacity_is_recorded_as_such, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_wait_dispatches_on_the_member_that_freed_a_slot, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_wait_sheds_when_no_slot_frees_and_the_gauge_balances"
   },
   {
    "id": "PB-3",
@@ -127,42 +127,42 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "ordered_walk_skips_tripped_preferred_to_next",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_ranking_walks_past_a_suppressed_preferred_member",
      "proves": "a tripped lane is excluded from the walk, not ordered last",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "ordered_walk_skips_excluded_preferred",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_ranking_walks_past_a_member_this_request_already_tried",
      "proves": "an excluded lane never receives an attempt",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "at_capacity_plus_tripped_member_rejects_503",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_member_that_is_merely_busy_does_not_mask_a_sibling_in_a_long_cooldown",
      "proves": "all excluded lands on the pool terminal",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "least_bad_never_reaches_an_excluded_member",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_last_resort_never_reaches_a_blocklisted_member",
      "proves": "least_bad ranks admissible lanes only",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "strengthened_lane_availability_invariant",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::every_generated_world_is_served_by_an_eligible_member_or_disposed_of_per_its_policy",
      "proves": "property test: the availability invariant holds under every policy",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:ordered_walk_skips_tripped_preferred_to_next, test:ordered_walk_skips_excluded_preferred, test:at_capacity_plus_tripped_member_rejects_503, test:least_bad_never_reaches_an_excluded_member, test:strengthened_lane_availability_invariant"
+   "verdict_detail": "test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_ranking_walks_past_a_suppressed_preferred_member, test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_ranking_walks_past_a_member_this_request_already_tried, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_member_that_is_merely_busy_does_not_mask_a_sibling_in_a_long_cooldown, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_last_resort_never_reaches_a_blocklisted_member, test:crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::every_generated_world_is_served_by_an_eligible_member_or_disposed_of_per_its_policy"
   },
   {
    "id": "PB-4",
@@ -194,91 +194,91 @@
     },
     {
      "kind": "test",
-     "ref": "at_capacity_default_no_on_exhausted_sheds_503",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_default_terminal_is_the_shed_and_it_says_the_words_that_shipped",
      "proves": "key absent: 503 + Retry-After",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "retry_after_reflects_cooldown_when_a_member_is_tripped",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_member_that_is_merely_busy_does_not_mask_a_sibling_in_a_long_cooldown",
      "proves": "Retry-After is the soonest genuine cooldown",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "retry_after_has_saturation_floor_when_purely_at_capacity",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second",
      "proves": "the AT_CAPACITY_RETRY_AFTER_SECS floor of 2",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "retry_after_empty_candidate_set_uses_floor_not_one",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::an_empty_candidate_set_gets_the_floor_too",
      "proves": "an empty candidate set uses the floor",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "least_bad_still_serves_the_only_member_after_it_was_tried",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::the_last_resort_still_serves_the_only_member_after_it_was_tried",
      "proves": "least_bad: one breaker-bypassing attempt",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_fallback_pool_applies_its_own_exclusions",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_spill_applies_the_target_pools_own_blocklist",
      "proves": "fallback_pool re-applies restricts",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "at_capacity_fallback_chain_spills_through_to_third_pool",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::saturation_spills_through_a_chain_until_a_pool_can_serve",
      "proves": "fallback_pool is multi-level",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "at_capacity_self_referential_fallback_stays_503",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_spill_that_comes_back_round_terminates",
      "proves": "the visited guard",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "queue_skips_wait_and_rejects_when_no_candidate_at_capacity",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_wait_sheds_at_once_when_nothing_it_could_wait_for_is_busy",
      "proves": "queue parks only when some exclusion was AtCapacity",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "queue_won_permit_but_breaker_now_open_never_dispatches",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::a_slot_won_on_a_member_whose_breaker_opened_while_waiting_is_never_dispatched",
      "proves": "the queue winner re-checks the breaker",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "queue_two_waiters_one_freed_permit_wakes_exactly_one",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::one_freed_slot_wakes_exactly_one_of_two_parked_requests",
      "proves": "FIFO permit park wakes one",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_scrape_gauges_pool_queued_reads_live_depth",
+     "ref": "crates/busbar/src/root/tests/serve_door_ported.rs::the_pool_queue_gauge_reads_the_live_park_depth",
      "proves": "the busbar_pool_queued gauge",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:crosscut.traps|exhausted-retry-after-floor, oracle-cell:route.failover|fo|all-down, oracle-cell:route.failover|lb|member-down, test:at_capacity_default_no_on_exhausted_sheds_503, test:retry_after_reflects_cooldown_when_a_member_is_tripped, test:retry_after_has_saturation_floor_when_purely_at_capacity, test:retry_after_empty_candidate_set_uses_floor_not_one, test:least_bad_still_serves_the_only_member_after_it_was_tried, test:a_fallback_pool_applies_its_own_exclusions, test:at_capacity_fallback_chain_spills_through_to_third_pool, test:at_capacity_self_referential_fallback_stays_503, test:queue_skips_wait_and_rejects_when_no_candidate_at_capacity, test:queue_won_permit_but_breaker_now_open_never_dispatches, test:queue_two_waiters_one_freed_permit_wakes_exactly_one, test:test_scrape_gauges_pool_queued_reads_live_depth"
+   "verdict_detail": "oracle-cell:crosscut.traps|exhausted-retry-after-floor, oracle-cell:route.failover|fo|all-down, oracle-cell:route.failover|lb|member-down, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_default_terminal_is_the_shed_and_it_says_the_words_that_shipped, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_member_that_is_merely_busy_does_not_mask_a_sibling_in_a_long_cooldown, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::an_empty_candidate_set_gets_the_floor_too, test:crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::the_last_resort_still_serves_the_only_member_after_it_was_tried, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_spill_applies_the_target_pools_own_blocklist, test:crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::saturation_spills_through_a_chain_until_a_pool_can_serve, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::a_spill_that_comes_back_round_terminates, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_wait_sheds_at_once_when_nothing_it_could_wait_for_is_busy, test:crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::a_slot_won_on_a_member_whose_breaker_opened_while_waiting_is_never_dispatched, test:crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::one_freed_slot_wakes_exactly_one_of_two_parked_requests, test:crates/busbar/src/root/tests/serve_door_ported.rs::the_pool_queue_gauge_reads_the_live_park_depth"
   },
   {
    "id": "PB-5",
@@ -296,63 +296,63 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::session_affinity_never_pins_to_a_drained_member",
      "proves": "sticky fast path skipped on weight 0",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "sticky_fall_through_records_reason",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::a_session_pinned_to_a_member_at_capacity_falls_through_recording_why",
      "proves": "sticky fast path skipped on an excluded lane",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_sticky_yields_when_tripped",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::a_session_pinned_to_a_suppressed_member_yields_to_the_healthy_one",
      "proves": "sticky yields to the walk when the lane is tripped",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::order_last_in_chain_wins",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::order_last_in_chain_wins",
      "proves": "the last ordering gate wins",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::stale_order_filtered_against_post_restrict_set",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::stale_order_filtered_against_post_restrict_set",
      "proves": "the order is re-validated against the post-restrict set",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate",
      "proves": "empty order abstains to the base policy",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "ordered_walk_falls_through_to_swrr_when_no_preferred_ready",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_ranking_that_covers_only_unhealthy_members_falls_through_to_the_floor",
      "proves": "the ready_in peek then SWRR fall-through",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "ordered_walk_empty_order_is_swrr",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::an_empty_ranking_is_the_plain_floor",
      "proves": "no ordering gate means the SWRR floor",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member, test:sticky_fall_through_records_reason, test:test_sticky_yields_when_tripped, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::order_last_in_chain_wins, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::stale_order_filtered_against_post_restrict_set, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate, test:ordered_walk_falls_through_to_swrr_when_no_preferred_ready, test:ordered_walk_empty_order_is_swrr"
+   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::session_affinity_never_pins_to_a_drained_member, test:crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::a_session_pinned_to_a_member_at_capacity_falls_through_recording_why, test:crates/busbar-kernel/src/tests/members/egress/route/ported_tests.rs::a_session_pinned_to_a_suppressed_member_yields_to_the_healthy_one, test:crates/busbar/tests/hook_parity_driver/seam.rs::order_last_in_chain_wins, test:crates/busbar/tests/hook_parity_driver/seam.rs::stale_order_filtered_against_post_restrict_set, test:crates/busbar/tests/hook_parity_driver/seam.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate, test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_ranking_that_covers_only_unhealthy_members_falls_through_to_the_floor, test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::an_empty_ranking_is_the_plain_floor"
   },
   {
    "id": "PB-6",
@@ -363,28 +363,28 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::global_gate_reject_short_circuits_the_request",
      "proves": "a decision-gate reject ends the request",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_request_stage_tap_fires_on_a_real_dispatched_request",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::global_request_stage_tap_fires_on_a_real_dispatched_request",
      "proves": "request-stage taps fire through fire_global_taps",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate",
+     "ref": "crates/busbar/src/root/tests/serve_hook_seats.rs::migrated_request_hook_seats_after_admit_before_candidate",
      "proves": "a decision-gate reject consumes the requests slot and refunds the billable request; rewrite, request taps and gates all run after the admission charge",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_request_stage_tap_fires_on_a_real_dispatched_request, test:crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate"
+   "verdict_detail": "test:crates/busbar/tests/hook_parity_driver/seam.rs::global_gate_reject_short_circuits_the_request, test:crates/busbar/tests/hook_parity_driver/seam.rs::global_request_stage_tap_fires_on_a_real_dispatched_request, test:crates/busbar/src/root/tests/serve_hook_seats.rs::migrated_request_hook_seats_after_admit_before_candidate"
   },
   {
    "id": "PB-7",
@@ -433,63 +433,56 @@
     },
     {
      "kind": "test",
-     "ref": "test_saturated_lane_respects_deadline_no_infinite_spin",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_wait_is_bounded_by_what_is_left_of_the_walk_and_not_only_by_its_own_setting",
      "proves": "the pick_among guard is bounded by failover.timeout_secs and resolves 503",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_context_length_failover_no_penalty",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs::a_context_length_refusal_excludes_only_admissible_smaller_windows",
      "proves": "context-length exclusion carries no breaker penalty",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_prefers_larger_context_max",
-     "proves": "candidates whose context_max is not larger are excluded",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it",
+     "ref": "crates/busbar/src/root/tests/serve_door_ported.rs::an_unrelated_apply_reuses_the_warm_connector",
      "proves": "upstream_request_timeout_secs is carried onto the client",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_member_override_wins_over_model_default",
+     "ref": "crates/busbar/src/root/tests/serve_door_ported.rs::a_pool_members_attempt_cap_beats_its_models",
      "proves": "the per-attempt time-to-headers cap with pool-member override",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_attempt_cap_budget_floor",
+     "ref": "crates/busbar-kernel-egress/src/tests/ported_tests.rs::the_attempt_cap_is_floored_by_the_remaining_budget_and_never_zero",
      "proves": "the attempt cap floor",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "route_deadline_503_carries_detail_request_timeout",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/deadline_tests.rs::a_spent_deadline_refuses_before_the_first_attempt",
      "proves": "the pre-attempt walk-deadline check answers 503 with DETAIL_REQUEST_TIMEOUT and makes no attempt",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "pick_among_none_lands_on_on_exhausted_with_overloaded_and_retry_after",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_default_terminal_is_the_shed_and_it_says_the_words_that_shipped",
      "proves": "the pick_among None path lands on on_exhausted: 503 KIND_OVERLOADED with Retry-After",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|primary-down, test:test_saturated_lane_respects_deadline_no_infinite_spin, test:test_context_length_failover_no_penalty, test:test_prefers_larger_context_max, test:a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it, test:test_member_override_wins_over_model_default, test:test_attempt_cap_budget_floor, test:route_deadline_503_carries_detail_request_timeout, test:pick_among_none_lands_on_on_exhausted_with_overloaded_and_retry_after"
+   "verdict_detail": "oracle-cell:route.failover|fo|primary-down, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_wait_is_bounded_by_what_is_left_of_the_walk_and_not_only_by_its_own_setting, test:crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs::a_context_length_refusal_excludes_only_admissible_smaller_windows, test:crates/busbar/src/root/tests/serve_door_ported.rs::an_unrelated_apply_reuses_the_warm_connector, test:crates/busbar/src/root/tests/serve_door_ported.rs::a_pool_members_attempt_cap_beats_its_models, test:crates/busbar-kernel-egress/src/tests/ported_tests.rs::the_attempt_cap_is_floored_by_the_remaining_budget_and_never_zero, test:crates/busbar-kernel/src/tests/members/egress/route/deadline_tests.rs::a_spent_deadline_refuses_before_the_first_attempt, test:crates/busbar-kernel/src/tests/members/egress/route/exhaustion_tests.rs::the_default_terminal_is_the_shed_and_it_says_the_words_that_shipped"
   },
   {
    "id": "PB-9",
@@ -539,42 +532,35 @@
     },
     {
      "kind": "test",
-     "ref": "test_disposition_hard_down_billing_code",
+     "ref": "crates/busbar-kernel-breaker/src/tests/port.rs::error_map_code_wins_over_http_status",
      "proves": "HardDown billing disposition row",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_disposition_transient_rate_limit_code",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply.rs::a_far_end_error_is_placed_in_its_class",
      "proves": "TransientUpstream rate-limit row with a code",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_disposition_transient_server_error",
+     "ref": "crates/busbar-kernel-breaker/src/tests/port.rs::unmapped_code_falls_through_to_http_status",
      "proves": "TransientUpstream 5xx row",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_disposition_hard_down_auth",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs::a_401_takes_the_member_down_and_is_relayed_to_the_plane",
      "proves": "HardDown auth row",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_disposition_code_drives_classification",
-     "proves": "the provider code drives the disposition",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_disposition_client_fault_no_known_code",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs::a_caller_fault_is_relayed_as_it_came",
      "proves": "ClientFault row without a known code",
      "source": "curated",
      "status": "mapped"
@@ -595,7 +581,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|primary-down, test:test_disposition_hard_down_billing_code, test:test_disposition_transient_rate_limit_code, test:test_disposition_transient_server_error, test:test_disposition_hard_down_auth, test:test_disposition_code_drives_classification, test:test_disposition_client_fault_no_known_code, test:test_classify_context_length_both_protocols, test:test_extract_error_bad_api_key_classifies_as_auth_harddown"
+   "verdict_detail": "oracle-cell:route.failover|fo|primary-down, test:crates/busbar-kernel-breaker/src/tests/port.rs::error_map_code_wins_over_http_status, test:crates/busbar-plane-llm/tests/exchange_reply.rs::a_far_end_error_is_placed_in_its_class, test:crates/busbar-kernel-breaker/src/tests/port.rs::unmapped_code_falls_through_to_http_status, test:crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs::a_401_takes_the_member_down_and_is_relayed_to_the_plane, test:crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs::a_caller_fault_is_relayed_as_it_came, test:test_classify_context_length_both_protocols, test:test_extract_error_bad_api_key_classifies_as_auth_harddown"
   },
   {
    "id": "PB-11",
@@ -798,28 +784,28 @@
     },
     {
      "kind": "test",
-     "ref": "test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee",
      "proves": "the fee is refunded on a non-2xx and kept on a 2xx",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_pre_routing_failure_does_not_refund_prior_charge",
+     "ref": "crates/busbar/src/root/tests/serve_door_ported.rs::a_body_refused_before_its_route_leaves_a_prior_charge_whole",
      "proves": "a pre-routing failure refunds nothing extra",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "finish_admitted_does_not_refund_an_uncharged_admit",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_plane_that_reports_no_fee_unit_has_its_fee_refunded",
      "proves": "finish_admitted never refunds an uncharged admit",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx, test:test_pre_routing_failure_does_not_refund_prior_charge, test:finish_admitted_does_not_refund_an_uncharged_admit"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee, test:crates/busbar/src/root/tests/serve_door_ported.rs::a_body_refused_before_its_route_leaves_a_prior_charge_whole, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_plane_that_reports_no_fee_unit_has_its_fee_refunded"
   },
   {
    "id": "PB-17",
@@ -888,7 +874,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "test_missing_group_fails_closed_at_ingress",
+     "ref": "crates/busbar-kernel/src/governance/tests/tests.rs::test_missing_group_fails_closed",
      "proves": "429 with the literal group is not configured body",
      "source": "curated",
      "status": "mapped"
@@ -909,7 +895,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_missing_group_fails_closed_at_ingress, test:test_missing_group_fails_closed, test:govern_admit_reason_reason_bytes_match_direct_try_admit"
+   "verdict_detail": "test:crates/busbar-kernel/src/governance/tests/tests.rs::test_missing_group_fails_closed, test:test_missing_group_fails_closed, test:govern_admit_reason_reason_bytes_match_direct_try_admit"
   },
   {
    "id": "PB-20",
@@ -1033,15 +1019,8 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "test_governance_over_budget_native_envelope_all_ingress",
+     "ref": "crates/busbar-plane-llm/tests/exchange_refuse.rs::a_blocked_limit_reads_the_kernels_text_with_its_retry_advice",
      "proves": "budget is insufficient_quota, 429 everywhere and 400 on bedrock",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_governance_rate_limit_429_native_envelope_all_ingress",
-     "proves": "requests is always 429 rate_limit_error, bedrock included",
      "source": "curated",
      "status": "mapped"
     },
@@ -1054,7 +1033,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_group_blocked_429_names_the_budget_group",
+     "ref": "crates/busbar-kernel/src/governance/tests/tests.rs::test_chain_enforcement_rejects_naming_the_blocking_group",
      "proves": "the first blocking bucket names the 429 and charges 0",
      "source": "curated",
      "status": "mapped"
@@ -1096,7 +1075,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_governance_over_budget_native_envelope_all_ingress, test:test_governance_rate_limit_429_native_envelope_all_ingress, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing, test:test_group_blocked_429_names_the_budget_group, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::budget_cap_derives_from_ledger_and_rate_card, test:test_group_token_spend_blocks_chain_admission, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::concurrent_gauge_holds_and_releases, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain, gate:xtask/src/gates/construction.rs"
+   "verdict_detail": "test:crates/busbar-plane-llm/tests/exchange_refuse.rs::a_blocked_limit_reads_the_kernels_text_with_its_retry_advice, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing, test:crates/busbar-kernel/src/governance/tests/tests.rs::test_chain_enforcement_rejects_naming_the_blocking_group, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::budget_cap_derives_from_ledger_and_rate_card, test:test_group_token_spend_blocks_chain_admission, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::concurrent_gauge_holds_and_releases, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain, gate:xtask/src/gates/construction.rs"
   },
   {
    "id": "PB-23",
@@ -1164,14 +1143,14 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "stream_without_usage_frame_bills_zero_on_every_dialect",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_delivered_zero_token_unit_meters_one_request",
      "proves": "six ingress dialects, a stream with no usage frame: zero tokens ledgered, one metering request with every tier zero",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:stream_without_usage_frame_bills_zero_on_every_dialect"
+   "verdict_detail": "test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_delivered_zero_token_unit_meters_one_request"
   },
   {
    "id": "PB-26",
@@ -1189,7 +1168,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_unpriced_passthrough_model_rejected_when_rate_card_present",
+     "ref": "crates/busbar-plane-llm/tests/exchange_refuse.rs::a_model_no_rate_prices_reads_the_kernels_no_rate_text",
      "proves": "the no configured rate for model 400 literal",
      "source": "curated",
      "status": "mapped"
@@ -1203,49 +1182,42 @@
     },
     {
      "kind": "test",
-     "ref": "test_governance_pool_acl_403_openai_native_envelope",
+     "ref": "crates/busbar-plane-llm/tests/refusal_envelopes.rs::every_refusal_is_the_dialects_own_envelope",
      "proves": "the pool-ACL 403 arm",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_governance_pool_acl_403_bedrock_native_envelope",
-     "proves": "the pool-ACL 403 arm on bedrock",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target",
+     "ref": "crates/busbar/src/root/tests/door_steps.rs::the_grant_is_judged_over_the_named_pool_then_its_fallback",
      "proves": "fallback_pools_authorized 403",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee",
      "proves": "post-guard exits refund billable on a non-2xx",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_pre_routing_failure_does_not_refund_prior_charge",
+     "ref": "crates/busbar/src/root/tests/serve_door_ported.rs::a_body_refused_before_its_route_leaves_a_prior_charge_whole",
      "proves": "a pre-routing failure refunds nothing extra",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_bedrock_non_object_body_is_400",
+     "ref": "crates/busbar-plane-llm/tests/exchange_arrive_ported.rs::a_non_object_bedrock_body_is_a_validation_exception_400",
      "proves": "the non-object body 400",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:test_unpriced_passthrough_model_rejected_when_rate_card_present, oracle-cell:http.crosscut|unknown-path|openai-suffix, test:test_governance_pool_acl_403_openai_native_envelope, test:test_governance_pool_acl_403_bedrock_native_envelope, test:test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx, test:test_pre_routing_failure_does_not_refund_prior_charge, test:test_bedrock_non_object_body_is_400"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:crates/busbar-plane-llm/tests/exchange_refuse.rs::a_model_no_rate_prices_reads_the_kernels_no_rate_text, oracle-cell:http.crosscut|unknown-path|openai-suffix, test:crates/busbar-plane-llm/tests/refusal_envelopes.rs::every_refusal_is_the_dialects_own_envelope, test:crates/busbar/src/root/tests/door_steps.rs::the_grant_is_judged_over_the_named_pool_then_its_fallback, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee, test:crates/busbar/src/root/tests/serve_door_ported.rs::a_body_refused_before_its_route_leaves_a_prior_charge_whole, test:crates/busbar-plane-llm/tests/exchange_arrive_ported.rs::a_non_object_bedrock_body_is_a_validation_exception_400"
   },
   {
    "id": "PB-27",
@@ -1270,77 +1242,63 @@
     },
     {
      "kind": "test",
-     "ref": "test_mid_stream_transport_error_does_not_bill_partial_usage",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_stream_cut_after_its_first_byte_refunds_nothing",
      "proves": "the SSE-cut arm bills zero",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_streaming_translate_abort_trips_breaker_and_skips_billing",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_still_reports_what_streamed",
      "proves": "a translate abort bills no tokens",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_untranslatable_2xx_does_not_charge_tokens",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply.rs::an_untranslatable_answer_is_the_callers_500",
      "proves": "a buffered untranslatable 2xx bills zero",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged",
-     "proves": "over the translate cap is 500 and uncharged",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_streaming_pre_first_byte_transport_error_refunds_budget",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_cut_before_the_first_byte_refunds_the_budget_unit",
      "proves": "the pre-first-byte cut refunds the lane unit",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_buffered_answer_cut_after_its_first_byte_refunds_the_budget_unit",
      "proves": "the post-first-byte cut refunds the lane unit on a NON-SSE body and does not on an SSE body",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_streaming_nonsse_mid_body_transport_error_records_transient",
-     "proves": "the non-SSE post-first-byte cut records its compensating transient and leaves the refund standing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_cancel_drop_bills_partial_tokens",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_cancelled_stream_meters_only_a_reported_bill",
      "proves": "a client disconnect bills the partial tokens",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_cancel_drop_mid_stream_refunds_budget",
+     "ref": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte",
      "proves": "a client disconnect refunds the lane unit",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee",
      "proves": "the flat fee is kept after 2xx headers",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, oracle-cell:route.failover|fo|primary-cut-stream, test:test_mid_stream_transport_error_does_not_bill_partial_usage, test:test_streaming_translate_abort_trips_breaker_and_skips_billing, test:test_untranslatable_2xx_does_not_charge_tokens, test:test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged, test:test_streaming_pre_first_byte_transport_error_refunds_budget, test:test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit, test:test_streaming_nonsse_mid_body_transport_error_records_transient, test:test_cancel_drop_bills_partial_tokens, test:test_cancel_drop_mid_stream_refunds_budget, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, oracle-cell:route.failover|fo|primary-cut-stream, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_stream_cut_after_its_first_byte_refunds_nothing, test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_still_reports_what_streamed, test:crates/busbar-plane-llm/tests/exchange_reply.rs::an_untranslatable_answer_is_the_callers_500, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_cut_before_the_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_buffered_answer_cut_after_its_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_cancelled_stream_meters_only_a_reported_bill, test:crates/busbar/src/root/tests/serve_door.rs::the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee"
   },
   {
    "id": "PB-28",
@@ -1351,14 +1309,14 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::enforce_restricts_reapplies_compliance_tags_across_pools",
      "proves": "for a gate, Weighted leaves the candidate set unchanged",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools"
+   "verdict_detail": "test:crates/busbar/tests/hook_parity_driver/seam.rs::enforce_restricts_reapplies_compliance_tags_across_pools"
   },
   {
    "id": "PB-29",
@@ -1369,42 +1327,42 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "decision_gate_that_cannot_complete_has_its_own_503_body",
+     "ref": "crates/busbar/tests/hook_parity_driver/ported.rs::a_decision_gate_that_cannot_complete_has_its_own_503_body",
      "proves": "\"A required gate could not complete…\" is the decision-gate error body",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "decision_gate_restriction_leaving_no_lane_has_its_own_503_body",
+     "ref": "crates/busbar/tests/hook_parity_driver/ported.rs::a_decision_gate_restriction_leaving_no_member_has_its_own_503_body",
      "proves": "\"No upstream satisfies a required gate's restriction…\" is the decision-gate empty-restrict body",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "base_policy_that_cannot_select_has_its_own_503_body",
+     "ref": "crates/busbar/tests/hook_parity_driver/ported.rs::a_base_policy_that_cannot_select_has_its_own_503_body",
      "proves": "\"The routing policy could not select an upstream…\" is the base-policy error body",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "base_policy_restriction_leaving_no_lane_has_its_own_503_body",
+     "ref": "crates/busbar/tests/hook_parity_driver/ported.rs::a_base_policy_restriction_leaving_no_member_has_its_own_503_body",
      "proves": "\"No upstream satisfies the routing policy's restriction…\" is the base-policy empty-restrict body",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "the_four_503_literals_are_distinct",
+     "ref": "crates/busbar/tests/hook_parity_driver/ported.rs::the_four_hook_503_bodies_are_pairwise_distinct",
      "proves": "the four literals are pairwise distinct",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:decision_gate_that_cannot_complete_has_its_own_503_body, test:decision_gate_restriction_leaving_no_lane_has_its_own_503_body, test:base_policy_that_cannot_select_has_its_own_503_body, test:base_policy_restriction_leaving_no_lane_has_its_own_503_body, test:the_four_503_literals_are_distinct"
+   "verdict_detail": "test:crates/busbar/tests/hook_parity_driver/ported.rs::a_decision_gate_that_cannot_complete_has_its_own_503_body, test:crates/busbar/tests/hook_parity_driver/ported.rs::a_decision_gate_restriction_leaving_no_member_has_its_own_503_body, test:crates/busbar/tests/hook_parity_driver/ported.rs::a_base_policy_that_cannot_select_has_its_own_503_body, test:crates/busbar/tests/hook_parity_driver/ported.rs::a_base_policy_restriction_leaving_no_member_has_its_own_503_body, test:crates/busbar/tests/hook_parity_driver/ported.rs::the_four_hook_503_bodies_are_pairwise_distinct"
   },
   {
    "id": "PB-30",
@@ -1450,7 +1408,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_fallback_bedrock_404_is_native_envelope_with_amzn_headers",
+     "ref": "crates/busbar/src/root/tests/linked_protocols.rs::the_fallback_404_on_a_dialects_path_is_its_native_envelope_with_its_head_fields",
      "proves": "fallback_error_response per inferred protocol (bedrock)",
      "source": "curated",
      "status": "mapped"
@@ -1464,7 +1422,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|api-prefix|data, oracle-cell:http.crosscut|unknown-path|anthropic-beta, oracle-cell:http.crosscut|unknown-path|bare, test:resolver_table, test:test_api_root_unmatched_paths_speak_the_admin_envelope, test:test_fallback_bedrock_404_is_native_envelope_with_amzn_headers, test:test_fallback_openai_404_is_json_no_amzn_headers"
+   "verdict_detail": "oracle-cell:http.crosscut|api-prefix|data, oracle-cell:http.crosscut|unknown-path|anthropic-beta, oracle-cell:http.crosscut|unknown-path|bare, test:resolver_table, test:test_api_root_unmatched_paths_speak_the_admin_envelope, test:crates/busbar/src/root/tests/linked_protocols.rs::the_fallback_404_on_a_dialects_path_is_its_native_envelope_with_its_head_fields, test:test_fallback_openai_404_is_json_no_amzn_headers"
   },
   {
    "id": "PB-31",
@@ -2276,21 +2234,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate",
+     "ref": "crates/busbar/src/root/tests/serve_hook_seats.rs::migrated_request_hook_seats_after_admit_before_candidate",
      "proves": "a migrated request-stage chain seats after the admission door and ahead of the candidate tap: admission → rewrite → request taps → gates → candidate tap",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once",
+     "ref": "crates/busbar/src/root/tests/serve_hook_seats.rs::candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once",
      "proves": "the candidate tap fires only after the gates decided, on a served request",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate, test:crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once"
+   "verdict_detail": "test:crates/busbar/src/root/tests/serve_hook_seats.rs::migrated_request_hook_seats_after_admit_before_candidate, test:crates/busbar/src/root/tests/serve_hook_seats.rs::candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once"
   },
   {
    "id": "PB-47",
@@ -2322,28 +2280,28 @@
     },
     {
      "kind": "test",
-     "ref": "test_budget_exhaustion_downgrades_pool",
+     "ref": "crates/busbar/src/root/tests/serve_door_ported.rs::an_exhausted_pool_budget_downgrades_onto_its_downgrade_pool",
      "proves": "admission lands on the effective post-downgrade pool",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_downgrade_cycle_terminates_via_the_revisit_guard",
+     "ref": "crates/busbar-kernel/src/tests/ported_legacy_tests.rs::a_cyclic_budget_downgrade_ends_at_the_revisit_guard_naming_the_last_pool",
      "proves": "the visited-set guard prevents a double charge",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fb|member-down, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::pool_scoped_accrual_and_refund_mirror_the_charge, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::budget_block_carries_downgrade_target, test:test_budget_exhaustion_downgrades_pool, test:test_downgrade_cycle_terminates_via_the_revisit_guard"
+   "verdict_detail": "oracle-cell:route.failover|fb|member-down, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::pool_scoped_accrual_and_refund_mirror_the_charge, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::budget_block_carries_downgrade_target, test:crates/busbar/src/root/tests/serve_door_ported.rs::an_exhausted_pool_budget_downgrades_onto_its_downgrade_pool, test:crates/busbar-kernel/src/tests/ported_legacy_tests.rs::a_cyclic_budget_downgrade_ends_at_the_revisit_guard_naming_the_last_pool"
   },
   {
    "id": "PB-48",
    "surface": "stall sweep on `http`/`sse`",
    "binding": "the `max_unit_duration` sweep alarms only (`busbar-kernel/src/tick.rs:141`, `Sweep::AlarmOnly`, which `sweep_outcome`/`sweep_settle` end nothing on); the unit's only timers are PB-8's — a stream is cut only by the `upstream_request_timeout_secs` TOTAL deadline (default 300 s, `busbar-kernel/src/config/limits.rs:22`), armed once at send start and covering head and body (`busbar-llm/src/engine/attempt/send.rs:63-76`; at the tag this was reqwest's client-level total timeout, re-provided at the call site by the owned-client cutover); there is no idle timer",
    "inventory": "proxy-hooks, ops",
-   "note": "Resolved 2026-09-06: max_unit_duration DOES exist -- it is the fourth parameter of `sweep()` at crates/busbar-kernel/src/tick.rs:141, and Sweep::AlarmOnly is the verdict it returns when the protocol declares no idle bound. The old note was wrong on the fact and the row was carried unproven on it. The sweep half is compared by crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, which drives sweep() past max_unit_duration with idle_bound_applies false, gets AlarmOnly, and shows sweep_settle takes no hold and ends no unit on it; nothing in crates/ calls sweep() on a production path at all, so the alarm is the most that can happen. The stream half is compared on the SHIPPED proxy path by crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier: the same black-holed upstream is cut at 7 s under one configuration and at 23 s under another, so the timer that fires is the operator's total deadline and no idle timer exists to fire first. The binding's `main.rs:3179-3181` anchor was dead and is amended in Appendix B to busbar-substrate/src/config/limits.rs:22 and busbar-llm/src/engine/attempt/send.rs:63-76.",
+   "note": "Resolved 2026-09-06: max_unit_duration DOES exist -- it is the fourth parameter of `sweep()` at crates/busbar-kernel/src/tick.rs:141, and Sweep::AlarmOnly is the verdict it returns when the protocol declares no idle bound. The old note was wrong on the fact and the row was carried unproven on it. The sweep half is compared by crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, which drives sweep() past max_unit_duration with idle_bound_applies false, gets AlarmOnly, and shows sweep_settle takes no hold and ends no unit on it; nothing in crates/ calls sweep() on a production path at all, so the alarm is the most that can happen. The stream half is compared on the SHIPPED door path by crates/busbar/src/root/tests/serve_door_ported.rs::a_black_holed_stream_is_cut_at_the_configured_second_and_no_earlier (the U11 port of the engine's stream_deadline test, FLIP-LLM): the same black-holed upstream is cut at 7 s under one configuration and at 23 s under another, so the timer that fires is the operator's total deadline and no idle timer exists to fire first. The binding's `main.rs:3179-3181` anchor was dead and is amended in Appendix B to busbar-substrate/src/config/limits.rs:22 and busbar-llm/src/engine/attempt/send.rs:63-76.",
    "status": "mapped",
    "checks": [
     {
@@ -2362,21 +2320,21 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier",
+     "ref": "crates/busbar/src/root/tests/serve_door_ported.rs::a_black_holed_stream_is_cut_at_the_configured_second_and_no_earlier",
      "proves": "the stream half of the binding on the SHIPPED proxy path: one black-holed upstream, two configurations of limits.upstream_request_timeout_secs, cut at exactly 7 s under one and exactly 23 s under the other. The timer that fires is the operator's total deadline (it tracks a number it would not know if it were a floor, a default or an interval of the runtime's own), and there is no idle timer, since the upstream is silent from the first instant and anything counting that silence would fire at the same moment in both runs",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::the_total_deadline_the_stream_rides_defaults_to_five_minutes",
+     "ref": "crates/busbar-kernel/src/tests/ported_legacy_tests.rs::the_default_upstream_request_timeout_is_five_minutes",
      "proves": "the deadline the binding names defaults to the 300 s it names",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, test:crates/busbar-kernel/tests/recovery_and_ticks.rs::a_lost_task_is_settled_within_one_tick, test:crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier, test:crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::the_total_deadline_the_stream_rides_defaults_to_five_minutes"
+   "verdict_detail": "test:crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, test:crates/busbar-kernel/tests/recovery_and_ticks.rs::a_lost_task_is_settled_within_one_tick, test:crates/busbar/src/root/tests/serve_door_ported.rs::a_black_holed_stream_is_cut_at_the_configured_second_and_no_earlier, test:crates/busbar-kernel/src/tests/ported_legacy_tests.rs::the_default_upstream_request_timeout_is_five_minutes"
   },
   {
    "id": "PB-49",
@@ -2608,42 +2566,42 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "test_health_probe_recovers_tripped_lane",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs::a_probe_recovers_a_tripped_member",
      "proves": "mode dead: a 2xx probe recovers a tripped lane",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_health_probe_failure_records_transient",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs::a_probe_that_brings_no_answer_is_a_transient_and_tries_no_other_member",
      "proves": "mode active: a failing probe records transient",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_probe_auth_failure_is_hard_down_not_transient",
+     "ref": "crates/busbar-kernel/src/store/tests/ported_probe_tests.rs::a_probe_answered_401_parks_the_lane_hard_down_in_every_cell",
      "proves": "a probe auth failure is hard-down",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_probe_client_fault_does_not_penalize_lane",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs::a_client_fault_answer_records_nothing",
      "proves": "a probe client fault does not penalize",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_swap_does_not_push_the_probe_deadline_out",
+     "ref": "crates/busbar-kernel/src/tests/probe_tests.rs::a_snapshot_swap_never_pushes_the_probe_deadline_out",
      "proves": "the probe schedule is inherited across a swap",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_health_probe_recovers_tripped_lane, test:test_health_probe_failure_records_transient, test:test_probe_auth_failure_is_hard_down_not_transient, test:test_probe_client_fault_does_not_penalize_lane, test:a_swap_does_not_push_the_probe_deadline_out"
+   "verdict_detail": "test:crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs::a_probe_recovers_a_tripped_member, test:crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs::a_probe_that_brings_no_answer_is_a_transient_and_tries_no_other_member, test:crates/busbar-kernel/src/store/tests/ported_probe_tests.rs::a_probe_answered_401_parks_the_lane_hard_down_in_every_cell, test:crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs::a_client_fault_answer_records_nothing, test:crates/busbar-kernel/src/tests/probe_tests.rs::a_snapshot_swap_never_pushes_the_probe_deadline_out"
   },
   {
    "id": "PB-56",
@@ -2654,14 +2612,14 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "redirects_surface_verbatim_and_are_followed_by_neither_stack",
+     "ref": "crates/busbar/src/root/tests/serve_door_kernel_ported.rs::a_far_ends_redirect_is_never_followed",
      "proves": "redirect Policy::none",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:redirects_surface_verbatim_and_are_followed_by_neither_stack"
+   "verdict_detail": "test:crates/busbar/src/root/tests/serve_door_kernel_ported.rs::a_far_ends_redirect_is_never_followed"
   },
   {
    "id": "PB-57",
@@ -2700,21 +2658,21 @@
     },
     {
      "kind": "test",
-     "ref": "a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves",
+     "ref": "crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_member_at_capacity_is_recorded_as_such",
      "proves": "only an at-capacity lane reaches try_admit after selection",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-kernel/src/store/tests/tests.rs::test_zero_weight_member_is_never_selected, test:test_swrr_no_open_selection, test:test_swrr_all_down_returns_none, test:a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves"
+   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-kernel/src/store/tests/tests.rs::test_zero_weight_member_is_never_selected, test:test_swrr_no_open_selection, test:test_swrr_all_down_returns_none, test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::a_member_at_capacity_is_recorded_as_such"
   },
   {
    "id": "PB-58",
    "surface": "admitted units and money",
    "binding": "on every 1.5.5-shaped deployment an ADMITTED `http`/`sse` unit is never ended for money: no `Aborted(Kernel { OverBudget })`, no `Aborted(Kernel { OverdraftCeiling })`; the overdraft ceiling is unbounded (flag-only) on every Migration-sealed bucket; `OverdraftCeiling` and `StaleSlice` are never refusal reasons on a 1.5.5 config; token overshoot is bounded only by the in-flight admitted requests, exactly as at the tag",
    "inventory": "governance; proxy-hooks",
-   "note": "Resolved 2026-09-06: all three reason codes DO exist -- crates/busbar-caps/src/decision.rs declares OverBudget, OverdraftCeiling and StaleSlice, and OverBudget is constructed six times in production, once at crates/busbar-llm/src/unit/admit.rs:203 as a Decision::refuse at StepName::Admit. The row was carried unproven on a note that was wrong on the fact. Every clause of this binding is a claim that a SHAPE DOES NOT OCCUR, which no behavioural test can settle, so it is settled on the shipped VOCABULARY by crates/busbar/tests/money_never_ends_an_admitted_unit.rs: the set of reasons the tree constructs inside `Abort::Kernel` is exactly {ClientGone, Drain} and contains no money reason; the set it constructs inside `Refusal::new` contains OverBudget (the non-vacuity, and the binding's positive half -- money refuses at a door) and neither OverdraftCeiling nor StaleSlice; and `Overdraft::Ceiling` is named in one production file, the module defining the rule, so no shipped path branches on the ceiling and KernelVerb::SetOverdraftCeiling carries no payload -- flag-only. The behavioural half is where the behaviour is: admit.rs's over_budget_refuses_with_no_charge_and_nothing_to_refund and crates/busbar/src/root/tests/durability.rs's a_spend_past_the_reservation_is_carried_out_as_an_overdraft (the unit settles; the chain holds its counts and no figure; the rebuilt book derives the carry at read).",
+   "note": "Resolved 2026-09-06: all three reason codes DO exist -- crates/busbar-caps/src/decision.rs declares OverBudget, OverdraftCeiling and StaleSlice, and OverBudget is constructed six times in production, once at crates/busbar-llm/src/unit/admit.rs:203 as a Decision::refuse at StepName::Admit. The row was carried unproven on a note that was wrong on the fact. Every clause of this binding is a claim that a SHAPE DOES NOT OCCUR, which no behavioural test can settle, so it is settled on the shipped VOCABULARY by crates/busbar/tests/money_never_ends_an_admitted_unit.rs: the set of reasons the tree constructs inside `Abort::Kernel` is exactly {ClientGone, Drain} and contains no money reason; the set it constructs inside `Refusal::new` contains OverBudget (the non-vacuity, and the binding's positive half -- money refuses at a door) and neither OverdraftCeiling nor StaleSlice; and `Overdraft::Ceiling` is named in one production file, the module defining the rule, so no shipped path branches on the ceiling and KernelVerb::SetOverdraftCeiling carries no payload -- flag-only. The behavioural half is where the behaviour is: crates/busbar/src/root/tests/serve_door.rs's the_pools_door_attributes_spend_and_a_spent_budget_refuses (the door's U11 cover of the engine's over-budget admit test, FLIP-LLM) and crates/busbar/src/root/tests/durability.rs's a_spend_past_the_reservation_is_carried_out_as_an_overdraft (the unit settles; the chain holds its counts and no figure; the rebuilt book derives the carry at read).",
    "status": "mapped",
    "checks": [
     {
@@ -2768,14 +2726,14 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/unit/tests/admit.rs::over_budget_refuses_with_no_charge_and_nothing_to_refund",
+     "ref": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses",
      "proves": "the behavioural half on the http/sse plane's own admission path: an over-budget request is a Decision::refuse at StepName::Admit carrying ReasonCode::OverBudget, charging nothing and leaving the ledger untouched -- a door, not an end",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw, test:crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on, test:crates/busbar-llm/src/unit/tests/admit.rs::over_budget_refuses_with_no_charge_and_nothing_to_refund"
+   "verdict_detail": "test:crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw, test:crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on, test:crates/busbar/src/root/tests/serve_door.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses"
   },
   {
    "id": "PB-59",
@@ -2840,7 +2798,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_oversized_body_413_bedrock_native_envelope_with_amzn_headers",
+     "ref": "crates/busbar/src/root/tests/serve_door_kernel_ported.rs::an_oversized_body_on_a_converse_path_is_refused_in_its_dialects_envelope",
      "proves": "the bedrock 413 carries the x-amzn headers",
      "source": "curated",
      "status": "mapped"
@@ -2868,7 +2826,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|413|api-prefix, oracle-cell:http.crosscut|413|openai, oracle-cell:http.crosscut|413|openai-unauth, test:oversized_request_413_is_reshaped_on_the_live_stack, test:test_oversized_body_413_bedrock_native_envelope_with_amzn_headers, test:test_axum_marker_413_is_reshaped_even_as_plain_text, test:test_relayed_upstream_413_not_reshaped, test:test_reshape_oversized_413_passthrough"
+   "verdict_detail": "oracle-cell:http.crosscut|413|api-prefix, oracle-cell:http.crosscut|413|openai, oracle-cell:http.crosscut|413|openai-unauth, test:oversized_request_413_is_reshaped_on_the_live_stack, test:crates/busbar/src/root/tests/serve_door_kernel_ported.rs::an_oversized_body_on_a_converse_path_is_refused_in_its_dialects_envelope, test:test_axum_marker_413_is_reshaped_even_as_plain_text, test:test_relayed_upstream_413_not_reshaped, test:test_reshape_oversized_413_passthrough"
   },
   {
    "id": "PB-61",
@@ -3085,7 +3043,7 @@
     },
     {
      "kind": "test",
-     "ref": "anthropic_egress_carries_exactly_the_declared_headers",
+     "ref": "crates/busbar-kernel/src/egress_auth/tests/prebuilt_auth_tests.rs::a_declared_static_header_follows_the_credential_verbatim",
      "proves": "an anthropic lane's egress carries exactly the declared headers",
      "source": "curated",
      "status": "mapped"
@@ -3141,69 +3099,55 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:egress_scheme_is_the_declared_credential_family_table, test:a_declared_static_header_follows_the_credential_verbatim, test:each_declared_scheme_presents_what_its_dialect_builder_wrote, test:anthropic_egress_carries_exactly_the_declared_headers, test:every_egress_request_declares_the_pinned_api_version, test:with_no_static_header_declared_the_version_header_is_absent, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:a_static_scheme_presents_the_header_its_table_names, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:a_misconfigured_or_unsendable_signing_credential_signs_nothing"
+   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:egress_scheme_is_the_declared_credential_family_table, test:a_declared_static_header_follows_the_credential_verbatim, test:each_declared_scheme_presents_what_its_dialect_builder_wrote, test:crates/busbar-kernel/src/egress_auth/tests/prebuilt_auth_tests.rs::a_declared_static_header_follows_the_credential_verbatim, test:every_egress_request_declares_the_pinned_api_version, test:with_no_static_header_declared_the_version_header_is_absent, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:a_static_scheme_presents_the_header_its_table_names, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:a_misconfigured_or_unsendable_signing_credential_signs_nothing"
   },
   {
    "id": "PB-66",
    "surface": "request and response headers",
    "binding": "OWNER HARD RULE 2026-10-02 (BUSBAR IS INVISIBLE TO UPSTREAMS): on a same-dialect route EVERY client request header rides upstream verbatim except what busbar governs — the dialects' credential headers and tenant selectors (declared as data per dialect), replaced from busbar's config, and the per-connection mechanics (hop-by-hop, `host`, `content-length`), re-derived; a translated route (client dialect differs from the upstream's, including on failover) forwards no client header; egress headers are otherwise the four-group construction (credential, three-case `content-type`, pinned native-SDK `user-agent`, `accept` with the Bedrock eventstream override), a forwarded client value replacing the default of the same name; on the response `retry-after` is busbar-SET (no dialect parses an upstream `Retry-After`); `content-type` is the upstream's VERBATIM on a same-protocol relay (`engine/mod.rs:2300-2321`) and otherwise the three cases of dialects :1304 — `application/json` for buffered and error responses, `writer.streaming_content_type()` when reframed (SSE, the gemini JSON array, bedrock `application/vnd.amazon.eventstream`), upstream verbatim same-protocol, and the relayed set is PER INGRESS WRITER — `ingress_relayed_response_header_names()`: bedrock `[\"x-amzn-requestid\", \"x-amzn-errortype\"]` (UUID v4 when absent), anthropic `[\"request-id\"]` (synthesized `req_01<24 base62>` when absent), every other dialect `[]`; everything else stripped; `advanced.response_headers.*` injections per PB-73 are outside this list",
    "inventory": "dialects (:1305-1316; `proto/mod.rs:695-697`), (:997); `crates/busbar-plane-llm/src/dialect.rs` `governed_headers`",
-   "note": "Resolved 2026-10-02: the owner's HARD RULE (BUSBAR IS INVISIBLE TO UPSTREAMS) replaced the allowlist; crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs pins every same-dialect client header forwarded, the governed and per-connection ones dropped, and none on a translated route.",
+   "note": "Resolved 2026-10-02: the owner's HARD RULE (BUSBAR IS INVISIBLE TO UPSTREAMS) replaced the allowlist; the engine's client-header tests are held on the door path since FLIP-LLM (U11): crates/busbar/src/root/tests/serve_door_kernel_ported.rs::the_callers_per_connection_fields_never_reach_the_far_end and crates/busbar-kernel-egress/src/tests/ported_tests.rs::the_head_a_plane_hands_the_far_end_drops_the_mechanics_and_keeps_the_rest pin the per-connection and governed fields dropped and the rest kept.",
    "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "same_dialect_anthropic_forwards_every_client_header",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt.rs::a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones",
      "proves": "every same-dialect client header reaches the upstream",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_egress_accept_matches_native_sdk",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::every_far_dialect_is_sent_its_native_target_accept_and_user_agent",
      "proves": "the pinned accept group incl. the bedrock eventstream override",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_egress_ua_versions_are_pinned_and_present",
-     "proves": "the pinned native-SDK user-agent",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_ingress_stream_content_type_by_protocol",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_callers_stream_content_type_follows_its_dialect",
      "proves": "streaming_content_type per ingress writer",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_bedrock_ingress_success_carries_amzn_request_id",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_bedrock_callers_translated_success_carries_one_amzn_request_id",
      "proves": "bedrock relays x-amzn-requestid",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_forward_once_bedrock_error_relays_amzn_headers",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply.rs::a_verbatim_relay_carries_the_native_head_fields",
      "proves": "bedrock relays x-amzn-errortype",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_anthropic_ingress_success_carries_request_id_header",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::an_anthropic_callers_translated_success_carries_one_request_id",
      "proves": "anthropic relays request-id",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once",
-     "proves": "request-id relayed verbatim exactly once",
      "source": "curated",
      "status": "mapped"
     },
@@ -3216,7 +3160,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:same_dialect_anthropic_forwards_every_client_header, test:test_egress_accept_matches_native_sdk, test:test_egress_ua_versions_are_pinned_and_present, test:test_ingress_stream_content_type_by_protocol, test:test_bedrock_ingress_success_carries_amzn_request_id, test:test_forward_once_bedrock_error_relays_amzn_headers, test:test_anthropic_ingress_success_carries_request_id_header, test:test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once, test:test_synth_anthropic_request_id_is_well_formed"
+   "verdict_detail": "test:crates/busbar-plane-llm/tests/exchange_attempt.rs::a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones, test:crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::every_far_dialect_is_sent_its_native_target_accept_and_user_agent, test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_callers_stream_content_type_follows_its_dialect, test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_bedrock_callers_translated_success_carries_one_amzn_request_id, test:crates/busbar-plane-llm/tests/exchange_reply.rs::a_verbatim_relay_carries_the_native_head_fields, test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::an_anthropic_callers_translated_success_carries_one_request_id, test:test_synth_anthropic_request_id_is_well_formed"
   },
   {
    "id": "PB-67",
@@ -3227,36 +3171,22 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "test_cross_protocol_error_kind_mapping",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_far_end_status_names_its_cross_dialect_kind",
      "proves": "the status to kind table as wire literals",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_shape_cross_protocol_error_auth_kinds",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_callers_refused_credential_reads_in_its_own_envelope",
      "proves": "the ingress-native envelope with the canonical kind",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_ingress_error_bedrock_amzn_headers",
+     "ref": "crates/busbar-plane-llm/tests/exchange_refuse.rs::an_unauthenticated_caller_reads_its_paths_dialect_in_vendor_terms",
      "proves": "the bedrock error envelope headers",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_vendor_auth_failure_message_is_plausible_per_proto",
-     "proves": "per-dialect auth-failure envelopes incl. bedrock 403 and gemini 400",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_bedrock_ingress_wrong_token_is_403_native_envelope",
-     "proves": "the bedrock 403 end to end",
      "source": "curated",
      "status": "mapped"
     },
@@ -3283,7 +3213,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_cross_protocol_error_kind_mapping, test:test_shape_cross_protocol_error_auth_kinds, test:test_ingress_error_bedrock_amzn_headers, test:test_vendor_auth_failure_message_is_plausible_per_proto, test:test_bedrock_ingress_wrong_token_is_403_native_envelope, test:error_kind_to_bedrock_type_covers_ingress_emitted_kinds, test:test_openai_classify, test:write_error_kind_vocabulary_mapping"
+   "verdict_detail": "test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_far_end_status_names_its_cross_dialect_kind, test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_callers_refused_credential_reads_in_its_own_envelope, test:crates/busbar-plane-llm/tests/exchange_refuse.rs::an_unauthenticated_caller_reads_its_paths_dialect_in_vendor_terms, test:error_kind_to_bedrock_type_covers_ingress_emitted_kinds, test:test_openai_classify, test:write_error_kind_vocabulary_mapping"
   },
   {
    "id": "PB-68",
@@ -3470,14 +3400,14 @@
     },
     {
      "kind": "test",
-     "ref": "route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled",
+     "ref": "crates/busbar/tests/route_policy_headers_on/main.rs::with_the_switch_on_a_member_no_policy_chose_carries_no_route_field",
      "proves": "no route headers for the SWRR floor even when enabled",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "route_policy_headers_present_only_when_both_gates_open",
+     "ref": "crates/busbar/tests/route_policy_headers_on/main.rs::with_the_switch_on_a_policy_chosen_member_names_the_policy_and_the_member",
      "proves": "route headers only when route_policy and a non-default ordering",
      "source": "curated",
      "status": "mapped"
@@ -3498,7 +3428,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:server_timing_header_absent_by_default_present_when_enabled, test:route_policy_headers_absent_by_default_on_the_live_stack, test:route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled, test:route_policy_headers_present_only_when_both_gates_open, test:test_emit_server_timing_moved_to_advanced_response_headers, lint:xtask/src/gates/response_header.rs"
+   "verdict_detail": "test:server_timing_header_absent_by_default_present_when_enabled, test:route_policy_headers_absent_by_default_on_the_live_stack, test:crates/busbar/tests/route_policy_headers_on/main.rs::with_the_switch_on_a_member_no_policy_chose_carries_no_route_field, test:crates/busbar/tests/route_policy_headers_on/main.rs::with_the_switch_on_a_policy_chosen_member_names_the_policy_and_the_member, test:test_emit_server_timing_moved_to_advanced_response_headers, lint:xtask/src/gates/response_header.rs"
   },
   {
    "id": "PB-74",
@@ -3724,21 +3654,14 @@
     },
     {
      "kind": "test",
-     "ref": "test_governance_rate_limit_429_native_envelope_all_ingress",
+     "ref": "crates/busbar-plane-llm/tests/exchange_refuse.rs::a_blocked_limit_reads_the_kernels_text_with_its_retry_advice",
      "proves": "requests refusal is 429 rate_limit_error on every ingress",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_budget_over_quota_bedrock_envelope",
-     "proves": "budget refusal is the Bedrock 400",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::missing_group_fails_closed, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::total_window_blocks_without_retry_after, test:test_try_admit_rejects_at_group_cap, test:test_chain_enforcement_rejects_naming_the_blocking_group, test:test_governance_rate_limit_429_native_envelope_all_ingress, test:test_budget_over_quota_bedrock_envelope"
+   "verdict_detail": "test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::missing_group_fails_closed, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::total_window_blocks_without_retry_after, test:test_try_admit_rejects_at_group_cap, test:test_chain_enforcement_rejects_naming_the_blocking_group, test:crates/busbar-plane-llm/tests/exchange_refuse.rs::a_blocked_limit_reads_the_kernels_text_with_its_retry_advice"
   },
   {
    "id": "PB-80",
@@ -3925,15 +3848,8 @@
     },
     {
      "kind": "test",
-     "ref": "adds_include_usage_when_absent",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt.rs::a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked",
      "proves": "stream_options.include_usage is forced upstream",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_streaming_openai_egress_without_client_opt_in_still_gets_include_usage_injected",
-     "proves": "injection happens without client opt-in",
      "source": "curated",
      "status": "mapped"
     },
@@ -3946,7 +3862,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:read_response_subtracts_cached_prefix_from_prompt_tokens, test:read_response_subtracts_cached_prefix_from_input_tokens, test:test_cached_content_token_count_reads_into_cache_read, test:test_gemini_usage_counts_thinking_tokens_as_output, test:adds_include_usage_when_absent, test:test_streaming_openai_egress_without_client_opt_in_still_gets_include_usage_injected, test:strip_same_proto_usage_fires_without_object_field"
+   "verdict_detail": "test:read_response_subtracts_cached_prefix_from_prompt_tokens, test:read_response_subtracts_cached_prefix_from_input_tokens, test:test_cached_content_token_count_reads_into_cache_read, test:test_gemini_usage_counts_thinking_tokens_as_output, test:crates/busbar-plane-llm/tests/exchange_attempt.rs::a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked, test:strip_same_proto_usage_fires_without_object_field"
   },
   {
    "id": "PB-83",
@@ -4004,21 +3920,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_reports_ok_outcome",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::completion_tap_reports_ok_outcome",
      "proves": "the response stage reports ok",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_gate",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::completion_tap_fires_synthetic_rejected_by_gate",
      "proves": "the synthetic outcome rejected_by_gate",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_auth",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::completion_tap_fires_synthetic_rejected_by_auth",
      "proves": "OWNER DECISION: an auth refusal on a hooked pool fires the completion tap with outcome rejected_by_auth and the protocol-native status (binding amended)",
      "source": "hand",
      "status": "mapped"
@@ -4032,7 +3948,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_reports_ok_outcome, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_gate, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_auth, oracle-cell:hooks|hooked-pool|unauth@hooks-webrequest"
+   "verdict_detail": "test:crates/busbar/tests/hook_parity_driver/seam.rs::completion_tap_reports_ok_outcome, test:crates/busbar/tests/hook_parity_driver/seam.rs::completion_tap_fires_synthetic_rejected_by_gate, test:crates/busbar/tests/hook_parity_driver/seam.rs::completion_tap_fires_synthetic_rejected_by_auth, oracle-cell:hooks|hooked-pool|unauth@hooks-webrequest"
   },
   {
    "id": "PB-85",
@@ -4057,21 +3973,21 @@
     },
     {
      "kind": "test",
-     "ref": "test_openai_explicit_max_tokens_preserved_over_lane_default",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::a_callers_max_tokens_survives_over_the_lanes_default",
      "proves": "an explicit client value is never rewritten on a real forward",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_openai_omits_max_tokens_injects_fallback_for_anthropic",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::an_omitted_max_tokens_reaches_a_far_end_that_requires_one_as_the_fallback",
      "proves": "injection on a cross-protocol forward",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:per_model_then_global_then_4096, test:test_requires_max_tokens_per_protocol, test:test_openai_explicit_max_tokens_preserved_over_lane_default, test:test_openai_omits_max_tokens_injects_fallback_for_anthropic"
+   "verdict_detail": "test:per_model_then_global_then_4096, test:test_requires_max_tokens_per_protocol, test:crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::a_callers_max_tokens_survives_over_the_lanes_default, test:crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::an_omitted_max_tokens_reaches_a_far_end_that_requires_one_as_the_fallback"
   },
   {
    "id": "PB-86",
@@ -4120,14 +4036,14 @@
     },
     {
      "kind": "test",
-     "ref": "a_reranks_search_units_reach_the_price",
+     "ref": "crates/busbar-kernel/src/governance/tests/limits_tests.rs::an_open_class_priced_in_config_is_charged_and_capped_end_to_end",
      "proves": "search units are priced by a present card, refused by a card silent about them (#42), read 0 with no card",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:rerank_resp_billing_is_flat, test:rerank_resp_billing_counts_search_units_as_an_open_class, test:a_reranks_search_units_reach_the_price"
+   "verdict_detail": "test:rerank_resp_billing_is_flat, test:rerank_resp_billing_counts_search_units_as_an_open_class, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::an_open_class_priced_in_config_is_charged_and_capped_end_to_end"
   },
   {
    "id": "PB-88",
@@ -4138,7 +4054,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "bad_request_reject_keeps_the_unchanged_generic_400",
+     "ref": "crates/busbar-plane-llm/tests/exchange_refuse_ported.rs::a_bad_request_rejection_is_the_generic_400",
      "proves": "the literal 400 We could not process the content of your request",
      "source": "curated",
      "status": "mapped"
@@ -4159,7 +4075,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:bad_request_reject_keeps_the_unchanged_generic_400, test:req_bedrock_to_cohere, test:resp_responses_to_gemini"
+   "verdict_detail": "test:crates/busbar-plane-llm/tests/exchange_refuse_ported.rs::a_bad_request_rejection_is_the_generic_400, test:req_bedrock_to_cohere, test:resp_responses_to_gemini"
   },
   {
    "id": "PB-89",
@@ -4246,7 +4162,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee",
      "proves": "the fee follows the client-facing status",
      "source": "curated",
      "status": "mapped"
@@ -4260,7 +4176,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|primary-cut-body, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::refund_returns_the_fee_but_never_the_requests_limit_slot, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx, gate:xtask/src/gates/construction.rs"
+   "verdict_detail": "oracle-cell:route.failover|fo|primary-cut-body, test:crates/busbar-kernel/src/governance/tests/limits_tests.rs::refund_returns_the_fee_but_never_the_requests_limit_slot, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee, gate:xtask/src/gates/construction.rs"
   },
   {
    "id": "PB-92",
@@ -4333,7 +4249,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "test_passthrough_forwards_caller_token",
+     "ref": "crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs::passthrough_hands_the_callers_credential_only_to_its_member",
      "proves": "passthrough sends the caller token",
      "source": "curated",
      "status": "mapped"
@@ -4347,7 +4263,7 @@
     },
     {
      "kind": "test",
-     "ref": "override_present_runs_full_lookup",
+     "ref": "crates/busbar-kernel/src/config/tests/tests.rs::pools_upstream_credentials_is_a_scalar_override",
      "proves": "a pool scalar replaces the section default",
      "source": "curated",
      "status": "mapped"
@@ -4361,7 +4277,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_passthrough_forwards_caller_token, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:override_present_runs_full_lookup, test:golden_migrate_auth_upstream_credentials_moves_to_pools"
+   "verdict_detail": "test:crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs::passthrough_hands_the_callers_credential_only_to_its_member, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:crates/busbar-kernel/src/config/tests/tests.rs::pools_upstream_credentials_is_a_scalar_override, test:golden_migrate_auth_upstream_credentials_moves_to_pools"
   },
   {
    "id": "PB-95",
@@ -4372,21 +4288,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::attempt_tap_carries_attempt_story",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::attempt_tap_carries_attempt_story",
      "proves": "the routing-stage payload carries a 1-based attempt_number",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::route_tap_reports_surviving_candidates",
+     "ref": "crates/busbar/tests/hook_parity_driver/seam.rs::route_tap_reports_surviving_candidates",
      "proves": "remaining_candidates on the candidate stage",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::attempt_tap_carries_attempt_story, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::route_tap_reports_surviving_candidates"
+   "verdict_detail": "test:crates/busbar/tests/hook_parity_driver/seam.rs::attempt_tap_carries_attempt_story, test:crates/busbar/tests/hook_parity_driver/seam.rs::route_tap_reports_surviving_candidates"
   },
   {
    "id": "PB-96",
@@ -4464,49 +4380,42 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "a_same_dialect_hop_is_the_callers_bytes_with_governed_splices",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt.rs::the_wire_model_is_written_when_it_differs",
      "proves": "a same-dialect hop is the caller's bytes with the governed splices only",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "pristine_same_proto_is_byte_identical_body_model",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt.rs::a_same_dialect_body_the_far_end_would_not_change_goes_out_as_the_callers_bytes",
      "proves": "an unmodified same-dialect request reaches upstream byte-identical",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "pristine_same_proto_is_byte_identical_url_model",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt.rs::a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it",
      "proves": "same, with the model on the path",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "claude_on_vertex_drops_model_and_injects_anthropic_version",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::claude_on_vertex_drops_the_model_and_carries_the_vertex_version",
      "proves": "the Claude-on-Vertex shim literal",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "invalidator_3_model_rewrite_forces_non_pristine",
-     "proves": "a rewrite takes the encode_egress path",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "invalidator_4_same_proto_model_shim_strip_forces_non_pristine",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::a_body_model_is_stripped_for_a_far_end_whose_url_names_the_model",
      "proves": "strip_same_protocol_model_shim forces re-encode",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:a_same_dialect_hop_is_the_callers_bytes_with_governed_splices, test:pristine_same_proto_is_byte_identical_body_model, test:pristine_same_proto_is_byte_identical_url_model, test:claude_on_vertex_drops_model_and_injects_anthropic_version, test:invalidator_3_model_rewrite_forces_non_pristine, test:invalidator_4_same_proto_model_shim_strip_forces_non_pristine"
+   "verdict_detail": "test:crates/busbar-plane-llm/tests/exchange_attempt.rs::the_wire_model_is_written_when_it_differs, test:crates/busbar-plane-llm/tests/exchange_attempt.rs::a_same_dialect_body_the_far_end_would_not_change_goes_out_as_the_callers_bytes, test:crates/busbar-plane-llm/tests/exchange_attempt.rs::a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it, test:crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::claude_on_vertex_drops_the_model_and_carries_the_vertex_version, test:crates/busbar-plane-llm/tests/exchange_attempt_ported.rs::a_body_model_is_stripped_for_a_far_end_whose_url_names_the_model"
   },
   {
    "id": "PB-98",
@@ -4517,7 +4426,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "test_normalize_raw_error_with_provider_override",
+     "ref": "crates/busbar-kernel-breaker/src/tests/port.rs::error_map_code_wins_over_http_status",
      "proves": "the provider code is first in the error_map ladder",
      "source": "curated",
      "status": "mapped"
@@ -4601,7 +4510,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, test:least_busy_prefers_most_headroom, test:least_busy_all_saturated_ranks_by_idx, test:cheapest_all_unknown_abstains, test:usage_all_unknown_abstains, test:fastest_orders_by_latency, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
+   "verdict_detail": "test:crates/busbar-kernel-breaker/src/tests/port.rs::error_map_code_wins_over_http_status, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, test:least_busy_prefers_most_headroom, test:least_busy_all_saturated_ranks_by_idx, test:cheapest_all_unknown_abstains, test:usage_all_unknown_abstains, test:fastest_orders_by_latency, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
   },
   {
    "id": "PB-99",

@@ -46,71 +46,6 @@ item = "busbar_plane_a2a"
 
 [[finding]]
 rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/attempt/respond.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/exhaustion/mod.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/hooks.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/lazy_body.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/pipeline.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/usage.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/wire.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/lib.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/native_ingress.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/testkit/shell.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/unit/arrival.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/unit/meter.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
 file = "crates/busbar-mcp/src/codec/handler.rs"
 item = "busbar_plane_mcp"
 
@@ -246,11 +181,6 @@ item = "EPOCH"
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/test_support/mod.rs"
 item = "SECTION_PLANE_TEST_RUNTIME_FACTORY"
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-llm/src/unit/node.rs"
-item = "NATIVE_SEATS"
 
 [[finding]]
 rule = "door-only:static-seam"

@@ -61,22 +61,21 @@ pub const SUBSTRATE: &str = "crates/busbar-kernel/src";
 /// The root every walk in this gate starts from.
 pub const CRATES: &str = "crates";
 
-/// FIVE SHAPES, because the naming is not uniform and pretending it is would silently drop a whole
-/// protocol from the scan. `busbar-llm` is the LLM protocol's plugin (six dialect modules under one
-/// crate — one plugin per PROTOCOL, not per dialect); `busbar-mcp` is the MCP protocol's plugin;
-/// `busbar-proto-*` is the older per-protocol naming; `busbar-*-codec` is the newest, each protocol
-/// plugin's pure half. A fifth protocol under any of them is scanned without editing this.
+/// FOUR SHAPES, because the naming is not uniform and pretending it is would silently drop a whole
+/// protocol from the scan. `busbar-mcp` is the MCP protocol's plugin; `busbar-proto-*` is the older
+/// per-protocol naming; `busbar-*-codec` is each protocol plugin's pure half; `busbar-plane-*` is the
+/// plane crate. A further protocol under any of them is scanned without editing this. (The fifth,
+/// the one-crate engine shape, left with the engine crate at FLIP-LLM.)
 pub fn proto_root_of(rel: &str) -> Option<String> {
     let rest = rel.strip_prefix("crates/")?;
     let (crate_name, tail) = rest.split_once('/')?;
     if !tail.starts_with("src/") {
         return None;
     }
-    let matches = crate_name == "busbar-llm"
-        || crate_name == "busbar-mcp"
+    let matches = crate_name == "busbar-mcp"
         || (crate_name.starts_with("busbar-") && crate_name.ends_with("-codec"))
         || crate_name.starts_with("busbar-proto-")
-        // THE FIFTH SHAPE, and the one this function had forgotten: fold #39 dissolved the
+        // THE FOURTH SHAPE, and the one this function had forgotten: fold #39 dissolved the
         // `-codec` halves into `busbar-plane-<key>` (the dialect to the plane crate), so a
         // protocol's wire arm now lives under this name and was in no scan and no allowed arm.
         || crate_name.starts_with("busbar-plane-");
@@ -297,7 +296,7 @@ fn finding_plane_root(e: &PlaneRootError) -> String {
 }
 
 pub fn finding_proto_roots() -> String {
-    "PROTO-ROOTS-MISSING: no `crates/busbar-llm/src`, `crates/busbar-mcp/src`, \
+    "PROTO-ROOTS-MISSING: no `crates/busbar-mcp/src`, \
      `crates/busbar-*-codec/src`, `crates/busbar-proto-*/src` or `crates/busbar-plane-*/src` holds \
      a source file. The operation \
      and transport axis bans are scoped over the protocol crates, so this is a ban scanning \

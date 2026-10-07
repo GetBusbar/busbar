@@ -35,7 +35,6 @@ const SCANNED: &[&str] = &[
     "crates/busbar-plane-a2a/src",
     "crates/busbar-plane-streaming/src",
     "crates/busbar-plane-decisions/src",
-    "crates/busbar-llm/src",
     "crates/busbar-mcp/src",
     "crates/busbar-a2a/src",
     "crates/busbar-voice/src",
@@ -52,7 +51,9 @@ const SHAPES: &[&str] = &[
 
 /// Where a plane's `PlaneDeclaration` (and so its `billable_classes`) is written.
 const DECLARATIONS: &[(&str, &str)] = &[
-    ("llm", "crates/busbar-llm/src/lib.rs"),
+    // A door plane's billable classes are its tail's, built from the class constants it lists
+    // (`door_declared`); the llm plane is served through its door since FLIP-LLM deleted `busbar-llm`.
+    ("llm", "crates/busbar-plane-llm/src/plane_door.rs"),
     ("mcp", "crates/busbar-mcp/src/mcp/mod.rs"),
     ("a2a", "crates/busbar-a2a/src/a2a/mod.rs"),
     ("streaming", "crates/busbar-voice/src/lib.rs"),
@@ -94,16 +95,8 @@ const SITES: &[Site] = &[
         emits: &["busbar_plane_llm::codec::ir::rerank::SEARCH_UNITS_CLASS"],
         dead: None,
     },
-    // The Meter step's billed map: the tiers above plus the tap's `Billing::Counted` classes,
-    // FORWARDED verbatim — it mints no class of its own.
-    Site {
-        plane: "llm",
-        file: "crates/busbar-llm/src/unit/meter.rs",
-        shape: "usage_units.entry(",
-        occurrences: 1,
-        emits: &[],
-        dead: None,
-    },
+    // (The engine's Meter step, `busbar-llm/src/unit/meter.rs`, left with the engine (FLIP-LLM): the
+    // door reports its counts by INDEX into its tail's billable classes, through no shape above.)
     Site {
         plane: "mcp",
         file: "crates/busbar-mcp/src/mcp/method.rs",
@@ -217,9 +210,9 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
         .find(|(p, _)| *p == plane)
         .ok_or_else(|| format!("no declaration file for plane {plane}"))?;
     let src = std::fs::read_to_string(root.join(file)).map_err(|e| format!("{file}: {e}"))?;
-    let start = src
-        .find("billable_classes: &[")
-        .ok_or_else(|| format!("{file}: no billable_classes"))?;
+    let Some(start) = src.find("billable_classes: &[") else {
+        return door_declared(root, file, &src);
+    };
     let block = &src[start..];
     let end = block.find("],").ok_or("an unterminated billable_classes")?;
     let mut classes = BTreeSet::new();
@@ -235,6 +228,61 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
             lit.trim_end_matches('"').to_string()
         } else {
             resolve(root, expr)?
+        });
+    }
+    Ok(classes)
+}
+
+/// A DOOR PLANE'S DECLARED CLASSES: its tail's billable classes are built from `TOKEN_CLASSES` (a
+/// list of class constants) and `OPEN_CLASSES` (`(class, family)` pairs), the source of every class
+/// it may report. Each constant is resolved as a declaration's is; a bare name through the file's own
+/// `use`, its `crate::` read as the file's crate.
+fn door_declared(root: &Path, file: &str, src: &str) -> Result<BTreeSet<String>, String> {
+    let body = |name: &str| -> Result<&str, String> {
+        let at = src
+            .find(&format!("const {name}:"))
+            .ok_or_else(|| format!("{file}: no billable_classes and no `const {name}`"))?;
+        let def = &src[at..];
+        let open = def
+            .find("= ")
+            .ok_or_else(|| format!("{file}: `{name}` has no value"))?;
+        let end = def
+            .find("];")
+            .ok_or_else(|| format!("{file}: `{name}` is unterminated"))?;
+        Ok(&def[open + 2..end])
+    };
+    let krate = file
+        .strip_prefix("crates/")
+        .and_then(|r| r.split('/').next())
+        .ok_or_else(|| format!("{file}: not under crates/"))?
+        .replace('-', "_");
+    let path_of = |expr: &str| -> Result<String, String> {
+        if expr.contains("::") {
+            return Ok(expr.to_string());
+        }
+        let used = src
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("use "))
+            .filter_map(|l| l.strip_suffix(';'))
+            .find(|l| l.ends_with(&format!("::{expr}")))
+            .ok_or_else(|| format!("{file}: `{expr}` is neither a path nor a `use`d name"))?;
+        Ok(used.replacen("crate::", &format!("{krate}::"), 1))
+    };
+    let mut classes = BTreeSet::new();
+    for expr in body("TOKEN_CLASSES")?
+        .trim_start_matches(['[', '&'])
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+    {
+        classes.insert(resolve(root, &path_of(expr)?)?);
+    }
+    for pair in body("OPEN_CLASSES")?.split('(').skip(1) {
+        let expr = pair.split(',').next().unwrap_or_default().trim();
+        classes.insert(if let Some(lit) = expr.strip_prefix('"') {
+            lit.trim_end_matches('"').to_string()
+        } else {
+            resolve(root, &path_of(expr)?)?
         });
     }
     Ok(classes)

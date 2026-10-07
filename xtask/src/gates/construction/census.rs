@@ -171,7 +171,16 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
                 bad.extend(deleted_ledger_findings(&now_deleted, &base_deleted, |d| {
                     cx.abs(d).exists()
                 }));
-                let moved = moved_out_by_kind(cx, cfg, &doc, &base.sha, &now_deleted);
+                let mut moved = moved_out_by_kind(cx, cfg, &doc, &base.sha, &now_deleted);
+                let base_planes = doc
+                    .table("gate")
+                    .map(|g| g.list_of("plane_crates"))
+                    .unwrap_or_default();
+                if let Some(n) = deleted_plane_crates(&base_planes, &plane_crates, |dir| {
+                    now_deleted.contains(dir) && !cx.abs(dir).exists()
+                }) {
+                    moved.insert("plane_crates".to_string(), n as i64);
+                }
                 bad.extend(lowered_floors(&cfg.doc, &doc, base.short(), &moved));
             }
         }
@@ -223,7 +232,9 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 ///
 /// THE ONE ACCEPTED WAY DOWN (ARCHITECT 2026-10-02, TODO PATH TO DEV-GREEN P5): a
 /// `plugin_kinds.<kind>` floor may drop by at most `moved[<key>]`, the number of that kind's crate
-/// directories that left the tree as MOVED-OUT plugins or ruled deletions ([`excused_out`]). Every other drop is RED.
+/// directories that left the tree as MOVED-OUT plugins or ruled deletions ([`excused_out`]), and the
+/// `plane_crates` floor by the legacy plane crates deleted under the ledger
+/// ([`deleted_plane_crates`]). Every other drop is RED.
 fn lowered_floors(
     now_doc: &Document,
     base_doc: &Document,
@@ -310,6 +321,24 @@ fn excused_out(
     gone.iter()
         .all(|dir| is_moved(dir) || is_deleted(dir))
         .then_some(gone.len())
+}
+
+/// The `gate.plane_crates` entries the base listed and this tree does not, when EVERY one is a
+/// crate deleted under a ruled deletion (`is_deleted(crates/<name>)`: named in
+/// `[gate.census.deleted]` and absent from the tree; ARCHITECT 2026-10-05, the P3 flips delete the
+/// legacy plane crates). `None` when any one is not (an unlisted vanished plane crate stays RED), and
+/// when none left.
+fn deleted_plane_crates(
+    base: &[String],
+    now: &[String],
+    is_deleted: impl Fn(&str) -> bool,
+) -> Option<usize> {
+    let gone: Vec<String> = base
+        .iter()
+        .filter(|c| !now.contains(c))
+        .map(|c| format!("crates/{c}"))
+        .collect();
+    excused_out(&gone, |_| false, is_deleted)
 }
 
 /// A plugin crate MOVED OUT (TODO PATH TO DEV-GREEN P5: filter-repo into its own repo, pinned back

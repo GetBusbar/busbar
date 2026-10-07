@@ -70,7 +70,9 @@ pub const ROW_NO_INLINE: &str = "blocking-ffi:no-inline-ffi";
 // (`Txn::read_store`, `Txn::store_write`, `hooks::offload_bounded`) this gate polices now live
 // under `crates/busbar-kernel/src`.
 const CORE: &str = "crates/busbar-kernel/src";
-const FIXED_ROOTS: &[&str] = &[CORE, "crates/busbar/src", "crates/busbar-llm/src"];
+// `crates/busbar-llm/src` is struck: FLIP-LLM deleted that engine; the plane crate it served is
+// read with every crate under `crates/` (`population::source_population`).
+const FIXED_ROOTS: &[&str] = &[CORE, "crates/busbar/src"];
 const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 // THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.

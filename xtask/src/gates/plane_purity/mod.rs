@@ -1230,7 +1230,7 @@ fn strict_plants() -> Vec<(&'static str, String, &'static str)> {
         ),
         (
             "BACKWARDS",
-            plane_test("llm"),
+            plane_test("mcp"),
             "fn b() { let _ = busbar_core::internal::foo(); }\n",
         ),
     ];

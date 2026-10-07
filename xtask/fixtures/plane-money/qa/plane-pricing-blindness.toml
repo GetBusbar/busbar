@@ -14,12 +14,12 @@ why = "a ghost row, kept so the stale-baseline proof has something to find"
 
 [[debt]]
 category = "price"
-file = "crates/busbar-llm/src/unit/money.rs"
+file = "crates/busbar-mcp/src/unit/money.rs"
 reach = "unproven"
 why = "nobody looked — this row is the 'no reach' proof"
 
 [[debt]]
 category = "hold"
-file = "crates/busbar-llm/src/unit/money.rs"
+file = "crates/busbar-mcp/src/unit/money.rs"
 reach = "reachable"
 why = ""

@@ -77,11 +77,11 @@
   },
   "root_legs": {
     "root-llm": {
-      "file": "crates/busbar/src/root/tests/plane_node.rs",
+      "file": "crates/busbar/src/root/tests/serve_door.rs",
       "columns": [
         "llm"
       ],
-      "note": "the LLM plane over the loop: LlmNode::answer driving the kernel's ten steps, compared against the shipped entry point on six fixtures"
+      "note": "the LLM plane's root leg on the DOOR path: its door linked and bound through the loader's one load, its claims mounted on the data router, a keyed caller's unit admitted and charged by the door steps, crossing the door and leaving through the kernel's connector to a real loopback far end; each root cell is a unit driven through that composition (serve_door.rs, the pools-door capability cells)"
     },
     "root-mcp": {
       "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
@@ -126,12 +126,13 @@
       "capability": "breaker-trip",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_trips_a_failing_members_breaker_cell",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-llm",
-        "reason": "the six root-llm fixtures each name one pool with one lane, so no run on the loop takes a target down and nothing is recorded into the breaker cell through the route step"
-      }
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_trips_a_failing_members_breaker_cell"
+      },
+      "note": "the LLM plane served through its door (busbar-plane-llm, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the model-serving walk over the kernel's lane cells (the legacy busbar-llm engine is deleted, FLIP-LLM U11)"
     },
     {
       "capability": "breaker-trip",
@@ -190,12 +191,13 @@
       "capability": "breaker-fastfail",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::ordered_walk_skips_tripped_preferred_to_next",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_refuses_a_tripped_member_before_dispatch",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-llm",
-        "reason": "nothing on the root-llm leg opens a cell, so no fixture reaches the loop's route step with a tripped target to be refused before dispatch"
-      }
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_refuses_a_tripped_member_before_dispatch"
+      },
+      "note": "the LLM plane served through its door (busbar-plane-llm, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the model-serving walk over the kernel's lane cells (the legacy busbar-llm engine is deleted, FLIP-LLM U11)"
     },
     {
       "capability": "breaker-fastfail",
@@ -254,12 +256,13 @@
       "capability": "failover-reroute",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_reroutes_to_the_twin_before_the_first_byte",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-llm",
-        "reason": "the fixtures declare a single pool member, so the selection loop the route step drives is never asked for a second candidate on this leg"
-      }
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_reroutes_to_the_twin_before_the_first_byte"
+      },
+      "note": "the LLM plane served through its door (busbar-plane-llm, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the model-serving walk over the kernel's lane cells (the legacy busbar-llm engine is deleted, FLIP-LLM U11)"
     },
     {
       "capability": "failover-reroute",
@@ -318,12 +321,13 @@
       "capability": "hooks-tap",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_doors_tap_hooks_observe_the_rewritten_request",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-llm",
-        "reason": "no root-llm fixture installs an observe or transform hook, so the byte-identity the leg proves says nothing about a rewrite or a usage projection running over the loop"
-      }
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_doors_tap_hooks_observe_the_rewritten_request"
+      },
+      "note": "the LLM plane served through its door (busbar-plane-llm, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the model-serving walk over the kernel's lane cells (the legacy busbar-llm engine is deleted, FLIP-LLM U11)"
     },
     {
       "capability": "hooks-tap",
@@ -388,12 +392,13 @@
       "capability": "hooks-gate",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_doors_gate_hook_refuses_before_dispatch",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-llm",
-        "reason": "no root-llm fixture installs a gate hook, so the loop has never been asked to refuse a request at hooks::gate::decide"
-      }
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_doors_gate_hook_refuses_before_dispatch"
+      },
+      "note": "the LLM plane served through its door (busbar-plane-llm, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the model-serving walk over the kernel's lane cells (the legacy busbar-llm engine is deleted, FLIP-LLM U11)"
     },
     {
       "capability": "hooks-gate",
@@ -453,13 +458,14 @@
     {
       "capability": "audit-chain",
       "plane": "llm",
-      "state": "missing",
-      "note": "reopened by the P2 ruling (2026-09-30, proxy/reqlog DELETE): the per-principal request chain proxy/reqlog.rs kept was an in-memory window nothing read, and it is deleted with its tests. No llm per-request hash chain exists until a durable one is built on the store door. The one-terminal-per-unit witness that chain carried lives in crates/busbar-kernel/src/ingress/tests/terminal_tests.rs. ARCHITECT-PENDING: escalate.q DEL-REQLOG Q1.",
+      "state": "proven",
+      "note": "the LLM plane served through its door (busbar-plane-llm, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the model-serving walk over the kernel's lane cells (the legacy busbar-llm engine is deleted, FLIP-LLM U11)",
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::a_driven_planes_abandoned_end_seals_one_audit_record"
-      }
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_seals_one_audit_record_per_unit"
+      },
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_seals_one_audit_record_per_unit"
     },
     {
       "capability": "audit-chain",
@@ -523,12 +529,13 @@
       "capability": "governance-budget",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses",
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it"
-      }
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses"
+      },
+      "note": "the LLM plane served through its door (busbar-plane-llm, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the model-serving walk over the kernel's lane cells (the legacy busbar-llm engine is deleted, FLIP-LLM U11)"
     },
     {
       "capability": "governance-budget",
@@ -595,7 +602,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::every_fixture_reaches_the_end_it_names"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_classifies_a_refused_request_as_the_callers_fault"
       }
     },
     {
@@ -655,12 +662,12 @@
       "capability": "metrics",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-kernel/tests/plane_integration.rs::mounted_plane_traffic_appears_on_a_real_metrics_scrape",
-      "note": "despite its name the test drives all three planes and asserts the llm, mcp and a2a series labels on one real scrape.",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_doors_traffic_appears_on_the_metrics_scrape",
+      "note": "the door's unit on one real scrape: its attempt under its pool and lane, its request families in the exact v1.5.4 label set {ingress_protocol, pool, outcome} with no plane label anywhere (the kernel router no longer serves this plane, so its scrape test drives only the mounted planes).",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-llm",
-        "reason": "the leg compares client bytes and the money the store holds; neither leg of a fixture scrapes /metrics, so the plane label on a real scrape is unwitnessed over the loop"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_doors_traffic_appears_on_the_metrics_scrape"
       }
     },
     {
@@ -854,12 +861,13 @@
       "capability": "egress-auth",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/auth_style_tests.rs::test_api_key_auth_sends_api_key_header",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_injects_the_members_credential_not_the_callers",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-llm",
-        "reason": "the scripted upstream accepts any credential it is handed, so a byte-identical delivered answer over the loop does not witness the egress plan that produced the header"
-      }
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_injects_the_members_credential_not_the_callers"
+      },
+      "note": "the LLM plane served through its door (busbar-plane-llm, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the model-serving walk over the kernel's lane cells (the legacy busbar-llm engine is deleted, FLIP-LLM U11)"
     },
     {
       "capability": "egress-auth",
@@ -923,7 +931,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::the_switched_table_names_every_dialect_the_plane_names"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches"
       }
     },
     {

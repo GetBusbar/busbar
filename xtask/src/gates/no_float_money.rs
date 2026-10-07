@@ -447,8 +447,10 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     // its files folded whole into `crates/busbar-plane-llm/src`, already a home here, so the union
     // this group scans lost no file and the dead `crates/busbar-llm-codec/src` home is struck.
     CountRoot {
-        area: "the LLM codecs, engine and plane",
-        homes: &["crates/busbar-llm/src", "crates/busbar-plane-llm/src"],
+        area: "the LLM codecs and plane",
+        // `crates/busbar-llm/src` is struck: FLIP-LLM deleted the engine, and its plane is served
+        // through `crates/busbar-plane-llm`'s door.
+        homes: &["crates/busbar-plane-llm/src"],
         floor: 70,
     },
     // `busbar-voice-codec` DISSOLVED THE SAME WAY, same ruling: its files folded whole into

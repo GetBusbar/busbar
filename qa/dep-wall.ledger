@@ -31,12 +31,6 @@ busbar-auth-oidc-plugin	rustls
 busbar-auth-oidc-plugin	socket2
 busbar-auth-oidc-plugin	tokio (net)
 busbar-auth-oidc-plugin	tokio-rustls
-busbar-llm	hyper-util
-busbar-llm	reqwest
-busbar-llm	rustls
-busbar-llm	socket2
-busbar-llm	tokio (net)
-busbar-llm	tokio-rustls
 busbar-mcp	hyper-util
 busbar-mcp	reqwest
 busbar-mcp	rustls

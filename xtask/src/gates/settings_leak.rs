@@ -58,7 +58,8 @@ pub const ROW_NO_RAW_BAG: &str = "settings-leak:no-raw-bag";
 const FIXED_ROOTS: &[&str] = &[
     "crates/busbar-kernel/src",
     "crates/busbar/src",
-    "crates/busbar-llm/src",
+    // `crates/busbar-llm/src` is struck: FLIP-LLM deleted that engine; the plane crate it served is
+    // read with every crate under `crates/` (`population::source_population`).
 ];
 
 /// The planes whose source must be in the scan whatever crate they end up in.

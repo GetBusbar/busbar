@@ -262,12 +262,13 @@ const ROSTER: &[Plane] = &[
         key: "llm",
         on_disk: "llm",
         module: "units_llm",
-        linked_crate: "busbar-llm",
-        register_tokens: &["LlmPlane"],
-        note: "the 1.5.5 plane; `proto-llm` carries the crate edge, the protocol DECLS and the \
-               plane decl together. Its pre-unification module is gone: what the root keeps is \
-               the plane-free node its units are handed to (`root/plane_node.rs`, on the `node` \
-               axis)",
+        linked_crate: "busbar-plane-llm",
+        register_tokens: &["LlmPlane", "busbar_plane_llm"],
+        note: "the 1.5.5 plane, a DOOR plane since FLIP-LLM deleted the `busbar-llm` engine: \
+               served through its `plane-door` row (busbar-plane-llm's `plane_door`), the one \
+               composition's driver and the data route driving it, as `decision` is; `proto-llm` \
+               carries the door row, the protocol DECLS and the node its units are driven on \
+               (`root/plane_node.rs`, on the `node` axis)",
     },
     Plane {
         key: "mcp",

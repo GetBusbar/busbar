@@ -128,8 +128,12 @@ pub struct Registration {
 pub const REPORT_ONLY: &[Posture] = &[
     Posture {
         name: "construction",
-        why: "RED BY DESIGN on HEAD while the construction work it measures is in flight — but \
-              red about a NAMED, FINITE list of rows and nothing else",
+        why: "GREEN, AND HELD THERE BY NAME. It stood red on a NAMED, FINITE list of rows while \
+              the construction work it measures was in flight; the list's last row, \
+              `one-pick-site`, drained when FLIP-LLM deleted the engine crate whose two pick sites \
+              held it red, and CONSTRUCTION_STANDING_REDS is empty. Every row is scored: a new red \
+              reds `--all` and `--posture` alike, and a name added to the list that is not red is \
+              STALE and reds them too",
         excuse: Excused::OnlyRows(StandingReds {
             rows: CONSTRUCTION_STANDING_REDS,
             list: "CONSTRUCTION_STANDING_REDS",
@@ -290,10 +294,9 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // no review had recorded (tokio, futures, rustls, hyper, ...); those names are now in
     // `[rules.manifest-allowlist.reviewed_extra]` for each of the four crates and the rows are
     // green.
-    // Four production call sites of `pick_among(` against a ceiling of 2: the kernel-egress exhaustion
-    // and walk sites beside busbar-llm's fallback and pipeline. DRAIN: Phase 4, when the plane's own
-    // pick moves behind the kernel loop and only the loop and the fallback re-entry remain.
-    "one-pick-site",
+    // `one-pick-site` STRUCK 2026-10-06 (FLIP-LLM deletion): the engine crate's two pick sites
+    // (its fallback and its pipeline) left with the crate, so the one production `pick_among(` call
+    // is the egress walk's and the row measures 1 against a ceiling lowered to 1.
     // RE-DERIVED 2026-09-24 FROM A REAL RUN (P1 integration). `cargo xtask gate construction` on a
     // clean checkout of b7200b496, base pinned to origin/predev, is red on exactly the rows on this
     // list. Three names were STALE and are struck here in the same commit:
@@ -3750,12 +3753,14 @@ mod posture_tests {
 
         // 3. A named row that went GREEN: also scored, because the list has gone stale. Without
         //    this the list only ever grows and drifts back into being the blanket it replaced.
+        //    An empty list has no name left to drain, so this arm holds only while it names one.
         let mut drained = standing;
-        drained.pop();
-        assert!(
-            excused_from_all("construction", &cx, &verdict(drained)).is_none(),
-            "a name that is no longer red must be struck, in the commit that drained it"
-        );
+        if drained.pop().is_some() {
+            assert!(
+                excused_from_all("construction", &cx, &verdict(drained)).is_none(),
+                "a name that is no longer red must be struck, in the commit that drained it"
+            );
+        }
     }
 
     /// A row that emitted nothing at all reaches the verdict as a reconciliation PROBLEM, never as

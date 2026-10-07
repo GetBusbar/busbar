@@ -746,14 +746,14 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         ov.set_command(
             NOTE_TABLE_KEY,
             format!(
-                "PB-1\tResolved: the behavioural half is where the behaviour is, at admit.rs's \
+                "PB-1\tResolved: the behavioural half is where the behaviour is, at serve_door.rs's \
                  {note}."
             ),
         );
         ov
     };
     let green_base = cx.with_overlay(fixture(
-        "over_budget_refuses_with_no_charge_and_nothing_to_refund",
+        "the_pools_door_attributes_spend_and_a_spent_budget_refuses",
     ));
     r.push(prove_rows_red(
         &green_base,
@@ -773,7 +773,7 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         gate,
         "a note whose named witness resolves to a real fn is accepted",
         &[super::ROW_NOTE_WITNESS],
-        fixture("over_budget_refuses_with_no_charge_and_nothing_to_refund"),
+        fixture("the_pools_door_attributes_spend_and_a_spent_budget_refuses"),
     ));
 
     r

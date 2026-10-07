@@ -55,7 +55,6 @@ const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
 /// `gate.plugin_kinds.plane`'s own rows, so the folded-in `codec` module scans as part of them; there
 /// is no second source root for THIS wall to add either.
 const LEGACY: &[&str] = &[
-    "crates/busbar-llm",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",

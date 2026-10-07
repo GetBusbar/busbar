@@ -45,8 +45,9 @@ BACKWARDS = 33
 # this file, the scanner's own needle in `xtask/src/gates/plane_purity/scanner.rs` (the `Mode::Reverse`
 # arm). Until then these four figures are ceilings over a needle that cannot match, NOT a measured
 # agreement between two gates.
+# `llm = 24` STRUCK (FLIP-LLM, 2026-10-06): the engine crate it measured is deleted, and its plane
+# crate is scanned by the PLANE-KIND regime, not this per-key table.
 [test-reach]
-llm = 24
 mcp = 1
 a2a = 3
 voice = 0

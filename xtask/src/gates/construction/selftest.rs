@@ -226,8 +226,8 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 /// * every COUNT RATCHET (`ceilings::pins`: the legacy reach and the ports-only figures) pinned to
 ///   what it measures, in both directions.
 /// * `one-pick-site` — `max_sites` pinned to the production pick sites the tree measures, so the
-///   question a plant asks is "is ONE MORE site seen", whatever the sites still draining
-///   (busbar-llm's engine, at LLM-ENGINE-DELETE) leave the count at.
+///   question a plant asks is "is ONE MORE site seen", whatever the sites still draining leave the
+///   count at.
 /// * `ceiling-census` — the base's copy of the ceilings file planted as THIS file.
 ///
 /// NOTHING HERE REACHES THE GATE ITSELF. `cargo xtask gate construction` never sees this overlay;
@@ -317,7 +317,7 @@ fn green_fixture(
     }
     // ── one-pick-site ───────────────────────────────────────────────────────────────────────────
     // Q-GG1: the far end walks through the egress unit's one walk, so the kernel's pick sites are
-    // one; busbar-llm's engine still holds two until LLM-ENGINE-DELETE. Pinned to the measurement
+    // one (the deleted llm engine's two left with it at FLIP-LLM). Pinned to the measurement
     // in both directions, as a ratcheted ceiling is, so every plant below is the only new site.
     if let Some(row) = rows.iter().find(|r| r.id == "one-pick-site") {
         if row.current >= 0 && row.current != row.threshold {
@@ -394,15 +394,15 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm/src/zz_planted_shape.rs",
+        "crates/busbar-plane-llm/src/zz_planted_shape.rs",
         "pub fn planted_second_attempt_site() {\n    let _ = \
-         ctx.client().get().request(method, url);\n}\n\npub fn planted_extra_door() {\n    \
+         e.conns.open(caller, need, &desc);\n}\n\npub fn planted_extra_door() {\n    \
          unit.finish_inner(end);\n}\n\npub fn planted_door_caller() {\n    \
          finish_admitted(end);\n    finish_rejected(end);\n}\n\npub fn planted_pick_a() {\n    \
          pick_among(lanes);\n}\n\npub fn planted_pick_b() {\n    pick_among(lanes);\n}\n",
     );
     ov.set(
-        "crates/busbar-llm/src/unit/zz_planted_escape.rs",
+        "crates/busbar-plane-llm/src/exchange/zz_planted_escape.rs",
         "pub fn planted_response_escape() -> Response {\n    Response::new()\n}\n",
     );
     r.push(prove_red(
@@ -449,7 +449,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // not appended: the end of a request-path file is a `#[cfg(test)]` module, and a function
     // planted inside one is test code the rule is right to ignore.
     let mut ov = on(base);
-    let target = "crates/busbar-llm/src/engine/pipeline.rs";
+    let target = "crates/busbar-kernel/src/ingress/mod.rs";
     if let Ok(basetext) = cx.read(target) {
         let body: String = (0..400)
             .map(|i| format!("    let _planted_{i} = {i};\n"))
@@ -531,7 +531,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm/src/zz_planted_token.rs",
+        "crates/busbar-mcp/src/zz_planted_token.rs",
         "pub fn planted_forged_token() {\n    let _ = UnitToken::mint(seal);\n    let _ = \
          KernelSeal::acquire_for_kernel(x);\n    let _ = AdmitToken::mint(y);\n}\n",
     );
@@ -554,7 +554,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // path-prefixed form is reached. Covering that row here proves the DELEGATION too: six planted
     // forgeries, five counted by `token-sealed` and the sixth by its own row, never one twice.
     ov.set(
-        "crates/busbar-llm/src/zz_planted_sealed.rs",
+        "crates/busbar-mcp/src/zz_planted_sealed.rs",
         "pub fn planted_forged_kernel_values() {\n    let _ = CallId::seal(seal, 7);\n    let _ = \
          Origin::seal(seal, kind);\n    let _ = SessionId::mint(seal, 9);\n    let _ = \
          IdempotencyKey::mint(seal, digest);\n    let _ = UnitEnd::seal(exit, outcome, \
@@ -595,19 +595,19 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         // pre-#73 constructor, and that it reported the planted `AdmitToken::mint(` line (4) as an
         // offender SITE — so the label can no longer be green on a symbol the scan cannot see.
         &[
-            "`UnitToken::mint(` at crates/busbar-llm/src/zz_planted_token.rs",
+            "`UnitToken::mint(` at crates/busbar-mcp/src/zz_planted_token.rs",
             "call site(s) of `KernelSeal::acquire_for_kernel(`",
             "pre-#73 name `AdmitToken::mint(`",
-            "(ceiling 0): crates/busbar-llm/src/zz_planted_token.rs:4",
+            "(ceiling 0): crates/busbar-mcp/src/zz_planted_token.rs:4",
             // X-178. One string per symbol, each naming the SPELLING and the SITE, so a row that
             // goes red for some other reason cannot satisfy this case.
-            "`CallId::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:2",
-            "`Origin::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:3",
-            "`SessionId::mint(` at crates/busbar-llm/src/zz_planted_sealed.rs:4",
-            "`IdempotencyKey::mint(` at crates/busbar-llm/src/zz_planted_sealed.rs:5",
-            "`UnitEnd::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:6",
+            "`CallId::seal(` at crates/busbar-mcp/src/zz_planted_sealed.rs:2",
+            "`Origin::seal(` at crates/busbar-mcp/src/zz_planted_sealed.rs:3",
+            "`SessionId::mint(` at crates/busbar-mcp/src/zz_planted_sealed.rs:4",
+            "`IdempotencyKey::mint(` at crates/busbar-mcp/src/zz_planted_sealed.rs:5",
+            "`UnitEnd::seal(` at crates/busbar-mcp/src/zz_planted_sealed.rs:6",
             // The verbs-unit symbol lands on its own sub-row, which prints sites as `path:line`.
-            "(ceiling 0): crates/busbar-llm/src/zz_planted_sealed.rs:7",
+            "(ceiling 0): crates/busbar-mcp/src/zz_planted_sealed.rs:7",
             // Q-GG2: a mint in busbar-contract source is caught, data file beside it or not.
             "`Pass::mint(` at crates/busbar-contract/src/caps/fixtures/zz_planted_contract_mint.rs:2",
         ],
@@ -615,7 +615,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm/src/zz_planted_loop.rs",
+        "crates/busbar-mcp/src/zz_planted_loop.rs",
         "pub fn planted_loop_entry_a() {\n    let _ = run_unit(ctx);\n}\n\npub fn \
          planted_loop_entry_b() {\n    let _ = run_unit(ctx);\n}\n\npub fn \
          planted_legacy_a() {\n    run_gauntlet(unit);\n}\n\npub fn planted_legacy_b() {\n    \
@@ -953,7 +953,7 @@ fn ceiling_file_cases<'a>(
     // The plant makes the verb match nothing ANYWHERE, so `extra` is empty too and the row's single
     // offender is the arm under test — nothing else can be what turned it red.
     let verbless = combined.replace(
-        r#"send_verb = '\.client\(\)\.get\(\)\.request\('"#,
+        r#"send_verb = '\be\.conns\.open\('"#,
         r#"send_verb = '\.zz_planted_verb_that_matches_nothing\('"#,
     );
     if verbless != combined {

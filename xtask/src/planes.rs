@@ -20,8 +20,11 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The canonical order is the doctrine order: the three original protocols, then voice (Plane 4).
-pub const PLANE_KEYS: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
+/// The canonical order is the doctrine order: the original protocols, then voice (Plane 4). `llm`
+/// (the legacy engine, `crates/busbar-llm`) is struck: FLIP-LLM deleted it, and the LLM plane is
+/// `busbar-plane-llm`, served through its memory-ABI door and scanned by the PLANE-KIND regime like
+/// every `busbar-plane-*` crate. It declares no `pub const PLANE_DECL`, so no root resolves for it.
+pub const PLANE_KEYS: [&str; 3] = ["mcp", "a2a", "voice"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
@@ -92,7 +95,7 @@ pub fn plane_src_roots() -> Vec<String> {
 ///
 /// * the five `busbar-plane-*` crates — the plane kind itself, scanned by the REVERSE side of
 ///   `plane-purity` through `kind_isolation::plane_kind_src_roots`;
-/// * `busbar-llm`, `busbar-mcp`, `busbar-a2a`, `busbar-voice` and the two surviving `-codec` halves
+/// * `busbar-mcp`, `busbar-a2a`, `busbar-voice` and the two surviving `-codec` halves
 ///   — the legacy engines: naming a protocol is what they are for, and [`plane_src_roots`] is the
 ///   list that scans them;
 /// * the plugin INSTANCES (`busbar-transport-*`, `store-*`, `secret-*`, `auth-*`, `hook*`,

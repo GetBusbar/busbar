@@ -8,7 +8,7 @@ path = "src/main.rs"
 
 # The plugin crates' directories — where the gate looks for a plane's own `linked` entry module.
 [dependencies]
-busbar-llm = { path = "../busbar-llm", optional = true }
+busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
 busbar-mcp = { path = "../busbar-mcp", optional = true }
 busbar-a2a = { path = "../busbar-a2a", optional = true }
 busbar-voice = { path = "../busbar-voice", optional = true }
@@ -16,7 +16,7 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 
 # The linked table the real root's build script turns into the `LINKED` table `main.rs` includes.
 [package.metadata.busbar.linked]
-proto-llm = "busbar-llm"
+proto-llm = "busbar-plane-llm"
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
 plane-streaming = "busbar-voice"
