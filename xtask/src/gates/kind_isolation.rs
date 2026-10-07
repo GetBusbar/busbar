@@ -5097,15 +5097,15 @@ fn plane_owned_steps(cx: &Ctx) -> Result<Vec<String>, String> {
 /// nothing, which is what "unmetered" means when it is a fact rather than a policy.
 const DATA_PATH_STEPS: &[&str] = &["route", "meter"];
 
-/// WHY THERE IS NO WORD LIST HERE. This rule once also refused six "upstream" words (`egress`,
-/// `pool`, `routing`, `failover`, `breaker`, `provider`) on every cleanliness line. That list was
-/// written for the `control` plugin kind (65542ca51b), which is cancelled (Part 2 #5: "There is no
-/// \"control\" plugin kind"). The cleanliness crates' rule is THE DESIGN §8: each depends one way on
-/// the kernel, names no plugin, and gets its listeners through the connector. Those six words name
-/// no plugin — they are the kernel's route vocabulary (Part 3: "KERNEL | route (pool walk, member,
-/// breaker)"), which the 1.5.5 admin API serves to the operator — so they were struck (ARCHITECT
-/// 2026-10-07). "Names no plugin" is `:matrix`'s armed `law0-neutral-instance` class, which holds
-/// every `Family::Neutral` crate, these three included, at zero on the ship twin.
+// WHY THERE IS NO WORD LIST HERE. This rule once also refused six "upstream" words (`egress`,
+// `pool`, `routing`, `failover`, `breaker`, `provider`) on every cleanliness line. That list was
+// written for the `control` plugin kind (65542ca51b), which is cancelled (Part 2 #5: "There is no
+// \"control\" plugin kind"). The cleanliness crates' rule is THE DESIGN §8: each depends one way on
+// the kernel, names no plugin, and gets its listeners through the connector. Those six words name
+// no plugin — they are the kernel's route vocabulary (Part 3: "KERNEL | route (pool walk, member,
+// breaker)"), which the 1.5.5 admin API serves to the operator — so they were struck (ARCHITECT
+// 2026-10-07). "Names no plugin" is `:matrix`'s armed `law0-neutral-instance` class, which holds
+// every `Family::Neutral` crate, these three included, at zero on the ship twin.
 
 /// Every `fn <name>` in a crate's shipped source, with the file, line and the body's blanked text.
 struct FnBody {
