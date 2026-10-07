@@ -14,7 +14,7 @@
 //!   dispatch, the catalogue or an upstream. `logging/setLevel`, `resources/subscribe` and
 //!   `resources/unsubscribe` are REFUSED (`-32601`) and not advertised: this revision keeps no
 //!   per-session floor or watch set, and nothing on the plane announces a resource's change to
-//!   deliver (a watch is `subscriptions/listen`'s; DESIGN 1.6.0 §2 mcp bullet keeps `subscribe` for
+//!   deliver (a watch is `subscriptions/listen`'s; the 1.6.0 design, mcp bullet, keeps `subscribe` for
 //!   the old revisions, on their sessions).
 //! - BUSBAR'S OWN ASKS are LIVE REQUESTS on the line ([`LiveAsk`]): an `input_required` answer is
 //!   issued as one request per ask, in order, each spelled `busbar:<n>`; the caller's answers become
