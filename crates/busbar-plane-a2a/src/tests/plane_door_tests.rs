@@ -290,6 +290,42 @@ fn an_abandoned_look_releases_its_flight_and_wakes_every_waiter_at_once() {
     );
 }
 
+/// Ported from busbar-a2a ingress_tests.rs::a_panicking_reverify_reraises_and_latches_unreachable_never_swallowed.
+///
+/// A PANIC IN THE VERIFY-ON-CALL LOOK SURFACES and is never swallowed into a verdict: it unwinds
+/// out of the look (the SDK's boundary answers it FAULT, and the kernel ends the unit on it as
+/// `PlanePanic`, refusing it), and the flight the faulted unit held is released on the way out,
+/// landing nothing: the unit that waited on it looks for itself, and the next due unit looks
+/// afresh, never wedged behind a look that will not land and never served on one.
+#[test]
+fn a_panicking_look_surfaces_and_releases_its_flight_never_swallowed() {
+    let flights = Flights::default();
+    let (faulted, waiter) = (ticket(1), ticket(2));
+    assert_eq!(flights.join("planner", faulted), None, "the due unit looks");
+    let seen = flights
+        .join("planner", waiter)
+        .expect("a second due unit waits on its look");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        looking((&flights, None, faulted), || -> bool {
+            panic!("card fetch blew up")
+        })
+    }));
+    assert!(
+        outcome.is_err(),
+        "a panicking look must surface as a panic, never a swallowed verdict"
+    );
+    assert_eq!(
+        flights.state("planner", seen, waiter),
+        FlightState::Released,
+        "nothing landed: the waiter looks for itself"
+    );
+    assert_eq!(
+        flights.join("planner", ticket(3)),
+        None,
+        "the next due unit takes the flight and looks again"
+    );
+}
+
 /// THE gRPC LINE'S OUTBOX: a whole answer is the rpc's one message at `OK` (no media type, no
 /// length), or the status its error binds with the details field; an answer in events is one
 /// message per event, each emitted on an answer of its own.

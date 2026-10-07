@@ -108,7 +108,9 @@ pub enum Sighting {
 }
 
 impl Sighting {
-    fn seen(&self) -> Option<&Observation> {
+    /// What the card presented, when the contact succeeded and verified.
+    #[must_use]
+    pub fn seen(&self) -> Option<&Observation> {
         match self {
             Sighting::Seen(o) => Some(o),
             _ => None,
@@ -161,7 +163,7 @@ impl State {
 }
 
 /// ONE REGISTRATION'S TRUST, as the plane holds it in memory: the last sighting, the
-/// re-verification ledger verify-on-call keeps.
+/// re-verification ledger verify-on-call keeps, and the skills of the card `approve` held.
 /// What the registration is trusted to SERVE is not here: it is the kernel's trust book.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Standing {
@@ -169,6 +171,10 @@ pub struct Standing {
     pub sighting: Sighting,
     /// When verify-on-call last looked.
     pub ledger: Ledger,
+    /// The skills (`id -> digest`) of the card the operator approved, held by `approve` for the
+    /// trust view's drift lists only (coordinator ruling Q2, 2026-10-07): what serves is the
+    /// kernel's book, which pins the fingerprint and nothing per skill. `None` = nothing approved.
+    pub approved: Option<BTreeMap<String, String>>,
 }
 
 /// THE RE-VERIFICATION LEDGER of one registration (the served engine's `reverify::Ledger`): when
@@ -696,9 +702,11 @@ pub fn verify(
 
 /// THE TRUST VIEW of one registered agent, field for field the served engine's: what both verbs
 /// answer with. Its `state` is the kernel's verdict on the agent's trust key (or the plane's own
-/// `error`); the approval it reads against is the KERNEL'S (ARCHITECT FLIP-A2A), which
-/// pins the card's fingerprint and not its skills, so the per-skill queue (`added`, `changed`,
-/// `removed`) is always empty and `pin_changed` says the kernel quarantined a moved card.
+/// `error`), and `pin_changed` says the kernel quarantined a moved card. The per-skill queue
+/// (`added`, `changed`, `removed`) is the served engine's drift (predev
+/// `busbar-kernel/src/trust/mod.rs:310-327`, read by `busbar-a2a/src/a2a/verbs.rs:229,726`): the
+/// sighted card's skills against the skills of the card the operator approved, which the plane
+/// holds for this view only ([`Standing::approved`]; coordinator ruling Q2, 2026-10-07).
 #[derive(serde::Serialize)]
 struct TrustView<'a> {
     name: &'a str,
@@ -713,21 +721,45 @@ struct TrustView<'a> {
     failure: Option<&'a str>,
 }
 
-fn view(name: &str, state: State, sighting: &Sighting) -> String {
+/// THE DRIFT QUEUE of one sighting against what was approved, in the served engine's order: each
+/// sighted skill nobody approved is `added`, each approved at another digest `changed` (both in
+/// skill-id order), then each approved skill the card no longer offers `removed`. Nothing approved
+/// (`approved` is `None`) approves no skill, so every sighted skill is `added`; a sighting that
+/// presented no card has no queue.
+fn drift(
+    approved: Option<&BTreeMap<String, String>>,
+    sighting: &Sighting,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let _ = (approved, sighting);
+    (Vec::new(), Vec::new(), Vec::new())
+}
+
+/// The view, `state` being the state the verb answers and `kernel` the kernel's own verdict: a key
+/// the kernel holds no approval for (`pending`) has approved nothing, whatever skills the plane
+/// last held for it.
+fn view(
+    name: &str,
+    state: State,
+    kernel: State,
+    sighting: &Sighting,
+    approved: Option<&BTreeMap<String, String>>,
+) -> String {
     let state = if sighting.failure().is_some() {
         State::Error
     } else {
         state
     };
+    let approved = approved.filter(|_| kernel != State::Pending);
+    let (added, changed, removed) = drift(approved, sighting);
     serde_json::to_string(&TrustView {
         name,
         state: state.word(),
         pin_mechanism: sighting.mechanism(),
         fingerprint: sighting.seen().and_then(|o| o.pin.fingerprint()),
         pin_changed: state == State::Quarantined,
-        added: Vec::new(),
-        changed: Vec::new(),
-        removed: Vec::new(),
+        added,
+        changed,
+        removed,
         observed_skills: sighting.skill_count(),
         failure: sighting.failure(),
     })
@@ -735,23 +767,34 @@ fn view(name: &str, state: State, sighting: &Sighting) -> String {
 }
 
 /// `connect`'s answer: a PREVIEW of what the card presented (`sighting`, which this look sighted on
-/// the kernel's trust book) under the state the agent's key stands in (`state`). It never reports
-/// `approved` — a key that serves is reported `pending`, so the preview cannot be read as the
-/// grant — and it surfaces the fingerprint the operator is being asked to approve.
+/// the kernel's trust book) under the state the agent's key stands in (`state`), its drift against
+/// the skills the operator approved (`approved`). It never reports `approved` — a key that serves
+/// is reported `pending`, so the preview cannot be read as the grant — and it surfaces the
+/// fingerprint the operator is being asked to approve.
 #[must_use]
-pub fn connect_view(name: &str, state: State, sighting: &Sighting) -> String {
-    let state = match state {
+pub fn connect_view(
+    name: &str,
+    state: State,
+    sighting: &Sighting,
+    approved: Option<&BTreeMap<String, String>>,
+) -> String {
+    let shown = match state {
         State::Approved => State::Pending,
         other => other,
     };
-    view(name, state, sighting)
+    view(name, shown, state, sighting, approved)
 }
 
 /// `approve`'s answer: the registration as it now stands on the kernel's trust book (`state`), its
-/// fingerprint the one approved.
+/// fingerprint the one approved, its drift against the skills now approved (`approved`).
 #[must_use]
-pub fn registration_view(name: &str, state: State, sighting: &Sighting) -> String {
-    view(name, state, sighting)
+pub fn registration_view(
+    name: &str,
+    state: State,
+    sighting: &Sighting,
+    approved: Option<&BTreeMap<String, String>>,
+) -> String {
+    view(name, state, state, sighting, approved)
 }
 
 /// DOES WHAT THE ENDPOINT SERVES NOW AGREE WITH WHAT THE OPERATOR SAYS THEY APPROVED? Every arm

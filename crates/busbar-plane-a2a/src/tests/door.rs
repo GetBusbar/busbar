@@ -151,7 +151,7 @@ fn the_abi_trust_keys_are_the_grammars_trust_keys() {
 
 #[test]
 fn an_open_route_claims_open_and_a_templated_target_claims_a_pattern() {
-    let spec = snapshot_spec(Some(&endpoint("gw", "")));
+    let spec = snapshot_spec(Some(&endpoint("gw", "")), true);
     for (c, r) in spec.claims.iter().zip(ROUTES) {
         let templated = r.target.contains('{');
         assert_eq!((c.verb.as_str(), c.target.as_str()), (r.verb, r.target));
@@ -177,7 +177,7 @@ fn the_tail_states_the_sentence_that_refuses_a_forwarded_caller_credential() {
 
 #[test]
 fn an_admitted_generation_claims_every_route_and_states_its_audience() {
-    let spec = snapshot_spec(Some(&endpoint("gw", "/base?x=1")));
+    let spec = snapshot_spec(Some(&endpoint("gw", "/base?x=1")), true);
     assert_eq!(spec.claims.len(), ROUTES.len());
     assert_eq!(spec.audience, Some(endpoint("gw", "/a2a")));
     assert_eq!(
@@ -194,11 +194,50 @@ fn an_admitted_generation_claims_every_route_and_states_its_audience() {
 #[test]
 fn a_generation_with_no_readable_public_base_claims_nothing() {
     for public in [None, Some("not a url")] {
-        let spec = snapshot_spec(public);
+        let spec = snapshot_spec(public, true);
         assert!(spec.claims.is_empty());
         assert_eq!((spec.audience, spec.resource_metadata), (None, None));
         assert_eq!(spec.admin_routes.len(), ADMIN_ROUTES.len());
     }
+}
+
+/// Ported from busbar-a2a plane_tests.rs::a_section_carrying_only_the_reserved_keys_is_still_no_plane
+/// (its plane half; the mounted surface is the root's `agent_door` cell of the same name).
+///
+/// `agents.hooks:` and `agents.upstream_credentials:` are DEFAULTS FOR agents, and defaults for an
+/// empty set front nothing: the section loads the plane (LAW 7), and its generation states no
+/// claim, no audience, no metadata document and no public push callback (ruling Q1(b)). Its trust
+/// verbs stay, each at its own index.
+#[test]
+fn a_section_carrying_only_the_reserved_keys_states_no_route_and_no_card() {
+    use busbar_contract::abi::plane::ROUTE_PUBLIC;
+    let cfg = read_settings(br#"{"hooks": ["audit"], "upstream_credentials": "own"}"#)
+        .expect("the reserved keys alone are a section");
+    assert!(cfg.agents.is_empty(), "it registers no agent");
+    let spec = snapshot_spec(Some(&endpoint("gw", "")), !cfg.agents.is_empty());
+    assert!(
+        spec.claims.is_empty(),
+        "it claims no route: {:?}",
+        spec.claims
+    );
+    assert_eq!((spec.audience, spec.resource_metadata), (None, None));
+    assert!(
+        spec.admin_routes
+            .iter()
+            .all(|r| r.flags & ROUTE_PUBLIC == 0),
+        "no public route: {:?}",
+        spec.admin_routes
+    );
+    let verbs: Vec<(&str, &str)> = spec
+        .admin_routes
+        .iter()
+        .map(|r| (r.verb.as_str(), r.target.as_str()))
+        .collect();
+    assert_eq!(
+        verbs,
+        ADMIN_VERBS[..PUSH_ROUTE].to_vec(),
+        "the trust verbs keep their indices"
+    );
 }
 
 #[test]
@@ -566,7 +605,7 @@ fn the_plane_declares_its_published_identity_and_its_claims_speak_its_wire_forma
     assert_eq!(TAIL.dialects_len, 3);
 
     // Its claims: an admitted generation claims doors at exactly the plane's two mounts.
-    let spec = snapshot_spec(Some(&endpoint("gw", "")));
+    let spec = snapshot_spec(Some(&endpoint("gw", "")), true);
     assert!(!spec.claims.is_empty());
     for c in &spec.claims {
         assert!(
@@ -584,5 +623,5 @@ fn the_plane_declares_its_published_identity_and_its_claims_speak_its_wire_forma
         );
     }
     // A generation with no public base (a delegation-only plane) claims nothing.
-    assert!(snapshot_spec(None).claims.is_empty());
+    assert!(snapshot_spec(None, true).claims.is_empty());
 }

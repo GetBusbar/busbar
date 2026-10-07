@@ -4813,6 +4813,72 @@ mod agent_door {
         assert!(!agent.relayed(), "no agent was dialled");
     }
 
+    /// Ported from busbar-a2a plane_tests.rs::a_section_carrying_only_the_reserved_keys_is_still_no_plane.
+    ///
+    /// `agents.hooks:` and `agents.upstream_credentials:` are DEFAULTS FOR agents: a section
+    /// carrying only them loads the plane (LAW 7: the section is present), and the door, fronting
+    /// no agent, mounts not one route (ruling Q1(b), coordinator 2026-10-07; predev
+    /// `busbar-a2a/src/a2a/plane.rs:231-233` built no plane for it). What a caller observes is
+    /// what a deployment with no `agents:` section at all answers on every one of the door's paths:
+    /// no card, no metadata document, no agent route, no push callback.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_section_carrying_only_the_reserved_keys_is_still_no_plane() {
+        let _one = PUBLISHING.lock().await;
+        let mut agent = Agent::start(200, ANSWER).await;
+        let metadata = format!("/.well-known/oauth-protected-resource{}", mount());
+        let card = "/.well-known/agent-card.json";
+        /// What the door's paths answer on `s`, each asked by its keyed caller where it is keyed.
+        async fn asked(s: &Served, metadata: &str, card: &str) -> Vec<(StatusCode, String)> {
+            let token = Some(s.token.as_str());
+            let mut answers = Vec::new();
+            for req in [
+                get(card, None),
+                get(metadata, None),
+                get(&format!("{}/agents/planner", mount()), token),
+                rpc("planner", "message/send", SEND, token),
+                rpc("", "message/send", SEND, token),
+                rpc("", "GetExtendedAgentCard", "{}", token),
+            ] {
+                answers.push(answered(&s.router, req).await);
+            }
+            answers
+        }
+
+        let absent = "serve-agent-door-no-section";
+        let published = Published(absent);
+        let unconfigured =
+            served_facing(absent, &agent.entry("planner", "1h"), Facing::Unconfigured);
+        let baseline = asked(&unconfigured, &metadata, card).await;
+        drop(published);
+
+        let reserved = "serve-agent-door-reserved-keys-only";
+        let _published = Published(reserved);
+        let s = served_facing(
+            reserved,
+            "hooks: [audit]\nupstream_credentials: own",
+            Facing::Routes,
+        );
+        let mounted: Vec<&String> = s
+            .routes
+            .iter()
+            .filter(|p| p.starts_with(mount()) || **p == metadata || p.as_str() == card)
+            .collect();
+        assert!(
+            mounted.is_empty(),
+            "a section carrying only the reserved keys mounted an agent route: {:?}",
+            s.routes
+        );
+        let answers = asked(&s, &metadata, card).await;
+        for (answer, expected) in answers.iter().zip(&baseline) {
+            assert_ne!(answer.0, StatusCode::OK, "nothing serves it: {answer:?}");
+            assert_eq!(
+                answer, expected,
+                "it answers as a deployment with no `agents:` section does"
+            );
+        }
+        assert!(!agent.relayed(), "no agent was dialled");
+    }
+
     /// Ported from busbar-a2a ingress_tests.rs::an_anonymous_caller_is_refused_and_told_where_to_get_a_token.
     ///
     /// The refusal owes a machine-readable challenge naming the door's metadata document. Without
