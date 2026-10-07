@@ -35,6 +35,15 @@ pub(super) struct Governed {
     token: String,
     app: Arc<App>,
     book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+    /// The live generation, as the door planes' units read it: a config apply replaces it.
+    current: Arc<std::sync::Mutex<Arc<App>>>,
+}
+
+impl Governed {
+    /// A CONFIG APPLY: `next` is the generation every unit that binds from now on reads.
+    fn apply(&self, next: Arc<App>) {
+        *self.current.lock().expect("unpoisoned") = next;
+    }
 }
 
 /// `keys_chain`: the deployment's data chain verifies a key (a claim that takes a credential is
@@ -53,7 +62,90 @@ fn governed_with(
     keys_chain: bool,
     budget: Option<u64>,
 ) -> Option<Governed> {
-    governed_over(instance, keys_chain, budget, None)
+    governed_full(instance, keys_chain, budget, Screen::Nothing, None)
+}
+
+/// What a governed deployment's `hooks:` screen.
+#[derive(Clone, Copy)]
+enum Screen<'a> {
+    /// No hook is configured.
+    Nothing,
+    /// A global gate rejects text carrying the token.
+    Global(&'a str),
+    /// A gate on the section's pool `p` (`pools: {p: {members: [m]}}`) rejects text carrying the
+    /// token.
+    Pool(&'a str),
+}
+
+/// The operator's gate definition, as `hooks:` writes it.
+fn screen_cfg(token: &str) -> busbar_kernel::config::HookCfg {
+    serde_json::from_value(serde_json::json!({
+        "kind": "gate",
+        "module": "test-hook",
+        "timeout_ms": 10_000,
+        "on_error": "weighted",
+        "prompt": "ro",
+        "priority": 0,
+        "settings": { "reject_if_contains": token },
+    }))
+    .expect("an operator's gate definition")
+}
+
+/// The hook env the gate's `module` resolves in: the kernel's hook double, its manifest asking to
+/// read the prompt.
+fn screen_env() -> busbar_kernel::hooks::HookEnv {
+    let needs = crate::root::loader::sign::HookNeeds {
+        prompt: crate::root::loader::sign::NeedLevel::Ro,
+        ..Default::default()
+    };
+    busbar_kernel::test_support::test_hook_env(&["test-hook"], needs)
+}
+
+/// The deployment's App for `screen`: a pool gate is resolved through the one gate resolver the
+/// build uses for a configured gate, filed under the pool.
+fn screened(screen: Screen<'_>) -> busbar_kernel::test_support::TestApp {
+    match screen {
+        Screen::Nothing => busbar_kernel::test_support::TestApp::new(),
+        Screen::Global(token) => screening_gate(token),
+        Screen::Pool(token) => {
+            let env = screen_env();
+            let registry = [("screen".to_string(), screen_cfg(token))]
+                .into_iter()
+                .collect();
+            let gates = busbar_kernel::hooks::resolve_gate_hooks(
+                &registry,
+                &["screen".to_string()],
+                &env,
+                0,
+            );
+            assert_eq!(gates.len(), 1, "the configured gate resolves");
+            busbar_kernel::test_support::TestApp::new()
+                .hook_env(env)
+                .pool_gates_resolved("p", gates)
+        }
+    }
+}
+
+/// The deployment's `hooks:` as an operator writes it: one global `kind: gate` on the kernel's
+/// hook double (the 1.5.5 hook reply through the hook axis port), granted `prompt: ro`, rejecting
+/// any request whose projected text carries `token`.
+fn screening_gate(token: &str) -> busbar_kernel::test_support::TestApp {
+    busbar_kernel::test_support::TestApp::new()
+        .hook_env(screen_env())
+        .hook("screen", screen_cfg(token))
+        .global_hook("screen")
+        .resolve_global_gates()
+}
+
+/// [`governed_with`], with `screen` configured; the door plane's driver binds the LIVE
+/// generation's hooks ([`super::HookStage`]) as the boot's does.
+fn governed_hooked(
+    instance: &'static str,
+    keys_chain: bool,
+    budget: Option<u64>,
+    screen: Screen<'_>,
+) -> Option<Governed> {
+    governed_full(instance, keys_chain, budget, screen, None)
 }
 
 /// The node a composition's units are driven on, and the book it is already bound to.
@@ -68,6 +160,18 @@ fn governed_over(
     instance: &'static str,
     keys_chain: bool,
     budget: Option<u64>,
+    on: Option<BoundNode>,
+) -> Option<Governed> {
+    governed_full(instance, keys_chain, budget, Screen::Nothing, on)
+}
+
+/// [`governed_with`] with both: `screen` configured, and its units driven on `on` (or on a node of
+/// its own bound to a fresh memory-buffered book).
+fn governed_full(
+    instance: &'static str,
+    keys_chain: bool,
+    budget: Option<u64>,
+    screen: Screen<'_>,
     on: Option<BoundNode>,
 ) -> Option<Governed> {
     // The dispatcher serves its instances the composition's host services (`unit.nest` among
@@ -150,7 +254,26 @@ fn governed_over(
     ));
     let one = Arc::clone(&money);
     let mut sections = BTreeMap::new();
-    sections.insert("test_plane", serde_yaml::from_str("m: {}").expect("yaml"));
+    sections.insert(
+        "test_plane",
+        serde_yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
+    );
+    let app = screened(screen);
+    let app = if keys_chain { app.keys_chain() } else { app };
+    let app = groups
+        .iter()
+        .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
+    let app = app.governance(Arc::clone(&gov)).cost(cost).build();
+    // The hook stage reads the generation current when a unit binds, as the boot's reads its swap
+    // handle; this rig's config applies replace the generation in a cell.
+    let current = Arc::new(std::sync::Mutex::new(Arc::clone(&app)));
+    let reads = Arc::clone(&current);
+    let hooks = super::HookStage {
+        host: Arc::new(move || {
+            busbar_kernel::plane_host::engine_host(&reads.lock().expect("unpoisoned"))
+        }),
+        gov: Arc::clone(&gov),
+    };
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
@@ -159,7 +282,7 @@ fn governed_over(
         None,
         &move || Arc::clone(&one),
         None,
-        None,
+        Some(&hooks),
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
@@ -168,12 +291,6 @@ fn governed_over(
     served.framers = Some(neutral_framers());
     let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
         .expect("its claims mount");
-    let app = busbar_kernel::test_support::TestApp::new();
-    let app = if keys_chain { app.keys_chain() } else { app };
-    let app = groups
-        .iter()
-        .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
-    let app = app.governance(Arc::clone(&gov)).cost(cost).build();
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
     Some(Governed {
@@ -186,6 +303,7 @@ fn governed_over(
         token: token.expose_secret().clone(),
         app,
         book,
+        current,
     })
 }
 
@@ -366,6 +484,94 @@ async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
         (200, "scan=0 gate=0 rewrite=0 verify=2")
     );
     assert_eq!(g.money.open_units(), 0);
+}
+
+/// THE DEPLOYMENT'S GATE REACHES A DOOR PLANE'S UNIT (U22, ARCHITECT 2026-10-05): the operator's
+/// global `kind: gate` (the 1.5.5 hook double, through the hook axis port) is bound to the unit by
+/// the driver, as the boot binds it. The request itself carries nothing the gate screens, so the
+/// unit is admitted and served; the content the plane then passes through `content.scan` and
+/// `hook.call` carries the screened token, and the configured gate blocks it, with its own status.
+/// The control (the same deployment with no gate) is the test above: `scan=0 gate=0`.
+#[tokio::test]
+async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed_hooked("serve-money-gated", true, None, Screen::Global("ping")) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=1 gate=403 rewrite=0 verify=2"),
+        "the gate blocks the screened content and stops the gated sub-operation"
+    );
+    assert_eq!(g.money.open_units(), 0);
+}
+
+/// A CONFIG APPLY REACHES THE NEXT UNIT WITH NO RESTART (ARCHITECT ruling on U22, 2026-10-05):
+/// the deployment boots with no hook, so a unit's in-session content passes; a config apply then
+/// adds a global gate, and the NEXT unit (a new session) binds the live generation's hooks, so the
+/// same content is blocked. Nothing is restarted or recomposed.
+#[tokio::test]
+async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restart() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-money-live", true) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=0 gate=0 rewrite=0 verify=2"),
+        "the boot generation configures no hook"
+    );
+    // THE APPLY: the same deployment (every plane's runtime carried, as an apply carries them), its
+    // `hooks:` now defining a gate and wiring it globally, resolved through the build's one resolver.
+    let mut next = (*g.app).clone();
+    let registry: std::collections::HashMap<_, _> = [("screen".to_string(), screen_cfg("ping"))]
+        .into_iter()
+        .collect();
+    next.global_gates = busbar_kernel::hooks::resolve_gate_hooks(
+        &registry,
+        &["screen".to_string()],
+        &screen_env(),
+        1,
+    );
+    assert_eq!(next.global_gates.len(), 1, "the applied gate resolves");
+    next.hook_registry = registry;
+    next.global_hooks = vec!["screen".to_string()];
+    let next = Arc::new(next);
+    g.apply(next);
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=1 gate=403 rewrite=0 verify=1"),
+        "the next unit binds the applied gate (and hits the verify entry the first one stored)"
+    );
+}
+
+/// A POOL'S OWN GATE SCREENS ITS UNITS' IN-SESSION CONTENT (ARCHITECT ruling on U22, 2026-10-05):
+/// a gate configured on the section's pool `p` blocks the content of a unit routed over `p`, as
+/// 1.5.5's pool gates did; a unit routed directly (no pool) is not under it.
+#[tokio::test]
+async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed_hooked("serve-money-pool-gate", true, None, Screen::Pool("ping")) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/services-pool:p", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=1 gate=403 rewrite=0 verify=2"),
+        "the pool's gate screens a unit routed over the pool"
+    );
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=0 gate=0 rewrite=0 verify=1"),
+        "a direct unit is not under the pool's gate"
+    );
 }
 
 /// BUDGET EXHAUSTION MID-NEST: the parent is admitted while its key's budget holds one more fee;
