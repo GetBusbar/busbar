@@ -2210,7 +2210,7 @@ mod agent_door {
         let (section, kind) = (surface("section"), surface("resource_kind"));
         let resolved = |card: &str| {
             let text = format!(
-                "providers: {{}}\nmodels: {{}}\n{section}:\n  \
+                "store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\n{section}:\n  \
                  planner: {{ url: https://planner.example/rpc, pin: {{ mechanism: unpinned }} }}\n  \
                  payments: {{ url: https://payments.example/rpc, pin: {{ mechanism: unpinned }} }}\n  \
                  rate_card:\n{card}"
