@@ -226,12 +226,11 @@ pub struct PlaneDriver {
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
     /// Which hooks bind to a unit of this plane; `None` = none ever does.
     hooks: Option<Arc<dyn HookBinder>>,
-    /// The instance's label, as admitted to the services.
+    /// The instance's label, as admitted to the services: what its trust entries are admitted
+    /// and judged under.
     label: Arc<str>,
     /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
     audit: Arc<dyn AuditSink>,
-    /// The instance's label: what its trust entries are admitted and judged under.
-    label: Arc<str>,
 }
 
 /// WHERE A DOOR UNIT'S AUDIT ROW GOES (ARCHITECT SEAM-L(k)): a plane writes its unit's audit row
@@ -355,7 +354,6 @@ impl PlaneDriver {
             hooks: None,
             label: Arc::from(&*d.label),
             audit: Arc::new(CoreAudit),
-            label: Arc::clone(&d.label),
         })
     }
 
