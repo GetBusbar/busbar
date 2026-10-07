@@ -282,6 +282,9 @@ pub(crate) struct PieceBufs {
     member: Vec<u8>,
     /// The pool the current attempt's member was picked from.
     pool: Vec<u8>,
+    /// The entry a `ROUTE_SCOPE_LOCAL` unit's scope resolved to, lent as the member of its pieces
+    /// with no attempt (empty = none: every other unit).
+    resolved: Vec<u8>,
     /// The provider of the current attempt's member.
     provider: String,
     /// The snapshot claim the unit arrived on, lent on every piece.
@@ -310,6 +313,7 @@ impl PieceBufs {
             input: Vec::new(),
             member: Vec::new(),
             pool: Vec::new(),
+            resolved: Vec::new(),
             provider: String::new(),
             claim: 0,
             dialect: 0,
@@ -413,7 +417,9 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         Src::None => &[][..],
     };
     let (member, pool) = if p.attempt_no == 0 {
-        (&[][..], &[][..])
+        // A unit answered at its scope's one entry (`ROUTE_SCOPE_LOCAL`) names that entry on the
+        // pieces it pushes with no attempt; any other unit names none there.
+        (&bufs.resolved[..], &[][..])
     } else {
         (operator_name(&bufs.member), operator_name(&bufs.pool))
     };
@@ -754,6 +760,12 @@ impl<'u> Pumping<'u> {
         self.bufs.dialect = dialect;
         self.bufs.caller_ref = caller_ref.to_vec();
         self.bufs.stream = stream;
+    }
+
+    /// Lend the entry a `ROUTE_SCOPE_LOCAL` unit's scope resolved to as the member of every piece
+    /// it pushes with no attempt (the unit is walked to no member).
+    pub(crate) fn lend_resolved(&mut self, entry: &[u8]) {
+        self.bufs.resolved = entry.to_vec();
     }
 
     /// Whether the unit moves money: a tick unit (a health probe) is zero-billed and draws no

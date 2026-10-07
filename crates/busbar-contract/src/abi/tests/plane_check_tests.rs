@@ -3023,7 +3023,7 @@ fn an_arrivals_route_class_is_pool_or_direct() {
     o.pool = s("a, b");
     assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
     let mut o: ArriveOut = z();
-    o.route = ROUTE_SCOPE + 1;
+    o.route = ROUTE_SCOPE_LOCAL + 1;
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route")
@@ -3035,6 +3035,40 @@ fn an_arrivals_route_class_is_pool_or_direct() {
     assert_eq!(
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.pool")
+    );
+}
+
+/// A UNIT ANSWERED BY THE PLANE AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`, COORDINATOR ruling
+/// 2026-10-07): a READY arrival may state it, naming no entry or its candidate entries as
+/// `ROUTE_SCOPE` does, and may count it as an admitted call as `ROUTE_LOCAL` may (`ROUTE_COUNTED`);
+/// a refusal about an entry never names it, as it never names `ROUTE_SCOPE`. RED: value `4` was an
+/// unknown route.
+#[test]
+fn a_unit_answered_at_its_scopes_one_entry_is_a_route_of_its_own() {
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_SCOPE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
+    o.pool = s("a, b");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "it may name its candidates"
+    );
+    o.route_flags = ROUTE_COUNTED;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "it may be counted as an admitted call"
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 7;
+    o.refusal_status = 503;
+    o.route = ROUTE_SCOPE_LOCAL;
+    o.pool = s("planner");
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.route"),
+        "a refusal about an entry names it directly or as a pool"
     );
 }
 

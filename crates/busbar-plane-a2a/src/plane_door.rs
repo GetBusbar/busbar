@@ -42,7 +42,8 @@ use busbar_contract::abi::plane::{
     ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
     PIECE_HAS_STATUS, PIECE_LAST, PIECE_REFUSED, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, RECORD_PUT,
-    REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_POOL, ROUTE_SCOPE, UNITS_REPORTED, VERDICT_RETRY,
+    REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_POOL, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::conn::Host;
 // THE ONE SHARED FAULT READING (ARCHITECT row 68): the breaker's vocabulary, stated on `OnPieceOut`.
@@ -959,6 +960,7 @@ slot!(
             return Outcome::Ready;
         }
         let mut pool = None;
+        let mut scope_local = false;
         match &agent {
             Some(agent) => {
                 out.route(ROUTE_DIRECT, agent);
@@ -1013,8 +1015,19 @@ slot!(
                             .collect()
                     })
                     .unwrap_or_default();
+                // A VERB THE PLANE ANSWERS ITSELF, unaddressed (COORDINATOR ruling 2026-10-07,
+                // `ROUTE_SCOPE_LOCAL`): answered at the ONE agent the caller's grant reaches, with
+                // no route walked, as predev's `select` chose the agent (`receive.rs:1257-1260`),
+                // `admit` admitted it (`:1279`), and the local verbs were answered there before
+                // the egress gate and before any pool was read (`:1559-1593`, `pool_of` `:1839`).
+                // An admitted call, counted as predev metered it.
+                scope_local = hop.is_none();
                 out.route(
-                    ROUTE_SCOPE,
+                    if scope_local {
+                        ROUTE_SCOPE_LOCAL
+                    } else {
+                        ROUTE_SCOPE
+                    },
                     &candidates.join(busbar_contract::abi::plane::ROUTE_SCOPE_SEPARATOR),
                 );
             }
@@ -1025,6 +1038,9 @@ slot!(
         // unit admitted here: a refusal about an entry states no route flags (abi/plane "A refused
         // arrival").
         out.once();
+        if scope_local {
+            out.counted();
+        }
         // A STREAMED ANSWER (`message/stream`, `tasks/resubscribe`, their v1.0 names and an unlisted
         // method named as a stream; predev `receive.rs` `reads_as_stream`): the kernel bounds it by
         // the tail's stream ceiling, from the moment its route is known (ARCHITECT ruling
