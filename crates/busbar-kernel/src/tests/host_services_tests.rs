@@ -410,20 +410,22 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let r = rig();
     let me = caller("inst");
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
-    // A sighting of the declared fingerprint before any approval reports pending (coordinator
-    // 2026-10-07, #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending; crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
+    // Before any approval every sighting reports pending, the declared fingerprint (coordinator
+    // 2026-10-07, #555 point ii) or another hash, which drifts nothing and writes no demotion
+    // (#555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending;
+    // crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
+    assert_eq!(sight("moved").value, svc::TRUST_NEW);
+    assert!(r.s.demotions.get().unwrap().record.list().is_empty());
     assert_eq!(sight("fp").value, svc::TRUST_NEW);
+    r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
+        .unwrap();
+    assert_eq!(sight("fp").value, svc::TRUST_SAME, "approved");
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
     let demoted = r.s.demotions.get().unwrap().record.list();
     assert_eq!(demoted.len(), 1);
     assert_eq!(demoted[0].server, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
-    assert_eq!(
-        sight("fp").value,
-        svc::TRUST_NEW,
-        "cleared, and still pending"
-    );
+    assert_eq!(sight("fp").value, svc::TRUST_SAME);
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
     let s = run(|l| r.s.trust_sight(&me, "nobody", "fp", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
@@ -438,6 +440,13 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     use crate::trust::book::Ruling;
     let r = rig();
     let me = caller("inst");
+    // Unreached before any approval, a declared fingerprint is pending (coordinator 2026-10-07,
+    // #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
+    assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_NEW);
+    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
+    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -565,6 +574,11 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();
     let me = caller("inst");
+    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
+    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
+        .unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -690,6 +704,11 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
 #[test]
 fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_counterparty() {
     let r = rig();
+    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
+    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
+        .unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&caller("inst"), "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -910,6 +929,11 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     let held = Arc::new(Held::default());
     let s = restarted(&r).with_pool(Arc::new(Arc::clone(&held)));
     s.admit("inst", trusting(Some("fp"))).unwrap();
+    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
+    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
+        .unwrap();
     let (slot, later) = recorder();
     let ran = s.trust_sight(&caller("inst"), "cp", "moved", later);
     // Nothing is written, nor answered, on the calling thread.
