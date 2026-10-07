@@ -19,7 +19,7 @@
 //! # The shape of the input, and why BOTH books map onto it
 //!
 //! There are two books in this tree — the metering rows (`MeteringRow`, a UTC-day cell per
-//! `(key, model, provider)`) and the enforcement ledger (`UsageLedger`, a cell per
+//! `(key, lane, provider)`) and the enforcement ledger (`UsageLedger`, a cell per
 //! `(bucket, window)`). They are different records of the same consumption. A [`LedgerEntry`] is
 //! what they have in common and it is the whole of what pricing needs: a LANE, some COUNTS keyed by
 //! meter class, a FEE COUNT, a TIER, and the INSTANT the counts arrived. Every row of either book
@@ -74,9 +74,9 @@ use crate::cost::{NANOS_PER_CENT, NANOS_PER_MICRO};
 
 /// Joins a plane key to its lane: `"<plane>\u{1f}<lane>"` is a lane priced by THAT plane's own card
 /// (#42 "scoped per plane", #47), resolved by [`crate::cost::RateCard::plane_lane`]. An unqualified
-/// lane is the flat card's — the llm (`pools`) plane's, where 1.5.5's top-level `rate_card:` loads.
-/// A plane that configured no card reads 0; one that did prices or refuses by that card alone.
-/// U+001F is not a character a `models:` key is written with.
+/// lane is the flat card's — the card of the plane that owns the unqualified lanes, where 1.5.5's
+/// top-level `rate_card:` loads. A plane that configured no card reads 0; one that did prices or
+/// refuses by that card alone. U+001F is not a character a configured lane key is written with.
 pub const PLANE_LANE_SEP: char = '\u{1f}';
 
 /// The scale every [`Money`] figure is held at: six decimal places, i.e. micro-units (#81).
@@ -170,14 +170,14 @@ impl std::fmt::Display for Money {
 
 /// **ONE ROW OF A LEDGER SLICE** — what either book holds, projected onto what pricing needs.
 ///
-/// A metering row becomes one of these with its four token fields as counts and its
+/// A metering row becomes one of these with its four reserved class fields as counts and its
 /// `priced_from_ms` (or its own arrival) as the instant. An enforcement-ledger cell becomes one per
-/// model, its `usage_units` map as counts — including the OPEN classes a plane declared, which is
+/// lane, its `usage_units` map as counts — including the OPEN classes a plane declared, which is
 /// the part every reserved-four derivation in this tree silently drops.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerEntry {
-    /// The lane the traffic was served on — the card's key for a destination (the model name, for
-    /// the LLM plane).
+    /// The lane the traffic was served on — the card's key for a destination, in whatever spelling
+    /// the plane that served it names its destinations.
     pub lane: String,
     /// The counts, keyed by the meter class the plane declared. Exact, at scale 6.
     pub counts: BTreeMap<String, Count>,
@@ -253,8 +253,8 @@ pub enum MoneyError {
     },
     /// A present card names the lane but not this class. The direct statement of #42: *a hit class
     /// not priced ⇒ REFUSE, never a silent 0*. This is the arm every reserved-four derivation in
-    /// the tree is missing, and it is why an open meter class — a2a `hops`, mcp `calls`, streaming
-    /// `audio-seconds` — bills as nothing on those paths.
+    /// the tree is missing, and it is why an open meter class — a count of hops, of calls, of
+    /// seconds — bills as nothing on those paths.
     ClassUnpriced {
         /// The entry that was in force.
         card_seq: HistorySeq,
@@ -607,7 +607,7 @@ impl<'a> Tally<'a> {
 /// can only be a fee an operator CONFIGURED at nothing — #77(5)'s explicit zero row.
 ///
 /// It is the same term whether the card is present or absent, because an absent card still posts
-/// its flat fee (#42 `BUSBAR-1.6.0.md:367`: *"rate_card ABSENT ⇒ NOT billed"* for the TOKENS; the
+/// its flat fee (#42 `BUSBAR-1.6.0.md:367`: *"rate_card ABSENT ⇒ NOT billed"* for the CLASSES; the
 /// fee is what such a deployment is actually billed).
 fn fee_term(card: &crate::cost::rate::RateCard, fee_count: Count) -> Result<i128, MoneyError> {
     fee_count
