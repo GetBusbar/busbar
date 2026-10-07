@@ -489,28 +489,31 @@ const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
 /// One host-held credential: kind, id, secret, live.
 type HeldCredential = (String, String, String, bool);
 
-/// `k[key]`, the host-held credentials (`[{"kind","id","secret","live"}]`).
+/// `k[section]`, the host-held credentials (`[{"kind","id","secret","live"}]`).
 ///
 /// # Panics
 /// When it is missing, empty or malformed.
-fn held_credentials(k: &serde_json::Value, key: &str) -> Vec<HeldCredential> {
-    let list = k[key].as_array().unwrap_or_else(|| {
+fn held_credentials(k: &serde_json::Value, section: &str) -> Vec<HeldCredential> {
+    let list = k[section].as_array().unwrap_or_else(|| {
         panic!(
-            "conformance.json: the door reads host credentials (FACT_READS_CREDENTIALS): auth.{key} \
+            "conformance.json: the door reads host credentials (FACT_READS_CREDENTIALS): auth.{section} \
              must be an array of {{\"kind\",\"id\",\"secret\",\"live\"}}"
         )
     });
-    assert!(!list.is_empty(), "conformance.json: auth.{key} is empty");
+    assert!(
+        !list.is_empty(),
+        "conformance.json: auth.{section} is empty"
+    );
     list.iter()
         .map(|c| {
             let field = |f: &str| {
                 c[f].as_str()
-                    .unwrap_or_else(|| panic!("conformance.json: auth.{key}[].{f} is a string"))
+                    .unwrap_or_else(|| panic!("conformance.json: auth.{section}[].{f} is a string"))
                     .to_string()
             };
             let live = c["live"]
                 .as_bool()
-                .unwrap_or_else(|| panic!("conformance.json: auth.{key}[].live is a boolean"));
+                .unwrap_or_else(|| panic!("conformance.json: auth.{section}[].live is a boolean"));
             (field("kind"), field("id"), field("secret"), live)
         })
         .collect()

@@ -2514,7 +2514,8 @@ pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
     #[allow(dead_code)]
     struct TokenUri {
         client_email: String,
-        private_key: String,
+        // Required, never held: its presence is the shape check, its value the plugin's to read.
+        private_key: serde::de::IgnoredAny,
         token_uri: Option<String>,
     }
     let json = if credential.trim_start().starts_with('{') {
