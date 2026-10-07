@@ -138,7 +138,8 @@ fn open_stated(
         dispatcher: ONE
             .get_or_init(|| Dispatcher::new(DispatchConfig::default()))
             .adopter(),
-        conns: None,
+        // A transport door is a framer the connector drives: it declares no need.
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_dropped::<Transport>(path, &rendering, bind).ok()?;
     let stated = plugin.context::<TransportFacts>().cloned()?;
@@ -155,6 +156,13 @@ fn open_stated(
                 claims: stated.claims,
                 role: stated.role,
                 composes_over: stated.composes_over,
+                status_rows: stated.status_rows,
+                streams: stated
+                    .upgrades
+                    .iter()
+                    .chain(&stated.sessions)
+                    .copied()
+                    .collect(),
             },
             plugin,
         }),

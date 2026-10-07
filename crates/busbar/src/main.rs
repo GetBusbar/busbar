@@ -334,6 +334,12 @@ static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
     std::sync::LazyLock::new(resolve_worker_threads);
 
 fn main() {
+    // THE `log` BRIDGE, before anything can run a compiled-in plugin's door: that door's call
+    // capture installs the same `LogTracer` in this image on first use, so the host takes the one
+    // `log` logger slot first (`observability::init_log_bridge`). The subscriber goes up in `run()`.
+    if let Err(e) = busbar_kernel::observability::init_log_bridge() {
+        eprintln!("busbar: the `log` bridge is not installed: {e}");
+    }
     // THE PROCESS'S ONE DISPATCHER, first: full-size (one plugin worker per data worker) before any
     // plugin of any kind binds — the planes and transports registered just below included — and
     // handed to the transport doors (`root::doors`), which bind on it.
@@ -618,7 +624,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // request-path logging is captured.
     // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
     // `init_logging`'s `stdout_reserved`.
-    busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()));
+    if let Err(e) =
+        busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()))
+    {
+        eprintln!("busbar: tracing subscriber already initialized: {e}");
+    }
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
@@ -864,7 +874,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         root::dispatch::dispatcher(),
         LINKED.auths,
         root::boot::dropped_registry(),
-        Some(Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>),
+        root::loader::dispatch::ConnTable::Host(
+            Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>
+        ),
     );
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,

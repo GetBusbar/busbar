@@ -43,9 +43,12 @@ usage:
   (--tree: `cargo tree -e normal,build --target all --prefix none -f '{p}|{f}'` per workspace member,
    concatenated; the closure and features are then the shipped build's, not the dev-unified resolve's)
   cargo xtask plugin-gates imports <undefined-symbols.txt> <needed-libs.txt> <deps.toml> <repo>
-  cargo xtask plugin-gates parity <plugin Cargo.lock> <busbar Cargo.lock>
+  cargo xtask plugin-gates parity <plugin Cargo.lock> <busbar Cargo.lock> [<deps.toml> <repo>] [--advisories <cargo-deny json lines>]
   cargo xtask plugin-gates bothways <conformance --list output>
   cargo xtask plugin-gates declares <busbar-root> <kind> <declares.json>
+  cargo xtask plugin-gates former-names <plugins.yaml> [<repo>] [--declared \"<name> ...\"]
+  (every entry, or <repo>'s, declares the 1.5.5 manifest name `legacy:` freezes for its repo;
+   --declared: judge that list, what a release packs, instead of the entry's `former_names:`)
   cargo xtask plugin-gates selftest";
 
 type Res<T> = Result<T, String>;
@@ -575,21 +578,157 @@ fn lock_versions(text: &str) -> Res<BTreeMap<String, BTreeSet<String>>> {
     Ok(out)
 }
 
-/// Ruling 3b, RED: every crates.io package both locks hold is at a version busbar's lock holds.
-pub fn parity(plugin_lock: &str, busbar_lock: &str) -> Res<Vec<String>> {
+/// The semver-compatible line of a version, as Cargo groups them: `MAJOR` for `MAJOR >= 1`, `0.MINOR`
+/// for `0.MINOR >= 0.1`, else `0.0.PATCH`. Build metadata and a pre-release tail are not part of it.
+fn compat_line(v: &str) -> String {
+    let core = v.split(['+', '-']).next().unwrap_or(v);
+    let mut it = core.split('.');
+    let (ma, mi, pa) = (
+        it.next().unwrap_or("0"),
+        it.next().unwrap_or("0"),
+        it.next().unwrap_or("0"),
+    );
+    if ma != "0" {
+        ma.to_string()
+    } else if mi != "0" {
+        format!("0.{mi}")
+    } else {
+        format!("0.0.{pa}")
+    }
+}
+
+/// One `[parity-lines] allow` row of `deps.toml`: a semver-incompatible line of a crate busbar's lock
+/// holds at another line only, declared for the plugin repos that carry it.
+struct ExtraLine {
+    krate: String,
+    line: String,
+    repos: Vec<String>,
+}
+
+fn extra_lines(deps: &Json) -> Res<Vec<ExtraLine>> {
+    let mut out = Vec::new();
+    for e in deps
+        .get("parity-lines")
+        .get("allow")
+        .as_array()
+        .unwrap_or(&[])
+    {
+        let field = |k: &str| -> Res<String> {
+            e.get(k)
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| format!("plugin-gates: parity-lines allow entry has no `{k}`"))
+        };
+        let krate = field("crate")?;
+        let line = field("line")?;
+        let used = field("use")?;
+        if used != "shipped" && used != "tests-only" {
+            return Err(format!(
+                "plugin-gates: parity-lines {krate} {line}: `use` is `{used}`, not `shipped` or `tests-only`"
+            ));
+        }
+        if field("reason")?.trim().is_empty() {
+            return Err(format!(
+                "plugin-gates: parity-lines {krate} {line}: an empty `reason`"
+            ));
+        }
+        if line != compat_line(&format!("{line}.0.0")) && line != compat_line(&format!("{line}.0"))
+        {
+            return Err(format!(
+                "plugin-gates: parity-lines {krate}: `{line}` is not a semver-compatible line (`1`, `0.11`, `0.0.3`)"
+            ));
+        }
+        out.push(ExtraLine {
+            krate,
+            line,
+            repos: str_list(e.get("repos")),
+        });
+    }
+    Ok(out)
+}
+
+/// The crates cargo-deny's advisory check refused (`cargo-deny --format json check advisories`, one
+/// JSON object per line): `(name, version) -> advisory id` for every error-severity diagnostic that
+/// names an advisory.
+fn advisories(jsonl: &str) -> BTreeMap<(String, String), String> {
+    let mut out = BTreeMap::new();
+    for l in jsonl.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(l.trim()) else {
+            continue;
+        };
+        let f = &v["fields"];
+        if v["type"] != "diagnostic" || f["severity"] != "error" {
+            continue;
+        }
+        let Some(id) = f["advisory"]["id"].as_str() else {
+            continue;
+        };
+        for g in f["graphs"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+            if let (Some(n), Some(ver)) =
+                (g["Krate"]["name"].as_str(), g["Krate"]["version"].as_str())
+            {
+                out.insert((n.to_string(), ver.to_string()), id.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Ruling 3b, RED, as tightened by the ARCHITECT (2026-10-05, the postgres parity ruling): ONE vetted
+/// version per semver-compatible line, shared by busbar and its plugins.
+///
+/// * a compatible line BOTH locks hold: the plugin's version is one busbar's lock holds (drift is RED);
+/// * a line busbar's lock holds NO version of (a semver-incompatible line, a different crate to Cargo):
+///   allowed only when `deps.toml` `[parity-lines]` declares that crate and line for this `repo`;
+///   undeclared is RED, by name;
+/// * a declaration never exempts an advisory: a declared extra line that cargo-deny's advisory check
+///   refused (`advisories`, its JSON lines) is RED too (and cargo-deny's own step stays blocking).
+///
+/// `deps` and `repo` absent: no line is declared (every extra line is RED, the strict 3b reading).
+pub fn parity(
+    plugin_lock: &str,
+    busbar_lock: &str,
+    deps: Option<(&Json, &str)>,
+    advisories_jsonl: Option<&str>,
+) -> Res<Vec<String>> {
     let mine = lock_versions(plugin_lock).map_err(|e| format!("plugin Cargo.lock: {e}"))?;
     let theirs = lock_versions(busbar_lock).map_err(|e| format!("busbar Cargo.lock: {e}"))?;
+    let (declared, repo) = match deps {
+        Some((d, r)) => (extra_lines(d)?, Some(r)),
+        None => (Vec::new(), None),
+    };
+    let refused = advisories(advisories_jsonl.unwrap_or(""));
     let mut out = Vec::new();
     for (name, mv) in &mine {
         let Some(tv) = theirs.get(name) else {
             continue;
         };
+        let held: Vec<&str> = tv.iter().map(String::as_str).collect();
         for v in mv.difference(tv) {
-            let held: Vec<&str> = tv.iter().map(String::as_str).collect();
-            out.push(format!(
-                "PARITY {name} {v}: busbar's lock at the pin holds {}",
-                held.join(", ")
-            ));
+            let line = compat_line(v);
+            if tv.iter().any(|t| compat_line(t) == line) {
+                out.push(format!(
+                    "PARITY {name} {v}: busbar's lock at the pin holds {}",
+                    held.join(", ")
+                ));
+                continue;
+            }
+            let ok = repo.is_some_and(|r| {
+                declared
+                    .iter()
+                    .any(|d| d.krate == *name && d.line == line && d.repos.iter().any(|x| x == r))
+            });
+            if !ok {
+                out.push(format!(
+                    "PARITY {name} {v}: busbar's lock at the pin holds {} and no {line} version; the {line} line is not declared for {} in .github/fleet/deps.toml [parity-lines]",
+                    held.join(", "),
+                    repo.unwrap_or("this plugin")
+                ));
+            } else if let Some(id) = refused.get(&(name.clone(), v.clone())) {
+                out.push(format!(
+                    "PARITY {name} {v}: the declared {line} line carries advisory {id} (a declaration never exempts an advisory)"
+                ));
+            }
         }
     }
     Ok(out)
@@ -791,6 +930,52 @@ pub fn declares(root: &Path, kind: &str, text: &str) -> Res<Vec<String>> {
         )]);
     }
     Ok(Vec::new())
+}
+
+// -- former names --------------------------------------------------------------------------------
+
+/// 1.5.5 CONFIGS LOAD UNCHANGED (ARCHITECT ruling): a plugin repo whose 1.5.5-era release shipped
+/// under another manifest name (plugins.yaml `legacy:`'s frozen `name_1_5_5.<repo>` rows) must still
+/// answer that name, so its entry's `former_names:` carries it — or, with `declared`, the list a
+/// release is about to sign (plugin-release.yml's `former_names` input). One finding per missing
+/// name, naming the repo and the name. With no `repo`, every entry is judged and every frozen row
+/// must name a registered repo.
+pub fn former_names(
+    registry: &str,
+    repo: Option<&str>,
+    declared: Option<&[String]>,
+) -> Res<Vec<String>> {
+    let fleet = super::registry::parse(registry).map_err(|e| format!("plugin-gates: {e}"))?;
+    let frozen: Vec<(&str, &str)> = fleet.names_1_5_5().collect();
+    let mut out = Vec::new();
+    if repo.is_none() {
+        for (r, name) in &frozen {
+            if fleet.plugin(r).is_err() {
+                out.push(format!(
+                    "FORMER-NAMES legacy: name_1_5_5.{r} ('{name}') names no plugin repo in plugins.yaml"
+                ));
+            }
+        }
+    }
+    let entries: Vec<&super::registry::Plugin> = match repo {
+        Some(r) => vec![fleet.plugin(r).map_err(|e| format!("plugin-gates: {e}"))?],
+        None => fleet.plugins.iter().collect(),
+    };
+    for p in entries {
+        let have: &[String] = declared.unwrap_or(&p.former_names);
+        for (_, name) in frozen.iter().filter(|(r, _)| *r == p.repo) {
+            if !have.iter().any(|h| h == name) {
+                out.push(format!(
+                    "FORMER-NAMES {} shipped its 1.5.5-era release as '{name}' (plugins.yaml legacy: name_1_5_5.{}) and {} {}: add '{name}' to its former_names, or a 1.5.5 config naming it is refused at boot.",
+                    p.repo,
+                    p.repo,
+                    if declared.is_some() { "this release signs former_names" } else { "declares former_names" },
+                    py_list(have)
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 // -- the deps.toml reader ------------------------------------------------------------------------
@@ -1119,7 +1304,17 @@ carriers = []
 
 [c-deps]
 allow = [{ crate = "libsqlite3-sys", version = "=0.38.1", features = ["bundled"], reason = "r" }]
+
+[parity-lines]
+allow = [{ crate = "serde", line = "2", repos = ["r"], use = "shipped", reason = "r" }]
 "#;
+
+/// One cargo-deny JSON advisory diagnostic refusing `name` `version`.
+fn advisory(name: &str, version: &str) -> String {
+    format!(
+        r#"{{"type":"diagnostic","fields":{{"severity":"error","code":"vulnerability","advisory":{{"id":"RUSTSEC-0000-0001"}},"graphs":[{{"Krate":{{"name":"{name}","version":"{version}"}}}}]}}}}"#
+    )
+}
 
 /// (id, name, version, source, links, features)
 type Pk<'a> = (
@@ -1332,10 +1527,44 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
         ),
         (
             "parity equal",
-            parity(&lock("1.0.1"), &lock("1.0.1")),
+            parity(&lock("1.0.1"), &lock("1.0.1"), None, None),
             false,
         ),
-        ("parity drift", parity(&lock("1.0.2"), &lock("1.0.1")), true),
+        (
+            "parity drift",
+            parity(&lock("1.0.2"), &lock("1.0.1"), None, None),
+            true,
+        ),
+        (
+            "parity drift within a line beside a declared one",
+            parity(&lock("1.0.2"), &lock("1.0.1"), Some((&policy, "r")), None),
+            true,
+        ),
+        (
+            "parity undeclared extra line",
+            parity(&lock("2.0.0"), &lock("1.0.1"), None, None),
+            true,
+        ),
+        (
+            "parity extra line declared for another repo",
+            parity(&lock("2.0.0"), &lock("1.0.1"), Some((&policy, "q")), None),
+            true,
+        ),
+        (
+            "parity declared extra line",
+            parity(&lock("2.0.0"), &lock("1.0.1"), Some((&policy, "r")), None),
+            false,
+        ),
+        (
+            "parity declared extra line with an advisory",
+            parity(
+                &lock("2.0.0"),
+                &lock("1.0.1"),
+                Some((&policy, "r")),
+                Some(&advisory("serde", "2.0.0")),
+            ),
+            true,
+        ),
         ("bothways both arms", Ok(bothways(&both)), false),
         ("bothways no RED arm", Ok(bothways(&both[..1])), true),
         ("bothways no equality arm", Ok(bothways(&both[1..])), true),
@@ -1369,6 +1598,61 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
     v.push((
         "declares stale",
         declares(d, "store", r#"{"contract_abi": {"min": 3, "max": 3}}"#),
+        true,
+    ));
+    let fleet = |entry: &str| {
+        format!(
+            "fleet:\n  busbar_ref: \"{}\"\n  name_pattern: \"^busbar-.*$\"\n  branches: [dev]\n\
+             legacy:\n  name_1_5_5.busbar-hook-x: busbar-x\n\
+             plugins:\n  - repo: busbar-hook-x\n    kind: hook\n    alias: x\n    crate: busbar-hook-x\n    \
+             service: none\n    description: \"d\"\n    declares: \"declares.json\"\n{entry}",
+            format_args!("{} 1.6.0", "0".repeat(40))
+        )
+    };
+    let declared = ["busbar-x".to_string()];
+    v.push((
+        "former-names declared",
+        former_names(
+            &fleet("    former_names: [busbar-x]\n"),
+            Some("busbar-hook-x"),
+            None,
+        ),
+        false,
+    ));
+    v.push((
+        "former-names missing",
+        former_names(&fleet(""), Some("busbar-hook-x"), None),
+        true,
+    ));
+    v.push((
+        "former-names other name",
+        former_names(&fleet("    former_names: [busbar-y]\n"), None, None),
+        true,
+    ));
+    v.push((
+        "former-names release signs it",
+        former_names(&fleet(""), Some("busbar-hook-x"), Some(&declared)),
+        false,
+    ));
+    v.push((
+        "former-names release drops it",
+        former_names(
+            &fleet("    former_names: [busbar-x]\n"),
+            Some("busbar-hook-x"),
+            Some(&[]),
+        ),
+        true,
+    ));
+    v.push((
+        "former-names stray frozen row",
+        former_names(
+            &fleet("    former_names: [busbar-x]\n").replace(
+                "legacy:\n",
+                "legacy:\n  name_1_5_5.busbar-hook-gone: busbar-gone\n",
+            ),
+            None,
+            None,
+        ),
         true,
     ));
     v.push((
@@ -1414,9 +1698,16 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
     // `--tree <file>` anywhere after the gate name: the shipped closure as `cargo tree` resolves it.
     let mut rest: Vec<String> = Vec::new();
     let mut shipped: Option<Shipped> = None;
+    let mut advisories_file: Option<String> = None;
     let mut it = args.iter();
     while let Some(x) = it.next() {
-        if x == "--tree" {
+        if x == "--advisories" {
+            advisories_file = Some(
+                it.next()
+                    .ok_or_else(|| format!("plugin-gates: `--advisories` needs a file\n{USAGE}"))?
+                    .clone(),
+            );
+        } else if x == "--tree" {
             let f = it
                 .next()
                 .ok_or_else(|| format!("plugin-gates: `--tree` needs a file\n{USAGE}"))?;
@@ -1443,9 +1734,46 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
             let (u, n) = (read(a(0)?)?, read(a(1)?)?);
             imports(&splitlines(&u), &splitlines(&n), &load_toml(a(2)?)?, a(3)?)
         }
-        "parity" => parity(&read(a(0)?)?, &read(a(1)?)?),
+        "parity" => {
+            let deps = match (args.get(2), args.get(3)) {
+                (Some(d), Some(_)) => Some(load_toml(d)?),
+                (Some(_), None) => {
+                    return Err(format!(
+                        "plugin-gates: `parity` takes <deps.toml> with <repo>\n{USAGE}"
+                    ))
+                }
+                _ => None,
+            };
+            let adv = advisories_file.as_deref().map(read).transpose()?;
+            parity(
+                &read(a(0)?)?,
+                &read(a(1)?)?,
+                deps.as_ref().zip(args.get(3).map(String::as_str)),
+                adv.as_deref(),
+            )
+        }
         "bothways" => Ok(bothways(&splitlines(&read(a(0)?)?))),
         "declares" => declares(Path::new(a(0)?), a(1)?, &read(a(2)?)?),
+        "former-names" => {
+            let mut rest = args[1..].iter();
+            let (mut repo, mut declared) = (None, None);
+            while let Some(x) = rest.next() {
+                if x == "--declared" {
+                    let v = rest.next().ok_or_else(|| {
+                        format!("plugin-gates: `--declared` needs a list\n{USAGE}")
+                    })?;
+                    declared = Some(
+                        v.split(|c: char| c == ',' || c.is_whitespace())
+                            .filter(|w| !w.is_empty())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>(),
+                    );
+                } else {
+                    repo = Some(x.as_str());
+                }
+            }
+            former_names(&read(a(0)?)?, repo, declared.as_deref())
+        }
         other => Err(format!("plugin-gates: unknown gate `{other}`")),
     }
 }
@@ -1505,12 +1833,47 @@ mod tests {
         imports_libssl => "imports libssl",
         parity_equal => "parity equal",
         parity_drift => "parity drift",
+        parity_drift_beside_a_declared_line => "parity drift within a line beside a declared one",
+        parity_undeclared_extra_line => "parity undeclared extra line",
+        parity_extra_line_for_another_repo => "parity extra line declared for another repo",
+        parity_declared_extra_line => "parity declared extra line",
+        parity_declared_extra_line_with_an_advisory => "parity declared extra line with an advisory",
         bothways_both_arms => "bothways both arms",
         bothways_no_red_arm => "bothways no RED arm",
         bothways_no_equality_arm => "bothways no equality arm",
         declares_current => "declares current",
         declares_stale => "declares stale",
         declares_literal => "declares literal",
+        former_names_declared => "former-names declared",
+        former_names_missing => "former-names missing",
+        former_names_other_name => "former-names other name",
+        former_names_release_signs_it => "former-names release signs it",
+        former_names_release_drops_it => "former-names release drops it",
+        former_names_stray_frozen_row => "former-names stray frozen row",
+    }
+
+    /// The committed plugins.yaml: every entry declares its repo's frozen 1.5.5 manifest name (the
+    /// ARCHITECT's measured nine), and a planted removal of one is RED naming the repo and the name.
+    #[test]
+    fn the_committed_registry_declares_every_1_5_5_name() {
+        let text = crate::ctx::Ctx::workspace()
+            .unwrap()
+            .read("plugins.yaml")
+            .unwrap();
+        assert_eq!(
+            former_names(&text, None, None).unwrap(),
+            Vec::<String>::new()
+        );
+        let fleet = super::super::registry::parse(&text).unwrap();
+        let frozen: Vec<(&str, &str)> = fleet.names_1_5_5().collect();
+        assert_eq!(frozen.len(), 9, "{frozen:?}");
+        let planted = text.replacen("    former_names: [busbar-webrequest]\n", "", 1);
+        assert_ne!(planted, text);
+        let red = former_names(&planted, Some("busbar-hook-webrequest"), None).unwrap();
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(
+            red[0].contains("busbar-hook-webrequest") && red[0].contains("'busbar-webrequest'")
+        );
     }
 
     #[test]
@@ -1599,6 +1962,36 @@ mod tests {
             found("parity drift"),
             ["PARITY serde 1.0.2: busbar's lock at the pin holds 1.0.1"]
         );
+        assert_eq!(
+            found("parity extra line declared for another repo"),
+            ["PARITY serde 2.0.0: busbar's lock at the pin holds 1.0.1 and no 2 version; the 2 line is not declared for q in .github/fleet/deps.toml [parity-lines]"]
+        );
+        assert_eq!(
+            found("parity declared extra line with an advisory"),
+            ["PARITY serde 2.0.0: the declared 2 line carries advisory RUSTSEC-0000-0001 (a declaration never exempts an advisory)"]
+        );
+    }
+
+    #[test]
+    fn compat_lines_are_cargos() {
+        for (v, l) in [
+            ("1.2.3", "1"),
+            ("0.11.0", "0.11"),
+            ("0.0.3", "0.0.3"),
+            ("0.11.1+wasi-snapshot-preview1", "0.11"),
+            ("2.0.0-rc.1", "2"),
+        ] {
+            assert_eq!(compat_line(v), l, "{v}");
+        }
+    }
+
+    #[test]
+    fn a_parity_line_row_states_its_use_and_reason() {
+        let bad = parse_toml(
+            "[parity-lines]\nallow = [{ crate = \"x\", line = \"2\", repos = [\"r\"], use = \"sometimes\", reason = \"r\" }]\n",
+        )
+        .unwrap();
+        assert!(parity(&lock("1.0.1"), &lock("1.0.1"), Some((&bad, "r")), None).is_err());
     }
 
     #[test]
@@ -1707,6 +2100,18 @@ mod tests {
         }
     }
 
+    /// The loader keys its `supported_abi` arms by the kind constants (`kind::STORE =>`); the declares
+    /// gate reads every kind's version off the REAL tree (RED before the arm reader took that form:
+    /// "supported_abi has no arm for kind `store`", which turned every plugin's declares step red).
+    #[test]
+    fn the_declares_gate_reads_the_real_trees_kind_constant_arms() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for kind in KINDS {
+            let v = kind_abi(&root, kind).unwrap_or_else(|e| panic!("{kind}: {e}"));
+            assert!(v >= 1, "{kind}: {v}");
+        }
+    }
+
     #[test]
     fn toml_reader_reads_the_real_policy() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -1715,6 +2120,10 @@ mod tests {
         assert_eq!(str_list(d.get("net-ban").get("carriers")).len(), 0);
         assert_eq!(d.get("c-deps").get("allow").as_array().unwrap().len(), 3);
         let lock = std::fs::read_to_string(root.join("Cargo.lock")).unwrap();
-        assert!(parity(&lock, &lock).unwrap().is_empty());
+        assert!(
+            parity(&lock, &lock, Some((&d, "busbar-store-postgres")), None)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

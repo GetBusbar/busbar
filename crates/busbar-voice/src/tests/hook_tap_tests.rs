@@ -144,7 +144,7 @@ async fn open_mint(
 ) -> axum::response::Response {
     let provider = ProviderEndpoint {
         base_url: base_url.to_string(),
-        api_key: "sk-real-key".to_string(),
+        api_key: busbar_contract::Redacted::new("sk-real-key".to_string()),
     };
     open_governed(GovernedOpen {
         rt,

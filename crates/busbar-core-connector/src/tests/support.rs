@@ -89,6 +89,8 @@ impl TestDoor {
                     busbar_contract::abi::transport::ROLE_FRAMER
                 },
                 composes_over: composes_over.to_vec(),
+                status_rows: Vec::new(),
+                streams: Vec::new(),
             },
             knobs,
             framings: Mutex::new(HashMap::new()),

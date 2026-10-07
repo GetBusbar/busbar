@@ -137,17 +137,17 @@ fn next_refresh_never_sleeps_past_a_live_token_expiry() {
 
 #[test]
 fn a_cached_token_is_redacted_in_debug() {
-    let (t, invalid) = CachedToken::new("super-secret-token".to_string(), 5);
+    let (t, invalid) = CachedToken::new("super-secret-token".to_string().into(), 5);
     assert!(!invalid);
     assert!(!format!("{t:?}").contains("super-secret-token"));
 }
 
 #[test]
 fn a_cached_token_omits_the_header_for_bytes_invalid_in_a_header_value() {
-    let (t, invalid) = CachedToken::new("tok\r\nen".to_string(), 5);
+    let (t, invalid) = CachedToken::new("tok\r\nen".to_string().into(), 5);
     assert!(invalid);
     assert_eq!(t.header(), None);
-    let (t, invalid) = CachedToken::new(String::new(), 0);
+    let (t, invalid) = CachedToken::new(String::new().into(), 0);
     assert!(
         !invalid,
         "the pre-first-mint sentinel is not a reportable token"

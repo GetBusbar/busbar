@@ -57,7 +57,7 @@ pub fn registry(
     )?;
     // The dropped-in secret plugins that state a door join the secret axis (the root's, over the
     // one dispatcher); a 1.5.x one with no door stays on the cold lane (M6).
-    super::linked::secret_rows().set_dropped(discovered(&registry, |kind| kind == "secret")?);
+    super::linked::secret_rows().admit_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
 }
 
@@ -226,7 +226,7 @@ fn discovered(
             bytes: Arc::new(row.lib_bytes.clone()),
         };
         out.push(
-            Candidate::from_rendering(stated, Some(&row.manifest.alias), origin)
+            Candidate::from_manifest(stated, &row.manifest, origin)
                 .map_err(|e| format!("plugin '{}': {e}", row.manifest.name))?,
         );
     }
@@ -583,7 +583,7 @@ pub fn load_door_planes() {
         std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
         crate::root::dispatch::dispatcher().adopter(),
         u32::MAX,
-        Some(conns),
+        crate::root::loader::dispatch::ConnTable::Host(conns),
     )
     .unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
@@ -730,19 +730,21 @@ pub fn compose_book(
 ) -> Result<
     (
         super::durability::Durability,
-        Arc<busbar_kernel_ledger::legacy::RecordingRows>,
+        Arc<busbar_kernel_ledger::legacy::SummedRows>,
         super::migration::Migration,
     ),
     String,
 > {
-    let rows = Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
+    // The dual write's rows as running sums, one per cell: memory bounded by the cells the node
+    // settles into, never by how many settlements it makes (the journal is the durable record).
+    let rows = Arc::new(busbar_kernel_ledger::legacy::SummedRows::new());
     let mut durability = super::durability::build_for_node(
         &super::durability::DurabilityConfig {
             data_dir: data_dir.clone(),
         },
         mig.node,
         adapter.shipper(),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
+        Box::new(busbar_kernel_ledger::legacy::SummedRows::clone(&rows)),
     )
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
     // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
