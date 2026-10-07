@@ -6,7 +6,8 @@
 //! example `cdylib` (the DROPPED door, through `export_door!`).
 //!
 //! It answers every plane op through the SDK's trampolines: `open` and `refresh` publish a
-//! generation snapshot (valid until `retire` of that generation), `arrive`, `on_piece`, `refusal`,
+//! generation snapshot (valid until `retire` of that generation; opened under a public URL, every
+//! generation also claims the session door `GET /upgrade`), `arrive`, `on_piece`, `refusal`,
 //! `serve` and `project` write only into the host's buffers, `drive` names the session with
 //! unsolicited output, `cancel` answers a disposition and `tick` its next tick. The request-path
 //! ops never allocate and never block: the only shared state they touch is one atomic.
@@ -116,9 +117,13 @@ const TAIL: &PlaneTail = &PlaneTail {
     },
 };
 
-/// Every generation's claim.
-fn claims() -> Vec<ClaimSpec> {
-    vec![ClaimSpec::new("POST", "/echo", "door", 0)]
+/// Every generation's claims: the request door, and with a public URL the session door.
+fn claims(public: bool) -> Vec<ClaimSpec> {
+    let mut claims = vec![ClaimSpec::new("POST", "/echo", "door", 0)];
+    if public {
+        claims.push(ClaimSpec::new("GET", "/upgrade", "door", 0));
+    }
+    claims
 }
 /// The admin route a REFRESHED generation adds.
 fn routes() -> Vec<AdminRouteSpec> {
@@ -133,14 +138,16 @@ pub const BAD_SETTINGS: &[u8] = b"bad";
 struct Plane {
     snapshots: Generations<PlaneSnapshot>,
     ready: AtomicU64,
+    /// Opened under a public URL.
+    public: bool,
 }
 
 impl Plane {
     /// The snapshot of a generation, held by the SDK until its `retire`; a refreshed one adds the
     /// admin route.
-    fn spec(refreshed: bool) -> SnapshotSpec {
+    fn spec(&self, refreshed: bool) -> SnapshotSpec {
         SnapshotSpec {
-            claims: claims(),
+            claims: claims(self.public),
             admin_routes: if refreshed { routes() } else { Vec::new() },
             ..SnapshotSpec::default()
         }
@@ -179,12 +186,13 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
     let p = Plane {
         snapshots: Generations::new(),
         ready: AtomicU64::new(0),
+        public: !input.field(|i| &i.public_url).bytes().is_empty(),
     };
     out.publish(
         |o| &o.snapshot,
         &p.snapshots,
         input.open.generation,
-        &Plane::spec(false),
+        &p.spec(false),
     );
     instance.open(p);
     Outcome::Ready
@@ -202,7 +210,7 @@ slot!(
             |o| &o.snapshot,
             &p.snapshots,
             input.generation,
-            &Plane::spec(true),
+            &p.spec(true),
         );
         Outcome::Ready
     }

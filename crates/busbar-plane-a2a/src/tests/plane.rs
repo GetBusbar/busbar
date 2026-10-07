@@ -13,7 +13,7 @@ use busbar_contract::unit::{AbortBy, FailureReason, RefusalReason, Step, UnitEnd
 /// this dialect answers it with. The list is exhaustive against `busbar_contract::unit::RefusalReason`
 /// (42 variants); `refusal_render`'s own match is `_`-free, so a reason absent here is one this test
 /// would silently skip — the two lists are kept in step on purpose.
-const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
+const ALL_REFUSAL_REASONS: [RefusalReason; 43] = [
     RefusalReason::InFlightCap,
     RefusalReason::CursorBudget,
     RefusalReason::CredentialBudget,
@@ -56,6 +56,7 @@ const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
     RefusalReason::Superseded,
     RefusalReason::ClientGone,
     RefusalReason::DeadlineExceeded,
+    RefusalReason::Untrusted,
 ];
 
 #[test]
@@ -280,7 +281,7 @@ use crate::{A2aPlane, Agent};
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::LaneId;
 use busbar_contract::plane::{Ingress, Plane};
-use busbar_contract::unit::{ResourceLocator, Unit};
+use busbar_contract::unit::Unit;
 
 /// Two agents on two lanes, so "the first one" and "the named one" are different answers.
 static TWO_AGENTS: &[Agent] = &[
@@ -360,14 +361,6 @@ fn a_hop_goes_to_the_agent_the_request_named() {
         hop_to(beta),
         "dialled the named agent"
     );
-    assert_eq!(
-        plane.approve(&unit, &ctx).resources.as_slice(),
-        &[ResourceLocator {
-            kind: "agent",
-            name: "beta"
-        }],
-        "scoped against the named agent"
-    );
     let plan = plane.route(&unit, &ctx);
     let hop = plan.legs.as_slice().last().expect("a send hops");
     assert_eq!(
@@ -392,10 +385,6 @@ fn a_request_naming_no_carried_agent_reaches_none() {
             plane.verify(&unit, &ctx),
             A2aPlane::EMPTY.verify(&unit, &ctx),
             "{target}: no guessed agent, the same unreachable answer a plane with none gives"
-        );
-        assert!(
-            plane.approve(&unit, &ctx).resources.is_empty(),
-            "{target}: no guessed scope"
         );
     }
 

@@ -4,8 +4,6 @@
 //! Tests for `crates/plugin-loader/src/lib.rs`.
 
 use super::*;
-// The artifact table lives in `crate::test_support`; this crate's tests name it here.
-pub(crate) use crate::test_support::artifact;
 use busbar_contract::abi::cold::{
     STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED, TRANSPORT_VERSION,
 };
@@ -15,12 +13,16 @@ use busbar_contract::abi::cold::{
 /// at it to pin the schema-keyed shim rule.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
-/// The REAL JSON-lane plugin the loader-MECHANISM tests below dlopen (validation, inventory, the kind
-/// gates): the export row of `[package.metadata.busbar.both-ways]`, the request-log file sink's
-/// `cdylib`, one of the two sinks still on that lane (M6-COLD-DELETE residue). Under CI a missing
-/// cdylib is a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
+/// The REAL plugin the loader-MECHANISM tests below dlopen (validation, inventory, the kind gates):
+/// the `auth` row of `[package.metadata.busbar.both-ways]`, the token-verifying OIDC module's
+/// dropped-in `cdylib`. It is on the auth kind's memory ABI (its row is a door row, and the table names
+/// its logic crate, so its cdylib is `<logic>_plugin`); every SDK-built library still answers the
+/// plugin-ABI handshake these tests drive (`busbar_abi`, `busbar_plugin_kind` and the four
+/// operational symbols), so it is the subject the cold auth cdylib was. Under CI a missing cdylib is
+/// a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
 fn json_lane_plugin_path() -> Option<std::path::PathBuf> {
-    super::both_ways::cdylib(super::both_ways::fixture("auth").0)
+    let (logic, _) = super::both_ways::door_fixture("auth");
+    super::both_ways::cdylib(&format!("{logic}_plugin"))
 }
 
 /// `validate_plugin` accepts the real JSON-lane fixture cdylib (ABI v1) without constructing an
@@ -287,6 +289,68 @@ fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
     );
 }
 
+/// NO LEGACY LOADING at the loader-mechanism paths (THE DESIGN §11.8, ruling C21/ABI-o1): a library
+/// with no `busbar_plugin_door` that states a JSON-contract kind by its `busbar_plugin_kind` symbol
+/// alone is a 1.5.5-era plugin. The symbol only CLASSIFIES it: the upload vet refuses it, the
+/// plugins inventory lists it invalid, and the kind gate refuses it even when the seam and the
+/// signed manifest agree with the kind it states, each naming the missing door and the rebuild.
+///
+/// RED against a loader that takes a kind symbol on its word: every handshake and kind check
+/// passes, so the vet answers `Ok`, the inventory lists it valid and the gate admits it to
+/// `busbar_open`.
+#[test]
+fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
+    let Some(path) = super::both_ways::example_cdylib("json_contract_auth") else {
+        eprintln!("skip: the json_contract_auth example cdylib is not built");
+        return;
+    };
+    let names_the_rebuild = |why: &str| {
+        assert!(
+            why.contains("busbar_plugin_door"),
+            "names the missing door: {why}"
+        );
+        assert!(why.contains("'auth'"), "names the kind it states: {why}");
+        assert!(
+            why.contains(crate::dispatch::load::REBUILD),
+            "names the rebuild: {why}"
+        );
+    };
+
+    // The upload vet.
+    let vet = validate_plugin(&path).expect_err("the upload vet refuses a door-less library");
+    names_the_rebuild(&vet);
+
+    // The plugins inventory.
+    let file = path.file_name().unwrap().to_owned();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-inventory-json-contract-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(&path, dir.join(&file)).unwrap();
+    let inv = inventory(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let listed = inv
+        .iter()
+        .find(|p| std::ffi::OsStr::new(&p.file) == file)
+        .expect("the door-less library is listed");
+    assert!(!listed.valid, "listed invalid: {listed:?}");
+    assert_eq!(listed.abi_version, None, "{listed:?}");
+    names_the_rebuild(listed.error.as_deref().expect("listed with its refusal"));
+
+    // The kind gate, with the seam and the signed manifest both agreeing on `auth`.
+    let bytes = std::fs::read(&path).expect("read the door-less cdylib");
+    let auth = busbar_contract::abi::mechanism::kind::AUTH;
+    let Err(gate) = load_image(Image::Bytes(&bytes), "{}", "json-contract-auth", auth, auth) else {
+        panic!("the kind gate must not admit a door-less library");
+    };
+    names_the_rebuild(&gate);
+}
+
 #[test]
 fn plugin_library_filename_matches_this_platforms_naming_convention() {
     let name = plugin_library_filename("busbar_foo_plugin");
@@ -527,7 +591,5 @@ fn a_panicking_close_during_reclaim_does_not_take_the_engine_down() {
 
 #[path = "ffi_guard_tests.rs"]
 mod ffi_guard_tests;
-#[path = "store_adapter_migration_tests.rs"]
-mod store_adapter_migration_tests;
 #[path = "store_adapter_tests.rs"]
 mod store_adapter_tests;

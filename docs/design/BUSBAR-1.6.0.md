@@ -4992,6 +4992,20 @@ Other rulings:
 ### 2026-10-04 — OWNER RULING Q137: the TLS listener offers ALPN `h2, http/1.1`
 - OWNER (Q137, "offers h2 on the TLS listener. yes why not?"): a `tls:` listener offers ALPN `h2, http/1.1` (1.5.5: `http/1.1` alone), a signed customer-visible change; a client offering only `http/1.1`, or no ALPN, is served byte-identically to 1.5.5, and an ALPN-`h2` connection that does not open with the connection preface is closed with no bytes (RFC 9113 §3.4), in the connector. Parity binding PB-69 cites it.
 
+### 2026-10-07 — ARCHITECT RULING: `kind-isolation:control-path` keeps `data-path-step` and drops its upstream word list
+- The `upstream` check (`egress`, `pool`, `routing`, `failover`, `breaker`, `provider`, refused on every
+  cleanliness line) was written for the `control` plugin kind (65542ca51b), which is cancelled: Part 2 #5,
+  "There is no "control" plugin kind." The cleanliness crates' rule is THE DESIGN §8: each "depends one way
+  on the kernel, names no plugin, and gets its listeners through the connector"; admin owns "the operator
+  surface", oauth2 the authorization server. Those six words name no plugin: route and pools are KERNEL
+  (§5 table, "KERNEL | route (pool walk, member, breaker)"), and the 1.5.5 pools/providers/routing admin API
+  is a customer-visible operator surface over kernel tables, not a plane's. The CIMD document fetch dials
+  through the root connector under an open-web need (Q128), so its egress class is correct vocabulary.
+- So the word check and the connector's in-role carve-out are deleted. `data-path-step` stays: no `fn route`
+  and no `fn meter` in a cleanliness crate (admin and oauth2 are off the hot path, #5). "Names no plugin" is
+  held by `kind-isolation:matrix`'s armed `law0-neutral-instance` class, at zero for every `Family::Neutral`
+  crate on the ship twin, with a red plant of a plane instance noun in core-admin.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 
