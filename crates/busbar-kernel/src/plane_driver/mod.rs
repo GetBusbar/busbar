@@ -93,7 +93,8 @@ pub use far_end::{
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, EngineCaller,
     GroupScope, HookBinder, HookRead, HostHooks, HostSource, Projection, Restrict, RewriteChain,
-    StageTaps, UnitHooks,
+    SessionStage, StageTaps, UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS,
+    STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
@@ -222,6 +223,8 @@ pub struct PlaneDriver {
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
     /// Which hooks bind to a unit of this plane; `None` = none ever does.
     hooks: Option<Arc<dyn HookBinder>>,
+    /// The instance's label, as admitted to the services.
+    label: Arc<str>,
     /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
     audit: Arc<dyn AuditSink>,
 }
@@ -346,6 +349,7 @@ impl PlaneDriver {
             services,
             sessions: Mutex::default(),
             hooks: None,
+            label: Arc::from(&*d.label),
             audit: Arc::new(CoreAudit),
         })
     }
@@ -965,6 +969,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     async fn route_async(&self, token: &Pass<Route>, ctx: &UnitCtx) -> StepAnswer<Route> {
         let d = self.driver;
         d.sweep();
+        self.state_stage(token);
         if let Err(stopped) = self.request_stage(token).await {
             let reason = self.stopped(stopped);
             d.money.finished(ctx);
