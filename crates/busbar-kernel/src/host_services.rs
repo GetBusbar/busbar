@@ -2019,9 +2019,10 @@ impl HostServices for KernelServices {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
         };
-        let Some(owner) = self.owner_of_unit(unit) else {
+        let (Some(unit), Some(owner)) = (unit, self.owner_of_unit(unit)) else {
             return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
         };
+        let units = Arc::clone(&self.units);
         // EVERY DENIAL ANSWERS ALIKE: a malformed reference, an unknown one, another instance's,
         // another principal's, and one settled past its retention are each READY absent.
         let absent = || Stored::ready(svc::ABSENT);
@@ -2050,6 +2051,9 @@ impl HostServices for KernelServices {
                     if w.owner == owner
                         && (w.live || w.settled_ms.saturating_add(retain_ms) > wall_ms()) =>
                 {
+                    // The owner's find binds its unit (ARCHITECT 2026-10-07 K4-11 (B)): a handle
+                    // read back from the store is scoped while the finder runs.
+                    book.found(handle, unit, &|u| units.get(u).is_some());
                     work_found(handle, &w)
                 }
                 _ => absent(),

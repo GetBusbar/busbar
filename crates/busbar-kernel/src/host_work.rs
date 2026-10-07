@@ -499,6 +499,18 @@ impl WorkBook {
         Ok(w.clone())
     }
 
+    /// The owner found live `handle` from `unit`: `unit` becomes the unit it is bound to, so a
+    /// handle read back from the store (no unit of this process) is scoped while its finder runs.
+    /// A unit bound to it and still in flight (`in_flight`) is not displaced; a settled handle is
+    /// left as it is.
+    pub fn found(&self, handle: u64, unit: u64, in_flight: &dyn Fn(u64) -> bool) {
+        if let Some(w) = self.lock().handles.get_mut(&handle) {
+            if w.live && !w.bound.is_some_and(in_flight) {
+                w.bound = Some(unit);
+            }
+        }
+    }
+
     /// How many handles the book holds, live and settled.
     #[must_use]
     pub fn held(&self) -> usize {
