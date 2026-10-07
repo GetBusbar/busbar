@@ -2581,7 +2581,7 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(secret_hygiene::SecretHygieneGate::shipped()),
         summary: "no bare-string secret field, no .expose_secret() at a sink, no secret interpolated \
-                  into a returned message (REPORT-ONLY ledger rows; SECRET_GATE_REPORT_ONLY=0 blocks, #53)",
+                  into a returned message (BLOCKING, #53; SECRET_GATE_REPORT_ONLY=1 is the report-only escape)",
     },
     Registration {
         name: "script-allowlist",

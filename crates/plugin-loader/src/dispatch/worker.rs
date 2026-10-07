@@ -154,8 +154,12 @@ pub(crate) struct Env {
     pub(crate) provider: Option<Arc<dyn HostServices>>,
     /// THE PROCESS'S RUNTIME, the reactor a plugin's connection is registered on: a crossing on a
     /// worker runs inside it, so a dial the connector makes on the worker (a plugin's `exchange`)
-    /// lands on the per-worker reactor (THE DESIGN, the connections section). Taken from the first
-    /// submit made inside a runtime (the dispatcher is built before the runtime starts).
+    /// lands on a reactor that is always driven (THE DESIGN, the connections section). INSTALLED,
+    /// never captured ([`Dispatcher::install_runtime`]): the host installs the process's one
+    /// runtime at boot (busbar: the connector's own I/O thread). A runtime taken from whoever
+    /// submitted first bound every worker to the control runtime, whose thread waits synchronously
+    /// on worker ops at boot, so a socket a plugin opened there was never driven. None installed:
+    /// a worker enters no runtime, and its I/O takes the connector's own refusal.
     pub(crate) runtime: std::sync::OnceLock<tokio::runtime::Handle>,
     /// THE HOST'S I/O (`io.*`) the instances of this dispatcher are served from; unset = none, and
     /// every `io` slot answers REFUSED.
@@ -1295,6 +1299,20 @@ impl Dispatcher {
         })
     }
 
+    /// INSTALL THE PROCESS'S RUNTIME every worker runs its crossings inside (see `Env::runtime`):
+    /// the one the host drives on a thread of its own. The first install holds; a later one is
+    /// ignored and answers `false`. Never taken from a submitter.
+    pub fn install_runtime(&self, handle: tokio::runtime::Handle) -> bool {
+        // A worker enters it at the top of its next turn, before it runs anything.
+        self.pool.env.runtime.set(handle).is_ok()
+    }
+
+    /// The runtime the workers run inside, when one is installed.
+    #[cfg(test)]
+    pub(crate) fn installed_runtime(&self) -> Option<&tokio::runtime::Handle> {
+        self.pool.env.runtime.get()
+    }
+
     /// Workers and a watchdog, per `config`, serving the host services the kernel implements.
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
         Self::build(config, Some(provider))
@@ -1309,9 +1327,7 @@ impl Dispatcher {
             completions: Arc::default(),
             services: Arc::default(),
             provider,
-            runtime: tokio::runtime::Handle::try_current()
-                .map(std::sync::OnceLock::from)
-                .unwrap_or_default(),
+            runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
             inline: Arc::default(),
         });
@@ -1599,11 +1615,6 @@ impl Dispatcher {
         watch: Duration,
         driven: bool,
     ) -> Reply<I, O> {
-        if self.pool.env.runtime.get().is_none() {
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                let _ = self.pool.env.runtime.set(handle);
-            }
-        }
         let inst = &plugin.inner;
         if ticket.is_none() {
             return Reply::settled(Outcome::Fault, frame);

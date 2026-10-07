@@ -19,11 +19,11 @@ impl ProtocolReader for GeminiReader {
         // The same table the complete response reads (`USAGE`): thinking tokens fold into the
         // output and the tool-use prompt term into the input, so a truncated response counts the same
         // as a complete one. An unreadable count yields NO recovered usage, never a zero one (#42).
-        Some(
-            crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE)
-                .ok()?
-                .to_token_usage(),
-        )
+        // The stated-total check rides too, so a recovered turn ledgers the same `unitemized_tokens`
+        // remainder its complete twin does (owner LEDGER-100).
+        let mut usage = crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE).ok()?;
+        usage.detail.usage_identity_note = super::gemini_usage_identity_note(Some(&v));
+        Some(usage.to_token_usage())
     }
 
     fn extract_error(

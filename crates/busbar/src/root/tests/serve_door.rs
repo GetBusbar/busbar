@@ -193,7 +193,9 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            conns: crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
         },
     )
     .expect("the linked door binds");
@@ -250,7 +252,9 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
         None,
-        Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+        crate::root::loader::dispatch::ConnTable::Host(
+            Arc::clone(&connector) as Arc<dyn DeclaredConns>
+        ),
     );
     let reach = DoorReach {
         providers: &providers,
@@ -383,7 +387,9 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: None,
+            // This row only routes (no request reaches the provider): the plane's need is not
+            // declared, bound as a probe.
+            conns: crate::root::loader::dispatch::ConnTable::Probe,
         },
     )
     .expect("the linked door binds");
@@ -454,7 +460,9 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: None,
+            // This row only routes (no request reaches the provider): the plane's need is not
+            // declared, bound as a probe.
+            conns: crate::root::loader::dispatch::ConnTable::Probe,
         },
     )
     .expect("the linked door binds");
@@ -543,7 +551,9 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            conns: crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
         },
     )
     .expect("the linked door binds");
@@ -599,7 +609,9 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
         None,
-        Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+        crate::root::loader::dispatch::ConnTable::Host(
+            Arc::clone(&connector) as Arc<dyn DeclaredConns>
+        ),
     );
     let reach = DoorReach {
         providers: &providers,

@@ -8,11 +8,13 @@
 //! (`tls/engine_tests.rs` drives the kernel's engine and listener over this crate's wrap; a plane's
 //! transport battery rides the kernel's TLS test double instead).
 //!
-//! Test machinery only: compiled under `cfg(test)` for this crate's own suite. Nothing in a shipped
-//! build reaches it. The gate below restates, on the file itself, the gate `lib.rs` puts on
-//! `pub mod test_support;`, so a per-file reader (`cargo xtask loc`) counts this file as the test
-//! machinery it is.
-#![cfg(test)]
+//! Test machinery only: compiled under `cfg(test)` for this crate's own suite, and under the
+//! `test-support` feature for a PLUGIN REPO'S conformance test (its host connector's TLS far ends,
+//! ARCHITECT Q-P4-9: the adapter lives in the plugin repo, a dev-dependency), so the far end's TLS is
+//! still this crate's and the plugin names no TLS library. Nothing in a shipped build reaches it.
+//! The gate below restates, on the file itself, the gate `lib.rs` puts on `pub mod test_support;`,
+//! so a per-file reader (`cargo xtask loc`) counts this file as the test machinery it is.
+#![cfg(any(test, feature = "test-support"))]
 
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -24,6 +26,43 @@ use busbar_contract::transport::wire::ConnectionSecurity;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+/// A private test CA and a `localhost` leaf it signed: the CA's certificate as PEM (what a suite's
+/// test trust anchors are), the leaf's certificate and its private key, DER (what a far end serves
+/// with [`ServerTls::new`]).
+#[derive(Debug, Clone)]
+pub struct TestCa {
+    /// The CA certificate, PEM.
+    pub ca_pem: String,
+    /// The `localhost` leaf certificate, DER.
+    pub leaf_der: Vec<u8>,
+    /// The leaf's private key, PKCS#8 DER.
+    pub key_der: Vec<u8>,
+}
+
+/// A fresh [`TestCa`].
+///
+/// # Panics
+/// The key or a certificate does not mint.
+#[must_use]
+pub fn private_ca() -> TestCa {
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
+    let ca_kp = KeyPair::generate().expect("a CA key");
+    let mut ca_params = CertificateParams::new(Vec::new()).expect("CA params");
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let ca = ca_params.self_signed(&ca_kp).expect("the CA certificate");
+    let issuer = Issuer::from_params(&ca_params, ca_kp);
+    let kp = KeyPair::generate().expect("a leaf key");
+    let leaf = CertificateParams::new(vec!["localhost".to_owned()])
+        .expect("leaf params")
+        .signed_by(&kp, &issuer)
+        .expect("the leaf certificate");
+    TestCa {
+        ca_pem: ca.pem(),
+        leaf_der: leaf.der().to_vec(),
+        key_der: kp.serialize_der(),
+    }
+}
 
 /// Every certificate in a PEM bundle, DER.
 ///

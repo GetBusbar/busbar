@@ -86,8 +86,8 @@ use busbar_contract::abi::transport::{
 };
 
 use super::{
-    bind, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick,
-    validate, Fold, Leg, Recorder, Subject,
+    close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick, validate,
+    Fold, Leg, Recorder, Subject,
 };
 use busbar_contract::abi::transport::ROLE_CARRIER;
 
@@ -573,10 +573,10 @@ fn yielded_line(wire: &[u8], frames: &[Vec<u8>], raw: &[u8], flags: u32, framing
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("transport");
     assert!(k.is_object(), "conformance.json has no `transport` inputs");
-    let settings = s.settings();
+    let settings = leg.settings(s);
 
     let d = dispatcher();
-    let p = load::<Transport>(s, leg, bind(&d, "transport")).expect("the transport door loads");
+    let p = load::<Transport>(s, leg, s.bind(&d, "transport")).expect("the transport door loads");
     let facts = p
         .context::<TransportFacts>()
         .cloned()
