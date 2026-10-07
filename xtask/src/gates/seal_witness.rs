@@ -420,6 +420,104 @@ impl Gate for SealWitnessGate {
             ov5,
         ));
 
+        // RED 4..11 (X5 finding 11): THE MINT IN EVERY OTHER SPELLING. The minter row used to match
+        // the one string `KernelSeal::acquire_for_kernel(` on a single line; each plant below
+        // obtains the same seal from the same non-kernel `src/lib.rs` without that string.
+        let spellings: [(&str, &str); 8] = [
+            (
+                "a mint through a `use … as` rename of KernelSeal is RED",
+                "use crate::caps::KernelSeal as __SwSeal;\npub fn __seal_witness_forge() { let _ = __SwSeal::acquire_for_kernel(); }\n",
+            ),
+            (
+                "a mint through a grouped `use {…, KernelSeal as K, …}` rename is RED",
+                "use crate::caps::{Grant, KernelSeal as __SwGroup, Pass};\npub fn __seal_witness_forge() { let _ = __SwGroup::acquire_for_kernel(); }\n",
+            ),
+            (
+                "a mint through a `type S = KernelSeal;` alias is RED",
+                "type __SwType = crate::caps::KernelSeal;\npub fn __seal_witness_forge() { let _ = __SwType::acquire_for_kernel(); }\n",
+            ),
+            (
+                "a mint whose call is split across two lines is RED",
+                "pub fn __seal_witness_forge() {\n    let _ = KernelSeal::\n        acquire_for_kernel();\n}\n",
+            ),
+            (
+                "a mint through the qualified path `<KernelSeal>::acquire_for_kernel(` is RED",
+                "pub fn __seal_witness_forge() { let _ = <KernelSeal>::acquire_for_kernel(); }\n",
+            ),
+            (
+                "a mint spelled with whitespace around `::` and before `(` is RED",
+                "pub fn __seal_witness_forge() { let _ = KernelSeal :: acquire_for_kernel (); }\n",
+            ),
+            (
+                "the minter taken as a fn value (no call parenthesis) is RED",
+                "pub fn __seal_witness_forge() { let mint: fn() -> KernelSeal = KernelSeal::acquire_for_kernel; let _ = mint(); }\n",
+            ),
+            (
+                "a mint through an alias a SIBLING module introduced is RED",
+                "pub fn __seal_witness_forge() { let _ = crate::__seal_witness_alias::SwSibling::acquire_for_kernel(); }\n",
+            ),
+        ];
+        for (name, forge) in spellings {
+            let mut ov = Overlay::new();
+            ov.set(outsider, format!("{otext}\n{forge}"));
+            if forge.contains("__seal_witness_alias") {
+                ov.set(
+                    "crates/busbar-contract/src/__seal_witness_alias.rs",
+                    "pub type SwSibling = crate::caps::KernelSeal;\n",
+                );
+            }
+            report.push(prove_red(
+                cx,
+                self,
+                name,
+                &[ROW_SINGLE_MINTER],
+                ov,
+                &["outside", outsider],
+            ));
+        }
+
+        // GREEN 3: an ALIASED mint inside an inline `#[cfg(test)] mod` is still test scope.
+        let mut ov6 = Overlay::new();
+        ov6.set(
+            outsider,
+            format!(
+                "{otext}\n#[cfg(test)]\nmod __seal_witness_probe {{\n    use crate::caps::KernelSeal as \
+                 S;\n    fn f() {{\n        let _ = S::\n            acquire_for_kernel();\n    }}\n}}\n"
+            ),
+        );
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "an aliased mint inside an inline #[cfg(test)] mod is test scope, not a production minter",
+            &[ROW_SINGLE_MINTER],
+            ov6,
+        ));
+
+        // RED 12 (X5 finding 1): THE FLOOR IS THE MEASURED POPULATION. A walk that comes back one
+        // file short of it is refused, though it still holds ten times the old floor of 200.
+        let all = WalkSpec::new(ROOTS.iter().copied())
+            .ext("rs")
+            .exclude(EXCLUDE.iter().copied());
+        match cx.list(&all) {
+            Ok(rels) => {
+                let keep = 2181 - 1;
+                let mut ov7 = Overlay::new();
+                for rel in rels.iter().skip(keep) {
+                    ov7.remove(rel);
+                }
+                let found = format!("found: {keep}");
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a walk one file below the measured population (and far above 200) is refused",
+                    &[ROW_NO_SURVIVING, ROW_SINGLE_MINTER],
+                    ov7,
+                    &["BelowFloor", found.as_str()],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!("seal-witness selftest: {e}")),
+        }
+
         report
     }
 }
