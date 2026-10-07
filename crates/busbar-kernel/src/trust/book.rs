@@ -13,8 +13,9 @@
 //!   every sighting before the approval answers [`Sight::New`]. A declared fingerprint is the
 //!   operator's INTENT, not an observation (coordinator ruling 2026-10-07, OWNER 2026-09-28): it is
 //!   what sightings are judged against, so another hash drifts, but it approves nothing. The
-//!   counterparty stays pending, refused by the Approve step and listed NEW, until the operator
-//!   approves it.
+//!   counterparty stays pending until the operator approves it: a sighting of the declared
+//!   fingerprint answers [`Sight::New`], the Approve step refuses it and every item there, and it
+//!   is listed NEW.
 //! * **Drift.** A hash other than the pin answers [`Sight::Drifted`] once and demotes the
 //!   counterparty; every sighting after that answers [`Sight::Quarantined`] until the pin is seen
 //!   again. That clean sighting clears the demotion, unless the declared recovery backoff since the
@@ -85,7 +86,8 @@ struct Subject {
     /// operator approved.
     pinned: Option<String>,
     /// The pin is a declared fingerprint the operator has not approved: intent, not an approval.
-    /// The Approve step refuses the counterparty until [`TrustBook::decide`] approves it.
+    /// Sightings of it answer [`Sight::New`], and the Approve step refuses the counterparty and
+    /// every item there, until [`TrustBook::decide`] approves it.
     pending: bool,
     /// The catalogue hash the last sighting reported.
     last_seen: Option<String>,
@@ -184,7 +186,7 @@ impl Subject {
             return KeyState::Quarantined;
         }
         match (self.approval(entry, item), self.items.get(item)) {
-            _ if self.revoked => KeyState::New,
+            _ if self.revoked || self.pending => KeyState::New,
             (None, _) => KeyState::New,
             (Some(_), None) => KeyState::Approved,
             (Some(at), Some(seen)) if at == seen => KeyState::Same,
@@ -391,7 +393,11 @@ impl TrustBook {
         if !s.quarantined {
             s.confirmed = true;
             return Ok((
-                if s.revoked { Sight::New } else { Sight::Same },
+                if s.revoked || s.pending {
+                    Sight::New
+                } else {
+                    Sight::Same
+                },
                 Effect::None,
             ));
         }
@@ -404,7 +410,10 @@ impl TrustBook {
         }
         s.quarantined = false;
         s.confirmed = true;
-        Ok((Sight::Same, Effect::Clear))
+        Ok((
+            if s.pending { Sight::New } else { Sight::Same },
+            Effect::Clear,
+        ))
     }
 
     /// THE LAST VERDICT for `counterparty` of `instance`, for a sighting the plane could NOT make
@@ -649,8 +658,8 @@ impl TrustBook {
 
     /// THE KERNEL'S APPROVE over the trust facts a plane stated for a unit of `instance`: the
     /// counterparty is declared, approved by the operator (a declared fingerprint alone approves
-    /// nothing) and not quarantined, and a named item is approved there at exactly the digest it is
-    /// offered at.
+    /// nothing, for the counterparty or any item there) and not quarantined, and a named item is
+    /// approved there at exactly the digest it is offered at.
     ///
     /// # Errors
     ///
@@ -673,14 +682,14 @@ impl TrustBook {
         if s.quarantined {
             return Err(Distrust::Quarantined);
         }
-        if s.revoked {
+        if s.revoked || s.pending {
+            // Revoked, or a declared fingerprint the operator never approved: nothing at the
+            // counterparty is trusted, its items included.
             return Err(Distrust::NotApproved);
         }
         let Some(item) = facts.item else {
-            // Item-less: the counterparty's catalogue must be approved. A declared fingerprint
-            // still pending is intent, not an approval, and is refused like an unapproved sighting.
+            // Item-less: the counterparty's catalogue must be approved (pinned).
             return match (&s.pinned, &s.last_seen) {
-                (Some(_), _) if s.pending => Err(Distrust::NotApproved),
                 (Some(_), _) => Ok(()),
                 (None, None) => Err(Distrust::Unsighted),
                 (None, Some(_)) => Err(Distrust::NotApproved),
