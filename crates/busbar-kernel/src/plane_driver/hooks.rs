@@ -108,6 +108,16 @@ pub trait HookBinder: Send + Sync {
     fn request_id(&self) -> Option<u64> {
         None
     }
+
+    /// [`Self::bind`], or, when no hook binds the unit, its correlation id ([`Self::request_id`]).
+    /// A binder that reads a host per unit answers both from one reading.
+    ///
+    /// # Errors
+    ///
+    /// No hook binds the unit: its correlation id, `None` when the binder keeps no counter.
+    fn bind_or_id(&self, bind: &Bind<'_>) -> Result<UnitHooks, Option<u64>> {
+        self.bind(bind).ok_or_else(|| self.request_id())
+    }
 }
 
 /// Record the unit's correlation id on the span the unit is driven under: the request span the
@@ -503,21 +513,14 @@ impl HookBinder for HostHooks {
     }
 
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
+        self.bind_on(&*(self.host)(), bind)
+    }
+
+    fn bind_or_id(&self, bind: &Bind<'_>) -> Result<UnitHooks, Option<u64>> {
+        // One reading of the generation's host for both answers: reading it builds its carrier.
         let host = (self.host)();
-        let h = &*host;
-        let parts = Parts::of(
-            (h.rewrite_hooks(), h.global_gates()),
-            (h.pool_rewrites(bind.pool), h.pool_gates(bind.pool)),
-            h.pool_policy(bind.pool).cloned(),
-            StageTaps {
-                request: h.tap_hooks().to_vec(),
-                candidate: h.tap_hooks_candidate().to_vec(),
-                routing: h.tap_hooks_routing().to_vec(),
-                response: h.tap_hooks_response().to_vec(),
-            },
-            *h.requested_signals(),
-        )?;
-        Some(parts.bind(bind, (&self.caller, &self.dialects), h.next_request_id()))
+        self.bind_on(&*host, bind)
+            .ok_or_else(|| Some(host.next_request_id()))
     }
 
     fn denied(&self, dialect: u32, status: u16) {
@@ -534,9 +537,24 @@ impl HookBinder for HostHooks {
             (dialect, status),
         );
     }
+}
 
-    fn request_id(&self) -> Option<u64> {
-        Some((self.host)().next_request_id())
+impl HostHooks {
+    /// The hooks a unit routed over `bind.pool` binds, read off `h`, the generation's host.
+    fn bind_on(&self, h: &dyn crate::plane_host::EngineHost, bind: &Bind<'_>) -> Option<UnitHooks> {
+        let parts = Parts::of(
+            (h.rewrite_hooks(), h.global_gates()),
+            (h.pool_rewrites(bind.pool), h.pool_gates(bind.pool)),
+            h.pool_policy(bind.pool).cloned(),
+            StageTaps {
+                request: h.tap_hooks().to_vec(),
+                candidate: h.tap_hooks_candidate().to_vec(),
+                routing: h.tap_hooks_routing().to_vec(),
+                response: h.tap_hooks_response().to_vec(),
+            },
+            *h.requested_signals(),
+        )?;
+        Some(parts.bind(bind, (&self.caller, &self.dialects), h.next_request_id()))
     }
 }
 
@@ -1379,16 +1397,19 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .as_ref()
             .map(|p| p.as_str().to_string());
         let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
-        let Some(hooks) = binder.bind(&Bind {
+        let hooks = match binder.bind_or_id(&Bind {
             pool: &walk_pool,
             principal: principal.as_deref(),
             dialect,
-        }) else {
+        }) {
+            Ok(hooks) => hooks,
             // No hook binds the unit: its request span still carries a correlation id.
-            if let Some(request_id) = binder.request_id() {
-                record_request_id(request_id);
+            Err(request_id) => {
+                if let Some(request_id) = request_id {
+                    record_request_id(request_id);
+                }
+                return Ok(());
             }
-            return Ok(());
         };
         let facts = self.far.candidates(token);
         self.lock().hooked_pool.clone_from(&walk_pool);

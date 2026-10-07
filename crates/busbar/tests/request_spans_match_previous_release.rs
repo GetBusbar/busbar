@@ -23,8 +23,11 @@
 //! member fails and which spills into its fallback pool (`forward` + `forward_once`), the same one
 //! streamed, the two path-named surfaces, and the three path-model dialect surfaces. The collector's
 //! spans must carry the names above, with the fields the export vocabulary carries (`pool`,
-//! `ingress`, `op`, `lane`, `provider`, `model`); the correlation id, which the export vocabulary does
-//! not carry, is read off the stderr log's span context.
+//! `ingress`, `op`, `lane`, `provider`, `model`). The correlation id is not in the export
+//! vocabulary and nothing on the request path logs an event under the span, so it is proven
+//! in-process by the kernel's driver tests (`busbar-kernel` `tests/support/plane_driver_hook_cases.rs`,
+//! `a_unit_no_hook_binds_carries_one_correlation_id_on_its_request_span` and
+//! `a_hooked_unit_carries_its_hooks_correlation_id_on_its_request_span`).
 //!
 //! `forward` and `forward_once` are the kernel's and the composition root's, and are asserted. The
 //! five surface spans are opened plane-side and are dropped by the plugin call capture before they
@@ -214,9 +217,7 @@ fn drive(wanted: &[&str]) -> Option<(Vec<Span>, String)> {
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
             .env("MOCK_KEY", "x")
-            // The stderr log at trace, so its span context shows the correlation id the export
-            // vocabulary does not carry.
-            .env("RUST_LOG", "trace")
+            .env("RUST_LOG", "info")
             .stdout(log.try_clone().unwrap())
             .stderr(log)
             .spawn()
@@ -284,10 +285,10 @@ fn drive(wanted: &[&str]) -> Option<(Vec<Span>, String)> {
 }
 
 /// The spans the kernel and the composition root open for 1.5.5's request path: `forward` with its
-/// `pool`, `ingress`, `op` and `request_id`, and `forward_once` with its `lane` under it.
+/// `pool`, `ingress` and `op`, and `forward_once` with its `lane` under it.
 #[test]
 fn the_request_path_emits_the_previous_release_request_spans_with_their_fields() {
-    let Some((spans, log)) = drive(&["forward", "forward_once"]) else {
+    let Some((spans, _log)) = drive(&["forward", "forward_once"]) else {
         return;
     };
 
@@ -320,21 +321,6 @@ fn the_request_path_emits_the_previous_release_request_spans_with_their_fields()
             .is_some_and(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
             && under_forward(&spans, s)),
         "every degraded attempt's span carries its lane and sits under the request span: {once:#?}"
-    );
-
-    // `request_id`: the request span's correlation id, a number, in the stderr log's span context.
-    let has_request_id = log.lines().any(|line| {
-        line.split("forward{").skip(1).any(|ctx| {
-            let ctx = ctx.split('}').next().unwrap_or("");
-            ctx.split_whitespace().any(|kv| {
-                kv.strip_prefix("request_id=")
-                    .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
-            })
-        })
-    });
-    assert!(
-        has_request_id,
-        "no `forward` span context in the log carries a request_id:\n{log}"
     );
 }
 
