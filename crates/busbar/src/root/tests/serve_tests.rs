@@ -2666,6 +2666,41 @@ mod agent_door {
             fields: Vec<(&'static str, String)>,
             tls: Option<tokio_rustls::TlsAcceptor>,
         ) -> Self {
+            Self::start_core(
+                status,
+                Arc::new(move |_: &str| answer.to_string()),
+                fields,
+                tls,
+            )
+            .await
+        }
+
+        /// An agent answering each relayed request `status` with what `answer_of` makes of the
+        /// request (its whole text), its card describing its one skill as "plans the work".
+        async fn start_answering(
+            status: u16,
+            answer_of: Arc<dyn Fn(&str) -> String + Send + Sync>,
+        ) -> Self {
+            Self::start_answering_over(status, answer_of, None).await
+        }
+
+        /// [`Agent::start_answering`], its connections secured by `tls` when given.
+        async fn start_answering_over(
+            status: u16,
+            answer_of: Arc<dyn Fn(&str) -> String + Send + Sync>,
+            tls: Option<tokio_rustls::TlsAcceptor>,
+        ) -> Self {
+            Self::start_core(status, answer_of, Vec::new(), tls).await
+        }
+
+        /// The agent every constructor starts: each relayed request answered `status` with what
+        /// `answer_of` makes of it and the head fields `fields`, its connections secured by `tls`.
+        async fn start_core(
+            status: u16,
+            answer_of: Arc<dyn Fn(&str) -> String + Send + Sync>,
+            fields: Vec<(&'static str, String)>,
+            tls: Option<tokio_rustls::TlsAcceptor>,
+        ) -> Self {
             use std::sync::atomic::Ordering;
             let issuer = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
             let card = Arc::new(std::sync::Mutex::new(serde_json::Value::Null));
@@ -2721,7 +2756,7 @@ mod agent_door {
                     }
                     Some(FarReply {
                         fields: fields.clone(),
-                        ..FarReply::of(status, answer.to_string())
+                        ..FarReply::of(status, answer_of(request))
                     })
                 }),
                 tls,
@@ -5546,6 +5581,447 @@ mod agent_door {
                 agent.take(),
                 Vec::<String>::new(),
                 "no hop reached the agent"
+            );
+        }
+    }
+
+    /// One length-prefixed message (`frame`'s bytes), as a gRPC far end writes it.
+    fn grpc_framed(message: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8];
+        out.extend_from_slice(&u32::try_from(message.len()).expect("small").to_be_bytes());
+        out.extend_from_slice(message);
+        out
+    }
+
+    /// A send's answer, its protobuf written out field by field: a task (field 1) whose id
+    /// (field 1) is `far-task` and whose status (field 3) is working (state field 1, `2`).
+    fn grpc_working_answer() -> Vec<u8> {
+        let status = [0x08, 0x02];
+        let mut task = vec![0x0a, 8];
+        task.extend_from_slice(b"far-task");
+        task.extend_from_slice(&[0x1a, 2]);
+        task.extend_from_slice(&status);
+        let mut answer = vec![0x0a, u8::try_from(task.len()).expect("small")];
+        answer.extend_from_slice(&task);
+        grpc_framed(&answer)
+    }
+
+    /// A gRPC AGENT ON LOOPBACK, pinned by its signing key: its card (naming only the gRPC binding)
+    /// at its origin's well-known path over HTTP/1.1, and every rpc on the same port over HTTP/2
+    /// (prior knowledge), each answered `answer` (one length-prefixed message) with `grpc-status:
+    /// 0` in the trailers. Each rpc's path and request bytes come back on `heard`.
+    struct GrpcAgent {
+        port: u16,
+        heard: tokio::sync::mpsc::UnboundedReceiver<(String, Vec<u8>)>,
+        issuer: ed25519_dalek::SigningKey,
+    }
+
+    impl GrpcAgent {
+        async fn start(answer: Vec<u8>) -> Self {
+            use http_body_util::BodyExt as _;
+            type Frames = Vec<Result<http_body::Frame<bytes::Bytes>, std::convert::Infallible>>;
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a loopback port");
+            let port = listener.local_addr().expect("its address").port();
+            let mut held = card(port, "plans the work");
+            held["supportedInterfaces"] = serde_json::json!([{
+                "url": format!("http://127.0.0.1:{port}/planner"),
+                "protocolBinding": surface("grpc_binding"),
+                "protocolVersion": "1.0",
+            }]);
+            let served = signed(&held, &issuer).to_string();
+            let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                while let Ok((socket, _)) = listener.accept().await {
+                    let (sent, served, answer) = (sent.clone(), served.clone(), answer.clone());
+                    tokio::spawn(async move {
+                        let service = hyper::service::service_fn(
+                            move |req: hyper::Request<hyper::body::Incoming>| {
+                                let (sent, served, answer) =
+                                    (sent.clone(), served.clone(), answer.clone());
+                                async move {
+                                    let get = req.method() == hyper::Method::GET;
+                                    let path = req.uri().path().to_string();
+                                    let body = req
+                                        .into_body()
+                                        .collect()
+                                        .await
+                                        .map(|c| c.to_bytes().to_vec())
+                                        .unwrap_or_default();
+                                    let (media, frames): (&str, Frames) = if get {
+                                        (
+                                            "application/json",
+                                            vec![Ok(http_body::Frame::data(bytes::Bytes::from(
+                                                served,
+                                            )))],
+                                        )
+                                    } else {
+                                        let _ = sent.send((path, body));
+                                        let mut trailers = http::HeaderMap::new();
+                                        trailers.insert(
+                                            "grpc-status",
+                                            http::HeaderValue::from_static("0"),
+                                        );
+                                        (
+                                            "application/grpc",
+                                            vec![
+                                                Ok(http_body::Frame::data(bytes::Bytes::from(
+                                                    answer,
+                                                ))),
+                                                Ok(http_body::Frame::trailers(trailers)),
+                                            ],
+                                        )
+                                    };
+                                    hyper::Response::builder()
+                                        .status(200)
+                                        .header("content-type", media)
+                                        .body(http_body_util::StreamBody::new(
+                                            futures::stream::iter(frames),
+                                        ))
+                                }
+                            },
+                        );
+                        let _ = hyper_util::server::conn::auto::Builder::new(
+                            hyper_util::rt::TokioExecutor::new(),
+                        )
+                        .serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+                        .await;
+                    });
+                }
+            });
+            Self {
+                port,
+                heard,
+                issuer,
+            }
+        }
+
+        /// The `agents:` entry registering `name` at this agent's path `/<name>`, pinned by its
+        /// signing key.
+        fn entry(&self, name: &str) -> String {
+            format!(
+                "{name}: {{url: 'http://127.0.0.1:{}/{name}', allow_private: true, reverify_ttl: \
+                 '1h', pin: {{mechanism: jws_issuer_key, key: '{}'}}}}",
+                self.port,
+                key_info(&self.issuer)
+            )
+        }
+    }
+
+    /// THE DOOR DIALS A gRPC AGENT (the engine's `grpc_client_issues_send_message`, end to end
+    /// through the composition): an agent whose card names only the gRPC binding is approved over
+    /// its card (HTTP/1.1, on the agent's own need), and a relayed `SendMessage` reaches it over
+    /// HTTP/2 on the door's gRPC need, which its registration rides: the rpc's own path under the
+    /// service, one length-prefixed request message carrying the caller's content; the agent's
+    /// answer message reaches the caller as the JSON-RPC result, under busbar's task identity. RED:
+    /// the card was unspeakable and the hop refused by name, never dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_whose_card_names_only_grpc_is_dialled_over_grpc() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-grpc";
+        let _published = Published(instance);
+        let mut agent = GrpcAgent::start(grpc_working_answer()).await;
+        let s = served(instance, &agent.entry("planner"), false, None);
+        approve(&s, "planner").await;
+        let params = r#"{"message":{"messageId":"m-1","role":"ROLE_USER","parts":[{"text":"PLAN THE MIGRATION"}]}}"#;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "SendMessage", params, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (path, sent) = agent
+            .heard
+            .try_recv()
+            .unwrap_or_else(|_| panic!("the agent was not dialled over gRPC: {body}"));
+        assert_eq!(path, format!("{}/SendMessage", surface("grpc_service")));
+        assert!(sent.len() > 5, "a length-prefixed message: {sent:?}");
+        assert_eq!(sent[0], 0, "no compression");
+        let len = u32::from_be_bytes([sent[1], sent[2], sent[3], sent[4]]) as usize;
+        assert_eq!(sent.len(), 5 + len, "exactly one length-prefixed message");
+        let content = b"PLAN THE MIGRATION";
+        assert!(
+            sent.windows(content.len()).any(|w| w == content),
+            "the caller's content survives the transcode into the request message"
+        );
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an answer");
+        assert_eq!(doc["id"], 1);
+        assert_eq!(
+            doc["result"]["task"]["status"]["state"], "TASK_STATE_WORKING",
+            "{body}"
+        );
+        assert_ne!(
+            doc["result"]["task"]["id"], "far-task",
+            "the answer leaves under busbar's task identity: {body}"
+        );
+    }
+
+    /// The far agent's own id for the task the port cells open.
+    const FAR_TASK: &str = "far-task";
+
+    /// An agent's answer to `request` (its whole text) for the port cells: a send is answered
+    /// with its own task in `send_state`, busbar's registration with that registration, and a
+    /// `ListTasks` with its own task in `listed_state`.
+    fn far_answer(request: &str, send_state: &str, listed_state: &str) -> String {
+        let originated = |result: serde_json::Value| {
+            serde_json::json!({ "jsonrpc": "2.0", "id": "busbar-originated", "result": result })
+                .to_string()
+        };
+        if request.contains("\"CreateTaskPushNotificationConfig\"") {
+            return originated(serde_json::json!({ "taskId": FAR_TASK, "id": "busbar-far-task" }));
+        }
+        if request.contains("\"ListTasks\"") {
+            return originated(serde_json::json!({ "tasks": [
+                { "id": FAR_TASK, "status": { "state": listed_state } }
+            ] }));
+        }
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": {
+            "kind": "task", "id": FAR_TASK, "contextId": "far-context",
+            "status": { "state": send_state }
+        } })
+        .to_string()
+    }
+
+    /// Open one task on `planner` with the cells' `message/send`: busbar's id for it.
+    async fn open_task(s: &Served) -> String {
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the submission is served: {body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an answer");
+        let id = doc["result"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the submission answered no task id: {body}"))
+            .to_string();
+        assert_ne!(id, FAR_TASK, "busbar's own id: {body}");
+        id
+    }
+
+    /// The caller's own registration of its webhook on `task`.
+    fn create_config(task: &str) -> String {
+        serde_json::json!({
+            "taskId": task, "id": "caller-config", "url": "https://1.1.1.1/hook",
+            "authentication": { "scheme": "Bearer", "credentials": "caller-secret" },
+        })
+        .to_string()
+    }
+
+    /// Every request the agent was sent since last asked, whole.
+    fn heard(agent: &mut Agent) -> Vec<String> {
+        let mut heard = Vec::new();
+        while let Ok(request) = agent.heard.try_recv() {
+            heard.push(request);
+        }
+        heard
+    }
+
+    /// The capability busbar registered with the agent, read off the registration it sent (never
+    /// minted by the test).
+    fn token_sent(requests: &[String]) -> String {
+        let create = requests
+            .iter()
+            .find(|r| r.contains("\"CreateTaskPushNotificationConfig\""))
+            .unwrap_or_else(|| panic!("busbar registered nothing with the agent: {requests:?}"));
+        let body = create.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+        let doc: serde_json::Value = serde_json::from_str(body).expect("a JSON-RPC request");
+        doc["params"]["authentication"]["credentials"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the registration carried no capability: {doc}"))
+            .to_string()
+    }
+
+    /// An agent's report that its task is now `state`, to busbar's own callback, bearing `token`.
+    fn push(token: &str, state: &str) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(surface("push_path"))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(
+                serde_json::json!({ "id": FAR_TASK, "kind": "task", "status": { "state": state } })
+                    .to_string(),
+            ))
+            .expect("a request")
+    }
+
+    /// The state the caller's own list shows for `task`.
+    async fn listed_state(s: &Served, task: &str) -> String {
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "tasks/list", "{}", Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the list is served: {body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an answer");
+        doc["result"]["tasks"]
+            .as_array()
+            .and_then(|tasks| tasks.iter().find(|t| t["id"] == task))
+            .and_then(|t| t["status"]["state"].as_str())
+            .unwrap_or_else(|| panic!("the caller's own task is not in its own list: {body}"))
+            .to_string()
+    }
+
+    /// `the_refreshed_state_reaches_the_callers_own_list` (the engine's client-leg cell): the agent
+    /// moved the task on out of band, and the caller's next list says so, because busbar asked the
+    /// agent (`ListTasks`) for the rows it holds there before answering.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_refreshed_state_reaches_the_callers_own_list() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-refresh";
+        let _published = Published(instance);
+        let mut agent = Agent::start_answering(
+            200,
+            Arc::new(|r: &str| far_answer(r, "working", "completed")),
+        )
+        .await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let task = open_task(&s).await;
+        let _ = heard(&mut agent);
+        let state = listed_state(&s, &task).await;
+        assert!(
+            heard(&mut agent)
+                .iter()
+                .any(|r| r.contains("\"ListTasks\"")),
+            "busbar asked the agent for the rows it holds there"
+        );
+        assert!(
+            ["completed", "TASK_STATE_COMPLETED"].contains(&state.as_str()),
+            "the state the agent reported reaches the caller's list: {state}"
+        );
+    }
+
+    /// `a_list_with_no_open_task_of_this_callers_makes_no_hop` (the engine's client-leg cell): a
+    /// caller with nothing live on the agent asks the agent nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-list-no-hop";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "tasks/list", "{}", Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            !agent.relayed(),
+            "busbar made a hop for a caller with no open task on the agent"
+        );
+    }
+
+    /// `a_terminal_task_is_not_armed_at_the_backend` (the engine's pushback cell): the caller's own
+    /// registration on a task busbar holds as terminal is still busbar's to accept, and busbar
+    /// registers nothing with the agent for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_terminal_task_is_not_armed_at_the_backend() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-terminal-unarmed";
+        let _published = Published(instance);
+        let mut agent = Agent::start_answering(
+            200,
+            Arc::new(|r: &str| far_answer(r, "completed", "completed")),
+        )
+        .await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let task = open_task(&s).await;
+        let _ = heard(&mut agent);
+        let (status, body) = answered(
+            &s.router,
+            rpc(
+                "planner",
+                "CreateTaskPushNotificationConfig",
+                &create_config(&task),
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let sent = heard(&mut agent);
+        assert!(
+            sent.is_empty(),
+            "busbar must make NO hop for a task it holds as terminal: {sent:?}"
+        );
+    }
+
+    /// `a_token_is_not_spent_by_being_used_while_the_task_is_live` (the engine's pushback cell):
+    /// busbar's capability for the task, read off the registration it sent the agent, admits every
+    /// report while the task lives, its ending included.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_token_is_not_spent_by_being_used_while_the_task_is_live() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-token-live";
+        let _published = Published(instance);
+        let mut agent =
+            Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+                .await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let task = open_task(&s).await;
+        let (status, body) = answered(
+            &s.router,
+            rpc(
+                "planner",
+                "CreateTaskPushNotificationConfig",
+                &create_config(&task),
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let token = token_sent(&heard(&mut agent));
+        for state in ["input-required", "working", "completed"] {
+            let (status, body) = answered(&s.router, push(&token, state)).await;
+            assert_eq!(
+                status,
+                StatusCode::ACCEPTED,
+                "the token was refused for `{state}` on a task that had not ended: {body}"
+            );
+        }
+    }
+
+    /// `a_token_for_a_task_that_has_ended_authorises_nothing` (the engine's pushback cell): the
+    /// agent's report of the ending is taken; a replay of it, or a report of another terminal state,
+    /// is `401`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_token_for_a_task_that_has_ended_authorises_nothing() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-token-ended";
+        let _published = Published(instance);
+        let mut agent =
+            Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+                .await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let task = open_task(&s).await;
+        let (status, body) = answered(
+            &s.router,
+            rpc(
+                "planner",
+                "CreateTaskPushNotificationConfig",
+                &create_config(&task),
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let token = token_sent(&heard(&mut agent));
+        let (status, body) = answered(&s.router, push(&token, "completed")).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "the ending is taken: {body}");
+        for state in ["completed", "failed"] {
+            let (status, body) = answered(&s.router, push(&token, state)).await;
+            assert_eq!(
+                status,
+                StatusCode::UNAUTHORIZED,
+                "a token for an ended task authorised a `{state}` report: {body}"
             );
         }
     }

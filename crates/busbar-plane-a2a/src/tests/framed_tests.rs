@@ -263,3 +263,30 @@ fn a_send_with_no_message_mints_a_v7_id() {
     assert_eq!(minted["params"]["message"]["role"], "ROLE_USER");
     assert!(minted["params"]["message"].get("parts").is_none());
 }
+
+/// SSE FRAMES ARE TAKEN WHOLE OR NOT AT ALL (the engine's `grpc_tests.rs`, ported): a frame split
+/// across two chunks is not delivered as two, and a buffer holding half a frame yields nothing
+/// rather than a truncated one.
+#[test]
+fn a_frame_is_taken_only_once_it_is_complete() {
+    let mut buf = b"data: {\"a\":1}\n\ndata: {\"b\"".to_vec();
+    assert_eq!(take_frame(&mut buf).as_deref(), Some("data: {\"a\":1}"));
+    assert_eq!(take_frame(&mut buf), None);
+    buf.extend_from_slice(b":2}\n\n");
+    assert_eq!(take_frame(&mut buf).as_deref(), Some("data: {\"b\":2}"));
+    assert_eq!(take_frame(&mut buf), None);
+}
+
+/// AND IN EVERY LINE ENDING THE SSE GRAMMAR ALLOWS (the engine's `grpc_tests.rs`, ported): a
+/// backend that frames with CRLF or CR is not a broken backend.
+#[test]
+fn every_sse_frame_terminator_is_recognised() {
+    for terminator in ["\r\n\r\n", "\n\n", "\r\r"] {
+        let mut buf = format!("data: {{\"x\":1}}{terminator}").into_bytes();
+        assert_eq!(
+            take_frame(&mut buf).as_deref(),
+            Some("data: {\"x\":1}"),
+            "terminator {terminator:?} was not recognised"
+        );
+    }
+}

@@ -74,8 +74,8 @@ const MAX_INFLIGHT: u32 = 64;
 pub const VERSION: &str = "1.6.0";
 
 /// THE STATEMENT: the plane's name and version, the settings section it declares
-/// ([`door::SECTIONS`]), its two outbound needs ([`door::NEEDS`]), the secret references its section
-/// holds ([`door::SECRET_REFS`]) and its tail ([`door::TAIL`]).
+/// ([`door::SECTIONS`]), its three outbound needs ([`door::NEEDS`]), the secret references its
+/// section holds ([`door::SECRET_REFS`]) and its tail ([`door::TAIL`]).
 pub const STATEMENT: Statement = Statement {
     kind_tail: (door::TAIL as *const busbar_contract::abi::plane::PlaneTail).cast::<KindTailHead>(),
     sections: door::SECTIONS.as_ptr(),
@@ -441,12 +441,18 @@ pub(crate) fn drive_originated(
         return Poll::Ready(None);
     };
     let mut conn = host.connector_from(ticket, *start);
-    match exchange(&mut conn, ex, door::NEED_AGENT, Some(&hop.url)) {
+    let need = match hop.binding {
+        crate::binding::Binding::Grpc => door::NEED_GRPC,
+        crate::binding::Binding::JsonRpc | crate::binding::Binding::HttpJson => door::NEED_AGENT,
+    };
+    match exchange(&mut conn, ex, need, Some(&hop.url)) {
         Poll::Pending => Poll::Pending,
         Poll::Ready(answer) => {
             hop.seq = conn.issued();
             hop.exchange = None;
-            Poll::Ready(answer.ok().map(|reply| (reply.status, reply.body)))
+            Poll::Ready(answer.ok().and_then(|reply| {
+                crate::mirror::answered(hop.binding, method, reply.status, reply.body)
+            }))
         }
     }
 }
@@ -1611,12 +1617,22 @@ fn piece(
                     FROM_FAR_END => relay::From::FarEnd,
                     _ => return (Outcome::Refused, false),
                 };
-                hop.relay.on_piece(relay::Piece {
-                    from,
-                    bytes,
-                    status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
-                    last: given.flags & PIECE_LAST != 0,
-                })
+                let status = (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code);
+                let last = given.flags & PIECE_LAST != 0;
+                // THE FAR END'S TRAILERS (`PIECE_FIELDS`): the relay reads what they say (a gRPC
+                // call's status), never as bytes of the answer.
+                if from == relay::From::FarEnd
+                    && given.flags & busbar_contract::abi::plane::PIECE_FIELDS != 0
+                {
+                    hop.relay.on_far_fields(bytes, status, last)
+                } else {
+                    hop.relay.on_piece(relay::Piece {
+                        from,
+                        bytes,
+                        status,
+                        last,
+                    })
+                }
             }
         };
         let outbox = match framed {
@@ -1649,6 +1665,7 @@ fn piece(
     }
     let left = hop.left;
     let admitted = hop.admitted;
+    let need = attempt_need(hop.relay.binding());
     let ob = &mut hop.outbox;
     let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
@@ -1801,6 +1818,8 @@ fn piece(
     if let (Some(v), Some(t)) = (verb, target) {
         out.set(|o| &o.verb, v);
         out.set(|o| &o.target, t);
+        // THE NEED THE ATTEMPT RIDES: a gRPC-bound agent is dialled over the door's gRPC need.
+        out.set(|o| &o.need, need);
     }
     if let Some(lane) = lane {
         out.set(|o| &o.lane, lane);
@@ -1812,6 +1831,17 @@ fn piece(
     // Stated once, on the READY answer that writes it (a short answer's re-call states it then).
     out.set(|o| &o.fault, std::mem::replace(&mut ob.fault, FAULT_NONE));
     (Outcome::Ready, done)
+}
+
+/// THE NEED AN ATTEMPT ON `binding` RIDES, as `OnPieceOut::need` names it (its index plus one;
+/// `0` = the member's own, [`door::NEED_AGENT`]): the gRPC binding rides [`door::NEED_GRPC`], every
+/// other binding the agent's own need.
+#[must_use]
+pub fn attempt_need(binding: crate::binding::Binding) -> u32 {
+    match binding {
+        crate::binding::Binding::Grpc => door::NEED_GRPC + 1,
+        crate::binding::Binding::JsonRpc | crate::binding::Binding::HttpJson => 0,
+    }
 }
 
 /// The shared fault reading a [`relay::Reading`] is.

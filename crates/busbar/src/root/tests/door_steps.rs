@@ -1231,3 +1231,328 @@ fn the_per_hop_binding_never_renders_the_secret_in_a_debug_line() {
     );
     let _ = std::fs::remove_file(&path);
 }
+/// A REGISTRATION MEMBER RIDES EVERY MEMBER-TARGET NEED its plane states (ARCHITECT root ruling,
+/// 2026-10-07, reusing the providers' rides, Q-L5B-NEEDS): its first is its own, each
+/// other one rides beside it at the target the registration names there (another origin dials that
+/// origin), and a far request naming any of them opens on it. A registration naming no target for
+/// a need does not ride it. RED: only the first member-target need was bound, so a far request
+/// naming the second had no destination.
+#[test]
+fn a_registration_member_rides_every_member_target_need() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+        ],
+        need_targets: vec!["", "settings.*.url", "settings.*.url", "settings.*.alt"],
+        ..Default::default()
+    };
+    let routes = resolve_for(
+        &facts,
+        "fs: {url: \"http://127.0.0.1:7/rpc\", alt: \"http://127.0.0.1:8/x\"}\n\
+         one: {url: \"http://127.0.0.1:9/rpc\"}\n",
+        &[],
+    )
+    .expect("the registrations resolve");
+    let fs = &routes["fs"];
+    assert_eq!(fs.need.0, 1, "the first member-target need is its own");
+    let rides: Vec<u32> = fs.rides.iter().map(|(n, _)| n.0).collect();
+    assert_eq!(
+        rides,
+        [2, 3],
+        "every other member-target need rides beside it"
+    );
+    assert_eq!(fs.ride(3).map(|r| r.need.0), Some(2));
+    assert_eq!(
+        fs.ride(3).map(|r| r.base_url),
+        Some("http://127.0.0.1:7"),
+        "the same target, the same origin"
+    );
+    assert_eq!(
+        fs.ride(4).map(|r| r.base_url),
+        Some("http://127.0.0.1:8"),
+        "a need whose target is another origin dials that origin"
+    );
+    assert!(fs.ride(1).is_none(), "the open need is no member's");
+    let one = &routes["one"];
+    let rides: Vec<u32> = one.rides.iter().map(|(n, _)| n.0).collect();
+    assert_eq!(
+        rides,
+        [2],
+        "a registration naming no `alt` does not ride its need"
+    );
+}
+
+/// A connection table that records what the composition seals on it: each need's anchors and
+/// private reach, and each auth binding, by need and target. It opens nothing.
+#[derive(Default)]
+struct Sealing {
+    anchored: std::sync::Mutex<Vec<(u32, String)>>,
+    reached: std::sync::Mutex<Vec<(u32, String, String)>>,
+    bound: std::sync::Mutex<Vec<(u32, String)>>,
+}
+
+impl busbar_contract::conn::Conns for Sealing {
+    fn open(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+        _: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Refused)
+    }
+    fn write(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn read(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: u64,
+        _: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn wait(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: &[busbar_contract::conn::ConnId],
+        _: u64,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn facts(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn close(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+}
+
+impl busbar_contract::conn::PollConns for Sealing {
+    fn poll_read(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: &mut std::task::Context<'_>,
+        _: &mut [u8],
+    ) -> std::task::Poll<Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError>>
+    {
+        std::task::Poll::Ready(Err(busbar_contract::conn::ConnError::Closed))
+    }
+    fn anchor(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        target: &str,
+        _: &busbar_contract::transport::trust::Anchors,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.anchored
+            .lock()
+            .unwrap()
+            .push((need.0, target.to_string()));
+        Ok(())
+    }
+    fn seal_reach(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+        target: &str,
+        reach: bool,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        if reach {
+            self.reached
+                .lock()
+                .unwrap()
+                .push((need.0, member.to_string(), target.to_string()));
+        }
+        Ok(())
+    }
+}
+
+impl busbar_contract::conn::DeclaredConns for Sealing {
+    fn declare(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+        _: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        Ok(())
+    }
+    fn declared(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+    ) -> Option<Result<(), busbar_contract::conn::ConnError>> {
+        Some(Ok(()))
+    }
+    fn serves_scheme(&self, _: &str) -> bool {
+        true
+    }
+    fn bind_auth(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        origin: &str,
+        _: busbar_contract::conn::ConnAuth,
+    ) {
+        self.bound
+            .lock()
+            .unwrap()
+            .push((need.0, origin.to_string()));
+    }
+}
+
+/// An auth binding that is only ever bound: it answers no fields.
+struct Bound;
+
+/// A fields answer that never arrives.
+struct Never;
+
+impl std::future::Future for Never {
+    type Output = busbar_contract::auth_calls::Fields;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Pending
+    }
+}
+
+impl busbar_contract::auth_calls::Fielding for Never {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::Fields> {
+        None
+    }
+}
+
+impl busbar_contract::auth_calls::OutboundAuth for Bound {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn fields_now(
+        &self,
+        _: u64,
+        _: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        None
+    }
+    fn fields(
+        &self,
+        _: u64,
+        _: busbar_contract::auth_calls::FieldsRequest,
+        _: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        Box::new(Never)
+    }
+}
+
+/// THE MEMBER'S ANCHORS, REACH AND BINDING HOLD ON EVERY NEED IT RIDES (ARCHITECT root ruling,
+/// 2026-10-07): the composition seals the registration's trust anchors and private reach on
+/// its own need and on each need riding beside it, at the base each dials, and the door's own
+/// requests on any member-target need it rides carry its auth binding. RED: only the member's own
+/// need was sealed and bound, so a far request (or the door's own request) on its second
+/// transport went out unpinned, unreached and unauthenticated.
+#[test]
+fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    use busbar_kernel::plane_driver::{AuthBinding, MemberRoute, ResponseKeep};
+    let served = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+        ],
+        need_targets: vec!["", "settings.*.url", "settings.*.url"],
+        ..Default::default()
+    };
+    let route = MemberRoute {
+        need: busbar_contract::conn::NeedId(1),
+        base_url: "https://far.example".to_string(),
+        auth: Some(AuthBinding {
+            auth: std::sync::Arc::new(Bound),
+            handle: 1,
+            style_flags: 0,
+            points: busbar_contract::abi::auth::AuthPoints(0),
+            passthrough: false,
+            per_request: None,
+        }),
+        provider: "fs".to_string(),
+        keep: ResponseKeep::default(),
+        rides: vec![(busbar_contract::conn::NeedId(2), ResponseKeep::default())],
+        anchors: busbar_contract::transport::trust::Anchors {
+            private_reach: true,
+            ..Default::default()
+        },
+        spelled: Vec::new(),
+    };
+    let routes = std::collections::BTreeMap::from([("fs".to_string(), route)]);
+    let table = std::sync::Arc::new(Sealing::default());
+    let instance = busbar_contract::conn::InstanceId(7);
+    super::bind_member_fetches(
+        &served,
+        &routes,
+        instance,
+        &*table,
+        &std::sync::Arc::new(busbar_kernel::host_units::UnitRecords::default()),
+    );
+    assert_eq!(
+        *table.bound.lock().unwrap(),
+        [
+            (1, "https://far.example".to_string()),
+            (2, "https://far.example".to_string())
+        ],
+        "the door's own requests on either need carry the member's binding"
+    );
+    let section: serde_yaml::Value =
+        serde_yaml::from_str("fs: {url: \"https://far.example/rpc\"}").expect("yaml");
+    let facts = super::door_facts("p", &[], &[], &[], "audit", Vec::new());
+    let node = std::sync::Arc::new(crate::root::plane_node::Node::new());
+    let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(node));
+    super::compose_egress(
+        &facts,
+        &DoorPools::of(&section),
+        instance,
+        std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
+        &routes,
+        post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+        1,
+    )
+    .expect("the egress composes");
+    assert_eq!(
+        *table.anchored.lock().unwrap(),
+        [
+            (1, "https://far.example".to_string()),
+            (2, "https://far.example".to_string())
+        ],
+        "the anchors are sealed on both needs"
+    );
+    assert_eq!(
+        *table.reached.lock().unwrap(),
+        [
+            (1, "fs".to_string(), "https://far.example".to_string()),
+            (2, "fs".to_string(), "https://far.example".to_string())
+        ],
+        "the registration's private reach is sealed on both needs"
+    );
+}

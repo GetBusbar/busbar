@@ -609,3 +609,44 @@ fn a_notification_is_acknowledged_here_with_a_202_and_no_body() {
     );
     assert_eq!(crate::arrival::STATUS_ACCEPTED, 202);
 }
+/// `jsonrpc_client_issues_get_extended_agent_card`: a caller that addresses ONE agent and asks for
+/// the extended card is asking for THAT agent's, and the door relays it as a TASK-LESS hop (a card
+/// read opens no task), the caller's envelope posted verbatim at the agent's own path; on the
+/// plane's own endpoint the same verb names no agent and makes no hop.
+#[test]
+fn an_addressed_extended_card_read_is_relayed_as_a_task_less_hop() {
+    let row = crate::ops::row_for("GetExtendedAgentCard").expect("a row");
+    let envelope = json!({ "jsonrpc": "2.0", "id": 7, "method": "GetExtendedAgentCard" });
+    let asked = Disposition::Request {
+        row,
+        id: json!(7),
+        version: "1.0",
+    };
+    assert!(
+        hop_of(&asked, false, Some(envelope.clone())).is_none(),
+        "the plane's own endpoint answers it locally"
+    );
+    let mut hop = hop_of(&asked, true, Some(envelope.clone())).expect("a hop to the agent");
+    assert!(hop.opening.is_none(), "a card read opens no task");
+    hop.relay.bind(crate::binding::Binding::JsonRpc, &envelope);
+    let Answer::Attempt(attempt) = hop.relay.on_piece(relay::Piece {
+        from: relay::From::Kernel(Some("https://backend.agent.test/a2a")),
+        bytes: &[],
+        status: None,
+        last: false,
+    }) else {
+        panic!("an attempt");
+    };
+    assert_eq!((attempt.verb, attempt.target.as_str()), ("POST", "/a2a"));
+    let bytes = serde_json::to_vec(&envelope).unwrap();
+    assert_eq!(
+        hop.relay.on_piece(relay::Piece {
+            from: relay::From::Caller,
+            bytes: &bytes,
+            status: None,
+            last: true,
+        }),
+        Answer::ToFarEnd(bytes.clone()),
+        "the caller's envelope, verbatim"
+    );
+}

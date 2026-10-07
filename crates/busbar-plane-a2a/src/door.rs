@@ -235,6 +235,14 @@ pub const NEED_OPEN_WEB: u32 = 0;
 /// verbs fetch an agent's card over it, at the well-known paths of the agent's own origin.
 pub const NEED_AGENT: u32 = 1;
 
+/// The [`NEEDS`] index of the relayed calls to the registered agents whose card's binding is gRPC
+/// (spec line 2026-09-30: "gRPC on its own listener; transport de-frames, plane transcodes"): the
+/// same member route as [`NEED_AGENT`], at the agent's own `url`, carried over the grpc transport,
+/// held to the same pin and client identity. The kernel binds a registration member on every
+/// member-target need its plane states, and an ATTEMPT names this one
+/// ([`crate::plane_door::attempt_need`]).
+pub const NEED_GRPC: u32 = 2;
+
 /// THE MEMBER-TARGET PATH of [`NEED_AGENT`] (`busbar_contract::section::MEMBER_TARGET_PREFIX`): each
 /// registered agent is reached at its own `url`, the plane spelling the path of every request it
 /// sends. The agent's `pin` stays the plane's trust key (`TRUST_KEYS`), judged as 1.5.5 judged it.
@@ -263,7 +271,8 @@ pub const SECRET_REFS: &[AbiStr] = &[
 /// THE PLANE'S CONNECTION NEEDS: its own outbound hops over http under the `open-web` class (public
 /// destinations over a secure connection only; metadata hosts refused before the dial), with no auth
 /// style and no configured target; and the relayed calls to the registered agents, governed as
-/// upstreams a plane reaches, each at its own `url`.
+/// upstreams a plane reaches, each at its own `url`: over http ([`NEED_AGENT`]) and over grpc
+/// ([`NEED_GRPC`]), the two under the same trust anchors.
 pub const NEEDS: &[Need] = &[
     Need {
         direction: DIRECTION_OUTBOUND,
@@ -290,6 +299,27 @@ pub const NEEDS: &[Need] = &[
         direction: DIRECTION_OUTBOUND,
         egress_class: EGRESS_PROVIDER,
         transport: abi_str(DOCUMENT_TRANSPORT),
+        auth: NONE,
+        target_from: abi_str(MEMBER_TARGET),
+        trust_from: abi_str(CLIENT_IDENTITY_FROM),
+        details: Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: BLOB_ABSENT,
+            flags: 0,
+        },
+        keep_response_headers: KEEP_RESPONSE_HEADERS.as_ptr(),
+        keep_response_headers_len: KEEP_RESPONSE_HEADERS.len(),
+        timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    },
+    Need {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: EGRESS_PROVIDER,
+        transport: abi_str(FRAMED_TRANSPORT),
         auth: NONE,
         target_from: abi_str(MEMBER_TARGET),
         trust_from: abi_str(CLIENT_IDENTITY_FROM),

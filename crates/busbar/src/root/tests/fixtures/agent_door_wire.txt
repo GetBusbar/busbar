@@ -23,3 +23,9 @@ scope_kind = agent
 # class a hop's moved bytes are counted in (meta.rs CLASS_BYTES).
 subject_noun = fronted agent
 bytes_class = bytes
+# The gRPC binding (framed.rs SERVICE_PATH, binding.rs BINDING_GRPC): the service every rpc's path
+# sits under, and the card word an agent serving it names.
+grpc_service = /lf.a2a.v1.A2AService
+grpc_binding = GRPC
+# The callback an agent reports a task's move to (lib.rs MOUNT_PATH + PUSH_PATH_SUFFIX).
+push_path = /a2a/push

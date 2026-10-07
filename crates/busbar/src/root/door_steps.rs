@@ -978,21 +978,28 @@ pub fn compose_egress(
             *keep = keep_of(*need);
         }
         // THE MEMBER'S TRUST ANCHORS, SEALED INTO THE CONNECTOR (the transport pin, ARCHITECT 2026-10-03): every connection
-        // to the member, the walk's and the plane's own, is held to them by the connector itself.
-        conns
-            .anchor(caller, route.need, &route.base_url, &route.anchors)
-            .map_err(|e| format!("member '{entry}': its trust anchors could not be sealed: {e}"))?;
-        // THE REGISTRATION'S PRIVATE REACH, sealed for this registration alone (SEAM-4k): the
-        // member route's dials name it, and no other registration at the same authority holds it.
-        conns
-            .seal_reach(
-                caller,
-                route.need,
-                &route.provider,
-                &route.base_url,
-                route.anchors.private_reach,
-            )
-            .map_err(|e| format!("member '{entry}': its private reach could not be sealed: {e}"))?;
+        // to the member, the walk's and the plane's own, is held to them by the connector itself,
+        // on EVERY need the member rides (its own and each beside it, at the base each dials).
+        for (need, base_url) in ridden(&route) {
+            conns
+                .anchor(caller, need, &base_url, &route.anchors)
+                .map_err(|e| {
+                    format!("member '{entry}': its trust anchors could not be sealed: {e}")
+                })?;
+            // THE REGISTRATION'S PRIVATE REACH, sealed for this registration alone (SEAM-4k): the
+            // member route's dials name it, and no other registration at the same authority holds it.
+            conns
+                .seal_reach(
+                    caller,
+                    need,
+                    &route.provider,
+                    &base_url,
+                    route.anchors.private_reach,
+                )
+                .map_err(|e| {
+                    format!("member '{entry}': its private reach could not be sealed: {e}")
+                })?;
+        }
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
         members.insert(entry.clone(), Member::new(destination, name.clone(), 1));
@@ -1600,36 +1607,67 @@ pub fn bind_member_fetches(
     table: &dyn busbar_contract::conn::DeclaredConns,
     units: &Arc<busbar_kernel::host_units::UnitRecords>,
 ) {
-    let Some(need) = served
-        .need_targets
-        .iter()
-        .enumerate()
-        .find_map(|(at, path)| {
-            busbar_contract::section::member_target(path)?;
-            Some(busbar_contract::conn::NeedId(u32::try_from(at).ok()?))
-        })
-    else {
-        return;
-    };
-    for route in routes.values().filter(|r| r.need == need) {
+    let targeted = member_target_needs(served);
+    for route in routes.values() {
         let Some(binding) = &route.auth else {
             continue;
         };
-        table.bind_auth(
-            instance,
-            need,
-            busbar_contract::conn::origin_of(&route.base_url),
-            busbar_contract::conn::ConnAuth {
-                auth: Arc::clone(&binding.auth),
-                handle: binding.handle,
-                style_flags: binding.style_flags,
-                points: binding.points,
-                passthrough: binding.passthrough,
-                per_request: binding.per_request.clone(),
-                lender: Some(Arc::clone(units) as Arc<dyn busbar_contract::conn::LendCredential>),
-            },
-        );
+        // EVERY member-target need the member rides carries its binding: the plane's own requests
+        // on any of them present what the walk's do.
+        for (need, base_url) in ridden(route) {
+            if !targeted.iter().any(|(n, _)| *n == need) {
+                continue;
+            }
+            table.bind_auth(
+                instance,
+                need,
+                busbar_contract::conn::origin_of(&base_url),
+                busbar_contract::conn::ConnAuth {
+                    auth: Arc::clone(&binding.auth),
+                    handle: binding.handle,
+                    style_flags: binding.style_flags,
+                    points: binding.points,
+                    passthrough: binding.passthrough,
+                    per_request: binding.per_request.clone(),
+                    lender: Some(
+                        Arc::clone(units) as Arc<dyn busbar_contract::conn::LendCredential>
+                    ),
+                },
+            );
+        }
     }
+}
+
+/// THE MEMBER-TARGET NEEDS a plane states (`settings.*.<key>`,
+/// `busbar_contract::section::member_target`), in its Statement's order, each with the
+/// registration key its target is read from.
+fn member_target_needs(
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+) -> Vec<(busbar_contract::conn::NeedId, &'static str)> {
+    served
+        .need_targets
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(at, path)| {
+            let key = busbar_contract::section::member_target(path)?;
+            Some((busbar_contract::conn::NeedId(u32::try_from(at).ok()?), key))
+        })
+        .collect()
+}
+
+/// EVERY NEED A MEMBER ROUTE RIDES, its own first, each with the base URL it dials
+/// (`MemberRoute::ride`).
+fn ridden(
+    route: &busbar_kernel::plane_driver::MemberRoute,
+) -> Vec<(busbar_contract::conn::NeedId, String)> {
+    std::iter::once(route.need)
+        .chain(route.rides.iter().map(|(need, _)| *need))
+        .filter_map(|need| {
+            let ride = route.ride(need.0.checked_add(1)?)?;
+            Some((ride.need, ride.base_url.to_string()))
+        })
+        .collect()
 }
 
 /// THE MEMBERS' ROUTES of one door plane (THE DESIGN §6 steps 2-3, sealed at its composition):
@@ -1662,15 +1700,11 @@ pub fn member_routes(
     let mut resolved = Vec::new();
     let mut registered = BTreeMap::new();
     // A REGISTRATION MEMBER (ARCHITECT Q-L3B-ROUTES): where the plane's need states a member-target
-    // path, an entry the section registers is reached at its own target, read off the registration.
-    let member_target = served
-        .need_targets
-        .iter()
-        .enumerate()
-        .find_map(|(at, path)| {
-            let key = busbar_contract::section::member_target(path)?;
-            Some((busbar_contract::conn::NeedId(u32::try_from(at).ok()?), key))
-        });
+    // path, an entry the section registers is reached at its own target, read off the registration;
+    // on EVERY member-target need the plane states (the providers' rides, ARCHITECT Q-L5B-NEEDS):
+    // the first as its own, each other one riding beside it at the target it names.
+    let member_targets = member_target_needs(served);
+    let member_target = member_targets.first().copied();
     // A PROGRAM MEMBER (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): where the plane's need states
     // the member-program path, an entry whose registration names a program is reached at its own
     // long-lived program, which the connector keeps per member (the loader declared each one from
@@ -1691,10 +1725,23 @@ pub fn member_routes(
                 {
                     let anchors =
                         registration_anchors(entry, registration, need, served, &*reach.secrets)?;
-                    registered.insert(
-                        entry.clone(),
-                        (need, origin_of(target).to_string(), anchors),
-                    );
+                    let base_url = origin_of(target).to_string();
+                    // Each other member-target need the registration names a target for rides
+                    // beside its own, held to the same anchors; one whose target is another
+                    // origin dials that origin.
+                    let mut rides = Vec::new();
+                    let mut spelled = Vec::new();
+                    for (other, key) in member_targets.iter().skip(1) {
+                        let Some(at) = entry_text(registration, key).filter(|t| !t.is_empty())
+                        else {
+                            continue;
+                        };
+                        rides.push(*other);
+                        if origin_of(at) != base_url {
+                            spelled.push((*other, origin_of(at).to_string()));
+                        }
+                    }
+                    registered.insert(entry.clone(), (need, base_url, anchors, rides, spelled));
                     continue;
                 }
             }
@@ -1782,7 +1829,7 @@ pub fn member_routes(
     let section_default = section
         .get(busbar_contract::section::UPSTREAM_CREDENTIALS_KEY)
         .and_then(serde_yaml::Value::as_str);
-    for (entry, (need, base_url, anchors)) in registered {
+    for (entry, (need, base_url, anchors, rides, spelled)) in registered {
         let mode = section
             .get(entry.as_str())
             .and_then(|r| entry_text(r, busbar_contract::section::UPSTREAM_CREDENTIALS_KEY))
@@ -1824,14 +1871,17 @@ pub fn member_routes(
         routes.insert(
             entry.clone(),
             MemberRoute {
-                rides: Vec::new(),
+                rides: rides
+                    .into_iter()
+                    .map(|n| (n, busbar_kernel::plane_driver::ResponseKeep::default()))
+                    .collect(),
                 need,
                 base_url,
                 auth,
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 anchors,
-                spelled: Vec::new(),
+                spelled,
             },
         );
     }

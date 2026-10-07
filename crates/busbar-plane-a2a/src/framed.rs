@@ -662,6 +662,234 @@ fn narrowed_to_the_proto(mut card: Value) -> Value {
     card
 }
 
+// ── THE OUTBOUND DIRECTION: busbar dialling an agent's gRPC binding ─────────────────────────────
+//
+// The same codec the other way round (the engine's `relay::GrpcFraming`, ported; spec line
+// 2026-09-30: "transport de-frames, plane transcodes protobuf<->ProtoJSON"): the hop's JSON-RPC
+// `params` ARE the rpc's request message in ProtoJSON, written as protobuf ([`request_message`]);
+// each message the far end answers is the rpc's response message, read back as the ProtoJSON
+// `result` it is ([`response_result`]). The grpc transport frames the request and hands the answer
+// back length-prefixed, message by message ([`take_message`]), its trailers as a field block
+// ([`ended`]).
+
+/// The `content-type` a dialled call carries, and the `accept` it declares (the engine's).
+pub const DIAL_CONTENT_TYPE: &str = "application/grpc+proto";
+
+/// The length prefix every message on the wire carries: one compression flag byte and a four-byte
+/// big-endian length.
+pub const MESSAGE_PREFIX: usize = 5;
+
+impl Rpc {
+    /// The rpc a JSON-RPC `method` is, in either A2A dialect's spelling; `None` for a method the
+    /// service does not have.
+    #[must_use]
+    pub fn of_method(method: &str) -> Option<Self> {
+        Some(match method {
+            "SendMessage" | "message/send" => Rpc::SendMessage,
+            "SendStreamingMessage" | "message/stream" => Rpc::SendStreamingMessage,
+            "GetTask" | "tasks/get" => Rpc::GetTask,
+            "ListTasks" | "tasks/list" => Rpc::ListTasks,
+            "CancelTask" | "tasks/cancel" => Rpc::CancelTask,
+            "SubscribeToTask" | "tasks/resubscribe" => Rpc::SubscribeToTask,
+            "CreateTaskPushNotificationConfig" | "tasks/pushNotificationConfig/set" => {
+                Rpc::CreateTaskPushNotificationConfig
+            }
+            "GetTaskPushNotificationConfig" | "tasks/pushNotificationConfig/get" => {
+                Rpc::GetTaskPushNotificationConfig
+            }
+            "ListTaskPushNotificationConfigs" | "tasks/pushNotificationConfig/list" => {
+                Rpc::ListTaskPushNotificationConfigs
+            }
+            "DeleteTaskPushNotificationConfig" | "tasks/pushNotificationConfig/delete" => {
+                Rpc::DeleteTaskPushNotificationConfig
+            }
+            "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard" => {
+                Rpc::GetExtendedAgentCard
+            }
+            _ => return None,
+        })
+    }
+
+    /// The target a dialled call of this rpc is sent at: the service's own path, never joined onto
+    /// the operator's (a gRPC server routes on the fully-qualified service and rpc exactly).
+    #[must_use]
+    pub fn target(self) -> String {
+        format!("{SERVICE_PATH}/{}", self.name())
+    }
+}
+
+/// CANONICAL JSON IN, THE RPC'S REQUEST MESSAGE OUT: the hop's `params` read as `rpc`'s request
+/// message (its ProtoJSON), carried through the model's rules, written as protobuf (unframed: the
+/// grpc transport frames it).
+///
+/// # Errors
+///
+/// The params are not the request message's ProtoJSON, or the model refuses it (never shown to the
+/// caller).
+pub fn request_message(rpc: Rpc, params: &Value) -> Result<Vec<u8>, String> {
+    let params = params.clone();
+    match rpc {
+        Rpc::SendMessage | Rpc::SendStreamingMessage => encoded::<pb::SendMessageRequest>(params),
+        Rpc::GetTask => encoded::<pb::GetTaskRequest>(params),
+        Rpc::ListTasks => encoded::<pb::ListTasksRequest>(params),
+        Rpc::CancelTask => encoded::<pb::CancelTaskRequest>(params),
+        Rpc::SubscribeToTask => encoded::<pb::SubscribeToTaskRequest>(params),
+        Rpc::CreateTaskPushNotificationConfig => encoded::<pb::TaskPushNotificationConfig>(params),
+        Rpc::GetTaskPushNotificationConfig => {
+            encoded::<pb::GetTaskPushNotificationConfigRequest>(params)
+        }
+        Rpc::ListTaskPushNotificationConfigs => {
+            encoded::<pb::ListTaskPushNotificationConfigsRequest>(params)
+        }
+        Rpc::GetExtendedAgentCard => encoded::<pb::GetExtendedAgentCardRequest>(params),
+        Rpc::DeleteTaskPushNotificationConfig => {
+            encoded::<pb::DeleteTaskPushNotificationConfigRequest>(params)
+        }
+    }
+}
+
+/// THE RPC'S RESPONSE MESSAGE IN, CANONICAL JSON OUT: one message the far end answered `rpc` with,
+/// decoded, carried through the model's rules, written as the ProtoJSON `result` it is.
+/// `DeleteTaskPushNotificationConfig` answers `google.protobuf.Empty`: its result is `null`.
+///
+/// # Errors
+///
+/// The message does not decode as the rpc's response, or the model refuses it.
+pub fn response_result(rpc: Rpc, message: &[u8]) -> Result<Value, String> {
+    match rpc {
+        Rpc::SendMessage => decoded::<pb::SendMessageResponse>(message),
+        Rpc::SendStreamingMessage | Rpc::SubscribeToTask => decoded::<pb::StreamResponse>(message),
+        Rpc::GetTask | Rpc::CancelTask => decoded::<pb::Task>(message),
+        Rpc::ListTasks => decoded::<pb::ListTasksResponse>(message),
+        Rpc::CreateTaskPushNotificationConfig | Rpc::GetTaskPushNotificationConfig => {
+            decoded::<pb::TaskPushNotificationConfig>(message)
+        }
+        Rpc::ListTaskPushNotificationConfigs => {
+            decoded::<pb::ListTaskPushNotificationConfigsResponse>(message)
+        }
+        Rpc::GetExtendedAgentCard => decoded::<pb::AgentCard>(message),
+        Rpc::DeleteTaskPushNotificationConfig => Ok(Value::Null),
+    }
+}
+
+fn encoded<M>(params: Value) -> Result<Vec<u8>, String>
+where
+    M: prost::Message + Normal + serde::de::DeserializeOwned,
+{
+    let mut m: M = serde_json::from_value(params)
+        .map_err(|e| format!("the request could not be rendered as protobuf: {e}"))?;
+    m.normal()
+        .map_err(|e| format!("the request could not be rendered as protobuf: {e}"))?;
+    Ok(m.encode_to_vec())
+}
+
+fn decoded<M>(message: &[u8]) -> Result<Value, String>
+where
+    M: prost::Message + Default + Normal + serde::Serialize,
+{
+    let mut m =
+        M::decode(message).map_err(|e| format!("the answer is not a readable message: {e}"))?;
+    m.normal()
+        .map_err(|e| format!("the answer could not be read: {e}"))?;
+    serde_json::to_value(&m).map_err(|e| format!("the answer could not be rendered: {e}"))
+}
+
+/// THE MESSAGE AT THE HEAD OF `buf`: its payload's length and how many bytes it takes with its
+/// prefix; `Ok(None)` while it is still arriving (the engine's `grpc_split`).
+///
+/// # Errors
+///
+/// A compressed message: busbar offers no compression, so a far end that compressed answered in a
+/// framing busbar cannot read.
+pub fn take_message(buf: &[u8]) -> Result<Option<(usize, usize)>, String> {
+    if buf.len() < MESSAGE_PREFIX {
+        return Ok(None);
+    }
+    if buf[0] != 0 {
+        return Err("the far end compressed a message busbar did not offer to decompress".into());
+    }
+    let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+    if buf.len() < MESSAGE_PREFIX + len {
+        return Ok(None);
+    }
+    Ok(Some((len, MESSAGE_PREFIX + len)))
+}
+
+/// JSON-RPC's own error codes, beside A2A's ([`crate::ERRORS`]): the codes section 5.4's table
+/// binds a gRPC status to.
+const JSON_RPC_CODES: [i64; 5] = [-32700, -32600, -32601, -32602, -32603];
+
+/// HOW A DIALLED CALL ENDED, as its trailers say: the gRPC code, and the `google.rpc.ErrorInfo`
+/// its status details carry (A2A section 10.6).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ended {
+    /// The gRPC code (`0` = `OK`).
+    pub code: u32,
+    /// The error's reason, when the details carry one.
+    pub info: Option<ErrorInfo>,
+}
+
+impl Ended {
+    /// The call ended `OK`.
+    #[must_use]
+    pub const fn ok(&self) -> bool {
+        self.code == Code::Ok as u32
+    }
+
+    /// THE A2A ERROR CODE it ended with: its `ErrorInfo` reason's (the protocol's own vocabulary),
+    /// else the one code section 5.4 binds to this status alone; `None` where neither says.
+    #[must_use]
+    pub fn a2a_code(&self) -> Option<i64> {
+        if let Some(reason) = self.info.as_ref().map(|i| i.reason.as_str()) {
+            if let Some((code, _)) = crate::ERRORS.iter().find(|(_, r)| *r == reason) {
+                return Some(*code);
+            }
+        }
+        let mut bound = crate::ERRORS
+            .iter()
+            .map(|(code, _)| *code)
+            .chain(JSON_RPC_CODES)
+            .filter(|c| grpc_code(*c).is_some_and(|g| g as u32 == self.code));
+        match (bound.next(), bound.next()) {
+            (Some(code), None) => Some(code),
+            _ => None,
+        }
+    }
+}
+
+/// THE STATUS A DIALLED CALL'S TRAILERS STATE (`block`, the field block the grpc transport hands
+/// back after the messages; `stated`, the code it reports beside the block, when the host passes
+/// one on): the code, else the code of the `google.rpc.Status` its [`DETAILS_FIELD`] carries, with
+/// that status's `ErrorInfo`. `None` when the trailers say neither.
+#[must_use]
+pub fn ended(block: &[u8], stated: Option<u32>) -> Option<Ended> {
+    use base64::Engine as _;
+    let details = busbar_contract::abi::transport::fields::lines(block)
+        .find(|(name, _)| name.eq_ignore_ascii_case(DETAILS_FIELD.as_bytes()))
+        .and_then(|(_, value)| {
+            let text = std::str::from_utf8(value)
+                .ok()?
+                .trim()
+                .trim_end_matches('=');
+            base64::engine::general_purpose::STANDARD_NO_PAD
+                .decode(text)
+                .ok()
+        })
+        .and_then(|bytes| rpc::Status::decode(bytes.as_slice()).ok());
+    let code = stated.or_else(|| details.as_ref().and_then(|s| u32::try_from(s.code).ok()))?;
+    let info = details.and_then(|s| {
+        s.details
+            .iter()
+            .find(|any| any.type_url == crate::ERROR_INFO_TYPE)
+            .and_then(|any| ErrorInfo::decode(any.value.as_slice()).ok())
+    });
+    Some(Ended { code, info })
+}
+
 #[cfg(test)]
 #[path = "tests/framed_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/framed_dial_tests.rs"]
+mod dial_tests;
