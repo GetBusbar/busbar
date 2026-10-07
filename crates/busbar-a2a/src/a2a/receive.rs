@@ -1291,11 +1291,12 @@ async fn admitted(
 
     // ── THE OPERATOR'S HOOK GATE — `agents.hooks:` and `agents.<agent>.hooks:`. ─────────────────
     //
-    // The twin of the MCP plane's dispatch gate, through the SAME seam
-    // (the host's `EngineHost::gate_decide`) with the same projection and the same verdict type. Not a
-    // second implementation of hooks for a second plane: a hook is a decision about one request,
-    // and the only thing this arm supplies that the seam cannot work out is the pair of facts only
-    // this plane knows — which agent the submission resolved to, and what its dialect is called.
+    // The twin of the MCP plane's dispatch gate, through the SAME seam (the kernel's
+    // `plane_host::admission_gates_decide`, over the hooks seam every plane holds) with the same
+    // projection and the same verdict type. Not a second implementation of hooks for a second
+    // plane: a hook is a decision about one request, and the only thing this arm supplies that the
+    // seam cannot work out is the pair of facts only this plane knows — which agent the submission
+    // resolved to, and what its dialect is called.
     //
     // PLACED AFTER admission (the agent is what the attach is keyed on, so there is nothing to look
     // up before it) and BEFORE the meter, the egress gate, the callback guard and the task row.
@@ -1305,12 +1306,16 @@ async fn admitted(
     // EVERY VERB, not only `message/send`. A gate an operator attached to an agent is a statement
     // about that agent, and a plane that fired it for submissions but not for the task verbs would
     // be a plane where the control's scope depends on which method a caller happened to use.
-    if engine_host.gate_attached(crate::PLANE_DECLARATION.key, &admitted.dispatch.agent_id) {
-        // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`) — the twin of the MCP
-        // dispatch gate, now inverted so this plane body no longer names core's hook gate directly or
-        // holds the resolved `ResolvedPolicy` set (the Seam-B inversion); the host re-selects the gate
-        // set by `(plane_key, container)` and runs the same decision. The presence check keeps the whole
-        // block zero-cost when nothing is attached.
+    if busbar_kernel::plane_host::admission_gates_attached(
+        &*engine_host,
+        crate::PLANE_DECLARATION.key,
+        &admitted.dispatch.agent_id,
+    ) {
+        // FIRE THE GATE THROUGH THE HOOKS SEAM (`plane_host::admission_gates_decide`) — the twin of
+        // the MCP dispatch gate, inverted so this plane body names no core hook gate and holds no
+        // resolved `ResolvedPolicy` set (the Seam-B inversion); the kernel reads the gate set off the
+        // host by `(plane_key, container)` and runs the same decision. The presence check keeps the
+        // whole block zero-cost when nothing is attached.
         //
         // THE A2A SUBMISSION AS THE INVOKE IR: the target is the METHOD and the arguments are `params` —
         // which is where a message's `parts` live, so the prose a screening gate reads is inside the
@@ -1336,7 +1341,8 @@ async fn admitted(
         // The host seam drives the ASYNC gate on a fresh runtime, so it MUST run on a BLOCKING thread
         // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
         let outcome = tokio::task::spawn_blocking(move || {
-            host2.gate_decide(
+            busbar_kernel::plane_host::admission_gates_decide(
+                &*host2,
                 crate::PLANE_DECLARATION.key,
                 &agent,
                 request_id,

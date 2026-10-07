@@ -949,30 +949,9 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
 }
 
 impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
-    fn gate_decide(
-        &self,
-        plane_key: &str,
-        container: &str,
-        request_id: u64,
-        tool: &str,
-        args_json: &[u8],
-        key: Option<(&str, &str)>,
-        session_id: Option<&str>,
-    ) -> busbar_kernel::plane_host::GateOutcome {
-        gate_decide_over(
-            &self.app, plane_key, container, request_id, tool, args_json, key, session_id,
-        )
-    }
-
-    fn gate_attached(&self, plane_key: &str, container: &str) -> bool {
-        // Pure snapshot read of the generic per-plane gate map, keyed by the opaque registry key.
-        self.app
-            .plane_gates(plane_key)
-            .is_some_and(|g| g.contains_key(container))
-    }
-
     fn tap_attached(&self, plane_key: &str, container: &str) -> bool {
-        // Pure snapshot read of the generic per-plane REWRITE map — the tap twin of `gate_attached`.
+        // Pure snapshot read of the generic per-plane REWRITE map — the tap twin of
+        // `admission_gates_attached`.
         // `resolve_container_rewrites` never files an empty chain, so presence == a real rewrite hook.
         self.app
             .plane_rewrites(plane_key)
@@ -1228,106 +1207,114 @@ fn standing_in(
     }
 }
 
-// The request-admission gate verdict is a pure POD naming only `busbar_contract::abi::hot` + std, so it now
-// lives in the substrate beside the neutral `EngineHost` seam; core re-exports it so every in-core
-// caller (`gate_decide_over`, a2a) is unchanged.
+/// Whether the deployment attached any REQUEST-ADMISSION hook gate to `container` on the plane filed
+/// under the registry key `plane_key` — the presence pre-filter a plane reads before it serializes
+/// anything or takes the blocking [`admission_gates_decide`] hop. A FREE FUNCTION over the hooks seam
+/// every plane already holds ([`HookConfigHost::plane_gates_of`], the per-entry gate set the kernel
+/// plane driver screens a door plane's units with), so the universal [`EngineHost`] carries no
+/// per-plane gate method. The resolved map never files an empty set, so presence is a non-empty set.
+#[must_use]
+pub fn admission_gates_attached<H: HookConfigHost + ?Sized>(
+    host: &H,
+    plane_key: &str,
+    container: &str,
+) -> bool {
+    !host.plane_gates_of(plane_key, container).is_empty()
+}
 
-/// Fire the operator's REQUEST-ADMISSION hook gates over the wired [`gate_decide`](vtable) seam and
-/// reconstruct the [`GateOutcome`] — so an MCP/A2A plane body admits a request through its
-/// `tools.hooks:` / `agents.hooks:` gates without ever naming `crate::hooks::gate::decide` or holding the
-/// resolved `ResolvedPolicy` set (the host owns and re-selects it by `(plane_key, container)`). A SAFE
-/// wrapper that keeps the `#[repr(C)]` [`GateVerdictOut`](busbar_contract::abi::hot::GateVerdictOut) out-param
-/// read + the two copy-out buffers inside this audited module (busbar-core denies `unsafe` elsewhere).
+/// Fire the REQUEST-ADMISSION hook gates the deployment attached to `container` on the plane filed
+/// under `plane_key`, over the `{tool, arguments}` projection of one request (`method` + the caller's
+/// `args_json`), and answer the [`GateOutcome`]. The plane supplies only the facts it alone knows;
+/// the gate set ([`HookConfigHost::plane_gates_of`]) and the incremental-scan substrate
+/// ([`HookConfigHost::gate_scan`]) are read off the host, and the decision is the kernel's one gate
+/// (`hooks::gate::decide`), so the plane names no gate engine and holds no resolved policy.
 ///
-/// Byte-identical to the in-process firing site: the host reconstructs the same `InvokeReq`-shaped facts
-/// (`tool` + the caller's `arguments` JSON, which round-trips losslessly because `serde_json`'s
-/// `preserve_order` is OFF), the same key identity (`id`/`name`), and the same incremental-scan session
-/// substrate, and runs the SAME gate decision.
+/// The subject is the one the request-gate host slot built: the `InvokeReq` facts (the arguments
+/// round-trip losslessly because `serde_json`'s `preserve_order` is OFF), the `ingress_protocol` label
+/// is the plane's registry key, the caller key carries only `id`/`name` (all the gate reads), and the
+/// session is shown to the hooks when non-empty. The incremental scan runs under the operator's
+/// opt-in and a non-empty session, its clearance bound to the caller principal and the hook-config
+/// generation (`IncrementalScan::derive_session_key`).
 ///
-/// The slot drives the ASYNC gate on a fresh current-thread runtime, so it MUST be invoked from a
-/// BLOCKING thread (`spawn_blocking`) — calling `block_on` on a runtime worker would panic. Fail-closed:
-/// the host ALWAYS initializes the out-param to a 403 reject, so a null subject or a caught panic
-/// reconstructs a `Reject` (an empty message/hook), exactly as a gate that could not run refuses.
-///
-/// `plane_key` is the plane's stable decl key; the host resolves it to the ABI registration INDEX for
-/// the POD (see [`crate::plane::registry::plane_key_index`]) and the vtable slot resolves the index
-/// back to the key to select the gate set and the `ingress_protocol` label — no hard-coded numbering,
-/// no plane token. `key` is the caller's resolved `(id, name)`; `session_id` is the caller's session,
-/// `Some` only when non-empty.
-#[allow(dead_code)]
+/// Drives the ASYNC gate on a fresh current-thread runtime, so it MUST be called from a BLOCKING
+/// thread (`spawn_blocking`): `block_on` on a runtime worker would panic. FAIL-CLOSED: a runtime that
+/// will not start, or a panic anywhere in the decision, answers a `403` reject with an empty message
+/// and hook — a gate that could not run refuses.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
-pub fn gate_decide_over(
-    app: &App,
+pub fn admission_gates_decide<H: HookConfigHost + ?Sized>(
+    host: &H,
     plane_key: &str,
     container: &str,
     request_id: u64,
-    tool: &str,
+    method: &str,
     args_json: &[u8],
     key: Option<(&str, &str)>,
     session_id: Option<&str>,
 ) -> GateOutcome {
-    // Resolve the plane's stable decl key to its opaque ABI registration index for the FFI POD; the
-    // vtable slot resolves it back to the key string (see `dispatch::gate_decide`).
-    let plane_key_idx = crate::plane::registry::plane_key_index(plane_key);
-    let mut msg_buf = [0u8; 512];
-    let mut hook_buf = [0u8; 512];
-    let mut out = core::mem::MaybeUninit::<busbar_contract::abi::hot::GateVerdictOut>::uninit();
-    let (key_id, key_name) = key.unwrap_or(("", ""));
-    let sid = session_id.unwrap_or("");
-    let scope = DispatchScope::new();
-    let status = with_borrowed_host(app, &scope, |hctx, vt| {
-        let subject = busbar_contract::abi::hot::GateSubjectRef {
-            size: core::mem::size_of::<busbar_contract::abi::hot::GateSubjectRef>() as u32,
-            version: busbar_contract::abi::hot::POD_VERSION,
-            plane_key: plane_key_idx,
-            key_present: u8::from(key.is_some()),
-            incremental: u8::from(session_id.is_some()),
-            _reserved: [0; 3],
-            request_id,
-            container_ptr: container.as_ptr(),
-            container_len: container.len(),
-            method_ptr: tool.as_ptr(),
-            method_len: tool.len(),
-            args_ptr: args_json.as_ptr(),
-            args_len: args_json.len(),
-            key_id_ptr: key_id.as_ptr(),
-            key_id_len: key_id.len(),
-            key_name_ptr: key_name.as_ptr(),
-            key_name_len: key_name.len(),
-            session_id_ptr: sid.as_ptr(),
-            session_id_len: sid.len(),
+    use crate::hooks::gate::{decide, GateSubject, GateVerdict, IncrementalScan};
+    let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let gates = host.plane_gates_of(plane_key, container);
+        let arguments: serde_json::Value =
+            serde_json::from_slice(args_json).unwrap_or(serde_json::Value::Null);
+        let facts = busbar_contract::ir::invoke::InvokeReq {
+            tool: method.to_string(),
+            arguments,
+            extra: Default::default(),
         };
-        (vt.gate_decide.expect("gate_decide is a wired slot"))(
-            hctx,
-            &subject as *const busbar_contract::abi::hot::GateSubjectRef,
-            msg_buf.as_mut_ptr(),
-            msg_buf.len(),
-            hook_buf.as_mut_ptr(),
-            hook_buf.len(),
-            std::ptr::from_mut(&mut out),
-        )
-    });
-    // SAFETY: the host ALWAYS initializes `out` up front (see `dispatch::gate_decide`), so it is a live
-    // `GateVerdictOut` on every return.
-    let v = unsafe { out.assume_init() };
-    if status == busbar_contract::abi::hot::StatusClass::Ok && v.proceed != 0 {
-        return GateOutcome::Proceed;
-    }
-    // A REJECT (Ok + proceed=0) OR a fail-closed refusal (Refused/Fault leaves the eager 403 header):
-    // both reconstruct a `Reject`, so a gate that could not run refuses.
-    let m = (v.message_len as usize).min(msg_buf.len());
-    let h = (v.hook_len as usize).min(hook_buf.len());
-    GateOutcome::Reject {
-        status: v.status,
-        message: String::from_utf8_lossy(&msg_buf[..m]).into_owned(),
-        hook: String::from_utf8_lossy(&hook_buf[..h]).into_owned(),
+        let key = key.map(|(id, name)| busbar_contract::records::VirtualKey {
+            id: id.to_string(),
+            name: name.to_string(),
+            ..Default::default()
+        });
+        let sid = session_id.unwrap_or("");
+        let principal_id = key.as_ref().map(|k| k.id.as_str()).unwrap_or("");
+        let scan = host.gate_scan();
+        let incremental = scan
+            .as_ref()
+            .filter(|_| !sid.is_empty())
+            .map(|(store, generation)| IncrementalScan {
+                store: store.as_ref(),
+                session: IncrementalScan::derive_session_key(sid, principal_id, *generation),
+                now_ms: crate::store::now_ms(),
+            });
+        let subject = GateSubject {
+            facts: &facts,
+            container,
+            ingress_protocol: plane_key,
+            request_id,
+            key: key.as_ref(),
+            incremental,
+            session: (!sid.is_empty()).then_some(sid.as_bytes()),
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        Some(rt.block_on(decide(&gates, &subject)))
+    }));
+    match fired {
+        Ok(Some(GateVerdict::Proceed)) => GateOutcome::Proceed,
+        Ok(Some(GateVerdict::Reject {
+            status,
+            message,
+            hook,
+        })) => GateOutcome::Reject {
+            status,
+            message,
+            hook: hook.to_string(),
+        },
+        Ok(None) | Err(_) => GateOutcome::Reject {
+            status: 403,
+            message: String::new(),
+            hook: String::new(),
+        },
     }
 }
 
 /// Fire the operator's REQUEST-ADMISSION TRANSFORM (`<section>.hooks:` `prompt: rw`) chain over the
 /// container's resolved rewrite hooks and reconstruct the [`TransformVerdict`] — the TAP/observe-
-/// transform twin of [`gate_decide_over`]. The host owns and re-selects the chain by `(plane_key,
+/// transform twin of [`admission_gates_decide`]. The host owns and re-selects the chain by `(plane_key,
 /// container)`, so an MCP/A2A plane body admits a rewrite pass over its payload without ever naming
 /// `crate::hooks` or holding the resolved `Arc<dyn RoutingPolicy>` set (the Seam-B inversion), exactly
 /// as it fires the gate.
@@ -1344,7 +1331,7 @@ pub fn gate_decide_over(
 ///
 /// Drives the ASYNC hooks on a fresh current-thread runtime, so it MUST be called from a BLOCKING
 /// thread (`spawn_blocking`) — `block_on` on a runtime worker would panic — exactly like
-/// [`gate_decide_over`].
+/// [`admission_gates_decide`].
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 #[must_use]
@@ -1707,13 +1694,13 @@ pub enum GovAdmit {
     },
 }
 
-/// The verdict of a request-admission gate fired over the host `gate_decide` seam.
+/// The verdict of the request-admission gates fired by [`admission_gates_decide`].
 #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 pub enum GateOutcome {
     /// No gate objected (or none is attached) — the request proceeds.
     Proceed,
-    /// A gate refused the request. Reconstructed from the `GateVerdictOut` header + the copied-out
-    /// buffers, byte-identical to the in-process `GateVerdict::Reject`.
+    /// A gate refused the request: the kernel gate's `GateVerdict::Reject`, or the fail-closed refusal
+    /// of a gate that could not run.
     Reject {
         /// The hook's refusal status, already clamped to the 4xx band by the gate.
         status: u16,
@@ -2755,36 +2742,10 @@ pub trait IdentityHost: Send + Sync {
     }
 }
 
-/// The ADMISSION slice: the request-admission gauntlet seams — the gate decision + presence pre-filter,
+/// The ADMISSION slice: the request-admission gauntlet seams — the rewrite pass + presence pre-filter,
 /// the governance admit-reason, the destination guard, the budget-admission door, the audience-bound
 /// mount read, and the post-admission/not-charged finishes. Split off `EngineHost` as a supertrait.
 pub trait AdmissionHost: Send + Sync {
-    /// Fire the operator's REQUEST-ADMISSION hook gates over the host `gate_decide` seam and
-    /// reconstruct the [`GateOutcome`]. Identical to `busbar_kernel::plane_host::gate_decide_over`:
-    /// same reconstructed facts, same key identity, same gate decision. Drives the ASYNC gate on a
-    /// fresh runtime, so it MUST be called from a BLOCKING thread (`spawn_blocking`).
-    ///
-    /// `plane_key` is the opaque registry key (the plane's stable decl key) the host resolves the
-    /// gate set and the `ingress_protocol` label from. `key` is the caller's resolved `(id, name)`;
-    /// `session_id` is the caller's session, `Some` only when non-empty.
-    #[allow(clippy::too_many_arguments)]
-    fn gate_decide(
-        &self,
-        plane_key: &str,
-        container: &str,
-        request_id: u64,
-        tool: &str,
-        args_json: &[u8],
-        key: Option<(&str, &str)>,
-        session_id: Option<&str>,
-    ) -> GateOutcome;
-
-    /// Cheap presence pre-filter: is any request-admission hook gate attached to `container` on the
-    /// plane identified by the opaque registry `plane_key` (the plane's stable decl key)? Lets a plane
-    /// skip the blocking `gate_decide` hop when nothing is attached. Identical to
-    /// `App::plane_gates(plane_key).contains_key(container)`.
-    fn gate_attached(&self, plane_key: &str, container: &str) -> bool;
-
     /// Cheap presence pre-filter for the TAP/TRANSFORM half: is any `prompt: rw` rewrite hook attached
     /// to `container` on the plane identified by the opaque registry `plane_key`? Lets a plane skip the
     /// blocking `transform_over` hop — and stay BYTE-IDENTICAL to a build without the seam — when
@@ -2796,15 +2757,15 @@ pub trait AdmissionHost: Send + Sync {
 
     /// Fire the operator's REQUEST-ADMISSION TRANSFORM (`<section>.hooks:` `prompt: rw`) chain over the
     /// host `transform_over` seam and reconstruct the [`TransformVerdict`] — the TAP/observe-transform
-    /// twin of [`gate_decide`](Self::gate_decide). The host re-selects the rewrite chain by
+    /// twin of [`admission_gates_decide`]. The host re-selects the rewrite chain by
     /// `(plane_key, container)` (the Seam-B inversion: the plane body names no core hook symbol), builds
     /// the SAME `InvokeReq` projection the gate builds from `(tool, args_json)`, runs each hook's
     /// `transform` in priority order (each seeing the prior's output — a true transform chain), and
     /// returns the rewritten payload or a reject. Drives the ASYNC hooks on a fresh runtime, so it MUST
-    /// be called from a BLOCKING thread (`spawn_blocking`), exactly like `gate_decide`.
+    /// be called from a BLOCKING thread (`spawn_blocking`), exactly like the gate.
     ///
     /// `plane_key`/`container`/`request_id`/`tool`/`args_json`/`key`/`session_id` carry the identical
-    /// meaning they do on [`gate_decide`](Self::gate_decide).
+    /// meaning they do on [`admission_gates_decide`].
     #[allow(clippy::too_many_arguments)]
     fn transform_over(
         &self,

@@ -82,7 +82,7 @@ pub(crate) const SESSION_AUDIT_ACTION: &str = "streaming.session.open";
 /// THE HOOK CONTAINER the voice plane's session-open gate/tap fire under — the plane's SINGULAR config
 /// section noun (`streams`), since voice declares no per-registration container (its config is one
 /// object, not a named-definition map). The operator attaches a session-open gate to this ONE
-/// container, and `gate_attached(plane_key, container)` reads it here.
+/// container, and `admission_gates_attached(host, plane_key, container)` reads it here.
 const GATE_CONTAINER: &str = "streams";
 
 /// THE SCOPE KIND a key must hold to open a live session — the plane's one declared scope kind (see
@@ -714,9 +714,10 @@ pub(crate) struct GovernedOpen<'a> {
 
 /// THE SHARED GOVERNED OPEN every voice route funnels through — the ONE choke point. In order:
 ///
-/// 1. **hooks-gate** (`host.gate_decide`) — the operator's request-admission gate over the session-open
-///    params. A `Reject` refuses BEFORE any lease/mint/dial. BYTE-IDENTICAL (nothing serialized, no
-///    blocking hop) when no gate is attached — the `gate_attached` presence pre-filter.
+/// 1. **hooks-gate** (`plane_host::admission_gates_decide`) — the operator's request-admission gate
+///    over the session-open params. A `Reject` refuses BEFORE any lease/mint/dial. BYTE-IDENTICAL
+///    (nothing serialized, no blocking hop) when no gate is attached — the
+///    `admission_gates_attached` presence pre-filter.
 /// 2. **hooks-tap** (`host.transform_over`) — a `prompt: rw` rewrite over the same params, AFTER the
 ///    gate and BEFORE the credential is leased. A committed rewrite REPLACES the locked session params
 ///    the mint/dial then carries; an abstaining chain (or no attached rewrite) leaves them
@@ -875,9 +876,9 @@ fn finish(
     resp
 }
 
-/// The hooks-GATE leg (`host.gate_decide`) over the session-open params. `Ok(())` proceeds; `Err` is a
-/// finished refusal. ZERO-COST / BYTE-IDENTICAL when no gate is attached: the `gate_attached` presence
-/// pre-filter short-circuits before any serialize or blocking hop.
+/// The hooks-GATE leg (`plane_host::admission_gates_decide`) over the session-open params. `Ok(())`
+/// proceeds; `Err` is a finished refusal. ZERO-COST / BYTE-IDENTICAL when no gate is attached: the
+/// `admission_gates_attached` presence pre-filter short-circuits before any serialize or blocking hop.
 async fn hook_gate(
     host: &Arc<dyn EngineHost>,
     key: Option<(String, String)>,
@@ -885,7 +886,11 @@ async fn hook_gate(
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<(), Box<axum::response::Response>> {
-    if !host.gate_attached(crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
+    if !busbar_kernel::plane_host::admission_gates_attached(
+        &**host,
+        crate::PLANE_DECLARATION.key,
+        GATE_CONTAINER,
+    ) {
         return Ok(());
     }
     // Serialized ONCE for the seam (only past the presence check). The host re-selects the gate set by
@@ -896,7 +901,8 @@ async fn hook_gate(
     let sid = session_id.to_string();
     let host = Arc::clone(host);
     let outcome = tokio::task::spawn_blocking(move || {
-        host.gate_decide(
+        busbar_kernel::plane_host::admission_gates_decide(
+            &*host,
             crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
             now,

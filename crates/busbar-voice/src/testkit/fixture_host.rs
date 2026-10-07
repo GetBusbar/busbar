@@ -13,9 +13,10 @@
 //! * the `(pool, lane)` BREAKER cells (`breaker_admit` / `breaker_record_*` / `breaker_retry_after_secs`),
 //!   readable through [`FixtureHost::breaker_state`];
 //! * the OPERATOR HOOK gate / rewrite chains keyed by `(plane_key, container)`, attached as scripted
-//!   verdicts ([`FixtureHost::attach_gate`] / [`FixtureHost::attach_rewrite`]) so the `gate_attached` /
-//!   `gate_decide` / `tap_attached` / `transform_over` legs run exactly as they do over a configured
-//!   deployment;
+//!   verdicts ([`FixtureHost::attach_gate`] / [`FixtureHost::attach_rewrite`]): a gate is filed as a
+//!   resolved policy on the hooks seam (`plane_gates_of`), so the kernel's own
+//!   `admission_gates_attached` / `admission_gates_decide` fire it exactly as they fire a configured
+//!   deployment's, and the `tap_attached` / `transform_over` legs run the rewrite script;
 //! * the per-key usage LEDGER the metering seams land on (`meter_ledger` / `meter_series`), readable
 //!   through [`FixtureHost::ledger_usage`], per `(lane, class)` through [`FixtureHost::ledger_rows`],
 //!   and per series row through [`FixtureHost::series_rows`] once the host is
@@ -48,9 +49,48 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// A scripted gate verdict for one `(plane_key, container)`: handed the serialized request payload the
-/// plane projected for the hook, answers the [`GateOutcome`] the real hook chain would.
+/// A scripted gate verdict for one `(plane_key, container)`: handed the content the kernel's gate
+/// projected for the hook (the prompt projection's message texts, newline-joined), answers the
+/// [`GateOutcome`] the real hook would. A `Reject` reaches the kernel gate as the hook's reject reply
+/// (the gate clamps its status); a `Proceed` is the hook abstaining.
 pub type GateScript = Arc<dyn Fn(&[u8]) -> GateOutcome + Send + Sync>;
+
+/// A [`GateScript`] filed as the hook policy a resolved gate carries, so the kernel's gate decision
+/// drives it through the same `decide` call it makes on a configured hook.
+struct ScriptedGate(GateScript);
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::RoutingPolicy for ScriptedGate {
+    async fn decide(
+        &self,
+        req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _candidates: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> busbar_contract::hooks::PolicyResult {
+        let content = req
+            .prompt
+            .as_ref()
+            .map(|p| {
+                p.messages
+                    .iter()
+                    .map(|(_, text)| text.as_ref())
+                    .collect::<Vec<&str>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        Ok(match (self.0)(content.as_bytes()) {
+            GateOutcome::Proceed => busbar_contract::hooks::RoutingDecision::Abstain,
+            GateOutcome::Reject {
+                status, message, ..
+            } => busbar_contract::hooks::RoutingDecision::Reject { status, message },
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "fixture-gate"
+    }
+}
 
 /// A scripted rewrite verdict for one `(plane_key, container)`: handed the serialized payload, answers
 /// the [`TransformVerdict`] the real `prompt: rw` chain would (a committed rewrite, an abstain, or a
@@ -188,8 +228,9 @@ impl FixtureHost {
         self
     }
 
-    /// Attach a scripted request-admission GATE to `container` on plane `plane_key`, so
-    /// `gate_attached` answers true and `gate_decide` runs `script` over the projected payload.
+    /// Attach a scripted request-admission GATE to `container` on plane `plane_key`, filed on the hooks
+    /// seam (`plane_gates_of`) so `admission_gates_attached` answers true and `admission_gates_decide`
+    /// runs `script` through the kernel's gate decision.
     #[must_use]
     pub fn attach_gate(self, plane_key: &str, container: &str, script: GateScript) -> Self {
         self.lock()
@@ -527,6 +568,29 @@ impl HookConfigHost for FixtureHost {
     fn tap_hooks_candidate(&self) -> &[TapEntry] {
         &[]
     }
+    fn plane_gates_of(&self, plane_key: &str, container: &str) -> Vec<(u16, ResolvedPolicy)> {
+        let script = self
+            .lock()
+            .gates
+            .get(&(plane_key.to_string(), container.to_string()))
+            .cloned();
+        script
+            .map(|s| {
+                vec![(
+                    0,
+                    ResolvedPolicy::Policy {
+                        policy: Arc::new(ScriptedGate(s)),
+                        on_error: busbar_kernel::config::PolicyOnError::Reject,
+                        on_error_chain: Vec::new(),
+                        timeout: std::time::Duration::from_secs(10),
+                        send_prompt: true,
+                        send_user: false,
+                        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+                    },
+                )]
+            })
+            .unwrap_or_default()
+    }
     fn pool_gates(&self, _pool: &str) -> &[(u16, ResolvedPolicy)] {
         &[]
     }
@@ -662,31 +726,6 @@ impl IdentityHost for FixtureHost {}
 // ── The admission slice: the scripted hook gate / rewrite chains ────────────────────────────────
 
 impl AdmissionHost for FixtureHost {
-    fn gate_decide(
-        &self,
-        plane_key: &str,
-        container: &str,
-        _request_id: u64,
-        _tool: &str,
-        args_json: &[u8],
-        _key: Option<(&str, &str)>,
-        _session_id: Option<&str>,
-    ) -> GateOutcome {
-        let script = self
-            .lock()
-            .gates
-            .get(&(plane_key.to_string(), container.to_string()))
-            .cloned();
-        match script {
-            Some(s) => s(args_json),
-            None => GateOutcome::Proceed,
-        }
-    }
-    fn gate_attached(&self, plane_key: &str, container: &str) -> bool {
-        self.lock()
-            .gates
-            .contains_key(&(plane_key.to_string(), container.to_string()))
-    }
     fn tap_attached(&self, plane_key: &str, container: &str) -> bool {
         self.lock()
             .rewrites
