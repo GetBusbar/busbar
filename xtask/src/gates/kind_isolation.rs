@@ -876,6 +876,18 @@ const BATTERY_MARKER: &str = "testkit";
 /// A per-crate battery file matches this, under the crate's own `tests/`.
 const CONFORMANCE_MARKER: &str = "conformance";
 
+/// THE PUBLISHED CONFORMANCE SUITE'S INVOCATION. A plugin runs busbar's published suite (OWNER
+/// 2026-10-03: plugins test themselves against busbar's published suite) by invoking
+/// `busbar_plugin_loader::conformance_suite!` in its `tests/conformance.rs`, and the macro expands
+/// to the suite's `#[test]` entries (`crates/plugin-loader/src/conformance/mod.rs`). The file
+/// itself spells no `#[test]`, so a counter that reads only attributes scored a running battery as
+/// one with no entry.
+const PUBLISHED_SUITE_MACRO: &str = "conformance_suite!";
+
+/// The key an invocation of [`PUBLISHED_SUITE_MACRO`] names its subject with. An invocation that
+/// names no `door:` expands to no entry against any subject, so it is not counted.
+const PUBLISHED_SUITE_SUBJECT: &str = "door:";
+
 // ------------------------------------------------------------------------------------------------
 // the vocabulary bans
 // ------------------------------------------------------------------------------------------------
@@ -4068,7 +4080,66 @@ fn live_battery_entries(text: &str) -> (usize, usize) {
             live += 1;
         }
     }
+    live += published_suite_invocations(&lines);
     (live, ignored)
+}
+
+/// How many invocations of the published suite ([`PUBLISHED_SUITE_MACRO`]) a battery file makes
+/// that name a subject — each one is the suite's entries run against that subject.
+///
+/// Read off the BLANKED lines, so the macro's name in prose or in a string is not an invocation.
+/// The invocation runs from the macro's name to the delimiter that closes the one it opened, and it
+/// counts only if that span names [`PUBLISHED_SUITE_SUBJECT`]: `conformance_suite! {}` expands to
+/// nothing and stays a file with no entry. A file that DEFINES its own `macro_rules!
+/// conformance_suite` is not invoking the published suite, whatever its invocation looks like, so
+/// none of its invocations count.
+fn published_suite_invocations(lines: &[String]) -> usize {
+    let shadowed = lines.iter().any(|l| {
+        l.contains("macro_rules!") && l.contains(PUBLISHED_SUITE_MACRO.trim_end_matches('!'))
+    });
+    if shadowed {
+        return 0;
+    }
+    let mut count = 0usize;
+    for (i, l) in lines.iter().enumerate() {
+        let Some(at) = l.find(PUBLISHED_SUITE_MACRO) else {
+            continue;
+        };
+        // The macro's name must be a path's last segment, not the tail of a longer identifier.
+        let before = l[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let mut span = String::new();
+        let mut depth = 0i32;
+        let mut opened = false;
+        'walk: for (j, line) in lines[i..].iter().enumerate() {
+            let text = if j == 0 {
+                &line[at + PUBLISHED_SUITE_MACRO.len()..]
+            } else {
+                line.as_str()
+            };
+            for ch in text.chars() {
+                match ch {
+                    '{' | '(' | '[' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' | ')' | ']' => depth -= 1,
+                    _ => {}
+                }
+                span.push(ch);
+                if opened && depth <= 0 {
+                    break 'walk;
+                }
+            }
+            span.push('\n');
+        }
+        if span.contains(PUBLISHED_SUITE_SUBJECT) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// The `<…>` immediately after `impl`, skipped as a BALANCED group: `impl<S: CellStore>` and
@@ -5145,28 +5216,15 @@ fn plane_owned_steps(cx: &Ctx) -> Result<Vec<String>, String> {
 /// nothing, which is what "unmetered" means when it is a fact rather than a policy.
 const DATA_PATH_STEPS: &[&str] = &["route", "meter"];
 
-/// The UPSTREAM vocabulary a control surface may not name at all — the words that only make sense
-/// when there is something on the other side of the request.
-const UPSTREAM_WORDS: &[&str] = &[
-    "egress", "pool", "routing", "failover", "breaker", "provider",
-];
-
-/// THE ONE CONTROL-TIER CRATE THAT OPENS THE REAL UPSTREAM CONNECTIONS: busbar-core-connector
-/// (CONNECTOR-19 — it dials; W3b — rustls lives only here, by design; Q-L16-4 — the operator
-/// verify-off opt-in). It is cleanliness-tier like admin and oauth2, but unlike them it DOES reach
-/// an upstream, so [`CONNECTOR_INROLE_WORDS`] — the vocabulary of OPENING a connection — is its job,
-/// not control-path debt.
-const EGRESS_HOME: &str = "busbar-core-connector";
-
-/// The connection/TLS vocabulary IN-ROLE for [`EGRESS_HOME`]: how a connection is opened — its
-/// egress class, the pool it is kept in, the TLS/crypto provider it is secured with. Excluded from
-/// the upstream-word finding for THAT crate ALONE; admin and oauth2 are checked on every word.
-///
-/// The DECISION words are deliberately NOT here: `routing`, `failover` and `breaker` are the
-/// kernel's route decision (spec:637 "KERNEL: route (pool walk, member, breaker)"), so the
-/// connector naming one is still a finding — kernel logic in the connector is real debt, not its
-/// in-role vocabulary.
-const CONNECTOR_INROLE_WORDS: &[&str] = &["egress", "pool", "provider"];
+// WHY THERE IS NO WORD LIST HERE. This rule once also refused six "upstream" words (`egress`,
+// `pool`, `routing`, `failover`, `breaker`, `provider`) on every cleanliness line. That list was
+// written for the `control` plugin kind (65542ca51b), which is cancelled (Part 2 #5: "There is no
+// "control" plugin kind"). The cleanliness crates' rule is THE DESIGN §8: each depends one way on
+// the kernel, names no plugin, and gets its listeners through the connector. Those six words name
+// no plugin — they are the kernel's route vocabulary (Part 3: "KERNEL | route (pool walk, member,
+// breaker)"), which the 1.5.5 admin API serves to the operator — so they were struck (ARCHITECT
+// 2026-10-07). "Names no plugin" is `:matrix`'s armed `law0-neutral-instance` class, which holds
+// every `Family::Neutral` crate, these three included, at zero on the ship twin.
 
 /// Every `fn <name>` in a crate's shipped source, with the file, line, its signature's blanked
 /// text (the `fn` line up to the body's opening brace) and the body's.
@@ -5475,36 +5533,6 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
                 }
             }
         }
-        let Ok(files) = cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) else {
-            continue;
-        };
-        for f in &files {
-            let rel = f.rel_str();
-            if !is_shipped_source(&rel) {
-                continue;
-            }
-            for line in production_code(&f.text).iter() {
-                let lineno = line.lineno;
-                let lower = line.blanked.to_lowercase();
-                for w in UPSTREAM_WORDS {
-                    // busbar-core-connector OPENS the real connections, so its connection/TLS
-                    // vocabulary is in-role, not control-path debt ([`CONNECTOR_INROLE_WORDS`]);
-                    // its DECISION words (routing/failover/breaker) stay a finding. No other
-                    // control surface gets this exclusion.
-                    if c.name == EGRESS_HOME && CONNECTOR_INROLE_WORDS.contains(w) {
-                        continue;
-                    }
-                    if word_ci(&lower, w) {
-                        offenders.push(format!(
-                            "upstream\t{rel}:{lineno}\t{} names `{w}` — a control surface has no \
-                             upstream to reach, so the vocabulary of reaching one has no meaning \
-                             on this path",
-                            c.name
-                        ));
-                    }
-                }
-            }
-        }
     }
     offenders.sort();
     offenders.dedup();
@@ -5517,7 +5545,7 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     Row::fail(
         ROW_CONTROL,
-        "a control surface runs the data path or names an upstream",
+        "a control surface runs a data-path step",
         format!(
             "{} finding(s) over {} control surface(s): {}",
             offenders.len(),
@@ -9706,18 +9734,39 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
+        // THE KERNEL'S ROUTE VOCABULARY IS NOT A FINDING ON A CLEANLINESS SURFACE (ARCHITECT
+        // 2026-10-07). `pool`, `failover`, `routing`, `provider`, `egress` and `breaker` name no
+        // plugin; they are the kernel's route words, and the 1.5.5 admin API serves them to the
+        // operator. A cleanliness crate naming them keeps `:control-path` green.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-core-oauth2/src/planted_pool.rs",
-            "pub fn pick(pool: u8) -> u8 { let failover = pool; failover }\n",
+            "pub fn pick(pool: u8, egress: u8) -> u8 { let failover = pool ^ egress; failover }\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a cleanliness surface naming the kernel's route vocabulary is not a control-path finding",
+            &[ROW_CONTROL],
+            ov,
+        ));
+
+        // A CLEANLINESS SURFACE NAMES NO PLUGIN (THE DESIGN §8). The rule that holds it is
+        // `:matrix`'s armed `law0-neutral-instance` class, at zero on the ship twin: a plane
+        // instance noun written in core-admin's shipped source is RED there, whatever
+        // `:control-path` says.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core-admin/src/planted_plane_noun.rs",
+            "pub fn mcp_tools_count() -> usize { 0 }\n",
         );
         report.push(prove_rows_red(
             cx,
             subject,
-            "a control surface naming the vocabulary of reaching an upstream",
-            &[ROW_CONTROL],
+            "a cleanliness surface naming a plane instance is refused at the ship ceiling of zero",
+            &[matrix::ROW_MATRIX],
             ov,
-            &["upstream", "busbar-core-oauth2", "pool"],
+            &["law0-neutral-instance", "busbar-core-admin \u{d7} plane"],
         ));
 
         // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED. The exemption's expiry
@@ -10086,6 +10135,81 @@ impl Gate for KindIsolationGate {
             &["battery-ignored", "busbar-store-ignored"],
         ));
 
+        // THE PUBLISHED SUITE IS A BATTERY. A plugin's `tests/conformance.rs` that invokes
+        // `busbar_plugin_loader::conformance_suite!` over its door runs the suite's entries — the
+        // macro expands to them — and spells no `#[test]` of its own. It is a live battery, and the
+        // row must not call it ignored.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-suite",
+            "busbar-store-suite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-suite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-suite/tests/conformance.rs",
+            "busbar_plugin_loader::conformance_suite! {\n    door: busbar_store_suite::door,\n    \
+             cdylib: \"store_suite_door\",\n    inputs: include_str!(\"conformance.json\"),\n}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a battery that invokes the published suite over its door is a live battery",
+            &[ROW_TESTKIT],
+            ov,
+        ));
+
+        // AN INVOCATION THAT EXPANDS TO NOTHING IS NOT A BATTERY. The same file with the subject
+        // taken out names the published macro and runs no entry against anything.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-emptysuite",
+            "busbar-store-emptysuite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-emptysuite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-emptysuite/tests/conformance.rs",
+            "busbar_plugin_loader::conformance_suite! {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a published-suite invocation that names no subject is a file with no entry",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-store-emptysuite"],
+        ));
+
+        // A LOCAL MACRO BY THE SAME NAME IS NOT THE PUBLISHED SUITE. A file that defines its own
+        // `conformance_suite` to expand to nothing, then invokes it with a subject, runs nothing.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-shadowsuite",
+            "busbar-store-shadowsuite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-shadowsuite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-shadowsuite/tests/conformance.rs",
+            "macro_rules! conformance_suite {\n    ($($t:tt)*) => {};\n}\n\
+             conformance_suite! {\n    door: busbar_store_shadowsuite::door,\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a file-local conformance_suite macro is not the published suite",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-store-shadowsuite"],
+        ));
+
         // A BATTERY WITH NO SUBJECT. The same crate, with a live battery and no implementor of its
         // kind's trait anywhere in shipped source: the file compiles, the battery passes, and it is
         // evidence about nothing this crate ships.
@@ -10219,8 +10343,7 @@ impl Gate for KindIsolationGate {
         // NO CONTROL SURFACE REACHED `:control-path`. The rule reads the `cleanliness` kind
         // (admin/oauth2, DECISIONS #5), so the honest fixture for "this rule looked at no surface
         // at all" is every crate of THAT kind out of the census. Zero surfaces run zero data-path
-        // steps and name zero upstreams, which reads exactly like a control kind that keeps to its
-        // own path.
+        // steps, which reads exactly like a control kind that keeps to its own path.
         //
         // It asked for `kinds_gone(["control"])`, a kind no crate resolves to: the overlay was
         // empty, the harness refused it, and the floor had no proof. And it cannot be proven from
