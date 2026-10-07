@@ -54,6 +54,9 @@
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
+#   p-items          DONE item 2: every P-item's `p_item_<item>_*` pins pass, each at its declared
+#                    count (refusal-reason collapse, unary/empty terminality, empty reply,
+#                    wrong-provider attribution, voice tool-args).
 #   changelog        cargo xtask gate changelog-register: EVERY entry in
 #                    testing/shadow-oracle/accepted-differences.json -- improvement as well as
 #                    breaking, per BUSBAR-1.6.0.md's owner rule -- has its `changelog` field's exact
@@ -159,7 +162,7 @@ step() {   # $1 = label ; rest = command
 # So: the number of groups this file DEFINES is counted from the file, the declared constant must
 # agree with it (a group added or removed is a two-place edit a reviewer sees), and the environment
 # may only ever RAISE the floor. A count that cannot be taken is RED, never a floor of zero.
-DONE_GROUPS_DECLARED=24
+DONE_GROUPS_DECLARED=25
 # awk, not `grep -c ... || echo 0`: `grep -c` on a file with no matches PRINTS 0 and EXITS 1, so the
 # obvious fallback fires on top of grep's own output and the variable becomes the two-line string
 # "0\n0" — which then fails every numeric comparison below and takes the honest-floor check with it.
@@ -1735,6 +1738,20 @@ if [ -f testing/fleet-fixtures/store-services.sh ]; then
 else
   absent_step "local store fixtures" "testing/fleet-fixtures/store-services.sh"
 fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by name (DONE item 2)"
+# docs/design/BUSBAR-1.6.0.md DONE item 2: "All P-item behaviours match 1.5.5 — refusal-reason
+# collapse, unary/empty terminality, wrong-provider attribution, voice tool-args — fixed as BUGS, not
+# signed." Each P-item is a set of tests named `p_item_<item>_*`, and each test's doc cites the 1.5.5
+# behaviour it holds. Every step declares its exact count, so a pin renamed, deleted or filtered
+# away is RED (VACUITY), never a green that ran nothing.
+step "refusal-reason collapse (one classification; 12 pins)" filtered_cargo_test 12 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-decisions -p busbar-plane-streaming -p busbar-llm -p xtask --quiet p_item_refusal_reason_collapse
+step "unary/empty terminality"                               filtered_cargo_test 1  cargo test -p busbar-plane-a2a --quiet p_item_unary_empty_terminality
+step "empty reply"                                           filtered_cargo_test 1  cargo test -p busbar-plane-mcp --quiet p_item_empty_reply
+step "wrong-provider attribution"                            filtered_cargo_test 1  cargo test -p busbar-plane-streaming --quiet p_item_wrong_provider_attribution
+step "voice tool-args"                                       filtered_cargo_test 2  cargo test -p busbar-plane-streaming --quiet p_item_voice_tool_args
 end_group
 
 # ── THE ONE VERDICT ─────────────────────────────────────────────────────────────────────────────
