@@ -185,6 +185,10 @@ pub struct Hop {
     /// The ATTEMPT the pool's gate let go (its number; `0` = none yet): its re-entries do not
     /// judge it again, so the host calls after it keep their handles.
     gated: u32,
+    /// THE TASK A BREAKER REFUSAL REJECTED (predev `receive::refuse_hop`: a fresh submission the
+    /// open breaker refused before the socket is opened and ended `rejected`, and the refusal names
+    /// its id): kept here on the refused piece, because `refusal` is ticketless and reads no store.
+    rejected: Option<String>,
 }
 
 impl Hop {
@@ -215,6 +219,7 @@ impl Hop {
             holder: None,
             mismatch: None,
             gated: 0,
+            rejected: None,
         }
     }
 
@@ -1868,6 +1873,8 @@ fn piece(
     // hands the refusal here first, on the unit's own ticket; every other kernel piece is an
     // ATTEMPT.
     let refused = given.from == FROM_KERNEL && given.flags & PIECE_REFUSED != 0;
+    let breaker_refused =
+        given.reason == busbar_contract::abi::plane::RefusalCode::BreakerOpen.code();
     let attempt = given.from == FROM_KERNEL && !refused;
     // A re-call carries the same piece again (after a short or pending answer) or nothing at all
     // (after `more = 1`: no bytes, no flags, no attempt); either way it is served from what is owed.
@@ -1955,6 +1962,22 @@ fn piece(
                 Err(outcome) => return (outcome, false),
                 Ok(refused) => refused,
             }
+        } else if refused && breaker_refused && !hop.left {
+            // THE WALK EXHAUSTED WITH NOTHING SENT (R-REJECTED, coordinator 2026-10-07, extends
+            // gap-2): no ATTEMPT came, so the task is opened here, as predev opened it before the
+            // hop (`receive::refuse_hop`), for the refusal to name and `rejected` to end. A store
+            // that refuses the opening leaves the refusal without an id.
+            let agent = match member {
+                "" => addressed
+                    .clone()
+                    .or_else(|| pooled.as_ref().and_then(|(_, m)| m.first().cloned()))
+                    .unwrap_or_default(),
+                member => member.to_string(),
+            };
+            match open_task(reach, hop, pass, (caller, &agent), None, &mut writes) {
+                Err(outcome) => return (outcome, false),
+                Ok(_) => None,
+            }
         } else {
             None
         };
@@ -2033,6 +2056,18 @@ fn piece(
                     credential_refused(hop, &agent, target_line)
                 } else if given.reason == Code::BreakerOpen.code() && hop.left {
                     hop_refused(hop, Relay::refuse_transport, target_line)
+                } else if breaker_refused && hop.rejected.is_none() {
+                    // A FRESH SUBMISSION THE BREAKER REFUSED BEFORE THE SOCKET ends `rejected`, the
+                    // spec's own "we did not accept this work", and the refusal names its id
+                    // (predev `receive.rs:3332-3345`); an addressed task keeps its last state.
+                    if let Some(task) = hop.relay.task().filter(|t| !t.addressed) {
+                        hop.rejected = Some(task.task_id.clone());
+                        hop.settle.push(Settled::Reported {
+                            state: crate::a2a::task::TaskState::Rejected,
+                            backend_id: None,
+                        });
+                    }
+                    false
                 } else {
                     false
                 };
@@ -2088,6 +2123,10 @@ fn piece(
     }
     if !hop.settle.is_empty() {
         if let Err(outcome) = settle_task(reach, hop, pass, caller) {
+            // The opening's writes ride with the answer once the settle resumes.
+            if matches!(outcome, Outcome::Pending) {
+                hop.held_writes = std::mem::take(&mut hop.outbox.writes);
+            }
             return (outcome, false);
         }
     }
@@ -2553,7 +2592,19 @@ slot!(
                 content_type: reply.content_type,
             }
         } else if let Some(refusal) = &tripped {
-            arrival::render(dialect, refusal, true)
+            // A FRESH SUBMISSION'S REFUSAL NAMES THE TASK IT REJECTED (predev `rpcerror::about_task`),
+            // read off the unit's own memory: this slot is ticketless.
+            let rejected = instance
+                .get()
+                .and_then(|plane| {
+                    plane
+                        .units
+                        .with(&given.unit, |u| u.and_then(|u| u.hop.as_ref()?.rejected.clone()))
+                });
+            match rejected {
+                Some(task) => arrival::render_about_task(dialect, refusal, &task),
+                None => arrival::render(dialect, refusal, true),
+            }
         } else if let Some(refusal) = &untrusted {
             arrival::render(dialect, refusal, true)
         } else if scoped {

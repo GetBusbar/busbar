@@ -4960,8 +4960,8 @@ mod agent_door {
 
     /// A tripped agent refuses a fresh submission with `503` and a `Retry-After` of at least one
     /// second, on the JSON-RPC line and on the HTTP+JSON line, and never dials.
-    /// PARTIAL PORT: predev also answered a `rejected` task with an id to poll; HEAD refuses before
-    /// any task row exists, so that half is dropped.
+    /// The `rejected` task with an id to poll is held by the `a_tripped_agent_rejects_fresh_submissions_on_*`
+    /// cells below (R-REJECTED, coordinator 2026-10-07).
     /// Ported from busbar-a2a a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding
     /// and ::a_tripped_agent_rejects_fresh_submissions_on_the_httpjson_binding.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5026,6 +5026,174 @@ mod agent_door {
             );
         }
         assert!(!agent.relayed(), "a tripped agent is never dialled");
+    }
+
+    /// The id of the task a breaker refusal names, read where a conformant client reads it: the
+    /// `ResourceInfo` of type `a2a.busbar/task` in `error.data` (the JSON-RPC line) or in the
+    /// AIP-193 document's `error.details` (the HTTP+JSON line).
+    fn refused_task_id(body: &str) -> String {
+        let doc: serde_json::Value = serde_json::from_str(body).expect("a refusal");
+        doc.pointer("/error/data")
+            .or_else(|| doc.pointer("/error/details"))
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|e| e["resourceType"] == surface("task_resource_type"))
+            .and_then(|e| e["resourceName"].as_str())
+            .unwrap_or_else(|| panic!("the refusal must name the task: {body}"))
+            .to_string()
+    }
+
+    /// THE `rejected` HALF of predev's `breaker_fastfail_tests.rs::battery` (lines 329-338), on one
+    /// binding: trip the agent, then a fresh submission is refused `503` + `Retry-After`, never
+    /// dials, names the task it opened (`ResourceInfo`, `a2a.busbar/task`), and `tasks/get` on that
+    /// id answers `rejected`, the spec's "we did not accept this work", never `failed`. R-REJECTED,
+    /// coordinator 2026-10-07: the refused piece reaches the plane with nothing sent, and the plane
+    /// opens the task and settles it.
+    async fn rejected_battery(
+        s: &Served,
+        agent: &mut dyn FnMut() -> bool,
+        (method, params): (&str, &str),
+        line: &str,
+        rest: bool,
+    ) {
+        use tower::ServiceExt as _;
+        let mut tripped = false;
+        for _ in 0..32 {
+            let (_, body) =
+                answered(&s.router, rpc("planner", method, params, Some(&s.token))).await;
+            if body.contains("breaker_open") {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(
+            tripped,
+            "[{line}] the breaker opened within 32 failing calls"
+        );
+        agent();
+        let req = if rest {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("{}/message:send", mount()))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", s.token))
+                .body(axum::body::Body::from(format!(
+                    r#"{{"message":{}}}"#,
+                    &SEND[11..SEND.len() - 1]
+                )))
+                .expect("a request")
+        } else {
+            rpc("planner", method, params, Some(&s.token))
+        };
+        let response = s.router.clone().oneshot(req).await.expect("answers");
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "[{line}]"
+        );
+        let wait: u64 = response
+            .headers()
+            .get("retry-after")
+            .unwrap_or_else(|| panic!("[{line}] the refusal carries Retry-After"))
+            .to_str()
+            .expect("text")
+            .parse()
+            .expect("seconds");
+        assert!(wait >= 1, "[{line}] Retry-After {wait}");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("body");
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains("breaker_open"), "[{line}] {body}");
+        assert!(!agent(), "[{line}] a tripped agent is never dialled");
+        let task = refused_task_id(&body);
+        let get = format!(r#"{{"id":"{task}"}}"#);
+        let (status, held) =
+            answered(&s.router, rpc("planner", "tasks/get", &get, Some(&s.token))).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "[{line}] the named task resolves: {held}"
+        );
+        let doc: serde_json::Value = serde_json::from_str(&held).expect("a task");
+        let state = doc["result"]["status"]["state"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert!(
+            state.contains("rejected"),
+            "[{line}] a breaker refusal is `rejected`, never `failed`: {held}"
+        );
+    }
+
+    /// Ported from busbar-a2a a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding
+    /// (the rejected-task half), on both lines the JSON-RPC binding is spoken on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-breaker-rejected-jsonrpc";
+        let _published = Published(instance);
+        let mut agent = Agent::start(401, r#"{"error":"denied"}"#).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        rejected_battery(
+            &s,
+            &mut || agent.relayed(),
+            ("message/send", SEND),
+            "jsonrpc",
+            false,
+        )
+        .await;
+    }
+
+    /// Ported from busbar-a2a a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_httpjson_binding
+    /// (the rejected-task half): the refusal reaches the caller as the AIP-193 document, the task's
+    /// `ResourceInfo` among its `details`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_agent_rejects_fresh_submissions_on_the_httpjson_binding() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-breaker-rejected-httpjson";
+        let _published = Published(instance);
+        let mut agent = Agent::start(401, r#"{"error":"denied"}"#).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        rejected_battery(
+            &s,
+            &mut || agent.relayed(),
+            ("message/send", SEND),
+            "httpjson",
+            true,
+        )
+        .await;
+    }
+
+    /// Ported from busbar-a2a a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_grpc_binding
+    /// (the rejected-task half): an agent whose card names only the gRPC binding, refusing busbar
+    /// (`UNAUTHENTICATED`), trips; the fresh `SendMessage` after it is refused and rejected the same.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_agent_rejects_fresh_submissions_on_the_grpc_binding() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-breaker-rejected-grpc";
+        let _published = Published(instance);
+        let mut agent = GrpcAgent::serving(Vec::new(), "16", 200, None).await;
+        let s = served(instance, &agent.entry("planner"), false, None);
+        approve(&s, "planner").await;
+        let params = r#"{"message":{"messageId":"m-1","role":"ROLE_USER","parts":[{"text":"PLAN THE MIGRATION"}]}}"#;
+        rejected_battery(
+            &s,
+            &mut || {
+                let mut heard = false;
+                while agent.heard.try_recv().is_ok() {
+                    heard = true;
+                }
+                heard
+            },
+            ("SendMessage", params),
+            "grpc",
+            false,
+        )
+        .await;
     }
 
     /// THE EXTENDED CARD IS METERED: busbar answers it out of its own state, and it is still one
