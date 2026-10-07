@@ -116,6 +116,9 @@ pub struct TestUnits {
     /// a plane does with one is post it; what this harness does is keep it, so a cell can post it
     /// onto a real ledger and read the books.
     pub abandoned: Mutex<Vec<busbar_kernel::teller::Ended>>,
+    /// The one entry a `ROUTE_SCOPE_LOCAL` unit's scope resolved to, as a composition's steps
+    /// resolve it on the principal's grant (`DriverSteps::resolved`). `None` = none resolved.
+    pub resolved: Option<Vec<u8>>,
 }
 
 impl Default for TestUnits {
@@ -135,6 +138,7 @@ impl Default for TestUnits {
             groups: Vec::new(),
             capped: None,
             abandoned: Mutex::new(Vec::new()),
+            resolved: None,
         }
     }
 }
@@ -348,8 +352,13 @@ macro_rules! step {
     }};
 }
 
-/// The plane driver's kernel steps: told nothing beyond the loop's own seats.
-impl busbar_kernel::plane_driver::DriverSteps for TestUnits {}
+/// The plane driver's kernel steps: told nothing beyond the loop's own seats, and the entry a
+/// scope-local unit resolved to, when the case names one.
+impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
+    fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
+        self.resolved.clone()
+    }
+}
 
 impl Units for TestUnits {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {

@@ -884,6 +884,33 @@ async fn until(left: Option<Duration>) {
 }
 
 impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
+    /// S3 for a unit its plane answers AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`): NO route is
+    /// walked: the far end is never asked for a member, so no pool, no breaker and no egress is
+    /// touched. The caller's body is pushed once, with no attempt (its member the resolved entry,
+    /// [`Pumping::lend_resolved`]), and the plane answers it itself; a plane that sends it toward a
+    /// far end instead has nowhere to send it, and the unit fails as unreachable.
+    pub(crate) async fn answered_here(&self, run: &mut Pumping<'_>) -> End {
+        let body = Piece {
+            from: FROM_CALLER,
+            flags: PIECE_LAST,
+            status: (0, 0),
+            attempt_no: 0,
+            src: Src::Body,
+            head: false,
+            reason: 0,
+        };
+        let mut request = OutboundRequest::default();
+        let mut toward = Toward::FarEnd(&mut request);
+        if let Step::End(end) = self.push(run, body, &mut toward).await {
+            return end;
+        }
+        if matches!(toward, Toward::Caller) {
+            End::Done
+        } else {
+            End::Failed(ReasonCode::DestinationUnreachable)
+        }
+    }
+
     /// S3: every attempt of the unit, until its reply is complete, it fails, or the driver cancels.
     /// A session's turn leg ([`session::Turn`]) is the same walk: each attempt picks a member
     /// inside the destination set sealed at the open (a member outside it is passed over, never

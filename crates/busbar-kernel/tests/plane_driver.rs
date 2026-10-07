@@ -31,7 +31,8 @@ use busbar_contract::abi::plane::{
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
     PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE,
-    REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -203,6 +204,8 @@ struct Double {
     sessions: Arc<Sessions>,
     /// The reason of every refused piece (`PIECE_REFUSED`) it was handed.
     refused: Mutex<Vec<u32>>,
+    /// Every caller piece of a `/scope-local*` unit: its attempt number and the member it lent.
+    scope_members: Mutex<Vec<(u32, Vec<u8>)>>,
 }
 
 /// The double's driver-ticket wake line (R-PUSH): off, it has no wake channel.
@@ -360,11 +363,17 @@ impl Double {
                 return (ready(Outcome::Ready), Hold::No);
             }
             FROM_CALLER => {
+                if head.starts_with(b"/scope-local") {
+                    self.scope_members
+                        .lock()
+                        .unwrap()
+                        .push((i.attempt_no, text(i.member).to_vec()));
+                }
                 u.body.extend_from_slice(piece);
                 if i.flags & PIECE_LAST == 0 {
                     return (ready(Outcome::Ready), Hold::No);
                 }
-                if head.as_slice() == b"/local" {
+                if head.as_slice() == b"/local" || head.as_slice() == b"/scope-local" {
                     // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
                     // with nothing for the far end.
                     o.reply_status = 200;
@@ -675,6 +684,11 @@ impl PlaneCalls for Double {
                     out.refusal_status = 400;
                     out.head.error = AbiStr::over(REFUSAL_WORDS);
                     return Outcome::Refused;
+                }
+                b"/scope-local" | b"/scope-local-far" => {
+                    // A unit the plane answers itself at its scope's one entry (ROUTE_SCOPE_LOCAL).
+                    out.route = ROUTE_SCOPE_LOCAL;
+                    vec![estimate(0)]
                 }
                 b"/session" => {
                     // A unit served as a duplex session, answered by the plane itself.
@@ -2130,6 +2144,100 @@ async fn a_gate_first_planes_passing_screen_reaches_the_door_and_the_far_end_onc
         .unwrap()
         .contains(&busbar_contract::caps::StepName::Admit));
     assert!(!far.sent().is_empty(), "the far end was reached");
+}
+
+/// A UNIT ITS PLANE ANSWERS AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`, COORDINATOR ruling
+/// 2026-10-07), plane-neutral: the steps resolve the one entry the principal's grant reaches
+/// (`DriverSteps::resolved`), and the driver walks NO route for it, whatever far end it was handed:
+/// the far end is never asked for a member and nothing is sent, and the caller's body reaches the
+/// plane once, with no attempt (`attempt_no` `0`), its `OnPieceIn::member` the resolved entry, and
+/// the plane's own answer is the caller's. A unit the plane sends toward a far end anyway has none
+/// and fails unreachable, still undialled. Steps that resolve zero or several entries refuse it
+/// `no_destination` at admission, before any piece. RED before the driver skipped the walk: the
+/// far end was asked for a member (and, had the plane sent, dialled).
+#[tokio::test]
+async fn a_scope_local_unit_is_answered_at_its_resolved_entry_with_no_walk() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let steps = common::TestUnits {
+        resolved: Some(b"entry-a".to_vec()),
+        ..common::TestUnits::passing()
+    };
+    let (far, caller) = (
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/scope-local", b"hi"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
+    assert_eq!(far.picks(), 0, "no route is walked");
+    assert!(far.sent().is_empty(), "no egress");
+    assert_eq!(
+        r.plane.scope_members.lock().unwrap().clone(),
+        vec![(0, b"entry-a".to_vec())],
+        "the body, once, with no attempt, its member the resolved entry"
+    );
+    assert_eq!(caller.text(), "hi", "the plane's own answer");
+
+    // The plane sends it toward a far end: there is none to send it to.
+    let (far, caller) = (
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/scope-local-far", b"hi"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed(_, ReasonCode::DestinationUnreachable)
+                | Outcome::Refused(_, ReasonCode::DestinationUnreachable)
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!((far.picks(), far.sent().len()), (0, 0), "still undialled");
+
+    // Zero or several reachable entries: the steps refuse it `no_destination` before any piece.
+    r.plane.scope_members.lock().unwrap().clear();
+    let unresolved = common::TestUnits {
+        refuse_at: Some((StepName::Admit, ReasonCode::NoDestination)),
+        ..common::TestUnits::passing()
+    };
+    let (far, caller) = (
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &unresolved,
+        &far,
+        &caller,
+        cases::arrival("/scope-local", b"hi"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Refused(StepName::Admit, ReasonCode::NoDestination)
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!((far.picks(), far.sent().len()), (0, 0), "undialled");
+    assert!(
+        r.plane.scope_members.lock().unwrap().is_empty(),
+        "no piece reached the plane"
+    );
 }
 
 /// RED (SEAM-4l additions): a plane that frames messages hands the caller's side each message's END
