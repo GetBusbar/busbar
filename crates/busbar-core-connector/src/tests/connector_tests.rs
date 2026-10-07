@@ -617,6 +617,153 @@ fn an_answer_naming_another_place_is_handed_up_and_never_dialled() {
     });
 }
 
+/// RED (ARCHITECT parity ruling A5; ports `sanitize_hop_header_rejects_crlf_and_hop_control` and
+/// `execute_hop_refuses_a_crlf_injected_header`, v1.5.5 `crates/busbar/src/auth/token.rs:805`
+/// `FORBIDDEN_HOP_HEADERS`, `:893-907` `sanitize_hop_header`, `crates/busbar/src/auth/tests/
+/// token_tests.rs:750-762`): a plugin's exchange whose head carries a NUL (or a CR or LF) in its
+/// target, its request target, its method, a field name or a field value, or a field stating the
+/// message's own framing (`Content-Length`, `Transfer-Encoding`, any case), is REFUSED whole before
+/// anything is dialled: the far end never sees a connection, so no byte of it (a token exchange's
+/// client secret) leaves. A clean head with an `Authorization` field opens. RED on the connector
+/// that handed every head to the framer.
+#[test]
+fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let nul_target = format!("{far}\0");
+        let clean: &[(&str, &[u8])] = &[("authorization", b"Bearer abc.def".as_slice())];
+        let refused: &[(&str, OpenDesc<'_>)] = &[
+            (
+                "NUL in the target",
+                OpenDesc {
+                    target: &nul_target,
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "NUL in the request target",
+                OpenDesc {
+                    target: &far,
+                    head_target: b"/v1/\0traces",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "NUL in the method",
+                OpenDesc {
+                    target: &far,
+                    method: b"PO\0ST",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "NUL in a field value",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("x-nul", b"a\0b".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "NUL in a field name",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("x-\0nul", b"v".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "CRLF in a field value",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("x-evil", b"a\r\nInjected: 1".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "LF in a field name",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("Bad\nName", b"v".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "CRLF in the request target",
+                OpenDesc {
+                    target: &far,
+                    head_target: b"/v1\r\nX: y",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "the plugin's own content-length",
+                OpenDesc {
+                    target: &far,
+                    fields: &[
+                        ("authorization", b"Bearer abc.def".as_slice()),
+                        ("content-length", b"5".as_slice()),
+                    ],
+                    body: b"token",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "the plugin's own Content-Length",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("Content-Length", b"0".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "the plugin's own transfer-encoding",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("Transfer-Encoding", b"chunked".as_slice())],
+                    body: b"token",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "the plugin's own TRANSFER-ENCODING",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("TRANSFER-ENCODING", b"identity".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+        ];
+        for (why, desc) in refused {
+            assert_eq!(
+                c.open(OWNER, NeedId(0), desc),
+                Err(ConnError::Refused),
+                "{why}"
+            );
+        }
+        let dialled = tokio::time::timeout(std::time::Duration::from_millis(100), l.accept()).await;
+        assert!(dialled.is_err(), "a refused head dials nothing");
+        let id = c
+            .open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: &far,
+                    fields: clean,
+                    method: b"POST",
+                    head_target: b"/v1/traces",
+                    body: b"token",
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a clean head opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
 /// A HOST-SIDE READER awaits a connection through `poll_read`: nothing ready is `Pending` with the
 /// reader's own waker registered, the far end's bytes wake THAT waker (the task finishes without
 /// being re-polled by anything else), and no plugin ticket is ever woken.
