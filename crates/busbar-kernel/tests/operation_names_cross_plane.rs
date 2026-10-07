@@ -18,9 +18,8 @@ fn register_planes() {
     linked::install();
 }
 
-/// The closed metric-label surface is `Operation::ALL ∪ declared_verbs()`. No word on it may carry a
-/// plane key or a registered protocol name, or a dashboard would read a label claiming the engine
-/// knows which protocol it is serving.
+/// No kernel verb may carry a plane key or a dialect the fallback plane declares, or a dashboard
+/// would read a label claiming the engine knows which protocol it is serving.
 #[test]
 fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
     register_planes();
@@ -31,26 +30,15 @@ fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
         "the registered roster declares at least three plane keys: {plane_keys:?}"
     );
     let mut identities: Vec<&'static str> = plane_keys.clone();
-    identities.extend(
-        busbar_kernel::proto::registry::registry()
-            .decls()
-            .iter()
-            .map(|d| d.name),
-    );
-    let verbs: Vec<OpVerb> = OpVerb::ALL
-        .iter()
-        .copied()
-        .chain(
-            busbar_kernel::proto::registry::declared_verbs()
-                .iter()
-                .copied(),
-        )
-        .collect();
+    // The fallback plane's declared dialects: the protocol names a label could carry.
+    identities.extend(busbar_kernel::plane::fallback_wire_formats());
     assert!(
-        verbs.len() > OpVerb::ALL.len(),
-        "the declared verbs folded in: {} verbs",
-        verbs.len()
+        identities.len() > plane_keys.len(),
+        "the fallback plane's dialects folded in: {identities:?}"
     );
+    // The kernel's own verbs. The classes a plane declares are checked against its own dialects
+    // beside its declaration (`busbar-plane-llm/tests/operation_labels.rs`).
+    let verbs: Vec<OpVerb> = OpVerb::ALL.to_vec();
     for verb in verbs {
         let name = verb.name();
         for forbidden in &identities {

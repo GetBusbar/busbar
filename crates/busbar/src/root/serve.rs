@@ -1669,15 +1669,9 @@ pub fn data_mounts(
         busbar_contract::abi::mechanism::route::RouteAuth,
     )],
     upgrades: &[&str],
-) -> Result<
-    (
-        Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-        Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-    ),
-    String,
-> {
+) -> Result<DataMounts, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), None));
     }
     #[cfg(linked_axis_node)]
     {
@@ -1688,7 +1682,7 @@ pub fn data_mounts(
             core,
             upgrades,
         )
-        .map(|m| (m.routes, m.sessions))
+        .map(|m| (m.routes, m.sessions, m.lines))
     }
     #[cfg(not(linked_axis_node))]
     {
@@ -1699,6 +1693,14 @@ pub fn data_mounts(
         )
     }
 }
+
+/// What the data router is built with for the door planes: their request routes, their session
+/// routes, and the data listener's lines the kernel's door-time steps read ([`DoorMounts::lines`]).
+pub type DataMounts = (
+    Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    Option<Arc<dyn busbar_kernel::guest::ListenerLines>>,
+);
 
 /// ONE DATA REQUEST on a door plane's claim, as its route handed it over: the credentials the auth
 /// gate consumed already struck, its verdict on the caller, and the generation serving it (its cost
@@ -1793,18 +1795,25 @@ fn claim_line(
         })?;
     let exact = claim.flags & CLAIM_EXACT != 0;
     let pattern = claim.flags & CLAIM_PATTERN != 0;
+    // A claim that states its form in the one route vocabulary (`Claim::path_form`, spec THE
+    // DESIGN §5 l.907) is a line of that form over its target; otherwise an exact claim is its
+    // target, a pattern claim is its target, each `{name}` one segment (`CLAIM_PATTERN`), and any
+    // other is its target's whole subtree, at any depth (the guest list's tail pattern, which
+    // matches what remains, including nothing).
+    let (path_form, path) = match claim.path_form {
+        0 if exact => (PATH_EXACT, claim.target.clone()),
+        0 if pattern => (PATH_PATTERN, claim.target.clone()),
+        0 => (
+            PATH_PATTERN,
+            format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/')),
+        ),
+        form => (form, claim.target.clone()),
+    };
     let line = busbar_kernel::guest::Line {
         route: busbar_kernel::guest::Route {
             methods: method_bit(&claim.verb),
-            // An exact claim is its target; a pattern claim is its target, each `{name}` one
-            // segment (`CLAIM_PATTERN`); any other is its target's whole subtree, at any depth (the
-            // guest list's tail pattern, which matches what remains, including nothing).
-            path_form: if exact { PATH_EXACT } else { PATH_PATTERN },
-            path: if exact || pattern {
-                claim.target.clone()
-            } else {
-                format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
-            },
+            path_form,
+            path,
             fields: Vec::new(),
             rung,
         },
@@ -1817,6 +1826,8 @@ fn claim_line(
         upgrade: upgrades
             .contains(&claim.carrier.as_str())
             .then(|| claim.carrier.clone()),
+        // The claim's default inbound auth style, as its plane stated it.
+        inbound_style: claim.inbound_style.clone(),
     };
     Ok((line, method))
 }
@@ -1856,6 +1867,10 @@ pub struct DoorMounts {
     pub routes: Vec<PlaneRouteSpec>,
     /// The session routes.
     pub sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    /// The data listener's lines over the door planes' claims ([`DoorLines`]): what the kernel's
+    /// door-time steps read a request's line from and render a refusal with no unit through
+    /// (`AppHandle::set_listener_lines`); `None` when no plane claims anything.
+    pub lines: Option<Arc<dyn busbar_kernel::guest::ListenerLines>>,
 }
 
 #[cfg(linked_axis_node)]
@@ -1882,7 +1897,9 @@ pub fn door_mounts(
     core: &[(String, RouteMethod, RouteAuth)],
     upgrades: &[&str],
 ) -> Result<DoorMounts, String> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_contract::abi::transport::route::{
+        method_bit, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN, PATH_PREFIX, PATH_SUFFIX,
+    };
     use busbar_kernel::guest::{Claimant, GuestList, GuestRefusal, LineAuth, Matched};
     use std::collections::HashMap;
     // THE PUBLIC ROUTES the served planes state (SEAM-4o): each at its own target on the data
@@ -1892,6 +1909,7 @@ pub fn door_mounts(
         return Ok(DoorMounts {
             routes: public,
             sessions: Vec::new(),
+            lines: None,
         });
     }
     let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
@@ -1931,6 +1949,7 @@ pub fn door_mounts(
                 _ => LineAuth::Chain(data_chain.to_vec()),
             },
             upgrade: None,
+            inbound_style: None,
         });
     }
     let guests = GuestList::seal(lines).map_err(|refusal| match refusal {
@@ -1955,7 +1974,17 @@ pub fn door_mounts(
             LineAuth::Chain(_) => RouteAuth::Key,
         };
         let tail = format!("/{{*{SUBTREE}}}");
-        let paths = if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
+        let paths = if matches!(line.route.path_form, PATH_SUFFIX | PATH_CONTAINS) {
+            // A line that reads the path's end or a fragment of it can meet any path: the router
+            // mounts it wherever a path can be, and the guest list says which line it is.
+            vec!["/".to_string(), tail.clone()]
+        } else if line.route.path_form == PATH_PREFIX {
+            // Exactly one segment under the target (the route vocabulary's prefix form).
+            vec![format!(
+                "{}/{{{SUBTREE}}}",
+                line.route.path.trim_end_matches('/')
+            )]
+        } else if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
             vec![line.route.path.clone()]
         } else {
             let target = line.route.path.trim_end_matches(&tail).to_string();
@@ -1971,7 +2000,10 @@ pub fn door_mounts(
         // are one route on the data listener, the first in the plane's claim order; which carrier
         // answers is the plane's to decide from the request, as the data door never compared it.
         for path in paths {
-            if !mounts.iter().any(|(p, m, ..)| *p == path && *m == method) {
+            // A path and verb the kernel's own route holds is the kernel's (its exact line outranks
+            // a plane's subtree on the guest list): the plane's line is not mounted over it.
+            let kernel_holds = core.iter().any(|(p, m, _)| *p == path && *m == method);
+            if !kernel_holds && !mounts.iter().any(|(p, m, ..)| *p == path && *m == method) {
                 mounts.push((path, method, auth, door));
             }
         }
@@ -2004,6 +2036,20 @@ pub fn door_mounts(
         }
     }
     let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
+    let lines: Arc<dyn busbar_kernel::guest::ListenerLines> = Arc::new(DoorLines {
+        guests: guests.clone(),
+        planes: served
+            .planes
+            .iter()
+            .map(|p| {
+                (
+                    p.instance.clone(),
+                    Arc::clone(&p.driver),
+                    p.dialects.clone(),
+                )
+            })
+            .collect(),
+    });
     let routes = Arc::new(DataRoutes {
         served,
         post,
@@ -2105,7 +2151,124 @@ pub fn door_mounts(
     Ok(DoorMounts {
         routes: routes_of,
         sessions,
+        lines: Some(lines),
     })
+}
+
+/// THE DATA LISTENER'S LINES, as the kernel's door-time steps read them
+/// ([`busbar_kernel::guest::ListenerLines`]): the sealed guest list, and each plane line's claimant
+/// (its instance, its driver and its tail's dialects). A line's dialect is its claimant's
+/// `refusal_dialect`; a refusal with no unit on it is rendered by that claimant's `refusal` from the
+/// target (spec THE DESIGN §5 l.958-960). A kernel line, or no line, answers `None`: the listener's
+/// own default stands.
+#[cfg(linked_axis_node)]
+struct DoorLines {
+    guests: busbar_kernel::guest::GuestList,
+    planes: Vec<LineClaimant>,
+}
+
+/// One plane claimant of the data listener's lines: its instance, its driver, its tail's dialects.
+#[cfg(linked_axis_node)]
+type LineClaimant = (String, Arc<PlaneDriver>, Vec<&'static str>);
+
+#[cfg(linked_axis_node)]
+impl DoorLines {
+    /// The PLANE line `(method, path)` matches, by the guest list's MATCH rule over the plane lines
+    /// alone (the first whose path holds and whose method set holds the method; else a method miss
+    /// on the first whose path holds), its claimant, and whether it admits the method. A kernel
+    /// line (`/stats`, `/healthz`, …) is passed over: it has no claimant to render a refusal, and
+    /// on such a path the listener's 1.5.5 default answered, which is the plane line beneath it
+    /// (the residual's `/` fallback, which renders by the target's own path rule).
+    fn plane_line(
+        &self,
+        method: &str,
+        path: &str,
+    ) -> Option<(&busbar_kernel::guest::Line, &LineClaimant, bool)> {
+        use busbar_kernel::guest::Claimant;
+        let mut miss = None;
+        for line in self.guests.lines() {
+            let Claimant::Plane(instance) = &line.claimant else {
+                continue;
+            };
+            let route = line.route.view();
+            if !route.path_and_fields_match(path, &[]) {
+                continue;
+            }
+            let Some(plane) = self.planes.iter().find(|(i, ..)| i == instance) else {
+                continue;
+            };
+            if route.admits(method) {
+                return Some((line, plane, true));
+            }
+            miss.get_or_insert((line, plane, false));
+        }
+        miss
+    }
+}
+
+#[cfg(linked_axis_node)]
+impl busbar_kernel::guest::ListenerLines for DoorLines {
+    fn facts(&self, method: &str, path: &str) -> Option<busbar_kernel::guest::LineFacts> {
+        let (line, (_, _, dialects), admits) = self.plane_line(method, path)?;
+        Some(busbar_kernel::guest::LineFacts {
+            dialect: dialects
+                .get(line.dialect as usize)
+                .copied()
+                .unwrap_or_default(),
+            inbound_style: line.inbound_style.clone(),
+            admits_method: admits,
+        })
+    }
+
+    fn refuse(
+        &self,
+        method: &str,
+        target: &str,
+        reason: ReasonCode,
+        status: u16,
+        text: &str,
+    ) -> Option<busbar_kernel::guest::Refused> {
+        let path = target.split_once('?').map_or(target, |(p, _)| p);
+        let (line, (_, driver, _), _) = self.plane_line(method, path)?;
+        let rendered = driver.refuse_unitless(
+            line.dialect,
+            reason,
+            u32::from(status),
+            text,
+            target.as_bytes(),
+        )?;
+        Some(busbar_kernel::guest::Refused {
+            status: u16::try_from(rendered.status).unwrap_or(500),
+            fields: rendered.fields,
+            body: rendered.body,
+        })
+    }
+
+    fn render_listing<'a>(
+        &'a self,
+        target: &'a str,
+        fields: Vec<(Vec<u8>, Vec<u8>)>,
+        names: Vec<String>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<busbar_kernel::guest::Refused>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            // The claimant of the plane line beneath the path, as a refusal with no unit there
+            // would render (ARCHITECT RULING D, 2026-10-07): it renders the listing through its
+            // `serve`, in the dialect its own rule picks.
+            let path = target.split_once('?').map_or(target, |(p, _)| p);
+            let (_, (_, driver, _), _) = self.plane_line("GET", path)?;
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            let rendered = driver
+                .render_listing(target.as_bytes(), fields, &names)
+                .await?;
+            Some(busbar_kernel::guest::Refused {
+                status: u16::try_from(rendered.status).ok()?,
+                fields: rendered.fields,
+                body: rendered.body,
+            })
+        })
+    }
 }
 
 /// THE PUBLIC ROUTES the served door planes state (`abi::plane::ROUTE_PUBLIC`, SEAM-4o): each at its
@@ -3362,7 +3525,12 @@ mod money_tests;
 
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_hook_seats.rs"]
-mod hook_seat_tests;
+pub(crate) mod hook_seat_tests;
+
+// The model listing the kernel computes and the llm door renders (ARCHITECT RULING D, 2026-10-07).
+#[cfg(all(test, linked_axis_node))]
+#[path = "tests/serve_listing.rs"]
+mod listing_tests;
 
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door_hooks_ported.rs"]

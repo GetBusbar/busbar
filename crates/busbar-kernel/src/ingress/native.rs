@@ -15,44 +15,47 @@
 
 use axum::http::StatusCode;
 use axum::response::Response;
+use busbar_contract::caps::ReasonCode;
 
+use crate::guest::{ListenerLines, Refused};
 use crate::plane::Ingress;
 
-/// The dialect an answer to `ingress` is SHAPED IN, as a name the protocol registry understands.
-///
-/// This is the ONE place an unrecognised residual path is answered in the registry's declared
-/// residual-default dialect, and it is a decision about the REPLY rather than a claim about the
-/// path: the caller's dialect is unknown, and the residual-default is whichever dialect declares
-/// itself the most widely understood — what a generic HTTP client probing `/` is most likely to
-/// parse. Stated here so the status/message lookups and the envelope builder cannot answer it two
-/// different ways, which is precisely how a mounted plane's path once acquired the wrong dialect's
-/// error shape.
-///
-/// IT IS [`Ingress::shaping_wire_format`] THAT IS READ HERE, NOT `wire_format`. The two ask
-/// different questions and only one of them is answerable at a door: see the note on
-/// `shaping_wire_format` for why a MOUNTED plane with several dialects must still name one for an
-/// error body, and for what reading `wire_format` here did the day a mounted plane grew a second
-/// dialect.
-pub fn envelope_dialect(ingress: Ingress) -> &'static str {
-    // The residual fallback dialect is the one the protocol registry declares as its
-    // `residual_default` (whichever dialect declares itself the most widely understood — declared on
-    // its `ProtocolDecl`, read here so core spells no dialect). A build that registers no such default
-    // (every dialect deleted) has no dialect to shape an unrecognised residual path in, so the
-    // caller gets the generic envelope — the honest deletion behaviour.
-    ingress
-        .shaping_wire_format()
-        .or_else(crate::proto::residual_default_dialect)
-        .unwrap_or("")
+/// The declared dialect NAME an answer to `(method, path)` is labelled with (the auth step's
+/// denial tap): a mounted plane's first wire format ([`Ingress::shaping_wire_format`]); on the
+/// fallback, the declared name of the matched line's `refusal_dialect` (spec Part 3 §12 l.2646:
+/// "each declared route carries an opaque `refusal_dialect`", the router sets it before `arrive`).
+/// Empty when no claimant's line answers the path: the kernel names no dialect of its own.
+pub fn denial_label(
+    lines: Option<&dyn ListenerLines>,
+    ingress: Ingress,
+    method: &str,
+    path: &str,
+) -> &'static str {
+    match ingress {
+        Ingress::Mounted(_) => ingress.shaping_wire_format().unwrap_or(""),
+        Ingress::Fallback => lines
+            .and_then(|l| l.facts(method, path))
+            .map_or("", |f| f.dialect),
+    }
 }
 
-/// Render `status`/`kind`/`message` in the dialect the resolved `ingress` is spoken in.
+/// Render a refusal the kernel answers with NO UNIT — its `401` before any handler, its no-route
+/// `404`, its wrong-method `405`, the body cap's `413`, the request-panic boundary's `500` — in the
+/// shape the resolved `ingress` is spoken in.
 ///
-/// The `kind` is the protocol-agnostic error category dialect writers map to their own vocabulary
-/// (`request_too_large`, `not_found`, …); a JSON-RPC plane has no such vocabulary — its category IS
-/// its numeric code — so the mounted arm does not consult it.
+/// The kernel owns the refusal; the bytes are the line's claimant's (spec THE DESIGN §5
+/// l.958-960: "the bytes come from the line's claimant through `refusal` under the line's
+/// `refusal_dialect` … or, with no line, from the listener's 1.5.5 default"). `reason` is what the
+/// claimant renders; `status`, `kind` and `message` are the kernel's own words, the `message` the
+/// claimant's text and the three together the listener's default when no claimant's line answers.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn native_error(
+    lines: Option<&dyn ListenerLines>,
     ingress: Ingress,
+    method: &str,
+    path: &str,
     status: StatusCode,
+    reason: ReasonCode,
     kind: &str,
     message: &str,
 ) -> Response {
@@ -64,11 +67,47 @@ pub(crate) fn native_error(
         // cosmetic mismatch: the client's decoder fails, and the failure is attributed to the wrong
         // layer.
         Ingress::Mounted(_) => crate::ingress::jsonrpc::transport_refusal(status, message),
-        // THE RESIDUAL, including the case where the path names no dialect at all — see
-        // [`envelope_dialect`] for what is chosen then, and why that is a decision about the reply
-        // rather than the fallthrough the old classifier smuggled into every site that read it.
-        Ingress::Fallback(_) => {
-            crate::proxy::ingress_error(envelope_dialect(ingress), status, kind, message)
+        // THE FALLBACK: the matched line's claimant renders it from the target by its own path
+        // rule; with no claimant's line, the listener's default envelope.
+        Ingress::Fallback => {
+            match lines.and_then(|l| l.refuse(method, path, reason, status.as_u16(), message)) {
+                Some(refused) => refused_response(refused),
+                None => listener_default(status, kind, message),
+            }
         }
     }
+}
+
+/// THE LISTENER'S OWN DEFAULT, with no claimant's line to render it: the dialect-free envelope
+/// (`{"error": {"message", "type"}}`), as JSON, at the kernel's status.
+pub(crate) fn listener_default(status: StatusCode, kind: &str, message: &str) -> Response {
+    use axum::response::IntoResponse;
+    let envelope = crate::proxy::agnostic_error_envelope(kind, message);
+    let body = crate::json::to_string(&envelope).unwrap_or_else(|_| envelope.to_string());
+    axum::response::Response::builder()
+        .status(status)
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            busbar_contract::protocol::APPLICATION_JSON,
+        )
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| status.into_response())
+}
+
+/// A claimant's rendered refusal as the response the listener writes: its status, its head fields
+/// in its order (a field whose name or value is not a legal header is dropped), its body.
+pub(crate) fn refused_response(refused: Refused) -> Response {
+    let status = StatusCode::from_u16(refused.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut resp = Response::new(axum::body::Body::from(refused.body));
+    *resp.status_mut() = status;
+    for (name, value) in refused.fields {
+        let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::from_bytes(&name),
+            axum::http::HeaderValue::from_bytes(&value),
+        ) else {
+            continue;
+        };
+        resp.headers_mut().append(name, value);
+    }
+    resp
 }

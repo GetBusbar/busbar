@@ -26,13 +26,21 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());
     let provider = crate::config::ProviderCfg {
-        // The registry-supplied residual-default dialect — the neutral test protocol — in place of the
-        // hard-coded `"openai"` literal. Under every surface that drives this fixture the LLM protocols
-        // are registered first (core's `cfg(test)` auto-publish, or each test's `install_test_seams`),
-        // so this resolves to the same default dialect the literal named.
-        protocol: crate::proto::residual_default_dialect()
-            .expect("a residual-default protocol (the neutral test dialect) must be registered")
-            .into(),
+        // A wire format the registered fallback plane declares, in place of a dialect name: the
+        // kernel's tests name none. The kernel's OWN test binary registers the neutral fallback
+        // plane for it; a test-support consumer (a plane's suite, the root's) registers its own
+        // planes, and a second fallback beside them would be refused.
+        protocol: {
+            #[cfg(test)]
+            register_neutral_test_plane();
+            let formats = crate::plane::fallback_wire_formats();
+            formats
+                .get(1)
+                .or(formats.first())
+                .copied()
+                .unwrap_or(NEUTRAL_WIRE_FORMATS[1])
+                .to_string()
+        },
         base_url: "https://api.example.com".into(),
         api_key,
         health: None,
@@ -113,6 +121,15 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
 // `register_test_plane` caller.
 static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl = NEUTRAL_FALLBACK;
 
+/// THE NEUTRAL FALLBACK PLANE'S DECLARED WIRE FORMATS: names no shipped dialect spells, standing for
+/// "the fallback plane declares wire formats" — what a provider's `protocol:` may name, the
+/// unknown-protocol refusal's list, and the per-wire-format telemetry banks — in a fixed order. The
+/// kernel's tests read them off the plane's declaration (`plane::fallback_wire_formats`) exactly as
+/// production reads the shipped plane's.
+pub const NEUTRAL_WIRE_FORMATS: &[&str] = &[
+    "proto-a", "proto-b", "proto-c", "proto-d", "proto-e", "proto-f",
+];
+
 /// The neutral fallback plane's row, as a value a test's own neutral plane can extend.
 pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
     declaration: crate::plane::registry::PlaneDeclaration {
@@ -135,7 +152,7 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
         served_op_classes: &[],
         caller_credential_refusal: None,
     },
-    wire_format_names: || &[],
+    wire_format_names: || NEUTRAL_WIRE_FORMATS,
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
@@ -166,7 +183,16 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
 /// `RootCfg`/`DeployCfg` (directly or via `resolve`) but asserts nothing about real llm/mcp/a2a
 /// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
 /// instead, where the real `busbar_llm`/`busbar_mcp`/`busbar_a2a` crates are reachable.
+///
+/// A registry that already holds a fallback plane (a test's own, seeded under an isolation) keeps
+/// it: one fallback is the rule, and the test's own is the one it asserts against.
 pub fn register_neutral_test_plane() {
+    if crate::plane::registry::plane_decls()
+        .iter()
+        .any(|d| d.fallback && d.key != NEUTRAL_FALLBACK_PLANE.key)
+    {
+        return;
+    }
     crate::plane::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
 }
 
@@ -363,5 +389,53 @@ impl busbar_kernel::test_support::BuiltAppSeam for crate::state::App {
 
     fn refresh_scrape_gauges(&self) {
         crate::metrics::refresh_scrape_gauges(self);
+    }
+}
+
+/// A KIND-NEUTRAL DOUBLE OF A LISTENER'S LINES (`guest::ListenerLines`), for a kernel test that
+/// needs the door-time facts a claimant's lines state without a plane: every path under the `.0`
+/// prefix is a line whose callers sign their requests (`abi::plane::STYLE_REQUEST_SIGNATURE`), and
+/// whose claimant answers a bad credential with a 403 (as a claimant stating that row would); no
+/// other refusal is rendered, so the listener's own default answers.
+pub struct SignedLinesDouble(pub &'static str);
+
+impl crate::guest::ListenerLines for SignedLinesDouble {
+    fn facts(&self, _method: &str, path: &str) -> Option<crate::guest::LineFacts> {
+        path.starts_with(self.0).then(|| crate::guest::LineFacts {
+            dialect: "",
+            inbound_style: Some(busbar_contract::abi::plane::STYLE_REQUEST_SIGNATURE.to_string()),
+            admits_method: true,
+        })
+    }
+
+    fn refuse(
+        &self,
+        _method: &str,
+        target: &str,
+        reason: busbar_contract::caps::ReasonCode,
+        _status: u16,
+        text: &str,
+    ) -> Option<crate::guest::Refused> {
+        // A claimant whose signed callers' bad credential is a 403 states it (as a real one states
+        // its row): the double renders that, in the listener's neutral envelope.
+        (reason == busbar_contract::caps::ReasonCode::Unauthenticated && target.starts_with(self.0))
+            .then(|| crate::guest::Refused {
+                status: 403,
+                fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+                body: crate::proxy::agnostic_error_envelope("permission_error", text)
+                    .to_string()
+                    .into_bytes(),
+            })
+    }
+
+    fn render_listing<'a>(
+        &'a self,
+        _target: &'a str,
+        _fields: Vec<(Vec<u8>, Vec<u8>)>,
+        _names: Vec<String>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<crate::guest::Refused>> + Send + 'a>,
+    > {
+        Box::pin(async { None })
     }
 }

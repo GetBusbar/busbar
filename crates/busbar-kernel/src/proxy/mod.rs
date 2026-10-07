@@ -160,18 +160,6 @@ pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
     serde_json::json!({ "error": { "message": msg, "type": kind } })
 }
 
-/// The canonical auth-failure `(HTTP status, error kind)` for an ingress protocol name — the agnostic
-/// dispatch through the registry's `ProtocolDecl::auth_failure_status_and_kind` (which replaced the
-/// `ProtocolWriter` vtable method). `BedrockWriter` resolves to (403, "auth"); `GeminiWriter` to (400,
-/// "invalid_request_error"); every other dialect and an unknown/dropped protocol fall back to the
-/// default (401, [`KIND_AUTHENTICATION`]) so the request path stays panic-free. Neutral: reads only the
-/// protocol registry, so it survives every LLM dialect being dropped from the build.
-pub fn auth_failure_status_and_kind(proto: &str) -> (http::StatusCode, &'static str) {
-    crate::proto::decl_for(proto)
-        .map(|d| d.auth_failure_status_and_kind)
-        .unwrap_or((http::StatusCode::UNAUTHORIZED, KIND_AUTHENTICATION))
-}
-
 tokio::task_local! {
     /// Per-request slot the `server_timing` middleware reads to compute Busbar's INTERNAL
     /// processing time (= total request wall-clock − upstream round-trip), reported as a
@@ -196,41 +184,16 @@ pub fn build_egress_client(
         .expect("the base egress engine posture has no failing build arm")
 }
 
-// ── THE AGNOSTIC INGRESS-ERROR SHAPER — RELOCATED DOWN from `busbar_kernel::proxy::proxy_vocab` ──────
-// The dialect-blind `(status, kind, msg)` → caller-dialect error `Response` projection, and core's own
-// fallback envelope. Moved onto the neutral substrate so the extracted native-ingress path in
-// `busbar-llm` shapes an ingress error through the neutral ABI rather than reaching BACK into
-// `busbar-core`. It names no dialect literally: `crate::proto::decl_for` reads whatever registry the
-// resident planes populated, and the fallback is the neutral envelope so it survives every LLM dialect
-// being dropped with the `busbar-llm` plane. `busbar-core` re-exports both at their historical
-// `busbar_kernel::proxy::{ingress_error, agnostic_error_envelope}` paths so every in-core caller is
-// unchanged.
+// ── THE LISTENER'S DEFAULT INGRESS-ERROR SHAPER ──────────────────────────────────────────────────
+// A dialect-shaped error is its claimant's (rendered through the claimant's `refusal`, spec THE
+// DESIGN §5 l.958-960); the kernel holds no dialect and renders only the listener's own default.
 
-/// The agnostic ingress-error shaper: project a `(status, kind, msg)` into the caller-dialect error
-/// response, attaching the protocol-appropriate headers via the resolved writer vtable. When `ingress`
-/// resolves to no protocol the body is the neutral `agnostic_error_envelope` and no protocol headers
-/// are attached — the shape that survives every LLM dialect being dropped with the `busbar-llm` plane.
+/// The listener's default ingress error: `(status, kind, msg)` as the neutral
+/// [`agnostic_error_envelope`], `application/json`. No dialect: the kernel picks none.
 pub fn ingress_error(
-    ingress: &str,
     status: axum::http::StatusCode,
     kind: &str,
     msg: &str,
 ) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    let dialect = crate::proto::decl_for(ingress).and_then(|d| d.dialect());
-    let envelope = match &dialect {
-        Some(di) => di.write_error(status.as_u16(), kind, msg),
-        None => agnostic_error_envelope(kind, msg),
-    };
-    let body = crate::json::to_string(&envelope)
-        .unwrap_or_else(|_| agnostic_error_envelope(kind, msg).to_string());
-    let mut resp = axum::response::Response::builder()
-        .status(status)
-        .header(axum::http::header::CONTENT_TYPE, APPLICATION_JSON)
-        .body(axum::body::Body::from(body))
-        .unwrap_or_else(|_| status.into_response());
-    if let Some(di) = &dialect {
-        di.attach_error_response_headers(resp.headers_mut(), kind, &envelope);
-    }
-    resp
+    crate::ingress::native::listener_default(status, kind, msg)
 }

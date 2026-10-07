@@ -712,15 +712,15 @@ pub struct ProtocolDecl {
 
     /// THE ROUTER detection predicate — how (and how tightly) this protocol claims an inbound
     /// `(headers, path)`. `None` for a protocol identified by its explicit mount rather than a wire
-    /// fingerprint. The generic fold in `busbar_kernel::proto::registry::detect_protocol` folds this over every
-    /// registered protocol in registration order and keeps the tightest [`ClaimStrength`], which is
+    /// fingerprint. The plane's detection fold (`busbar_plane_llm::exchange::arrive::detect`) folds this over
+    /// every declared protocol in declaration order and keeps the tightest [`ClaimStrength`], which is
     /// exactly what the old `busbar-core`-resident `protocol_id` if-ladder computed by hand. Each
     /// dialect states only ITS OWN rungs here, so the router names no dialect.
     pub claims: Option<ClaimsFn>,
 
     /// THE RESIDUAL detection predicate — how (and how tightly) this protocol claims a path from its
-    /// SHAPE ALONE, the arm `busbar_kernel::proto::residual_dialect_for_path` folds when the mount
-    /// table has declined a path and a native error envelope must still be chosen. `None` when this
+    /// SHAPE ALONE, the arm the plane's residual fold (`busbar_plane_llm::exchange::arrive::residual`)
+    /// reads when a refusal with no unit must still choose a native error envelope. `None` when this
     /// protocol names no residual path. Replaces this dialect's arm of the core-resident
     /// `residual_dialect_for_path` ladder.
     pub residual_claims: Option<ResidualClaimsFn>,

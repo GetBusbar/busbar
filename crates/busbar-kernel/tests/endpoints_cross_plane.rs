@@ -12,15 +12,15 @@
 //! with ONE `busbar_kernel` in the graph, which is exactly what an integration-test target gives. See
 //! `plane_integration.rs`'s header for the same rationale, first written there.
 //!
-//! `endpoints::{stats, list_models, list_models_v1beta}` were widened from `pub(crate)` to `pub` for
+//! `endpoints::{stats, visible_names}` were widened from `pub(crate)` to `pub` for
 //! exactly this move — nothing about the tests themselves changed; they still drive the real handler
 //! functions directly, not a shim or a real HTTP round trip.
 
 mod linked;
 
-use axum::{extract::Extension, http::HeaderMap};
+use axum::extract::Extension;
 use busbar_contract::records::{ScopeRef, VirtualKey};
-use busbar_kernel::endpoints::{list_models, list_models_v1beta, stats};
+use busbar_kernel::endpoints::stats;
 use busbar_kernel::governance::GovCtx;
 use busbar_kernel::state::{App, CurrentApp};
 use busbar_kernel::store::now;
@@ -59,17 +59,17 @@ fn topology_app() -> Arc<App> {
     TestApp::new()
         .lane(LaneSpec::new(
             "model-a0",
-            busbar_kernel::proto::PROTO_OPENAI,
+            linked::fallback_dialect(1),
             "http://a0",
         ))
         .lane(LaneSpec::new(
             "model-a1",
-            busbar_kernel::proto::PROTO_OPENAI,
+            linked::fallback_dialect(1),
             "http://a1",
         ))
         .lane(LaneSpec::new(
             "model-b",
-            busbar_kernel::proto::PROTO_OPENAI,
+            linked::fallback_dialect(1),
             "http://b",
         ))
         .pool("pool-a", &[(0, 1), (1, 1)])
@@ -156,12 +156,12 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("bounded", busbar_kernel::proto::PROTO_OPENAI, "http://b")
+            LaneSpec::new("bounded", linked::fallback_dialect(1), "http://b")
                 .max(1)
                 .sem(sem.clone()),
         )
         .lane(
-            LaneSpec::new("unbounded", busbar_kernel::proto::PROTO_OPENAI, "http://u")
+            LaneSpec::new("unbounded", linked::fallback_dialect(1), "http://u")
                 .max(tokio::sync::Semaphore::MAX_PERMITS),
         )
         .pool("p", &[(0, 1), (1, 1)])
@@ -236,9 +236,9 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
 async fn test_stats_limit_is_numeric_alias_of_max_concurrent() {
     register_planes();
     let app = TestApp::new()
-        .lane(LaneSpec::new("bounded", busbar_kernel::proto::PROTO_OPENAI, "http://b").max(3))
+        .lane(LaneSpec::new("bounded", linked::fallback_dialect(1), "http://b").max(3))
         .lane(
-            LaneSpec::new("unbounded", busbar_kernel::proto::PROTO_OPENAI, "http://u")
+            LaneSpec::new("unbounded", linked::fallback_dialect(1), "http://u")
                 .max(tokio::sync::Semaphore::MAX_PERMITS),
         )
         .pool("p", &[(0, 1), (1, 1)])
@@ -281,7 +281,7 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("wedged", busbar_kernel::proto::PROTO_OPENAI, "http://w")
+            LaneSpec::new("wedged", linked::fallback_dialect(1), "http://w")
                 .max(1)
                 .sem(sem.clone()),
         )
@@ -322,22 +322,11 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
     );
 }
 
+/// The names `/v1/models` lists for `gov`'s caller, as the kernel computes them (its governance;
+/// the claimant of the plane line beneath the path renders them, ARCHITECT RULING D 2026-10-07,
+/// pinned byte for byte in `busbar/src/root/tests/serve_listing.rs`).
 async fn models_ids(app: Arc<App>, gov: GovCtx) -> Vec<String> {
-    let resp = list_models(CurrentApp(app), Extension(gov), HeaderMap::new()).await;
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .expect("collect /v1/models body");
-    let body: Value = serde_json::from_slice(&bytes).expect("/v1/models body is JSON");
-    assert_eq!(body["object"], "list", "OpenAI list envelope");
-    body["data"]
-        .as_array()
-        .expect("data array")
-        .iter()
-        .map(|m| {
-            assert_eq!(m["object"], "model", "OpenAI model object");
-            m["id"].as_str().expect("model id").to_string()
-        })
-        .collect()
+    busbar_kernel::endpoints::visible_names(&app, &gov, &[])
 }
 
 /// `models.list()` is the first call an OpenAI SDK or a self-hosted UI makes. An
@@ -381,44 +370,7 @@ async fn test_v1_models_empty_allowed_pools_sees_all() {
     assert_eq!(ids.len(), 5);
 }
 
-async fn models_body(app: Arc<App>, headers: HeaderMap, beta: bool) -> Value {
-    let resp = if beta {
-        list_models_v1beta(CurrentApp(app), Extension(GovCtx::default()), headers).await
-    } else {
-        list_models(CurrentApp(app), Extension(GovCtx::default()), headers).await
-    };
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .expect("collect body");
-    serde_json::from_slice(&bytes).expect("JSON body")
-}
-
-/// The Anthropic SDK always sends `anthropic-version` (their API requires it) — the
-/// same path answers in the Anthropic list envelope for those callers.
-#[tokio::test]
-async fn test_v1_models_anthropic_fingerprint_gets_anthropic_envelope() {
-    let mut headers = HeaderMap::new();
-    headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
-    let body = models_body(topology_app(), headers, false).await;
-    assert_eq!(body["has_more"], false, "Anthropic list envelope");
-    let first = &body["data"][0];
-    assert_eq!(first["type"], "model");
-    assert_eq!(first["id"], "pool-a");
-    assert!(body.get("object").is_none(), "no OpenAI envelope fields");
-}
-
-/// Gemini callers (x-goog-api-key header, or the /v1beta path their SDK uses) get the
-/// Gemini models envelope with `models/<id>` resource names.
-#[tokio::test]
-async fn test_v1_models_gemini_fingerprint_gets_gemini_envelope() {
-    let mut headers = HeaderMap::new();
-    headers.insert("x-goog-api-key", "k".parse().unwrap());
-    let body = models_body(topology_app(), headers, false).await;
-    assert_eq!(body["models"][0]["name"], "models/pool-a");
-
-    let beta = models_body(topology_app(), HeaderMap::new(), true).await;
-    assert_eq!(
-        beta["models"][0]["name"], "models/pool-a",
-        "/v1beta path implies Gemini"
-    );
-}
+// The two envelope tests (`test_v1_models_anthropic_fingerprint_gets_anthropic_envelope`,
+// `test_v1_models_gemini_fingerprint_gets_gemini_envelope`) are re-homed beside the dialects that
+// render them, in `busbar-plane-llm/tests/listing.rs`: which envelope a caller reads is the plane's
+// rule, and the kernel names no dialect (ARCHITECT RULING D, 2026-10-07).

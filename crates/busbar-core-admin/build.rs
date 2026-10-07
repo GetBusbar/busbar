@@ -29,7 +29,6 @@ fn main() {
         "testkit::TEST_SEAM",
     );
     code.push_str(&door_table(&rows));
-    code.push_str(&protocols_table(&text));
     std::fs::write(Path::new(&out_dir).join("test_linked.rs"), code).expect("write test_linked.rs");
     // THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW: the auth plugin the tests link onto the auth axis,
     // as its memory-ABI door (`door::door`), named here as data and nowhere in the sources.
@@ -37,37 +36,6 @@ fn main() {
     let code = boundary_table(&auth, "for_each_operator_auth_row");
     std::fs::write(Path::new(&out_dir).join("test_operator_auth.rs"), code)
         .expect("write test_operator_auth.rs");
-}
-
-/// THE TEST-LINKED PROTOCOL DECLARATIONS (`test-linked-protocols = [...]`, optional): each listed
-/// crate's `linked::PROTOCOLS`, the declarations its linked row installs on the protocol axis in
-/// production, as `static TEST_LINKED_PROTOCOLS`, so a door plane whose dialects carry wire codecs
-/// installs them the way the composition root does. An absent key is an empty table: a crate that
-/// lists no such plane registers none.
-fn protocols_table(manifest: &str) -> String {
-    let listed = manifest.lines().any(|l| {
-        l.split('#')
-            .next()
-            .unwrap_or("")
-            .trim_start()
-            .starts_with("test-linked-protocols")
-    });
-    let crates = if listed {
-        metadata_list(manifest, "package.metadata.busbar", "test-linked-protocols")
-    } else {
-        Vec::new()
-    };
-    let mut out = String::from(
-        "static TEST_LINKED_PROTOCOLS: &[&[&::busbar_contract::protocol::ProtocolDecl]] = &[\n",
-    );
-    for c in &crates {
-        out.push_str(&format!(
-            "    {}::linked::PROTOCOLS,\n",
-            c.replace('-', "_")
-        ));
-    }
-    out.push_str("];\n");
-    out
 }
 
 /// The prefix of a `test-linked` row that is a plane served through its memory-ABI door only.

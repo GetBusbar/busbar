@@ -22,9 +22,7 @@ use serde_json::Value;
 use crate::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
 use crate::codec::DECLS;
 
-fn decl(name: &str) -> Option<&'static ProtocolDecl> {
-    DECLS.iter().copied().find(|d| d.name == name)
-}
+use crate::exchange::decl_for as decl;
 
 /// The message a far-end error with no readable message of its own is answered with.
 pub const GENERIC_REJECTED_DETAIL: &str = "The request could not be processed.";

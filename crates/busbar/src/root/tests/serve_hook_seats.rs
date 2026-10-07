@@ -34,7 +34,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, Published, PUBLISHING};
-use super::{compose_planes, door_routes, DoorEgress, HookStage};
+use super::{compose_planes, door_mounts, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -71,10 +71,19 @@ fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .expect("the fold switch links the door serving the `pools` map")
 }
 
+/// REGISTER THE DOOR SERVING THE `pools` MAP as the fallback plane, as the boot registers it: the
+/// plane whose declared dialects a deployment's providers name (`plane::fallback_wire_formats`), and
+/// the codec host services it reads, armed. For a root test that builds a configuration naming a
+/// provider without serving through the door.
+pub(crate) fn register_pools_door() {
+    busbar_kernel::plane_host::arm_codec_host_services();
+    busbar_kernel::plane::registry::register_test_plane(pools_door_row());
+}
+
 /// THE DOOR'S REGISTRY ROW, folded once for the process exactly as the boot folds a linked door
 /// (`root::linked::door_rows`): the loader's registration over a probe instance of the door, folded
 /// by the kernel into the row a deployment's sections resolve against.
-fn pools_door_row() -> &'static busbar_kernel::plane::registry::PlaneDecl {
+pub(crate) fn pools_door_row() -> &'static busbar_kernel::plane::registry::PlaneDecl {
     static ROW: std::sync::OnceLock<&'static busbar_kernel::plane::registry::PlaneDecl> =
         std::sync::OnceLock::new();
     ROW.get_or_init(|| {
@@ -487,6 +496,8 @@ pub(super) struct RigOpts<'a> {
     pub upstream_request_timeout_secs: Option<u64>,
     /// No hook is bound: the four probed seats (and a ranker) are left out of the generation.
     pub hookless: bool,
+    /// Pool `p`'s name (`None`: `p`).
+    pub main_pool: Option<&'a str>,
 }
 
 /// The Standard Webhooks signing secret the rig's `webhook-signature` instance holds (`whsec_` +
@@ -683,12 +694,11 @@ impl DoorRig {
 /// on the process connector, over `opts`' far ends, its egress the model-serving walk over the
 /// kernel's lane cells, its hooks the kernel's stage with the four probed seats installed.
 pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
-    // The linked protocol declarations the deployment's providers name, read off the linked table
-    // the root registers from, and the door's registry row (the plane key's row, which owns the
-    // `pools:`/`models:` sections the deployment writes), folded as the boot folds it.
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
+    // The codec host services, as the root's boot arms them before any plane is reachable.
+    busbar_kernel::plane_host::arm_codec_host_services();
+    // The door's registry row (the plane key's row, which owns the `pools:`/`models:` sections the
+    // deployment writes, and whose declared dialects the deployment's providers name), folded as
+    // the boot folds it.
     busbar_kernel::plane::registry::register_test_plane(pools_door_row());
     busbar_kernel::metrics::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
@@ -762,7 +772,8 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
             yaml.push_str(&indent(lines, 4));
         }
     }
-    yaml.push_str("pools:\n  p:\n    members:\n");
+    let main_pool = opts.main_pool.unwrap_or("p");
+    yaml.push_str(&format!("pools:\n  {main_pool}:\n    members:\n"));
     let pooled = opts.pooled.unwrap_or(opts.members.len());
     for (i, (_, weight)) in opts.members.iter().enumerate().take(pooled) {
         yaml.push_str(&format!(
@@ -940,7 +951,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         .take(pooled)
         .map(|(i, (_, w))| (i, *w))
         .collect();
-    builder = builder.pool("p", &weights);
+    builder = builder.pool(main_pool, &weights);
     for (pool, members, _) in opts.pools {
         let weights: Vec<(usize, u32)> = members.iter().map(|i| (*i, 1)).collect();
         builder = builder.pool(pool, &weights);
@@ -996,7 +1007,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         a.global_gates = vec![(0u16, gate(Arc::new(gate_probe)))];
         if opts.described || opts.signals.is_some() {
             let r: Arc<dyn RoutingPolicy> = ranker.clone();
-            a.pool_orderings.insert("p".to_string(), gate(r));
+            a.pool_orderings.insert(main_pool.to_string(), gate(r));
             use busbar_contract::Signal;
             let declared = opts.signals.unwrap_or(&[
                 Signal::CandidateBreakerState,
@@ -1082,15 +1093,26 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         )
     };
     let appliers = served.appliers();
-    let doors = door_routes(
+    let mounts = door_mounts(
         served,
         || CARD.pin(),
         &[],
         &busbar_kernel::base_data_core_lines(&app),
+        &[],
     )
     .expect("its claims mount");
-    let (router, _admin, _handle) =
-        busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+    let (router, _admin, handle) = busbar_kernel::build_split_routers_serving(
+        Arc::clone(&app),
+        mounts.routes,
+        1 << 20,
+        0,
+        false,
+    );
+    // The data listener's lines over the composed door's claims are handed to the kernel as
+    // production hands them (`AppHandle::set_listener_lines`): its door-time steps read them.
+    if let Some(lines) = mounts.lines {
+        handle.set_listener_lines(lines);
+    }
     DoorRig {
         router,
         token: token.expose_secret().to_string(),

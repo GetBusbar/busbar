@@ -42,11 +42,6 @@ const SCRATCH_KEY: &str = "mcp";
 /// WITHOUT building a plane (they reach the same `config_sections()` fold).
 pub fn install_test_seams() {
     busbar_kernel::plane::registry::register_test_plane(&PLANE_ROW);
-    // Register MCP the PROTOCOL into the process registry too — the composition root installs
-    // `PROTO_DECL` beside the plane in production, and core's registry must resolve `decl_for("mcp")`
-    // for the cross-plane refusal / matrix fixtures. Idempotent; replaces the deleted `#[path]` witness
-    // row that used to net the MCP codec into `busbar-core`'s test binary.
-    busbar_kernel::proto::register_test_protocol(&crate::PROTO_DECL);
     // The root's seam bindings beside the plane: the hostless-egress driver this plane's wire legs
     // run on, and the parse-time section list.
     busbar_kernel::test_support::install_root_seams();

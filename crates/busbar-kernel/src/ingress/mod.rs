@@ -4,12 +4,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::{
-    body::Bytes,
-    extract::OriginalUri,
-    http::{HeaderMap, StatusCode},
-    response::Response,
-};
+use axum::{extract::OriginalUri, http::StatusCode, response::Response};
 
 use crate::state::App;
 
@@ -146,7 +141,7 @@ pub fn admit_check(
         // bucket label, not an internal credential handle. Server-side tracing records the
         // full detail either way.
         tracing::info!(key_id = %key.id, blocked = ?blocked, "governance: limit bucket blocked admission");
-        let (status, kind, message, retry_after) = limit_refusal(proto, &blocked);
+        let (status, kind, message, retry_after) = limit_refusal(&blocked);
         let mut resp = ingress_error(proto, status, kind, &message);
         // Standard `Retry-After` for a rolling window so a well-behaved SDK backs off the
         // right amount ('total' never rolls: no header).
@@ -223,12 +218,14 @@ pub fn admit_downgrading<G>(
     }
 }
 
-/// THE LIMIT REFUSAL a blocked admission is answered with: its status in `proto`, its kind word,
-/// its message (naming the group, metric and window, never the key), and its Retry-After seconds
-/// (a rolling window's; `total` never rolls). One spelling, read by every door that admits.
+/// THE LIMIT REFUSAL a blocked admission is answered with: the kernel's status, its kind word, its
+/// message (naming the group, metric and window, never the key), and its Retry-After seconds (a
+/// rolling window's; `total` never rolls). One spelling, read by every door that admits. A dialect
+/// whose genuine over-quota answer wears another status states it as its plane's refusal-status row
+/// (the llm plane's bedrock `over_budget` 400, `busbar-plane-llm/src/refusal.rs`); the kernel holds
+/// no dialect's status.
 #[must_use]
 pub fn limit_refusal(
-    proto: &str,
     blocked: &crate::governance::LimitBlocked,
 ) -> (StatusCode, &'static str, String, Option<u64>) {
     use crate::governance::LimitBlocked;
@@ -278,12 +275,9 @@ pub fn limit_refusal(
             retry_after,
             ..
         } => (
-            // Native quota status differs by vendor (Bedrock's
-            // ServiceQuotaExceededException is 400; every other vendor surfaces
-            // over-quota as 429). The writer owns that mapping.
-            crate::proto::decl_for(proto)
-                .map(|d| d.quota_exceeded_status)
-                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            // The kernel's over-quota status. A vendor whose genuine over-quota answer wears
+            // another status states it as its plane's refusal-status row.
+            StatusCode::TOO_MANY_REQUESTS,
             crate::proxy::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "You have exceeded your current quota (group '{group}' budget per {}{} \
@@ -330,9 +324,7 @@ pub fn limit_refusal(
         // FAIL-CLOSED: a key bound to a group this node's config does not know is not
         // admitted; the message names the missing bucket so the operator can fix it.
         LimitBlocked::MissingGroup(group) => (
-            crate::proto::decl_for(proto)
-                .map(|d| d.quota_exceeded_status)
-                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            StatusCode::TOO_MANY_REQUESTS,
             crate::proxy::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "Your quota configuration is incomplete (group '{group}' is not \
@@ -650,20 +642,13 @@ fn finish_inner(
     resp
 }
 
-/// Render a router-side error as the ingress protocol's NATIVE error envelope (total
-/// indistinguishability). A client on a vendor's official SDK gets the typed
-/// exception it expects (JSON envelope) instead of a plain-text body it cannot decode. `proto`
-/// names the ingress protocol of the route that failed; `status` is the HTTP status; `kind` is a
-/// protocol-appropriate error category; `message` is the human-readable detail.
-///
-/// Thin delegation to the CANONICAL `crate::proxy::ingress_error` (the single
-/// source of truth for native error shaping + per-protocol headers — Bedrock
-/// `x-amzn-RequestId`/`x-amzn-errortype` via the `ProtocolWriter::attach_error_response_headers` vtable method (BedrockWriter delegates to its private helper), the generic
-/// fallback envelope, etc.). Keeping ingress on this one function rather than a private copy means
-/// route/forward error shaping cannot drift. The route call sites (and the in-module tests) keep
-/// the short `proto`/`message` parameter names; the canonical fn names them `ingress`/`msg`.
-pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {
-    crate::proxy::ingress_error(proto, status, kind, message)
+/// An ingress refusal answered here, where no claimant renders it: the listener's default envelope
+/// (`application/json`, the neutral `{"error": {"message", "type"}}`), so a client never reads a
+/// bare-text body. `_label` names the ingress the refusal is for in the caller's own vocabulary; the
+/// kernel reads no dialect off it (spec Part 2 #49). A dialect's own shape is its claimant's,
+/// rendered through its `refusal`.
+pub fn ingress_error(_label: &str, status: StatusCode, kind: &str, message: &str) -> Response {
+    crate::proxy::ingress_error(status, kind, message)
 }
 
 // THE PLANE-NEUTRAL JSON-RPC ENVELOPE READER, shared by every JSON-RPC-fronted mounted plane. It

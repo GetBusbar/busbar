@@ -605,11 +605,10 @@ auth:
         .map(|name| {
             let def: crate::config::ProviderDef = serde_yaml::from_str(&format!(
                 "protocol: {}\nbase_url: \"https://api.vendor-a.test\"\n",
-                crate::proto::registry::builtin_decls()
-                    .iter()
-                    .find(|d| d.codec.is_some())
-                    .map(|d| d.name)
-                    .expect("the test binary ships a codec protocol")
+                {
+                    crate::test_support::register_neutral_test_plane();
+                    crate::test_support::NEUTRAL_WIRE_FORMATS[0]
+                }
             ))
             .expect("the fixture ProviderDef yaml must parse");
             (name.to_string(), def)

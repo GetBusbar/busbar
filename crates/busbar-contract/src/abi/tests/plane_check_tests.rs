@@ -975,6 +975,86 @@ fn a_serve_audit_is_one_of_the_three() {
     );
 }
 
+/// THE LISTING RENDER'S `in` (ARCHITECT RULING D, 2026-10-07): a listing is one JSON payload under
+/// the blob rule on route `u32::MAX`; every other `serve` carries no listing and names a route.
+/// One RED arm per rule.
+#[test]
+fn a_serve_in_listing_is_json_on_the_listing_route_alone() {
+    use crate::abi::mechanism::call::{BLOB_JSON, BLOB_JSONL, BLOB_OCTETS};
+    let names = br#"["pool-a","model-a0"]"#;
+    let json = Blob {
+        ptr: names.as_ptr(),
+        len: names.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    // GREEN: an admin route with no listing; a listing on the listing route.
+    assert_eq!(check_serve_in(0, &Blob::ABSENT), Ok(()));
+    assert_eq!(check_serve_in(u32::MAX, &json), Ok(()));
+    // An empty list is still a listing.
+    let empty = b"[]";
+    let none_listed = Blob {
+        ptr: empty.as_ptr(),
+        len: empty.len(),
+        ..json
+    };
+    assert_eq!(check_serve_in(u32::MAX, &none_listed), Ok(()));
+    // RED: the listing route with no listing.
+    assert_eq!(
+        check_serve_in(u32::MAX, &Blob::ABSENT),
+        f(Rule::Missing, "serve_in.listing")
+    );
+    // RED: a listing that names an admin route.
+    assert_eq!(
+        check_serve_in(0, &json),
+        f(Rule::Contradiction, "serve_in.route")
+    );
+    // RED: an absent listing that still points at bytes.
+    let stray = Blob {
+        fmt: BLOB_ABSENT,
+        ..json
+    };
+    assert_eq!(
+        check_serve_in(0, &stray),
+        f(Rule::Contradiction, "serve_in.listing")
+    );
+    // RED: a format other than JSON.
+    for fmt in [BLOB_JSONL, BLOB_OCTETS, 99] {
+        assert_eq!(
+            check_serve_in(u32::MAX, &Blob { fmt, ..json }),
+            f(Rule::UnknownCode, "serve_in.listing.fmt")
+        );
+    }
+    // RED: a counted listing behind NULL.
+    let null_bytes = Blob {
+        ptr: null(),
+        ..json
+    };
+    assert_eq!(
+        check_serve_in(u32::MAX, &null_bytes),
+        f(Rule::NullWithCount, "serve_in.listing.ptr")
+    );
+}
+
+/// A listing's bytes read as the kernel's names, in order; anything but a JSON array of strings is
+/// FAULT (RED arms).
+#[test]
+fn a_serve_in_listing_reads_as_an_array_of_names() {
+    assert_eq!(
+        listing_names(br#"["pool-a","model-a0"]"#),
+        Ok(vec!["pool-a".to_string(), "model-a0".to_string()])
+    );
+    assert_eq!(listing_names(b"[]"), Ok(Vec::new()));
+    for bad in [&b"{}"[..], b"[1]", b"\"pool-a\"", b"", b"[\"a\""] {
+        assert_eq!(
+            listing_names(bad).map(|_| ()),
+            f(Rule::Contradiction, "serve_in.listing.names"),
+            "{:?}",
+            String::from_utf8_lossy(bad)
+        );
+    }
+}
+
 /// THE PUBLIC ROUTE'S AUTH SCHEME (ARCHITECT Q2 webhook receiver, 2026-10-06): a public route may
 /// name the scheme its callers are verified under; a scheme on an admin route, one counted with no
 /// bytes and one past the text bound are FAULT (RED arms).
@@ -1116,7 +1196,59 @@ fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
         flags,
         refusal_dialect: 0,
         _pad: 0,
+        inbound_style: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        path_form: 0,
+        _form_reserved: 0,
     }
+}
+
+/// A CLAIM'S PATH FORM IS THE ONE ROUTE VOCABULARY'S (spec, the design's connections): `0` leaves the
+/// flags to decide; any `abi::transport` form stands alone; a number outside it, or a form beside a
+/// target flag, is refused.
+#[test]
+fn a_claims_path_form_is_the_one_route_vocabularys() {
+    use crate::abi::transport::route::{PATH_CONTAINS, PATH_EXACT, PATH_SUFFIX};
+    for form in [0, PATH_EXACT, PATH_SUFFIX, PATH_CONTAINS] {
+        let mut c = claim("V", "/v1/messages", 0);
+        c.path_form = form;
+        assert_eq!(check_claims(&[c], 1), Ok(()), "form {form}");
+    }
+    let mut c = claim("V", "/v1/messages", 0);
+    c.path_form = PATH_CONTAINS + 1;
+    assert_eq!(
+        check_claims(&[c], 1),
+        f(Rule::UnknownCode, "claim.path_form")
+    );
+    for flag in [CLAIM_EXACT, CLAIM_PATTERN] {
+        let mut c = claim("V", "/v1/messages", flag);
+        c.path_form = PATH_SUFFIX;
+        assert_eq!(
+            check_claims(&[c], 1),
+            f(Rule::Contradiction, "claim.path_form"),
+            "flag {flag}"
+        );
+    }
+}
+
+/// THE INBOUND STYLE A CLAIM STATES (spec, the design's connections): absent, or a string; a length
+/// with a NULL pointer is refused, as every other string of the snapshot is.
+#[test]
+fn a_claims_inbound_style_is_absent_or_a_string() {
+    let mut c = claim("V", "/t", CLAIM_EXACT);
+    assert_eq!(check_claims(&[c], 1), Ok(()));
+    c.inbound_style = s(STYLE_REQUEST_SIGNATURE);
+    assert_eq!(check_claims(&[c], 1), Ok(()));
+    c.inbound_style = AbiStr {
+        ptr: std::ptr::null(),
+        len: 3,
+    };
+    assert_eq!(
+        check_claims(&[c], 1),
+        f(Rule::NullWithCount, "claim.inbound_style")
+    );
 }
 
 #[test]
@@ -2083,7 +2215,13 @@ fn a_refusal_status_names_a_declared_dialect_or_every_dialect() {
 #[test]
 fn a_refusal_status_names_a_reason_the_vocabulary_holds() {
     let mut r = row(0, ReasonCode::OverBudget, 400);
-    r.reason = ReasonCode::ALL.len() as u32;
+    // The next number past the wire table (its codes are append-only, not dense).
+    r.reason = RefusalCode::ALL
+        .iter()
+        .map(|c| c.code())
+        .max()
+        .expect("codes")
+        + 1;
     assert_eq!(
         check_refusal_statuses(&[r], 1),
         f(Rule::UnknownCode, "refusal_status.reason")
@@ -2301,6 +2439,9 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
     (39, RefusalCode::Superseded, "superseded"),
     (40, RefusalCode::ClientGone, "client_gone"),
     (41, RefusalCode::DeadlineExceeded, "deadline_exceeded"),
+    (43, RefusalCode::NoRoute, "no_route"),
+    (44, RefusalCode::WrongMethod, "wrong_method"),
+    (45, RefusalCode::HandlerPanic, "handler_panic"),
 ];
 
 #[test]
@@ -2326,7 +2467,9 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
         assert_eq!(reason.as_str(), *word, "code {number}");
         assert_eq!(reason_code(reason), *number);
     }
-    assert_eq!(RefusalCode::of(PINNED.len() as u32), None);
+    // The next number past the table names no code (the table is append-only, not dense).
+    let next = PINNED.iter().map(|(n, ..)| *n).max().expect("pins") + 1;
+    assert_eq!(RefusalCode::of(next), None);
     assert_eq!(reason_of(u32::MAX), None);
     // Every reason in the kernel's vocabulary has a wire code, and none shares one.
     for (i, r) in ReasonCode::ALL.iter().enumerate() {

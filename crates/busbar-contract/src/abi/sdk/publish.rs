@@ -177,6 +177,11 @@ pub struct ClaimSpec {
     /// The dialect a refusal on this route wears before `arrive` has read the arrival (see
     /// [`Claim::refusal_dialect`]); `0` for a plane with no dialects.
     pub refusal_dialect: u16,
+    /// The route's default inbound auth style (see [`Claim::inbound_style`]); `None` = none.
+    pub inbound_style: Option<String>,
+    /// How the target matches in the one route vocabulary (see [`Claim::path_form`]); `0` = by
+    /// `flags`.
+    pub path_form: u32,
 }
 
 impl ClaimSpec {
@@ -189,6 +194,8 @@ impl ClaimSpec {
             carrier: carrier.to_string(),
             flags,
             refusal_dialect: 0,
+            inbound_style: None,
+            path_form: 0,
         }
     }
 }
@@ -203,6 +210,9 @@ impl Publish for Claim {
             flags: spec.flags,
             refusal_dialect: spec.refusal_dialect,
             _pad: 0,
+            inbound_style: arena.opt_str(spec.inbound_style.as_deref()),
+            path_form: spec.path_form,
+            _form_reserved: 0,
         }
     }
 }

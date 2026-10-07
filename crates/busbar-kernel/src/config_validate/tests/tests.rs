@@ -7,6 +7,8 @@ fn make_root_cfg(
     models: HashMap<String, config::ModelCfg>,
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
+    // The fallback plane whose declared wire formats a provider's `protocol:` may name.
+    crate::test_support::register_neutral_test_plane();
     config::RootCfg {
         tool_defs: crate::plane::config::ToolsSection::default().0,
         agent_defs: crate::plane::config::AgentsSection::default().0,
@@ -85,25 +87,23 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
     }
 }
 
-/// The `nth` wire-codec protocol this test binary ships, read by POSITION off core's own test
-/// built-in table (the shipped install order) rather than spelled here. The validator's provider
-/// sweep asks only "is this a compiled-in codec protocol?", never which one, so a fixture needs a
-/// registered name, not a particular dialect — and the neutral kernel's tests name none.
+/// The `nth` wire format the neutral fallback plane declares (registered here), read by POSITION
+/// rather than spelled at each site. The validator's provider sweep asks only "is this a wire format
+/// the fallback plane declares?", never which one, so a fixture needs a declared name, not a
+/// particular dialect — and the neutral kernel's tests name none.
 fn shipped_protocol(nth: usize) -> &'static str {
-    crate::proto::registry::builtin_decls()
-        .iter()
-        .filter(|d| d.codec.is_some())
-        .nth(nth)
-        .map(|d| d.name)
+    crate::test_support::register_neutral_test_plane();
+    crate::test_support::NEUTRAL_WIRE_FORMATS
+        .get(nth)
+        .copied()
         .unwrap_or_else(|| {
             panic!(
-                "the test binary ships fewer than {} codec protocols",
+                "the neutral fallback plane declares fewer than {} wire formats",
                 nth + 1
             )
         })
 }
 
-/// The first shipped codec protocol — the one most fixtures use.
 fn proto_a() -> &'static str {
     shipped_protocol(0)
 }
@@ -210,7 +210,7 @@ fn test_validate_rejects_bad_protocol() {
         .iter()
         .find(|e| e.contains("unknown protocol 'nope'"))
         .unwrap_or_else(|| panic!("expected unknown-protocol error; got: {errs:?}"));
-    for proto in crate::proto::known_protocols() {
+    for proto in crate::plane::fallback_wire_formats() {
         assert!(
             msg.contains(proto),
             "allowed-set list must include '{proto}'; got: {msg}"
@@ -5603,29 +5603,16 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     );
 }
 
-/// **D5 — AND THE EMPTY SET IS ONE THE REGISTRY ITSELF PRODUCES.**
+/// **D5 — AND THE EMPTY SET IS ONE A BUILD WITH NO FALLBACK PLANE PRODUCES.**
 ///
-/// The two tests above hand the validator a literal `&[]`. That is only evidence if the registry
-/// can ever hand it the same thing — otherwise the refusal is pinned against an input that cannot
-/// occur, which is the vacuity D5 is about. So this one takes no literal: it builds a registry
-/// through the registry's OWN boot path with every protocol edge removed (see
-/// `registry_tests::a_registry_with_no_declarations_reports_no_protocols_at_all`), reads its
-/// codec-protocol list, and feeds THAT to the production sweep.
-///
-/// HONEST LIMIT, stated so nobody reads more into this than it says: the process-wide
-/// `known_protocols()` is a `OnceLock` over a `BUILTIN_DECLS` that is not empty in this build, so
-/// this drives the registry's empty state, not the process's. The zero-protocol BOOT proof closes
-/// with the last dialect extraction; this is the strongest proof available before it.
+/// The two tests above hand the validator a literal `&[]`. That is only evidence if the known set
+/// can ever be that — otherwise the refusal is pinned against an input that cannot occur, which is
+/// the vacuity D5 is about. So this one takes no literal: the known set is the fallback plane's
+/// declared wire formats (`plane::fallback_wire_formats`), read under a plane registry with no
+/// plane registered at all — the state of a build with every fallback-plane edge removed — and
+/// THAT is fed to the production sweep.
 #[test]
 fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
-    let empty_registry =
-        crate::proto::registry::Registry::new(crate::proto::registry::merged_boot_decls(&[], &[]));
-    let known: &'static [&'static str] = empty_registry.codec_protocols();
-    assert!(
-        known.is_empty(),
-        "the premise of this test: a registry with no declarations knows no protocols"
-    );
-
     let mut providers = HashMap::new();
     providers.insert(
         "prov-a".to_string(),
@@ -5633,12 +5620,18 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
 
+    let _no_planes = crate::plane::registry::TestRegistryIsolation::empty();
+    let known: &'static [&'static str] = crate::plane::fallback_wire_formats();
+    assert!(
+        known.is_empty(),
+        "the premise of this test: a build with no fallback plane declares no wire format"
+    );
     let mut errors = Vec::new();
     super::validate_providers_with(known, &cfg, &[], &mut errors);
     assert_eq!(
         errors.len(),
         1,
-        "the registry-derived empty set refuses the provider, once: {errors:?}"
+        "the empty set a planeless build produces refuses the provider, once: {errors:?}"
     );
     assert!(
         errors[0].contains("prov-a")
@@ -6047,6 +6040,8 @@ static FLAT_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
         ],
         ..CLASS_PLANE.declaration
     },
+    // The fallback plane declares the wire formats a provider's `protocol:` names.
+    wire_format_names: || crate::test_support::NEUTRAL_WIRE_FORMATS,
     ..CLASS_PLANE
 };
 

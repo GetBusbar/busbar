@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use super::arrive::Arrived;
 use super::attempt::stream_intent;
-use super::{decl, handler_of};
+use super::{decl_for as decl, handler_of};
 use crate::codec::translate::TranslateCodec;
 
 /// The dialect whose output cap the previous release read under `max_output_tokens`.

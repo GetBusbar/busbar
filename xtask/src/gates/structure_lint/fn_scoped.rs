@@ -111,7 +111,9 @@ pub fn request_path(a: &Addresses) -> Vec<FnRow> {
             why: "the store is a durability sink, never on the request path — every latency figure busbar publishes is measured on an admission that does no I/O".into(),
         },
         // THE PROTOCOL LOOKUP ALLOCATES NOTHING. `decl_for` is the one by-name protocol resolution
-        // in busbar and it is called several times per request. The `match` it replaced returned an
+        // in busbar and it is called several times per request. It lives in the plane that holds
+        // the dialects (the kernel's registry is deleted: the kernel names no dialect, spec Part 2
+        // #49), so the row is addressed at that plane's exchange module. The `match` it replaced returned an
         // OWNED `Protocol` and therefore allocated two vtable boxes on EVERY call — including the
         // many calls that only wanted a `&'static` constant off the declaration. Everything
         // reachable through a `ProtocolDecl` is `&'static`, so this function has no legitimate
@@ -119,7 +121,7 @@ pub fn request_path(a: &Addresses) -> Vec<FnRow> {
         FnRow {
             id: "A8-protocol-decl-for".into(),
             tag: "ALLOC-ON-PROTOCOL-LOOKUP".into(),
-            file: format!("{core}/proto/registry.rs"),
+            file: "crates/busbar-plane-llm/src/exchange/mod.rs".into(),
             func: "decl_for".into(),
             rules: vec![
                 FnBan::new("Box::new", "a box allocated while resolving a protocol name"),

@@ -57,18 +57,19 @@ use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
+use busbar_contract::abi::plane::check::{check_serve_in, listing_names};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    PIECE_CUT, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE,
-    ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK,
-    TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK,
-    VERDICT_RETRY,
+    CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PATTERN, CLAIM_PROBE, EMIT_DONE,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PIECE_CUT, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
+    PRINCIPAL_REQUIRED, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_POOL,
+    SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
+    VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
-use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
+use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut, STYLE_REQUEST_SIGNATURE};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, AUDIT_NONE, RECORD_AUDIT};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
@@ -76,6 +77,7 @@ use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec
 use busbar_contract::abi::sdk::{
     open_failed, Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot, Services,
 };
+use busbar_contract::abi::transport::route::{PATH_CONTAINS, PATH_SUFFIX};
 use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::ids::{MeterClassDecl, OpClassId};
 use busbar_contract::plane::PlaneMeta;
@@ -567,9 +569,29 @@ impl LlmDoor {
 
 // ── the claims ───────────────────────────────────────────────────────────────────────────────────
 
-/// One claim: its verb, its target, whether the target is exact (else its whole subtree), and the
-/// dialect a refusal on it wears before `arrive` has read the arrival.
-type ClaimRow = (&'static str, &'static str, bool, &'static str);
+/// How a claim's target matches: the one path, a `{name}` pattern (each placeholder one segment),
+/// the target's whole subtree, or — in the one route vocabulary (`abi::transport::route`, the
+/// design's guest lines, where it is defined once) — a path that ENDS with the target or CONTAINS
+/// it anywhere.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Form {
+    Exact,
+    Pattern,
+    Subtree,
+    Suffix,
+    Contains,
+}
+
+/// One claim: its verb, its target, how the target matches, the dialect a refusal on it wears
+/// before `arrive` has read the arrival, and the default inbound auth style its callers present
+/// (`None` = the plane states none).
+type ClaimRow = (
+    &'static str,
+    &'static str,
+    Form,
+    &'static str,
+    Option<&'static str>,
+);
 
 /// The verbs the previous release's fallback answered on any path (a dialect path hit with another
 /// verb reads the dialect's 405 from `arrive`; any other path its not-found).
@@ -577,35 +599,109 @@ const FALLBACK_VERBS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 /// THE DIALECTS' OWN PATHS (ARCHITECT Q-FL1, 2026-10-02), each with the dialect its path shape
 /// names (the rule [`crate::exchange::arrive::envelope_for`] renders a refusal by): exact where
-/// the previous release named one path, the whole subtree where it named a family.
-const DIALECT_CLAIMS: [ClaimRow; 7] = [
-    ("POST", "/v1/messages", true, "anthropic"),
-    ("POST", "/v1/chat/completions", true, "openai"),
-    ("POST", "/v1/responses", true, "responses"),
-    ("POST", "/v2/chat", true, "cohere"),
-    ("POST", "/v1beta/models", false, "gemini"),
-    ("POST", "/model", false, "bedrock"),
-    ("POST", "/v1/models", false, "openai"),
+/// the previous release named one path, the whole subtree where it named a family. The `/model` and
+/// `/v1/models` families are 1.5.5's residual default's, so their paths fall to the fallback line:
+/// 1.5.5 named another dialect there only on the converse paths ([`SIGNED_CLAIMS`]) and the gemini
+/// actions ([`suffix_dialects`]), which a subtree line would outrank (the guest lines' precedence,
+/// CG-62: a whole-path line beats a path's end) and whose `{model}` segment a subtree's tail cannot
+/// share a router with.
+const DIALECT_CLAIMS: [ClaimRow; 5] = [
+    ("POST", "/v1/messages", Form::Exact, "anthropic", None),
+    ("POST", "/v1/chat/completions", Form::Exact, "openai", None),
+    ("POST", "/v1/responses", Form::Exact, "responses", None),
+    ("POST", "/v2/chat", Form::Exact, "cohere", None),
+    ("POST", "/v1beta/models", Form::Subtree, "gemini", None),
 ];
 
-/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], then the previous release's fallback, a prefix claim on
-/// `/` per verb wearing the residual default dialect. The fallback reaches every path at any depth
-/// no more specific claim or kernel route takes (CG-62); the router has no plane-shaped branch.
+/// THE PATHS 1.5.5 NAMED A DIALECT FOR UNDER EVERY VERB (its residual ladder read the path alone),
+/// and the default inbound auth style each one's callers present: the converse paths' callers sign
+/// their requests (1.5.5 ran its request-signature pre-step there and nowhere else; spec THE
+/// design's guest lines, each claim's "default inbound auth style"). [`DIALECT_CLAIMS`] holds the `POST`
+/// claims of the first four; every other verb of [`FALLBACK_VERBS`] claims them all, so a refusal
+/// on any verb wears the path's own dialect, as 1.5.5's did (the plane seam's refusals).
+const PATH_DIALECTS: [(&str, Form, &str, Option<&str>); 6] = [
+    ("/v1/messages", Form::Exact, "anthropic", None),
+    ("/v1/responses", Form::Exact, "responses", None),
+    ("/v2/chat", Form::Exact, "cohere", None),
+    ("/v1beta/models", Form::Subtree, "gemini", None),
+    (
+        "/model/{model}/converse",
+        Form::Pattern,
+        "bedrock",
+        Some(STYLE_REQUEST_SIGNATURE),
+    ),
+    (
+        "/model/{model}/converse-stream",
+        Form::Pattern,
+        "bedrock",
+        Some(STYLE_REQUEST_SIGNATURE),
+    ),
+];
+
+/// The `POST` claims of the converse paths ([`PATH_DIALECTS`]' last two): the signed paths.
+const SIGNED_CLAIMS: std::ops::Range<usize> = 4..6;
+
+/// THE RUNGS OF 1.5.5'S LADDER THAT READ A PATH'S END, under every verb (spec l.910: a plane's
+/// lines "reproduce its 1.5.5 dispatch ladder exactly"): a path ending `/v1/messages` at any depth
+/// is the anthropic dialect's, and a model path ending in one of the gemini actions the gemini
+/// dialect's ([`crate::codec::gemini::GEMINI_RESIDUAL_ACTIONS`]).
+fn suffix_dialects(
+) -> impl Iterator<Item = (&'static str, Form, &'static str, Option<&'static str>)> {
+    std::iter::once(("/v1/messages", Form::Suffix, "anthropic", None)).chain(
+        crate::codec::gemini::GEMINI_RESIDUAL_ACTIONS
+            .iter()
+            .map(|&action| (action, Form::Suffix, "gemini", None)),
+    )
+}
+
+/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], the signed converse paths, every other verb's claim on
+/// the paths 1.5.5 named a dialect for ([`PATH_DIALECTS`]), every verb's claim on the path ends
+/// 1.5.5 named one for ([`suffix_dialects`]), then the previous release's fallback, a line per verb
+/// that CONTAINS `/` — every path at any depth — wearing the residual default dialect. Being the
+/// least specific line there is (CG-62), the fallback is reached only by a path no other claim or
+/// kernel route takes; the router has no plane-shaped branch.
 #[must_use]
 pub fn claims() -> Vec<ClaimSpec> {
     let fallback = crate::exchange::arrive::envelope_for("/");
+    let row = |verb: &'static str,
+               (target, form, dialect, style): (
+        &'static str,
+        Form,
+        &'static str,
+        Option<&'static str>,
+    )| (verb, target, form, dialect, style);
     DIALECT_CLAIMS
         .iter()
         .copied()
+        .chain(PATH_DIALECTS[SIGNED_CLAIMS].iter().map(|&p| row("POST", p)))
         .chain(
             FALLBACK_VERBS
                 .iter()
-                .map(|&verb| (verb, "/", false, fallback)),
+                .filter(|&&verb| verb != "POST")
+                .flat_map(|&verb| PATH_DIALECTS.iter().map(move |&p| row(verb, p))),
         )
-        .map(|(verb, target, exact, dialect)| {
-            let flags = if exact { CLAIM_EXACT } else { 0 };
+        .chain(
+            FALLBACK_VERBS
+                .iter()
+                .flat_map(|&verb| suffix_dialects().map(move |p| row(verb, p))),
+        )
+        .chain(
+            FALLBACK_VERBS
+                .iter()
+                .map(|&verb| (verb, "/", Form::Contains, fallback, None)),
+        )
+        .map(|(verb, target, form, dialect, style)| {
+            let (flags, path_form) = match form {
+                Form::Exact => (CLAIM_EXACT, 0),
+                Form::Pattern => (CLAIM_PATTERN, 0),
+                Form::Subtree => (0, 0),
+                Form::Suffix => (0, PATH_SUFFIX),
+                Form::Contains => (0, PATH_CONTAINS),
+            };
             let mut claim = ClaimSpec::new(verb, target, TRANSPORT, flags);
             claim.refusal_dialect = u16::try_from(dialect_index(dialect)).unwrap_or(0);
+            claim.inbound_style = style.map(str::to_string);
+            claim.path_form = path_form;
             claim
         })
         .collect()
@@ -1344,6 +1440,7 @@ slot!(
         };
         let given = input.get();
         let held = guard(&door.units).remove(&given.unit);
+        let mut restated: Option<u32> = None;
         let rendered = match &held {
             Some(UnitState {
                 declined: Some(d), ..
@@ -1373,7 +1470,16 @@ slot!(
                     }
                     _ => String::from_utf8_lossy(input.field(|i| &i.text).bytes()).into_owned(),
                 };
-                let status = u16::try_from(given.status).unwrap_or(500);
+                // A refusal with NO UNIT (the kernel's own, before any arrival: its 401, 404,
+                // 405, 413 and handler-panic 500) wears the status this plane states for the
+                // envelope the TARGET names, as 1.5.5 answered it, whatever dialect the matched
+                // line carried (the plane seam's refusals, "for a refusal with no unit — the TARGET, which
+                // the plane renders by its own path rule"; tail overrides l.2647).
+                if given.unit == 0 && arrived.is_none() && given.cause == REFUSAL_KERNEL {
+                    restated = crate::refusal::stated_status(envelope, given.reason);
+                }
+                let status =
+                    u16::try_from(restated.unwrap_or(given.status)).unwrap_or(500);
                 if given.cause == REFUSAL_GATE {
                     refuse::gate_refusal(envelope, status, &text)
                 } else {
@@ -1400,6 +1506,9 @@ slot!(
         out.set(|o| &o.fields_needed, fnd as u32);
         out.set(|o| &o.arena_written, aw as u64);
         out.set(|o| &o.arena_needed, and as u64);
+        if let Some(status) = restated {
+            out.set(|o| &o.status, status);
+        }
         if short {
             // The driver re-calls once with the buffers this named: the unit stays for it.
             if let Some(unit) = held {
@@ -1415,11 +1524,39 @@ slot!(
 slot!(
     /// `serve`: a public webhook route its owned section states, its caller already verified by the
     /// kernel under the route's scheme (the plane never sees the secret): the event acknowledged.
+    /// A LISTING RENDER (`ServeIn::listing`, ARCHITECT RULING D 2026-10-07): the kernel's visible
+    /// names for the caller, answered in the dialect the plane's own rule picks
+    /// ([`crate::exchange::listing`]); no audit row.
     Serve, ServeIn, ServeOut, |instance, input, mut out| {
+        let given = input.get();
+        if given.listing.fmt != BLOB_ABSENT || given.route == u32::MAX {
+            if check_serve_in(given.route, &given.listing).is_err() {
+                return Outcome::Fault;
+            }
+            let Ok(names) = listing_names(input.field(|i| &i.listing).bytes()) else {
+                return Outcome::Fault;
+            };
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            let target = String::from_utf8_lossy(input.field(|i| &i.target).bytes()).into_owned();
+            let head: Vec<(&[u8], &[u8])> = input
+                .fields()
+                .iter()
+                .map(|f| (f.field(|f| &f.name).bytes(), f.field(|f| &f.value).bytes()))
+                .collect();
+            let listing = crate::exchange::listing::render(&target, &head, &names);
+            drop(head);
+            return out.answer(
+                &input,
+                u32::from(listing.status),
+                &listing.fields,
+                &listing.body,
+                AUDIT_NONE,
+            );
+        }
         let Some(door) = instance.get() else {
             return Outcome::Failed;
         };
-        let route = input.get().route as usize;
+        let route = given.route as usize;
         if door.webhooks.get(route).is_none() {
             return Outcome::Refused;
         }

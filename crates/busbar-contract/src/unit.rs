@@ -179,6 +179,12 @@ pub enum RefusalReason {
     ClientGone,
     /// The unit ran past its maximum duration.
     DeadlineExceeded,
+    /// No line on the listener answers the request's target.
+    NoRoute,
+    /// A line answers the request's target, and none admits its method.
+    WrongMethod,
+    /// The kernel's own handler for the request panicked; the request alone fails.
+    HandlerPanic,
 }
 
 /// The closed reason codes a failure may carry.

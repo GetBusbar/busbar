@@ -29,6 +29,7 @@ fn line(claimant: &str, route: Route) -> Line {
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
+        inbound_style: None,
     }
 }
 

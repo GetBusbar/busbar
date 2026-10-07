@@ -44,7 +44,8 @@
 //!         | StaleSlice | DurabilityUnavailable | TierMismatch | Replayed | InFlight
 //!         | DestinationBudgetExhausted | BreakerOpen | DestinationUnreachable | MeterDisputed
 //!         | HandoffMismatch | PlanePanic | TaskLost | Stalled | SecretPlaceholder | Drain
-//!         | Superseded | ClientGone | DeadlineExceeded => false,
+//!         | Superseded | ClientGone | DeadlineExceeded | NoRoute | WrongMethod
+//!         | HandlerPanic => false,
 //!     }
 //! }
 //! assert!(is_the_callers_money(ReasonCode::OverBudget));
@@ -204,6 +205,13 @@ reasons! {
     ClientGone => "client_gone", ClientGone,
     /// The unit ran past its maximum duration.
     DeadlineExceeded => "deadline_exceeded", DeadlineExceeded,
+    /// No line on the listener answers the request's target (the kernel's own no-route answer).
+    NoRoute => "no_route", NoRoute,
+    /// A line answers the request's target and none admits its method (the kernel's own
+    /// wrong-method answer).
+    WrongMethod => "wrong_method", WrongMethod,
+    /// The kernel's own handler for the request panicked; the request alone fails.
+    HandlerPanic => "handler_panic", HandlerPanic,
 }
 
 impl std::fmt::Display for ReasonCode {

@@ -1,6 +1,5 @@
 use busbar_kernel::audit_ring;
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
-use busbar_kernel::proto::PROTO_ANTHROPIC;
 use busbar_kernel::test_support::warn_capture::WarnCapture;
 use std::sync::Arc;
 
@@ -146,7 +145,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         .lane(
             LaneSpec::new(
                 "model-a",
-                busbar_kernel::proto::PROTO_ANTHROPIC,
+                crate::test_seams::fallback_dialect(0),
                 "http://127.0.0.1:1/",
             )
             .provider("prov-x"),
@@ -154,7 +153,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         .lane(
             LaneSpec::new(
                 "model-b",
-                busbar_kernel::proto::PROTO_ANTHROPIC,
+                crate::test_seams::fallback_dialect(0),
                 "http://127.0.0.1:1/",
             )
             .provider("prov-y"),
@@ -353,7 +352,7 @@ async fn test_admin_v1_pool_detail_live_status() {
         .lane(
             LaneSpec::new(
                 "m1",
-                busbar_kernel::proto::PROTO_ANTHROPIC,
+                crate::test_seams::fallback_dialect(0),
                 "http://127.0.0.1:1/",
             )
             .provider("p"),
@@ -462,7 +461,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         .lane(
             LaneSpec::new(
                 "m1",
-                busbar_kernel::proto::PROTO_ANTHROPIC,
+                crate::test_seams::fallback_dialect(0),
                 "http://127.0.0.1:1/",
             )
             .provider("p"),
@@ -1081,7 +1080,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let mut app = crate::new_test_app()
         .lane(busbar_kernel::test_support::LaneSpec::new(
             "m0",
-            busbar_kernel::proto::PROTO_ANTHROPIC,
+            crate::test_seams::fallback_dialect(0),
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1100,7 +1099,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
 
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": PROTO_ANTHROPIC, "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}
+            "test-provider": {"protocol": crate::test_seams::fallback_dialect(0), "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -1179,10 +1178,11 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         &providers_path,
         format!(
             "test-provider:
-  protocol: {PROTO_ANTHROPIC}
+  protocol: {dialect}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_RELOAD_NO_SUCH_KEY
-"
+",
+            dialect = crate::test_seams::fallback_dialect(0)
         ),
     )
     .unwrap();
@@ -1215,7 +1215,7 @@ pools:
     let mut app = crate::new_test_app()
         .lane(busbar_kernel::test_support::LaneSpec::new(
             "m0",
-            busbar_kernel::proto::PROTO_ANTHROPIC,
+            crate::test_seams::fallback_dialect(0),
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1989,7 +1989,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let app = crate::new_test_app()
         .lane(busbar_kernel::test_support::LaneSpec::new(
             "m0",
-            busbar_kernel::proto::PROTO_ANTHROPIC,
+            crate::test_seams::fallback_dialect(0),
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -4571,7 +4571,7 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         .lane(
             LaneSpec::new(
                 "m",
-                busbar_kernel::proto::PROTO_ANTHROPIC,
+                crate::test_seams::fallback_dialect(0),
                 "http://127.0.0.1:1/",
             )
             .provider("prov"),
@@ -5834,7 +5834,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     let app = crate::new_test_app()
         .lane(busbar_kernel::test_support::LaneSpec::new(
             "m",
-            busbar_kernel::proto::PROTO_ANTHROPIC,
+            crate::test_seams::fallback_dialect(0),
             "http://127.0.0.1:0",
         ))
         .pool("smart", &[(0, 1)])
@@ -9710,10 +9710,11 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
         &providers_path,
         format!(
             "test-provider:
-  protocol: {PROTO_ANTHROPIC}
+  protocol: {dialect}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_RESET_NO_SUCH_KEY
-"
+",
+            dialect = crate::test_seams::fallback_dialect(0)
         ),
     )
     .unwrap();
@@ -11209,10 +11210,11 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         &providers_path,
         format!(
             "test-provider:
-  protocol: {PROTO_ANTHROPIC}
+  protocol: {dialect}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_GOV_ROTATE_NO_SUCH_KEY
-"
+",
+            dialect = crate::test_seams::fallback_dialect(0)
         ),
     )
     .unwrap();
@@ -13951,10 +13953,11 @@ fn write_named_map_fixture(
         &providers_path,
         format!(
             "test-provider:
-  protocol: {PROTO_ANTHROPIC}
+  protocol: {dialect}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY
-"
+",
+            dialect = crate::test_seams::fallback_dialect(0)
         ),
     )
     .unwrap();

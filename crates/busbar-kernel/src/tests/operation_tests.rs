@@ -79,46 +79,10 @@ fn all_holds_every_core_owned_verb_and_nothing_else() {
     );
 }
 
-/// THE METRIC LABEL SURFACE, AS A SET. `Operation::name` is a Prometheus/tracing label; the set of
-/// values it can take is the set of series an operator's dashboard can select. This is that set,
-/// spelled once, sorted, so any change to it is a visible diff in this file rather than a silently
-/// re-based series.
-///
-/// DERIVED FROM BOTH HALVES since the LLM rows left `Operation::ALL`: the core's six shape verbs
-/// plus whatever the registered protocol declarations serve. With the built-in protocols present
-/// this is the SAME thirteen labels the 1.5 era published — asserting that here is what proves the
-/// derivation re-based nothing — and in a build whose protocols are deleted the declared half
-/// genuinely shrinks, which is the vocabulary-level teeth the deletion test lacked while the seven
-/// words were a core table.
-#[test]
-fn the_metric_label_surface_is_exactly_these_thirteen() {
-    let mut labels: Vec<&str> = OpVerb::ALL
-        .iter()
-        .chain(crate::proto::registry::declared_verbs())
-        .map(|o| o.name())
-        .collect();
-    labels.sort_unstable();
-    labels.dedup();
-    assert_eq!(
-        labels,
-        [
-            "catalogue",
-            "chat",
-            "control",
-            "embeddings",
-            "fetch",
-            "image",
-            "invoke",
-            "moderation",
-            "rerank",
-            "speech",
-            "subscribe",
-            "task",
-            "transcription",
-        ],
-        "the operation metric label surface changed; a dashboard depends on this set"
-    );
-}
+// The operation LABEL SURFACE tests (`the_metric_label_surface_is_exactly_these_thirteen`,
+// `no_verb_name_carries_a_protocol_identity`) read their declared half off the kernel's protocol
+// registry, which is gone; they are re-homed beside the declarations they read, in
+// `busbar-plane-llm/tests/operation_labels.rs`. `no_operation_is_still_called_tool_call` stays.
 
 /// `ToolCall` became `Invoke` in 1.6.0 because the operation now carries A2A `message/send` as well
 /// as MCP `tools/call`; the old MCP-flavoured label must not survive anywhere on this axis, or a
@@ -129,35 +93,6 @@ fn no_operation_is_still_called_tool_call() {
         ALL.iter().all(|(_, _, n)| *n != "tool_call"),
         "`tool_call` was renamed to `invoke`; no operation may publish the old label"
     );
-}
-
-/// NO VERB NAMES A PROTOCOL. The whole point of the split is that a core type carries no protocol's
-/// identity, so the metric label surface may not contain one either — `mcp_tools_call` in this list
-/// would fail the deletion test on line one.
-#[test]
-fn no_verb_name_carries_a_protocol_identity() {
-    // The identities are READ OFF THE REGISTRY, not listed here: every protocol this test binary
-    // registers, so a protocol added to the registry is checked the day it lands. The plane keys of
-    // the real roster are checked against the same verbs in
-    // `tests/operation_names_cross_plane.rs`, where that roster is registered.
-    let identities: Vec<&str> = crate::proto::registry::registry()
-        .decls()
-        .iter()
-        .map(|d| d.name)
-        .collect();
-    assert_eq!(
-        identities.len(),
-        7,
-        "core's test binary registers seven protocols; an empty list would pass vacuously"
-    );
-    for (_, _, name) in ALL {
-        for forbidden in &identities {
-            assert!(
-                !name.contains(forbidden),
-                "`{name}` names the `{forbidden}` protocol; verbs are shapes plus neutral words"
-            );
-        }
-    }
 }
 
 /// THE SHAPE SET IS ENUMERABLE, and every shape has a distinct word. The same role

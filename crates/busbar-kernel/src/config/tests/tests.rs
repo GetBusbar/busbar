@@ -4,6 +4,9 @@ use super::*;
 
 /// A minimal ProviderDef for resolve() tests.
 fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
+    // The fallback plane whose declared wire formats a provider names (and whose first is the
+    // omitted-`protocol:` default).
+    crate::test_support::register_neutral_test_plane();
     ProviderDef {
         protocol: protocol.to_string(),
         base_url: base_url.to_string(),
@@ -1439,7 +1442,7 @@ fn test_resolve_provider_from_def() {
     // DeployCfg referencing z.ai + providers.yaml def -> resolved ProviderCfg has
     // protocol/base_url/error_map from def
     let mut defs = HashMap::new();
-    let mut def = provider_def(DEFAULT_PROTOCOL, "https://api.z.ai/api/model-1");
+    let mut def = provider_def(&default_protocol(), "https://api.z.ai/api/model-1");
     def.error_map
         .insert("1113".to_string(), "billing".to_string());
     def.error_map
@@ -1457,7 +1460,7 @@ fn test_resolve_provider_from_def() {
         .providers
         .get("z.ai")
         .expect("z.ai should be in resolved providers");
-    assert_eq!(provider_cfg.protocol, DEFAULT_PROTOCOL);
+    assert_eq!(provider_cfg.protocol, default_protocol());
     assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/model-1");
     assert_eq!(provider_cfg.api_key.env_var(), Some("ZAI_KEY"));
     assert_eq!(
@@ -1526,7 +1529,7 @@ fn test_resolve_override_wins() {
     let mut defs = HashMap::new();
     defs.insert(
         "custom".to_string(),
-        provider_def(DEFAULT_PROTOCOL, "https://default.example.com"),
+        provider_def(&default_protocol(), "https://default.example.com"),
     );
 
     let mut override_error_map = HashMap::new();
@@ -1566,7 +1569,7 @@ fn test_resolve_empty_error_map_allowed_in_def() {
     let mut defs = HashMap::new();
     defs.insert(
         "minimal".to_string(),
-        provider_def(DEFAULT_PROTOCOL, "https://api.example.com"),
+        provider_def(&default_protocol(), "https://api.example.com"),
     );
     let mut deploy = base_deploy();
     deploy
@@ -1781,7 +1784,10 @@ models:
         DEFAULT_MAX_HONORED_RETRY_AFTER_SECS
     );
     assert_eq!(l.default_max_tokens, DEFAULT_DEFAULT_MAX_TOKENS);
-    assert_eq!(l.default_max_tokens, crate::proto::DEFAULT_MAX_TOKENS);
+    assert_eq!(
+        l.default_max_tokens,
+        crate::config::limits::DEFAULT_MAX_TOKENS
+    );
     // The webhook sink's in-flight bound and delivery deadline are its own settings, checked by the
     // sink (`busbar-export-webhook`), never projected onto `LimitsResolved`.
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
@@ -2226,8 +2232,15 @@ fn on_error_cfg_as_name_unwraps_both_variants() {
 /// rather than N near-identical single-purpose tests.
 #[test]
 fn serde_default_fns_return_their_documented_constants() {
-    // plane-purity: frozen-wire the omitted-`protocol:` default in the frozen providers.yaml config grammar (frozen since 1.5.3)
-    assert_eq!(default_protocol(), "anthropic");
+    // The omitted-`protocol:` default is the fallback plane's first declared dialect (its tail's
+    // `dialects[0]`), read off the plane: the neutral fallback plane's here, the llm plane's 1.5.5
+    // default in the shipped build (`busbar-plane-llm/tests/plane_door.rs`,
+    // `the_first_declared_dialect_is_the_1_5_5_omitted_protocol_default`).
+    crate::test_support::register_neutral_test_plane();
+    assert_eq!(
+        default_protocol(),
+        crate::test_support::NEUTRAL_WIRE_FORMATS[0]
+    );
     assert_eq!(default_min_requests(), 5);
     assert_eq!(default_max_cooldown(), 120);
     assert_eq!(default_failover_timeout(), 120);
@@ -4363,7 +4376,10 @@ fn warn_invalid_floors_keeps_both_warnings_byte_for_byte() {
 /// wins over the catalog's, and absent everywhere it stays absent.
 #[test]
 fn the_provider_tenant_merges_deployment_over_catalog() {
-    let mut def = provider_def("openai", "https://api.example.com");
+    let mut def = provider_def(
+        crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+        "https://api.example.com",
+    );
     let mut deploy = provider_deploy("K");
     assert_eq!(merge_provider_fallback(&def, &deploy).organization, None);
     def.organization = Some("org-catalog".to_string());

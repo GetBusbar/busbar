@@ -4,7 +4,7 @@
 //! busbar-mcp — the Model Context Protocol, as ONE plugin crate.
 //!
 //! WHAT THIS CRATE HOLDS TODAY. The MCP protocol codec — the [`codec`] module: the
-//! [`ProtocolDecl`](busbar_kernel::proto::ProtocolDecl) ([`PROTO_DECL`]), the JSON-RPC dialect, and
+//! [`ProtocolDecl`](busbar_contract::protocol::ProtocolDecl) ([`PROTO_DECL`]), the JSON-RPC dialect, and
 //! the `tools/call` and subscription operation cells that core resolves through the support matrix.
 //! This is the whole of what `busbar-core/src/handlers/mcp.rs` was and what the standalone
 //! `busbar-proto-mcp` crate carried before it folded in here.
@@ -21,8 +21,8 @@
 //! about the seam changes because this plugin happens to also carry a plane's worth of state.
 //! Everything the codec consumes from the engine comes through `busbar-core`'s public surface;
 //! nothing in `busbar-core` names this crate in production, and the `busbar` BINARY — the
-//! composition root — links it and hands [`PROTO_DECL`] to
-//! the kernel's protocol registry (`busbar_kernel::proto::install_protocols`) at boot.
+//! composition root — links it. The kernel holds no protocol registry: [`PROTO_DECL`] is this
+//! crate's own declaration, read by this crate.
 
 /// THE CODEC, THE RECORD VOCABULARY AND THE TWO PURE CONTENT PASSES, RE-EXPORTED FROM
 /// `busbar-plane-mcp`.
@@ -101,17 +101,14 @@ pub use busbar_plane_mcp::PLANE_KEY;
 /// THE ONE ENTRY THIS PLUGIN IS REGISTERED THROUGH — everything a composition root that linked it
 /// wires, one item per registration axis, read off the crate rather than spelled at the root. The
 /// root's manifest names this crate and the axes it registers on
-/// (`[package.metadata.busbar.linked-axes]`: the plane, the JSON-RPC protocol declaration, the
-/// plane's owned diagnostics, the governed outbound hop it drives through the root-bound egress seam,
+/// (`[package.metadata.busbar.linked-axes]`: the plane, the plane's owned diagnostics, the governed outbound hop it drives through the root-bound egress seam,
 /// and the stdio serve mode); its build script turns that into one table per axis over these items,
 /// and the root's source names no item of this crate.
 pub mod linked {
-    /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
-    pub use crate::mcp::{PLANE_DECLARATION, PLANE_HOOKS};
-    /// The protocol axis: the one JSON-RPC declaration.
-    pub static PROTOCOLS: &[&busbar_contract::protocol::ProtocolDecl] = &[&crate::PROTO_DECL];
     /// The stdio serve mode: frames on stdin/stdout instead of a listener; the exit code.
     pub use crate::mcp::serve_stdio_boxed as stdio_serve;
+    /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
+    pub use crate::mcp::{PLANE_DECLARATION, PLANE_HOOKS};
     /// The diagnostics axis.
     pub use crate::DIAGNOSTICS;
     /// The CLI-help axis: this plane's rows of `busbar --help`, as declared data — `("flag", lines)`

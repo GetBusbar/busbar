@@ -156,23 +156,55 @@ fn counts_are_the_far_ends_tokens_in_the_tails_class_order_and_nothing_before_on
     assert!(counts(&units).iter().all(|u| u.source == UNITS_REPORTED));
 }
 
-/// The claim a POST on `path` meets: the exact claim on it, else the prefix claim with the longest
-/// target whose subtree holds it (a claim's target and every path under it, at any depth).
-fn claim_for(path: &str) -> busbar_contract::abi::sdk::publish::ClaimSpec {
-    use busbar_contract::abi::plane::CLAIM_EXACT;
-    let all = claims();
-    let post = all.iter().filter(|c| c.verb == "POST");
-    let exact = post
-        .clone()
-        .find(|c| c.flags & CLAIM_EXACT != 0 && c.target == path);
-    let under = |c: &&busbar_contract::abi::sdk::publish::ClaimSpec| {
-        let t = c.target.trim_end_matches('/');
-        c.flags & CLAIM_EXACT == 0 && (path == c.target || path.starts_with(&format!("{t}/")))
+/// The claim a request of `verb` on `path` meets, by the guest list's precedence (the guest
+/// lines' precedence, CG-62, as the kernel scores it, `busbar_kernel::grammar::specificity`): a whole path beats a
+/// pattern, a pattern beats a path's end or fragment, more literal beats less, and the plane's
+/// own order breaks a tie.
+fn claim_on(verb: &str, path: &str) -> busbar_contract::abi::sdk::publish::ClaimSpec {
+    use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_PATTERN};
+    use busbar_contract::abi::transport::route::{PATH_CONTAINS, PATH_SUFFIX};
+    let segs = |t: &str| -> Vec<String> {
+        t.trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
     };
-    exact
-        .or_else(|| post.filter(under).max_by_key(|c| c.target.len()))
-        .cloned()
-        .unwrap_or_else(|| panic!("no claim takes POST {path}"))
+    let literal = |s: &String| !s.starts_with('{');
+    let scored = |c: &busbar_contract::abi::sdk::publish::ClaimSpec| -> Option<u32> {
+        let t = c.target.as_str();
+        match (c.path_form, c.flags & (CLAIM_EXACT | CLAIM_PATTERN)) {
+            (PATH_SUFFIX, _) => path.ends_with(t).then(|| 1_000 + t.len() as u32),
+            (PATH_CONTAINS, _) => path.contains(t).then(|| 1_000 + t.len() as u32),
+            (_, CLAIM_EXACT) => (path == t).then(|| 10_000 + t.len() as u32),
+            (_, CLAIM_PATTERN) => {
+                let (ts, ps) = (segs(t), segs(path));
+                let hit =
+                    ts.len() == ps.len() && ts.iter().zip(&ps).all(|(t, p)| !literal(t) || t == p);
+                let lits = ts.iter().filter(|s| literal(s)).count() as u32;
+                hit.then(|| 5_000 + lits * 100 + ts.len() as u32)
+            }
+            _ => {
+                let base = t.trim_end_matches('/');
+                let hit = path == t || base.is_empty() || path.starts_with(&format!("{base}/"));
+                let ts = segs(t);
+                hit.then(|| 5_000 + ts.len() as u32 * 100 + ts.len() as u32 + 1 - 50)
+            }
+        }
+    };
+    let all = claims();
+    all.iter()
+        .enumerate()
+        .filter(|(_, c)| c.verb == verb)
+        .filter_map(|(i, c)| scored(c).map(|s| (s, std::cmp::Reverse(i), c)))
+        .max_by_key(|(s, i, _)| (*s, *i))
+        .map(|(_, _, c)| c.clone())
+        .unwrap_or_else(|| panic!("no claim takes {verb} {path}"))
+}
+
+/// The claim a POST on `path` meets ([`claim_on`]).
+fn claim_for(path: &str) -> busbar_contract::abi::sdk::publish::ClaimSpec {
+    claim_on("POST", path)
 }
 
 fn dialect_of(claim: &busbar_contract::abi::sdk::publish::ClaimSpec) -> &'static str {
@@ -198,9 +230,89 @@ fn every_dialects_path_is_a_claim_wearing_its_dialect() {
     }
 }
 
-/// THE PREVIOUS RELEASE'S FALLBACK IS A PREFIX CLAIM ON `/`, per verb, so a path no dialect names, at
-/// any depth, still reaches the plane (`http.crosscut|unknown-path|bare` and `|openai-suffix`), and
-/// a dialect path hit with another verb reaches `arrive`, which answers the dialect's 405.
+/// EVERY LINE WEARS 1.5.5'S DIALECT FOR ITS PATH, UNDER EVERY VERB (spec the design's guest lines: a
+/// plane's lines "reproduce its 1.5.5 dispatch ladder exactly"; the plane seam's refusals: the router sets
+/// a refusal's dialect from the matched route before `arrive`). 1.5.5's ladder read the path alone,
+/// so a refusal with no unit on any verb of a dialect's path wore that dialect: the line's dialect
+/// is [`envelope_for`]'s for every path a line can express. RED before the per-verb lines: `GET
+/// /v1/messages` met the `/` fallback, which wears the residual default.
+#[test]
+fn every_line_wears_the_dialect_1_5_5_named_for_its_path_under_every_verb() {
+    use busbar_plane_llm::exchange::arrive::envelope_for;
+    for verb in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+        for path in [
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/v2/chat",
+            "/v1beta/models",
+            "/v1beta/models/gemini-pro:generateContent",
+            "/model/m/converse",
+            "/model/m/converse-stream",
+            "/model/m/invoke",
+            "/model/m",
+            "/v1/models",
+            "/v1/models/gpt-4o",
+            "/v1/embeddings",
+            "/",
+            "/definitely/unknown",
+            // The path ends 1.5.5's ladder read (spec l.910), each its own line.
+            "/a/b/v1/messages",
+            "/x/v1/messages",
+            "/v1/models/gemini-pro:generateContent",
+            "/v1/models/gemini-pro:streamGenerateContent",
+            "/v1/models/gemini-pro:countTokens",
+            "/v1/models/text-embedding:embedContent",
+            "/v1/models/text-embedding:batchEmbedContents",
+            "/v1/models/gemini-pro:batchGenerateContent",
+            "/v1/models/aqa:generateAnswer",
+            "/v1/models/a/b:generateContent",
+        ] {
+            assert_eq!(
+                dialect_of(&claim_on(verb, path)),
+                envelope_for(path),
+                "{verb} {path}"
+            );
+        }
+    }
+}
+
+/// THE SIGNED LINES (the design's guest lines: each claim's "default inbound auth style"): the
+/// converse paths, under every verb, state `request-signature`, the one style the kernel's
+/// request-signature pre-step runs for; no other line states a style, so the pre-step runs where
+/// 1.5.5 ran it and nowhere else.
+#[test]
+fn only_the_converse_lines_state_the_request_signature_style() {
+    use busbar_contract::abi::plane::STYLE_REQUEST_SIGNATURE;
+    for verb in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+        for path in ["/model/m/converse", "/model/m/converse-stream"] {
+            assert_eq!(
+                claim_on(verb, path).inbound_style.as_deref(),
+                Some(STYLE_REQUEST_SIGNATURE),
+                "{verb} {path}"
+            );
+        }
+        for path in [
+            "/model/m/invoke",
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/",
+        ] {
+            assert_eq!(claim_on(verb, path).inbound_style, None, "{verb} {path}");
+        }
+    }
+    let signed = claims()
+        .iter()
+        .filter(|c| c.inbound_style.is_some())
+        .count();
+    assert_eq!(signed, 10, "two converse paths under five verbs");
+}
+
+/// THE PREVIOUS RELEASE'S FALLBACK IS A CLAIM ON `/`, per verb, so a path no dialect names, at any
+/// depth, still reaches the plane (`http.crosscut|unknown-path|bare` and `|openai-suffix`), and a
+/// dialect path hit with another verb reaches `arrive`, which answers the dialect's 405. It is a
+/// line that CONTAINS `/` (every path), the least specific line of the one route vocabulary, so
+/// every line reading a path's end outranks it (CG-62).
 #[test]
 fn the_fallback_is_a_prefix_claim_on_the_root_for_every_verb() {
     use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN};
@@ -211,6 +323,12 @@ fn the_fallback_is_a_prefix_claim_on_the_root_for_every_verb() {
             .find(|c| c.verb == verb && c.target == "/")
             .unwrap_or_else(|| panic!("no fallback claim for {verb}"));
         assert_eq!(root.flags & (CLAIM_EXACT | CLAIM_OPEN), 0, "{verb} /");
+        // Every path at any depth, in the one route vocabulary, the least specific line there is.
+        assert_eq!(
+            root.path_form,
+            busbar_contract::abi::transport::route::PATH_CONTAINS,
+            "{verb} /"
+        );
         assert_eq!(
             dialect_of(root),
             busbar_plane_llm::exchange::arrive::envelope_for("/"),
@@ -222,10 +340,14 @@ fn the_fallback_is_a_prefix_claim_on_the_root_for_every_verb() {
     }
     // No claim is open: every llm path takes a credential, as it did.
     assert!(all.iter().all(|c| c.flags & CLAIM_OPEN == 0));
-    // Every claim arrives over the one transport the far ends are reached over, and is named.
-    assert!(all
-        .iter()
-        .all(|c| !c.verb.is_empty() && c.target.starts_with('/') && c.carrier == "http"));
+    // Every claim arrives over the one transport the far ends are reached over, and is named: a
+    // path, or for a line that reads a path's end, that end.
+    assert!(all.iter().all(|c| {
+        !c.verb.is_empty()
+            && (c.target.starts_with('/')
+                || c.path_form == busbar_contract::abi::transport::route::PATH_SUFFIX)
+            && c.carrier == "http"
+    }));
 }
 
 /// RED for the `$` G3 commit: an open count the far end reported reaches the kernel in its
@@ -382,6 +504,32 @@ fn the_sticky_key_is_the_pools_header_else_the_chat_bodys_system() {
     let plain = serde_json::json!({"model": "p", "system": "", "messages": []});
     assert_eq!(affinity_key("x-session-id", &[], chat, Some(&plain)), None);
     assert_eq!(affinity_key("x-session-id", &[], None, Some(&body)), None);
+}
+
+/// THE PLANE'S DEFAULT DIALECT IS ITS FIRST (`abi::plane::PlaneTail::dialects`: "dialects[0] is the
+/// plane's default dialect for an entry that names none"; ARCHITECT ruling 2026-10-07): the kernel
+/// reads it for a provider whose `protocol:` is omitted, so it must be 1.5.5's omitted-protocol
+/// default, and the dialect list is 1.5.5's operator-visible order (oracle `BOOT-020`'s "must be
+/// one of" tail).
+#[test]
+fn the_first_declared_dialect_is_the_1_5_5_omitted_protocol_default() {
+    let names: Vec<&str> = DIALECTS.iter().map(|d| d.name).collect();
+    assert_eq!(
+        names,
+        [
+            "anthropic",
+            "openai",
+            "gemini",
+            "bedrock",
+            "responses",
+            "cohere"
+        ]
+    );
+    assert_eq!(
+        names[0],
+        busbar_plane_llm::exchange::shaping::DEFAULT_PROTOCOL,
+        "the plane's own omitted-protocol default"
+    );
 }
 
 /// EVERY DECLARED OPEN CLASS REACHES THE DURABLE BOOK (owner LEDGER-100): one count of each open

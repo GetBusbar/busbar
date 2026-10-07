@@ -300,8 +300,7 @@ static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLoc
 static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
 
 /// INSTALL PLANE DECLARATIONS — the composition root's one write into the plane axis, and the seam
-/// an extracted plane crate registers through. Exactly `crate::proto::registry::install_protocols`'
-/// shape and contract, on the plane axis. `pub`, not `pub`: the `busbar` binary crate is the
+/// an extracted plane crate registers through. `pub`, not `pub`: the `busbar` binary crate is the
 /// composition root and calls this from `main` (`register_planes`), before any config load or
 /// validation touches a plane.
 ///
@@ -868,8 +867,8 @@ impl std::ops::Deref for PlaneDecl {
 plane_behaviour! {
     /// The distinct WIRE FORMATS this plane translates between, named. A FUNCTION rather than a
     /// slice for exactly one reason, and it is the reason the field is worth its indirection: the
-    /// LLM plane's answer is `busbar_kernel::proto::known_protocols` — read off the live protocol
-    /// registry, so a seventh dialect does not depend on anybody remembering to bump a literal here.
+    /// a door plane's answer is its tail's declared dialects (`plane::door`), so a seventh dialect
+    /// does not depend on anybody remembering to bump a literal here.
     /// A plane whose list is constant returns a `&'static` slice and pays nothing.
     ///
     /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
@@ -1178,9 +1177,22 @@ static TEST_ISOLATION_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> =
 /// either observes this registration in full or excludes it for its whole lifetime — never a torn view.
 #[cfg(any(test, feature = "test-support"))]
 pub fn register_test_plane(decl: &'static PlaneDecl) {
-    let _serial = TEST_REGISTRY_SERIAL
+    // The isolation owner already holds the serial lock: its registration goes into the set it
+    // isolated (restored on drop) without re-taking the non-reentrant lock, the same reentrant path
+    // its reads take (`test_registered_planes`). Every other thread waits on the serial.
+    let owned_by_us = *TEST_ISOLATION_OWNER
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(|e| e.into_inner())
+        == Some(std::thread::current().id());
+    let _serial = if owned_by_us {
+        None
+    } else {
+        Some(
+            TEST_REGISTRY_SERIAL
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        )
+    };
     let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
     if !reg.iter().any(|d| d.key == decl.key) {
         reg.push(decl);

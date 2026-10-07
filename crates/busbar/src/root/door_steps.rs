@@ -672,7 +672,7 @@ impl<'s> DoorSteps<'s> {
             // The plane serving the `pools` map answers a blocked admission in the previous
             // release's words (`busbar_kernel::ingress::limit_refusal`).
             if self.facts.plane.is_empty() {
-                self.lock().refused.1 = Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+                self.lock().refused.1 = Some(busbar_kernel::ingress::limit_refusal(&blocked).2);
             }
             refusal_for(&blocked)
         })?;

@@ -251,18 +251,6 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 // crate this replaced did.
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 
-/// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
-/// every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
-///
-/// THE ORDER IS OPERATOR-VISIBLE. `merged_boot_decls` folds this set AHEAD of whatever built-in
-/// declarations core still carries, and the resulting sequence is both the "must be one of:" tail on
-/// a bad `protocol:` and the list `telemetry` indexes its per-protocol metric families by POSITION
-/// in. The set is the table's order, which is the manifest's: appending a row keeps every existing
-/// index; inserting one renumbers them.
-fn register_protocols() {
-    root::linked::register_protocols(&LINKED);
-}
-
 /// REGISTER THE PLANES — the composition root's one write into the plane axis
 /// (`busbar_kernel::plane::registry::install_planes`), over the plane tables of [`LINKED`] (each
 /// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`, and each
@@ -355,13 +343,12 @@ fn main() {
     let late_services = root::serve::LateServices::new();
     let dispatcher = root::dispatch::boot(WORKERS.0, late_services.clone());
     root::doors::install_dispatcher(dispatcher);
-    // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
-    // set. This is the composition root's whole knowledge of the protocol crates: one line per
-    // linked dialect, handed to the registry seam before anything reads it. A dialect absent from
-    // the build (its feature off) is simply never registered, and a config that names it gets the
-    // unknown-protocol refusal — the deletion test's runtime half (scripts/proto-deletion-gate.sh).
-    register_protocols();
-    // PLANE REGISTRATION, same slot and the same reason: `--validate` (just below) reads the plane
+    // THE CODEC HOST SERVICES FIRST (entropy, wall clock, usage-tap reporting, the translate cap):
+    // a plane's codec reads them through the contract, so they are armed before any plane is
+    // reachable. The kernel holds no protocol registry: a dialect is its plane's, and a config that
+    // names one the build's fallback plane does not declare gets the unknown-protocol refusal.
+    busbar_kernel::plane_host::arm_codec_host_services();
+    // PLANE REGISTRATION, before the CLI flags: `--validate` (just below) reads the plane
     // list through `plane::config::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
@@ -1032,7 +1019,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let door_appliers = served.appliers();
     #[cfg(linked_axis_node)]
     let door_post = served.post.clone();
-    let (doors, sessions) = root::serve::data_mounts(
+    let (doors, sessions, lines) = root::serve::data_mounts(
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
@@ -1047,6 +1034,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    // THE DATA LISTENER'S LINES, handed to the kernel before the first request: what its door-time
+    // steps (auth, the body cap, the no-route and wrong-method answers, the panic boundary) read a
+    // request's line from and render a refusal with no unit through.
+    if let Some(lines) = lines {
+        app_handle.set_listener_lines(lines);
+    }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new({

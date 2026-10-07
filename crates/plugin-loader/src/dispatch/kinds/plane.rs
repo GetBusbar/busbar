@@ -1426,6 +1426,11 @@ pub struct OwnedClaim {
     /// The dialect a refusal on this route wears before `arrive` has read the arrival (an index
     /// into the tail's dialects, opaque to the host): the guest-list line's dialect.
     pub refusal_dialect: u16,
+    /// The route's default inbound auth style (`abi::plane::Claim::inbound_style`); `None` = none.
+    pub inbound_style: Option<String>,
+    /// How the target matches in the one route vocabulary (`abi::plane::Claim::path_form`); `0` =
+    /// by `flags`.
+    pub path_form: u32,
 }
 
 /// One admin route of a snapshot, owned by the host.
@@ -1542,6 +1547,8 @@ fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot
                     carrier: text(c.carrier)?,
                     flags: c.flags,
                     refusal_dialect: c.refusal_dialect,
+                    inbound_style: owned_str(c.inbound_style)?,
+                    path_form: c.path_form,
                 })
             })
             .collect::<Option<_>>()?,

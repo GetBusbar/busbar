@@ -45,7 +45,6 @@ pub(super) fn linked(
         secrets: &[],
         plane_door_slots: &[],
         plane_door_declares: &[],
-        protocols: &[],
         diagnostics: &[],
         ws_arrivals: &[],
         compose: &[],

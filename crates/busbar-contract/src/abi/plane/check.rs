@@ -42,7 +42,9 @@ use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
     SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_ABSENT, BLOB_OCTETS, MAX_TEXT};
+use crate::abi::mechanism::call::{
+    AbiStr, Blob, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, MAX_TEXT,
+};
 use crate::abi::mechanism::check::{
     bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
     Filled, MAX_BYTES,
@@ -854,6 +856,55 @@ pub fn check_serve(
     )
 }
 
+/// The `route` a LISTING RENDER names ([`super::ServeIn::listing`]): no admin route.
+const LISTING_ROUTE: u32 = u32::MAX;
+
+/// `serve`'s `in`, as the kernel lends it (ARCHITECT RULING D, 2026-10-07): a listing render
+/// ([`super::ServeIn::listing`] present) is one [`BLOB_JSON`] payload under the plugin-owned blob
+/// rule and names route `u32::MAX`; any other `serve` carries [`Blob::ABSENT`] and names a route.
+///
+/// # Errors
+///
+/// [`Rule::UnknownCode`] for a format that is neither absent nor JSON; [`Rule::NullWithCount`] or
+/// [`Rule::OverMax`] for a payload the blob rule refuses; [`Rule::Contradiction`] for an absent
+/// listing with bytes, or a listing that names a route; [`Rule::Missing`] for route `u32::MAX`
+/// with no listing.
+pub fn check_serve_in(route: u32, listing: &Blob) -> Result<(), Fault> {
+    match listing.fmt {
+        BLOB_ABSENT => {
+            if !listing.ptr.is_null() || listing.len != 0 {
+                return Err(fault(Rule::Contradiction, "serve_in.listing"));
+            }
+            if route == LISTING_ROUTE {
+                return Err(fault(Rule::Missing, "serve_in.listing"));
+            }
+            Ok(())
+        }
+        BLOB_JSON => {
+            crate::abi::mechanism::check::blob(
+                listing,
+                "serve_in.listing.ptr",
+                "serve_in.listing.len",
+            )?;
+            if route != LISTING_ROUTE {
+                return Err(fault(Rule::Contradiction, "serve_in.route"));
+            }
+            Ok(())
+        }
+        _ => Err(fault(Rule::UnknownCode, "serve_in.listing.fmt")),
+    }
+}
+
+/// A listing render's names ([`super::ServeIn::listing`]'s bytes): one JSON array of strings, in
+/// the kernel's order.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for bytes that are not a JSON array of strings.
+pub fn listing_names(bytes: &[u8]) -> Result<Vec<String>, Fault> {
+    serde_json::from_slice(bytes).map_err(|_| fault(Rule::Contradiction, "serve_in.listing.names"))
+}
+
 /// The lifecycle `cancel`'s disposition: on READY, one of the plane's three (`0` = unwritten is
 /// FAULT); on any other outcome the op did not answer a disposition, and it must be unwritten.
 ///
@@ -963,6 +1014,29 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         if c.flags & CLAIM_EXACT != 0 && c.flags & CLAIM_PATTERN != 0 {
             return Err(fault(Rule::Contradiction, "claim.flags"));
         }
+        text(c.inbound_style, "claim.inbound_style")?;
+        claim_form(c.flags, c.path_form)?;
+    }
+    Ok(())
+}
+
+/// A claim's [`Claim::path_form`]: `0` (its flags decide), or a form of the one route vocabulary
+/// (`abi::transport::route::PATH_*`) with neither target flag set beside it.
+///
+/// # Errors
+///
+/// [`Rule::UnknownCode`] for a form outside the vocabulary, [`Rule::Contradiction`] for a form
+/// stated beside [`CLAIM_EXACT`] or [`CLAIM_PATTERN`].
+pub fn claim_form(flags: u32, path_form: u32) -> Result<(), Fault> {
+    use crate::abi::transport::route::{PATH_CONTAINS, PATH_EXACT};
+    if path_form == 0 {
+        return Ok(());
+    }
+    if !(PATH_EXACT..=PATH_CONTAINS).contains(&path_form) {
+        return Err(fault(Rule::UnknownCode, "claim.path_form"));
+    }
+    if flags & (CLAIM_EXACT | CLAIM_PATTERN) != 0 {
+        return Err(fault(Rule::Contradiction, "claim.path_form"));
     }
     Ok(())
 }

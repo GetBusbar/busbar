@@ -103,17 +103,16 @@ pub struct ProviderCfg {
     pub allow_metadata_hosts: Vec<String>,
 }
 
-/// Default provider protocol when not specified. Wire-contract: providers.yaml catalog entries
-/// and un-overridden deployments use this protocol for the dispatch registry lookup. This is the
-/// FROZEN config-grammar default for an omitted `protocol:` — independent of which dialects are
-/// compiled in (a build with every LLM dialect deleted still parses providers.yaml against it), so it
-/// cannot be read off the (possibly-empty) protocol registry and is named as a frozen-wire literal.
-// plane-purity: frozen-wire the omitted-`protocol:` default in the frozen providers.yaml config grammar (frozen since 1.5.3)
-pub const DEFAULT_PROTOCOL: &str = "anthropic";
-
-/// The serde default for an omitted `protocol:` — see [`DEFAULT_PROTOCOL`].
+/// The serde default for an omitted `protocol:`: the FALLBACK PLANE'S DEFAULT DIALECT, its first
+/// declared wire format (`abi::plane::PlaneTail::dialects`: "dialects[0] is the plane's default
+/// dialect for an entry that names none"; ARCHITECT ruling 2026-10-07). Read off the plane's own
+/// declaration, never a literal: the kernel names no dialect (spec Part 2 #49). A build with no
+/// fallback plane has no default, and an entry that names none is refused as an unknown protocol,
+/// the refusal every other unserved protocol gets.
 pub fn default_protocol() -> String {
-    DEFAULT_PROTOCOL.to_string()
+    crate::plane::fallback_wire_formats()
+        .first()
+        .map_or_else(String::new, |d| (*d).to_string())
 }
 
 /// Active health-probe mode for a provider's lanes.

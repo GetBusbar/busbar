@@ -41,11 +41,6 @@ pub fn install() {
             register_test_plane_seam(entry);
         }
     });
-    // The protocol declarations a door plane's linked row installs on the protocol axis, first: a
-    // lane's dialect resolves against them, as the composition root registers them before any plane.
-    for decls in TEST_LINKED_PROTOCOLS {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
     let doors = door_rows();
     let (mut seam, mut door) = (0, 0);
     for &is_door in TEST_LINKED_ORDER {
@@ -150,4 +145,21 @@ pub fn seam(decl: &PlaneDecl) -> &'static TestPlaneSeam {
         .into_iter()
         .find(|s| s.name == decl.key)
         .unwrap_or_else(|| panic!("the `{}` plane registered no test seam", decl.key))
+}
+
+/// The fallback plane's `nth` declared dialect (its tail's `dialects`, in its declared order —
+/// `dialects[0]` its default), installing the test-linked planes first: a test that needs a lane in
+/// SOME dialect of the linked fallback plane reads the plane's own word rather than spelling one.
+pub fn fallback_dialect(nth: usize) -> &'static str {
+    install();
+    busbar_kernel::plane::fallback_wire_formats()
+        .get(nth)
+        .copied()
+        .unwrap_or_else(|| {
+            panic!(
+                "the test-linked fallback plane declares fewer than {} dialects (Cargo.toml \
+                 [package.metadata.busbar] test-linked)",
+                nth + 1
+            )
+        })
 }

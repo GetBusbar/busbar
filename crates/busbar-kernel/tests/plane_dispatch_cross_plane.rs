@@ -48,13 +48,6 @@ fn door(key: &str) -> String {
     format!("/{key}")
 }
 
-/// WARM THE SHARED PROTOCOL REGISTRY. Reading `known_protocols()` once, up front, before any plane
-/// helper reaches it, keeps the dialect list populated order-independently of whatever order the
-/// harness runs tests in.
-fn warm_shared_protocol_registry() {
-    let _ = busbar_kernel::proto::known_protocols();
-}
-
 /// Every plane is reachable from `plane_keys()`, and it has no duplicates. The router, the config
 /// validator and the candidate projection all iterate this, so a plane missing from it is a plane
 /// that silently does not exist.
@@ -139,7 +132,6 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
 #[test]
 fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
     register_planes();
-    warm_shared_protocol_registry();
     assert!(has_superset_ir(fallback()));
     assert!(!has_superset_ir(single()));
     assert!(
@@ -175,20 +167,20 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
     );
 }
 
-/// The fallback plane's wire-format count is DERIVED from the real protocol registry, never a
-/// literal. An additional registered protocol must not require anyone to remember to bump a number
-/// here.
+/// The fallback plane's wire-format count is DERIVED from the plane's own declaration (its tail's
+/// dialects), never a literal and never a kernel table: an additional declared dialect must not
+/// require anyone to remember to bump a number here. (Formerly read off the kernel's protocol
+/// registry, which is gone; the plane's declaration is now the one list.)
 #[test]
-fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
+fn the_fallback_wire_format_count_comes_from_the_planes_declaration() {
     register_planes();
-    warm_shared_protocol_registry();
     assert_eq!(
         wire_formats(fallback()),
-        busbar_kernel::proto::known_protocols().len()
+        busbar_kernel::plane::fallback_wire_formats().len()
     );
     assert!(
         wire_formats(fallback()) >= 2,
-        "the registry itself is what earns the fallback plane its IR"
+        "the plane's declared dialects are what earn the fallback plane its IR"
     );
 }
 
@@ -209,7 +201,7 @@ fn transports_do_not_count_as_wire_formats() {
 fn plane_of(d: &PlaneDispatch, path: &str) -> &'static str {
     match d.ingress_of(path) {
         Ingress::Mounted(key) => key,
-        Ingress::Fallback(_) => fallback_key(),
+        Ingress::Fallback => fallback_key(),
     }
 }
 
@@ -339,7 +331,6 @@ fn a_mount_is_readable_back() {
 #[test]
 fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
     register_planes();
-    warm_shared_protocol_registry();
     for p in plane_keys() {
         assert_eq!(
             sole_wire_format(p).is_some(),
@@ -423,7 +414,7 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
             "{p:?} is mountable and its canonical binding is not JSON-RPC"
         );
         assert_eq!(
-            busbar_kernel::ingress::native::envelope_dialect(Ingress::Mounted(p)),
+            busbar_kernel::ingress::native::denial_label(None, Ingress::Mounted(p), "POST", "/"),
             WIRE_JSONRPC,
             "{p:?}'s door refusals must not fall through to a vendor envelope"
         );
@@ -445,12 +436,13 @@ fn the_mount_table_is_read_before_the_path_shape() {
         d.ingress_of(&format!("{m}/tools/list")),
         Ingress::Mounted(s)
     );
-    assert_eq!(
-        d.ingress_of("/v1/chat/completions"),
-        Ingress::Fallback(Some("openai"))
-    );
-    assert_eq!(d.ingress_of(&format!("{m}x")), Ingress::Fallback(None));
-    assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback(None));
+    // The fallback carries no dialect: the kernel reads none off a path's shape (spec Part 2 #49;
+    // THE DESIGN §5 l.958-960). Which dialect a fallback path's answers wear is its line's
+    // claimant's (`busbar-plane-llm/tests/plane_door.rs`,
+    // `every_line_wears_the_dialect_1_5_5_named_for_its_path_under_every_verb`).
+    assert_eq!(d.ingress_of("/v1/chat/completions"), Ingress::Fallback);
+    assert_eq!(d.ingress_of(&format!("{m}x")), Ingress::Fallback);
+    assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback);
 }
 
 /// A MOUNT CANNOT BE INFERRED FROM A URL.
@@ -467,7 +459,7 @@ fn an_unmounted_plane_is_never_resolved_from_the_path() {
     for path in &paths {
         assert_eq!(
             d.ingress_of(path),
-            Ingress::Fallback(None),
+            Ingress::Fallback,
             "{path} on a deployment with no plane mounted"
         );
     }
@@ -480,10 +472,9 @@ fn a_resolved_ingress_names_its_own_wire_format() {
     let s = single();
     let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
     assert_eq!(d.ingress_of(&door(s)).wire_format(), Some(WIRE_JSONRPC));
-    assert_eq!(
-        d.ingress_of("/v1/messages").wire_format(),
-        Some("anthropic")
-    );
+    // A fallback path names no wire format at the boundary: the kernel reads no dialect off its
+    // shape; the claimant labels its own units from inside (`arrive`'s dialect).
+    assert_eq!(d.ingress_of("/v1/messages").wire_format(), None);
     assert_eq!(d.ingress_of("/stats").wire_format(), None);
     let over = PlaneDispatch::default().mount(s, "/v1/messages", WIRE_JSONRPC);
     assert_eq!(
@@ -543,23 +534,20 @@ fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision() {
     assert!(superset_of(2));
 }
 
-/// **The fallback plane's dialect list IS the registry's, so the empty case is the registry's empty
-/// case.**
+/// **The kernel's dialect list IS the fallback plane's declaration, so the empty case is a build with
+/// no fallback plane.**
 #[test]
-fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
+fn the_fallback_planes_dialects_are_its_declaration_so_no_fallback_plane_empties_the_list() {
     register_planes();
-    warm_shared_protocol_registry();
     assert_eq!(
         wire_format_names(fallback()),
-        busbar_kernel::proto::known_protocols(),
-        "the fallback plane's wire formats must track the registry"
+        busbar_kernel::plane::fallback_wire_formats(),
+        "the kernel's wire formats must be the fallback plane's declaration"
     );
 
-    let empty = busbar_kernel::proto::registry::Registry::new(
-        busbar_kernel::proto::registry::merged_boot_decls(&[], &[]),
-    );
-    let names: &'static [&'static str] = empty.codec_protocols();
-    assert!(names.is_empty(), "premise: no declarations, no dialects");
+    let _no_planes = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
+    let names: &'static [&'static str] = busbar_kernel::plane::fallback_wire_formats();
+    assert!(names.is_empty(), "premise: no fallback plane, no dialects");
     assert_eq!(
         sole_of(names),
         None,

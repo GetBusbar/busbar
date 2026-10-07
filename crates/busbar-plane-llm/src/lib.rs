@@ -45,8 +45,6 @@ pub mod linked {
     /// The diagnostics axis: the plane's own coded diagnostics, defined beside the dialect code
     /// that emits them.
     pub use crate::codec::diagnostics::DIAGNOSTICS;
-    /// The protocol axis: the six dialects' declarations, in the order an operator sees.
-    pub use crate::codec::DECLS as PROTOCOLS;
     /// The CLI-help axis: this plane's rows of `busbar --help`, as declared data.
     pub use crate::meta::CLI_HELP;
 }

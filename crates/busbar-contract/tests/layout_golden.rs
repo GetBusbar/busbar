@@ -1724,7 +1724,17 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::Claim,
-        [verb, target, carrier, flags, refusal_dialect, _pad]
+        [
+            verb,
+            target,
+            carrier,
+            flags,
+            refusal_dialect,
+            _pad,
+            inbound_style,
+            path_form,
+            _form_reserved
+        ]
     );
     record!(
         s,
@@ -1909,7 +1919,8 @@ fn compute_layout() -> String {
             arena_buf,
             arena_cap,
             records_buf,
-            records_cap
+            records_cap,
+            listing
         ]
     );
     record!(

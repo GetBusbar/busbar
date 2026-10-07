@@ -621,17 +621,6 @@ pub(crate) fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
     }
 }
 
-// ── TEST-SUPPORT PROTOCOL REGISTRATION (the neutral seam) ──────────────────────────────────────────
-// A protocol crate's test-kit registers its `&'static ProtocolDecl` here — a SUBSTRATE type — exactly
-// as production's composition root `install_protocols` does, so the extracted protocol crates
-// (`busbar-llm`, `busbar-mcp`) reach the neutral ABI (`busbar_kernel::proto::register_test_protocol`)
-// rather than back into `busbar_kernel::proto::registry`. `busbar-core`'s test-support `registry()` folds
-// this list ahead of its built-ins on every read, so a protocol registered by any test before it reads
-// the registry is visible regardless of test order. This is the exact analogue of the plane axis's
-// `busbar_kernel::plane::registry::register_test_plane`, and it is what let the `#[path]` witness
-// re-includes of the dialect sources into `busbar-core` be deleted: the externally-linked crate's
-// `&DECL` is now the SAME `ProtocolDecl` type (this one), so core no longer needs a re-compiled copy.
-
 /// Drop the RESPONSE-side provider metadata that an egress dialect carries and no ingress dialect
 /// can express, on the open translate attempt (`codec::drops`), so it does not vanish from a
 /// translated response with nothing said. WHICH fields are present, and the SHAPE of the lookup,

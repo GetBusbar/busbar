@@ -397,6 +397,9 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
         flags: 0,
         refusal_dialect: 0,
         _pad: 0,
+        inbound_style: NO_STR,
+        path_form: 0,
+        _form_reserved: 0,
     },
     Claim {
         verb: s(b"POST"),
@@ -405,6 +408,9 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
         flags: CLAIM_OPEN | CLAIM_EXACT,
         refusal_dialect: 0,
         _pad: 0,
+        inbound_style: NO_STR,
+        path_form: 0,
+        _form_reserved: 0,
     },
     Claim {
         verb: s(b"POST"),
@@ -413,6 +419,9 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
         flags: CLAIM_OPEN,
         refusal_dialect: 0,
         _pad: 0,
+        inbound_style: NO_STR,
+        path_form: 0,
+        _form_reserved: 0,
     },
 ]);
 

@@ -169,6 +169,13 @@ impl DriverConfig {
     /// The status a refusal for `reason` wears in `dialect`: the plane's row for that dialect,
     /// else its row for every dialect, else [`DriverConfig::status_of`].
     pub fn status(&self, dialect: u32, reason: ReasonCode) -> u32 {
+        self.stated(dialect, reason)
+            .unwrap_or_else(|| (self.status_of)(reason))
+    }
+
+    /// The status the plane's tail STATES for `reason` in `dialect` (its row for that dialect, else
+    /// its row for every dialect); `None` when it states none.
+    pub fn stated(&self, dialect: u32, reason: ReasonCode) -> Option<u32> {
         let code = reason_code(reason);
         let row = |d: u32| {
             self.refusal_statuses
@@ -176,9 +183,7 @@ impl DriverConfig {
                 .find(|r| r.dialect == d && r.reason == code)
                 .map(|r| r.status)
         };
-        row(dialect)
-            .or_else(|| row(REFUSAL_ANY_DIALECT))
-            .unwrap_or_else(|| (self.status_of)(reason))
+        row(dialect).or_else(|| row(REFUSAL_ANY_DIALECT))
     }
 }
 
@@ -459,6 +464,110 @@ impl PlaneDriver {
     pub fn with_records(mut self, services: Arc<KernelServices>, caller: Caller) -> Self {
         self.records = Some((services, caller));
         self
+    }
+
+    /// A REFUSAL WITH NO UNIT, rendered by the plane through its `refusal` (ticketless, one re-call
+    /// when short): the kernel's own refusal before any arrival (its 401, its no-route 404, its
+    /// wrong-method 405, the body cap's 413, the request-panic 500) on a line of this plane. The
+    /// kernel chooses the status from the plane's stated row for the line's `dialect` and `reason`,
+    /// else the listener's own `status` for that answer (the 1.5.5 one: these are the listener's
+    /// answers, not a unit's), and passes the TARGET, which the plane renders by its own path rule
+    /// (spec Part 3 §12 l.2645); the plane may state the status its rendering carries. `None` when
+    /// the plane renders nothing.
+    #[must_use]
+    pub fn refuse_unitless(
+        &self,
+        dialect: u32,
+        reason: ReasonCode,
+        status: u32,
+        text: &str,
+        target: &[u8],
+    ) -> Option<Rendered> {
+        let status = self.config.stated(dialect, reason).unwrap_or(status);
+        let caps = self.config.caps;
+        let (mut reply, mut fields, mut arena) = (
+            vec![0u8; caps.reply],
+            vec![NO_FIELD; caps.fields],
+            vec![0u8; caps.arena],
+        );
+        let mut records = vec![NO_RECORD; caps.records];
+        let mut input = RefusalIn {
+            cause: REFUSAL_KERNEL,
+            status,
+            dialect,
+            reason: reason_code(reason),
+            text: AbiStr::over(text.as_bytes()),
+            reply_buf: reply.as_mut_ptr(),
+            reply_cap: reply.len(),
+            fields_buf: fields.as_mut_ptr(),
+            fields_cap: fields.len(),
+            arena_buf: arena.as_mut_ptr(),
+            arena_cap: arena.len(),
+            unit: 0,
+            plane_code: 0,
+            retry_after_s: 0,
+            target: AbiStr::over(target),
+            records_buf: records.as_mut_ptr(),
+            records_cap: records.len(),
+            ..blank_in()
+        };
+        let mut o: RefusalOut = blank_out();
+        let outcome = self.calls.refusal(&mut input, &mut o, &mut |short, i| {
+            reply.resize((short.reply_needed as usize).max(reply.len()), 0);
+            fields.resize((short.fields_needed as usize).max(fields.len()), NO_FIELD);
+            arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+            records.resize(
+                (short.records_needed as usize).max(records.len()),
+                NO_RECORD,
+            );
+            (i.records_buf, i.records_cap) = (records.as_mut_ptr(), records.len());
+            (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+            (i.fields_buf, i.fields_cap) = (fields.as_mut_ptr(), fields.len());
+            (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        });
+        if outcome != AbiOutcome::Ready {
+            return None;
+        }
+        let span = |s: Span| {
+            let start = s.offset as usize;
+            arena
+                .get(start..start.saturating_add(s.len as usize))
+                .unwrap_or_default()
+                .to_vec()
+        };
+        Some(Rendered {
+            // The status the plane's rendering carries, where it states one (`0` = the kernel's).
+            status: if o.status == 0 { status } else { o.status },
+            fields: fields
+                .iter()
+                .take(o.fields_written as usize)
+                .map(|f| (span(f.name), span(f.value)))
+                .collect(),
+            body: reply
+                .get(..o.reply_written as usize)
+                .unwrap_or_default()
+                .to_vec(),
+        })
+    }
+
+    /// THE LISTING RENDER on this plane (ARCHITECT RULING D, 2026-10-07): `names`, the kernel's
+    /// visible names for the caller in its order, rendered by the plane's `serve` op
+    /// ([`serve::render_listing`]) for the request `target` and the caller's `head` (the plane picks
+    /// the dialect by its own rule). Not a unit. `None` when the plane renders nothing.
+    pub async fn render_listing(
+        &self,
+        target: &[u8],
+        head: HeadFields,
+        names: &[&str],
+    ) -> Option<Rendered> {
+        let served = serve::render_listing(&*self.calls, self.config.caps, target, head, names)
+            .await
+            .ok()?;
+        Some(Rendered {
+            status: served.status,
+            fields: served.fields,
+            body: served.body,
+        })
     }
 
     /// The plane's generation is being replaced: every running unit is cancelled by the driver

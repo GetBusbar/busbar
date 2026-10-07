@@ -139,7 +139,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             errors.push(format!(
                 "model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
                 model_name,
-                crate::proto::DEFAULT_MAX_TOKENS
+                crate::config::limits::DEFAULT_MAX_TOKENS
             ));
         }
         // A `max_concurrent: 0` lane builds a `Semaphore::new(0)` at startup (main.rs), which never
@@ -320,13 +320,10 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // provider sweep (not just its protocol arm) is a function a test can drive against an EMPTY
     // set. See `validate_providers_with` for why the empty set is the load-bearing case.
     //
-    // Read through `registry().codec_protocols()` rather than the `known_protocols()` re-export:
-    // both yield the same codec set (`known_protocols` IS `registry().codec_protocols()`), but the
-    // `registry()` accessor SEEDS core's own-test built-in tail first, where the bare re-export does
-    // not. Under the test-support surface, validation can be a test's FIRST registry read (an
-    // app-boot fixture that never hit a request path), and an unseeded read would spuriously see an
-    // empty codec set and refuse a valid provider. Production is unaffected — there `registry()` is
-    // the direct substrate re-export and the composition root installed the protocols in `main`.
+    // The known set starts as the FALLBACK plane's declared wire formats
+    // (`plane::fallback_wire_formats`, the plane's own statement, in its order: the "must be one
+    // of:" tail is operator-visible, oracle cell BOOT-020). The kernel holds no dialect table of
+    // its own (spec Part 2 #49).
     //
     // UNIONED with every CONFIGURED plane's OWN declared dialects (`PlaneCfg::known_dialects`,
     // P2-243/P2-decvalidate) — a plane like the decisions plane speaks a dialect with no translating
@@ -340,9 +337,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::proto::registry::registry()
-        .codec_protocols()
-        .to_vec();
+    let mut known_protocols: Vec<&str> = crate::plane::fallback_wire_formats().to_vec();
     for decl in crate::plane::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))

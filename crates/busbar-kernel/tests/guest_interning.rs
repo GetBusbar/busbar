@@ -23,6 +23,7 @@ fn lines() -> Vec<Line> {
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
+        inbound_style: None,
     };
     vec![
         line("a", PATH_EXACT, "/intern/exact", Vec::new()),

@@ -31,9 +31,6 @@ test-linked = ["door:busbar-plane-llm", "busbar-mcp", "busbar-a2a"]
 # A `door:` row is a plane crate served through its memory-ABI door only: build.rs emits its
 # `plane_door::door` and the harness folds its registry row from its Statement, as the composition
 # root does (`root::linked::door_rows`). The list is the install order (the planes' layering order).
-# `test-linked-protocols` names the crates whose linked row installs protocol declarations on the
-# protocol axis (`linked::PROTOCOLS`): the dialects a lane's `protocol:` resolves against.
-test-linked-protocols = ["busbar-plane-llm"]
 # THE TEST REGISTRY ROW for the operator credential: the auth plugin dev-dependency whose SDK boundary
 # this crate's unit tests link onto the auth axis (build.rs emits it; the sources name no auth plugin),
 # as the composition root links it into the shipped binary.
@@ -85,7 +82,7 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # `CorePlaneAdminEnvelope`, which STAYED in busbar-core). NOTE: do NOT enable busbar-admin/test-support
 # on these edges.
 # THE FIRST TEST-LINKED PLANE, through its memory-ABI door only (a `door:` row of `test-linked`
-# above, its protocol declarations `test-linked-protocols`): a pure plane crate (it names the contract
+# above): a pure plane crate (it names the contract
 # alone), so no engine rides in.
 busbar-plane-llm = { path = "../busbar-plane-llm" }
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }

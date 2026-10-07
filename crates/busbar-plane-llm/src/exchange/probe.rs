@@ -9,15 +9,12 @@
 //! which a probe cannot name). The credential, the schedule, the timeout and the verdict are the
 //! kernel's.
 
-use busbar_contract::protocol::{ProtocolDecl, APPLICATION_JSON, EGRESS_UA_DEFAULT};
+use busbar_contract::protocol::{APPLICATION_JSON, EGRESS_UA_DEFAULT};
 
 use super::attempt::{wire_and_canonical_path, FarRequest};
 use super::shaping::Lane;
-use crate::codec::DECLS;
 
-fn decl(name: &str) -> Option<&'static ProtocolDecl> {
-    DECLS.iter().copied().find(|d| d.name == name)
-}
+use crate::exchange::decl_for as decl;
 
 /// The probe body the far end's dialect answers for `wire_model` (empty when it has none).
 #[must_use]

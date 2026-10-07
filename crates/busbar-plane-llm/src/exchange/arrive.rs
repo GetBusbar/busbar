@@ -14,7 +14,7 @@
 use std::borrow::Cow;
 
 use busbar_contract::operation::OpVerb;
-use busbar_contract::protocol::{HeadFields, ProtocolDecl, KIND_INVALID_REQUEST, KIND_NOT_FOUND};
+use busbar_contract::protocol::{HeadFields, KIND_INVALID_REQUEST, KIND_NOT_FOUND};
 use serde_json::Value;
 
 use crate::codec::gemini::STREAM_QUERY;
@@ -132,9 +132,7 @@ impl Catalogue for () {
     }
 }
 
-fn decl(name: &str) -> Option<&'static ProtocolDecl> {
-    DECLS.iter().copied().find(|d| d.name == name)
-}
+use crate::exchange::decl_for as decl;
 
 /// THE DETECTION FOLD: every dialect's claim on `(fields, path)`, the tightest winning, a tie going
 /// to the earlier declaration.

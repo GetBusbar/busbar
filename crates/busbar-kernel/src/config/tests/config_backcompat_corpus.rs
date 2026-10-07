@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::{resolve, DeployCfg, ProviderDef, DEFAULT_PROTOCOL};
+use super::{default_protocol, resolve, DeployCfg, ProviderDef};
 
 /// The directory holding the corpus configs and their blessed golden snapshots.
 fn corpus_dir() -> PathBuf {
@@ -67,8 +67,10 @@ fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
         .providers
         .keys()
         .map(|name| {
+            crate::test_support::register_neutral_test_plane();
             let def: ProviderDef = serde_yaml::from_str(&format!(
-                "{{ protocol: {DEFAULT_PROTOCOL}, base_url: \"https://provider.invalid\" }}"
+                "{{ protocol: {}, base_url: \"https://provider.invalid\" }}",
+                default_protocol()
             ))
             .expect("the fixed ProviderDef literal parses");
             (name.clone(), def)

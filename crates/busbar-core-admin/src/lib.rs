@@ -129,6 +129,22 @@ mod test_seams {
     include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
     include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
 
+    /// The linked fallback plane's `nth` declared dialect (`dialects[0]` its default), the seams
+    /// installed first: a test that needs a lane in SOME dialect of the linked fallback plane reads
+    /// the plane's own word rather than spelling one.
+    pub(crate) fn fallback_dialect(nth: usize) -> &'static str {
+        ensure_seam();
+        busbar_kernel::plane::fallback_wire_formats()
+            .get(nth)
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the linked fallback plane declares fewer than {} dialects",
+                    nth + 1
+                )
+            })
+    }
+
     pub(crate) fn ensure_seam() {
         use busbar_kernel::test_support::seam::{register_test_plane_seam, test_plane_seams};
         static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
@@ -149,11 +165,6 @@ mod test_seams {
             }
             for entry in TEST_LINKED {
                 register_test_plane_seam(entry);
-            }
-            // The protocol declarations a door plane's linked row installs on the protocol axis,
-            // first: a lane's dialect resolves against them, as the root registers them.
-            for decls in TEST_LINKED_PROTOCOLS {
-                busbar_kernel::proto::register_test_protocols(decls);
             }
             // In the list's order (the planes' layering order): each linked crate's own install,
             // each door plane's registry row folded from its Statement, as the root folds a door.

@@ -378,8 +378,8 @@ loom-model = ["busbar-kernel/loom-model"]
 # them into the kernel's registration seams, axis by axis, in table order — the same path an entry
 # adapted from a plugin dropped into `plugins/` feeds.
 #
-# THE ORDER IS THE REGISTRATION ORDER on every axis (protocols, planes, diagnostics, WS arrivals, the
-# root-bound seams): appending a row keeps every existing protocol's index; inserting one renumbers
+# THE ORDER IS THE REGISTRATION ORDER on every axis (planes, diagnostics, WS arrivals, the
+# root-bound seams): appending a row keeps every existing row's index; inserting one renumbers
 # them. `crates/busbar/tests/composition_root_names_no_linked_plugin.rs` refuses a `main.rs` that
 # names any crate or root module listed here.
 [package.metadata.busbar.linked]
@@ -421,7 +421,7 @@ plane-decisions-door = "busbar-plane-decisions"
 proto-llm-door = "busbar-plane-llm"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
-# kernel-side), `protocols`, `diagnostics`, `ws-arrivals`, `compose`, `stdio-serve`, `exports` —
+# kernel-side), `diagnostics`, `ws-arrivals`, `compose`, `stdio-serve`, `exports` —
 # each an item of the crate's entry
 # module — and the root-bound seams it drives: `egress`, `plane-sections`, `admin-envelope`.
 # `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
@@ -437,8 +437,8 @@ proto-llm-door = "busbar-plane-llm"
 # `secret-doors`: a `kind: secret` plugin's memory-ABI `door`.
 # `export-doors`: a memory-ABI `kind: export` sink's `NAME`, `ALIAS`, `DECLARES` and `door`.
 [package.metadata.busbar.linked-axes]
-proto-llm = "protocols diagnostics cli-help node"
-plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
+proto-llm = "diagnostics cli-help node"
+plane-mcp = "plane claims diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
 plane-decisions = "plane claims"

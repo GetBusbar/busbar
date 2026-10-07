@@ -427,6 +427,7 @@ extern "C" {
 #define BB_PLANE_PIN_FINGERPRINT UINT32_C(1) /* [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`. */
 #define BB_PLANE_MECHANISM_ROOT UINT32_C(1) /* [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key */
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */
+#define BB_PLANE_STYLE_REQUEST_SIGNATURE "request-signature" /* [`Claim::inbound_style`]: the route's callers present a REQUEST SIGNATURE rather than a token, */
 
 /* transport */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
@@ -743,6 +744,9 @@ typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_Superseded ((bb_plane_RefusalCode)39)
 #define BB_PLANE_RefusalCode_ClientGone ((bb_plane_RefusalCode)40)
 #define BB_PLANE_RefusalCode_DeadlineExceeded ((bb_plane_RefusalCode)41)
+#define BB_PLANE_RefusalCode_NoRoute ((bb_plane_RefusalCode)43)
+#define BB_PLANE_RefusalCode_WrongMethod ((bb_plane_RefusalCode)44)
+#define BB_PLANE_RefusalCode_HandlerPanic ((bb_plane_RefusalCode)45)
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;
@@ -2527,6 +2531,9 @@ struct bb_plane_Claim {
     uint32_t flags;
     uint16_t refusal_dialect;
     uint16_t _pad;
+    bb_mech_AbiStr inbound_style;
+    uint32_t path_form;
+    uint32_t _form_reserved;
 };
 
 /* One admin route the built plane serves through [`slot::SERVE`]. */
@@ -2745,6 +2752,7 @@ struct bb_plane_ServeIn {
     size_t arena_cap;
     bb_plane_RecordWrite *records_buf;
     size_t records_cap;
+    bb_mech_Blob listing;
 };
 
 /* `serve`'s `out`. */
@@ -4813,7 +4821,7 @@ BB_ASSERT(offsetof(bb_plane_PlaneTail, caller_credential_refusal) == 344, "bb_pl
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_routes) == 360, "bb_plane_PlaneTail.admin_routes: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_routes_len) == 368, "bb_plane_PlaneTail.admin_routes_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_openapi) == 376, "bb_plane_PlaneTail.admin_openapi: offset");
-BB_ASSERT(sizeof(bb_plane_Claim) == 56, "bb_plane_Claim: size");
+BB_ASSERT(sizeof(bb_plane_Claim) == 80, "bb_plane_Claim: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_Claim) == 8, "bb_plane_Claim: alignment");
 BB_ASSERT(offsetof(bb_plane_Claim, verb) == 0, "bb_plane_Claim.verb: offset");
 BB_ASSERT(offsetof(bb_plane_Claim, target) == 16, "bb_plane_Claim.target: offset");
@@ -4821,6 +4829,9 @@ BB_ASSERT(offsetof(bb_plane_Claim, carrier) == 32, "bb_plane_Claim.carrier: offs
 BB_ASSERT(offsetof(bb_plane_Claim, flags) == 48, "bb_plane_Claim.flags: offset");
 BB_ASSERT(offsetof(bb_plane_Claim, refusal_dialect) == 52, "bb_plane_Claim.refusal_dialect: offset");
 BB_ASSERT(offsetof(bb_plane_Claim, _pad) == 54, "bb_plane_Claim._pad: offset");
+BB_ASSERT(offsetof(bb_plane_Claim, inbound_style) == 56, "bb_plane_Claim.inbound_style: offset");
+BB_ASSERT(offsetof(bb_plane_Claim, path_form) == 72, "bb_plane_Claim.path_form: offset");
+BB_ASSERT(offsetof(bb_plane_Claim, _form_reserved) == 76, "bb_plane_Claim._form_reserved: offset");
 BB_ASSERT(sizeof(bb_plane_AdminRoute) == 72, "bb_plane_AdminRoute: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_AdminRoute) == 8, "bb_plane_AdminRoute: alignment");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, verb) == 0, "bb_plane_AdminRoute.verb: offset");
@@ -4992,7 +5003,7 @@ BB_ASSERT(offsetof(bb_plane_RefusalOut, fields_needed) == 136, "bb_plane_Refusal
 BB_ASSERT(offsetof(bb_plane_RefusalOut, status) == 140, "bb_plane_RefusalOut.status: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, records_written) == 144, "bb_plane_RefusalOut.records_written: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, records_needed) == 148, "bb_plane_RefusalOut.records_needed: offset");
-BB_ASSERT(sizeof(bb_plane_ServeIn) == 216, "bb_plane_ServeIn: size");
+BB_ASSERT(sizeof(bb_plane_ServeIn) == 240, "bb_plane_ServeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ServeIn) == 8, "bb_plane_ServeIn: alignment");
 BB_ASSERT(offsetof(bb_plane_ServeIn, head) == 0, "bb_plane_ServeIn.head: offset");
 BB_ASSERT(offsetof(bb_plane_ServeIn, route) == 88, "bb_plane_ServeIn.route: offset");
@@ -5009,6 +5020,7 @@ BB_ASSERT(offsetof(bb_plane_ServeIn, arena_buf) == 184, "bb_plane_ServeIn.arena_
 BB_ASSERT(offsetof(bb_plane_ServeIn, arena_cap) == 192, "bb_plane_ServeIn.arena_cap: offset");
 BB_ASSERT(offsetof(bb_plane_ServeIn, records_buf) == 200, "bb_plane_ServeIn.records_buf: offset");
 BB_ASSERT(offsetof(bb_plane_ServeIn, records_cap) == 208, "bb_plane_ServeIn.records_cap: offset");
+BB_ASSERT(offsetof(bb_plane_ServeIn, listing) == 216, "bb_plane_ServeIn.listing: offset");
 BB_ASSERT(sizeof(bb_plane_ServeOut) == 152, "bb_plane_ServeOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ServeOut) == 8, "bb_plane_ServeOut: alignment");
 BB_ASSERT(offsetof(bb_plane_ServeOut, head) == 0, "bb_plane_ServeOut.head: offset");

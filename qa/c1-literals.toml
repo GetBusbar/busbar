@@ -146,11 +146,6 @@ item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/providers.rs"
-item = "anthropic"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/sections.rs"
 item = "otlp"
 

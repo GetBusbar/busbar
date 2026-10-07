@@ -830,7 +830,7 @@ pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
 // Moved to `busbar_kernel::config::providers`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::providers::{
     default_protocol, neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef,
-    ProviderDeploy, DEFAULT_PROTOCOL,
+    ProviderDeploy,
 };
 
 // ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config

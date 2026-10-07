@@ -228,7 +228,7 @@ fn app_with_table(table: Arc<PluginRouteTable>) -> Arc<crate::state::App> {
     let base = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::test_support::NEUTRAL_WIRE_FORMATS[0],
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -357,7 +357,7 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
     let base = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::test_support::NEUTRAL_WIRE_FORMATS[0],
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])

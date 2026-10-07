@@ -59,7 +59,7 @@ fn resolved(sections: &str) -> RootCfg {
         "acme".to_string(),
         serde_yaml::from_str(&format!(
             "protocol: {}\nbase_url: https://api.example.com\n",
-            busbar_kernel::proto::residual_default_dialect().expect("a residual-default dialect")
+            linked::fallback_dialect(1)
         ))
         .expect("provider def"),
     );
@@ -613,7 +613,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    busbar_kernel::proto::PROTO_ANTHROPIC,
+                    linked::fallback_dialect(0),
                     &server.base_url(),
                 )
                 .api_key("busbar-upstream-key"),

@@ -198,7 +198,7 @@ three = "busbar-third"
 four = "busbar-fourth"
 
 [package.metadata.busbar.linked-axes]
-one = "plane protocols"
+one = "plane ws-arrivals"
 two = "plane egress"
 three = "plane diagnostics egress"
 four = "hot-plane"
@@ -225,7 +225,7 @@ unit-b = "beta"
     );
     assert!(out.contains("PlaneDecl; 2] = ["), "two plane rows: {out}");
     assert!(out.contains("assemble(crate::root::third_half::PLANE_DECLARATION, crate::root::third_half::PLANE_HOOKS)"));
-    assert!(out.contains("    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"));
+    assert!(out.contains("    ws_arrivals: &[busbar_first::linked::install_ws_arrivals, ],\n"));
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
     assert!(
         out.contains("    hot_planes: &[&busbar_fourth::linked::PLANE_DECL, ],\n"),

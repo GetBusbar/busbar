@@ -194,50 +194,6 @@ fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
 
 // ───────────────────────── 2. pre-mint READY-with-zero-fields -> no auth header ───────────────
 
-/// **Public entry point, not the unit**: `egress_auth::resolve()` — the SAME function the boot path
-/// calls to pick a lane's egress credential — for `jwt-bearer`/`oauth-client-credentials` returns a
-/// credential that emits NO auth header at all rather than a self-minted token synchronously (those
-/// mint asynchronously at boot via a separate special-cased path; reaching `resolve` with one of
-/// these styles means that wiring was bypassed). Zero header bytes on the wire is exactly what turns
-/// into the upstream's OWN ordinary 401 — no busbar-side header is emitted for the upstream to
-/// reject on shape, and no raw secret material is sent as a bogus bearer either. Pins v1.5.5
-/// `crates/busbar/src/egress_auth/mod.rs:150-200` via the
-/// CURRENT public surface, not by reaching into `NoCredential` directly.
-#[test]
-fn ready_credential_with_no_fields_emits_no_auth_header_through_public_resolve() {
-    use crate::config::ProviderAuth;
-    use crate::egress_auth::resolve;
-    use crate::proto::SigningContext;
-
-    for style in [
-        ProviderAuth::JwtBearer,
-        ProviderAuth::OAuthClientCredentials,
-    ] {
-        let cred = resolve("anthropic", Some(style));
-        // `NoCredential` IS lane-constant — it is constantly nothing, so freezing it at boot is
-        // sound (unlike a real self-minting credential, which never reaches this arm: it is
-        // special-cased at boot into its own async mint path before `resolve` is ever called).
-        assert!(
-            cred.is_lane_constant(),
-            "the fail-closed no-header stand-in is context-independent by construction"
-        );
-        let ctx = SigningContext {
-            host: "h.example.com",
-            canonical_uri: "/v1/messages",
-            body: b"",
-            timestamp_epoch: 0,
-            upstream_creds: busbar_contract::config::UpstreamCreds::Own,
-        };
-        let headers = cred.headers_for("should-be-ignored", &ctx);
-        assert!(
-            headers.is_empty(),
-            "resolve() reaching a self-minting style outside its async boot path must emit ZERO \
-             auth header bytes (upstream sees its own ordinary 401), never the raw key verbatim: \
-             got {headers:?}"
-        );
-    }
-}
-
 /// THE ADMIN CREDENTIAL NEVER REACHES A LOG LINE (ARCHITECT ruling 2026-09-30, AUTH-DOOR: admin
 /// requests terminate locally and the verify answer's strips are not applied there, so nothing the
 /// chain writes may carry the credential). Every answer the operator's door can give — an identity,

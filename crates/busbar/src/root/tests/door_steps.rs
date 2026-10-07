@@ -454,6 +454,41 @@ fn a_member_binds_every_need_its_style_names_one_per_transport() {
     );
 }
 
+/// THE OPERATOR'S `auth: api-key` OVERRIDE BINDS FOR EVERY DIALECT (ported from the kernel's deleted
+/// `egress_auth/tests/prebuilt_auth_tests.rs`, `api_key_override_prebuilds_for_every_protocol`;
+/// ARCHITECT F25 ruling 2026-10-07): whatever a dialect's own default style — a bearer, a request
+/// signature — a provider that names `auth: api-key` is bound on the need the `api-key` style names,
+/// never on its dialect's default. The static style is built once at open (the linked header auth
+/// plugin's `the_static_styles_build_their_header_at_open`), so the bound credential is the
+/// boot-built one on every request.
+#[cfg(feature = "auth-header")]
+#[test]
+fn the_api_key_override_binds_its_own_need_for_every_dialect() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let served = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, "bearer"),
+            (DIRECTION_OUTBOUND, "request-signature"),
+            (DIRECTION_OUTBOUND, "api-key"),
+        ],
+        need_transports: vec!["http", "http", "http"],
+        dialects: vec!["d-bearer", "d-signed"],
+        dialect_auth: vec![(0, "bearer", b""), (1, "request-signature", b"")],
+        ..Default::default()
+    };
+    for dialect in ["d-bearer", "d-signed"] {
+        let routes = resolve_over(
+            "models: {m: {provider: p}}",
+            &[("p", provider(dialect, Some("api-key")))],
+            &served,
+        )
+        .unwrap_or_else(|e| panic!("{dialect}: the member resolves: {e}"));
+        let route = &routes["m"];
+        assert_eq!(route.need.0, 2, "{dialect}: bound on the api-key need");
+        assert!(route.auth.is_some(), "{dialect}: its credential is bound");
+    }
+}
+
 /// The routes `section`'s members resolve to over `providers`, or why the load is refused.
 fn resolve(
     section: &str,

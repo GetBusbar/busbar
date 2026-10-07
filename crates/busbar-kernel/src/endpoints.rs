@@ -144,48 +144,55 @@ pub async fn stats(
     Json(json!({ "pools": pools, "lanes": lanes })).into_response()
 }
 
-/// `GET /v1/models` — a list-models discovery surface. This is often the first call an SDK
-/// (`client.models.list()`) or a self-hosted UI makes to populate a
-/// model picker, so busbar answers it with every name a client can put in a request body:
-/// configured model entries AND pool names (a pool is a routable model from the client's
-/// point of view).
+/// `GET /v1/models` and `GET /v1beta/models` — the list-models discovery surface. This is often the
+/// first call an SDK (`client.models.list()`) or a self-hosted UI makes to populate a model picker,
+/// so busbar answers it with every name a client can put in a request body: configured model
+/// entries AND pool names (a pool is a routable model from the client's point of view), then each
+/// plane generation's listed names.
 ///
 /// Governance-scoped with the same rules as `/stats`: a virtual key with an `allowed_scopes` list
-/// (even an empty one) sees only its visible pools and the models reachable through them —
-/// the model list must not leak topology the pool ACL hides.
-pub async fn list_models(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Extension(gov): Extension<GovCtx>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    list_models_dialect(app, gov, &headers, false)
-}
-
-/// `GET /v1beta/models` — the same list under a second dialect's discovery path.
-pub async fn list_models_v1beta(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Extension(gov): Extension<GovCtx>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    list_models_dialect(app, gov, &headers, true)
-}
-
-/// Multiple registered dialects can put their list-models endpoint on the same noun, each with its
-/// own envelope: this build's dialects may share `GET /v1/models` outright, and a dialect may
-/// instead list at `GET /v1(beta)/models`. Primary (POST) surfaces are disjoint by path, so this is
-/// the one place busbar disambiguates callers by PROTOCOL FINGERPRINT instead: each dialect
-/// declares its own fingerprint headers (see `ProtocolDecl::list_models_fingerprint_headers`) or
-/// relies on the `/v1beta` path convention, the first dialect whose fingerprint matches renders the
-/// envelope, and anything left unmatched falls to the registry's residual default dialect.
+/// (even an empty one) sees only its visible pools and the models reachable through them — the
+/// model list must not leak topology the pool ACL hides.
 ///
-/// The list itself is the same data in every dialect: the names a client may put in a
-/// request body. No privileged protocol - the data is one, the rendering is the caller's.
-fn list_models_dialect(
-    app: Arc<App>,
-    gov: GovCtx,
-    headers: &axum::http::HeaderMap,
-    gemini_path: bool,
+/// THE KERNEL COMPUTES THE NAMES; THE PLANE RENDERS THEM (ARCHITECT RULING D, 2026-10-07; spec Part
+/// 2 #49, THE DESIGN §5 l.958-960). Several dialects put their list-models endpoint on this noun,
+/// each with its own envelope, and which one a caller speaks is a dialect question the kernel does
+/// not ask: the names go to the claimant of the plane line beneath the path
+/// ([`crate::guest::ListenerLines::render_listing`], through its `serve`), which picks the dialect
+/// by its own rule from the target and the caller's head and answers the whole reply. Not a unit:
+/// nothing here is admitted, audited, metered or posted. With no plane line beneath the path (a
+/// build with no plane claiming it), the answer is an empty JSON object, which names no dialect and
+/// leaks no shape.
+pub async fn list_models(
+    axum::extract::State(handle): axum::extract::State<Arc<crate::state::AppHandle>>,
+    Extension(gov): Extension<GovCtx>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
 ) -> Response {
+    let app = handle.load();
+    let lines = handle.listener_lines();
+    let listed = lines.map(|l| l.listed()).unwrap_or_default();
+    let names = visible_names(&app, &gov, &listed);
+    let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
+    let rendered = match lines {
+        Some(lines) => {
+            lines
+                .render_listing(target, listing_head(&headers), names)
+                .await
+        }
+        None => None,
+    };
+    rendered
+        .and_then(|r| rendered_response(&r))
+        .unwrap_or_else(|| Json(json!({})).into_response())
+}
+
+/// THE NAMES `gov`'s caller may put in a request body, in the order the listing states them: the
+/// visible pools (sorted), then the direct models (sorted; a restricted key sees one only when a
+/// visible pool routes to its lane), adjacent repeats dropped; then each plane generation's
+/// `listed` name its grant reaches and the list does not already hold, in the order stated.
+#[must_use]
+pub fn visible_names(app: &App, gov: &GovCtx, listed: &[crate::guest::Listed]) -> Vec<String> {
     let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
     // The routing tables through the NEUTRAL read seam (money-path Phase 3-4 B): discovery reads the
     // pool label space, the direct-model index, and pool membership as neutral projections, so
@@ -230,46 +237,60 @@ fn list_models_dialect(
     names.extend(models);
     names.dedup();
 
-    // Neutral dispatch: core resolves WHICH dialect answers from the request fingerprint, then hands
-    // that dialect's declaration the visible name list and lets IT shape the envelope. Each
-    // registered dialect's list-models envelope shape is plugin-specific and lives with that
-    // dialect behind `ProtocolDecl::models_list_envelope` — core names no dialect's envelope shape
-    // here.
-    // The dialect selection is the generic detection fold, restricted to the fingerprint headers
-    // each dialect declares (plus the `/v1beta` path convention) and defaulting to the registry's
-    // residual dialect — so core spells NO dialect name here.
-    // Restricting the sniff to those declared fingerprint headers (rather than the full router
-    // headers) keeps this byte-identical to prior behavior: an incidental, unrelated header on a
-    // models-list GET must not steer the envelope, only the fingerprints the dialects actually
-    // declare here do.
-    let mut sniff = axum::http::HeaderMap::new();
-    for &name in crate::proto::known_protocols() {
-        let Some(decl) = crate::proto::decl_for(name) else {
-            continue;
-        };
-        for &hn in decl.list_models_fingerprint_headers {
-            if let Some(v) = headers.get(hn) {
-                sniff.insert(hn, v.clone());
-            }
+    let mut out: Vec<String> = names.into_iter().map(str::to_string).collect();
+    // Each plane generation's listed names (spec l.410), behind the caller's grant: appended, so a
+    // build whose planes list none answers the bytes it always did.
+    for l in listed {
+        let granted = gov
+            .key
+            .as_ref()
+            .is_none_or(|k| k.scope_allowed(&l.scope.kind, &l.scope.value));
+        if granted && !out.contains(&l.name) {
+            out.push(l.name.clone());
         }
     }
-    let sniff_path = if gemini_path {
-        "/v1beta/models/"
-    } else {
-        "/v1/models"
-    };
-    let dialect = crate::proto::detect_protocol(sniff_path, &sniff)
-        .or_else(crate::proto::residual_default_dialect);
-    match dialect
-        .and_then(crate::proto::decl_for)
-        .and_then(|d| d.models_list_envelope)
-    {
-        Some(build) => Json(build(&names)).into_response(),
-        // Unreachable while any dialect declaring this builder is installed (they always declare
-        // it). If a build ships without one, `/v1/models` still resolves but has no dialect to
-        // render for — an empty JSON object names no protocol and leaks no shape.
-        None => Json(json!({})).into_response(),
+    out
+}
+
+/// The caller's head as a listing render reads it: its fields in order, as every plane crossing
+/// carries them ([`crate::plane_driver::caller_head`]), except that a field the contract never
+/// keeps (a credential among them) crosses by NAME ALONE, its value empty. Which dialect a caller
+/// speaks is told by which fields it sent (one dialect's SDK names its key in its own field), never
+/// by a credential's value, and the value never leaves the kernel.
+fn listing_head(headers: &axum::http::HeaderMap) -> Vec<(Vec<u8>, Vec<u8>)> {
+    use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
+    let kept = crate::plane_driver::caller_head(headers);
+    let mut out = Vec::with_capacity(headers.len());
+    let mut kept = kept.into_iter().peekable();
+    for (name, value) in headers {
+        let name = name.as_str().as_bytes();
+        if kept
+            .peek()
+            .is_some_and(|(n, v)| n.as_slice() == name && v.as_slice() == value.as_bytes())
+        {
+            out.extend(kept.next());
+        } else if NEVER_KEPT
+            .iter()
+            .any(|n| n.as_bytes().eq_ignore_ascii_case(name))
+        {
+            out.push((name.to_vec(), Vec::new()));
+        }
     }
+    out
+}
+
+/// The claimant's rendered reply as the response; `None` when a status or field it wrote is not
+/// one a reply can carry.
+fn rendered_response(r: &crate::guest::Refused) -> Option<Response> {
+    let status = StatusCode::from_u16(r.status).ok()?;
+    let mut resp = Response::new(axum::body::Body::from(r.body.clone()));
+    *resp.status_mut() = status;
+    for (n, v) in &r.fields {
+        let name = axum::http::HeaderName::from_bytes(n).ok()?;
+        let value = axum::http::HeaderValue::from_bytes(v).ok()?;
+        resp.headers_mut().append(name, value);
+    }
+    Some(resp)
 }
 
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {

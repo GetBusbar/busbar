@@ -645,16 +645,15 @@ fn the_declaration_registers_under_the_planes_key() {
 /// content into the prompt projection keeps its own tests there.
 #[test]
 fn subscribe_body_projects_its_target() {
-    use busbar_kernel::{handlers::request_handler, proto::register_test_protocol};
-    register_test_protocol(&crate::PROTO_DECL);
     let v = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "resources/subscribe",
         "params": {"uri": "mcp://resource/SECRET-TARGET"}
     });
-    // The same resolution the hook seam makes: the registered protocol's handler for the operation.
-    let handler = request_handler(crate::PROTO_DECL.name)
+    // The same resolution the hook seam makes: the protocol's declared handler for the operation.
+    let handler = crate::PROTO_DECL
+        .handler
         .and_then(|rh| rh.operation_handler(OpVerb::SUBSCRIBE))
         .expect("the registered protocol serves SUBSCRIBE");
     let facts = handler
@@ -669,5 +668,37 @@ fn subscribe_body_projects_its_target() {
     assert!(
         shown.iter().any(|t| t.contains("SECRET-TARGET")),
         "the subscribe target must reach the hook projection; shown: {shown:?}"
+    );
+}
+
+/// A NON-CHAT OPERATION'S FAILURE REACHES THE BREAKER WITH A STATUS ATTRIBUTED (ported from the
+/// kernel's deleted `handlers/tests/dispatch_tests.rs`
+/// `a_non_chat_operation_failure_reaches_the_breaker_with_a_status_attributed`; ARCHITECT F25
+/// ruling 2026-10-07): this codec-less protocol's Invoke cell says the status and claims no provider
+/// vocabulary — the most restrictive useful answer — and the status alone lets the breaker classify
+/// the attempt as a transient upstream failure.
+#[test]
+fn a_non_chat_operation_failure_reaches_the_breaker_with_a_status_attributed() {
+    assert!(
+        crate::PROTO_DECL.codec.is_none(),
+        "the subject is codec-less"
+    );
+    let cell = crate::PROTO_DECL
+        .handler
+        .and_then(|rh| rh.operation_handler(OpVerb::INVOKE))
+        .expect("the protocol serves Invoke");
+    let raw = cell.extract_error(503, br#"{"jsonrpc":"2.0","error":{"code":-32000}}"#);
+    assert_eq!(raw.http_status, 503, "the status is attributed");
+    assert_eq!(raw.provider_code, None, "no provider vocabulary claimed");
+    assert_eq!(raw.structured_type, None, "no provider vocabulary claimed");
+    assert_eq!(
+        raw.retry_after_secs, None,
+        "headers are the forwarding layer's to fill in"
+    );
+    let sig = busbar_kernel::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    assert_eq!(
+        busbar_kernel::breaker::classify(&sig),
+        busbar_kernel::breaker::Disposition::TransientUpstream,
+        "a status alone is enough for the breaker to classify the attempt"
     );
 }

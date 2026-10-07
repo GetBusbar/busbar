@@ -5,7 +5,7 @@
 //!
 //! WHAT THIS CRATE HOLDS. The plane's DECLARATIONS — [`PLANE_DECLARATION`] (a contract
 //! [`busbar_contract::plane::PlaneDeclaration`], joined kernel-side to [`PLANE_HOOKS`]) and [`DECLS`] (a
-//! [`busbar_kernel::proto::ProtocolDecl`] with `codec: None`) — plus the plane's OWN four-layer
+//! [`busbar_contract::protocol::ProtocolDecl`] with `codec: None`) — plus the plane's OWN four-layer
 //! duplex/session IR ([`ir`]) and BOTH dialect codecs (OpenAI Realtime + Gemini Live). The live pump,
 //! reader/writer bodies, and session store are implemented in [`runtime`] behind the `runtime` feature
 //! (see `docs/design/BUSBAR-1.6.0.md` #18/#45).
@@ -240,7 +240,7 @@ const VOICE_WIRE_FORMATS: &[&str] = &[OPENAI_REALTIME, GEMINI_LIVE];
 pub(crate) fn voice_provider_bearer(
     key: &str,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
-    busbar_kernel::proto::bearer_auth_headers(OPENAI_REALTIME, key)
+    busbar_kernel::egress_auth::bearer_auth_headers(OPENAI_REALTIME, key)
 }
 
 /// `ProtocolDecl::egress_auth_headers` — the plain-Bearer arm of `busbar-llm`'s OpenAI dialect (the
@@ -248,7 +248,7 @@ pub(crate) fn voice_provider_bearer(
 /// string (it reads nothing off the [`SigningContext`]), so [`DECLS`] declares it LANE-CONSTANT.
 fn voice_egress_auth_headers(
     key: &str,
-    _ctx: &busbar_kernel::proto::SigningContext,
+    _ctx: &busbar_contract::protocol::SigningContext,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
     voice_provider_bearer(key)
 }
@@ -407,64 +407,65 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// NOT YET MOUNTED: `handler: None` and `verbs: &[]` — route-mounting the duplex handler /
 /// gauntlet-session entry is follow-on work. Every other field carries the neutral default a codec-less
 /// protocol declares (the MCP `DECL` shape).
-pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::ProtocolDecl {
-    name: OPENAI_REALTIME,
-    // THE SUPERSET IS ITS OWN IR (`BUSBAR-1.6.0.md` #18/#45): the two dialects meet in the plane's
-    // shared IR types, not a `DialectCodec` facade — so this field stays `None`, the MCP/A2A precedent.
-    codec: None,
-    // NOT YET MOUNTED: no request handler wired here yet — the duplex pump exists in `crate::runtime`;
-    // route-mounting its entry point is follow-on work.
-    handler: None,
-    // NOT YET MOUNTED: no verbs declared yet (the long-lived Subscribe/Control shapes arrive with the
-    // boot-mounting pass).
-    verbs: &[],
-    head_keys: &[],
-    streaming_content_type: None,
-    array_stream_shim_key: None,
-    native_tool_id_prefix: None,
-    ingress_auth: busbar_kernel::proto::IngressAuth::Bearer,
-    // THE ONE EGRESS CREDENTIAL MECHANISM: the provider bearer / WebRTC `ek_` / telephony carrier
-    // credential is planned onto the dial's headers HERE, never a caller token passed through (see
-    // [`voice_egress_auth_headers`]). LANE-CONSTANT: the builder is a pure function of the resolved
-    // credential string and reads nothing off the `SigningContext`, so the boot path may prebuild the
-    // header set once per lane (the plain-Bearer discipline the LLM plane's OpenAI dialect declares).
-    egress_auth_headers: Some(voice_egress_auth_headers),
-    egress_auth_lane_constant: true,
-    egress_scheme: None,
-    stream_usage_requires_opt_in: false,
-    // Promoted writer facts: this plane declares no cross-dialect codec and has no writer, so every
-    // promoted fact is the `ProtocolWriter` trait DEFAULT — the same values the codec-less MCP `DECL`
-    // states. Inert for a `codec: None` protocol, but the declaration must state them.
-    requires_max_tokens: false,
-    stop_sequence_cap: None,
-    cache_markers_model_gated: false,
-    fills_thought_signature: false,
-    frame_after_message_start: None,
-    reshapes_body_at_path_base: false,
-    max_cache_control_breakpoints: None,
-    quota_exceeded_status: axum::http::StatusCode::TOO_MANY_REQUESTS,
-    ingress_is_eventstream: false,
-    emits_sse_done_terminator: false,
-    max_citations_per_delta: None,
-    egress_user_agent: busbar_kernel::proxy::EGRESS_UA_DEFAULT,
-    has_model_in_url: false,
-    auth_failure_status_and_kind: (
-        axum::http::StatusCode::UNAUTHORIZED,
-        busbar_kernel::proto::ERR_TYPE_AUTHENTICATION,
-    ),
-    ingress_relays_amzn_headers: false,
-    ingress_relayed_response_header_names: &[],
-    auth_failure_message: "authentication failed",
-    uses_array_stream_shim: false,
-    has_native_path_not_found: false,
-    egress_stream_accept: busbar_kernel::proxy::TEXT_EVENT_STREAM,
-    models_list_envelope: None,
-    // Identified by its EXPLICIT mount, never by a wire fingerprint — so it claims no router or
-    // residual rung, contributes no vendor response metadata, and is not the residual default.
-    claims: None,
-    residual_claims: None,
-    residual_default: false,
-    vendor_response_metadata: None,
-    list_models_fingerprint_headers: &[],
-    static_headers: &[],
-};
+pub static DECLS: busbar_contract::protocol::ProtocolDecl =
+    busbar_contract::protocol::ProtocolDecl {
+        name: OPENAI_REALTIME,
+        // THE SUPERSET IS ITS OWN IR (`BUSBAR-1.6.0.md` #18/#45): the two dialects meet in the plane's
+        // shared IR types, not a `DialectCodec` facade — so this field stays `None`, the MCP/A2A precedent.
+        codec: None,
+        // NOT YET MOUNTED: no request handler wired here yet — the duplex pump exists in `crate::runtime`;
+        // route-mounting its entry point is follow-on work.
+        handler: None,
+        // NOT YET MOUNTED: no verbs declared yet (the long-lived Subscribe/Control shapes arrive with the
+        // boot-mounting pass).
+        verbs: &[],
+        head_keys: &[],
+        streaming_content_type: None,
+        array_stream_shim_key: None,
+        native_tool_id_prefix: None,
+        ingress_auth: busbar_contract::protocol::IngressAuth::Bearer,
+        // THE ONE EGRESS CREDENTIAL MECHANISM: the provider bearer / WebRTC `ek_` / telephony carrier
+        // credential is planned onto the dial's headers HERE, never a caller token passed through (see
+        // [`voice_egress_auth_headers`]). LANE-CONSTANT: the builder is a pure function of the resolved
+        // credential string and reads nothing off the `SigningContext`, so the boot path may prebuild the
+        // header set once per lane (the plain-Bearer discipline the LLM plane's OpenAI dialect declares).
+        egress_auth_headers: Some(voice_egress_auth_headers),
+        egress_auth_lane_constant: true,
+        egress_scheme: None,
+        stream_usage_requires_opt_in: false,
+        // Promoted writer facts: this plane declares no cross-dialect codec and has no writer, so every
+        // promoted fact is the `ProtocolWriter` trait DEFAULT — the same values the codec-less MCP `DECL`
+        // states. Inert for a `codec: None` protocol, but the declaration must state them.
+        requires_max_tokens: false,
+        stop_sequence_cap: None,
+        cache_markers_model_gated: false,
+        fills_thought_signature: false,
+        frame_after_message_start: None,
+        reshapes_body_at_path_base: false,
+        max_cache_control_breakpoints: None,
+        quota_exceeded_status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+        ingress_is_eventstream: false,
+        emits_sse_done_terminator: false,
+        max_citations_per_delta: None,
+        egress_user_agent: busbar_kernel::proxy::EGRESS_UA_DEFAULT,
+        has_model_in_url: false,
+        auth_failure_status_and_kind: (
+            axum::http::StatusCode::UNAUTHORIZED,
+            busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
+        ),
+        ingress_relays_amzn_headers: false,
+        ingress_relayed_response_header_names: &[],
+        auth_failure_message: "authentication failed",
+        uses_array_stream_shim: false,
+        has_native_path_not_found: false,
+        egress_stream_accept: busbar_kernel::proxy::TEXT_EVENT_STREAM,
+        models_list_envelope: None,
+        // Identified by its EXPLICIT mount, never by a wire fingerprint — so it claims no router or
+        // residual rung, contributes no vendor response metadata, and is not the residual default.
+        claims: None,
+        residual_claims: None,
+        residual_default: false,
+        vendor_response_metadata: None,
+        list_models_fingerprint_headers: &[],
+        static_headers: &[],
+    };

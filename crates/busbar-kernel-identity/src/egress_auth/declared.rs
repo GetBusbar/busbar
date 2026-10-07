@@ -13,7 +13,7 @@ use super::{decorate, sigv4, substitute, EgressBody, Scheme, SessionToken};
 use busbar_contract::caps::{Grant, Sign};
 use busbar_contract::config::UpstreamCreds;
 use busbar_contract::diagnostic::Diagnostic;
-use busbar_contract::protocol::{CredentialHeader, EgressScheme, ProtocolDecl, SigningContext};
+use busbar_contract::protocol::{CredentialHeader, EgressScheme, SigningContext};
 
 /// How a static declared scheme presents `credential` in `mode`: the first credential-family row
 /// whose prefix the credential (leading whitespace trimmed) starts with, else the scheme's
@@ -98,27 +98,6 @@ pub fn present(
             substitute(&decoration, secret, Vec::new())
         }
     }
-}
-
-/// [`present`] for a lane of the protocol `decl` declared (`None`: the operator's override, which
-/// declares nothing else): the credential headers, then — when none could be presented —
-/// [`report_unpresented`] under the host catalog's `codes`, then the declaration's `static_headers`
-/// verbatim, in their declared order. A static header is not auth: it rides whatever the credential.
-pub fn present_declared(
-    token: &Grant<Sign>,
-    scheme: &EgressScheme,
-    decl: Option<&ProtocolDecl>,
-    credential: &str,
-    ctx: &SigningContext<'_>,
-    codes: [&Diagnostic; 2],
-) -> Vec<(String, String)> {
-    let mut headers = present(token, scheme, credential, ctx);
-    let (protocol, statics) = decl.map_or(("", &[][..]), |d| (d.name, d.static_headers));
-    if headers.is_empty() {
-        report_unpresented(scheme, protocol, credential, ctx.upstream_creds, codes);
-    }
-    headers.extend(statics.iter().map(|(k, v)| (k.to_string(), v.to_string())));
-    headers
 }
 
 /// Report a credential [`present`] could not present (an empty presentation), in the line its

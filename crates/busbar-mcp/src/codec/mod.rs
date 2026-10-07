@@ -9,9 +9,9 @@
 //! `invoke.rs` and `subscribe.rs` (the two cells), and `tests/` (its own tests, nobody else's).
 //! Everything it consumes from the engine comes through `busbar-core`'s public surface; nothing in
 //! `busbar-core` names this crate in production (`git grep busbar_mcp crates/busbar-core/src` is
-//! pinned at zero) — the `busbar` BINARY, the composition root, links `busbar-mcp` and hands
-//! [`DECL`] (which `busbar-mcp` re-exports as its `PROTO_DECL`) to
-//! the kernel's protocol registry (`busbar_kernel::proto::install_protocols`) at boot. Delete the dependency edge and busbar
+//! pinned at zero) — the `busbar` BINARY, the composition root, links `busbar-mcp`. [`DECL`]
+//! (which `busbar-mcp` re-exports as its `PROTO_DECL`) is this crate's own declaration; the kernel
+//! holds no protocol registry. Delete the dependency edge and busbar
 //! still builds, boots, refuses `protocol: mcp` config with the unknown-protocol refusal, and
 //! serves the remaining dialects — that build is a gate, not a thought experiment.
 //!

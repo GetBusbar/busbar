@@ -167,3 +167,85 @@ fn a_family_table_reads_from_settings_json() {
     .expect("the family table parses");
     assert_eq!(families, family_scheme().families);
 }
+
+/// THE DIFFERENTIAL OVER THE SHARED FIXTURE (ported from the kernel's deleted
+/// `egress_auth/tests/prebuilt_auth_tests.rs`: `each_twin_carries_the_fixture_scheme_of_its_dialect`,
+/// `each_declared_scheme_presents_what_its_dialect_builder_wrote`,
+/// `a_static_credential_is_presented_verbatim_or_omitted_never_emptied`; ARCHITECT F25 ruling
+/// 2026-10-07). `testing/plane-copies/declared-credentials.json` records, for every static dialect,
+/// the scheme it declares (the declaring plane's own suite holds each real declaration to it,
+/// `codec/tests/proto/declared_scheme_tests.rs`) and the credential headers that dialect's own 1.5.5
+/// builder wrote, per credential and mode. Presented under each recorded scheme, this plugin writes
+/// exactly those headers, in order — a credential no header value may carry is omitted, never sent
+/// empty. The two halves together are the byte-identity proof of the presentation.
+#[test]
+fn every_static_dialects_recorded_credential_is_presented_as_its_builder_wrote() {
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+    fn presentation(v: &serde_json::Value) -> Presentation {
+        if v["bearer"] == true {
+            Presentation::BEARER
+        } else {
+            Presentation {
+                header: Some(v["header"].as_str().expect("header").to_string()),
+                trim_start: v["trim_start"].as_bool().expect("trim_start"),
+            }
+        }
+    }
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/declared-credentials.json"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("the fixture")).expect("JSON");
+    let mut compared = 0;
+    for row in doc["rows"].as_array().expect("rows") {
+        let dialect = row["dialect"].as_str().expect("dialect");
+        let scheme = &doc["schemes"][dialect];
+        if scheme["kind"] != "static" {
+            continue;
+        }
+        let scheme = StaticScheme {
+            families: scheme["families"]
+                .as_array()
+                .expect("families")
+                .iter()
+                .map(|f| Family {
+                    prefix: f["prefix"].as_str().expect("prefix").to_string(),
+                    presented: presentation(&f["presented_as"]),
+                })
+                .collect(),
+            own: presentation(&scheme["own"]),
+            passthrough: presentation(&scheme["passthrough"]),
+        };
+        let key = String::from_utf8(unhex(row["key_hex"].as_str().expect("key"))).expect("utf-8");
+        let mode = if row["mode"] == "own" {
+            Mode::Own
+        } else {
+            Mode::Passthrough
+        };
+        let presented: Vec<serde_json::Value> = scheme
+            .present(&key, mode)
+            .into_iter()
+            .map(|(k, v)| {
+                let hex: String = v.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+                serde_json::json!([k, hex])
+            })
+            .collect();
+        assert_eq!(
+            serde_json::Value::Array(presented),
+            row["headers"],
+            "{dialect}: key {key:?}, mode {}",
+            row["mode"]
+        );
+        compared += 1;
+    }
+    assert_eq!(
+        compared, 220,
+        "every static dialect's recorded row was presented"
+    );
+}

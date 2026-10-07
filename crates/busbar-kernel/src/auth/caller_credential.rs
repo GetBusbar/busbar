@@ -16,7 +16,8 @@
 //!   the ref and never holds the plaintext.
 
 use super::{HeaderMap, HeaderName, HeaderValue};
-use crate::{egress_auth::CredentialProvider, proto::SigningContext};
+use crate::egress_auth::CredentialProvider;
+use busbar_contract::protocol::SigningContext;
 
 /// What the auth gate holds of one request's credentials (request extension): the header names the
 /// configured gate reads a credential from, and the credential it extracted, as a ref. Inserted by the gate on every request it judged;

@@ -120,3 +120,24 @@ fn tick_prederives_every_live_bindings_day_key_and_answers_zero_when_none_are_op
     open(&s, Some("AKIDEXAMPLE:SECRET"));
     assert!(s.tick(1_000) > 1_000);
 }
+
+/// THE UNSENDABLE-SESSION-TOKEN LINE, WORD FOR WORD (ported from the kernel's deleted
+/// `egress_auth/tests/prebuilt_auth_tests.rs`, `an_unsendable_session_token_logs_the_signers_own_line`,
+/// ARCHITECT F25 ruling 2026-10-07): a session token no header value may carry is reported in the
+/// line the dialect's own 1.5.5 signer logged, naming the declared service with its first letter
+/// raised, and the binding signs nothing.
+#[test]
+fn an_unsendable_session_token_is_reported_in_the_signers_own_words() {
+    let mut env = EnvStore::default();
+    SigV4::note_open(
+        &mut env,
+        &[crate::style::OpenNote::SessionToken("bedrock".to_string())],
+    );
+    assert_eq!(
+        env.texts,
+        ["Bedrock lane session token contains a byte rejected by HeaderValue; skipping signing to \
+          avoid a signed-but-absent x-amz-security-token header."]
+    );
+    assert_eq!(env.diags().len(), 1);
+    assert_eq!(env.diags()[0].id_idx, diag::SESSION_TOKEN_INVALID_BYTES);
+}

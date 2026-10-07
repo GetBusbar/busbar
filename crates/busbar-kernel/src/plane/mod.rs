@@ -159,6 +159,26 @@ pub fn fallback_key() -> &'static str {
         .unwrap_or("")
 }
 
+/// THE FALLBACK PLANE'S DECLARED WIRE FORMATS, in the order its statement lists them: the names a
+/// provider's `protocol:` may take, the `supported:`/`must be one of:` tail of a refusal naming an
+/// unknown one, and the `ingress_protocol` vocabulary `telemetry` banks its per-dialect families by
+/// POSITION in. Read off the plane's own declaration (`PlaneDecl::wire_format_names`, a door plane's
+/// tail `dialects`), never a kernel table: the kernel holds no protocol or dialect name (spec Part 2
+/// #49). Empty when no fallback plane is registered, which is a real answer: a build with no such
+/// plane serves no dialect.
+pub fn fallback_wire_formats() -> &'static [&'static str] {
+    registry::plane_decls()
+        .iter()
+        .find(|d| d.fallback)
+        .map_or(&[], |d| (d.wire_format_names)())
+}
+
+/// The fallback plane's declared wire format named `name`, as the declaration's own interned
+/// `&'static str`, or `None` when the fallback plane declares no such wire format.
+pub fn fallback_wire_format(name: &str) -> Option<&'static str> {
+    fallback_wire_formats().iter().copied().find(|w| *w == name)
+}
+
 /// Whether `key` names THE FALLBACK plane — the non-panicking predicate the fallback GUARDS read
 /// (`PlaneDispatch::mount`/`admit` no-op; the fallback-plane telemetry branch). Distinct from
 /// [`fallback_key`]: it answers "is THIS key the fallback" WITHOUT requiring a fallback to be
@@ -504,10 +524,9 @@ impl PlaneDispatch {
     pub fn ingress_of(&self, path: &str) -> Ingress {
         match self.mounted_plane_of(path) {
             Some(key) => Ingress::Mounted(key),
-            // THE FALLBACK ARM, and the only place a path SHAPE decides anything. It answers
-            // `None` for a path that names no dialect — an honest answer the old classifier could
-            // not give, because it always spent that case on one hard-coded dialect.
-            None => Ingress::Fallback(crate::proto::residual_dialect_for_path(path)),
+            // THE FALLBACK ARM. The kernel reads no dialect off the path's shape: a fallback path's
+            // line and its claimant say what its answers are shaped in (`guest::ListenerLines`).
+            None => Ingress::Fallback,
         }
     }
 
@@ -552,19 +571,17 @@ impl PlaneDispatch {
 /// every site that must shape a reply from a path alone reads.
 ///
 /// Two variants, and the split is the mount table's: a path is CLAIMED by a plane the operator
-/// mounted, or it is not and belongs to the fallback. There is deliberately no third variant for
-/// "unknown": an unrecognised path is not a fourth kind of thing, it is a fallback path whose
-/// dialect is not legible, which is what `Fallback(None)` says.
+/// mounted, or it is not and belongs to the fallback. The fallback variant carries NO dialect: the
+/// kernel picks none (spec THE DESIGN §5 l.958-960, Part 3 §12 l.2645). What a fallback path's
+/// answer is shaped in is the matched line's claimant's to say, through its `refusal`, from the
+/// target by its own path rule ([`crate::guest::ListenerLines`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ingress {
     /// A path a plane CLAIMS BY MOUNT, at a segment boundary, named by its registry key.
     Mounted(&'static str),
-    /// The fallback plane. `Some(dialect)` when the path shape names one of the registered fallback
-    /// dialects; `None` when it names none — a bare `/`, a typo, a probe. `None` is a real answer
-    /// and not a failure: what to SAY to a caller whose dialect is unknown is a decision for the
-    /// site composing the reply, not for the resolver, which would otherwise have to invent a
-    /// protocol identity for a path that carries none.
-    Fallback(Option<&'static str>),
+    /// The fallback: no plane claims the path by mount. Which dialect it is spoken in is not the
+    /// kernel's to read off its shape.
+    Fallback,
 }
 
 impl Ingress {
@@ -578,7 +595,7 @@ impl Ingress {
             // A plane with several dialects cannot be labelled from the boundary — which dialect
             // spoke is a fact only its reader knows. `sole_wire_format` is that rule, computed.
             Ingress::Mounted(key) => sole_wire_format(key),
-            Ingress::Fallback(dialect) => dialect,
+            Ingress::Fallback => None,
         }
     }
 
@@ -606,7 +623,7 @@ impl Ingress {
     pub fn shaping_wire_format(self) -> Option<&'static str> {
         match self {
             Ingress::Mounted(key) => wire_format_names(key).first().copied(),
-            Ingress::Fallback(dialect) => dialect,
+            Ingress::Fallback => None,
         }
     }
 }

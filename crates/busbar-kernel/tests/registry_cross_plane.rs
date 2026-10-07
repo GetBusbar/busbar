@@ -275,16 +275,17 @@ fn every_plane_key_answers_from_its_declaration() {
     }
 }
 
-/// THE LLM PLANE'S WIRE-FORMAT LIST IS STILL READ OFF THE LIVE PROTOCOL REGISTRY, through the decl's
-/// function pointer. This is the join between the two registries, and it is what keeps the
-/// superset-IR rule a RULE: a seventh dialect moves this list with nothing edited on the plane axis.
+/// THE FALLBACK PLANE'S WIRE-FORMAT LIST IS ITS OWN DECLARATION (its tail's dialects, read through
+/// the decl's function pointer), and the kernel's list is that same list: the superset-IR rule stays
+/// a RULE, so a seventh declared dialect moves this list with nothing edited on the plane axis.
+/// (Formerly the join to the kernel's protocol registry, which is gone.)
 #[test]
-fn the_fallback_decl_reads_the_protocol_registry() {
+fn the_fallback_decl_reads_its_own_declaration() {
     linked::install();
     assert_eq!(
         busbar_kernel::plane::wire_format_names(busbar_kernel::plane::fallback_key()),
-        busbar_kernel::proto::known_protocols(),
-        "the fallback plane's dialects are the registered protocols, not a literal"
+        busbar_kernel::plane::fallback_wire_formats(),
+        "the kernel's wire formats are the fallback plane's declared dialects, not a literal"
     );
     assert!(
         busbar_kernel::plane::wire_formats(busbar_kernel::plane::fallback_key()) > 1,

@@ -893,10 +893,10 @@ known_sites = [
   "crates/busbar-kernel/src/config/mod.rs :: completion",
   "crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference.",
   "crates/busbar-kernel/src/config/pools.rs :: a bare member name, or a member object `{ model, weight, ... }`",
-  # Moved from the retired shared value crate with the code that carries them (#83a SD-8), reviewed
-  # there and frozen: the omitted-`protocol:` default of the 1.5.3 providers.yaml grammar, and the
-  # published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
-  "crates/busbar-kernel/src/config/providers.rs :: anthropic",
+  # Moved from the retired shared value crate with the code that carries it (#83a SD-8), reviewed
+  # there and frozen: the published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
+  # The omitted-`protocol:` default this list also held is struck: it is the fallback plane's first
+  # declared dialect now (PlaneTail.dialects[0]), so the kernel file names no dialect (#49).
   "crates/busbar-kernel/src/diagnostics/mod.rs :: rate_card entry prices a model at ALL ZERO (metered as free, uncapped)",
   # `crates/busbar-kernel/src/config/providers.rs:75` STRUCK: the provider config shapes moved to
   # the LLM plane side and left that file 20 lines long, so the pin named a line that does not exist
@@ -1243,9 +1243,6 @@ known_sites = [
   # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
   # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
   "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
-  # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
-  # verbatim (#83a SD-8).
-  "crates/busbar-kernel/src/proto/installed.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
   "crates/plane-example/src/",

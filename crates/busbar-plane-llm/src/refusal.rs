@@ -91,3 +91,23 @@ pub const REFUSAL_STATUSES: [RefusalStatus; 7] = [
     row(REFUSAL_ANY_DIALECT, reason::NO_RATE, 400),
     row(REFUSAL_ANY_DIALECT, reason::NO_DESTINATION, 404),
 ];
+
+/// The status this plane STATES for `reason` in the dialect named `dialect`: the row for that
+/// dialect, else the row for every dialect; `None` when the plane states none (the kernel's own
+/// status then stands). Read by the `refusal` slot for a refusal with no unit, whose envelope the
+/// plane chooses from the target (`exchange::arrive::envelope_for`): the status is that envelope's
+/// dialect's, as 1.5.5 answered it, whatever dialect the matched line carried.
+#[must_use]
+pub fn stated_status(dialect: &str, reason: u32) -> Option<u32> {
+    let index = DIALECTS
+        .iter()
+        .position(|d| d.name == dialect)
+        .and_then(|i| u32::try_from(i).ok());
+    let row = |d: Option<u32>| {
+        REFUSAL_STATUSES
+            .iter()
+            .find(|r| Some(r.dialect) == d && r.reason == reason)
+            .map(|r| r.status)
+    };
+    row(index).or_else(|| row(Some(REFUSAL_ANY_DIALECT)))
+}

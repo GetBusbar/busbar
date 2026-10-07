@@ -44,7 +44,7 @@ use busbar_kernel::plane::calllog::CallInput;
 use busbar_kernel::plane_host::{
     AdmissionHost, AdmitHandle, AudienceBinding, BreakerHost, BudgetHost, ClockHost,
     CompletionHost, CompletionRefusal, DispatchScope, EngineHost, GateOutcome, GovAdmit, GovHandle,
-    HookConfigHost, HostCompletion, IdentityHost, JournalHost, LanePoolHost, MeterPin, MountHost,
+    HookConfigHost, HostCompletion, IdentityHost, JournalHost, LanePoolHost, MeterPin,
     RegistryHost, TelemetryHost, TransformVerdict,
 };
 use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
@@ -446,27 +446,6 @@ impl JournalHost for FixtureHost {
     }
     fn call_log_emit(&self, _principal: &str, _input: CallInput) {}
     fn call_log_emit_hostless(&self, _principal: &str, _input: CallInput) {}
-}
-
-impl MountHost for FixtureHost {
-    fn arrival_envelope_dialect(&self, _path: &str) -> &'static str {
-        ""
-    }
-    fn arrival_fallback_error(
-        &self,
-        _path: &str,
-        status: axum::http::StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> axum::response::Response {
-        axum::response::Response::builder()
-            .status(status)
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(axum::body::Body::from(
-                serde_json::json!({ "error": { "type": kind, "message": message } }).to_string(),
-            ))
-            .expect("a static response builds")
-    }
 }
 
 /// A resolver with no secrets behind it: every reference fails closed.

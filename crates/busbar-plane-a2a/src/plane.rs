@@ -277,9 +277,16 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
         | RefusalReason::HandoffMismatch
         | RefusalReason::PlanePanic
         | RefusalReason::TaskLost
-        | RefusalReason::SecretPlaceholder => (
+        | RefusalReason::SecretPlaceholder
+        | RefusalReason::HandlerPanic => (
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
+        ),
+        // The listener's own no-route and wrong-method answers: nothing on this node answers the
+        // request as it was addressed.
+        RefusalReason::NoRoute | RefusalReason::WrongMethod => (
+            jsonrpc::CODE_METHOD_NOT_FOUND,
+            "the requested resource was not found",
         ),
     }
 }

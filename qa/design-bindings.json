@@ -1408,7 +1408,7 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar/src/root/tests/linked_protocols.rs::the_fallback_404_on_a_dialects_path_is_its_native_envelope_with_its_head_fields",
+     "ref": "crates/busbar-plane-llm/tests/linked_protocols.rs::the_fallback_404_on_a_dialects_path_is_its_native_envelope_with_its_head_fields",
      "proves": "fallback_error_response per inferred protocol (bedrock)",
      "source": "curated",
      "status": "mapped"
@@ -1422,7 +1422,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|api-prefix|data, oracle-cell:http.crosscut|unknown-path|anthropic-beta, oracle-cell:http.crosscut|unknown-path|bare, test:resolver_table, test:test_api_root_unmatched_paths_speak_the_admin_envelope, test:crates/busbar/src/root/tests/linked_protocols.rs::the_fallback_404_on_a_dialects_path_is_its_native_envelope_with_its_head_fields, test:test_fallback_openai_404_is_json_no_amzn_headers"
+   "verdict_detail": "oracle-cell:http.crosscut|api-prefix|data, oracle-cell:http.crosscut|unknown-path|anthropic-beta, oracle-cell:http.crosscut|unknown-path|bare, test:resolver_table, test:test_api_root_unmatched_paths_speak_the_admin_envelope, test:crates/busbar-plane-llm/tests/linked_protocols.rs::the_fallback_404_on_a_dialects_path_is_its_native_envelope_with_its_head_fields, test:test_fallback_openai_404_is_json_no_amzn_headers"
   },
   {
    "id": "PB-31",
@@ -3029,21 +3029,28 @@
     },
     {
      "kind": "test",
-     "ref": "a_declared_static_header_follows_the_credential_verbatim",
+     "ref": "crates/busbar-plane-llm/tests/exchange_attempt.rs::no_client_header_leaves_egress_unchanged",
      "proves": "anthropic-version follows the credential verbatim",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "each_declared_scheme_presents_what_its_dialect_builder_wrote",
+     "ref": "crates/busbar-auth-header/src/tests/present_tests.rs::every_static_dialects_recorded_credential_is_presented_as_its_builder_wrote",
      "proves": "each declared scheme presents what its dialect's builder wrote",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel/src/egress_auth/tests/prebuilt_auth_tests.rs::a_declared_static_header_follows_the_credential_verbatim",
+     "ref": "crates/busbar-auth-sigv4/src/tests/signing_tests.rs::every_recorded_signing_row_signs_as_the_dialects_signer_wrote",
+     "proves": "the signing dialect signs what its builder wrote",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-plane-llm/src/codec/tests/proto/declared_scheme_tests.rs::only_the_versioned_dialect_declares_a_static_header",
      "proves": "an anthropic lane's egress carries exactly the declared headers",
      "source": "curated",
      "status": "mapped"
@@ -3052,13 +3059,6 @@
      "kind": "test",
      "ref": "every_egress_request_declares_the_pinned_api_version",
      "proves": "anthropic-version is declared on every egress request",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "with_no_static_header_declared_the_version_header_is_absent",
-     "proves": "the version header comes from the declaration and nowhere else",
      "source": "curated",
      "status": "mapped"
     },
@@ -3092,14 +3092,14 @@
     },
     {
      "kind": "test",
-     "ref": "a_misconfigured_or_unsendable_signing_credential_signs_nothing",
+     "ref": "crates/busbar-auth-sigv4/src/tests/signing_tests.rs::unsendable_or_incomplete_signing_credentials_sign_nothing",
      "proves": "a misconfigured key signs nothing",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:egress_scheme_is_the_declared_credential_family_table, test:a_declared_static_header_follows_the_credential_verbatim, test:each_declared_scheme_presents_what_its_dialect_builder_wrote, test:crates/busbar-kernel/src/egress_auth/tests/prebuilt_auth_tests.rs::a_declared_static_header_follows_the_credential_verbatim, test:every_egress_request_declares_the_pinned_api_version, test:with_no_static_header_declared_the_version_header_is_absent, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:a_static_scheme_presents_the_header_its_table_names, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:a_misconfigured_or_unsendable_signing_credential_signs_nothing"
+   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:egress_scheme_is_the_declared_credential_family_table, test:crates/busbar-plane-llm/tests/exchange_attempt.rs::no_client_header_leaves_egress_unchanged, test:crates/busbar-auth-header/src/tests/present_tests.rs::every_static_dialects_recorded_credential_is_presented_as_its_builder_wrote, test:crates/busbar-auth-sigv4/src/tests/signing_tests.rs::every_recorded_signing_row_signs_as_the_dialects_signer_wrote, test:crates/busbar-plane-llm/src/codec/tests/proto/declared_scheme_tests.rs::only_the_versioned_dialect_declares_a_static_header, test:every_egress_request_declares_the_pinned_api_version, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:a_static_scheme_presents_the_header_its_table_names, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:crates/busbar-auth-sigv4/src/tests/signing_tests.rs::unsendable_or_incomplete_signing_credentials_sign_nothing"
   },
   {
    "id": "PB-66",

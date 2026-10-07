@@ -113,8 +113,13 @@ pub(crate) struct AppSlots {
     /// plane's v1.5.4-identical series); the mounted planes emit their own `busbar_plane_*`
     /// families from `request_finished` instead.
     banked_plane: &'static str,
+    /// The fallback plane's declared wire formats as they stood when this bank was built
+    /// ([`crate::plane::fallback_wire_formats`]): the vocabulary `request`'s families are indexed
+    /// by, kept with them so the per-request lookup reads the very list the bank was laid out over
+    /// and walks no registry on the hot path.
+    formats: &'static [&'static str],
     /// pool label (ingress convention: pools ∪ models ∪ "unresolved") → per-protocol request
-    /// families, indexed by position in `proto::KNOWN_PROTOCOLS`.
+    /// families, indexed by position in `formats`.
     request: HashMap<Box<str>, Box<[RequestFamily]>>,
     /// engine pool label (pools ∪ models, matching `proxy::metric_pool_label`) → lane idx → family.
     lane: HashMap<Box<str>, HashMap<usize, LaneFamily>>,
@@ -154,9 +159,10 @@ impl AppSlots {
         ingress_labels.sort_unstable();
         ingress_labels.dedup();
 
+        let formats = crate::plane::fallback_wire_formats();
         let mut request = HashMap::with_capacity(ingress_labels.len());
         for pool in &ingress_labels {
-            let families: Box<[RequestFamily]> = crate::proto::known_protocols()
+            let families: Box<[RequestFamily]> = formats
                 .iter()
                 .map(|proto| RequestFamily {
                     requests: std::array::from_fn(|oi| {
@@ -231,6 +237,7 @@ impl AppSlots {
 
         AppSlots {
             banked_plane: plane,
+            formats,
             request,
             lane: lane_map,
             failover,
@@ -246,9 +253,7 @@ impl AppSlots {
         if plane != self.banked_plane {
             return None;
         }
-        let proto_idx = crate::proto::known_protocols()
-            .iter()
-            .position(|p| *p == ingress_protocol)?;
+        let proto_idx = self.formats.iter().position(|p| *p == ingress_protocol)?;
         self.request.get(pool).map(|fams| &fams[proto_idx])
     }
 
@@ -442,8 +447,8 @@ pub fn translation(from: &str, to: &str) {
     static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
     let table = SLOTS.get_or_init(|| {
         let mut v = Vec::new();
-        for f in crate::proto::known_protocols() {
-            for t in crate::proto::known_protocols() {
+        for f in crate::plane::fallback_wire_formats() {
+            for t in crate::plane::fallback_wire_formats() {
                 if f != t {
                     v.push((
                         *f,

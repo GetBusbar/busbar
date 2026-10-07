@@ -712,6 +712,12 @@ pub enum RefusalCode {
     ClientGone = 40,
     /// `DeadlineExceeded`.
     DeadlineExceeded = 41,
+    /// `NoRoute`.
+    NoRoute = 43,
+    /// `WrongMethod`.
+    WrongMethod = 44,
+    /// `HandlerPanic`.
+    HandlerPanic = 45,
 }
 
 impl RefusalCode {
@@ -759,6 +765,9 @@ impl RefusalCode {
         RefusalCode::Superseded,
         RefusalCode::ClientGone,
         RefusalCode::DeadlineExceeded,
+        RefusalCode::NoRoute,
+        RefusalCode::WrongMethod,
+        RefusalCode::HandlerPanic,
     ];
 
     /// The number on the wire.
@@ -834,6 +843,9 @@ pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
         ReasonCode::Superseded => RefusalCode::Superseded,
         ReasonCode::ClientGone => RefusalCode::ClientGone,
         ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
+        ReasonCode::NoRoute => RefusalCode::NoRoute,
+        ReasonCode::WrongMethod => RefusalCode::WrongMethod,
+        ReasonCode::HandlerPanic => RefusalCode::HandlerPanic,
     }
 }
 
@@ -888,6 +900,9 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::Superseded => ReasonCode::Superseded,
         RefusalCode::ClientGone => ReasonCode::ClientGone,
         RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
+        RefusalCode::NoRoute => ReasonCode::NoRoute,
+        RefusalCode::WrongMethod => ReasonCode::WrongMethod,
+        RefusalCode::HandlerPanic => ReasonCode::HandlerPanic,
     })
 }
 
@@ -1076,7 +1091,9 @@ pub struct PlaneTail {
     pub signing_kid_prefix: AbiStr,
     /// The plane's command-line help text.
     pub cli_help: AbiStr,
-    /// Its dialects; per-call `dialect` indexes them.
+    /// Its dialects; per-call `dialect` indexes them. `dialects[0]` is the plane's DEFAULT
+    /// DIALECT for an entry that names none (a provider whose `protocol:` is omitted; ARCHITECT
+    /// ruling 2026-10-07): the kernel reads it, and names no dialect of its own.
     pub dialects: *const AbiStr,
     /// How many.
     pub dialects_len: usize,
@@ -1164,7 +1181,27 @@ pub struct Claim {
     pub refusal_dialect: u16,
     /// Alignment padding.
     pub _pad: u16,
+    /// The route's DEFAULT INBOUND AUTH STYLE (spec, the design's connections: each plane declares its claims
+    /// per dialect, "route, transport, default inbound auth style and `refusal_dialect`"): an open
+    /// word, opaque to the kernel save [`STYLE_REQUEST_SIGNATURE`], whose lines run the kernel's
+    /// request-signature pre-step. Absent (NULL) = the claim states none. A tail addition.
+    pub inbound_style: AbiStr,
+    /// HOW THE TARGET MATCHES, in the ONE route vocabulary (spec, the design's connections: "The match
+    /// vocabulary is defined once in `abi/transport`"): `0` = by [`Claim::flags`] as ever
+    /// ([`CLAIM_EXACT`], [`CLAIM_PATTERN`], else the target's whole subtree); otherwise one of
+    /// `abi::transport::route::PATH_EXACT`, `PATH_PATTERN`, `PATH_PREFIX`, `PATH_SUFFIX`,
+    /// `PATH_CONTAINS`, with neither [`CLAIM_EXACT`] nor [`CLAIM_PATTERN`] set. A plane's lines
+    /// reproduce its 1.5.5 dispatch ladder exactly (l.910), so a ladder rung that reads a path's
+    /// end or a fragment of it is a line of that form. A tail addition.
+    pub path_form: u32,
+    /// Alignment padding.
+    pub _form_reserved: u32,
 }
+
+/// [`Claim::inbound_style`]: the route's callers present a REQUEST SIGNATURE rather than a token,
+/// so the kernel's request-signature pre-step (which binds the buffered body to the signed payload
+/// hash before the auth chain) runs on its lines, and on no other line.
+pub const STYLE_REQUEST_SIGNATURE: &str = "request-signature";
 
 /// One admin route the built plane serves through [`slot::SERVE`].
 #[repr(C)]
@@ -1721,6 +1758,17 @@ pub struct ServeIn {
     pub records_buf: *mut RecordWrite,
     /// Its capacity.
     pub records_cap: usize,
+    /// A LISTING RENDER (ARCHITECT RULING D, 2026-10-07; spec Part 2 #49, and THE DESIGN's rule
+    /// that the kernel holds no dialect, l.958-960): the names the caller may put in a request
+    /// body, as the kernel computed them for that caller (its scope applied, in the kernel's
+    /// order), one [`super::mechanism::call::BLOB_JSON`] array of strings. The plane renders them
+    /// in the dialect its own rule picks from [`ServeIn::target`] and the head
+    /// [`ServeIn::fields`], and answers the reply's status, fields and bytes; the kernel picks no
+    /// dialect. On a listing render [`ServeIn::route`] is `u32::MAX` (no admin route; a plane that
+    /// predates this field refuses it as an index past its routes). [`Blob::ABSENT`] on every
+    /// other `serve` (an admin or public route). A tail addition; judged by
+    /// [`check::check_serve_in`].
+    pub listing: Blob,
 }
 
 /// `serve`'s `out`.

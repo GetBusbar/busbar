@@ -13,13 +13,11 @@
 
 use busbar_contract::abi::plane::reason_of;
 use busbar_contract::protocol::{
-    ProtocolDecl, APPLICATION_JSON, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
+    APPLICATION_JSON, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
     KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT,
     KIND_REQUEST_TOO_LARGE, KIND_TIMEOUT,
 };
 use serde_json::Value;
-
-use crate::codec::DECLS;
 
 /// What the caller reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,9 +30,7 @@ pub struct Rendered {
     pub body: Vec<u8>,
 }
 
-fn decl(name: &str) -> Option<&'static ProtocolDecl> {
-    DECLS.iter().copied().find(|d| d.name == name)
-}
+use crate::exchange::decl_for as decl;
 
 /// The agnostic envelope: `{"error": {"message", "type"}}`.
 #[must_use]
@@ -90,9 +86,10 @@ pub fn kind_of(reason: &str, status: u16) -> &'static str {
         "no_rate" | "unpriced" | "decode_failed" | "replayed" | "superseded" => {
             KIND_INVALID_REQUEST
         }
-        "no_destination" => KIND_NOT_FOUND,
+        "no_destination" | "no_route" => KIND_NOT_FOUND,
+        "wrong_method" => KIND_INVALID_REQUEST,
         "meter_disputed" | "handoff_mismatch" | "plane_panic" | "task_lost"
-        | "secret_placeholder" => KIND_API_ERROR,
+        | "secret_placeholder" | "handler_panic" => KIND_API_ERROR,
         _ if status >= 500 && status != 503 => KIND_API_ERROR,
         _ if status >= 500 => KIND_OVERLOADED,
         _ if status == 429 => KIND_RATE_LIMIT,

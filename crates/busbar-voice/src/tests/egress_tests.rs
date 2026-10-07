@@ -11,7 +11,7 @@
 
 use crate::DECLS;
 use busbar_contract::config::UpstreamCreds;
-use busbar_kernel::proto::SigningContext;
+use busbar_contract::protocol::SigningContext;
 
 #[test]
 fn the_provider_dial_carries_the_planned_credential_and_never_a_caller_token() {

@@ -284,7 +284,7 @@ async fn split_admin_listener_no_double_exposure() {
     let app = crate::new_test_app()
         .lane(LaneSpec::new(
             "test-model",
-            busbar_kernel::proto::PROTO_ANTHROPIC,
+            crate::test_seams::fallback_dialect(0),
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])

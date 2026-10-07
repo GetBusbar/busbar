@@ -84,8 +84,6 @@ pub struct Linked {
         busbar_contract::abi::mechanism::door::DoorFn,
         &'static str,
     )],
-    /// Protocol declarations, appended to the installed protocol set in this order.
-    pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// Owned diagnostics, joining the rendered catalog.
     pub diagnostics: &'static [&'static [&'static busbar_contract::diagnostic::Diagnostic]],
     /// Installers of a duplex plane's inbound WS-accept arrivals (the seam is set once: the first
@@ -252,17 +250,6 @@ pub struct BookCtx<'a> {
     pub book: &'a crate::root::durability::NodeBook,
     /// The boot generation.
     pub app: &'a busbar_kernel::state::App,
-}
-
-/// THE PROTOCOL AXIS: every entry's declarations, appended to the installed protocol set in table
-/// order.
-pub fn register_protocols(linked: &Linked) {
-    let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
-        .protocols
-        .iter()
-        .flat_map(|decls| decls.iter().copied())
-        .collect();
-    busbar_kernel::proto::install_protocols(installed);
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
@@ -1276,7 +1263,3 @@ mod auth_tests;
 #[cfg(test)]
 #[path = "tests/metric_family_conformance.rs"]
 mod metric_family_conformance;
-
-#[cfg(all(test, linked_every_plane))]
-#[path = "tests/linked_protocols.rs"]
-mod linked_protocols;

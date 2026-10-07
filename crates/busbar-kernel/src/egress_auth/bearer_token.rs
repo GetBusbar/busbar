@@ -20,8 +20,8 @@ use crate::diag_warn;
 use crate::diagnostics::{
     EGRESS_OAUTH_EMPTY_TOKEN, EGRESS_OAUTH_MINT_FAILED, EGRESS_OAUTH_TOKEN_INVALID_BYTES,
 };
-use crate::proto::SigningContext;
 use axum::http::{HeaderName, HeaderValue};
+use busbar_contract::protocol::SigningContext;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock, Weak};

@@ -47,6 +47,8 @@ const KIND_OVERLOADED: &str = "overloaded_error";
 const KIND_REQUEST_TOO_LARGE: &str = "request_too_large";
 /// The token a node-side fault wears.
 const KIND_API_ERROR: &str = "api_error";
+/// The token a target nothing answers wears.
+const KIND_NOT_FOUND: &str = "not_found_error";
 
 /// The transport fact the request target is published under.
 ///
@@ -214,7 +216,11 @@ fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {
         | RefusalReason::HandoffMismatch
         | RefusalReason::PlanePanic
         | RefusalReason::TaskLost
-        | RefusalReason::SecretPlaceholder => (500, KIND_API_ERROR),
+        | RefusalReason::SecretPlaceholder
+        | RefusalReason::HandlerPanic => (500, KIND_API_ERROR),
+        // The listener's own no-route and wrong-method answers (1.5.5's 404 and 405 shapes).
+        RefusalReason::NoRoute => (404, KIND_NOT_FOUND),
+        RefusalReason::WrongMethod => (405, KIND_INVALID_REQUEST),
     }
 }
 

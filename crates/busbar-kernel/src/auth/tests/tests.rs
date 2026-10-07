@@ -709,7 +709,11 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/totally/unknown/path", // unknown → fallback
     ];
     for path in paths {
-        let body = decode_body(unauthorized_response(&residual_app(), path));
+        let door = super::Door {
+            lines: None,
+            method: "POST",
+        };
+        let body = decode_body(unauthorized_response(&residual_app(), door, path));
         let mut strings = Vec::new();
         collect_strings(&body, &mut strings);
         for s in &strings {
@@ -1136,7 +1140,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::test_support::NEUTRAL_WIRE_FORMATS[0],
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -1250,7 +1254,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::test_support::NEUTRAL_WIRE_FORMATS[0],
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -1826,7 +1830,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::test_support::NEUTRAL_WIRE_FORMATS[0],
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -1992,7 +1996,7 @@ async fn structural_sigv4_gate_rejects_without_reading_the_body() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::test_support::NEUTRAL_WIRE_FORMATS[0],
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -2001,7 +2005,15 @@ async fn structural_sigv4_gate_rejects_without_reading_the_body() {
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .governance(gov)
         .build();
-    let router = crate::build_router(app);
+    // The line the request matches states the request-signature style, as a claimant's converse
+    // line does: the pre-step runs on such lines alone.
+    let (router, handle) = crate::build_router_with_limits(
+        app,
+        busbar_kernel::proxy::max_translate_body_bytes(),
+        crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
+        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    );
+    handle.set_listener_lines(Arc::new(crate::test_support::SignedLinesDouble("/model/")));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -2111,7 +2123,14 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     let key_id = gov.all_keys().unwrap()[0].id.clone();
     gov.update_key(&key_id, Some(false), None).unwrap(); // freeze it
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url()).api_key("up"))
+        .lane(
+            LaneSpec::new(
+                "m",
+                crate::test_support::NEUTRAL_WIRE_FORMATS[0],
+                &server.base_url(),
+            )
+            .api_key("up"),
+        )
         .pool("pa", &[(0, 1)])
         .keys_chain()
         .governance(gov)
@@ -2536,7 +2555,12 @@ async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401
     let ask = |auth: AuthMiddleware| {
         let app = TestApp::new()
             .lane(
-                LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url()).api_key("up"),
+                LaneSpec::new(
+                    "m",
+                    crate::test_support::NEUTRAL_WIRE_FORMATS[0],
+                    &server.base_url(),
+                )
+                .api_key("up"),
             )
             .pool("pa", &[(0, 1)])
             .auth(std::sync::Arc::new(auth))

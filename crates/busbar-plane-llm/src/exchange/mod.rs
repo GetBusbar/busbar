@@ -4,6 +4,7 @@
 
 pub mod arrive;
 pub mod attempt;
+pub mod listing;
 pub mod multipart;
 pub mod probe;
 pub mod project;
@@ -18,14 +19,14 @@ use busbar_contract::protocol::ProtocolDecl;
 use crate::codec::DECLS;
 
 /// The declaration of the dialect named `name`.
-pub(crate) fn decl(name: &str) -> Option<&'static ProtocolDecl> {
+pub(crate) fn decl_for(name: &str) -> Option<&'static ProtocolDecl> {
     DECLS.iter().copied().find(|d| d.name == name)
 }
 
 /// The operation handler that serves `arrived`: its dialect's handler for its operation.
 #[must_use]
 pub fn handler_of(arrived: &arrive::Arrived) -> Option<&'static dyn OperationHandler> {
-    decl(arrived.dialect)
+    decl_for(arrived.dialect)
         .and_then(|d| d.handler)
         .and_then(|rh| rh.operation_handler(arrived.operation))
 }

@@ -78,7 +78,13 @@ fn an_ungrouped_key_is_never_blocked_at_the_admission_door() {
     let app = governed(&["p"], &gov, CostModel::flat(30));
     const ADMITS: i64 = 500;
     for i in 0..ADMITS {
-        let admitted = crate::ingress::admit_check(&app, &caller(&key), "openai", "", AT);
+        let admitted = crate::ingress::admit_check(
+            &app,
+            &caller(&key),
+            crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+            "",
+            AT,
+        );
         assert!(
             matches!(admitted, Ok((Some(_), None))),
             "an ungrouped key is authenticated but unlimited: admission #{i} must not block"
@@ -149,13 +155,25 @@ fn a_cyclic_budget_downgrade_ends_at_the_revisit_guard_naming_the_last_pool() {
     let app = governed(&["a", "b", "c"], &gov, cost);
     let now = crate::store::now();
 
-    let (grant, effective) = crate::ingress::admit_check(&app, &caller(&key), "openai", "a", now)
-        .expect("the first admission is under a's cap");
+    let (grant, effective) = crate::ingress::admit_check(
+        &app,
+        &caller(&key),
+        crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+        "a",
+        now,
+    )
+    .expect("the first admission is under a's cap");
     assert!(grant.is_some());
     assert_eq!(effective, None);
 
-    let refused = crate::ingress::admit_check(&app, &caller(&key), "openai", "a", now)
-        .expect_err("a cyclic downgrade chain must terminate in a refusal, not an admission");
+    let refused = crate::ingress::admit_check(
+        &app,
+        &caller(&key),
+        crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+        "a",
+        now,
+    )
+    .expect_err("a cyclic downgrade chain must terminate in a refusal, not an admission");
     assert_eq!(
         refused.status(),
         StatusCode::TOO_MANY_REQUESTS,
@@ -380,7 +398,6 @@ fn the_required_hook_refusal_says_the_words_that_shipped() {
 #[test]
 fn an_unresolved_ingress_is_answered_in_the_kernels_own_envelope() {
     let resp = crate::proxy::ingress_error(
-        "no-such-protocol",
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_kernel_egress::wire::KIND_OVERLOADED,
         "everything is on fire",
@@ -451,7 +468,7 @@ async fn a_static_chain_admits_its_own_credential_when_no_virtual_key_is_demande
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::test_support::NEUTRAL_WIRE_FORMATS[0],
                     "http://127.0.0.1:1",
                 )
                 .api_key("busbar-upstream-key"),
@@ -525,7 +542,7 @@ async fn a_persisted_key_is_not_enforced_when_the_chain_does_not_name_the_keys_v
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::test_support::NEUTRAL_WIRE_FORMATS[0],
                     "http://127.0.0.1:1",
                 )
                 .api_key("busbar-upstream-key"),

@@ -152,8 +152,13 @@ fn refusal_render(reason: RefusalReason) -> (&'static str, &'static str) {
         | RefusalReason::HandoffMismatch
         | RefusalReason::PlanePanic
         | RefusalReason::TaskLost
-        | RefusalReason::SecretPlaceholder => {
+        | RefusalReason::SecretPlaceholder
+        | RefusalReason::HandlerPanic => {
             ("internal", "the request could not be served at this time")
+        }
+        // The listener's own no-route and wrong-method answers.
+        RefusalReason::NoRoute | RefusalReason::WrongMethod => {
+            ("invalid_request", "the requested resource was not found")
         }
     }
 }

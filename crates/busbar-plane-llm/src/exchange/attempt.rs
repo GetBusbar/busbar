@@ -93,9 +93,7 @@ pub const DETAIL_MODEL_UNSUPPORTED_OPERATION: &str = "This model does not suppor
 pub const DETAIL_ENDPOINT_UNSUPPORTED_OPERATION: &str =
     "This endpoint does not support that operation.";
 
-fn decl(name: &str) -> Option<&'static ProtocolDecl> {
-    DECLS.iter().copied().find(|d| d.name == name)
-}
+use crate::exchange::decl_for as decl;
 
 fn answer(
     envelope: &'static str,

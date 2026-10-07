@@ -167,6 +167,96 @@ pub struct Line {
     pub auth: LineAuth,
     /// The transport the connection is handed to after the head, for an upgrade line.
     pub upgrade: Option<String>,
+    /// The line's DEFAULT INBOUND AUTH STYLE, as its claimant declared it (spec THE DESIGN §5,
+    /// "Each plane declares its claims per dialect: route, transport, default inbound auth style
+    /// and `refusal_dialect`"): an opaque word to the kernel, `None` when the claim states none.
+    pub inbound_style: Option<String>,
+}
+
+/// A refusal the listener answered with NO UNIT, as the matched line's claimant rendered it through
+/// its `refusal` (spec THE DESIGN §5: "the bytes come from the line's claimant through `refusal`
+/// under the line's `refusal_dialect`"; Part 3 §12: a refusal with no unit passes the TARGET, which
+/// the plane renders by its own path rule).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    /// The status the rendered reply carries.
+    pub status: u16,
+    /// Its head fields, as the claimant wrote them.
+    pub fields: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Its body.
+    pub body: Vec<u8>,
+}
+
+/// What a request's matched line states, before any unit: the facts the kernel's own steps read
+/// at the door (the auth step's denial label, and its request-signature pre-step).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineFacts {
+    /// The declared NAME of the line's `refusal_dialect` (the claimant's tail dialect it indexes);
+    /// empty when the claimant states no dialects.
+    pub dialect: &'static str,
+    /// The line's default inbound auth style ([`Line::inbound_style`]).
+    pub inbound_style: Option<String>,
+    /// Whether the line admits the request's method; `false` is a method miss on it (405, never
+    /// no-route, [`Matched::MethodMiss`]).
+    pub admits_method: bool,
+}
+
+/// ONE LISTENER'S LINES, as the kernel's own door-time steps reach them: the composition root seals
+/// the listener's [`GuestList`] over its claimants and answers these two questions from it. The
+/// kernel names no dialect and picks none: a line's dialect is its claimant's, and the bytes of a
+/// refusal with no unit are its claimant's.
+pub trait ListenerLines: Send + Sync {
+    /// The facts the line `(method, path)` matches states (a method miss reads its line too);
+    /// `None` when no claimant's line answers the path.
+    fn facts(&self, method: &str, path: &str) -> Option<LineFacts>;
+
+    /// The refusal for `reason`, with no unit, rendered by the claimant of the line `(method,
+    /// target)` matches (a method miss renders on its line) under the line's `refusal_dialect`,
+    /// the kernel's `text` its words and `status` the listener's own unless the claimant states
+    /// one for the reason; `None` when no claimant's line answers the target, and the
+    /// listener's own default stands.
+    fn refuse(
+        &self,
+        method: &str,
+        target: &str,
+        reason: busbar_contract::caps::ReasonCode,
+        status: u16,
+        text: &str,
+    ) -> Option<Refused>;
+
+    /// THE LISTING, rendered by the claimant of the PLANE line beneath `target` (the one a refusal
+    /// with no unit on that path renders through; ARCHITECT RULING D, 2026-10-07): `names`, the
+    /// kernel's visible names for the caller in the kernel's order, handed to that claimant's
+    /// `serve` with the request `target` and the caller's head `fields`; the claimant picks the
+    /// dialect by its own rule and answers the whole reply. Not a unit: nothing is admitted,
+    /// audited, metered or posted. `None` when no plane line lies beneath the target or its
+    /// claimant renders nothing, and the kernel's dialect-free default stands.
+    fn render_listing<'a>(
+        &'a self,
+        target: &'a str,
+        fields: Vec<(Vec<u8>, Vec<u8>)>,
+        names: Vec<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Refused>> + Send + 'a>>;
+
+    /// EACH PLANE GENERATION'S LISTED NAMES (spec l.410: "`/v1/models` appends each plane
+    /// generation's listed names (bytes unchanged when none)"; DECISIONS D8 `listed_models`): every
+    /// name a served plane's current generation lists, each with the scope a caller's grant must
+    /// reach for the caller to see it. The kernel applies the grant (its governance) and appends
+    /// the names it lets through after its own. None by default: no plane on this build states a
+    /// listed name yet, and the listing's bytes are unchanged.
+    fn listed(&self) -> Vec<Listed> {
+        Vec::new()
+    }
+}
+
+/// ONE LISTED NAME a plane generation states ([`ListenerLines::listed`]): the name, and the scope a
+/// caller's grant must reach to see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    /// The name, as a caller puts it in a request body.
+    pub name: String,
+    /// The scope that gates it.
+    pub scope: busbar_contract::records::ScopeRef,
 }
 
 /// Why a guest list is refused at boot.

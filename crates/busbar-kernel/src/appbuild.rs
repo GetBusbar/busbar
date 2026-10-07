@@ -27,8 +27,8 @@ use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
     hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, ratelimit, state, store, telemetry, tls,
-    transport, trust,
+    plane, plugin_routes, profile, proxy, ratelimit, state, store, telemetry, tls, transport,
+    trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -564,6 +564,9 @@ pub fn build_app_from_config(
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The codec host services a plane's codec reads, armed before anything below can reach one
+    // (idempotent: the composition root armed them at boot already).
+    crate::plane_host::arm_codec_host_services();
     // The root's projection of this configuration, taken before any part of it is consumed.
     let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
@@ -848,17 +851,17 @@ pub fn build_app_from_config(
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
-        let Some(protocol) = crate::proto::lane_protocol_name(&provider_cfg.protocol) else {
-            // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
-            // hand-maintained literal: the codec dialects are whatever the linked plane crates
-            // registered, so a build with the fallback plane compiled out names only what it actually
-            // serves (and a build with a new dialect names it) — the deletion-test property at the
-            // vocabulary level. Empty roster is a real answer.
+        let Some(protocol) = crate::plane::fallback_wire_format(&provider_cfg.protocol) else {
+            // The "supported:" roster is the fallback plane's DECLARED wire formats
+            // (`plane::fallback_wire_formats`), not a hand-maintained literal: the dialects are
+            // whatever the linked plane declares, so a build with the fallback plane compiled out
+            // names only what it actually serves (and a build with a new dialect names it) — the
+            // deletion-test property at the vocabulary level. Empty roster is a real answer.
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.provider,
                 provider_cfg.protocol,
-                crate::proto::known_protocols().join(", ")
+                crate::plane::fallback_wire_formats().join(", ")
             ));
         };
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as

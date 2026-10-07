@@ -112,7 +112,7 @@ fn resolved() -> RootCfg {
         "acme".to_string(),
         serde_yaml::from_str(&format!(
             "protocol: {}\nbase_url: https://api.example.com\n",
-            busbar_kernel::proto::residual_default_dialect().expect("a residual-default dialect")
+            linked::fallback_dialect(1)
         ))
         .expect("provider def"),
     );

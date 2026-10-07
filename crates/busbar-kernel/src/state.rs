@@ -803,6 +803,12 @@ pub struct AppHandle {
     /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
     /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
     appliers: std::sync::Mutex<Vec<Applier>>,
+    /// THE DATA LISTENER'S LINES, as the composition root sealed them over its claimants: what the
+    /// kernel's door-time steps (auth, the body cap, the no-route and wrong-method answers, the
+    /// request-panic boundary) read a request's line facts from and render a refusal with no unit
+    /// through. Set once, after the routers are built and before the first request; unset = no
+    /// claimant's line answers any path, and the listener's own default envelope stands.
+    lines: std::sync::OnceLock<Arc<dyn crate::guest::ListenerLines>>,
 }
 
 /// One thing told of every generation a [`AppHandle::swap`] installs.
@@ -815,7 +821,20 @@ impl AppHandle {
             #[cfg(debug_assertions)]
             swapping: std::sync::atomic::AtomicBool::new(false),
             appliers: std::sync::Mutex::new(Vec::new()),
+            lines: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Hand the kernel the data listener's lines ([`crate::guest::ListenerLines`]). Once: a second
+    /// call is ignored, and answers `false`.
+    pub fn set_listener_lines(&self, lines: Arc<dyn crate::guest::ListenerLines>) -> bool {
+        self.lines.set(lines).is_ok()
+    }
+
+    /// The data listener's lines, when the composition root handed them over.
+    #[must_use]
+    pub fn listener_lines(&self) -> Option<&Arc<dyn crate::guest::ListenerLines>> {
+        self.lines.get()
     }
 
     /// Tell `applier` of every generation a later [`swap`](Self::swap) installs (a config apply,

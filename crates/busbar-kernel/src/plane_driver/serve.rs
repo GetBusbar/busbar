@@ -29,8 +29,9 @@ use axum::body::{Body, Bytes};
 use axum::extract::{FromRequest, Request};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, Span, BLOB_JSON};
 use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::abi::plane::check::check_serve_in;
 use busbar_contract::abi::plane::{
     FieldList, OutField, ServeIn, ServeOut, AUDIT_APPLIED, AUDIT_REJECTED, ROUTE_PUBLIC,
 };
@@ -457,10 +458,18 @@ struct Bufs {
     fields: Vec<OutField>,
     arena: Vec<u8>,
     records: Vec<busbar_contract::abi::plane::RecordWrite>,
+    /// A listing render's names, one JSON array ([`ServeIn::listing`]); `None` on every other serve.
+    listing: Option<Vec<u8>>,
 }
 
 impl Bufs {
     fn frame(&mut self, route: u32) -> (ServeIn, ServeOut) {
+        let listing = self.listing.as_ref().map_or(Blob::ABSENT, |l| Blob {
+            ptr: l.as_ptr(),
+            len: l.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        });
         let input = ServeIn {
             route,
             target: AbiStr::over(&self.target),
@@ -475,6 +484,7 @@ impl Bufs {
             arena_cap: self.arena.len(),
             records_buf: self.records.as_mut_ptr(),
             records_cap: self.records.len(),
+            listing,
             ..blank_in()
         };
         (input, blank_out())
@@ -518,6 +528,52 @@ pub async fn serve(
     if route as usize >= routes {
         return Err(Unserved::NoRoute);
     }
+    crossed(calls, caps, route, target, head, body, None).await
+}
+
+/// THE LISTING RENDER (ARCHITECT RULING D, 2026-10-07; spec Part 2 #49, THE DESIGN §5 l.958-960):
+/// `names` (the kernel's visible names for the caller, in its order) handed to the plane's `serve`
+/// as [`ServeIn::listing`] on route `u32::MAX`, with the request's `target` and `head`, and the
+/// reply the plane renders in the dialect its own rule picks. Not a unit: nothing is admitted,
+/// audited, metered or posted, and the kernel names no dialect.
+///
+/// # Errors
+///
+/// As [`serve`]: no ticket, or a plane that FAULTed, answered short twice or refused.
+pub async fn render_listing(
+    calls: &dyn PlaneCalls,
+    caps: BufferCaps,
+    target: &[u8],
+    head: HeadFields,
+    names: &[&str],
+) -> Result<Served, Unserved> {
+    let listing = serde_json::to_vec(names).map_err(|_| Unserved::Fault)?;
+    crossed(
+        calls,
+        caps,
+        LISTING_ROUTE,
+        target,
+        head,
+        Bytes::new(),
+        Some(listing),
+    )
+    .await
+}
+
+/// The `route` a listing render names ([`ServeIn::listing`]): no admin route.
+const LISTING_ROUTE: u32 = u32::MAX;
+
+/// One served request across the `serve` op, on a request ticket, with one re-call for a short
+/// answer.
+async fn crossed(
+    calls: &dyn PlaneCalls,
+    caps: BufferCaps,
+    route: u32,
+    target: &[u8],
+    head: HeadFields,
+    body: Bytes,
+    listing: Option<Vec<u8>>,
+) -> Result<Served, Unserved> {
     let ticket = calls.mint().ok_or(Unserved::NoTicket)?;
     let mut held = Held {
         calls,
@@ -532,10 +588,16 @@ pub async fn serve(
         fields: vec![NO_FIELD; caps.fields],
         arena: vec![0; caps.arena],
         records: vec![super::NO_RECORD; caps.records],
+        listing,
     }));
     let lock = || keep.lock().unwrap_or_else(PoisonError::into_inner);
     for recall in [false, true] {
-        let (input, out) = lock().frame(route);
+        // The host's own `in`, judged before it crosses (a listing only on the listing route).
+        let (input, out) = {
+            let (input, out) = lock().frame(route);
+            let judged = check_serve_in(input.route, &input.listing);
+            judged.map(|()| (input, out)).map_err(|_| Unserved::Fault)?
+        };
         let lent: Lent = keep.clone();
         held.crossing = true;
         let mut flight = calls.serve(ticket, input, out, lent);

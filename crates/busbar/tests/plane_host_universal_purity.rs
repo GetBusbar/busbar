@@ -72,7 +72,6 @@ const SLICE_TRAITS: &[&str] = &[
     "ClockHost",
     "TelemetryHost",
     "JournalHost",
-    "MountHost",
     "RegistryHost",
     "HookConfigHost",
     "BudgetHost",

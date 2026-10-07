@@ -182,7 +182,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ("PB-30", &[
         ("test", "resolver_table", "the detect ladder rungs: headers, SigV4 prefix, path suffixes, catch-all"),
         ("test", "test_api_root_unmatched_paths_speak_the_admin_envelope", "/api paths get the frozen admin envelope"),
-        ("test", "crates/busbar/src/root/tests/linked_protocols.rs::the_fallback_404_on_a_dialects_path_is_its_native_envelope_with_its_head_fields", "fallback_error_response per inferred protocol (bedrock)"),
+        ("test", "crates/busbar-plane-llm/tests/linked_protocols.rs::the_fallback_404_on_a_dialects_path_is_its_native_envelope_with_its_head_fields", "fallback_error_response per inferred protocol (bedrock)"),
         ("test", "test_fallback_openai_404_is_json_no_amzn_headers", "fallback_error_response per inferred protocol (openai)"),
     ]),
     ("PB-31", &[
@@ -368,16 +368,17 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ("PB-65", &[
         ("test", "test_auth_headers_valid_key_emits_x_goog_api_key", "the x-goog-api-key header name"),
         ("test", "egress_scheme_is_the_declared_credential_family_table", "an api key is presented as x-api-key, from the declared credential-family table"),
-        ("test", "a_declared_static_header_follows_the_credential_verbatim", "anthropic-version follows the credential verbatim"),
-        ("test", "each_declared_scheme_presents_what_its_dialect_builder_wrote", "each declared scheme presents what its dialect's builder wrote"),
-        ("test", "crates/busbar-kernel/src/egress_auth/tests/prebuilt_auth_tests.rs::a_declared_static_header_follows_the_credential_verbatim", "an anthropic lane's egress carries exactly the declared headers"),
+        ("test", "crates/busbar-plane-llm/tests/exchange_attempt.rs::no_client_header_leaves_egress_unchanged", "anthropic-version follows the credential verbatim"),
+        ("test", "crates/busbar-auth-header/src/tests/present_tests.rs::every_static_dialects_recorded_credential_is_presented_as_its_builder_wrote", "each declared scheme presents what its dialect's builder wrote"),
+        ("test", "crates/busbar-auth-sigv4/src/tests/signing_tests.rs::every_recorded_signing_row_signs_as_the_dialects_signer_wrote", "the signing dialect signs what its builder wrote"),
+        ("test", "crates/busbar-plane-llm/src/codec/tests/proto/declared_scheme_tests.rs::only_the_versioned_dialect_declares_a_static_header", "an anthropic lane's egress carries exactly the declared headers"),
         ("test", "every_egress_request_declares_the_pinned_api_version", "anthropic-version is declared on every egress request"),
-        ("test", "with_no_static_header_declared_the_version_header_is_absent", "the version header comes from the declaration and nowhere else"),
+        ("test", "crates/busbar-plane-llm/src/codec/tests/proto/declared_scheme_tests.rs::only_the_versioned_dialect_declares_a_static_header", "the version header comes from the declaration and nowhere else"),
         ("test", "the_family_table_decides_first_and_the_mode_decides_the_rest", "the key-prefix disambiguation: the family table decides first"),
         ("test", "a_static_scheme_presents_the_header_its_table_names", "an oauth token is presented only as Authorization: Bearer"),
         ("test", "test_bedrock_sigv4_sign_request_structure", "the SigV4 SignedHeaders line"),
         ("test", "test_bedrock_sigv4_session_token", "the access:secret:session split"),
-        ("test", "a_misconfigured_or_unsendable_signing_credential_signs_nothing", "a misconfigured key signs nothing"),
+        ("test", "crates/busbar-auth-sigv4/src/tests/signing_tests.rs::unsendable_or_incomplete_signing_credentials_sign_nothing", "a misconfigured key signs nothing"),
     ]),
     ("PB-66", &[
         ("test", "crates/busbar-plane-llm/tests/exchange_attempt.rs::a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones", "every same-dialect client header reaches the upstream"),

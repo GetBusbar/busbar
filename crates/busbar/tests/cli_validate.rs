@@ -355,7 +355,7 @@ fn validate_trust_gate_matches_boot() {
 /// that spells the reference by ALIAS resolves the linked store: the unsigned tarball validates
 /// clean and the gate's "unsigned refused" case passes nothing. The reference is read from the
 /// gate's own store arm, so this test fails while the gate spells it by alias.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_node)]
 #[test]
 fn the_signing_gate_reference_reaches_the_dropped_in_tarball_past_a_linked_alias() {
     const CRATE: &str = "busbar-store-memory-plugin";

@@ -121,3 +121,47 @@ fn note_open_reports_each_note_in_its_own_line() {
     assert_eq!(env.diags()[1].id_idx, diag::AUTH_INVALID_HEADER_BYTES);
     assert_eq!(env.diags()[2].id_idx, diag::CREDENTIAL_INVALID_BYTES);
 }
+
+/// THE UNPRESENTABLE-CREDENTIAL LINES, WORD FOR WORD (ported from the kernel's deleted
+/// `egress_auth/tests/prebuilt_auth_tests.rs`, `an_unpresentable_static_credential_logs_its_builders_own_line`,
+/// ARCHITECT F25 ruling 2026-10-07): a credential no header value may carry is reported in the
+/// line its 1.5.5 builder logged — the custom header's and the credential-family table's naming the
+/// header they omitted, the bearer's its own words — and the operator reads exactly these bytes.
+#[test]
+fn an_unpresentable_credential_is_reported_in_its_builders_own_words() {
+    let mut env = EnvStore::default();
+    Header::note_open(
+        &mut env,
+        &[
+            style::OpenNote::Header("x-goog-api-key".to_string()),
+            style::OpenNote::Bearer,
+            style::OpenNote::Family("x-api-key".to_string()),
+            style::OpenNote::Family("authorization".to_string()),
+        ],
+    );
+    assert_eq!(
+        env.texts,
+        [
+            "egress credential contains invalid header bytes (ASCII control character); omitting \
+             auth header — upstream will reject with 401 header=x-goog-api-key",
+            "authorization credential contains invalid header bytes (ASCII control character); \
+             omitting auth header — upstream will reject with 401",
+            "auth credential contains bytes invalid for an HTTP header value (e.g. a trailing \
+             newline); omitting the credential header — upstream will return 401, check the key \
+             configuration header=x-api-key",
+            "auth credential contains bytes invalid for an HTTP header value (e.g. a trailing \
+             newline); omitting the credential header — upstream will return 401, check the key \
+             configuration header=authorization",
+        ]
+    );
+    let ids: Vec<u32> = env.diags().iter().map(|d| d.id_idx).collect();
+    assert_eq!(
+        ids,
+        [
+            diag::APIKEY_INVALID_BYTES,
+            diag::AUTH_INVALID_HEADER_BYTES,
+            diag::CREDENTIAL_INVALID_BYTES,
+            diag::CREDENTIAL_INVALID_BYTES
+        ]
+    );
+}

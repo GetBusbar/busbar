@@ -3,20 +3,11 @@
 
 //! Re-export shim. THE EGRESS-AUTH SEAM moved DOWN into `busbar-substrate` (the LLM plane named
 //! `busbar_kernel::egress_auth` as its last backwards reach); this module re-exports it (glob) so
-//! every historical `busbar_kernel::egress_auth::…` name — `resolve`, `prebuild_auth`,
-//! `CredentialProvider`, `MetadataSsrfPolicy`, and the `jwt_bearer` /
+//! every historical `busbar_kernel::egress_auth::…` name — `CredentialProvider`,
+//! `MetadataSsrfPolicy`, `bearer_auth_headers`, and the `jwt_bearer` /
 //! `oauth_client_credentials` mint modules — resolves unchanged, and hosts the two egress-auth
 //! tests that must stay core-side (below). The egress grant gate is authorization and lives in
 //! `busbar_kernel_scope::egress`.
-
-// THE PREBUILT-AUTH DIFFERENTIAL PROOF stays core-side: `resolve` reads the LLM dialect
-// `ProtocolDecl`s, and only core's `proto::decl_for` wrapper seeds a built-in decl under
-// `#[cfg(test)]` — a bare `cargo test -p busbar-substrate` registers none, so `resolve("bedrock")`
-// would there wrongly report lane-constant. It names only the re-exported `crate::egress_auth`
-// surface plus `crate::proto` / `crate::config`, all still valid here.
-#[cfg(test)]
-#[path = "tests/prebuilt_auth_tests.rs"]
-mod prebuilt_auth_tests;
 
 // The crate-wide license-header meta-test scans this crate's whole `src` (via `CARGO_MANIFEST_DIR`),
 // so it stays with busbar-core; it is not egress-auth-specific.
@@ -25,12 +16,8 @@ mod prebuilt_auth_tests;
 mod license_header_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-use crate::proto::{ProtocolDecl, SigningContext};
-use crate::teller::Kernel;
 use axum::http::{HeaderName, HeaderValue};
-use busbar_contract::protocol::EgressScheme;
-use busbar_kernel_identity::egress_auth::present_declared;
-use std::sync::Arc;
+use busbar_contract::protocol::SigningContext;
 
 pub(crate) mod bearer_token;
 /// THE EGRESS GATE: whether an outbound credential may be leased AT ALL, for a given inbound
@@ -190,118 +177,8 @@ pub trait CredentialProvider: Send + Sync {
     }
 }
 
-/// Resolve a lane's egress credential at boot from its protocol name and auth style.
-/// `auth: api-key` overrides the protocol's native scheme.
-pub fn resolve(
-    protocol_name: &str,
-    auth: Option<crate::config::ProviderAuth>,
-) -> Arc<dyn CredentialProvider> {
-    if matches!(auth, Some(crate::config::ProviderAuth::ApiKey)) {
-        return Arc::new(DeclaredScheme(
-            EgressScheme::header("api-key"),
-            Kernel::new(),
-            None,
-        ));
-    }
-    if matches!(
-        auth,
-        Some(crate::config::ProviderAuth::JwtBearer)
-            | Some(crate::config::ProviderAuth::OAuthClientCredentials)
-    ) {
-        // The OAuth styles mint their token asynchronously at boot (see `jwt_bearer::build` /
-        // `oauth_client_credentials::build`), so the boot path special-cases them and never routes
-        // them through this sync resolver. Reaching here means that wiring was bypassed — fail closed
-        // with a credential that emits no auth header (upstream 401) rather than sending raw secret
-        // material as a bearer.
-        return Arc::new(NoCredential);
-    }
-    // A protocol that DECLARED its native credential scheme (an extracted dialect: Anthropic's
-    // api-key-vs-Bearer disambiguation was the first) supplies the builder through its
-    // `ProtocolDecl`; the arms below are the shared schemes of the dialects still in-tree, and
-    // each leaves this match when its dialect is extracted.
-    if let Some(decl) = crate::proto::decl_for(protocol_name) {
-        if let Some(scheme) = decl.egress_scheme {
-            return Arc::new(DeclaredScheme(scheme, Kernel::new(), Some(decl)));
-        }
-        if let Some(headers_for) = decl.egress_auth_headers {
-            return Arc::new(DeclaredCredential {
-                headers_for,
-                // The decl says whether its builder reads only (key, mode) — see
-                // `ProtocolDecl::egress_auth_lane_constant`. A signer (bedrock SigV4) declares
-                // `false` and is never prebuilt.
-                lane_constant: decl.egress_auth_lane_constant,
-            });
-        }
-    }
-    // Every protocol a real deployment registers declares its own native egress scheme on its
-    // `ProtocolDecl` (`egress_auth_headers`), resolved and returned BEFORE this point. No dialect
-    // literal remains in this neutral resolver. Config validation refuses an unknown protocol name
-    // before a lane ever reaches here, so this is a defensive, fail-closed fallback that emits no
-    // auth header (upstream 401) — not a live scheme for any protocol this build actually serves.
-    Arc::new(NoCredential)
-}
-
-/// Fail-closed credential: emits no auth header. Used only as a defensive fallback if an
-/// async-constructed credential (e.g. `jwt-bearer`) reaches the sync resolver — the upstream then
-/// rejects with 401 rather than receiving a wrong or raw-secret header.
-struct NoCredential;
-impl CredentialProvider for NoCredential {
-    fn headers_for(&self, _key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        Vec::new()
-    }
-    fn is_lane_constant(&self) -> bool {
-        true // constantly nothing
-    }
-}
-
-/// A DECLARED egress scheme (`ProtocolDecl::egress_scheme`, or the operator's `auth: api-key`
-/// override, which is the static `api-key` header scheme): presented by the egress-auth unit under a
-/// `Grant<Sign>` the lane's teller mints for each presentation, so the credential is written onto
-/// the request here and never passes through a plane, followed verbatim by the declaring protocol's
-/// `static_headers` (the override declares none). A static scheme is lane-constant; a signer is not.
-/// A credential the unit could not present sends no auth header — the upstream answers 401 — and is
-/// reported in the line its scheme's builder always logged, with the key never logged.
-struct DeclaredScheme(EgressScheme, Kernel, Option<&'static ProtocolDecl>);
-impl CredentialProvider for DeclaredScheme {
-    fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        let presented =
-            present_declared(&self.1.sign_token(), &self.0, self.2, key, ctx, UNPRESENTED);
-        let typed = |(k, v): (String, String)| Some((k.parse().ok()?, v.parse().ok()?));
-        presented.into_iter().filter_map(typed).collect()
-    }
-    fn is_lane_constant(&self) -> bool {
-        matches!(self.0, EgressScheme::Static { .. })
-    }
-}
-
-/// The host catalog's codes for a credential a declared scheme could not present: an omitted static
-/// header, an omitted bearer.
-const UNPRESENTED: [&crate::diagnostics::Diagnostic; 2] = [
-    &crate::diagnostics::EGRESS_APIKEY_INVALID_BYTES,
-    &crate::diagnostics::PROTO_AUTH_INVALID_HEADER_BYTES,
-];
-
-/// A credential scheme a PROTOCOL DECLARED (`ProtocolDecl::egress_auth_headers`) — the extracted
-/// dialects' path into this layer. The builder is declared data; this wrapper is only the vtable
-/// shape `resolve` hands back for every scheme.
-struct DeclaredCredential {
-    headers_for: fn(&str, &SigningContext) -> Vec<(HeaderName, HeaderValue)>,
-    lane_constant: bool,
-}
-impl CredentialProvider for DeclaredCredential {
-    fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        (self.headers_for)(key, ctx)
-    }
-    fn is_lane_constant(&self) -> bool {
-        self.lane_constant
-    }
-}
-
-// The license-header meta-test (scans the whole crate `src`) and the prebuilt-auth differential
-// proof STAY in busbar-core after the module relocated DOWN here: the prebuilt proof reads the
-// LLM dialect `ProtocolDecl`s that only core's `#[cfg(test)]` decl seeding registers, and the
-// license scan is a crate-wide meta-test core keeps for its own `src`. Both host under core's
-// `egress_auth` re-export shim.
+// The license-header meta-test scans the whole crate `src`; it is a crate-wide meta-test core keeps
+// for its own `src`, hosted here.
 
 // `read_capped_token_response` meta-test lives in tests/ per the repo layout rule (no inline test
 // bodies in a mod.rs); keep the module here via a #[path] decl.
@@ -309,35 +186,20 @@ impl CredentialProvider for DeclaredCredential {
 #[path = "tests/helper_tests.rs"]
 mod helper_tests;
 
-/// Prebuild a lane's `Own`-mode egress auth headers at boot, or `None` when the credential is not
-/// lane-constant. THE SAME CALL the request path makes — `headers_for` with an `Own`-mode context —
-/// so the map a request clones is byte-identical to what it would have built live; the context's
-/// request-varying fields are inert by definition of [`CredentialProvider::is_lane_constant`]
-/// (a `false` there is exactly "this credential reads them", and such a credential never gets here).
-pub fn prebuild_auth(
-    credential: &Arc<dyn CredentialProvider>,
-    api_key: &str,
-    signing_host: &str,
-) -> Option<http::header::HeaderMap> {
-    if !credential.is_lane_constant() {
-        return None;
+/// THE SHARED `Authorization: Bearer <key>` BUILDER, typed: the identity crate's builder, with a
+/// credential carrying bytes no header may hold OMITTED (the upstream then answers 401) and that
+/// omission logged under `label` (the caller's own name for what it presents to), the key never
+/// logged. Protocol-neutral: a bearer token is a credential carrier, not a dialect.
+pub fn bearer_auth_headers(label: &str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
+    let built = busbar_kernel_identity::egress_auth::bearer_auth_headers(key);
+    if built.is_empty() {
+        crate::diagnostics::diag_debug!(
+            crate::diagnostics::PROTO_AUTH_INVALID_HEADER_BYTES,
+            protocol = label,
+            "authorization credential contains invalid header bytes (ASCII control character); \
+             omitting auth header — upstream will reject with 401"
+        );
     }
-    // NO CREDENTIAL ⇒ NO AUTH HEADER. An empty key means there is nothing to present: the provider
-    // declared `api_key: none` (a keyless local upstream — ollama, vLLM). Freezing
-    // `Authorization: Bearer ` with no token would be strictly worse than freezing nothing — a
-    // keyless upstream may reject a malformed empty credential, and an empty auth header is a proxy
-    // tell no native client emits. The same rule is applied per-request in `lane_auth_headers`.
-    if api_key.is_empty() && credential.uses_key() {
-        return Some(http::header::HeaderMap::new());
-    }
-    let ctx = SigningContext {
-        host: signing_host,
-        canonical_uri: "",
-        body: &[],
-        timestamp_epoch: 0,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
-    };
-    Some(crate::proto::convert_headers(
-        credential.headers_for(api_key, &ctx),
-    ))
+    let typed = |(k, v): (String, String)| Some((k.parse().ok()?, v.parse().ok()?));
+    built.into_iter().filter_map(typed).collect()
 }

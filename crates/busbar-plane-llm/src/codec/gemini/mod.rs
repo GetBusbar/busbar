@@ -103,7 +103,7 @@ fn claims(
 /// surface — DISTINCT from the router's `:{verb}` set above (this is the drop-through error-envelope
 /// question, not the routing one): a `/v1/models/{id}` whose last segment ends in one of these is
 /// Gemini; any other colon-bearing id (an OpenAI fine-tune) is not, and falls to the OpenAI residual.
-const GEMINI_RESIDUAL_ACTIONS: [&str; 7] = [
+pub(crate) const GEMINI_RESIDUAL_ACTIONS: [&str; 7] = [
     ":generateContent",
     ":streamGenerateContent",
     ":countTokens",

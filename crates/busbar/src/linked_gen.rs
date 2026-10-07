@@ -33,7 +33,6 @@
 /// that registers on it exports. The plane axis is the one exception, built below (two items, joined),
 /// and its HOT lane (`hot-plane`: the entry's `#[repr(C)]` `PLANE_DECL`, referenced) beside it.
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
-    ("protocols", "protocols", "PROTOCOLS"),
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
     ("ws-arrivals", "ws_arrivals", "install_ws_arrivals"),
     ("compose", "compose", "compose"),

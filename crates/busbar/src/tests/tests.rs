@@ -804,10 +804,9 @@ fn empty_opening_plan() -> root::migration::MigrationConfig {
 ///     proof. The marker is the FIRST record on the chain; a settlement made afterwards lands
 ///     STRICTLY AFTER it. An opening sealed after traffic has begun is worse than useless, because
 ///     it looks authoritative while measuring from the wrong point.
-// A PROVIDER NEEDS A WIRE CODEC. `cfg_with_provider_api_key` configures one provider on the
-// registry's residual-default dialect, and a build that links no protocol (a single-plane build of a
-// plane with no provider codec) has none to name: the fixture refuses, and which test happened to
-// register a dialect first decided the verdict. Gated on the linked axis that carries the codecs, as
+// A PROVIDER NEEDS A WIRE CODEC. `cfg_with_provider_api_key` configures one provider on a dialect
+// the fallback plane declares, and a build that links no such plane (a single-plane build of a
+// plane with no provider codec) has none to name. Gated on the linked axis that carries the codecs, as
 // the root's other provider-configuring cells are.
 #[cfg(linked_axis_node)]
 #[test]
@@ -815,14 +814,9 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
     use busbar_kernel_wal::RecordClass;
 
-    // ORDER-INDEPENDENCE, not decoration. `cfg_with_provider_api_key` names the registry's
-    // residual-default dialect, and in a test binary the protocol set is installed by whichever
-    // test installs it first — so without this the test passes in a full run and fails run alone.
-    // Every linked protocol declaration goes into the test registry, read off the linked table
-    // the root registers from.
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
+    // ORDER-INDEPENDENCE, not decoration: `cfg_with_provider_api_key` names a dialect the fallback
+    // plane declares, so the plane is registered here as the boot registers it.
+    crate::root::serve::hook_seat_tests::register_pools_door();
     busbar_kernel::metrics::init();
     let dir = BookDir::new("real-path");
     assert!(
@@ -1174,9 +1168,7 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
 fn one_seal_after_two_reloads() {
     use busbar_kernel_wal::RecordClass;
 
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
+    crate::root::serve::hook_seat_tests::register_pools_door();
     busbar_kernel::metrics::init();
     let dir = BookDir::new("two-reloads");
     let _env = data_dir_env(&dir.0);

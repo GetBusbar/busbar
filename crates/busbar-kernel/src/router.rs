@@ -11,7 +11,7 @@ use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
     hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, state, store, telemetry, tls, transport, trust,
+    plane, plugin_routes, profile, proxy, state, store, telemetry, tls, transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -23,20 +23,24 @@ pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
 /// with the const; overflow/conversion fallbacks that happen to produce u64::MAX are NOT this.
 pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
 
-/// Render a native ingress error envelope (`application/json`) for the fallback handlers, in the
-/// dialect the path is spoken in — attaching the `x-amzn-*` headers when that dialect is Bedrock,
-/// so the response is indistinguishable from a real vendor 404/405, and answering in JSON-RPC on a
-/// path a plane has been MOUNTED on. Shared by the 404 catch-all, [`method_not_allowed_handler`]
-/// (405, wrong method on a valid path) and the oversized-body 413 reshape.
+/// Render the kernel's own refusal with no unit for the fallback handlers — the no-route 404, the
+/// wrong-method 405 ([`method_not_allowed_handler`]), the oversized-body 413 reshape and the
+/// request-panic 500 — answering in JSON-RPC on a path a plane has been MOUNTED on, and otherwise
+/// in the bytes the matched line's claimant renders from the target under the line's
+/// `refusal_dialect` (`lines`; spec THE DESIGN §5 l.958-960). The kernel picks no dialect.
 ///
 /// `planes` is the mount table, and it is a parameter rather than something inferred here because
 /// a mount is a fact about the deployment: no amount of looking at the path reveals it, and the
 /// version of this function that tried shipped one dialect's envelope onto a different plane's own
 /// mounted path.
+#[allow(clippy::too_many_arguments)]
 pub fn fallback_error_response(
+    lines: Option<&dyn crate::guest::ListenerLines>,
     planes: &crate::plane::PlaneDispatch,
+    method: &str,
     path: &str,
     status: axum::http::StatusCode,
+    reason: busbar_contract::caps::ReasonCode,
     kind: &str,
     message: &str,
 ) -> axum::response::Response {
@@ -59,11 +63,18 @@ pub fn fallback_error_response(
             return crate::admin::v1::json::err_json(&e);
         }
     }
-    // ONE resolver, ONE shaping seam. Each dialect's own vendor-pinned response headers (Bedrock
-    // `x-amzn-RequestId`/`x-amzn-errortype`; Anthropic `request-id`) come with it, dispatched
-    // through the writer vtable inside `proxy::ingress_error`, so this handler matches the shape
-    // the hot path produces and carries no dialect name-branch of its own.
-    crate::ingress::native::native_error(planes.ingress_of(path), status, kind, message)
+    // ONE resolver, ONE shaping seam: the claimant's own head fields come with its bytes, so this
+    // handler matches the shape the door produces and carries no dialect of its own.
+    crate::ingress::native::native_error(
+        lines,
+        planes.ingress_of(path),
+        method,
+        path,
+        status,
+        reason,
+        kind,
+        message,
+    )
 }
 
 // NOTE: the 404 fallback handler is superseded by `ingress::protocol_dispatch`, which owns the
@@ -73,13 +84,17 @@ pub fn fallback_error_response(
 /// axum's built-in 405 is an `Allow`-header-only empty body; reshape to the protocol-native envelope
 /// so an SDK sees a vendor-shaped error instead of a bare proxy tell.
 pub(crate) async fn method_not_allowed_handler(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
+    method: axum::http::Method,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
     fallback_error_response(
-        &app.planes,
+        handle.listener_lines().map(|l| l.as_ref()),
+        &handle.load().planes,
+        method.as_str(),
         uri.path(),
         axum::http::StatusCode::METHOD_NOT_ALLOWED,
+        busbar_contract::caps::ReasonCode::WrongMethod,
         crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
         "method not allowed for this resource",
     )
@@ -133,6 +148,7 @@ pub(crate) async fn reshape_body_limit_413(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let path = req.uri().path().to_owned();
+    let method = req.method().clone();
     let resp = next.run(req).await;
     // FAST PATH: only a 413 is ever reshaped ([`reshape_oversized_413`]'s own first check), so a
     // non-413 — every ordinary request — must not pay even the snapshot the reshape needs.
@@ -142,7 +158,14 @@ pub(crate) async fn reshape_body_limit_413(
     }
     // The snapshot is taken AFTER the inner stack runs, so a config apply mid-request shapes the
     // answer with the mount table that is live when the answer is written.
-    reshape_oversized_413(&handle.snapshot().planes, &path, resp).await
+    reshape_oversized_413(
+        handle.listener_lines().map(|l| l.as_ref()),
+        &handle.snapshot().planes,
+        method.as_str(),
+        &path,
+        resp,
+    )
+    .await
 }
 
 /// Per-process count of requests that entered the middleware stack — the idleness signal for the
@@ -221,7 +244,9 @@ pub(crate) async fn server_timing(
 /// `application/json`, or any forward-relayed UPSTREAM 413 (different/non-marker body), is passed
 /// through verbatim (the body is buffered to inspect the sentinel, then re-attached unchanged).
 pub(crate) async fn reshape_oversized_413(
+    lines: Option<&dyn crate::guest::ListenerLines>,
     planes: &crate::plane::PlaneDispatch,
+    method: &str,
     path: &str,
     resp: axum::response::Response,
 ) -> axum::response::Response {
@@ -259,9 +284,12 @@ pub(crate) async fn reshape_oversized_413(
         return axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
     }
     fallback_error_response(
+        lines,
         planes,
+        method,
         path,
         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        busbar_contract::caps::ReasonCode::BodyTooLarge,
         // CANONICAL kind for an oversized payload across the protocol writers.
         crate::proxy::KIND_REQUEST_TOO_LARGE,
         "request body exceeds the maximum allowed size",
@@ -420,7 +448,7 @@ pub(crate) fn base_data_router(
             "/v1beta/models",
             RouteMethod::Get,
             RouteAuth::Key,
-            endpoints::list_models_v1beta,
+            endpoints::list_models,
         );
     // THE PLANES' DATA ROUTES, contributed through the registry rather than named here. For every
     // registered plane with a `mount` fn AND a runtime object this generation (its slot), the plane's
@@ -861,14 +889,17 @@ pub(crate) fn apply_common_layers(
         // The router's state is a swappable `AppHandle` (the config-apply hot-swap seam). Every
         // handler reads the CURRENT snapshot via the `CurrentApp` extractor; the auth middleware
         // loads it too. Until an admin apply calls `swap()`, this is identical to a fixed `Arc<App>`.
-        .layer(axum::middleware::from_fn_with_state(
-            handle.clone(),
+        .layer(axum::middleware::from_fn_with_state(handle.clone(), {
+            let handle = handle.clone();
             move |app: crate::state::CurrentApp,
                   req: axum::extract::Request,
                   next: axum::middleware::Next| {
-                auth::auth_middleware(app, core_routes, req, next)
-            },
-        ))
+                // The listener's lines, read per request: the composition root hands them
+                // over after the routers are built and before the first request.
+                let lines = handle.listener_lines().cloned();
+                auth::auth_middleware(app, core_routes, lines, req, next)
+            }
+        }))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
         // `limits.request_body_max_bytes` (default 32 MiB); COUPLED with the egress translate-body cap
         // (`busbar_kernel::proxy::max_translate_body_bytes`) — both read the SAME knob so an accepted request is
@@ -1085,9 +1116,12 @@ fn request_panicked(
         "a request handler panicked; that request was answered 500 and the connection kept serving"
     );
     fallback_error_response(
+        handle.listener_lines().map(|l| l.as_ref()),
         &handle.load().planes,
+        method.as_str(),
         uri.path(),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        busbar_contract::caps::ReasonCode::HandlerPanic,
         crate::proxy::KIND_API_ERROR,
         "internal error",
     )

@@ -172,3 +172,82 @@ fn a_logged_credential_redacts_its_secret_and_token() {
     assert!(!printed.contains("wJalr"), "{printed}");
     assert!(printed.contains("<redacted>"), "{printed}");
 }
+
+/// THE SIGNING DIFFERENTIAL OVER THE SHARED FIXTURE (ported from the kernel's deleted
+/// `egress_auth/tests/prebuilt_auth_tests.rs`: `each_declared_scheme_presents_what_its_dialect_builder_wrote`
+/// for the signing dialect, `a_signing_dialect_request_carries_the_scope_the_host_names`,
+/// `a_session_token_is_sent_and_signed_for_the_hosts_region`,
+/// `a_fips_host_signs_for_its_region_and_an_unnamed_one_for_the_default`; ARCHITECT F25 ruling
+/// 2026-10-07). `testing/plane-copies/declared-credentials.json` records the signing dialect's
+/// declared scheme, the region each recorded host names (a FIPS host its own region, a host naming
+/// none the declared default — resolved at seal by the root from the dialect's parameters,
+/// `root/tests/door_steps.rs` `a_members_binding_is_opened_with_its_dialects_parameters_under_the_providers_own`),
+/// and the headers the dialect's own 1.5.5 signer wrote for every credential, host, body and
+/// timestamp. Signed under the recorded scheme for the recorded region, this plugin writes exactly
+/// those headers, in order — the scope names the host's region, a session token is sent and signed,
+/// and a credential that cannot be signed signs nothing.
+#[test]
+fn every_recorded_signing_row_signs_as_the_dialects_signer_wrote() {
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/declared-credentials.json"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("the fixture")).expect("JSON");
+    let scheme = &doc["schemes"]["bedrock"];
+    assert_eq!(scheme["kind"], "sigv4");
+    let region_of = |host: &str| -> String {
+        doc["regions"]
+            .as_array()
+            .expect("regions")
+            .iter()
+            .find(|r| r["host"] == host)
+            .and_then(|r| r["region"].as_str())
+            .unwrap_or_else(|| scheme["default_region"].as_str().expect("default"))
+            .to_string()
+    };
+    let mut compared = 0;
+    for row in doc["rows"].as_array().expect("rows") {
+        if row["dialect"] != "bedrock" {
+            continue;
+        }
+        let host = row["host"].as_str().expect("host");
+        let params = SigV4Params {
+            service: scheme["service"].as_str().expect("service").to_string(),
+            region: region_of(host),
+            content_type: scheme["content_type"].as_str().expect("ct").to_string(),
+        };
+        let key = String::from_utf8(unhex(row["key_hex"].as_str().expect("key"))).expect("utf-8");
+        let body = unhex(row["body_hex"].as_str().expect("body"));
+        let hash = sigv4::sha256_hex(&body);
+        let binding = SigV4Binding::new(params, SigningCredential::split(&key));
+        let sent: Vec<serde_json::Value> = binding
+            .sign(&SignFacts {
+                host,
+                canonical_uri: row["canonical_uri"].as_str().expect("uri"),
+                payload_hash: &hash,
+                timestamp_epoch: row["timestamp_epoch"].as_u64().expect("ts"),
+            })
+            .into_iter()
+            .map(|(k, v)| {
+                let hex: String = v.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+                serde_json::json!([k, hex])
+            })
+            .collect();
+        assert_eq!(
+            serde_json::Value::Array(sent),
+            row["headers"],
+            "key {key:?}, host {host}, mode {}, uri {}",
+            row["mode"],
+            row["canonical_uri"]
+        );
+        compared += 1;
+    }
+    assert_eq!(compared, 320, "every recorded signing row was signed");
+}

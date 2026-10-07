@@ -148,7 +148,11 @@ fn test_scrape_gauges_key_spend_and_remaining() {
 
     // Build a minimal App with governance.
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .lane(LaneSpec::new(
+            "m",
+            crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+            "http://m",
+        ))
         .pool("pool-a", &[(0, 1)])
         .governance(gov)
         .build();
@@ -209,7 +213,11 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
             },
         )]);
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .lane(LaneSpec::new(
+            "m",
+            crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+            "http://m",
+        ))
         .pool("pool-b", &[(0, 1)])
         .governance(gov)
         .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
@@ -291,7 +299,11 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
     );
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .lane(LaneSpec::new(
+            "m",
+            crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+            "http://m",
+        ))
         .pool("pool-b", &[(0, 1)])
         .governance(gov)
         .cost(crate::cost::CostModel::resolve_parts(None, 1, &groups))
@@ -416,7 +428,11 @@ fn test_key_gauge_limit_truncation() {
 
     let gov = Arc::new(GovState::new(store, None).unwrap());
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .lane(LaneSpec::new(
+            "m",
+            crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+            "http://m",
+        ))
         .pool("pool-limit", &[(0, 1)])
         .governance(gov)
         .build();
@@ -492,7 +508,11 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
     }
     let gov = Arc::new(GovState::new(store, None).unwrap());
     TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .lane(LaneSpec::new(
+            "m",
+            crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+            "http://m",
+        ))
         .pool("pool-bound", &[(0, 1)])
         .governance(gov)
         .build()
@@ -553,7 +573,11 @@ fn test_cardinality_invariant_no_raw_secret_in_labels() {
     let gov = gov_with_key(key);
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .lane(LaneSpec::new(
+            "m",
+            crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+            "http://m",
+        ))
         .pool("pool-ci", &[(0, 1)])
         .governance(gov)
         .build();
@@ -781,7 +805,11 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         .map(|id| seed_viewed_key(store.as_ref(), id, 10_000))
         .collect();
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .lane(LaneSpec::new(
+            "m",
+            crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+            "http://m",
+        ))
         .pool("pool-view", &[(0, 1)])
         .cost(priced_at(100.0, 0))
         .governance(gov.clone())
@@ -830,7 +858,11 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
     // (3) the same governance under a new card.
     let old = spend_of(&render(), "vk_view_b");
     let swapped = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .lane(LaneSpec::new(
+            "m",
+            crate::test_support::NEUTRAL_WIRE_FORMATS[1],
+            "http://m",
+        ))
         .pool("pool-view", &[(0, 1)])
         .cost(priced_at(300.0, 0))
         .governance(gov.clone())

@@ -527,7 +527,7 @@ pub struct LaneSpec {
     // NEUTRAL FIXTURE: a lane needs only its protocol's registry
     // NAME — the codec itself is resolved by-name from the installed registry at dispatch, never held
     // here. Storing the interned `&'static str` (a neutral `PROTO_*` const) instead of an
-    // `Arc<crate::proto::Protocol>` lets the routing/dispatch suites build lanes without naming the
+    // an `Arc` protocol object lets the routing/dispatch suites build lanes without naming the
     // witnessed busbar-llm codec, so the witness can be deleted at the final flip.
     protocol: &'static str,
     max: usize,
@@ -983,12 +983,16 @@ pub fn install_root_egress() {
 }
 
 /// THE ROOT'S `register_seams`, IN A TEST BINARY: the hostless-egress driver
-/// ([`install_root_egress`]) and the parse-time section list (the test fold,
+/// ([`install_root_egress`]), the codec host services (`plane_host::arm_codec_host_services`) and the
+/// parse-time section list (the test fold,
 /// [`crate::plane::config::default_plane_sections`]), each first-wins. A plane's test-kit calls this
 /// where the composition root would have bound them, so a plane test that drives a wire leg without
 /// building a [`TestApp`] runs on the same bindings a shipped binary does.
 pub fn install_root_seams() {
     install_root_egress();
+    // The codec host services (entropy, wall clock, usage-tap reporting) a plane's codec reads, as
+    // the root's boot arms them.
+    crate::plane_host::arm_codec_host_services();
     crate::plane::config::install_plane_sections(crate::plane::config::default_plane_sections);
 }
 

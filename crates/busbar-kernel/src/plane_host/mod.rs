@@ -157,6 +157,28 @@ pub unsafe fn recover<'a>(host: HostCtx) -> Option<&'a HostState<'a>> {
     Some(unsafe { &*(host.ptr() as *const HostState<'a>) })
 }
 
+/// ARM THE CODEC HOST SERVICES a plane's codec reaches through `busbar_contract::codec`: the
+/// usage-tap fault reporter and its warn-once latch, the per-response translation cap, the entropy
+/// source and the wall clock. Idempotent (each seam is set once, first wins), and armed at boot
+/// before any plane is reachable and again at every App build, so no reader ever finds a seam
+/// unarmed. Neutral: every service is the kernel's own, and none names a protocol.
+pub fn arm_codec_host_services() {
+    busbar_contract::codec::install_usage_tap_fault_reporter(
+        crate::handlers::report_usage_tap_decode_failure,
+    );
+    busbar_contract::codec::install_usage_tap_fault_latch(
+        crate::handlers::usage_tap_decode_fail_should_warn,
+    );
+    busbar_contract::codec::install_translate_cap_reader(crate::proxy::max_translate_body_bytes);
+    busbar_contract::codec::install_entropy_source(os_entropy);
+    busbar_contract::codec::install_wall_clock(crate::store::now);
+}
+
+/// The kernel's entropy source: the operating system's.
+fn os_entropy(out: &mut [u8]) -> bool {
+    getrandom::fill(out).is_ok()
+}
+
 /// Open a [`DispatchScope`], build the host vtable, and hand a plane a [`HostCtx`] + `&PlaneHostVtable`
 /// for the duration of `f` — reclaiming every registered host handle when the scope ends. This is the
 /// seam the in-place plane will dogfood in Phase 2 (it is ADDITIVE — nothing calls it yet).
@@ -685,26 +707,6 @@ impl busbar_kernel::plane_host::JournalHost for EngineHostImpl {
         input: busbar_kernel::plane::calllog::CallInput,
     ) {
         crate::calllog::emit_hostless(principal, input);
-    }
-}
-
-impl busbar_kernel::plane_host::MountHost for EngineHostImpl {
-    fn arrival_envelope_dialect(&self, path: &str) -> &'static str {
-        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
-        // reach `envelope_dialect(app.planes.ingress_of(path))`.
-        crate::ingress::native::envelope_dialect(self.app.planes.ingress_of(path))
-    }
-
-    fn arrival_fallback_error(
-        &self,
-        path: &str,
-        status: axum::http::StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> axum::response::Response {
-        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
-        // reach `fallback_error_response(&app.planes, …)`.
-        crate::fallback_error_response(&self.app.planes, path, status, kind, message)
     }
 }
 
@@ -1815,6 +1817,10 @@ mod tests;
 #[path = "tests/residual_tests.rs"]
 mod residual_tests;
 
+#[cfg(test)]
+#[path = "tests/codec_host_services_tests.rs"]
+mod codec_host_services_tests;
+
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 // THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C): the single-compiled `PlaneBuildInput`
 // DTO `busbar-core`'s `appbuild` populates and hands to the LLM plane's `build_runtime` seam.
@@ -2643,31 +2649,6 @@ pub trait JournalHost: Send + Sync {
     fn call_log_emit_hostless(&self, principal: &str, input: CallInput);
 }
 
-/// The MOUNT slice: the pure mount-table reads that shape an arrival's dialect and its pre-collapse
-/// fallback error. Split off `EngineHost` as a supertrait; both are pure snapshot reads, no `HostCtx`.
-pub trait MountHost: Send + Sync {
-    /// The mount-aware dialect an answer to `path` is SHAPED in — the host-driven form of
-    /// `busbar_kernel::ingress::native::envelope_dialect(App::planes.ingress_of(path))`. A pure snapshot
-    /// mount-table read, no `HostCtx`.
-    ///
-    /// WEDGE 3 (App-retype — THE FLIP): the seam core's `ArrivalHost` impl reads instead of the dropped
-    /// `ArrivalPayload::app`; the neutral `ArrivalPayload` now carries only the host, so this mount read
-    /// crosses the host seam like every other.
-    fn arrival_envelope_dialect(&self, path: &str) -> &'static str;
-
-    /// The pre-collapse fallback error SHAPE by `path` — the host-driven form of
-    /// `busbar_kernel::fallback_error_response(&App::planes, path, status, kind, message)`. Renders the
-    /// unmatched-path/404 envelope in the dialect the deployment mounted `path` under; a pure snapshot
-    /// mount-table read, no `HostCtx`. The twin of [`arrival_envelope_dialect`](Self::arrival_envelope_dialect).
-    fn arrival_fallback_error(
-        &self,
-        path: &str,
-        status: axum::http::StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> axum::response::Response;
-}
-
 /// The REGISTRY slice: the per-generation registry/snapshot reads a plane pulls off the bound (or
 /// live) snapshot — its type-erased runtime slot, its type-erased defs, the request-id counter, the
 /// neutral secret resolver, and the host-held card-signing key. Split off `EngineHost` as a supertrait.
@@ -3233,7 +3214,7 @@ pub trait CompletionHost: Send + Sync {
 /// ## M4 — `EngineHost` is the SUM of the capability slices
 ///
 /// The residual flat method set has been cut into cohesive capability SUPERTRAITS
-/// ([`ClockHost`], [`TelemetryHost`], [`JournalHost`], [`MountHost`], [`RegistryHost`],
+/// ([`ClockHost`], [`TelemetryHost`], [`JournalHost`], [`RegistryHost`],
 /// [`HookConfigHost`], [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`], [`CompletionHost`]),
 /// alongside the earlier braking slices ([`BreakerHost`], [`LanePoolHost`]). Every slice is
 /// PLANE-FACING and pricing-blind; the kernel's pricing ([`MeteringHost`]) is deliberately NOT one of
@@ -3253,7 +3234,6 @@ pub trait EngineHost:
     + ClockHost
     + TelemetryHost
     + JournalHost
-    + MountHost
     + RegistryHost
     + HookConfigHost
     + BudgetHost
@@ -3292,7 +3272,6 @@ const _: () = {
         fn _needs_clock<U: ClockHost + ?Sized>() {}
         fn _needs_telemetry<U: TelemetryHost + ?Sized>() {}
         fn _needs_journal<U: JournalHost + ?Sized>() {}
-        fn _needs_mount<U: MountHost + ?Sized>() {}
         fn _needs_registry<U: RegistryHost + ?Sized>() {}
         fn _needs_hook_config<U: HookConfigHost + ?Sized>() {}
         fn _needs_budget<U: BudgetHost + ?Sized>() {}
@@ -3304,7 +3283,6 @@ const _: () = {
         _needs_clock::<T>();
         _needs_telemetry::<T>();
         _needs_journal::<T>();
-        _needs_mount::<T>();
         _needs_registry::<T>();
         _needs_hook_config::<T>();
         _needs_budget::<T>();
