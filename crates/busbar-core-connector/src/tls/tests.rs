@@ -82,9 +82,13 @@ async fn prepare_plaintext_is_identity_and_passes_bytes_unchanged() {
 }
 
 /// [`build_server_config`] builds a working `rustls::ServerConfig` from the operator's `tls:`
-/// config — every field a listener needs (the cert/key pair, http/1.1-only ALPN, no client-cert
+/// config — every field a listener needs (the cert/key pair, the ALPN offer, no client-cert
 /// verifier when `client_ca` is absent) — and `prepare` reaches the same result for a
 /// TLS-configured, capable binding.
+///
+/// The ALPN offer is `h2, http/1.1`, in that order: OWNER RULING Q137 (2026-10-04), a signed
+/// customer-visible change from 1.5.5, which offered `http/1.1` alone. The listener serves HTTP/2 on
+/// an `h2` connection; a client offering only `http/1.1` is served as in 1.5.5.
 #[tokio::test]
 async fn build_server_config_and_prepare_build_from_operator_config() {
     let (tls, _cert_pem) = valid_tls_cfg();
@@ -93,8 +97,8 @@ async fn build_server_config_and_prepare_build_from_operator_config() {
     let config = build_server_config(&tls, &resolver).expect("valid self-signed cert/key");
     assert_eq!(
         config.alpn_protocols,
-        vec![b"http/1.1".to_vec()],
-        "busbar's axum server speaks http/1.1 only; TLS must not advertise h2"
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        "a TLS listener offers h2 then http/1.1 (owner ruling Q137, 2026-10-04)"
     );
 
     let security = prepare("tls-binding", Some(&tls), &resolver, true)
@@ -608,4 +612,143 @@ fn any_offered_name_or_none_is_served_the_configured_certificate() {
         configured,
         "an unknown name: the configured certificate is served, not a refusal"
     );
+}
+
+// ── ALPN: h2 OVER TLS (OWNER RULING Q137, 2026-10-04) ─────────────────────────────────────
+//
+// A TLS listener offers ALPN `h2, http/1.1`: a client that offers `h2` speaks HTTP/2, one that offers
+// only `http/1.1` (or no ALPN at all) is served HTTP/1.1 as in 1.5.5. A connection whose ALPN is `h2`
+// is KNOWN to be HTTP/2, so RFC 9113 §3.4 governs its first bytes: one that does not open with the
+// connection preface is a connection error, closed with no bytes (no h2 frame layer exists yet).
+
+/// A client offering exactly `protocols` over ALPN, trusting exactly `ca_pem`.
+fn offering(ca_pem: &str, protocols: &[&[u8]]) -> Arc<rustls::ClientConfig> {
+    let mut config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots_of(ca_pem))
+        .with_no_client_auth();
+    config.alpn_protocols = protocols.iter().map(|p| p.to_vec()).collect();
+    Arc::new(config)
+}
+
+/// The listener's config, built from the `tls:` block, negotiates `h2` with a client that offers it
+/// and `http/1.1` with a client that offers only that; a client offering no ALPN negotiates none.
+#[test]
+fn a_tls_listener_negotiates_h2_when_offered_and_http1_when_only_that_is_offered() {
+    install_crypto_provider();
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let cert_pem = cert.pem();
+    let tls = tls_cfg_from(&cert_pem, &signing_key.serialize_pem(), None);
+    let server_cfg = Arc::new(build_server_config(&tls, &SecretResolver::builtins_only()).unwrap());
+    let negotiated = |protocols: &[&[u8]]| {
+        let (client, server) = handshake(
+            Arc::clone(&server_cfg),
+            offering(&cert_pem, protocols),
+            rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+        )
+        .expect("the handshake completes");
+        assert_eq!(client.alpn_protocol(), server.alpn_protocol());
+        server.alpn_protocol().map(<[u8]>::to_vec)
+    };
+    assert_eq!(
+        negotiated(&[b"h2", b"http/1.1"]),
+        Some(b"h2".to_vec()),
+        "a client offering h2 speaks HTTP/2 over TLS (owner ruling Q137)"
+    );
+    assert_eq!(negotiated(&[b"h2"]), Some(b"h2".to_vec()));
+    assert_eq!(
+        negotiated(&[b"http/1.1"]),
+        Some(b"http/1.1".to_vec()),
+        "a client offering only http/1.1 is served HTTP/1.1, as in 1.5.5"
+    );
+    assert_eq!(
+        negotiated(&[]),
+        None,
+        "a client offering no ALPN negotiates none"
+    );
+}
+
+/// Drive the `Tls` wrap with a real client offering `protocols`, send `sent` once the handshake is
+/// done, and hand back what the server read off the wrapped stream (`want` bytes) — or the error the
+/// wrap ended with.
+async fn wrap_and_read(
+    protocols: &[&[u8]],
+    sent: &'static [u8],
+    want: usize,
+) -> std::io::Result<Vec<u8>> {
+    install_crypto_provider();
+    let (ca_pem, cert_pem, key_pem) = gen_ca_and_leaf(vec!["localhost".into()]);
+    let security = prepare(
+        "alpn-binding",
+        Some(&tls_cfg_from(&cert_pem, &key_pem, None)),
+        &SecretResolver::builtins_only(),
+        true,
+    )
+    .expect("valid TLS config with a capable transport");
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    let server_task = tokio::spawn(async move {
+        let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
+            Box::new(TokioAsyncReadCompatExt::compat(server_io));
+        let mut wrapped = security.wrap(raw).await?;
+        let mut got = vec![0u8; want];
+        futures::io::AsyncReadExt::read_exact(&mut wrapped, &mut got).await?;
+        Ok::<_, std::io::Error>(got)
+    });
+    let connector = tokio_rustls::TlsConnector::from(offering(&ca_pem, protocols));
+    let mut client = connector
+        .connect(
+            rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+            client_io,
+        )
+        .await
+        .expect("the handshake completes");
+    client.write_all(sent).await.unwrap();
+    client.flush().await.unwrap();
+    let served = server_task.await.unwrap();
+    drop(client);
+    served
+}
+
+/// The HTTP/2 connection preface (RFC 9113 §3.4) and the SETTINGS frame header a client sends after it.
+const PREFACE_AND_SETTINGS: &[u8] =
+    b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00";
+
+/// h2spec http2/3.5/2 sends this instead of the preface.
+const INVALID_PREFACE: &[u8] = b"INVALID CONNECTION PREFACE\r\n\r\n";
+
+/// On an ALPN `h2` connection the preface and every byte after it reach the server unchanged.
+#[tokio::test]
+async fn an_h2_connection_that_opens_with_the_preface_is_served_its_bytes_unchanged() {
+    let got = wrap_and_read(
+        &[b"h2", b"http/1.1"],
+        PREFACE_AND_SETTINGS,
+        PREFACE_AND_SETTINGS.len(),
+    )
+    .await
+    .expect("a correct preface is served");
+    assert_eq!(got, PREFACE_AND_SETTINGS);
+}
+
+/// On an ALPN `h2` connection anything but the preface is a connection error (RFC 9113 §3.4): the
+/// wrap fails and the connection closes with no bytes, never read as an HTTP/1 request line.
+#[tokio::test]
+async fn an_h2_connection_that_does_not_open_with_the_preface_is_closed() {
+    for sent in [INVALID_PREFACE, &b"GET / HTTP/1.1\r\nhost: x\r\n\r\n"[..]] {
+        let err = wrap_and_read(&[b"h2"], sent, sent.len())
+            .await
+            .expect_err("a known-h2 connection without the preface is not served");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    }
+}
+
+/// On an `http/1.1` connection (and one with no ALPN) the first bytes are not screened here: an
+/// unparseable request line reaches the HTTP/1 server, which keeps 1.5.5's `400` (Q137 (2)).
+#[tokio::test]
+async fn an_http1_connection_is_handed_its_bytes_unscreened() {
+    for protocols in [&[&b"http/1.1"[..]][..], &[]] {
+        let got = wrap_and_read(protocols, INVALID_PREFACE, INVALID_PREFACE.len())
+            .await
+            .expect("an HTTP/1 connection's bytes are the HTTP/1 server's to judge");
+        assert_eq!(got, INVALID_PREFACE);
+    }
 }

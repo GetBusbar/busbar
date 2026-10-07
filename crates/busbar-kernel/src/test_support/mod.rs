@@ -531,7 +531,7 @@ pub struct LaneSpec {
     // witnessed busbar-llm codec, so the witness can be deleted at the final flip.
     protocol: &'static str,
     max: usize,
-    api_key: String,
+    api_key: busbar_contract::redacted::Redacted<String>,
     error_map: std::collections::HashMap<String, String>,
     context_max: Option<usize>,
     path: Option<String>,
@@ -568,7 +568,7 @@ impl LaneSpec {
             base_url: base_url.into(),
             protocol,
             max: 10,
-            api_key: "k".into(),
+            api_key: String::from("k").into(),
             error_map: std::collections::HashMap::new(),
             context_max: None,
             path: None,
@@ -607,7 +607,7 @@ impl LaneSpec {
         self
     }
     pub fn api_key(mut self, k: &str) -> Self {
-        self.api_key = k.into();
+        self.api_key = k.to_string().into();
         self
     }
     pub fn error_map(mut self, m: std::collections::HashMap<String, String>) -> Self {
@@ -702,7 +702,7 @@ impl LaneSpec {
             organization: self.organization.clone(),
             project: self.project.clone(),
             upstream_model: self.upstream_model.clone(),
-            api_key: busbar_contract::redacted::Redacted::new(self.api_key.clone()),
+            api_key: self.api_key.clone(),
             auth_style,
             scope: None,
             token_url: None,
@@ -1686,15 +1686,19 @@ impl TestApp {
         // UNCONDITIONALLY under the interned `runtime_slot_key(<llm plane key>)`: a fixture always
         // configures its lanes/pools and expects them readable through `engine_tables`, exactly as the
         // always-present flat field guaranteed, so `build()` seeds the slot for every `TestApp` whose
-        // process actually has an LLM (fallback) plane. GATED on `is_fallback` because `fallback_key()`
-        // degrades to the FIRST registered plane's key when no plane flags itself fallback (the plane
-        // suites' dependency-copy of core, which registers only MCP/A2A) — inserting there would key the
-        // LLM runtime under a sibling's `runtime_slot_key` and clobber that sibling's own runtime slot.
-        let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
+        // process actually has an LLM (fallback) plane. The key AND the `build_runtime` come from ONE
+        // resolved decl ([`crate::plane::fallback_decl`]), never from `fallback_key()`: that degrades to
+        // the FIRST registered plane's key when no plane flags itself fallback (the plane suites'
+        // dependency-copy of core, which registers only MCP/A2A), and this test binary's registry GROWS
+        // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
+        // registers and a decl read after it named two different planes — the LLM runtime then landed
+        // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
+        let fallback = crate::plane::fallback_decl();
+        let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
         // default (a surface with no LLM plane never routes through `engine_tables` anyway).
-        if crate::plane::is_fallback(crate::plane::fallback_key()) {
+        if let Some(build_runtime) = fallback.and_then(|d| d.build_runtime) {
             // Assemble the NEUTRAL `PlaneBuildInput` (money-path Phase 3-4 C) exactly as production
             // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
             // fn-pointer — so the fixture names no `Lane`/`NativeRuntime` and exercises the SAME in-plane
@@ -1791,12 +1795,8 @@ impl TestApp {
                 reasoning_budgets: [1024, 4096, 8192, 16384],
                 default_failover: Some(default_failover),
             };
-            if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-                .and_then(|d| d.build_runtime)
-            {
-                let slot = f(&build_input as &dyn std::any::Any, None);
-                plane_slots.insert(fallback_runtime_key, slot);
-            }
+            let slot = build_runtime(&build_input as &dyn std::any::Any, None);
+            plane_slots.insert(fallback_runtime_key, slot);
         }
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
         let any_content_hook = crate::hooks::any_content_hook(&self.hook_registry);
@@ -2425,7 +2425,7 @@ pub fn store_axis_stand_in() -> std::sync::Arc<dyn busbar_contract::store_calls:
         dispatcher: std::sync::Arc::clone(dispatcher),
         logs: PluginLogConfig::from_words(None, None, &none, None, None)
             .expect("the plugins.logs defaults resolve"),
-        conns: None,
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
         mint: crate::door::op_id,
     })
 }

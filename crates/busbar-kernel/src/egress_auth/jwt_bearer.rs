@@ -85,14 +85,16 @@ fn parse_service_account(
     ssrf: &super::MetadataSsrfPolicy,
 ) -> Result<(ServiceAccount, ring::signature::RsaKeyPair), String> {
     let sa_json = read_credential(credential)?;
+    // The decoder's own text is withheld (`super::json_err`): a data error quotes the offending
+    // value, and the value here may be the private key.
     let sa: ServiceAccount = serde_json::from_str(&sa_json)
-        .map_err(|e| format!("service-account JSON is invalid: {e}"))?;
+        .map_err(super::json_err("service-account JSON is invalid"))?;
     // Defense in depth: the SA JSON's token_uri is the POST target for the signed assertion. Vet it the
     // same way oauth-client-credentials' token_url is vetted — https for a public host (http only for
     // loopback/private) and never a cloud-metadata/IMDS endpoint, honoring the operator's metadata
     // posture. The minter client already refuses redirects; this closes the direct-target case.
     validate_token_uri(&sa.token_uri, ssrf)?;
-    let der = pem_to_pkcs8_der(&sa.private_key)?;
+    let der = pem_to_pkcs8_der(sa.private_key.expose_secret())?;
     let key_pair = ring::signature::RsaKeyPair::from_pkcs8(&der)
         .map_err(|e| format!("service-account private_key is not a valid PKCS#8 RSA key: {e}"))?;
     Ok((sa, key_pair))
@@ -219,8 +221,10 @@ impl Signer {
                 body.chars().take(200).collect::<String>()
             ));
         }
-        let tok: TokenResponse =
-            serde_json::from_str(&body).map_err(|e| format!("token response JSON invalid: {e}"))?;
+        // Decoded straight into `Redacted` (the access token never sits in a bare `String`), and a
+        // decode failure is described without the decoder's text, which can quote the token.
+        let tok: super::TokenResponse =
+            serde_json::from_str(&body).map_err(super::json_err("token response JSON invalid"))?;
         Ok(CachedToken::new(
             tok.access_token,
             // saturating_add: `expires_in` is attacker-influenced (comes off the token endpoint), so a
@@ -352,23 +356,15 @@ fn b64url(bytes: &[u8]) -> String {
 #[derive(serde::Deserialize)]
 struct ServiceAccount {
     client_email: String,
-    private_key: String,
+    /// The RSA signing key, decoded straight into `Redacted`; exposed only to the PEM parse.
+    #[serde(deserialize_with = "super::deserialize_redacted")]
+    private_key: busbar_contract::redacted::Redacted<String>,
     #[serde(default = "default_token_uri")]
     token_uri: String,
 }
 
 fn default_token_uri() -> String {
     "https://oauth2.googleapis.com/token".to_string()
-}
-
-#[derive(serde::Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    #[serde(
-        default = "super::default_expires_in",
-        deserialize_with = "super::deserialize_expires_in"
-    )]
-    expires_in: u64,
 }
 
 #[cfg(test)]

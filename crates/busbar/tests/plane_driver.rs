@@ -43,8 +43,8 @@ use busbar_plugin_loader::dispatch::{
     kinds::plane::{OwnedSnapshot, Plane},
     load_dropped, load_linked, now_ns as dispatch_now, out_head,
     plane_calls::PlaneInstance,
-    rendering_of, Bind, Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame,
-    LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
+    rendering_of, Bind, ConnTable, Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink,
+    Frame, LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
 };
 
 /// The dispatcher's clock, the one a unit's deadline is on.
@@ -92,7 +92,8 @@ fn load(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
 
 /// [`load`], with the #85 envelope going to `sink`.
 fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> Plugin<Plane> {
-    load_open(way, dispatcher, sink, None).0
+    // These rows never dial: the plane's need is not declared, bound as a probe.
+    load_open(way, dispatcher, sink, ConnTable::Probe).0
 }
 
 /// [`load_with`], its need declared on `conns` when given.
@@ -102,6 +103,7 @@ fn load_over(
     sink: Arc<dyn EnvelopeSink>,
     conns: Option<Arc<dyn DeclaredConns>>,
 ) -> Plugin<Plane> {
+    let conns = conns.map_or(ConnTable::Probe, ConnTable::Host);
     load_open(way, dispatcher, sink, conns).0
 }
 
@@ -110,7 +112,7 @@ fn load_open(
     way: Way,
     dispatcher: &Dispatcher,
     sink: Arc<dyn EnvelopeSink>,
-    conns: Option<Arc<dyn DeclaredConns>>,
+    conns: ConnTable,
 ) -> (Plugin<Plane>, OwnedSnapshot) {
     let bind = Bind {
         instance: Arc::from("the-instance"),
@@ -803,7 +805,7 @@ fn serve_table(
         workers: 2,
         ..DispatchConfig::default()
     }));
-    let (plugin, snapshot) = load_open(way, &dispatcher, Arc::new(NoSink), None);
+    let (plugin, snapshot) = load_open(way, &dispatcher, Arc::new(NoSink), ConnTable::Probe);
     let routes = snapshot
         .admin_routes
         .iter()
