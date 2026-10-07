@@ -462,6 +462,27 @@ pub fn not_granted(resource: &str) -> String {
     format!("this key is not granted `{resource}`")
 }
 
+/// The status a unit addressed to an agent this deployment does not front answers with.
+pub const STATUS_NO_SUCH_AGENT: u32 = 404;
+
+/// THE UNKNOWN AGENT'S REFUSAL (1.5.5's `InboundRefusal::NoSuchAgent`): `404`, `-32004`, no id,
+/// "no fronted agent `<agent>`".
+#[must_use]
+pub fn no_such_agent(agent: &str) -> Refusal {
+    kernel_refusal(STATUS_NO_SUCH_AGENT, &format!("no fronted agent `{agent}`"))
+}
+
+/// The status a unit whose caller's key is no longer live answers with.
+pub const STATUS_NOT_LIVE: u32 = 401;
+
+/// THE CALLER WHOSE KEY IS NO LONGER LIVE (1.5.5's `InboundRefusal::KeyNotLive`): `401`, `-32004`,
+/// no id. 1.5.5 named the key's id where this says `this key`: a plane never sees the raw principal
+/// (BUSBAR-1.6.0.md l.2639-2641; ruling (B), coordinator 2026-10-07), as [`not_granted`] words it.
+#[must_use]
+pub fn not_live() -> Refusal {
+    kernel_refusal(STATUS_NOT_LIVE, "this key is not live")
+}
+
 /// The status a unit refused by its agent's open breaker answers with.
 pub const STATUS_UNAVAILABLE: u32 = 503;
 

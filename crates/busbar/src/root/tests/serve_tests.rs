@@ -1405,6 +1405,18 @@ mod agent_door {
         let routes = doors.iter().map(|r| r.path.clone()).collect();
         let (router, admin, handle) =
             busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+        // THE NODE'S ADMIN SURFACE OVER IT, as boot mounts it (`units_admin::mount_node`, the one
+        // function both call): the generic trust verbs over the kernel's trust book among it
+        // (ruling (d), coordinator 2026-10-07).
+        let admin = crate::root::units_admin::mount_node(
+            admin,
+            1 << 20,
+            &handle,
+            &book,
+            None,
+            &services,
+            crate::root::adapters::BreakerPolicy::new(),
+        );
         // Every config apply refreshes the door, as production binds it.
         handle.on_apply(Box::new(move |app| appliers.apply(app)));
         Served {
@@ -2002,8 +2014,27 @@ mod agent_door {
         assert_eq!(admitted(&s), 0, "nothing charged");
     }
 
+    /// THE GRANT'S REFUSAL, in predev's bytes (1.5.5's `InboundRefusal::NotInScope`: `403`,
+    /// `-32004`, no id), its sentence naming `this key` where predev named the key's id: a plane
+    /// never sees the raw principal (BUSBAR-1.6.0.md l.2639-2641). Ruling (a): grant before trust,
+    /// in predev's bytes; coordinator 2026-10-07. Ruling (B), coordinator 2026-10-07: the plane
+    /// stays blind; a deliberate difference from predev's key-naming sentence.
+    fn assert_not_granted(status: StatusCode, body: &str, agent: &str) {
+        assert_eq!(status, StatusCode::FORBIDDEN, "the grant's refusal: {body}");
+        let doc: serde_json::Value = serde_json::from_str(body).expect("an envelope");
+        assert_eq!(doc["error"]["code"], -32004, "{body}");
+        assert_eq!(
+            doc["error"]["message"],
+            format!("this key is not granted `agent:{agent}`"),
+            "{body}"
+        );
+        assert_eq!(doc["id"], serde_json::Value::Null, "{body}");
+    }
+
     /// The root cell `catalogue × a2a-server`: a unit addressed to an agent outside the caller's
-    /// grant is refused before it dials, and charges nothing.
+    /// grant is refused before it dials, and charges nothing — refused for the grant (in predev's
+    /// bytes, [`assert_not_granted`]) and never for the agent's trust state, which the grant is
+    /// judged before (ruling (a), coordinator 2026-10-07).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_unit_outside_the_callers_grant_is_refused_before_it_dials() {
         let _one = PUBLISHING.lock().await;
@@ -2016,11 +2047,7 @@ mod agent_door {
             rpc("planner", "message/send", SEND, Some(&s.token)),
         )
         .await;
-        assert_ne!(status, StatusCode::OK, "refused: {body}");
-        assert!(
-            body.contains("scope_denied"),
-            "the kernel's refusal, in the plane's words: {body}"
-        );
+        assert_not_granted(status, &body, "planner");
         assert!(heard.try_recv().is_err(), "nothing was dialled");
         assert_eq!(admitted(&s), 0, "nothing charged");
     }
@@ -3427,12 +3454,11 @@ mod agent_door {
             rpc("planner", "message/send", SEND, Some(&s.token)),
         )
         .await;
-        assert_eq!(
-            status,
-            StatusCode::FORBIDDEN,
+        assert_not_granted(status, &body, "planner");
+        assert!(
+            !body.contains("is not serving"),
             "the grant is judged first: {body}"
         );
-        assert!(body.contains("scope_denied"), "{body}");
         assert_eq!(admitted(&s), 0, "nothing charged");
     }
 
@@ -5003,8 +5029,7 @@ mod agent_door {
             rpc("planner", "message/send", SEND, Some(&pool_only)),
         )
         .await;
-        assert_ne!(status, StatusCode::OK, "{body}");
-        assert!(body.contains("scope_denied"), "{body}");
+        assert_not_granted(status, &body, "planner");
         assert!(!agent.relayed(), "nothing was dialled");
     }
 
@@ -5040,19 +5065,28 @@ mod agent_door {
             let (status, body) =
                 answered(&s.router, rpc(theirs, "message/send", SEND, Some(token))).await;
             assert_ne!(status, StatusCode::OK, "{who} reached `{theirs}`: {body}");
-            assert!(
-                body.contains("scope_denied"),
-                "{who}: refused for scope: {body}"
-            );
+            assert_not_granted(status, &body, theirs);
             assert!(!agent.relayed(), "{who}: nothing was dialled");
         }
     }
 
     /// Ported from busbar-a2a catalogue_tests.rs::a_key_that_is_no_longer_live_sees_no_agent_at_all.
     ///
-    /// A key deleted, disabled or expired sees no agent at all: its catalogue read and an
-    /// addressed unit are each refused `401`, and nothing is dialled. The control: a live key of
-    /// the same grant sees both agents.
+    /// A key deleted, disabled or expired sees no agent at all, and nothing is dialled. The
+    /// control: a live key of the same grant sees both agents.
+    ///
+    /// * deleted and disabled: the kernel's auth chain refuses the token, so its catalogue read and
+    ///   an addressed unit are each `401`;
+    /// * expired (its row's `expires_at` passed, its token still in date): the kernel's auth chain
+    ///   admits it (the 1.5.5 rule `key_expires_at_tests` and `key_expires_at_cross_plane` pin), and
+    ///   the plane's admission refuses it. Its catalogue read is predev's: `200`, busbar's card with
+    ///   no skill. MEASURED on predev 70776f1d36 (Latchkey job
+    ///   cli-cbd10b3b-45f6-4274-82bd-4a6a9e56c2c1, `served_methods_tests` over `relay_harness`):
+    ///   `GetExtendedAgentCard` on `POST /a2a` answered `200` with the signed busbar card and
+    ///   `"skills":[]`; ruling: match predev; coordinator 2026-10-07. Its addressed unit is
+    ///   predev's `KeyNotLive`, `401`, `-32004`, no id; predev measured `key `vk_…` is not live`,
+    ///   and the plane says `this key is not live` (BUSBAR-1.6.0.md l.2639-2641: a plane never sees
+    ///   the raw principal; ruling (B), coordinator 2026-10-07).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_key_that_is_no_longer_live_sees_no_agent_at_all() {
         let _one = PUBLISHING.lock().await;
@@ -5088,10 +5122,15 @@ mod agent_door {
                     s.gov.refresh().expect("the book reloads");
                 }
             }
+            let catalogue_read = if what == "expired" {
+                StatusCode::OK
+            } else {
+                StatusCode::UNAUTHORIZED
+            };
             let (status, seen) = agents_seen(&s, &token).await;
             assert_eq!(
                 (status, seen),
-                (StatusCode::UNAUTHORIZED, Vec::new()),
+                (catalogue_read, Vec::new()),
                 "a {what} key must see no agent"
             );
             let (status, body) = answered(
@@ -5100,6 +5139,12 @@ mod agent_door {
             )
             .await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{what}: {body}");
+            if what == "expired" {
+                let doc: serde_json::Value = serde_json::from_str(&body).expect("an envelope");
+                assert_eq!(doc["error"]["code"], -32004, "{body}");
+                assert_eq!(doc["error"]["message"], "this key is not live", "{body}");
+                assert_eq!(doc["id"], serde_json::Value::Null, "{body}");
+            }
             assert!(!agent.relayed(), "{what}: nothing was dialled");
         }
     }

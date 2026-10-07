@@ -5002,6 +5002,13 @@ Other rulings:
   without asking `trust.serves` for it; it may still report `trust.unreachable` for the record, and
   the kernel's last verdict stays untouched.
 
+### 2026-10-07 — COORDINATOR ruling (B) (A2A-FLIP): an a2a refusal names "this key", never the caller's key id
+- 2026-10-07 COORDINATOR (A2A-FLIP, ruling (B)): the a2a door's caller refusals say "this key is
+  not granted `agent:<id>`" (`403`) and "this key is not live" (`401`), `-32004`, no id, where
+  predev named the caller's key id ("key `<key_id>` is ..."): a plane never sees the raw principal
+  (Part 3 l.2639-2641, outranking predev's bytes; l.423, l.4848). Every other byte of those
+  refusals is predev's.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 

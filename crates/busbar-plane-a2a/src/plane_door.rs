@@ -686,6 +686,22 @@ slot!(
         };
         let spec = door::snapshot_spec(plane.public_url.as_deref());
         let generation = input.get().generation;
+        // THE CARDS A KEPT REGISTRATION HOLDS are held under the new generation too: the apply
+        // keeps the operator's approval (it is the kernel's trust book's, ARCHITECT
+        // Q-DEL-A2A-APPLY), and an approved agent whose registration the apply did not touch is
+        // served on the next unit, not refused for want of the card it was approved at (ruling
+        // (b), coordinator 2026-10-07). A registration the apply changed holds none until it is
+        // looked at again.
+        let (before, held_at) = (plane.generations.current(), plane.newest());
+        for (name, def) in &cfg.agents {
+            let kept = before
+                .as_ref()
+                .and_then(|b| b.agents.get(name))
+                .is_some_and(|was| was == def);
+            if let Some(card) = plane.cards.at(name, held_at).filter(|_| kept) {
+                plane.cards.hold(name, generation, (*card).clone());
+            }
+        }
         out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, cfg);
         plane.published(generation);
         // EVERY REGISTRATION STARTS AGAIN at the fail-closed floor, as the engine rebuilt each one
@@ -884,23 +900,19 @@ slot!(
             );
             return Outcome::Ready;
         }
-        // AT MOST ONCE (1.5.5's relay): an agent that ANSWERED with a failure is not retried on
-        // another; its failure is the unit's answer, surfaced per attempt, while the walk still
-        // moves past a member whose breaker is open before anything was sent.
-        out.once();
         match &agent {
             Some(agent) => {
                 out.route(ROUTE_DIRECT, agent);
-                if let Some(def) = section.as_ref().and_then(|s| s.agents.get(agent)) {
-                    if let Err(refusal) = admit_addressed(
-                        plane,
-                        (agent, def),
-                        generation,
-                        request.as_ref(),
-                        &mut out,
-                    ) {
-                        return refused(&mut out, &refusal);
-                    }
+                // AN AGENT THIS DEPLOYMENT DOES NOT FRONT (1.5.5's `InboundRefusal::NoSuchAgent`):
+                // a refusal about the entry it names, so the kernel judges the caller's identity
+                // and grant first and nothing is charged; `404`, never a `503`.
+                let Some(def) = section.as_ref().and_then(|s| s.agents.get(agent)) else {
+                    return refused(&mut out, &arrival::no_such_agent(agent));
+                };
+                if let Err(refusal) =
+                    admit_addressed(plane, (agent, def), generation, request.as_ref(), &mut out)
+                {
+                    return refused(&mut out, &refusal);
                 }
             }
             None => {
@@ -923,6 +935,12 @@ slot!(
                 );
             }
         }
+        // AT MOST ONCE (1.5.5's relay): an agent that ANSWERED with a failure is not retried on
+        // another; its failure is the unit's answer, surfaced per attempt, while the walk still
+        // moves past a member whose breaker is open before anything was sent. Stated only on a
+        // unit admitted here: a refusal about an entry states no route flags (abi/plane "A refused
+        // arrival").
+        out.once();
         let unit = Unit {
             disposition,
             agent,
@@ -1383,12 +1401,15 @@ fn admit_addressed(
     generation: u64,
     envelope: Option<&serde_json::Value>,
     out: &mut Out<'_, ArriveOut>,
-) -> Result<Option<String>, arrival::Refusal> {
-    out.trust(member, None, None);
-    if verdict(plane, member) != busbar_contract::abi::host::service::DISTRUST_NONE {
-        return Ok(None);
+) -> Result<(), arrival::Refusal> {
+    // The trust facts ride an ADMITTED arrival only: a refusal about the entry states none
+    // (abi/plane "A refused arrival"), so the plane's own refusal (a suspension, the card's fit)
+    // is stated after its standing and never beside it.
+    if verdict(plane, member) == busbar_contract::abi::host::service::DISTRUST_NONE {
+        admit_unit(plane, (member, def), Some(member), generation, envelope)?;
     }
-    admit_unit(plane, (member, def), Some(member), generation, envelope)
+    out.trust(member, None, None);
+    Ok(())
 }
 
 /// THE ADMISSION AND THE CATALOGUE (the engine's `receive::admit`, after the kernel's identity and
@@ -1435,6 +1456,44 @@ pub(crate) fn admit_unit(
         .map(crate::skill::TaskShape::of)
         .unwrap_or_default();
     crate::skill::fit(&card, &shape).map_err(excluded)
+}
+
+/// THE CALLER'S IDENTITY, the ordered gate's first step (1.5.5's `inbound::authorize`: a key that
+/// is disabled, deleted or past its row's `expires_at` is `KeyNotLive`, `401`, before anything
+/// else is judged), asked of the kernel at the unit's attempt: `entitlement.check` of the unit's
+/// caller for `member`'s agent scope, whose identity step refuses a principal that is not live (the
+/// kernel's own auth chain admits a key row past its `expires_at`, the 1.5.5 rule
+/// `key_expires_at_tests` pins; this plane's admission never did). The kernel already judged the
+/// caller's grant over the route, so a refused entitlement of the agent the unit addressed is the
+/// caller's identity: `401`, `this key is not live` ([`arrival::not_live`]). Routed by scope, a
+/// caller that may reach no agent is answered as 1.5.5's catalogue answered one that reached none
+/// ([`arrival::scope_refusal`]). A member of an addressed pool is judged on its own elsewhere.
+/// `None`: the caller stands. A check the host cannot answer is no entitlement.
+fn stands(
+    reach: &Reach<'_>,
+    pass: &mut crate::task_door::Pass,
+    member: &str,
+    addressed: Option<&str>,
+) -> Option<arrival::Refusal> {
+    if addressed.is_some_and(|a| a != member) {
+        return None;
+    }
+    let handle = CompletionHandle {
+        ticket: reach.ticket,
+        seq: pass.issued,
+        _reserved: 0,
+    };
+    pass.issued += 1;
+    let entitled = reach.plane.services.is_some_and(|services| {
+        services
+            .entitled(handle, &door::agent_resource(member))
+            .unwrap_or(false)
+    });
+    match (entitled, addressed) {
+        (true, _) => None,
+        (false, Some(_)) => Some(arrival::not_live()),
+        (false, None) => Some(arrival::scope_refusal("")),
+    }
 }
 
 /// A refusal as the caller's whole answer: its status, and its envelope.
@@ -1536,13 +1595,16 @@ fn piece(
         // the hop does, in the admission's words.
         let admission = match (&def, given.from == FROM_KERNEL && !hop.admitted) {
             (Some(def), true) => {
-                let admitted = admit_unit(
-                    reach.plane,
-                    (member, def),
-                    addressed.as_deref(),
-                    unit.generation,
-                    hop.request.as_ref(),
-                );
+                let admitted = match stands(reach, pass, member, addressed.as_deref()) {
+                    Some(refusal) => Err(refusal),
+                    None => admit_unit(
+                        reach.plane,
+                        (member, def),
+                        addressed.as_deref(),
+                        unit.generation,
+                        hop.request.as_ref(),
+                    ),
+                };
                 match admitted {
                     Ok(skill) => {
                         hop.admitted = true;

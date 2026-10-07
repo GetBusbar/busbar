@@ -415,6 +415,38 @@ fn an_ungranted_caller_is_told_the_scope_it_does_not_hold() {
     );
 }
 
+/// A KEY THAT IS NOT LIVE IS REFUSED `401`, HOWEVER IT IS NOT LIVE (1.5.5's `KeyNotLive`). Which
+/// keys are not live (disabled, tombstoned, past its row's `expires_at`, reaching the expiry being
+/// expired) is the kernel's identity step, pinned there
+/// (`host_services_tests::a_dead_or_expired_key_sees_nothing`), which the door asks at the attempt
+/// (`plane_door::stands`); this pins what the door answers: `401`, `-32004`, no id, its sentence
+/// naming `this key` (a plane never sees the raw principal, BUSBAR-1.6.0.md l.2639-2641; ruling
+/// (B), coordinator 2026-10-07).
+/// Ported from busbar-a2a a2a/tests/inbound_tests.rs::a_key_that_is_not_live_is_refused_401_however_it_is_not_live.
+#[test]
+fn a_key_that_is_not_live_is_refused_401_however_it_is_not_live() {
+    let refusal = not_live();
+    let rendered = render(Dialect::JsonRpc, &refusal, true);
+    assert_eq!(rendered.status, 401);
+    let doc: serde_json::Value = serde_json::from_slice(&rendered.body).expect("json");
+    assert_eq!(doc["error"]["code"], -32004);
+    assert_eq!(doc["error"]["message"], "this key is not live");
+    assert_eq!(doc["id"], serde_json::Value::Null);
+}
+
+/// AN AGENT THIS DEPLOYMENT DOES NOT FRONT is a `404` in 1.5.5's words (`NoSuchAgent`), never an
+/// out-of-scope one.
+/// Ported from busbar-a2a a2a/tests/inbound_tests.rs::an_unknown_agent_is_a_404_and_an_out_of_scope_one_says_so.
+#[test]
+fn an_unknown_agent_is_a_404_in_1_5_5_words() {
+    let rendered = render(Dialect::JsonRpc, &no_such_agent("nonexistent"), true);
+    assert_eq!(rendered.status, 404);
+    let doc: serde_json::Value = serde_json::from_slice(&rendered.body).expect("json");
+    assert_eq!(doc["error"]["code"], -32004);
+    assert_eq!(doc["error"]["message"], "no fronted agent `nonexistent`");
+    assert_eq!(doc["id"], serde_json::Value::Null);
+}
+
 /// A request with `"id": null` is never answered with a success: it is an Invalid Request (`-32600`)
 /// refused at the arrival, BEFORE any hop (a refused arrival has no operation class and no unit is
 /// routed), and its refusal carries `"id": null` (JSON-RPC 2.0 section 5). Rendered on each line.
