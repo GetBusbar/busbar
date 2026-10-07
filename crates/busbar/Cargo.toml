@@ -115,7 +115,7 @@ busbar-secret-env = { workspace = true }
 busbar-secret-file = { workspace = true }
 # THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
-busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+busbar-hook-ranking = { workspace = true, optional = true }
 # THE OPERATOR CREDENTIAL (`auth.admin_auth: [admin-tokens]`, the single operator admin token), a
 # first-party AUTH plugin linked through the `auths` axis under `auth-admin-tokens` — the same row a
 # signed tarball of it registers when dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
@@ -125,8 +125,9 @@ busbar-auth-admin-tokens-plugin = { workspace = true, optional = true }
 # THE OUTBOUND HEADER STYLES (bearer, api-key, x-goog-api-key): the auth plugin a plane's outbound need
 # is bound under when its member's style is one of them (THE DESIGN §6 step 3: the auth plugin that
 # serves the style opens the binding), linked through the `auths` axis under `auth-header`
-# (ARCHITECT Q-L1-AUTH (A), 2026-10-03). Staged in-tree; its only busbar edge is `busbar-contract`.
-busbar-auth-header = { path = "../busbar-auth-header", optional = true }
+# (ARCHITECT Q-L1-AUTH (A), 2026-10-03). It lives in its own repo (GetBusbar/busbar-auth-header), pulled
+# at a pinned rev; its only busbar edge is `busbar-contract`.
+busbar-auth-header = { workspace = true, optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
 # in its own repo (GetBusbar/busbar-export-file) and is pulled at a PINNED rev; the workspace `[patch]`
@@ -306,7 +307,7 @@ auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
 # plugin serving a plane need's header style, on the `auths` axis. Off, a member whose style it serves
 # binds only when a signed tarball of the module is dropped into `plugins/`.
 auth-header = ["dep:busbar-auth-header"]
-hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
@@ -339,7 +340,7 @@ auth-header = "busbar-auth-header"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
-hooks-ranking = "busbar-hooks-ranking"
+hooks-ranking = "busbar-hook-ranking"
 # THE SECRET AXIS: the env and file sources, required dependencies (every build links them; the key
 # names the row). Each is loaded only when a reference names it.
 secret-env = "busbar-secret-env"
@@ -474,7 +475,7 @@ busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
 # token-style auth plugin through its own need (TODO row 22).
-busbar-auth-oauth = { path = "../busbar-auth-oauth" }
+busbar-auth-oauth = { workspace = true }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
@@ -505,10 +506,6 @@ futures = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
-# The plane axis's both-doors proof (`src/root/tests/linked.rs`): a `["cdylib", "rlib"]` fixture, so
-# the test links its `PLANE_DECL` (the linked door) and drops its cdylib into a temp `plugins/`
-# directory (the dropped-in door) and requires the two to install byte-identical registry rows.
-busbar-plugin-example-plane = { path = "../plane-example" }
 # The dropped-in export plugin's end-to-end proof (`tests/export_plugin_dropped_in_serves.rs`): the
 # FILE sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge
 # above, dropped into `plugins/` as the library a tarball of the sink carries. The sink's own

@@ -427,12 +427,13 @@ const NOUNS: &[Noun] = &[
         camel: &[],
         section: None,
     },
-    // The hook kind's one in-tree instance (item 197), on its crate identifier.
+    // The hook kind's ranking instance (item 197), on its crate identifier: busbar-hook-ranking,
+    // pulled from its own repo at a pinned rev since P5.
     Noun {
         key: "ranking",
         kind: "hook",
         family: FAM_HOOKS_RANKING,
-        tokens: &["busbar_hooks_ranking"],
+        tokens: &["busbar_hook_ranking"],
         camel: &[],
         section: None,
     },

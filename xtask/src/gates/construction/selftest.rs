@@ -197,6 +197,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     r.append(delegated_cases(gate, &gcx, &fixture));
     r.append(unit_crate_cases(gate, &gcx, &fixture));
     r.append(ceiling_file_cases(gate, &gcx, cx, &fixture, &cleared));
+    r.append(census_rename_cases(gate, &gcx, &fixture));
     r.append(kind_cases(gate, &gcx, &fixture));
     r.append(vocabulary_cases(gate, &gcx, &fixture));
     r.append(money_cases(gate, &gcx, &fixture));
@@ -983,6 +984,143 @@ fn ceiling_file_cases<'a>(
             &refs(&combined_naming),
         ));
     }
+    r
+}
+
+/// THE RENAMED MOVE-OUT (ARCHITECT 2026-10-03, Q-L7B2-CENSUS): a `plugin_kinds` floor drop for a
+/// crate whose package name changed with its extraction is excused ONLY by BOTH the root's git pin
+/// at a rev under the NEW name AND a `[[gate.census.renamed]]` row naming old -> new, its commit
+/// and its reason.
+///
+/// Driven over a SYNTHETIC BASE so the cases do not depend on which extraction history the base
+/// happens to carry: the base's ceilings file pins the hook floor one higher than this tree's, its
+/// `crates/` listing carries one more hook-kind directory, and that directory's manifest names the
+/// OLD package. The tree is the fixture, plus — per case — the root's pin under the new name and
+/// the rename row.
+fn census_rename_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
+    const SYN_BASE: &str = "zz-census-rename-base";
+    const SYN_COMMIT: &str = "zz-census-rename-commit";
+    const OLD: &str = "busbar-hooks-zz-planted";
+    const NEW: &str = "busbar-hook-zz-planted";
+    let mut r = Report::new();
+    let (Ok(cfg), Ok(text), Ok(root)) = (
+        ConstructionGate::cfg(cx),
+        cx.read(CEILINGS),
+        cx.read("Cargo.toml"),
+    ) else {
+        r.note_infra_failure(
+            "the ceilings file or the root manifest could not be read, so the renamed move-out \
+             cases are unproven",
+        );
+        return r;
+    };
+    let glob = cfg
+        .kind_globs("hook")
+        .ok()
+        .and_then(|g| g.into_iter().find(|g| g.contains('*')));
+    let floor = cfg
+        .doc
+        .table_or_empty("gate.census.plugin_kinds")
+        .int_of("hook");
+    let (Some(glob), Some(floor)) = (glob, floor) else {
+        r.note_infra_failure(
+            "the hook kind has no wildcard glob or no census floor, so there is no floor a renamed \
+             move-out could lower and the cases are unproven",
+        );
+        return r;
+    };
+    let dir = glob.replacen('*', "s-zz-planted", 1);
+    let parent = glob.rsplit_once('/').map_or(".", |(p, _)| p).to_string();
+    let Some(base_ceilings) =
+        ceilings::set_int(&text, "gate.census.plugin_kinds", "hook", floor + 1)
+    else {
+        r.note_infra_failure("the base's hook floor could not be planted one higher");
+        return r;
+    };
+    let mut listing = cx
+        .git_lines(&[
+            "ls-tree",
+            "-d",
+            "--name-only",
+            "HEAD",
+            &format!("{parent}/"),
+        ])
+        .unwrap_or_default();
+    listing.push(dir.clone());
+    let header = "[workspace.dependencies]\n";
+    let pinned_root = root.replacen(
+        header,
+        &format!(
+            "{header}{NEW} = {{ git = \"https://example.invalid/{NEW}\", rev = \"0123abc\" }}\n"
+        ),
+        1,
+    );
+    if pinned_root == root {
+        r.note_infra_failure(
+            "the root manifest has no [workspace.dependencies] header to pin into",
+        );
+        return r;
+    }
+    let row = |reason: &str| {
+        format!(
+            "{text}\n[[{}]]\nfrom = \"{OLD}\"\nto = \"{NEW}\"\ncommit = \"{SYN_COMMIT}\"\n\
+             reason = \"{reason}\"\n",
+            census::RENAMED
+        )
+    };
+    let plant = |ceilings_now: String, root_now: &str| {
+        let mut ov = on(base);
+        ov.set_command(ceilings::BASE_PIN_KEY, SYN_BASE);
+        ov.set_command(
+            format!("git-show:{SYN_BASE}:{CEILINGS}"),
+            base_ceilings.clone(),
+        );
+        ov.set_command(
+            format!("git-show:{SYN_BASE}:{dir}/Cargo.toml"),
+            format!("[package]\nname = \"{OLD}\"\nversion = \"0.0.0\"\n"),
+        );
+        ov.set_command(
+            format!("{}:{SYN_BASE}:{parent}/", census::LS_TREE_KEY),
+            listing.join("\n"),
+        );
+        ov.set_command(format!("git-ref:{SYN_COMMIT}"), "1");
+        ov.set(CEILINGS, ceilings_now);
+        ov.set("Cargo.toml", root_now.to_string());
+        ov
+    };
+    let dropped = "plugin_kinds.hook: the floor itself went";
+
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a renamed move-out pinned under its new name with NO rename row stays red",
+        &[census::ROW_CENSUS],
+        plant(text.clone(), &pinned_root),
+        &[dropped],
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a rename row whose new name the root does not pin as a git dependency stays red",
+        &[census::ROW_CENSUS],
+        plant(row("planted"), &root),
+        &[dropped],
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a rename row with no reason is not a rename row, and excuses nothing",
+        &[census::ROW_CENSUS],
+        plant(row(""), &pinned_root),
+        &["is not a whole rename row", dropped],
+    ));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a renamed move-out with BOTH its rename row and its pin under the new name excuses the drop",
+        &[census::ROW_CENSUS],
+        plant(row("planted"), &pinned_root),
+    ));
     r
 }
 

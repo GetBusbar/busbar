@@ -237,6 +237,16 @@
 # (c7de1ab) lacks dev's engine fixes and is NOT pinned. promote.yml RELEASE_REF moves to the same sha in the
 # same commit, so CI and lane proofs run ONE engine.
 #
+# 2026-10-05 (P5 extraction, busbar #484): moved 4a7a7bba2cef -> 0ede76aea912, the merge of busbar-release
+# #157 into dev: the build-test plan drops the rows naming crates P5 moves out or deletes (the dropped-in
+# sigv4 row: its proof is GetBusbar/busbar-auth-sigv4's own conformance leg; the example plane's dlopen
+# build, re-pointed at the loader's plane_door_plugin). It descends from edd17921e320 (P6 ORACLE-STRICT's
+# pin: #158, #159, #163) and carries #161; promote.yml RELEASE_REF moves to the same sha.
+#
+# 2026-10-06: moved 0ede76aea912 -> 1869c0032ecf, busbar-release dev's head (the merge of #168): it contains every
+# earlier pin (predev's 4a7a7bba2cef, oracle-strict's edd17921e320, #157's 0ede76aea912, #493's 5b89bdf67326), so
+# no lane's engine moves backwards when this lands.
+#
 # 2026-10-06 (busbar P3 FLIP-STREAMING / DEL-VOICE): moved 4a7a7bba2cef -> 30d072960aa1 (busbar-release
 # `p3-flip-streaming-plan`, PR #168 into dev, cut from 4a7a7bba2cef). One commit, no engine change: the
 # build-test plan's `voice runtime` row leaves with the deleted busbar-voice crate (plan-lint refuses a row
