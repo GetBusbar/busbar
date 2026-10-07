@@ -607,11 +607,21 @@ required-features = ["auth-admin-tokens"]
 name = "root_listeners_are_the_connectors"
 path = "tests/root_listeners_are_the_connectors.rs"
 required-features = ["auth-admin-tokens"]
+
+[[test]]
+name = "metrics_routes_across_export_reload"
+path = "tests/metrics_routes_across_export_reload.rs"
+required-features = ["auth-admin-tokens"]
 [package.metadata.busbar.legacy]
 # THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each
 # entry's `retired:` and `former_names:`); src/root/tests/legacy.rs is red on an edit and prints the
 # render to paste.
 # build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.
+"export_module_streams" = "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
+"export_modules" = "prometheus | request-log-webhook | request-log-file | otlp"
+"export_trace_instance" = "traces"
+"export_trace_module" = "otlp"
+"export_type_keys" = "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
 "gov14_busy_timeout_key" = "sqlite_busy_timeout_ms"
 "gov14_change" = "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
 "gov14_db_path" = "busbar-governance.db"

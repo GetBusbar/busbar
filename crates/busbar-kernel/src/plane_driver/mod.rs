@@ -56,7 +56,7 @@
 mod cancel;
 mod epoch;
 mod far_end;
-mod hooks;
+pub(crate) mod hooks;
 mod money;
 mod needs;
 mod probe;

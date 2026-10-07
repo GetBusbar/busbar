@@ -944,7 +944,7 @@ plane_behaviour! {
     /// [`crate::admin_verbs::AdminRouteSpec`] — each a `(method, path, scope, kind, handler)`
     /// where the handler is a neutral async fn over an
     /// [`crate::admin_verbs::AdminReqCtx`], never an `axum` extractor or `Arc<AppHandle>`. The
-    /// CORE adapter (`busbar_kernel::admin::v1::json::mount_plane_admin_routes`) registers each spec at
+    /// CORE adapter (`busbar_core_admin::v1::json::mount_plane_admin_routes`) registers each spec at
     /// its VERBATIM `(method, path)`, so the auth middleware's `required_scope(method, path)` is
     /// byte-identical — the security invariant this seam preserves.
     #[allow(clippy::type_complexity)]
@@ -1039,7 +1039,7 @@ plane_behaviour! {
     reresolve_gates: Option<fn(&mut dyn crate::plane_host::ContainerGateSink)>,
 
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
-    /// schema pass in `busbar_kernel::admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
+    /// schema pass in `busbar_core_admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
     /// and request [`schemars::SchemaGenerator`]s and the `paths` map, it registers its own view/body
     /// types into `#/components/schemas` and attaches their `$ref`s onto the paths its [`Self::openapi`]
     /// fragment inserted — so `handlers` names no `crate::mcp`/`crate::a2a` view type and the document

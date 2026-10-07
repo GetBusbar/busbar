@@ -826,7 +826,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = BookDir::new("real-path");
     assert!(
         dir.entries().is_empty(),
@@ -1180,7 +1180,7 @@ fn one_seal_after_two_reloads() {
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = BookDir::new("two-reloads");
     let _env = data_dir_env(&dir.0);
     let cfg = || {

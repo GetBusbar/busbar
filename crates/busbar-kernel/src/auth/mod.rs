@@ -1528,8 +1528,8 @@ async fn external_admin_module(
 /// The 503 an admin chain that could not be judged answers, in the frozen v1 envelope
 /// (`{error:{code:"unavailable"}}`).
 fn admin_unavailable_response(why: AdminUnavailable) -> Response {
-    let e = crate::admin::v1::contract::AdminError::Unavailable(why.message().to_string());
-    crate::admin::v1::json::err_json(&e)
+    let e = crate::admin::gate::ApiError::Unavailable(why.message().to_string());
+    crate::admin::gate::err_json(&e)
 }
 
 /// The ADMIN-SCOPE CEILING for an identifying module (`max_admin_scope:`): the operator credential
@@ -1729,7 +1729,7 @@ fn admin_scope_for(
 /// most-frequent error must carry the SAME `{error:{code,message}}` shape tooling branches on;
 /// the data plane keeps protocol-native 401 shaping (`unauthorized_response`).
 fn admin_unauthorized_response() -> Response {
-    let e = crate::admin::v1::contract::AdminError::Unauthorized;
+    let e = crate::admin::gate::ApiError::Unauthorized;
     let body = serde_json::json!({
         "error": { "code": e.code(), "message": e.message() }
     })
@@ -1762,7 +1762,7 @@ fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
 /// A 429 in the frozen admin error envelope — the per-principal mutation budget is spent. Carries
 /// `Retry-After: 60` (the fixed window length): a compliant client backs off without guessing.
 fn rate_limited_response() -> Response {
-    let e = crate::admin::v1::contract::AdminError::RateLimited;
+    let e = crate::admin::gate::ApiError::RateLimited;
     let body = serde_json::json!({
         "error": { "code": e.code(), "message": e.message() }
     })
@@ -1820,7 +1820,7 @@ fn unauthorized_with_completion_taps(
         busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
             &app.tap_hooks_response,
             &shape,
-            crate::hooks::wire::HookStageProjection {
+            busbar_contract::hook_wire::HookStageProjection {
                 at: "response",
                 model: None,
                 attempt_number: None,
@@ -2023,7 +2023,7 @@ pub(crate) async fn auth_middleware(
             // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
             AdminDoor::Denied => return Err(admin_unauthorized_response()),
         };
-        let required = crate::admin::v1::contract::required_scope(req.method(), &path);
+        let required = crate::admin::gate::required_scope(req.method(), &path);
         if !scope.allows(required) {
             // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
             // an operator wants to see) — but at most once per (principal, window). The durable
@@ -2072,7 +2072,7 @@ pub(crate) async fn auth_middleware(
             // predicate, so it can be enumerated and cross-checked against
             // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
             let rel = path
-                .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
+                .strip_prefix(crate::admin::gate::ADMIN_PREFIX)
                 .unwrap_or(&path);
             let class = crate::ratelimit::classify_mutation(rel);
             let actor = principal
