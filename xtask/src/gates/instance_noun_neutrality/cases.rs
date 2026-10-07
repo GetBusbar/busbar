@@ -23,6 +23,7 @@ const NEUTRAL: &str = "pub fn install() {}\n";
 const WIRE_TOML: &str = "crates/busbar-plane-llm/dialects/openai_responses.toml";
 const WIRE_MOD: &str = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
 const WIRE_OTHER: &str = "crates/busbar-plane-llm/src/codec/proto_stream.rs";
+// qa-names: crates/busbar-kernel/src/planted_wire_word.rs -- xtask/src/gates/instance_noun_neutrality/cases.rs -- the overlay-only kernel file a case plants a dialect's wire literal in, to prove a wire word outside a dialect module is still a leak
 const KERNEL_PLANT: &str = "crates/busbar-kernel/src/planted_wire_word.rs";
 const GOOD: &str = "pub const DOOR: &str = \"the mcp door\"; \
                     // noun-neutrality: frozen-literal pinned-by=docs/pin.md the door's wire text\n";
@@ -127,19 +128,19 @@ pub(super) fn push(
     let mcp = row_id("mcp");
 
     // THE DIALECT'S OWN WIRE-PATH TABLE (ruling C5-Q1, the #324 precedent): a Responses item type
-    // spelled in the dialect module's drop table is the provider's word; the same word in another
-    // constant of that module, or in a drop table outside a dialect module, is a leak.
+    // spelled in the dialect module's drop table is the provider's word; the same word as an
+    // IDENTIFIER in that module, or in a drop table outside a dialect module, is a leak. (A literal
+    // elsewhere in a dialect module is the dialect's vocabulary too since ARCHITECT 2026-10-07,
+    // INSTANCE-NOUN (b), so the in-module leak this case plants is an identifier.)
     let table = "const RESPONSE_DROPS: &[&str] = &[\n    \"output[].type=mcp_call\",\n];\n";
     let dialect = |body: &str| ov(&[(WIRE_TOML, ""), (WIRE_MOD, body), (WIRE_OTHER, NEUTRAL)]);
     red(
-        "a dialect module's wire-path table entry is the provider's word; the same word in another \
-         constant of that module is a leak",
+        "a dialect module's wire-path table entry is the provider's word; the same word as an \
+         identifier in that module is a leak",
         &mcp,
         WIRE_MOD,
         dialect(table),
-        dialect(&format!(
-            "{table}const PLANTED: &str = \"output[].type=mcp_call\";\n"
-        )),
+        dialect(&format!("{table}pub fn mcp_call_drops() {{}}\n")),
     );
     red(
         "a wire-path table outside a dialect module still counts",
