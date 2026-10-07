@@ -16,9 +16,8 @@
 //! (`crates/busbar/src/root/tests/linked_secret_sources.rs`, `root/tests/linked.rs`) pins the real
 //! sources' words through the linked axis, so the two cannot drift silently apart.
 //!
-//! It produces a subset of the sources' refusals, the ones the kernel's tests need: a settings
-//! document that is not a JSON object, a missing / blank `key` / `path`, an unset or non-UTF-8
-//! variable, an unreadable file, an empty value. The sources' own guards beyond those (the blank
+//! It produces a subset of the sources' refusals, the ones the kernel's tests need: a missing /
+//! blank `key` / `path`, an unset or non-UTF-8 variable, an unreadable file, an empty value. The sources' own guards beyond those (the blank
 //! value / blank file rule, the regular-file check, the size cap) are theirs alone and are proven at
 //! the root. A value it returns is the source's bytes, untouched.
 
@@ -67,16 +66,16 @@ const FILE_NEEDS_PATH: &str = "secret module 'file' requires settings.path namin
 /// The non-blank string setting `field` of a settings document; `missing` is the source's refusal
 /// when it is absent or blank.
 fn setting(settings: &[u8], field: &str, missing: &str) -> Result<String, SecretRefused> {
+    // The kernel's resolver hands every call the reference's settings as a JSON object
+    // (`config::secret::SecretResolver::resolve`), so a document that is not one is a broken
+    // caller, not an operator's refusal: the double does not produce the sources' "secret settings
+    // are not a JSON object" refusal (secret-env/src/lib.rs:95 @ 495318c, secret-file/src/lib.rs:141
+    // @ 479c833), and a test that reaches this fails loudly.
     let doc: serde_json::Map<String, serde_json::Value> = if settings.is_empty() {
         serde_json::Map::new()
     } else {
-        serde_json::from_slice(settings).map_err(|e| {
-            // secret-env/src/lib.rs:95 @ 495318c; secret-file/src/lib.rs:141 @ 479c833.
-            refused(
-                ERROR_KIND_INVALID,
-                format!("secret settings are not a JSON object: {e}"),
-            )
-        })?
+        serde_json::from_slice(settings)
+            .expect("the kernel hands a secret module its settings as a JSON object")
     };
     match doc.get(field).and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => Ok(v.to_string()),
