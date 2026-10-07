@@ -1287,12 +1287,12 @@ fn a_registration_member_rides_every_member_target_need() {
 }
 
 /// A connection table that records what the composition seals on it: each need's anchors and
-/// private reach, and each auth binding, by need and target. It opens nothing.
+/// private reach, and each auth binding, by need, member and target. It opens nothing.
 #[derive(Default)]
 struct Sealing {
     anchored: std::sync::Mutex<Vec<(u32, String)>>,
     reached: std::sync::Mutex<Vec<(u32, String, String)>>,
-    bound: std::sync::Mutex<Vec<(u32, String)>>,
+    bound: std::sync::Mutex<Vec<(u32, String, String)>>,
 }
 
 impl busbar_contract::conn::Conns for Sealing {
@@ -1415,13 +1415,14 @@ impl busbar_contract::conn::DeclaredConns for Sealing {
         &self,
         _: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
+        member: &str,
         origin: &str,
         _: busbar_contract::conn::ConnAuth,
     ) {
         self.bound
             .lock()
             .unwrap()
-            .push((need.0, origin.to_string()));
+            .push((need.0, member.to_string(), origin.to_string()));
     }
 }
 
@@ -1520,8 +1521,8 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
     assert_eq!(
         *table.bound.lock().unwrap(),
         [
-            (1, "https://far.example".to_string()),
-            (2, "https://far.example".to_string())
+            (1, "fs".to_string(), "https://far.example".to_string()),
+            (2, "fs".to_string(), "https://far.example".to_string())
         ],
         "the door's own requests on either need carry the member's binding"
     );

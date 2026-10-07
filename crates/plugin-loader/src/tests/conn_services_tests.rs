@@ -823,6 +823,7 @@ impl DeclaredConns for Scripted {
         _: InstanceId,
         _: NeedId,
         _: &str,
+        _: &str,
     ) -> Option<busbar_contract::conn::ConnAuth> {
         self.member_auth.clone()
     }

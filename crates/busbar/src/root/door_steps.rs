@@ -1656,8 +1656,10 @@ impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
 /// round 5 Q-L3B-DOOR-EXCHANGE; round 4 (d): "admin connect + verify-on-call fetches use the same
 /// binding"): every registration member's route with an auth binding (`routes`, on the plane's
 /// member-target need `served` states) is held on the plane's connection table `table` per
-/// (`instance`, need, target origin), its passthrough credential lent from the unit records
-/// `units` by the unit the request is made inside.
+/// (`instance`, need, member, target origin), its passthrough credential lent from the unit records
+/// `units` by the unit the request is made inside. Held per MEMBER: the door's own request names
+/// the registration it is for, so two registrations at one origin each present their own, and one
+/// with no binding presents none (predev `creds.rs` `Lease::header_for`, `LeaseError::WrongAgent`).
 pub fn bind_member_fetches(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
@@ -1666,7 +1668,7 @@ pub fn bind_member_fetches(
     units: &Arc<busbar_kernel::host_units::UnitRecords>,
 ) {
     let targeted = member_target_needs(served);
-    for route in routes.values() {
+    for (member, route) in routes {
         let Some(binding) = &route.auth else {
             continue;
         };
@@ -1679,6 +1681,7 @@ pub fn bind_member_fetches(
             table.bind_auth(
                 instance,
                 need,
+                member,
                 busbar_contract::conn::origin_of(&base_url),
                 busbar_contract::conn::ConnAuth {
                     auth: Arc::clone(&binding.auth),
