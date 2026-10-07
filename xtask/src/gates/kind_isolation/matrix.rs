@@ -4042,10 +4042,10 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-breaker` carries a live cell; it
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-egress` carries a live cell; it
     // measures nothing the moment the crate stops being one.
     //
-    // RE-TARGETED TWICE. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
+    // RE-TARGETED. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
     // on the real tree when the crate's last `busbar-api` name moved to the contract; then
     // `busbar-auth-static-plugin × plugin-tooling`, which went dead when the SDK merged into the
     // contract (#84) and the plugin stopped naming `busbar-plugin-sdk`. Each time its red became
@@ -4056,16 +4056,21 @@ pub fn selftest<'a>(
     // [`COLLIDING_INSTANCE_WORDS`] no longer counts, so that row went dead on the real tree.
     // Re-targeted a fourth time: the subject was `busbar-kernel-ledger × kernel`, whose last hit was
     // the dev-dependency on the deleted `busbar-kernel-budget` (DEL-BUDGET-R), so that row went dead
-    // on the real tree and was struck.
+    // on the real tree and was struck. Re-targeted a fifth time: the subject was
+    // `busbar-kernel-breaker × plane`, whose last hits were two comments the breaker lane drained
+    // (00259bd004, "busbar-kernel-breaker names no plane"), so that row went dead on the real tree
+    // and was struck. The subject is now `busbar-kernel-egress × kernel` (its dev edge to the
+    // breaker unit, granted kernel -> kernel with no drain): it measures nothing the moment the
+    // egress crate stops being one.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-kernel-breaker/Cargo.toml");
+    ov.remove("crates/busbar-kernel-egress/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &["dead-cell", "busbar-kernel-breaker \u{d7} plane"],
+        &["dead-cell", "busbar-kernel-egress \u{d7} kernel"],
     ));
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
