@@ -25,7 +25,7 @@ use busbar_contract::abi::hook::signal;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
@@ -35,6 +35,7 @@ use busbar_contract::abi::plane::{
     INGRESS_REQUEST_RESPONSE, PIECE_LAST, PRINCIPAL_NONE, RECORD_PUT, SHAPE_PIECEWISE,
     UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_OK,
 };
+use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot, SignalScalar};
@@ -104,6 +105,15 @@ const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: std::ptr::null(),
     refusal_statuses_len: 0,
+    caller_credential_refusal: NONE,
+    admin_routes: std::ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: busbar_contract::abi::mechanism::call::Blob {
+        ptr: std::ptr::null(),
+        len: 0,
+        fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
+        flags: 0,
+    },
 };
 
 /// Every generation's claim.
@@ -234,8 +244,8 @@ slot!(
     }
 );
 
-slot!(Cancel, CancelIn, CancelOut, |_, _, out| {
-    out.set(|o| &o.disposition, CANCEL_ABORTED);
+slot!(Cancel, PlaneCancelIn, PlaneCancelOut, |_, _, out| {
+    out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
     Outcome::Ready
 });
 

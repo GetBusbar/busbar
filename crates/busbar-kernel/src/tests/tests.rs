@@ -1089,6 +1089,7 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
         prompt: None,
         identity: None,
         signals: Default::default(),
+        session: None,
     };
     let ctx = RoutingContext {
         pool: "p",

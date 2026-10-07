@@ -58,7 +58,7 @@ impl HostServices for Provider {
         }
     }
 
-    fn dest_judge(&self, dest: &str, _class: u32, _resolve: bool, later: Option<Later>) -> Ran {
+    fn dest_judge(&self, dest: &str, _class: u32, _flags: u32, later: Option<Later>) -> Ran {
         self.judged.fetch_add(1, Ordering::SeqCst);
         if dest.starts_with("now:") {
             return Ran::Now(Stored::ready(DEST_METADATA));
@@ -795,7 +795,7 @@ fn an_in_for_another_service_or_of_a_short_size_is_fault() {
     let mut i = judge_in("https://a.example/", TICKET, 0, 0);
     i.head.size -= 1;
     assert_eq!(call_judge(&d, &i).0.outcome(), Outcome::Fault);
-    let i = judge_in("https://a.example/", TICKET, 0, 2);
+    let i = judge_in("https://a.example/", TICKET, 0, 8);
     assert_eq!(
         call_judge(&d, &i).0.outcome(),
         Outcome::Fault,

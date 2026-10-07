@@ -239,6 +239,73 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
             self.put(|o| &o.pool, name);
         }
     }
+
+    /// THE UNIT IS THE PLANE'S OWN TO ANSWER ([`crate::abi::plane::ROUTE_LOCAL`], ARCHITECT
+    /// Q-L3B-LOCAL): it names no entry, and the kernel admits it with no route walk.
+    pub fn local(&mut self) {
+        self.set(|o| &o.route, crate::abi::plane::ROUTE_LOCAL);
+    }
+
+    /// THE UNIT'S OPERATION IS PERFORMED AT MOST ONCE ([`crate::abi::plane::ROUTE_ONCE`]): a member
+    /// that answered with a failure is not retried on another.
+    pub fn once(&mut self) {
+        self.set(|o| &o.route_flags, crate::abi::plane::ROUTE_ONCE);
+    }
+
+    /// THE UNIT IS ROUTED BY THE PRINCIPAL'S SCOPE ([`crate::abi::plane::ROUTE_SCOPE`], ARCHITECT
+    /// Q-DEL-A2A-SELECT): it names no entry, and the kernel routes it to the one entry the
+    /// principal's grant reaches.
+    pub fn by_scope(&mut self) {
+        self.set(|o| &o.route, crate::abi::plane::ROUTE_SCOPE);
+    }
+    /// THE UNIT IS SERVED AS A DUPLEX SESSION ([`crate::abi::plane::ROUTE_SESSION`]): its pieces
+    /// name its stream, and its unsolicited output is named on the instance's driver ticket.
+    pub fn session(&mut self) {
+        let flags = self.get().route_flags | crate::abi::plane::ROUTE_SESSION;
+        self.set(|o| &o.route_flags, flags);
+    }
+}
+
+impl Out<'_, crate::abi::plane::ServeOut> {
+    /// A `serve` ANSWER, written whole into the host buffers `input` lends: `body`, the head
+    /// `fields` (name, value) in order, the status and the `AUDIT_*` row the kernel audits it with.
+    /// A short buffer answers FAILED with what each buffer needs, nothing else set: the host grows
+    /// them and calls once more.
+    pub fn answer(
+        &mut self,
+        input: &crate::abi::sdk::Lent<'_, crate::abi::plane::ServeIn>,
+        status: u32,
+        fields: &[(&str, &str)],
+        body: &[u8],
+        audit: u32,
+    ) -> crate::abi::mechanism::call::Outcome {
+        use crate::abi::plane::OutField;
+        let (mut reply, mut field_buf, mut arena) =
+            (input.reply_buf(), input.fields_buf(), input.arena_buf());
+        reply.extend(body);
+        for (name, value) in fields {
+            field_buf.push(OutField {
+                name: arena.span(name.as_bytes()),
+                value: arena.span(value.as_bytes()),
+            });
+        }
+        let short = !(reply.fits() && field_buf.fits() && arena.fits());
+        let (rw, rnd) = reply.settle(short);
+        let (fw, fnd) = field_buf.settle(short);
+        let (aw, and) = arena.settle(short);
+        self.set(|o| &o.reply_written, rw as u64);
+        self.set(|o| &o.reply_needed, rnd as u64);
+        self.set(|o| &o.fields_written, fw as u32);
+        self.set(|o| &o.fields_needed, fnd as u32);
+        self.set(|o| &o.arena_written, aw as u64);
+        self.set(|o| &o.arena_needed, and as u64);
+        if short {
+            return crate::abi::mechanism::call::Outcome::Failed;
+        }
+        self.set(|o| &o.status, status);
+        self.set(|o| &o.audit, audit);
+        crate::abi::mechanism::call::Outcome::Ready
+    }
 }
 
 impl<'a, T: AbiOut> Out<'a, T> {
@@ -534,6 +601,20 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.put(pick, p);
     }
 
+    /// [`Out::publish`] with the plugin's `payload` for that generation, held beside it
+    /// ([`Generations::publish_with`]).
+    pub fn publish_with<P: Publish, D>(
+        &mut self,
+        pick: impl FnOnce(&T) -> &*const P,
+        gens: &Generations<P, D>,
+        generation: u64,
+        spec: &P::Spec,
+        payload: D,
+    ) {
+        let p = gens.publish_with(generation, spec, payload);
+        self.put(pick, p);
+    }
+
     /// Set the string field `pick` names to the bytes `span` names in the host buffer `buf`,
     /// which the host lent for this call and reads when it returns.
     pub fn host_str(
@@ -551,6 +632,27 @@ impl<'a, T: AbiOut> Out<'a, T> {
     pub fn host_rows<E: Copy>(&mut self, pick: impl FnOnce(&T) -> &*const E, buf: &HostBuf<'_, E>) {
         let p = buf.as_ptr().cast_const();
         self.put(pick, p);
+    }
+
+    /// Set the blob field `pick` names to the opaque octets
+    /// ([`BLOB_OCTETS`](crate::abi::mechanism::call::BLOB_OCTETS)) `span` names in the host
+    /// buffer `buf`, which the host lent for this call and reads when it returns.
+    pub fn host_octets(
+        &mut self,
+        pick: impl FnOnce(&T) -> &crate::abi::mechanism::call::Blob,
+        buf: &HostBuf<'_, u8>,
+        span: crate::abi::mechanism::call::Span,
+    ) {
+        let s = buf.str_at(span);
+        self.put(
+            pick,
+            crate::abi::mechanism::call::Blob {
+                ptr: s.ptr,
+                len: s.len,
+                fmt: crate::abi::mechanism::call::BLOB_OCTETS,
+                flags: 0,
+            },
+        );
     }
 
     /// Set the list `ptr`/`len` name to what `buf`, a host buffer lent for this call, holds.

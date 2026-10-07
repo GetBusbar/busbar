@@ -69,6 +69,19 @@ pub trait HookBinder: Send + Sync {
     /// unit pays nothing more).
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks>;
 
+    /// The order this plane's units run their request-stage hooks in (the plane's tail statement,
+    /// `abi::plane::TAIL_HOOKS_GATED`); [`HookOrder::Routed`] unless the binder says otherwise.
+    fn order(&self) -> HookOrder {
+        HookOrder::Routed
+    }
+
+    /// GATE-FIRST: the hooks the deployment attached to the entry `container` the plane's
+    /// `project` names, for the verified `principal`; `None` = none (the unit pays nothing more).
+    fn bind_gated(&self, container: &str, principal: Option<&str>) -> Option<GatedHooks> {
+        let _ = (container, principal);
+        None
+    }
+
     /// A unit refused at authentication: the `response` stage taps see the previous release's
     /// synthetic `rejected_by_auth` completion, under the status the caller was answered with, in
     /// the zeroed shape (no body was read), labelled with the dialect (the index into the plane's
@@ -546,6 +559,11 @@ pub struct Projection {
     pub end_user: Option<String>,
     /// The body a rewrite left, when this projection answered one.
     pub rewritten: Option<Vec<u8>>,
+    /// The session the request continues, as the plane read it (`RequestView::session`).
+    pub session: Option<Vec<u8>>,
+    /// The plane's projected body (`ProjectOut::body`), when it states one: what a gate-first
+    /// plane's gates screen.
+    pub projected: Option<Vec<u8>>,
 }
 
 impl Projection {
@@ -589,6 +607,7 @@ impl Projection {
             prompt: prompt.then(|| self.prompt()),
             identity,
             signals: SignalBag::default(),
+            session: self.session.as_deref(),
         }
     }
 
@@ -623,12 +642,28 @@ pub(crate) struct Veto {
     pub status: u32,
     /// The words.
     pub text: String,
+    /// The vetoing hook's name, where a named hook vetoed (handed to the plane's `refusal`).
+    pub hook: Option<String>,
 }
+
+#[path = "gated.rs"]
+pub mod gated;
+pub use gated::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 
 fn veto(status: u16, text: impl Into<String>) -> Stopped {
     Stopped::Veto(Veto {
         status: u32::from(status),
         text: text.into(),
+        hook: None,
+    })
+}
+
+/// [`veto`] by the hook named `hook`.
+fn veto_by(status: u16, text: impl Into<String>, hook: &str) -> Stopped {
+    Stopped::Veto(Veto {
+        status: u32::from(status),
+        text: text.into(),
+        hook: Some(hook.to_string()),
     })
 }
 
@@ -1149,6 +1184,16 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             turns,
             end_user: opt(o.end_user),
             rewritten: span(o.rewritten),
+            projected: span(o.body),
+            session: (v.session.fmt == busbar_contract::abi::mechanism::call::BLOB_OCTETS
+                && !v.session.ptr.is_null())
+            .then(|| {
+                let at = (v.session.ptr as usize).wrapping_sub(base);
+                bufs.arena
+                    .get(at..at.saturating_add(v.session.len))
+                    .map(<[u8]>::to_vec)
+                    .unwrap_or_default()
+            }),
         })
     }
 
@@ -1199,6 +1244,15 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // A health probe is the kernel's own unit: no caller, no request a hook screens.
         if self.arrival.claim == CLAIM_PROBE {
             return Ok(());
+        }
+        // A GATE-FIRST plane runs its entry's gates, then its rewrites (`gated`), at its screen
+        // before the door; a unit that reached no screen (a session opened at the door) runs them
+        // here.
+        if binder.order() == HookOrder::Gated {
+            if self.lock().screened {
+                return Ok(());
+            }
+            return self.gated_stage(&**binder).await;
         }
         let facts = self.far.candidates(token);
         let named = facts.is_some();

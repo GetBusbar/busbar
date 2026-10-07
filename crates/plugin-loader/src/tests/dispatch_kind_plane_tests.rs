@@ -13,7 +13,7 @@ use crate::dispatch::kinds::plane::PlaneFacts;
 use busbar_contract::abi::hook::SignalEntry;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, GenIn, RefreshIn};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::Bounds;
 use busbar_contract::abi::plane::{
@@ -411,22 +411,29 @@ fn refresh_green_and_red_on_its_snapshot() {
 
 #[test]
 fn cancel_green_and_red_on_its_disposition() {
-    let i: InHead = z();
-    let mut o: CancelOut = z();
+    let i: busbar_contract::abi::plane::PlaneCancelIn = z();
+    let mut o: busbar_contract::abi::plane::PlaneCancelOut = z();
     for d in [CANCEL_OK_PARTIAL, CANCEL_ABORTED] {
-        o.disposition = d;
+        o.cancel.disposition = d;
         assert_eq!(
             Plane::check(&answer(life::CANCEL, Outcome::Ready, &i, &o)),
             Ok(())
         );
     }
     for d in [0, CANCEL_ABORTED + 1] {
-        o.disposition = d;
+        o.cancel.disposition = d;
         assert_eq!(
             Plane::check(&answer(life::CANCEL, Outcome::Ready, &i, &o)),
             f(Rule::UnknownCode, "cancel.disposition")
         );
     }
+    // SEAM-L(r): a write counted past the host's record buffer is FAULT.
+    o.cancel.disposition = CANCEL_ABORTED;
+    o.records_written = 1;
+    assert_eq!(
+        Plane::check(&answer(life::CANCEL, Outcome::Ready, &i, &o)),
+        f(Rule::OverCap, "cancel.records")
+    );
 }
 
 #[test]
@@ -803,4 +810,68 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
     assert_eq!(facts.refusal_statuses, rows(400).to_vec());
     let refused = bind(rows(200)).expect_err("a status outside 400-599 refuses the load");
     assert!(refused.contains("refusal_status.status"), "{refused}");
+}
+
+/// RED (ARCHITECT Q-L5-FEE (C)): the tail's fee units are judged at bind. A fee unit that is one of
+/// the tail's billable classes binds; one no class lists refuses the load (the plane could never
+/// report it, so its fee would be refunded on every unit), and so does a class with no family.
+#[test]
+fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{BillableClass, PlaneTail, INGRESS_DUPLEX_SESSION};
+    fn s(text: &'static str) -> AbiStr {
+        AbiStr {
+            ptr: text.as_ptr(),
+            len: text.len(),
+        }
+    }
+    let bind = |classes: &'static [BillableClass], fees: &'static [AbiStr]| {
+        let mut tail: PlaneTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<PlaneTail>() as u32,
+            _reserved: 0,
+        };
+        tail.ingress = INGRESS_DUPLEX_SESSION;
+        tail.billable_classes = classes.as_ptr();
+        tail.billable_classes_len = classes.len();
+        tail.fee_units = fees.as_ptr();
+        tail.fee_units_len = fees.len();
+        let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+        let sections: &'static [Section] = Box::leak(Box::new([Section {
+            name: s("door"),
+            flags: SECTION_DECLARING,
+            _reserved: 0,
+        }]));
+        let mut st: Statement = z();
+        st.kind_tail = &tail.head;
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
+        Plane::context(&st).map(|_| ())
+    };
+    let class = |name: &'static str, family: &'static str| BillableClass {
+        class: s(name),
+        family: s(family),
+    };
+    let classes: &'static [BillableClass] = Box::leak(Box::new([
+        class("tool_calls", "count"),
+        class("per_session", "count"),
+    ]));
+    let fee: &'static [AbiStr] = Box::leak(Box::new([s("per_session")]));
+    assert_eq!(
+        bind(classes, fee),
+        Ok(()),
+        "a fee unit that is a class binds"
+    );
+    assert_eq!(bind(&[], &[]), Ok(()), "no fee unit, nothing to judge");
+    let unlisted: &'static [BillableClass] = Box::leak(Box::new([class("tool_calls", "count")]));
+    let refused = bind(unlisted, fee).expect_err("a fee unit no class lists refuses the load");
+    assert!(refused.contains("tail.fee_units"), "{refused}");
+    let familyless: &'static [BillableClass] = Box::leak(Box::new([BillableClass {
+        class: s("per_session"),
+        family: z(),
+    }]));
+    let refused = bind(familyless, fee).expect_err("a class with no family refuses the load");
+    assert!(refused.contains("billable_class.family"), "{refused}");
 }

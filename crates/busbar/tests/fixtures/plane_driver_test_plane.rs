@@ -284,6 +284,10 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: &STATUSES.0 as *const RefusalStatus,
     refusal_statuses_len: 3,
+    caller_credential_refusal: NO_STR,
+    admin_routes: std::ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: NO_BLOB,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
@@ -558,6 +562,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             openapi: NO_BLOB,
             audience: NO_STR,
             resource_metadata: NO_STR,
+            resource_facts: NO_BLOB,
         });
         let me = Box::new(Inst {
             wake,
@@ -1348,7 +1353,8 @@ extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> R
     unsafe {
         let i = &*input.cast::<ServeIn>();
         let o = &mut *out.cast::<ServeOut>();
-        if i.route != 0 {
+        // Route 0, the admin route; route 1, the public one (answered under its own word).
+        if i.route > 1 {
             return say(out, Outcome::Refused);
         }
         let body = bytes(i.body);
@@ -1364,8 +1370,9 @@ extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> R
             std::slice::from_raw_parts(i.fields, i.fields_len)
         };
         let names: Vec<&[u8]> = fields.iter().map(|f| text(f.name)).collect();
+        let word: &[u8] = if i.route == 1 { b"public " } else { b"served " };
         let mut reply = [
-            b"served ".as_slice(),
+            word,
             text(i.target),
             b" fields=",
             names.join(&b","[..]).as_slice(),
@@ -1515,6 +1522,7 @@ unsafe fn establish_and_read(me: &Inst, ticket: Ticket) -> bool {
         timeout_ms: 0,
         target: s(b"far"),
         within: NO_STR,
+        member: NO_STR,
     };
     let Some(o) = conn_call(me, slots.establish, &mut est, ticket, 1, service::ESTABLISH) else {
         return false;
