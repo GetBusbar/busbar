@@ -301,6 +301,19 @@ pub async fn answer_public(
         body,
     )
     .await;
+    // Its record writes go before its reply, as an admin route's do (SEAM-L(t)): a public route's
+    // answer that moved the plane's records (a callback's reported move) is written, never dropped.
+    let served = match served {
+        Ok(s) => write_served_records(
+            table.records.as_ref(),
+            &super::CoreAudit,
+            &s,
+            AuthPrincipal(None).actor_id(),
+        )
+        .await
+        .map(|()| s),
+        Err(e) => Err(e),
+    };
     match served.and_then(|s| reply(&s).map(|resp| (s.audit, resp))) {
         Ok((audit, resp)) => {
             let outcome = match audit {
