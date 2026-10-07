@@ -460,3 +460,7 @@ pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
     // sees only its own.
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/config_tests.rs"]
+mod tests;

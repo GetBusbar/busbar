@@ -343,3 +343,17 @@ fn a_dealt_validate_blob_is_unwrapped_to_its_section() {
     assert_eq!(&*crate::door::dealt_section(bare), &bare[..]);
     assert!(crate::door::read_settings(&crate::door::dealt_section(dealt)).is_ok());
 }
+
+/// Two constants, and both are wire-visible: the credential kind appears on a stored credential row
+/// and the scope kind on every scope reference an operator writes. Changing either silently
+/// orphans every existing row, so they are pinned by value.
+/// Ported from busbar-a2a a2a/tests/inbound_tests.rs::the_credential_kind_and_the_scope_kind_are_the_spellings_the_rest_of_the_tree_uses.
+#[test]
+fn the_credential_kind_and_the_scope_kind_are_the_spellings_the_rest_of_the_tree_uses() {
+    assert_eq!(
+        crate::served_card::CREDENTIAL_KIND_A2A_INBOUND,
+        "a2a_inbound"
+    );
+    assert_eq!(SCOPE, "agent");
+    assert_eq!(s(TAIL.scope), "agent");
+}

@@ -414,3 +414,57 @@ fn an_ungranted_caller_is_told_the_scope_it_does_not_hold() {
         "this key is not granted `agent:probe`"
     );
 }
+
+/// A request with `"id": null` is never answered with a success: it is an Invalid Request (`-32600`)
+/// refused at the arrival, BEFORE any hop (a refused arrival has no operation class and no unit is
+/// routed), and its refusal carries `"id": null` (JSON-RPC 2.0 section 5). Rendered on each line.
+/// Ported from busbar-a2a a2a/tests/envelope_id_tests.rs::a_null_id_is_never_answered_with_a_success_result.
+#[test]
+fn a_null_id_is_never_answered_with_a_success_result() {
+    let body = br#"{"jsonrpc":"2.0","id":null,"method":"SendMessage","params":{}}"#;
+    let disposition = decide(body, head(None, None));
+    assert_eq!(
+        disposition.op_class(),
+        None,
+        "a refused arrival is never routed, so nothing is relayed to a backend"
+    );
+    let r = refused(disposition);
+    assert_eq!(r.status, 400, "not a 200");
+    assert_eq!(r.code, -32600, "an illegal `id` is an Invalid Request");
+    assert_eq!(r.id, None);
+    let body = render(Dialect::JsonRpc, &r, true);
+    assert_eq!(body.status, 400);
+    let doc: serde_json::Value = serde_json::from_slice(&body.body).unwrap();
+    assert!(doc.get("result").is_none(), "{doc}");
+    assert_eq!(doc.pointer("/error/code"), Some(&serde_json::json!(-32600)));
+    assert_eq!(
+        doc.get("id"),
+        Some(&serde_json::Value::Null),
+        "the refusal must carry `\"id\": null`: {doc}"
+    );
+}
+
+/// A request method with no `id` member is a notification: acknowledged, never answered (JSON-RPC
+/// 2.0 section 4.1), and a notification is not a request, so it names no id and carries no refusal.
+/// Ported from busbar-a2a a2a/tests/envelope_id_tests.rs::a_request_method_with_no_id_is_a_notification_and_gets_no_response_body.
+#[test]
+fn a_request_method_with_no_id_is_a_notification_and_gets_no_response_body() {
+    let d = decide(
+        br#"{"jsonrpc":"2.0","method":"SendMessage","params":{}}"#,
+        head(None, None),
+    );
+    assert_eq!(
+        d,
+        Disposition::Notice {
+            method: "SendMessage".to_string()
+        }
+    );
+    assert!(
+        d.op_class().is_some(),
+        "an admitted notification is a unit of its method's class"
+    );
+    assert_eq!(
+        STATUS_ACCEPTED, 202,
+        "a notification is acknowledged, not answered"
+    );
+}

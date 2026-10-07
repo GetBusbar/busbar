@@ -2198,7 +2198,10 @@ mod agent_door {
         fetches: Arc<std::sync::atomic::AtomicUsize>,
         down: Arc<std::sync::atomic::AtomicBool>,
         /// `0`: the card is served at the well-known path; `1`: the well-known path redirects to
-        /// `/cards/card.json`, which serves it; `2`: every `GET` redirects, forever.
+        /// `/cards/card.json`, which serves it; `2`: every `GET` redirects, forever; `3`: every
+        /// `GET` redirects at the cloud-metadata address; `4`: every `GET` redirects at a
+        /// cloud-metadata NAME; `5`: the well-known path redirects to `/cards/one`, which redirects
+        /// to `/cards/card.json`, which serves the card.
         redirect: Arc<std::sync::atomic::AtomicU8>,
         /// How long the next card fetch takes to answer (the ones after it answer at once).
         card_delay_ms: Arc<std::sync::atomic::AtomicU64>,
@@ -2246,7 +2249,19 @@ mod agent_door {
                         };
                         match moved.load(Ordering::SeqCst) {
                             2 => return Some(to("/loop")),
+                            3 => return Some(to(
+                                "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                            )),
+                            4 => {
+                                return Some(to(
+                                    "http://metadata.google.internal/computeMetadata/v1/",
+                                ))
+                            }
                             1 if request.starts_with(CARD_PATH) => {
+                                return Some(to("/cards/card.json"))
+                            }
+                            5 if request.starts_with(CARD_PATH) => return Some(to("/cards/one")),
+                            5 if request.starts_with("GET /cards/one ") => {
                                 return Some(to("/cards/card.json"))
                             }
                             _ => {}
@@ -2774,6 +2789,73 @@ mod agent_door {
             agent.fetches(),
             fetched,
             "the agent never heard the refused fetch"
+        );
+    }
+
+    /// A REDIRECT IS A URL A STRANGER CHOSE, judged from scratch at the hop that names it: a card
+    /// whose well-known path redirects at the cloud-metadata ADDRESS, and one that redirects at a
+    /// cloud-metadata NAME, are each refused at that hop in 1.5.5's words whatever the
+    /// registration's `allow_private` says (the registration here is one that allows it), and the
+    /// card is never obtained.
+    /// Ported from busbar-a2a a2a/tests/fetch_tests.rs::a_redirect_to_the_cloud_metadata_address_is_refused_at_the_hop_that_names_it
+    /// and a2a/tests/fetch_tests.rs::a_redirect_to_a_metadata_dns_name_is_refused_before_it_is_resolved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_card_fetch_redirected_at_cloud_metadata_is_refused_at_the_hop_that_names_it() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        use std::sync::atomic::Ordering;
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-card-redirect-metadata";
+        let _published = Published(instance);
+        let agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        for (mode, words) in [
+            (
+                3,
+                "SSRF guard refused the agent card fetch: host `169.254.169.254` resolved to the \
+                 internal address 169.254.169.254; set this registration's `allow_private: true` \
+                 if reaching it is deliberate. A cloud-metadata address is refused whatever that \
+                 is set to.",
+            ),
+            (
+                4,
+                "SSRF guard refused the agent card fetch: host `metadata.google.internal` is a \
+                 cloud-metadata name",
+            ),
+        ] {
+            agent.redirect.store(mode, Ordering::SeqCst);
+            let (status, view) = admin(&s, "/agents/planner/connect", "").await;
+            assert_eq!(status, StatusCode::OK, "{view}");
+            assert_eq!(view["state"], "error", "mode {mode}: {view}");
+            assert_eq!(view["failure"], words, "mode {mode}: {view}");
+        }
+        assert_eq!(agent.fetches(), 0, "the card was never obtained");
+    }
+
+    /// A LEGAL CHAIN IS FOLLOWED HOP BY HOP: a card behind two redirects (the well-known path to
+    /// `/cards/one` to `/cards/card.json`) is fetched, verified and approved, each hop judged and
+    /// dialled in its own right. The count of lookups and the address each hop was pinned to are the
+    /// host's, not observable from here; that every hop was followed to the document is.
+    /// Ported from busbar-a2a a2a/tests/fetch_tests.rs::every_hop_of_a_legal_chain_is_resolved_and_pinned_separately.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_hop_of_a_legal_chain_is_followed_to_the_card() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        use std::sync::atomic::Ordering;
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-card-redirect-chain";
+        let _published = Published(instance);
+        let agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        agent.redirect.store(5, Ordering::SeqCst);
+        approve(&s, "planner").await;
+        assert!(
+            agent.fetches() >= 1,
+            "the card was obtained at the end of the chain"
         );
     }
 
@@ -3507,6 +3589,75 @@ mod agent_door {
         let skills = doc["result"]["skills"].as_array().expect("skills");
         assert_eq!(skills.len(), 1, "{body}");
         assert_eq!(skills[0]["id"], "planner");
+        assert!(
+            !agent.relayed(),
+            "the extended card is busbar's, never relayed"
+        );
+    }
+    /// A unit addressed to an agent nothing registered is a `404`, never dialled and charging
+    /// nothing; it does not read as an out-of-scope one (that is the grant's refusal, in
+    /// `an_agent_unit_outside_the_callers_grant_is_refused_before_it_dials`).
+    /// Ported from busbar-a2a a2a/tests/inbound_tests.rs::an_unknown_agent_is_a_404_and_an_out_of_scope_one_says_so.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_unit_to_an_unregistered_agent_is_a_404() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-unregistered";
+        let _published = Published(instance);
+        let (port, mut heard) = far_agent().await;
+        let s = served(instance, &agents(port, false), false, None);
+        let (status, body) = answered(
+            &s.router,
+            rpc("nonexistent", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(
+            !body.contains("scope_denied"),
+            "an unregistered agent is not an out-of-scope one: {body}"
+        );
+        assert!(heard.try_recv().is_err(), "nothing was dialled");
+        assert_eq!(admitted(&s), 0, "nothing charged");
+    }
+
+    /// THE EXTENDED CARD IS METERED: busbar answers it out of its own state, and it is still one
+    /// admitted request on the presenting key, with no token accrual (a verb answered locally
+    /// selects no upstream and relays no frame, so no per-request token fee can land on it).
+    /// Ported from busbar-a2a a2a/tests/metered_verbs_tests.rs::the_catalogue_card_verb_is_metered_against_the_plane_pool.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_extended_card_is_metered_as_one_request_and_no_tokens() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-extended-card-metered";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        assert_eq!(admitted(&s), 0, "nothing billed before the call");
+        let (status, body) = answered(
+            &s.router,
+            rpc("", "GetExtendedAgentCard", "{}", Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the card is still answered: {body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an answer");
+        assert!(
+            doc.get("result").is_some(),
+            "the card verb must still return a card, not merely a bill: {body}"
+        );
+        let usage = s
+            .gov
+            .usage_for(&s.app.cost, &s.key.id, busbar_kernel::store::now())
+            .expect("a read")
+            .expect("the key exists");
+        assert_eq!(usage.requests, 1, "one call, one request accrual");
+        assert_eq!(usage.tokens, 0, "a locally answered verb accrues no tokens");
         assert!(
             !agent.relayed(),
             "the extended card is busbar's, never relayed"

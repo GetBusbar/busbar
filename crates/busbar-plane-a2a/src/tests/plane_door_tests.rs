@@ -404,3 +404,29 @@ fn the_framed_line_marks_its_messages_and_a_late_failure() {
     let after = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
     assert!(after.done && after.bytes.is_empty() && after.final_status.is_some());
 }
+
+/// A long-running task streams many events and re-records the same pair each time. Re-recording a
+/// held key must not evict any other, or one chatty task would push every other one out at the cap.
+/// Ported from busbar-a2a a2a/tests/idmap_tests.rs::re_recording_the_same_pair_does_not_churn_the_map.
+#[test]
+fn re_recording_the_same_pair_does_not_churn_the_map() {
+    let map: Keyed<String, String> = Keyed::new();
+    for k in ["a", "b", "c"] {
+        keep(&map, 3, k.to_string(), format!("far-{k}"));
+    }
+    for _ in 0..1000 {
+        keep(&map, 3, "b".to_string(), "far-b".to_string());
+    }
+    assert_eq!(
+        map.len(),
+        3,
+        "the map is still at its cap and nothing left it"
+    );
+    for k in ["a", "b", "c"] {
+        assert_eq!(map.get(&k.to_string()), Some(format!("far-{k}")), "{k}");
+    }
+    // A NEW key past the cap still makes room, so the bound holds.
+    keep(&map, 3, "d".to_string(), "far-d".to_string());
+    assert_eq!(map.len(), 3);
+    assert_eq!(map.get(&"d".to_string()), Some("far-d".to_string()));
+}

@@ -208,3 +208,65 @@ mod page {
         committed_matches(COMMITTED_JSON, &render_json_for(&host_page()));
     }
 }
+
+// THE A2A PLANE'S OWN PAGE. The plane's catalogue lives in `busbar-plane-a2a`
+// (`src/diagnostics.rs`), which cannot name the kernel's renderers; the two snapshots are held to
+// a fresh render here, where the renderers are. Compiled where the plane's door is linked.
+#[cfg(feature = "plane-a2a-door")]
+mod a2a_page {
+    use busbar_contract::diagnostic::Diagnostic;
+    use busbar_kernel::diagnostics::{render_json_for, render_markdown_for};
+    use busbar_plane_a2a::diagnostics::DIAGNOSTICS;
+
+    /// The committed per-plane markdown snapshot.
+    const COMMITTED_MD: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics-a2a.md");
+    /// The committed per-plane machine-readable snapshot.
+    const COMMITTED_JSON: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/diagnostics-a2a.json"
+    );
+
+    /// THIS PLANE'S OWN PAGE: every code of [`DIAGNOSTICS`] except those the HOST page publishes (the
+    /// codes the plane took out of the host registry together with the code that emits them, whose
+    /// page and number are frozen there). One code, one page.
+    fn own_page() -> Vec<&'static Diagnostic> {
+        let host = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.json");
+        let text = std::fs::read_to_string(host).expect("docs/diagnostics.json is readable");
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&text).expect("docs/diagnostics.json is a JSON array");
+        DIAGNOSTICS
+            .iter()
+            .copied()
+            .filter(|d| !entries.iter().any(|e| e["number"] == u64::from(d.code)))
+            .collect()
+    }
+
+    /// Compare `fresh` with the committed file at `path`, or write it under `UPDATE_DIAGNOSTICS=1`.
+    fn committed_matches(path: &str, fresh: &str) {
+        if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
+            std::fs::write(path, fresh).unwrap_or_else(|e| panic!("write {path}: {e}"));
+            return;
+        }
+        let committed = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {path}: {e}; generate it with UPDATE_DIAGNOSTICS=1"));
+        assert_eq!(
+            committed, fresh,
+            "{path} is stale: regenerate with `UPDATE_DIAGNOSTICS=1 cargo test -p busbar catalogue_tests`"
+        );
+    }
+
+    /// The committed per-plane markdown equals a fresh render of this plane's own page.
+    /// Ported from busbar-a2a tests/diagnostics_page_tests.rs::committed_markdown_matches_diagnostics.
+    #[test]
+    fn committed_markdown_matches_diagnostics() {
+        committed_matches(COMMITTED_MD, &render_markdown_for(&own_page()));
+    }
+
+    /// The committed per-plane JSON equals a fresh render of this plane's own page.
+    /// Ported from busbar-a2a tests/diagnostics_page_tests.rs::committed_json_matches_diagnostics.
+    #[test]
+    fn committed_json_matches_diagnostics() {
+        committed_matches(COMMITTED_JSON, &render_json_for(&own_page()));
+    }
+}

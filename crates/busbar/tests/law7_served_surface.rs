@@ -279,6 +279,37 @@ fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_
     }
 }
 
+/// THE TWO TRUST VERBS ARE BEHIND THE ADMIN GUARD. `connect` and `approve` are the routes that move
+/// a registration INTO SERVICE, so a regression that mounted them without the credential check
+/// would let any unauthenticated caller approve an agent. With the plane configured, a caller
+/// holding no admin credential, or the wrong one, is refused `401` on both; the same call with the
+/// right one reaches the verb (the agent `x` is unknown, which is not a `401`); and a refused call
+/// is refused BEFORE the verb looks anything up, so it answers what no lookup could.
+/// Ported from busbar-a2a a2a/tests/adminverbs_tests.rs::the_trust_verbs_refuse_a_caller_holding_no_admin_token_or_the_wrong_one.
+#[test]
+fn the_agent_trust_verbs_refuse_a_caller_holding_no_admin_token_or_the_wrong_one() {
+    let b = boot("planes", true);
+    for path in ["/agents/x/connect", "/agents/x/approve"] {
+        let url = format!("/api/v1/admin{path}");
+        for (what, token) in [
+            ("no admin token at all", None),
+            ("a wrong token", Some("not-the-token")),
+        ] {
+            let (status, body) = request(&b.admin, "POST", &url, token);
+            assert_eq!(
+                status, 401,
+                "`{path}` admitted {what}: these are the two verbs that move a registration into \
+                 service, so admitting one is a full trust bypass: {body}"
+            );
+        }
+        let (status, body) = request(&b.admin, "POST", &url, Some(ADMIN_TOKEN));
+        assert_ne!(
+            status, 401,
+            "`{path}` refused the right admin token: {body}"
+        );
+    }
+}
+
 /// Boot on the oracle's BOOT-181 mutation (listener TLS material that does not parse) and return the
 /// whole of what the refused boot printed.
 fn boot_181_output(extra: &str) -> String {

@@ -121,6 +121,102 @@ fn the_digest_is_the_engines_frozen_v2_digest() {
     }
 }
 
+/// Two tuples the legacy unframed pipe-join flattened to the same bytes (`("a|b", "c")` and
+/// `("a", "b|c")` in context_id, principal) digest apart under the length-prefixed framing.
+/// Ported from busbar-a2a a2a/tests/chain_golden.rs::pipe_shifting_tuples_that_collided_under_v1_are_distinct_under_v2.
+#[test]
+fn pipe_shifting_tuples_that_collided_under_v1_are_distinct_under_v2() {
+    let at = |context: &str, principal: &str| TaskEventRow {
+        task_id: "t".to_string(),
+        seq: 1,
+        ts: 1,
+        kind: "k".to_string(),
+        context_id: context.to_string(),
+        principal: principal.to_string(),
+        agent_id: "ag".to_string(),
+        state: "s".to_string(),
+        request_id: String::new(),
+        prev_hash: String::new(),
+        hash: String::new(),
+        digest_version: DIGEST_VERSION_LEN_PREFIXED,
+    };
+    assert_ne!(
+        digest(&at("a|b", "c")),
+        digest(&at("a", "b|c")),
+        "the injective length-prefixed framing must separate these tuples"
+    );
+    assert_eq!(
+        digest(&at("a|b", "c")),
+        digest(&at("a|b", "c")),
+        "and it is deterministic"
+    );
+}
+
+/// A real inbound task leaves a chain that RECOMPUTES from the persisted rows: opening a relayed
+/// task writes `task.submitted` (the genesis, seq 1, no predecessor) then `task.delegated` (who it
+/// was delegated to), each event's hash is the digest of its own fields and links to its
+/// predecessor's, and every event is scoped to the task and its caller. The read-back is over the
+/// store's rows, never the writer's memory.
+/// Ported from busbar-a2a a2a/tests/front_door_chain_tests.rs::an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wrote_it_to.
+#[test]
+fn an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wrote_it_to() {
+    let mut book = Book::default();
+    let mut out = Vec::new();
+    open(
+        &mut book,
+        &step(ALICE, 100),
+        row("t1", 100),
+        "planner",
+        &mut out,
+    )
+    .unwrap();
+    book.apply(&out);
+
+    let events: Vec<TaskEventRow> = (1..=2).map(|seq| event(&book, ALICE, "t1", seq)).collect();
+    assert!(
+        book.value(KIND_TASK_EVENT, &event_key(ALICE, "t1", 3))
+            .is_none(),
+        "submitted and delegated, nothing more"
+    );
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(kinds, [EV_SUBMITTED, EV_DELEGATED]);
+    assert_eq!(
+        events[0].seq, 1,
+        "the chain the front door opened starts at seq 1"
+    );
+    assert!(
+        events[0].prev_hash.is_empty(),
+        "a genesis event has no predecessor to link to"
+    );
+    assert_eq!(
+        events[1].agent_id, "planner",
+        "who was delegated to is on the chain"
+    );
+    let mut previous = String::new();
+    for e in &events {
+        assert_eq!(
+            e.prev_hash, previous,
+            "seq {} links to its predecessor",
+            e.seq
+        );
+        assert_eq!(
+            digest(e),
+            e.hash,
+            "seq {} recomputes from its own fields",
+            e.seq
+        );
+        assert_eq!(e.task_id, "t1");
+        assert_eq!(e.principal, ALICE);
+        previous = e.hash.clone();
+    }
+    let held = get(&mut book, ALICE, "t1", 100).unwrap().unwrap();
+    assert_eq!(
+        (held.next_seq, held.tail_hash),
+        (3, previous),
+        "the held row's tail is the last event's hash"
+    );
+}
+
 /// A task is held under its caller's prefix: its caller reads it back, another caller reads the same
 /// nothing a missing id reads, and a list is the caller's own.
 #[test]
