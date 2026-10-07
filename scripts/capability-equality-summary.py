@@ -29,7 +29,6 @@ that refusal as a failure, because a gap that can no longer be named is a gap on
 forgotten. The owner has repeated this doctrine enough times.
 """
 
-import glob
 import json
 import os
 import re
@@ -212,30 +211,68 @@ def root_cells(doc):
     return out
 
 
-def mounted_module(file):
-    """The module a `tests/` child file is MOUNTED as, read off the `#[path = "tests/<stem>.rs"]`
-    attribute that mounts it: the mounting file sits in the directory holding `tests/`, and the
-    `mod <name>;` the attribute sits on names the module. `root/tests/serve_tests.rs`, mounted by
-    `root/serve.rs` as `mod door_tests;`, is `root::serve::door_tests`. `None` when no file mounts it."""
-    m = re.search(r"^(.*/src)/(.+)/tests/([^/]+)\.rs$", file)
+def _module_of(file):
+    """`crates/busbar/src/root/serve.rs` -> ["root", "serve"]; a `mod.rs` is its directory."""
+    m = re.search(r"src/(.+)\.rs$", file)
     if not m:
         return None
-    src, parent, stem = m.groups()
-    attr = re.compile(
-        r'#\[path\s*=\s*"tests/' + re.escape(stem) + r'\.rs"\]\s*'
-        r"(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;"
-    )
-    for mounting in sorted(glob.glob(os.path.join(src, parent, "*.rs"))):
-        try:
-            with open(mounting, encoding="utf-8") as f:
-                found = attr.search(f.read())
-        except OSError:
+    parts = m.group(1).split("/")
+    return parts[:-1] if parts[-1] == "mod" else parts
+
+
+def _declaration(file):
+    """The `#[path]` declaration of a test file: (the declaring file, the `mod` name it is declared
+    under), read off the `.rs` files of the directory its `tests/` sits in. A `#[path]` attribute is
+    followed, past any further attributes, by the `mod <name>;` it names. None when no file there
+    declares it."""
+    tests_dir = os.path.dirname(file)
+    if os.path.basename(tests_dir) != "tests":
+        return None
+    home = os.path.dirname(tests_dir)
+    try:
+        names = sorted(os.listdir(home))
+    except OSError:
+        return None
+    for name in names:
+        declarer = os.path.join(home, name)
+        if not name.endswith(".rs") or not os.path.isfile(declarer):
             continue
-        if found:
-            stem_of = os.path.splitext(os.path.basename(mounting))[0]
-            parts = parent.split("/") + ([] if stem_of == "mod" else [stem_of])
-            return "::".join(parts + [found.group(1)])
+        with open(declarer, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        for at, line in enumerate(lines):
+            m = re.match(r'\s*#\[path = "([^"]+)"\]\s*$', line)
+            if not m or os.path.normpath(os.path.join(home, m.group(1))) != os.path.normpath(file):
+                continue
+            for follow in lines[at + 1 :]:
+                if follow.strip().startswith("#["):
+                    continue
+                d = re.match(r"\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+(\w+)\s*;", follow)
+                if d:
+                    return declarer, d.group(1)
+                break
     return None
+
+
+def _enclosing_mods(file, fn):
+    """The inline `mod <name> {` blocks enclosing `fn <fn>(` in `file`, outermost first (rustfmt's
+    indentation is the scope: a module opened at a shallower indent and not yet closed)."""
+    try:
+        with open(file, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    stack = []
+    for line in lines:
+        indent = len(line) - len(line.lstrip())
+        while stack and line.strip() == "}" and indent == stack[-1][1]:
+            stack.pop()
+        m = re.match(r"\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+(\w+)\s*\{\s*$", line)
+        if m:
+            stack.append((m.group(1), indent))
+            continue
+        if re.match(rf"\s*(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?fn\s+{re.escape(fn)}\s*\(", line):
+            return [name for name, depth in stack if depth < indent]
+    return []
 
 
 def libtest_path(file, fn):
@@ -244,16 +281,22 @@ def libtest_path(file, fn):
     harness's own --list below, so a module that moved is a refusal and not a silent miss.
 
     A test body may live in a `tests/` child directory rather than inline (structure-lint's
-    <dir>/tests/<stem>.rs convention). Its module is the one the `#[path]` attribute mounting it
-    names (`mounted_module`): a SIBLING file's tests (`root/tests/gauntlet_kernel.rs`, mounted by
-    `root/gauntlet_kernel.rs` as `mod tests;`) are `root::gauntlet_kernel::tests`; a file mounted
-    under another name (`root/tests/serve_tests.rs`, mounted by `root/serve.rs` as
-    `mod door_tests;`) is `root::serve::door_tests`. Where no file mounts it, the path alone derives
-    it: stripping the `tests` path segment and, only in the repeating-name case (a DIRECTORY
-    module's own tests, `root/units_admin/tests/units_admin.rs`), its following stem too."""
-    mounted = mounted_module(file)
-    if mounted:
-        return mounted + "::" + fn
+    <dir>/tests/<stem>.rs convention), declared back by `#[path = "tests/<file>"] mod <name>;`. The
+    declaration is READ: the declaring file's module, then the `mod` name it declares the file under
+    (`root/tests/gauntlet_kernel.rs` is `root::gauntlet_kernel::tests`; `root/tests/serve_tests.rs`,
+    declared by `serve.rs` as `mod door_tests`, is `root::serve::door_tests`), then any inline module
+    the fn sits in. Where no declaration is found the path shape alone decides, as before: a SIBLING
+    file's tests belong to `root::<stem>::tests`; a DIRECTORY module's own
+    (`root/units_admin/tests/units_admin.rs`, the stem repeating the directory's name) to
+    `root::units_admin::tests`."""
+    nested = _enclosing_mods(file, fn)
+    declared = _declaration(file)
+    if declared is not None:
+        declarer, name = declared
+        module = _module_of(declarer)
+        if module is None:
+            return None
+        return "::".join(module + [name] + nested + [fn])
     m = re.search(r"src/(.+)\.rs$", file)
     if not m:
         return None
@@ -264,7 +307,7 @@ def libtest_path(file, fn):
             return None
         prefix, stem = parts[:i], parts[i + 1]
         parts = prefix if prefix and prefix[-1] == stem else prefix + [stem]
-    return "::".join(parts) + "::tests::" + fn
+    return "::".join(parts + ["tests"] + nested + [fn])
 
 
 def run_named_root_cells(cells, label):
@@ -496,23 +539,11 @@ def selftest():
             and all(
                 (libtest_path(f, fn) or "").startswith("root::")
                 and (libtest_path(f, fn) or "").endswith(f"::{fn}")
+                and "::" in (libtest_path(f, fn) or "")[len("root::") : -len(f"::{fn}")]
                 for _, f, fn in leg_cells
             ),
             "a root cell derives no module path",
         )
-        # (5c) The module is the one the file is MOUNTED as, read off its `#[path]` attribute: a
-        # tests file mounted under another name than `tests` is not looked for under `tests`.
-        for f, want in [
-            ("crates/busbar/src/root/tests/serve_tests.rs", "root::serve::door_tests::x"),
-            ("crates/busbar/src/root/tests/gauntlet_kernel.rs", "root::gauntlet_kernel::tests::x"),
-            ("crates/busbar/src/root/tests/plane_node.rs", "root::plane_node::tests::x"),
-            (
-                "crates/busbar/src/root/units_admin/tests/units_admin.rs",
-                "root::units_admin::tests::x",
-            ),
-        ]:
-            got = libtest_path(f, "x")
-            case(f"{f} derives the module that mounts it", got == want, f"{got} != {want}")
 
     # (6) The deep gate this printer fronts for actually exists and names the ledger -- a printer
     # outliving its gate would be the drift, one level up.
