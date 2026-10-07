@@ -1722,6 +1722,7 @@ fn compute_layout() -> String {
             admin_routes,
             admin_routes_len,
             admin_openapi,
+            stream_ceiling_secs,
             metric_lanes,
             metric_lanes_len
         ]

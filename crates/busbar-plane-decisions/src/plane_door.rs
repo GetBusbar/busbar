@@ -210,6 +210,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_openapi: Blob::ABSENT,
     metric_lanes: ptr::null(),
     metric_lanes_len: 0,
+    stream_ceiling_secs: 0,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its need and its tail.

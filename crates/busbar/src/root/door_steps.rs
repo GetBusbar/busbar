@@ -447,6 +447,9 @@ pub struct DoorFacts {
     /// Its declared counter lane words (`PlaneTail::metric_lanes`): beside its entry names, the
     /// words its attempts may state as their `lane` label ([`label_bound`]).
     pub metric_lanes: Vec<String>,
+    /// Its stated stream ceiling, seconds (its tail's `stream_ceiling_secs`): the deadline of a
+    /// unit whose `arrive` states `ROUTE_STREAM`, from the moment its route is known. `0` = none.
+    pub stream_ceiling_secs: u64,
 }
 
 /// What one unit carries between its steps.
@@ -461,6 +464,8 @@ struct DoorUnit {
     once: bool,
     /// The plane answers it itself as an admitted call (`ROUTE_COUNTED`): a keyed one is charged.
     counted: bool,
+    /// Its caller asked for the answer streamed (`ROUTE_STREAM`).
+    stream: bool,
     routed: Option<Routed>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<AdmitGrant>,
@@ -586,6 +591,12 @@ impl<'s> DoorSteps<'s> {
     #[must_use]
     pub fn once(&self) -> bool {
         self.lock().once
+    }
+
+    /// Whether the unit's caller asked for its answer streamed (its `arrive`'s `ROUTE_STREAM`).
+    #[must_use]
+    pub fn streamed(&self) -> bool {
+        self.lock().stream
     }
 
     /// The key of the plane the unit is of.
@@ -719,6 +730,7 @@ impl DriverSteps for DoorSteps<'_> {
         let mut u = self.lock();
         u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
         u.counted = flags & busbar_contract::abi::plane::ROUTE_COUNTED != 0;
+        u.stream = flags & busbar_contract::abi::plane::ROUTE_STREAM != 0;
     }
 }
 
@@ -1039,6 +1051,7 @@ pub fn door_facts(
         keeps,
         bench_below_trip_threshold: None,
         metric_lanes: Vec::new(),
+        stream_ceiling_secs: 0,
     }
 }
 
@@ -1202,6 +1215,7 @@ pub fn compose_egress(
         pools: built,
         routes: sealed,
         stream_ceiling_secs,
+        stated_ceiling_secs: facts.stream_ceiling_secs,
         error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
     })
 }

@@ -213,6 +213,7 @@ impl Node {
                 })
                 .collect(),
             stream_ceiling_secs: STREAM_CEILING_SECS,
+            stated_ceiling_secs: 0,
             error_body_max: DEFAULT_ERROR_BODY_MAX,
         }
     }

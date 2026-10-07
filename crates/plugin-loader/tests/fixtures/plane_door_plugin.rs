@@ -116,6 +116,7 @@ const TAIL: &PlaneTail = &PlaneTail {
     },
     metric_lanes: std::ptr::null(),
     metric_lanes_len: 0,
+    stream_ceiling_secs: 0,
 };
 
 /// Every generation's claim.

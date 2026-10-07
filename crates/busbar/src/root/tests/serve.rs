@@ -350,6 +350,86 @@ async fn an_ingress_write_waits_for_the_body_to_take_the_piece_before_it() {
     assert!(second.await, "taken: the second write resolves");
 }
 
+/// AFTER ITS HEAD THE UNIT RUNS ON ITS OWN TASK (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a
+/// caller that stops reading a streamed answer with its socket open leaves the body unpolled, and
+/// the unit still runs, so its own deadline can fire. Here the unit's second write waits on the
+/// unread body under a timer of the unit's own, which fires and lets the unit end. RED: the unit was
+/// driven only from inside the body's poll, so with the body unread nothing drove its timer and it
+/// never ended.
+#[tokio::test]
+async fn after_its_head_the_unit_runs_whether_or_not_its_body_is_read() {
+    let (caller, reply) = IngressCaller::new();
+    let (ended, told) = tokio::sync::oneshot::channel();
+    let unit: DrivenUnit = Box::pin(async move {
+        caller.head(
+            200,
+            vec![(b"content-type".to_vec(), b"text/event-stream".to_vec())],
+        );
+        assert!(
+            caller.write(b"one").await,
+            "the first piece fits the window"
+        );
+        let stalled =
+            tokio::time::timeout(std::time::Duration::from_millis(50), caller.write(b"two")).await;
+        let _ = ended.send(stalled.is_err());
+        None
+    });
+    let response = reply.answer(unit).await;
+    let stalled = tokio::time::timeout(std::time::Duration::from_secs(5), told)
+        .await
+        .expect("the unit ran on with its body unread")
+        .expect("the unit said how its write went");
+    assert!(
+        stalled,
+        "the second write waited on the unread body until the unit's own timer"
+    );
+    drop(response);
+}
+
+/// DROPPING THE BODY TELLS THE UNIT ITS CALLER IS GONE: a unit still running on its own task when
+/// the reply's body is dropped is dropped too (the driver's client-drop path), and a streamed body
+/// read to its end still carries every piece, in order, then ends with the unit.
+#[tokio::test]
+async fn dropping_the_body_drops_the_unit_and_a_read_body_carries_every_piece() {
+    struct Gone(Option<tokio::sync::oneshot::Sender<()>>);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+    let (caller, reply) = IngressCaller::new();
+    let (tx, dropped) = tokio::sync::oneshot::channel();
+    let unit: DrivenUnit = Box::pin(async move {
+        let _gone = Gone(Some(tx));
+        caller.head(200, Vec::new());
+        assert!(caller.write(b"one").await);
+        std::future::pending::<()>().await;
+        None
+    });
+    let response = reply.answer(unit).await;
+    drop(response);
+    tokio::time::timeout(std::time::Duration::from_secs(5), dropped)
+        .await
+        .expect("the unit was dropped with its body")
+        .expect("dropped, not leaked");
+
+    let (caller, reply) = IngressCaller::new();
+    let unit: DrivenUnit = Box::pin(async move {
+        caller.head(200, Vec::new());
+        for piece in [&b"a"[..], b"b", b"c"] {
+            assert!(caller.write(piece).await);
+        }
+        None
+    });
+    let response = reply.answer(unit).await;
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("the body");
+    assert_eq!(&body[..], b"abc");
+}
+
 /// A caller that went away: every write answers `false` (the driver's ClientGone), and a head
 /// after it, or a unit that ends without one, panics nowhere.
 #[tokio::test]
