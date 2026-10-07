@@ -16,9 +16,11 @@
 //!
 //! The store at the published schema is an in-memory double bound to payload schema 2, which is
 //! where the request log lives.
+//!
+//! These run the REAL ledger migration over the loader's adapter, so they live here, in the
+//! composition root that links both: the loader names the contract's migration seams alone, and the
+//! ledger that folds what it reads is the root's to bind.
 
-use super::*;
-use crate::store_adapter::{LegacyReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS};
 use busbar_contract::records::{
     AuditRecord, MeteringDelta, MeteringRow, ModelTokens, RecordStore as AbiStore,
     RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
@@ -27,10 +29,12 @@ use busbar_kernel_ledger::migration::{
     meter_pool_scope, migrate, LegacyFamily, MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ,
 };
 use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey};
+use busbar_plugin_loader::store_adapter::{LegacyReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS};
 use std::sync::{Arc, Mutex};
 
-/// The published payload schema — the one every 1.5.x store plugin is built against.
-const PUBLISHED_SCHEMA: u32 = PUBLISHED_STORE_SCHEMA;
+/// The published payload schema — the one every 1.5.x store plugin is built against (the 1.5.5
+/// store payload schema, v2).
+const PUBLISHED_SCHEMA: u32 = 2;
 
 /// A store at the published schema holding the previous release's rows, recording every request it
 /// is given and refusing — loudly — to be written to.
