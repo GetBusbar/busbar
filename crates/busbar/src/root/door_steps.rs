@@ -1823,9 +1823,20 @@ fn sealed_params(
     provider: &ProviderRoute,
     credential: &[u8],
 ) -> Result<StyleParams, String> {
-    // RED: the base's behaviour — the stated keys only; the credential's `token_uri` unfilled.
-    let _ = (name, style, SERVICE_ACCOUNT_STYLE, credential);
-    Ok(provider.params.clone())
+    let mut params = provider.params.clone();
+    if style != SERVICE_ACCOUNT_STYLE || credential.is_empty() {
+        return Ok(params);
+    }
+    let Ok(text) = std::str::from_utf8(credential) else {
+        return Ok(params);
+    };
+    let Ok(token_uri) = busbar_kernel::config_validate::service_account_token_uri(text) else {
+        return Ok(params);
+    };
+    busbar_kernel::config_validate::vet_token_uri(&token_uri, &provider.metadata)
+        .map_err(|e| format!("provider '{name}' (jwt-bearer auth): {e}"))?;
+    params.token_uri = Some(token_uri);
+    Ok(params)
 }
 
 /// THE BASE URL A NEED'S FRAMER READS: a need over `transport`, a framer composed over the
