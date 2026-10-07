@@ -1595,6 +1595,9 @@ fn piece(
     let Some(hop) = unit.hop.as_mut() else {
         return (Outcome::Refused, false);
     };
+    if let Some(url) = &url {
+        hop.relay.name_backend(member, url);
+    }
     // THE REFUSED PIECE (`TAIL_REFUSED_PIECE`): the kernel refused the unit before it dialled, and
     // hands the refusal here first, on the unit's own ticket; every other kernel piece is an
     // ATTEMPT.

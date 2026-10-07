@@ -223,6 +223,35 @@ impl HopRefusal {
         format!("{}: {sentence}", self.client_code())
     }
 
+    /// The OPERATOR's sentence (the engine's `RelayRefusal` `Display`, `relay.rs:499`): it names the
+    /// backend's `url` on purpose, because a journal line is for diagnosing the backend. Never put
+    /// in a reply to a caller.
+    #[must_use]
+    pub fn operator(self, url: &str, status: Option<u32>) -> String {
+        match self {
+            HopRefusal::Status => match status {
+                Some(status) => format!("the backend agent at `{url}` answered HTTP {status}"),
+                None => format!("the backend agent at `{url}` answered outside 2xx"),
+            },
+            HopRefusal::BodyTooLarge => {
+                format!("the backend agent at `{url}` replied over the configured ceiling")
+            }
+            HopRefusal::NotJson => {
+                format!("the backend agent at `{url}` replied with something that is not JSON")
+            }
+            HopRefusal::BackendError => format!("the backend agent at `{url}` refused the task"),
+            HopRefusal::Uncorrelated => format!(
+                "the backend agent at `{url}` answered something busbar cannot correlate to the \
+                 request it sent, so it is refused rather than relayed"
+            ),
+            HopRefusal::NotServing => self.client_text(),
+            HopRefusal::EndpointRefused => format!("the relay target `{url}` was refused"),
+            HopRefusal::Transport => {
+                format!("the relayed submission to `{url}` failed: no answer came back")
+            }
+        }
+    }
+
     /// The caller's answer: the one error envelope, `-32006` with its `ErrorInfo`, at `502` (the
     /// engine's `receive::refuse_hop_early`).
     #[must_use]
@@ -381,6 +410,10 @@ pub struct Relay {
     reading: Option<Reading>,
     /// On the gRPC binding: what the far end's messages and trailers have said so far.
     grpc: GrpcRead,
+    /// The agent this hop is for and its registered backend url: what the OPERATOR's journal line
+    /// for a refusal names, and the one place either is held. Never part of a caller's answer.
+    agent: String,
+    url: String,
 }
 
 /// HOW FAR A gRPC FAR END'S ANSWER HAS BEEN READ: the length-prefixed bytes of an answer in events
@@ -472,6 +505,45 @@ impl Relay {
             events: None,
             reading: None,
             grpc: GrpcRead::default(),
+            agent: String::new(),
+            url: String::new(),
+        }
+    }
+
+    /// Name the agent this hop is for and its registered backend `url`, for the operator's journal
+    /// (`journal`). The caller's answers never carry either.
+    pub fn name_backend(&mut self, agent: &str, url: &str) {
+        self.agent = agent.to_string();
+        self.url = url.to_string();
+    }
+
+    /// THE OPERATOR'S LINE for a refused hop: the backend's url and the reason, at debug (predev
+    /// `receive.rs:3326` `refuse_hop` for a hop with a task context, `:3300` `refuse_hop_early`
+    /// for one without, `:3131` for a stream that ended in a refusal). The caller's answer is
+    /// [`HopRefusal::reply`] and names no backend.
+    fn journal(&self, refusal: HopRefusal, stream: bool) {
+        let (agent, url) = (self.agent.as_str(), self.url.as_str());
+        let error = refusal.operator(url, self.status);
+        match (&self.task, stream) {
+            (Some(task), true) => busbar_contract::diag_debug!(
+                crate::diagnostics::A2A_RELAYED_STREAM_REFUSED,
+                task = %task.task_id,
+                error = %error,
+                "a2a: the relayed stream ended in a refusal"
+            ),
+            (Some(task), false) => busbar_contract::diag_debug!(
+                crate::diagnostics::A2A_RELAYED_SUBMISSION_FAILED,
+                agent = %agent,
+                task = %task.task_id,
+                error = %error,
+                "a2a: the relayed task submission failed"
+            ),
+            (None, _) => busbar_contract::diag_debug!(
+                crate::diagnostics::A2A_RELAYED_SUBMISSION_FAILED,
+                code = %refusal.client_code(),
+                error = %error,
+                "a2a: a hop was refused before a task context existed"
+            ),
         }
     }
 
@@ -579,6 +651,7 @@ impl Relay {
     /// caller never reads the endpoint.
     pub fn refuse_endpoint(&mut self) -> Answer {
         self.answered = true;
+        self.journal(HopRefusal::EndpointRefused, false);
         let Some(task) = &self.task else {
             return Answer::ToCaller(HopRefusal::EndpointRefused.reply(&self.id));
         };
@@ -599,6 +672,7 @@ impl Relay {
     #[must_use]
     pub fn refuse_transport(&mut self) -> (Reply, bool) {
         self.answered = true;
+        self.journal(HopRefusal::Transport, false);
         match &self.task {
             None => (HopRefusal::Transport.reply(&self.id), false),
             Some(task) => task_refusal(None, task, &self.id),
@@ -808,7 +882,10 @@ impl Relay {
                 self.reading = None;
                 self.grpc = GrpcRead::default();
                 match url {
-                    Some(url) => self.attempt(url),
+                    Some(url) => {
+                        self.url = url.to_string();
+                        self.attempt(url)
+                    }
                     None => Answer::Refused,
                 }
             }
@@ -950,6 +1027,7 @@ impl Relay {
     fn events_refused(&mut self, refusal: HopRefusal, body: Vec<u8>) -> Answer {
         self.answered = true;
         let started = self.events.as_ref().is_some_and(|e| e.committed);
+        self.journal(refusal, started || !body.is_empty());
         if !started && body.is_empty() {
             return Answer::ToCaller(match &self.task {
                 None => refusal.reply(&self.id),
@@ -1113,6 +1191,9 @@ impl Relay {
             },
         };
         self.answered = true;
+        if let Err(refusal) = &answer {
+            self.journal(*refusal, false);
+        }
         let Some(task) = &self.task else {
             return Answer::ToCaller(match answer {
                 Ok(result) => relayed(&self.id, result),
