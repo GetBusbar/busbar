@@ -515,6 +515,43 @@ impl Gate for TracingGate {
             ));
         }
 
+        // THE FLOOR SITS AT THE MEASURED COUNT. One crate file fewer than the walk finds today
+        // (one that carries no span, so the subject floor stays out of it) is refused; a floor set
+        // a margin below the count passes it, so this is red exactly when the floor has slipped
+        // under the number the tree measures.
+        match cx.walk(
+            &WalkSpec::new([SCAN_ROOT])
+                .ext("rs")
+                .exclude([EXCLUDE_TESTS_DIR]),
+        ) {
+            Ok(files) => match files
+                .iter()
+                .rev()
+                .find(|f| !f.text.contains("#[instrument"))
+            {
+                Some(f) => {
+                    let mut ov = Overlay::new();
+                    ov.remove(&f.rel);
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "a crates walk one file short of the measured floor is refused",
+                        &[ROW_SCAN_FLOOR],
+                        ov,
+                        &["floor"],
+                    ));
+                }
+                None => report.note_infra_failure(
+                    "tracing selftest: every crate file carries a span, so no file can be removed \
+                     without also moving the subject floor"
+                        .to_string(),
+                ),
+            },
+            Err(e) => report.note_infra_failure(format!(
+                "tracing selftest: the base tree's crates walk is unreadable ({e})"
+            )),
+        }
+
         // THE FLOOR, on the RUN path. Every candidate file is removed from the overlay's view,
         // which is what a workspace restructure looks like from the scan's side.
         match cx.walk(
