@@ -2895,8 +2895,23 @@ fn verify_on_call(
 /// as a cancelled unit's look does: the kernel sends a faulted unit no `cancel`, and a flight left
 /// held by it would wedge every later unit for the agent behind a look that never lands.
 fn looking<T>(held: (&Flights, Option<&Host>, Ticket), look: impl FnOnce() -> T) -> T {
-    let _ = held;
-    look()
+    /// Dropped only by an unwinding look: a look that returns forgets it.
+    struct Unwinding<'p>(&'p Flights, Option<&'p Host>, Ticket);
+    impl Drop for Unwinding<'_> {
+        fn drop(&mut self) {
+            let woken = self.0.abandon(self.2);
+            if let Some(host) = self.1 {
+                for waiter in woken {
+                    host.wake(waiter);
+                }
+            }
+        }
+    }
+    let (flights, host, ticket) = held;
+    let unwinding = Unwinding(flights, host, ticket);
+    let looked = look();
+    std::mem::forget(unwinding);
+    looked
 }
 
 /// ONE AGENT'S LOOK IN FLIGHT (the engine's `VerifyGate` flight): how many looks have landed, the
