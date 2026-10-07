@@ -34,6 +34,7 @@ fn packed_tarball_verifies_end_to_end() {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     let signed = sign(&key, m, lib);
     busbar_plugin_loader::sign::validate_structure(
@@ -183,6 +184,78 @@ fn pack_cli_embeds_the_declares_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `--former-name` (repeatable) signs the plugin's former manifest names into the manifest, in
+/// order, so a tarball released under a new name still answers the name its 1.5.5 release carried.
+/// RED ARMS, in the same test: a former name outside the alias charset, or one that repeats the
+/// plugin's own name, is refused at pack time and writes no tarball.
+#[test]
+fn pack_cli_signs_the_former_names() {
+    let dir = std::env::temp_dir().join(format!("plugin-pack-former-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib_path = dir.join("lib.so");
+    std::fs::write(&lib_path, b"pretend cdylib").unwrap();
+    let pack_with = |former: &[&str]| {
+        let out = dir.join("out.tar.gz");
+        let _ = std::fs::remove_file(&out);
+        let mut args: Vec<String> = [
+            "--lib",
+            &lib_path.to_string_lossy(),
+            "--name",
+            "busbar-hook-webrequest",
+            "--alias",
+            "webrequest",
+            "--kind",
+            "hook",
+            "--version",
+            "1.0.0",
+            "--publisher",
+            "p",
+            "--out",
+            &out.to_string_lossy(),
+            "--allow-unsigned",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        for f in former {
+            args.extend(["--former-name".to_string(), (*f).to_string()]);
+        }
+        let code = pack(&args);
+        let unpacked = std::fs::read(&out)
+            .ok()
+            .map(|t| busbar_plugin_loader::tarball::unpack(&t).unwrap().manifest);
+        (code, unpacked)
+    };
+    let (code, packed) = pack_with(&["busbar-webrequest", "busbar-webrequest-hook"]);
+    assert_eq!(code, ExitCode::SUCCESS);
+    let m = packed.expect("the tarball was written");
+    assert_eq!(
+        m.former_names,
+        ["busbar-webrequest", "busbar-webrequest-hook"]
+    );
+    assert!(m.answers_to("busbar-webrequest") && m.answers_to("webrequest"));
+    // With none given the manifest carries none (and its bytes are an old manifest's).
+    let (code, packed) = pack_with(&[]);
+    assert_eq!(code, ExitCode::SUCCESS);
+    let m = packed.expect("the tarball was written");
+    assert!(m.former_names.is_empty());
+    assert!(
+        !String::from_utf8(busbar_plugin_loader::sign::canonical_manifest_bytes(&m))
+            .unwrap()
+            .contains("former_names")
+    );
+    // RED ARMS: not the alias charset; the plugin's own name.
+    for bad in ["Busbar_WebRequest", "busbar-hook-webrequest", "webrequest"] {
+        let (code, packed) = pack_with(&[bad]);
+        assert_eq!(code, ExitCode::FAILURE, "{bad}");
+        assert!(
+            packed.is_none(),
+            "a refused pack must not leave a tarball ({bad})"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The `--needs-*` level parser accepts the ladder tokens (case/alias-insensitively) and hard-errors
 /// on anything else (a fat-fingered intent must not silently default to a weaker/stronger level).
 #[test]
@@ -228,6 +301,7 @@ fn packed_hook_needs_prompt_rw_is_signed() {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     let signed = sign(&key, m, lib);
     assert_eq!(signed.needs.prompt, NeedLevel::Rw);
@@ -258,9 +332,15 @@ fn flag_parsing() {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let (flags, unsigned, schema_derived) = parse_flags(&args).unwrap();
+    let Flags {
+        map: flags,
+        allow_unsigned: unsigned,
+        schema_derived,
+        former_names,
+    } = parse_flags(&args).unwrap();
     assert!(unsigned);
     assert!(!schema_derived);
+    assert!(former_names.is_empty());
     assert_eq!(flags["lib"], "a.so");
     assert_eq!(flags["name"], "n");
     assert!(parse_flags(&["--dangling".to_string()]).is_err());
@@ -270,8 +350,28 @@ fn flag_parsing() {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let (_, _, schema_derived) = parse_flags(&with_derived).unwrap();
-    assert!(schema_derived);
+    assert!(parse_flags(&with_derived).unwrap().schema_derived);
+
+    // `--former-name` is REPEATABLE: every value is kept, in order, and none lands in the map.
+    let former: Vec<String> = [
+        "--former-name",
+        "busbar-webrequest",
+        "--name",
+        "busbar-hook-webrequest",
+        "--former-name",
+        "busbar-webrequest-hook",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let f = parse_flags(&former).unwrap();
+    assert_eq!(
+        f.former_names,
+        ["busbar-webrequest", "busbar-webrequest-hook"]
+    );
+    assert!(!f.map.contains_key(FORMER_NAME));
+    assert_eq!(f.map["name"], "busbar-hook-webrequest");
+    assert!(parse_flags(&["--former-name".to_string()]).is_err());
 }
 
 /// A schema whose `$schema` names an older/missing draft is rejected even though it would
