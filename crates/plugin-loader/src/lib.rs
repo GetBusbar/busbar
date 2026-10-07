@@ -54,12 +54,18 @@ pub mod secret_calls;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
+/// TEST ONLY: a real door restated with one `tcp` need (the bind tests' subject; no plugin).
+#[cfg(test)]
+#[path = "tests/needs_restated.rs"]
+mod needs_restated;
 pub mod sign;
 mod stage;
 pub mod store_adapter;
 pub mod store_v3;
 pub mod tarball;
-#[cfg(any(test, feature = "test-support"))]
+/// TEST ONLY: the test connection table. Also the published conformance suite's (`conformance`):
+/// a plugin repo names this crate only as a dev-dependency, so it reaches no shipped closure.
+#[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod tcp_conns;
 /// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
 /// Compiled for this crate's tests and under the `test-support` feature, which only

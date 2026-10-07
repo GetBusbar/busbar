@@ -27,7 +27,7 @@ use crate::dispatch::kinds::{
     transport::Transport,
 };
 use crate::dispatch::{
-    load_dropped_bytes, load_linked, Adopter, Bind, EnvelopeSink, LinkedRow, Plugin,
+    load_dropped_bytes, load_linked, Adopter, Bind, ConnTable, EnvelopeSink, LinkedRow, Plugin,
     PluginLogConfig,
 };
 
@@ -494,7 +494,7 @@ pub fn load_planes(
     metrics: Arc<dyn EnvelopeSink>,
     dispatcher: Adopter,
     max_inflight_cap: u32,
-    conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    conns: ConnTable,
 ) -> Result<Vec<(String, Plugin<Plane>)>, String> {
     let selected: Vec<Selected> = doors
         .iter()
@@ -726,8 +726,8 @@ pub struct LoadRequest<'a> {
     pub dispatcher: Adopter,
     /// The host's clamp on `max_inflight`.
     pub max_inflight_cap: u32,
-    /// The host's one connection table ([`Bind::conns`]).
-    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    /// The host's one connection table, or why the load has none ([`Bind::conns`]).
+    pub conns: ConnTable,
     /// What OPENS each auth instance the load binds, and awaits its `ready`; `None` = bind only.
     pub opening: Option<Opening<'a>>,
 }
