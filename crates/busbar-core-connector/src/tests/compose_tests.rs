@@ -435,7 +435,7 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
 }
 
 /// WHY A CONNECTION FAILED, named by stage and the underlying error's own words (ARCHITECT
-/// Q-DEL guard-words ruling): a closed port fails the socket's open with the socket's own error
+/// ruling on a plane's guard words): a closed port fails the socket's open with the socket's own error
 /// (the one this host's own connect to it answers); a far end whose certificate no anchor signs
 /// fails connection security with the TLS stack's own error; a handshake that never finishes is a
 /// deadline.
