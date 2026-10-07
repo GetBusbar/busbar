@@ -52,10 +52,10 @@ use axum::Router;
 // checks without booting, and the last two are the config/providers path precedence the scanners
 // there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_serving_sessions, load_config_from_disk,
-    LoadedConfig, ENV_CONFIG,
+    build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
+    ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
+use busbar_kernel::{config, config_validate, diagnostics, export, snapshot, tls};
 // The root's own binds listen through the connector's listener (the one listener source).
 #[cfg(unix)]
 use busbar_core_connector::listen::{AcceptLimits, Listening, DEFAULT_HANDSHAKE_TIMEOUT};
@@ -607,7 +607,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // duplicate singleton — is reported and FATAL a few lines down in `config::resolve`, which runs
     // the same lowering; discarding the error list here just avoids reporting it twice.
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
-    metrics::configure(
+    snapshot::configure(
         resolved_export
             .recorder
             .as_ref()
@@ -1032,17 +1032,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let door_appliers = served.appliers();
     #[cfg(linked_axis_node)]
     let door_post = served.post.clone();
-    let (doors, sessions) = root::serve::data_mounts(
+    let (doors, sessions, refusals) = root::serve::data_mounts(
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
         &root::serve::upgrade_carriers(LINKED.transports),
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_serving_sessions(
+    let (data_router, admin_router, app_handle) = build_split_routers_serving_doors(
         app,
         doors,
         sessions,
+        refusals,
         req_body_max,
         max_inbound,
         response_headers_cfg.server_timing,

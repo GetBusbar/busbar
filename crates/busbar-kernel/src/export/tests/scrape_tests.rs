@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the host's scrape (`export/scrape.rs`): `/metrics` is registered only with a scrape
-//! sink configured, it is the route the sink claimed, and a scrape is the sink's rendering of the
-//! recorder's snapshot — the recorder's own bytes, back.
+//! Tests for the host snapshot service (`export/scrape.rs`): `/metrics` and `/metrics/hooks` are
+//! the scrape sink's OWN routes, answered by its `serve` over `snapshot.read` (owner law
+//! 2026-09-27; ARCHITECT Q-U2-4); the snapshot is lent only to the crossing granted it; and the
+//! sink renders the recorder's bytes back.
 
 use super::*;
-use crate::config::{resolve_export, ExportDefs};
+use crate::config::{resolve_export, ExportCfg, ExportDefs};
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
-use busbar_contract::export_calls::ExportAxis;
+use busbar_contract::export_calls::{ExportAxis, ExportCalls};
 
 /// The export axis THIS test binary resolves `export:` against: the neutral rows, and the scrape
 /// sink (`prometheus`) LINKED ahead of them as the composition root links it — the configuration
@@ -22,10 +23,34 @@ pub(crate) fn installed_axis() {
     );
 }
 
-/// The `export:` block with one `module: prometheus` instance named `metrics`, resolved against
-/// the test binary's axis (where the scrape sink is linked).
-fn cfg_with_scrape_sink() -> ExportCfg {
-    crate::export::scrape::tests::installed_axis();
+/// The scrape sink, opened as boot opens it, on the test dispatcher (which serves the kernel's host
+/// services).
+fn scrape_sink() -> Arc<dyn ExportCalls> {
+    installed_axis();
+    crate::test_support::export_axis::STAND_IN
+        .open(
+            "prometheus",
+            "export.metrics",
+            &serde_json::json!({"buffer_seconds": 60}),
+        )
+        .expect("the scrape sink opens")
+}
+
+/// A `GET` of `path`.
+fn get(path: &str) -> EndpointRequest {
+    EndpointRequest {
+        method: "GET".into(),
+        path: path.into(),
+        query: String::new(),
+        headers: vec![],
+        body: vec![],
+    }
+}
+
+/// The instance subscribed to `metrics` is the scrape sink, and the recorder's settings ride on it.
+#[test]
+fn the_metrics_instance_is_the_scrape_sink() {
+    installed_axis();
     let defs: ExportDefs = serde_yaml::from_str(
         "metrics: { module: prometheus, settings: { buffer_seconds: 60, key_gauge_limit: 7 } }\n",
     )
@@ -33,31 +58,13 @@ fn cfg_with_scrape_sink() -> ExportCfg {
     let mut errors = Vec::new();
     let cfg = resolve_export(&defs, &mut errors);
     assert!(errors.is_empty(), "{errors:?}");
-    cfg
-}
-
-/// `/metrics` is registered ONLY with a scrape sink configured — the presence-is-the-switch
-/// contract — as the well-known `GET /metrics` (auth `key`), owned by the module the operator
-/// named, which is what a colliding sink is refused against.
-#[test]
-fn metrics_route_declared_only_when_configured() {
-    assert!(
-        route_decl(&ExportCfg::default()).is_none(),
-        "no scrape sink configured ⇒ no /metrics route (zero-config default unchanged)"
-    );
-
-    let cfg = cfg_with_scrape_sink();
     let scraped: Vec<_> = cfg
         .plugins
         .iter()
         .filter(|p| p.scrape)
         .map(|p| &p.name)
         .collect();
-    assert_eq!(
-        scraped,
-        ["metrics"],
-        "the instance subscribed to `metrics` is the scrape sink"
-    );
+    assert_eq!(scraped, ["metrics"]);
     assert_eq!(
         cfg.recorder
             .as_ref()
@@ -65,71 +72,130 @@ fn metrics_route_declared_only_when_configured() {
         Some((60, 7)),
         "the recorder's settings ride on the scrape sink's instance"
     );
-    let decl = route_decl(&cfg).expect("a scrape sink ⇒ a /metrics route is declared");
-    assert_eq!(decl.owner, "prometheus");
-    assert_eq!(
-        decl.route,
-        Route {
-            path: METRICS_PATH.to_string(),
-            method: RouteMethod::Get,
-            auth: RouteAuth::Key,
-        }
-    );
-    assert_eq!(decl.kind, RouteKind::Export);
 }
 
-/// The declared route builds a live plugin-route table: `GET /metrics` resolves to auth `key`, so
-/// the mounted handler dispatches every scrape to the host's scrape.
+/// THE ROUTES ARE THE SINK'S (owner law: "the kernel owns no route that exists for one plugin"):
+/// with no scrape sink configured nothing declares `/metrics` (the presence-is-the-switch
+/// contract); the scrape sink DECLARES `GET /metrics` and `GET /metrics/hooks` behind the data
+/// plane's key, and its declarations build a live route table — the kernel declares neither.
 #[test]
-fn metrics_served_via_endpoint_registration() {
-    let cfg = cfg_with_scrape_sink();
-    let table = crate::plugin_routes::build_route_table(crate::export::route_decls(&cfg))
-        .expect("the /metrics route confines + collides cleanly");
-    assert_eq!(
-        table.declared_auth("/metrics", &axum::http::Method::GET),
-        Some(RouteAuth::Key),
-        "the built table exposes GET /metrics via the plugin endpoint registration (data-plane auth)"
-    );
-}
-
-/// With nothing to render but the recorder, a scrape is a `200` Prometheus text exposition with the
-/// canonical content type. `metrics::init()` installs synchronously in tests, so the recorder is
-/// installed before the scrape regardless of test order (an uninstalled one answers `503`).
-#[test]
-fn dispatch_renders_prometheus_exposition() {
-    crate::metrics::init();
-    let req = EndpointRequest {
-        method: "GET".into(),
-        path: "/metrics".into(),
-        query: String::new(),
-        headers: vec![],
-        body: vec![],
-    };
-    let resp = decl("metrics", None).dispatch.handle_http(&req);
-    assert_eq!(resp.status, 200);
+fn metrics_route_declared_only_when_configured() {
     assert!(
-        resp.headers
-            .iter()
-            .any(|(k, v)| k == "content-type" && v.contains("text/plain")),
-        "the exposition carries the Prometheus content type"
+        crate::export::route_decls(&ExportCfg::default()).is_empty(),
+        "no scrape sink configured ⇒ no /metrics route (zero-config default unchanged)"
     );
+    let sink = scrape_sink();
+    let key = |path: &str| Route {
+        path: path.to_string(),
+        method: RouteMethod::Get,
+        auth: RouteAuth::Key,
+    };
+    assert_eq!(sink.routes(), [key("/metrics"), key("/metrics/hooks")]);
+    let decls = sink
+        .routes()
+        .iter()
+        .map(|route| crate::plugin_routes::RouteDecl {
+            owner: "prometheus".into(),
+            kind: crate::plugin_routes::RouteKind::Export,
+            route: route.clone(),
+            scrape: true,
+            dispatch: Arc::new(Granted(Arc::new(super::super::plugin::Served(
+                sink.clone(),
+            )))),
+        })
+        .collect();
+    let table = crate::plugin_routes::build_route_table(decls).expect("both confine");
+    for path in ["/metrics", "/metrics/hooks"] {
+        assert_eq!(
+            table.declared_auth(path, &axum::http::Method::GET),
+            Some(RouteAuth::Key)
+        );
+    }
+}
+
+/// THE GRANTED SCRAPE: through the grant, `GET /metrics` is the sink's `200` rendering of the
+/// recorder's snapshot under 1.5.5's content type, and `GET /metrics/hooks` the hook rendering
+/// under its own (the app-less arm folds no hook, so it is empty).
+#[test]
+fn a_granted_scrape_is_the_sinks_rendering_of_the_snapshot() {
+    crate::snapshot::init();
+    let granted = Granted(Arc::new(super::super::plugin::Served(scrape_sink())));
+    let resp = granted.handle_http(&get("/metrics"));
+    assert_eq!(
+        resp.status,
+        200,
+        "{:?}",
+        String::from_utf8_lossy(&resp.body)
+    );
+    assert_eq!(
+        resp.headers,
+        [(
+            "content-type".to_string(),
+            "text/plain; version=0.0.4".to_string()
+        )]
+    );
+    let text = String::from_utf8(resp.body).expect("UTF-8");
+    let families = busbar_contract::export_calls::parse_families(&text).expect("an exposition");
+    assert!(!families.is_empty(), "the recorder's families, rendered");
+    let hooks = granted.handle_http(&get("/metrics/hooks"));
+    assert_eq!(
+        (hooks.status, hooks.headers, hooks.body),
+        (
+            200,
+            vec![(
+                "content-type".to_string(),
+                "text/plain; version=0.0.4; charset=utf-8".to_string()
+            )],
+            vec![]
+        )
+    );
+}
+
+/// RED: the snapshot is lent ONLY to the crossing granted it. The same sink's route dispatched
+/// without the grant reads nothing (a `502` with no body, never the host's own text), and a read
+/// from no crossing is refused.
+#[test]
+fn an_ungranted_crossing_reads_no_snapshot() {
+    crate::snapshot::init();
+    let served = super::super::plugin::Served(scrape_sink());
+    let resp = crate::plugin_routes::PluginHttpDispatch::handle_http(&served, &get("/metrics"));
+    assert_eq!(
+        (resp.status, resp.headers, resp.body),
+        (502, vec![], vec![])
+    );
+    assert_eq!(
+        read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_WHOLE),
+        Snapshot::Refused(NOT_GRANTED)
+    );
+}
+
+/// The lend is the crossing's: inside it the read answers (and the read takes the lend, so a
+/// crossing the read makes is not lent it, then restores it); an unknown scope is refused; after
+/// the crossing nothing is lent.
+#[test]
+fn the_lend_lasts_exactly_the_crossing() {
+    crate::snapshot::init();
+    lend(None, || {
+        assert!(matches!(
+            read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_WHOLE),
+            Snapshot::Families(_)
+        ));
+        assert_eq!(
+            read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_HOOKS),
+            Snapshot::Families(Vec::new()),
+            "read again in the same crossing: the lend was restored"
+        );
+        assert_eq!(read(7), Snapshot::Refused(UNKNOWN_SCOPE));
+    });
+    assert_eq!(read(0), Snapshot::Refused(NOT_GRANTED));
 }
 
 /// THE SINK RENDERS THE RECORDER'S BYTES BACK: the linked scrape sink, handed the snapshot of an
 /// exposition carrying every family type the recorder writes (a HELP-less counter, labels with
-/// escapes, a histogram, a quantile summary), answers exactly those bytes, and the host serves that
-/// answer. And the RED arm: text the snapshot cannot place is never rendered from — the host
-/// serves its own bytes under its own type.
+/// escapes, a histogram, a quantile summary), answers exactly those bytes.
 #[test]
 fn the_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
-    installed_axis();
-    let sink = crate::test_support::export_axis::STAND_IN
-        .open(
-            "prometheus",
-            "export.metrics",
-            &serde_json::json!({"buffer_seconds": 60}),
-        )
-        .expect("the scrape sink opens");
+    let sink = scrape_sink();
     // Listed in the sink's stable order — every counter, then every gauge, then every
     // histogram/summary (v1.5.5's own renderer drains its maps in that fixed order), name-sorted
     // within a kind — so the bytes come back unchanged.
@@ -154,34 +220,5 @@ fn the_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
         body,
         own.as_bytes(),
         "the scrape is the recorder's bytes, back"
-    );
-    let header = |r: &EndpointResponse| r.headers[0].1.clone();
-    let content_type = crate::metrics::PROMETHEUS_CONTENT_TYPE;
-    let served = exposition(Some(&*sink), Some(own.into()), content_type);
-    assert_eq!(
-        (served.status, header(&served)),
-        (200, content_type.to_string())
-    );
-    assert_eq!(
-        served.body,
-        own.as_bytes(),
-        "the host serves the sink's rendering"
-    );
-    let orphan = "busbar_orphan_sample 1\n";
-    let served = exposition(Some(&*sink), Some(orphan.into()), "x/own");
-    assert_eq!(
-        (header(&served), served.body),
-        ("x/own".to_string(), orphan.as_bytes().to_vec()),
-        "a sample outside a typed family is not snapshotted: the host serves its own text"
-    );
-    let refused = exposition(Some(&*sink), None, "x/own");
-    assert_eq!(
-        (refused.status, refused.headers, refused.body),
-        (
-            503,
-            vec![("retry-after".to_string(), "1".to_string())],
-            vec![]
-        ),
-        "no recorder yet: refused, never an empty success"
     );
 }

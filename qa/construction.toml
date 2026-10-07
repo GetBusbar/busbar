@@ -923,8 +923,8 @@ known_sites = [
   "crates/busbar-kernel/src/ingress/mod.rs :: governance: no configured rate for model; rejecting (rate_card is authoritative and complete)",
   "crates/busbar-kernel/src/door.rs :: no configured rate for model '{name}'",
   "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
-  "crates/busbar-kernel/src/metrics/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
-  "crates/busbar-kernel/src/metrics/money.rs :: model",
+  "crates/busbar-kernel/src/snapshot/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
+  "crates/busbar-kernel/src/snapshot/money.rs :: model",
   "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
   "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
   "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
@@ -1267,6 +1267,28 @@ known_sites = [
   # operating-system failure text ONCE and answers `OS_REFUSED` past `MAX_WORDS` of them — the
   # leak-once intern shape of ids.rs `key` above, its allocation bounded by the cap.
   "crates/busbar-kernel/src/host_disk.rs::os_words",
+  # REVIEWED 2026-10-07 (`Vec::leak`/`String::leak`/`.leak()` joined the symbol list; every site
+  # below was read then). Each is a boot- or load-time, fixed-size allocation of non-hold data
+  # (names, registry rows, declaration tables, interned path patterns), made once per plane, plugin
+  # load or distinct pattern, never per request, and none of them can carry a hold. Sites already
+  # inside a reviewed entry above were read too: `plugin-loader/src/` (a plane's Statement words
+  # and tail tables copied once per load: `kinds/plane.rs` `tail_facts`, `kept`, `declared`,
+  # `registration`), `proto/installed.rs` (the protocol registry's process-singleton tables) and
+  # `diagnostics/emit.rs::site` (the interned field set).
+  #   The plane axis's installed row list: one slice of row references, made once at boot.
+  "crates/busbar/src/root/linked.rs::register_planes",
+  #   The HOT-lane planes and the rows read off them, kept once at boot for the process's life.
+  "crates/busbar/src/root/linked.rs::plane_rows",
+  #   A HOT-lane plane's declaration words and tables, copied once per plane as its row is built.
+  "crates/busbar/src/root/linked.rs::hot_plane_row",
+  #   The declared-diagnostics catalogue, installed once at boot.
+  "crates/busbar/src/root/linked.rs::register_diagnostics",
+  #   A door plane's registration words, folded once per key (bounded by MAX_DOOR_PLANES).
+  "crates/busbar-kernel/src/plane/door.rs::fold",
+  "crates/busbar-kernel/src/plane/door.rs::declaration_of",
+  #   A path pattern's segments, interned once per distinct pattern (the interner answers a pattern
+  #   it already holds), the leak-once intern shape of ids.rs `key` above.
+  "crates/busbar-contract/src/abi/transport/route.rs::intern_pattern",
 ]
 
 # The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
@@ -1300,6 +1322,24 @@ symbol = "Box::leak"
 confined_to = ""
 confined_to_paths = []
 because = "a leaked hold never reaches the exit path"
+
+[rules.hold-escapes.symbols.vec-leak]
+symbol = "Vec::leak"
+confined_to = ""
+confined_to_paths = []
+because = "the same as Box::leak, spelled differently"
+
+[rules.hold-escapes.symbols.string-leak]
+symbol = "String::leak"
+confined_to = ""
+confined_to_paths = []
+because = "the same as Box::leak, spelled differently"
+
+[rules.hold-escapes.symbols.leak-method]
+symbol = ".leak()"
+confined_to = ""
+confined_to_paths = []
+because = "the same as Box::leak, spelled differently"
 
 [rules.hold-escapes.symbols.process-abort]
 symbol = "process::abort"

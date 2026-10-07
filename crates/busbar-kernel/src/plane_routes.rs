@@ -47,6 +47,95 @@ pub type PlaneRouteFuture = Pin<Box<dyn Future<Output = PlaneResponse> + Send>>;
 /// `axum` closure it mounts.
 pub type PlaneRouteFn = Arc<dyn Fn(PlaneReqCtx) -> PlaneRouteFuture + Send + Sync>;
 
+/// A DOOR ROUTE'S UNIT-LESS REFUSAL (spec Part 3 section 12, "Refusals"): the response its plane
+/// renders, through its `refusal` op in the route's refusal dialect, for a refusal the kernel decided
+/// before any unit exists — `reason`, for the request `target` (path and query). The kernel's auth
+/// chokepoint still decides; this only words its answer in the plane's dialect.
+pub type PlaneRefuseFn =
+    Arc<dyn Fn(busbar_contract::caps::ReasonCode, &str) -> PlaneResponse + Send + Sync>;
+
+/// THE ROUTE IDENTITY a door route and its unit-less refusal share: the route's axum path pattern,
+/// as mounted, and its method. One key for both, so the two cannot name different routes.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DoorRouteId {
+    /// The axum path pattern.
+    pub path: String,
+    /// The method.
+    pub method: RouteMethod,
+}
+
+/// One door route's unit-less refusal, keyed by the route's identity ([`DoorRouteId`]): the data
+/// router records it beside the route's admission bar, and the auth middleware renders a `401` it
+/// decides on that route through it, instead of the residual data plane's envelope.
+#[derive(Clone)]
+pub struct PlaneRefusalSpec {
+    /// The door route it words the `401` of.
+    pub route: DoorRouteId,
+    /// Its plane's rendering.
+    pub refuse: PlaneRefuseFn,
+}
+
+impl std::fmt::Debug for PlaneRefusalSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaneRefusalSpec")
+            .field("route", &self.route)
+            .finish_non_exhaustive()
+    }
+}
+
+/// THE DOOR ROUTES AND THEIR REFUSALS, PAIRED (ARCHITECT 2026-10-06): every door route that takes a
+/// credential (`RouteAuth::Key`; its request routes, and its session routes, which answer `GET`) has
+/// exactly one refusal spec under its identity, and every refusal spec names such a route. Checked
+/// at boot, before the data router is built, so the side table cannot drift from the routes it
+/// words.
+///
+/// # Errors
+///
+/// The first door route with no refusal, refusal with no door route, or identity refused twice.
+pub fn pair_door_refusals(
+    routes: &[PlaneRouteSpec],
+    sessions: &[PlaneSessionSpec],
+    refusals: &[PlaneRefusalSpec],
+) -> Result<(), String> {
+    let credentialed: Vec<DoorRouteId> = routes
+        .iter()
+        .filter(|r| matches!(r.auth, RouteAuth::Key))
+        .map(PlaneRouteSpec::route_id)
+        .chain(
+            sessions
+                .iter()
+                .filter(|s| matches!(s.auth, RouteAuth::Key))
+                .map(PlaneSessionSpec::route_id),
+        )
+        .collect();
+    let mut seen: std::collections::HashSet<&DoorRouteId> = std::collections::HashSet::new();
+    for r in refusals {
+        if !seen.insert(&r.route) {
+            return Err(format!(
+                "the door route {} {} has two refusal specs; one route words its 401 once",
+                r.route.method.as_str(),
+                r.route.path
+            ));
+        }
+        if !credentialed.contains(&r.route) {
+            return Err(format!(
+                "a refusal spec names {} {}, which is no door route that takes a credential",
+                r.route.method.as_str(),
+                r.route.path
+            ));
+        }
+    }
+    if let Some(bare) = credentialed.iter().find(|id| !seen.contains(id)) {
+        return Err(format!(
+            "the door route {} {} takes a credential and has no refusal spec: its 401 would be \
+             worded in another plane's dialect",
+            bare.method.as_str(),
+            bare.path
+        ));
+    }
+    Ok(())
+}
+
 /// One data route a plane DECLARES: the exact path, the method, the admission bar, and the neutral
 /// handler. The first three are handed VERBATIM to `CoreRouter::route` by the core adapter, so the
 /// `CoreRouteTable` row this route records is identical to the one the old `mount` fn recorded.
@@ -62,6 +151,17 @@ pub struct PlaneRouteSpec {
     pub auth: RouteAuth,
     /// The neutral handler the core adapter awaits, having built a [`PlaneReqCtx`] from the request.
     pub handler: PlaneRouteFn,
+}
+
+impl PlaneRouteSpec {
+    /// Its identity ([`DoorRouteId`]): the path pattern it is mounted at and its method.
+    #[must_use]
+    pub fn route_id(&self) -> DoorRouteId {
+        DoorRouteId {
+            path: self.path.clone(),
+            method: self.method,
+        }
+    }
 }
 
 /// The per-request context the core adapter builds and hands a plane handler — everything the handler
@@ -172,3 +272,19 @@ pub struct PlaneSessionSpec {
     /// The handler.
     pub handler: PlaneSessionFn,
 }
+
+impl PlaneSessionSpec {
+    /// Its identity ([`DoorRouteId`]): the path pattern it is mounted at, and `GET` (an upgrade is
+    /// an HTTP GET).
+    #[must_use]
+    pub fn route_id(&self) -> DoorRouteId {
+        DoorRouteId {
+            path: self.path.clone(),
+            method: RouteMethod::Get,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/plane_routes_pairing.rs"]
+mod pairing_tests;

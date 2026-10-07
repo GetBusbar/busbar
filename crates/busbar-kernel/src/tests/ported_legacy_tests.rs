@@ -35,7 +35,7 @@ fn caller(key: &VirtualKey) -> PlaneRequestCtx {
 /// protocol is a neutral name: no test here dispatches.
 fn governed(pools: &[&str], gov: &Arc<GovState>, cost: CostModel) -> Arc<crate::state::App> {
     crate::test_support::register_neutral_test_plane();
-    crate::metrics::init();
+    crate::snapshot::init();
     let mut builder = TestApp::new().lane(LaneSpec::new(
         "ported-lane",
         "ported-lane-proto",
@@ -185,7 +185,7 @@ fn a_unit_ending_503_is_counted_as_exhausted() {
     let proto = "ported-outcome-proto";
     let count = || {
         crate::test_support::metric_sum(
-            crate::metrics::REQUESTS_TOTAL,
+            crate::snapshot::REQUESTS_TOTAL,
             &[("ingress_protocol", proto), ("outcome", "exhausted")],
         )
     };
@@ -440,7 +440,7 @@ fn messages_body() -> String {
 /// credential it does not recognise is still refused.
 #[tokio::test]
 async fn a_static_chain_admits_its_own_credential_when_no_virtual_key_is_demanded() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).unwrap());
     assert!(
         gov.admin_token_hash().is_none(),
@@ -499,7 +499,7 @@ async fn a_static_chain_admits_its_own_credential_when_no_virtual_key_is_demande
 /// credential is admitted without the key's pool restriction being consulted.
 #[tokio::test]
 async fn a_persisted_key_is_not_enforced_when_the_chain_does_not_name_the_keys_verifier() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let persisted_secret = "sk-vk-persisted-from-prior-run";
     let store = Arc::new(MemoryStore::new());
     store

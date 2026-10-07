@@ -304,7 +304,7 @@ fn a_path_override_with_a_query_is_kept_verbatim() {
 ///
 /// Ports legacy `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs::openai_to_anthropic_response_format_forwards_and_translates_not_dropped`
 /// (the door writes one audit row per dropped control:
-/// `serve_door::the_pools_door_audits_a_control_the_far_dialect_cannot_carry`).
+/// `serve_tests::the_pools_door_audits_a_control_the_far_dialect_cannot_carry`).
 #[test]
 fn a_response_format_crossing_to_anthropic_is_translated_not_dropped() {
     let r = far(

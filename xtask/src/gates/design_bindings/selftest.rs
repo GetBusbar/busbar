@@ -746,7 +746,7 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         ov.set_command(
             NOTE_TABLE_KEY,
             format!(
-                "PB-1\tResolved: the behavioural half is where the behaviour is, at serve_door.rs's \
+                "PB-1\tResolved: the behavioural half is where the behaviour is, at serve_tests.rs's \
                  {note}."
             ),
         );

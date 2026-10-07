@@ -134,6 +134,20 @@ impl Host {
         }
     }
 
+    /// The host services table these tables carry (`abi::host::service`), as the SDK's typed
+    /// wrappers; `None` when the host offers none.
+    #[must_use]
+    pub fn services(&self) -> Option<crate::abi::sdk::services::Services> {
+        crate::abi::sdk::services::Services::of(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: self.ctx,
+            wake: self.wake,
+            conns: self.conns,
+            services: self.services,
+        })
+    }
+
     /// The connector for ONE entry of the op running on `ticket`.
     #[must_use]
     pub fn connector(&self, ticket: Ticket) -> Connector<'_> {

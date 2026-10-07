@@ -690,7 +690,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         busbar_kernel::proto::register_test_protocols(decls);
     }
     busbar_kernel::plane::registry::register_test_plane(pools_door_row());
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()

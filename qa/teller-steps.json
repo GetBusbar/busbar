@@ -76,7 +76,7 @@
   "root_legs": {
     "root-llm": {
       "plane": "llm",
-      "file": "crates/busbar/src/root/tests/serve_door.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "feature": "proto-llm"
     },
     "root-mcp": {
@@ -108,7 +108,7 @@
         "root": {
           "state": "none",
           "leg": "root-llm",
-          "note": "the door's arrive refusing a body it cannot read is proven in this leg's sibling file serve_door_exchange_ported.rs (an_unparseable_body_is_refused_and_counted), not in serve_door.rs, so this leg's own file holds no arrival cell since the engine's node fixtures left with busbar-llm"
+          "note": "the door's arrive refusing a body it cannot read is proven in this leg's sibling file serve_door_exchange_ported.rs (an_unparseable_body_is_refused_and_counted), not in serve_tests.rs, so this leg's own file holds no arrival cell since the engine's node fixtures left with busbar-llm"
         }
       },
       "decode": {
@@ -128,7 +128,7 @@
         "root": {
           "state": "none",
           "leg": "root-llm",
-          "note": "every credential carrier admitted and a bad one answered with the native 401 is proven in serve_door_exchange_ported.rs, a sibling of this leg's file; serve_door.rs itself drives keyed callers only, so it argues no authenticate verdict here"
+          "note": "every credential carrier admitted and a bad one answered with the native 401 is proven in serve_door_exchange_ported.rs, a sibling of this leg's file; serve_tests.rs itself drives keyed callers only, so it argues no authenticate verdict here"
         }
       },
       "verify": {
@@ -148,7 +148,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_doors_gate_hook_refuses_before_dispatch",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_gate_hook_refuses_before_dispatch",
           "note": "a decision gate seated on the kernel's hook stage refuses the door's unit before anything is dispatched to a far end, and nothing is charged for it"
         }
       },
@@ -159,7 +159,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses",
           "note": "the door admits a keyed unit and attributes its spend to the presenting key, then refuses the same key once its group budget is spent, before the far end is dialled"
         }
       },
@@ -170,7 +170,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_reroutes_to_the_twin_before_the_first_byte",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_reroutes_to_the_twin_before_the_first_byte",
           "note": "the kernel's one walk tries the second interchangeable member before the first byte when the first far end fails, so the route step drives a real reroute through the door"
         }
       },
@@ -181,7 +181,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_reported",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_reported",
           "note": "the meter reads the far end's reported usage off the door's reply: a cut answer bills exactly what was reported before the cut and nothing it never counted"
         }
       },
@@ -192,7 +192,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_seals_one_audit_record_per_unit",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_one_audit_record_per_unit",
           "note": "every unit the door serves seals exactly one record on the node's audit chain, from the facts and pass its audit door handed back"
         }
       },
@@ -203,7 +203,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::the_pools_doors_traffic_appears_on_the_metrics_scrape",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_traffic_appears_on_the_metrics_scrape",
           "note": "each served unit leaves through the one exit and is counted once on the request series under the pool and lane it was served on, so the exit posted exactly once"
         }
       }

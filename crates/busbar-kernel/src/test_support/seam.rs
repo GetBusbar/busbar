@@ -215,3 +215,21 @@ pub fn test_plane_seams() -> Vec<&'static TestPlaneSeam> {
         .unwrap_or_else(|e| e.into_inner())
         .clone()
 }
+
+/// A TEST-LINKED PLANE DOOR'S REGISTRY ROW, folded the way the composition root folds every door
+/// candidate (`root::linked::door_rows`): the door bound through the loader's one load
+/// (`linked_probe`), its facts read as a registration and folded by the kernel
+/// ([`crate::plane::door::fold`]). For a test harness that links a plane door as data (a `door:` row
+/// of its `test-linked` list) and reaches the loader only through the kernel it serves (a cleanliness
+/// crate names no loader: BUSBAR-1.6.0.md R2/#37). Panics naming the label when the door does not
+/// bind or its row does not fold: a test harness has nothing to fall back to.
+pub fn fold_test_door(
+    label: &str,
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> &'static crate::plane::registry::PlaneDecl {
+    use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
+    let reg = registration(linked_probe(door, label))
+        .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"));
+    crate::plane::door::fold(reg)
+        .unwrap_or_else(|e| panic!("the test-linked door `{label}` folds: {e}"))
+}
