@@ -304,10 +304,10 @@ metrics-exporter-prometheus = { workspace = true }
 # makes `cargo test -p busbar-kernel` build its cdylib (under `deps/`, hashed), which the tests sign
 # into a temp `plugins/` directory and drive with JWTs a local issuer signs.
 busbar-auth-oidc-plugin = { workspace = true }
-# ...and the issuer those tokens come from: the module's OWN test issuer (its logic crate's `testkit`
-# feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the module
-# trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
-busbar-auth-oidc = { workspace = true, features = ["testkit"] }
+# ...and its LOGIC crate at the SAME rev, for the name its door's Statement states (the identity the
+# chain reports). The issuer those tokens come from is the loader's `test_issuer` (`test-support`),
+# reached through the loader's `https_conns` connection table: the module holds no socket and no TLS.
+busbar-auth-oidc = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }

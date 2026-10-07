@@ -556,10 +556,11 @@ busbar-export-prometheus-plugin = { workspace = true }
 # with JWTs a local issuer signs. Its busbar-contract resolves to this tree through the `[patch]`
 # table in the workspace manifest.
 busbar-auth-oidc-plugin = { workspace = true }
-# The local issuer those proofs verify against: the module's OWN test issuer (its logic crate's
-# `testkit` feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the
-# module trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
-busbar-auth-oidc = { workspace = true, features = ["testkit"] }
+# Its LOGIC crate at the SAME rev, for the name its door's Statement states. The local issuer those
+# proofs verify against is the loader's `test_issuer` (`test-support`: an ES256 key, its JWKS served
+# over a certificate-verified loopback endpoint the module trusts through `ca_cert_pem`, genuinely
+# signed tokens); the composition root's connector fetches it for the module.
+busbar-auth-oidc = { workspace = true }
 # That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.

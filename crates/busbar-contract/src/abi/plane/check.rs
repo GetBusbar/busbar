@@ -33,8 +33,8 @@ use super::{
     MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
     RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE,
     ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN, TRUST_PRIVATE_REACH,
-    UNITS_ESTIMATED, VERDICT_HARD,
+    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_ITEM_APPROVALS, TRUST_PIN,
+    TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -260,11 +260,43 @@ pub fn check_arrive(
     if outcome != Outcome::Ready && (out.affinity.len != 0 || !out.affinity.ptr.is_null()) {
         return Err(fault(Rule::Contradiction, "arrive.affinity"));
     }
+    trust_facts(outcome, out)?;
     if outcome == Outcome::Refused {
         text(out.head.error, "arrive.refusal_text")?;
         if out.head.error.len as u64 > MAX_REFUSAL_TEXT {
             return Err(fault(Rule::OverMax, "arrive.refusal_text"));
         }
+    }
+    Ok(())
+}
+
+/// `arrive`'s TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): each a bounded text; a
+/// item only with a counterparty, a digest only with an item; and an answer that admits
+/// nothing states none.
+fn trust_facts(outcome: Outcome, out: &ArriveOut) -> Result<(), Fault> {
+    let stated = |s: AbiStr| s.len != 0 || !s.ptr.is_null();
+    let facts = [
+        (out.trust_counterparty, "arrive.trust_counterparty"),
+        (out.trust_item, "arrive.trust_item"),
+        (out.trust_digest, "arrive.trust_digest"),
+    ];
+    if outcome != Outcome::Ready {
+        if facts.iter().any(|(s, _)| stated(*s)) {
+            return Err(fault(Rule::Contradiction, "arrive.trust"));
+        }
+        return Ok(());
+    }
+    for (s, field) in facts {
+        text(s, field)?;
+        if s.len > MAX_TEXT {
+            return Err(fault(Rule::OverMax, field));
+        }
+    }
+    if stated(out.trust_item) && out.trust_counterparty.len == 0 {
+        return Err(fault(Rule::Contradiction, "arrive.trust_item"));
+    }
+    if stated(out.trust_digest) && out.trust_item.len == 0 {
+        return Err(fault(Rule::Contradiction, "arrive.trust_digest"));
     }
     Ok(())
 }
@@ -1249,7 +1281,7 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
         code(
             u64::from(k.role),
             u64::from(TRUST_PIN),
-            u64::from(TRUST_PRIVATE_REACH),
+            u64::from(TRUST_ITEM_APPROVALS),
             "trust_key.role",
         )?;
         text(k.default, "trust_key.default")?;
@@ -1273,6 +1305,10 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
             }
             if k.role == TRUST_PRIVATE_REACH && !k.default.ptr.is_null() {
                 return Err(fault(Rule::Contradiction, "trust_key.reach_default"));
+            }
+            // The item approvals name the field each item's digest is written under.
+            if k.role == TRUST_ITEM_APPROVALS && (k.default.ptr.is_null() || k.default.len == 0) {
+                return Err(fault(Rule::Missing, "trust_key.approvals_field"));
             }
         }
         if keys[..i].iter().any(|p| p.role == k.role) {
