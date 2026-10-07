@@ -603,3 +603,26 @@ fn the_verdicts_the_producer_writes_rebuild_the_manifest_in_process() {
     assert_eq!(manifest_drift(&repo), xtask::ledger::Status::Pass);
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+#[test]
+fn the_records_own_reconciled_outputs_are_not_drift_but_any_other_tracked_edit_is() {
+    let repo = fixture_repo("record-drift");
+    std::fs::create_dir_all(repo.join("conformance/verdicts")).unwrap();
+    std::fs::write(repo.join("conformance/manifest.json"), "{}\n").unwrap();
+    std::fs::write(repo.join("README.md"), "readme\n").unwrap();
+    git(&repo, &["add", "conformance/manifest.json", "README.md"]);
+    git(&repo, &["commit", "-q", "-m", "manifest"]);
+    let out = repo.join("conformance/verdicts");
+    let drift = |r: &Path| xtask::conformance_record::tracked_drift(r, &out).expect("git status");
+
+    // What one `conformance record --suite <id>` writes: a verdict, the reconciled manifest and
+    // the README badge block. A second `--suite` run in the same checkout must still judge HEAD.
+    std::fs::write(out.join("mcp.json"), "{}\n").unwrap();
+    std::fs::write(repo.join("conformance/manifest.json"), "{\"suites\": []}\n").unwrap();
+    std::fs::write(repo.join("README.md"), "readme, badges re-rendered\n").unwrap();
+    assert_eq!(drift(&repo), Vec::<String>::new());
+
+    // Any other tracked edit means HEAD does not name the judged tree.
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    assert_eq!(drift(&repo), vec!["a.txt".to_string()]);
+}
