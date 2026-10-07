@@ -2,14 +2,15 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE GATE-FIRST HOOK ORDER (spec Part 3 section 12 "Hooks": the hook stages run "in the hook
-//! order 1.5.5 used for that plane (per attachment where 1.5.5 differed)"; ARCHITECT ruling
-//! Q-FOLD-A2A-2). A plane whose tail states `abi::plane::TAIL_HOOKS_GATED` runs its request-stage
-//! hooks as the previous release ran them for a plane that screened an invocation:
+//! order 1.5.5 used for that plane (per attachment where 1.5.5 differed)"). A plane whose tail
+//! states `abi::plane::TAIL_HOOKS_GATED` runs its request-stage hooks as the previous release ran
+//! them for a plane that screened an invocation:
 //!
-//! 1. THE DECISION GATES attached to the entry the plane's `project` names (its view's `pool`)
-//!    screen the projected body (`hooks::gate::decide_door`), the incremental scan keyed on the
-//!    view's session under the operator's opt-in, fail-closed; a refusal stops the unit at the
-//!    hook's own clamped status and words.
+//! 1. THE DECISION GATES attached to the entry the plane's `arrive` named, as the kernel recorded
+//!    it at decode (its `project` must name the same entry, or the unit is refused), screen the
+//!    projected body (`hooks::gate::decide_door`), the incremental scan keyed on the view's session
+//!    under the operator's opt-in, fail-closed; a refusal stops the unit at the hook's own clamped
+//!    status and words.
 //! 2. THE REWRITE CHAIN attached to that entry runs, each rewrite handed back to the plane, which
 //!    applies it and projects again.
 //!
@@ -119,12 +120,17 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more.
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
         let mut view: Projection = self.project(None)?;
-        let principal = self
-            .lock()
-            .principal
-            .as_ref()
-            .map(|p| p.as_str().to_string());
-        let Some(hooks) = binder.bind_gated(&view.pool, principal.as_deref()) else {
+        let (principal, recorded) = {
+            let st = self.lock();
+            (
+                st.principal.as_ref().map(|p| p.as_str().to_string()),
+                st.decoded.as_ref().and_then(|d| d.pool.clone()),
+            )
+        };
+        // THE ENTRY THE KERNEL RECORDED at decode, never the plane's later word: a projection naming
+        // another entry is refused before any entry's gates are bound.
+        let entry = recorded_entry(recorded.as_deref(), &view.pool)?;
+        let Some(hooks) = binder.bind_gated(entry, principal.as_deref()) else {
             return Ok(());
         };
         let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
@@ -178,12 +184,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             drop(req);
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
-                    let bytes = serde_json::to_vec(&serde_json::json!({
-                        "messages": rw.messages,
-                        "tools": rw.tools,
-                    }))
-                    .unwrap_or_default();
+                    let bytes = super::rewrite_bytes(&rw);
                     let next = self.project(Some(&bytes))?;
+                    // The re-projection is held to the same recorded entry.
+                    recorded_entry(recorded.as_deref(), &next.pool)?;
                     if let Some(body) = &next.rewritten {
                         self.lock().body = Some(Arc::from(body.as_slice()));
                     }
@@ -206,6 +210,20 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         }
         Ok(())
     }
+}
+
+/// THE ENTRY A GATE-FIRST UNIT'S HOOKS ARE BOUND OVER: the one its `arrive` named and the kernel
+/// recorded at decode (`Decoded::pool`; none named is the empty entry). The plane's `project`
+/// states an entry too, and it must be the same one: a projection naming another is the plane's
+/// fault and refuses the unit, so the gates the operator attached to the routed entry can never be
+/// traded for another entry's by the plane's later word (audit kernel-K2 leftover A4; ARCHITECT
+/// 2026-10-07).
+fn recorded_entry<'r>(recorded: Option<&'r [u8]>, projected: &str) -> Result<&'r str, Stopped> {
+    let recorded = recorded.unwrap_or_default();
+    if recorded != projected.as_bytes() {
+        return Err(Stopped::Unreadable);
+    }
+    std::str::from_utf8(recorded).map_err(|_| Stopped::Unreadable)
 }
 
 /// A REWRITE'S REFUSAL, as the caller is answered (SEAM-L(q), predev parity): a status the hook
