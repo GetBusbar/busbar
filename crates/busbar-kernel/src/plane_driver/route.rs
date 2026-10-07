@@ -47,7 +47,8 @@ use crate::teller::UnitCtx;
 pub struct FarPiece {
     /// The bytes.
     pub bytes: Vec<u8>,
-    /// On the reply's first piece: the exact status number and its class.
+    /// On the reply's first piece: the exact status number and its class. On a trailers piece
+    /// (`fields`): the status the transport read off the trailers, where it read one.
     pub status: Option<(u32, u32)>,
     /// No piece follows.
     pub last: bool,
@@ -979,8 +980,11 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 }
                 run.bufs.input.clear();
                 run.bufs.input.extend_from_slice(&piece.bytes);
-                let status = piece.status.filter(|_| first);
-                if status.is_some() {
+                // The status crosses on the answer's first piece, and on its trailers where the
+                // transport read one off them (`FarPiece::status`).
+                let head = first && piece.status.is_some();
+                let status = piece.status.filter(|_| first || piece.fields);
+                if head {
                     // THE ANSWER'S HEAD: the kept response fields cross with its first piece.
                     run.bufs.head = FieldList::new(piece.head.clone());
                 }
@@ -997,7 +1001,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     status: status.unwrap_or((0, 0)),
                     attempt_no: 0,
                     src: Src::Input,
-                    head: status.is_some(),
+                    head,
                 };
                 match self.push(run, far, &mut Toward::Caller).await {
                     Step::End(end) => return end,

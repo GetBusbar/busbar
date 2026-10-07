@@ -857,13 +857,15 @@ impl Ended {
     }
 }
 
-/// THE STATUS A DIALLED CALL'S TRAILERS STATE (`block`, the field block the grpc transport hands
-/// back after the messages; `stated`, the code it reports beside the block, when the host passes
-/// one on): the code, else the code of the `google.rpc.Status` its [`DETAILS_FIELD`] carries, with
-/// that status's `ErrorInfo`. `None` when the trailers say neither.
+/// HOW A DIALLED CALL ENDED (`block`, the field block the grpc transport hands back after the
+/// messages; `stated`, the `grpc-status` it read off them, which the kernel hands on beside the
+/// block, `BUSBAR-1.6.0.md` l.394, l.747): that code, with the `ErrorInfo` of the
+/// `google.rpc.Status` its [`DETAILS_FIELD`] carries, where it carries one. The details never
+/// state the code: `None` when no status was handed on.
 #[must_use]
 pub fn ended(block: &[u8], stated: Option<u32>) -> Option<Ended> {
     use base64::Engine as _;
+    let code = stated?;
     let details = busbar_contract::abi::transport::fields::lines(block)
         .find(|(name, _)| name.eq_ignore_ascii_case(DETAILS_FIELD.as_bytes()))
         .and_then(|(_, value)| {
@@ -876,7 +878,6 @@ pub fn ended(block: &[u8], stated: Option<u32>) -> Option<Ended> {
                 .ok()
         })
         .and_then(|bytes| rpc::Status::decode(bytes.as_slice()).ok());
-    let code = stated.or_else(|| details.as_ref().and_then(|s| u32::try_from(s.code).ok()))?;
     let info = details.and_then(|s| {
         s.details
             .iter()

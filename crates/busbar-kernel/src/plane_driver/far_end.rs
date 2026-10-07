@@ -402,6 +402,9 @@ struct Unjudged {
     class: Option<WireStatusClass>,
     /// The wait the answer stated.
     retry_after: Option<u64>,
+    /// The answer's head was already recorded as a success: a reading of the answer that is a
+    /// success again records nothing more (one answer, one success).
+    after_success: bool,
 }
 
 /// One unit's state: the egress unit's walk, the attempt in flight, and a health probe's one
@@ -608,6 +611,9 @@ impl EgressFarEnd<'_> {
             ),
             None => held.classified,
         };
+        if held.after_success && matches!(classified.outcome, Outcome::Success) {
+            return;
+        }
         let now = e.clock.now_secs();
         match plane {
             Some((token, _)) => self.record(live, token, classified, now),
@@ -1138,17 +1144,9 @@ impl EgressFarEnd<'_> {
             // Fields piece, always): the answer's status, and the head fields its need keeps.
             PieceKind::Fields if !answered => Some(self.head(token, &piece, &buf[..piece.len])),
             // The far end's fields after its body (trailers): handed to the plane, which decides
-            // what they mean (one that reads a trailer status reads it; any other ignores them).
+            // what they mean, with the status the transport read off them.
             PieceKind::Fields | PieceKind::HookReply => {
-                let piece = FarPiece {
-                    bytes: buf[..piece.len].to_vec(),
-                    fields: true,
-                    ..FarPiece::default()
-                };
-                if let Some(live) = self.lock().live.as_mut() {
-                    delivered(live, &piece, self.route.wants_stream);
-                }
-                Some(piece)
+                Some(self.trailers(&piece, buf[..piece.len].to_vec()))
             }
             PieceKind::Body if answered => Some(self.capped(FarPiece {
                 bytes: buf[..piece.len].to_vec(),
@@ -1187,6 +1185,59 @@ impl EgressFarEnd<'_> {
             answer.head = head;
         }
         answer
+    }
+
+    /// THE FAR END'S FIELDS AFTER ITS BODY (trailers): handed to the plane, which decides what they
+    /// mean. Where the transport read a status off them (a transport that states its answer's
+    /// status at the end, `abi::transport::STATUS_AT_TERMINAL`: the trailers' fields piece carries
+    /// it), that status goes with them, its number and its class (`BUSBAR-1.6.0.md` l.394, l.747:
+    /// the trailers carry the status, and a binding that reads it reads it there). A success's
+    /// trailers leave the answer to end as it ends. Any other status, after a head the walk took
+    /// for a success, IS the answer's outcome: an ANSWER, never a connection fault. The trailers
+    /// are its last piece (the failed end the transport reports after them is never read, so it is
+    /// no cut and records no compensating transient, and the budget unit the head spent stays
+    /// spent, as any answer's does), and the transport's reading of the status (its fault table)
+    /// is held for the plane's own reading of the same answer ([`FarEnd::judged`]), as a relayed
+    /// failure's head is.
+    fn trailers(&self, piece: &busbar_contract::conn::Piece, bytes: Vec<u8>) -> FarPiece {
+        let mut out = FarPiece {
+            bytes,
+            fields: true,
+            ..FarPiece::default()
+        };
+        let mut w = self.lock();
+        let Some(live) = w.live.as_mut() else {
+            return out;
+        };
+        if let Some(code) = piece.status_code {
+            out.status = Some((code, class_code(piece.status)));
+            let success = matches!(piece.status, Some(WireStatusClass::Success) | None);
+            // Only after a head the walk recorded as a success: a relayed failure's head already
+            // holds its own reading.
+            if !success && live.error_left.is_none() && live.unjudged.is_none() {
+                let status = UpstreamStatus {
+                    class: piece.status,
+                    fault: piece.fault,
+                    retry_after: piece.retry_after_secs,
+                };
+                live.unjudged = Some(Unjudged {
+                    classified: self
+                        .egress
+                        .breaker
+                        .classify(live.member.destination, status),
+                    class: piece.status,
+                    retry_after: piece.retry_after_secs,
+                    after_success: true,
+                });
+                live.ended = true;
+                out.last = true;
+            }
+        }
+        delivered(live, &out, self.route.wants_stream);
+        if out.last {
+            self.settle_read(&mut w);
+        }
+        out
     }
 
     /// A body piece of the answer, under the error-body cap when the answer is a relayed failure.
@@ -1329,6 +1380,7 @@ impl EgressFarEnd<'_> {
                 classified,
                 class: status.class,
                 retry_after: status.retry_after,
+                after_success: false,
             });
             live.error_left = Some(e.error_body_max);
             let piece = cap(

@@ -453,7 +453,9 @@ pub const PIECE_HAS_STATUS: u32 = 1 << 2;
 /// [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that
 /// follows its body (trailers), as the transport rendered them. The plane decides: one whose far
 /// end reports its outcome there (a trailer status) reads it, any other ignores the piece. The
-/// kernel never drops or reads it.
+/// kernel never drops or reads it. With [`PIECE_HAS_STATUS`]: `status_code`/`status_class` are the
+/// status the transport read off the trailers (a transport that states its answer's status at the
+/// end); a non-success one ends the answer, and this is its [`PIECE_LAST`] piece.
 pub const PIECE_FIELDS: u32 = 1 << 3;
 /// [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no
 /// bytes, on a session's [`OnPieceIn::stream`], it says the catalogue generation that session

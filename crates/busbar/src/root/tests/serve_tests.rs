@@ -5788,7 +5788,7 @@ mod agent_door {
     /// caller was answered a reply busbar could not read, and each cut was a transient on the
     /// agent's breaker until it opened.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_grpc_agents_error_status_is_relayed_as_its_a2a_error_and_never_trips_it() {
+    async fn a_grpc_agents_error_status_is_relayed_as_the_error_it_binds_and_never_trips_it() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-grpc-status";
         let _published = Published(instance);
