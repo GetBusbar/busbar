@@ -3276,6 +3276,11 @@ mod money_tests;
 #[path = "tests/serve_hook_seats.rs"]
 mod hook_seat_tests;
 
+// The exchange cases of the retired engine crate, served through the door (the U11 port).
+#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[path = "tests/serve_door_exchange_ported.rs"]
+mod door_exchange_ported_tests;
+
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
