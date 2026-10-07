@@ -12,7 +12,7 @@
 //! | authenticate | the auth gate's verdict (the unit's principal); a unit with no key on a claim that takes a credential is refused (ARCHITECT P3 (a)) |
 //! | verify | the route the plane's `arrive` named, resolved against its section ([`DoorPools`], ARCHITECT Q-SW6/Q-FL3), a `ROUTE_SCOPE` unit to the one entry the principal's grant reaches among the plane's candidates (Q-DEL-A2A-SELECT, -SCOPE-TRUST); each member sealed under its (plane key, entry) |
 //! | approve | the caller's grant of the plane's scope kind over the route as named, then its fallback pool |
-//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
+//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged, unless the plane counts it as an admitted call (`ROUTE_COUNTED`) or states expected units: then a keyed one is charged on the plane's pool as below; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
 //! | meter | the plane's last far-end-reported counts, as the unit's usage lines (an estimate never bills) |
 //! | audit | the record's facts: the decoded operation class and how the unit finished |
 //!
@@ -392,6 +392,8 @@ struct DoorUnit {
     expected: Vec<UnitCount>,
     /// Its operation is performed at most once (`ROUTE_ONCE`).
     once: bool,
+    /// The plane answers it itself as an admitted call (`ROUTE_COUNTED`): a keyed one is charged.
+    counted: bool,
     routed: Option<Routed>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<AdmitGrant>,
@@ -641,7 +643,9 @@ impl DriverSteps for DoorSteps<'_> {
     }
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
-        self.lock().once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        let mut u = self.lock();
+        u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        u.counted = flags & busbar_contract::abi::plane::ROUTE_COUNTED != 0;
     }
 }
 
@@ -790,15 +794,17 @@ impl Units for DoorSteps<'_> {
         // is audited as every unit is.
         // A local unit whose plane EXPECTS units (its admission estimate) is charged as any keyed
         // unit is: the plane's own round, on the caller's budget (the served engine charged busbar's
-        // own ask round before it was asked; lane-dg-mcp 05e053183a).
-        let (local, estimated) = {
+        // own ask round before it was asked; lane-dg-mcp 05e053183a). So is one the plane answers
+        // AS AN ADMITTED CALL (ROUTE_COUNTED): a keyed one passes the one check-then-charge on the
+        // plane's pool, counting its request (R2, 1.5.5's rule), and keeps only the fee units the
+        // plane reports.
+        let (local, counted, estimated) = {
             let u = self.lock();
-            (
-                u.named
-                    .as_ref()
-                    .is_some_and(|(class, _)| *class == ROUTE_LOCAL),
-                !u.expected.is_empty(),
-            )
+            let local = u
+                .named
+                .as_ref()
+                .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+            (local, local && u.counted, !u.expected.is_empty())
         };
         // A UNIT ROUTED BY SCOPE that no one entry reached (Q-DEL-A2A-SELECT): refused before
         // anything is charged, as 1.5.5 chose the agent before its admission.
@@ -815,7 +821,7 @@ impl Units for DoorSteps<'_> {
             Admission::Refused => {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-            Admission::Keyed if !local || estimated => {
+            Admission::Keyed if !local || counted || estimated => {
                 if let Some(key) = self.key.clone() {
                     if let Err(refusal) = self.charge(ctx, &key) {
                         return SeatVerdict::refuse(token, refusal);
