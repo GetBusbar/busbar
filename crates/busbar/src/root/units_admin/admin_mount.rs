@@ -740,6 +740,85 @@ pub fn mount(
     ))
 }
 
+/// THE NODE'S ADMIN SURFACE, AS BOOT MOUNTS IT: [`mount`] over `admin_router`, its units the
+/// admin-only composition sharing the node's one `book`, bound to this node's live snapshot
+/// (`app`): the sealed operator posture (`operator_key`), the configured pools an `adjust` may
+/// name, the planes and their record sink, the kernel's trust book the three trust verbs read and
+/// decide over (ARCHITECT 2026-10-06, through `late`), the kernel's own breaker (`breaker`), and
+/// the governance directory the authenticate step gates an identification with.
+///
+/// ONE function, called by the boot path and by a root cell that builds its own admin router, so
+/// the surface a cell drives is the one production serves (ruling (d), coordinator 2026-10-07: the
+/// generic `/api/v1/admin/trust` verbs were mounted at boot and absent from the cell's
+/// composition).
+#[cfg(feature = "root-admin")]
+pub fn mount_node(
+    admin_router: axum::Router,
+    request_body_max_bytes: usize,
+    app: &Arc<busbar_kernel::state::AppHandle>,
+    book: &crate::root::durability::NodeBook,
+    operator_key: Option<[u8; 32]>,
+    late: &Arc<crate::root::serve::LateServices>,
+    breaker: crate::root::adapters::BreakerPolicy,
+) -> axum::Router {
+    mount(
+        admin_router,
+        crate::root::kernel::new_kernel(),
+        // The same ingress cap the router below the wrap was built with, because the wrap reads the
+        // body before that router's own limit can.
+        request_body_max_bytes,
+        |dispatch| {
+            // THE ADMIN DOOR: the deployment's live `admin_auth` chain, read per unit off the same
+            // snapshot the kernel middleware reads and `PUT /api/v1/admin/admin-auth` swaps.
+            let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+                dispatch,
+                live_admin_door(Arc::clone(app)),
+                Arc::clone(&book.durability),
+                Arc::clone(&book.rows) as Arc<dyn LegacyRowsRead>,
+            );
+            // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
+            // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
+            // the boot-resolved operator key, so `operator.pub` present ⇒ `OperatorState::Set` (a
+            // valid-signed `amend_rate_history` is now performable + ed25519-verified) and absent ⇒
+            // `OperatorState::Unset` (amend refused at the ceremony gate, byte-identical to before).
+            // Bound over the SAME public `posture` seam `AdminBinding::with_posture_view` sets — and
+            // the same one the ledger view beside it is bound through — so this is a binding, not a
+            // structural change to the units.
+            units.admin.posture = Arc::new(SealedPosture::new(operator_key));
+            // Q64/Q67: an `adjust` names the pool its unit was dispatched through, checked against
+            // the pools this node has CONFIGURED — read off the live snapshot on every call, so a
+            // config apply that adds or removes a pool is what the check sees.
+            let live = Arc::clone(app);
+            units.admin.pools = Arc::new(move |pool: &str| {
+                busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
+            });
+            // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
+            // live snapshot (Law 7) and write through the configured store's plane-facing seam.
+            units.admin.planes = live_planes(Arc::clone(app));
+            units.admin.records = Some(live_records(Arc::clone(app)));
+            // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
+            // book — the composed services, reached through the late install.
+            let late = Arc::clone(late);
+            units.admin.trust = Arc::new(move || late.kernel());
+            // The root breaker is the kernel's own: one cell set on the node, read through the
+            // live snapshot so an apply's rebuilt store is the one it observes into.
+            units.breaker =
+                crate::root::adapters::BreakerAdapter::over_kernel(Arc::clone(app), breaker);
+            // THE REVOCATION SET the authenticate step gates an identification with: the same
+            // governance state's directory, so the revocation set is the one this node keeps. No
+            // governance state is no directory, left as the assembly built it.
+            match app.load().governance.clone() {
+                Some(gov) => {
+                    units.with_auth_bindings(crate::root::kernel::auth_bindings::AuthBindings::new(
+                        Arc::new(crate::root::kernel::auth_bindings::GovernanceDirectory::new(gov)),
+                    ))
+                }
+                None => units,
+            }
+        },
+    )
+}
+
 /// Whether THIS node serves the row `resolved` names, beyond the table declaring it.
 ///
 /// A row whose verb this build binds no effect to (`busbar_core_admin::verb::effect_bound`) is
