@@ -7,7 +7,8 @@
 //! candidate's signal bag, the generation declaring exactly the signals a test names. What the bag
 //! carries is read off the kernel's lane store and the egress's p95 reservoir, as production reads
 //! it. Each test names the legacy test it ports (crate-relative path) and keeps the values it
-//! asserted.
+//! asserted. Beside them, the hook projection of a request body that is not JSON: served, shown no
+//! messages.
 
 use busbar_contract::{Signal, SignalBag, SignalValue};
 
@@ -190,4 +191,82 @@ async fn an_undeclared_p95_is_never_shown_though_the_latency_average_moves() {
     );
     let bags = bags_after_chat(&rig).await;
     assert!(bags[0].get(Signal::CandidateLatencyP95Ms).is_none());
+}
+
+/// A MULTIPART UPLOAD THE OPERATION'S READER REFUSES, with request hooks bound (the rig binds a
+/// rewrite, a gate and a request tap holding the prompt grant), is SERVED, and the hooks are shown
+/// no messages: the zeroed shape. The upload is a transcription with no `file` part, which the
+/// transcription byte reader refuses; its `prompt` part is never projected. 1.5.5 showed every
+/// hook the null body for a request body that was not JSON (`v1.5.5`
+/// `crates/busbar/src/proxy/engine/mod.rs:955-961`, the rewrite pass skipped at `:729`) and relayed
+/// the bytes within one dialect; the legacy engine projected a refused byte read as absent
+/// (the legacy engine crate's `engine/hooks.rs`, `request_facts`: `handler.read_facts(..).ok()`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_multipart_upload_the_reader_refuses_is_served_and_the_hooks_see_no_messages() {
+    use tower::ServiceExt as _;
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-ported-multipart-unread";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, r#"{"text":"hi"}"#).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let boundary = "----busbardoorunreadable";
+    let body = format!(
+        "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\np\r\n\
+         --{b}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nNOT-PROJECTED\r\n\
+         --{b}--\r\n",
+        b = boundary
+    );
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/audio/transcriptions")
+        .header("authorization", format!("Bearer {}", rig.token))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(axum::body::Body::from(body))
+        .expect("a request");
+    let response = rig
+        .router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("the router answers");
+    let status = response.status().as_u16();
+    let answered = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("the body");
+    assert_eq!(
+        status,
+        200,
+        "the upload is served, never refused for what a hook cannot be shown: {}",
+        String::from_utf8_lossy(&answered)
+    );
+    assert_eq!(far.served(), 1, "the far end served the upload");
+    let payload = rig
+        .request_tap_payload(2_000)
+        .await
+        .expect("the request tap fires");
+    let tap: serde_json::Value = serde_json::from_slice(&payload).expect("the tap's JSON");
+    let request = &tap["request"];
+    assert_eq!(request["message_count"], 0, "{tap}");
+    assert_eq!(request["total_chars"], 0, "{tap}");
+    assert!(
+        request
+            .get("messages")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(Vec::is_empty),
+        "the hook is shown no messages: {tap}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&payload).contains("NOT-PROJECTED"),
+        "the refused upload's prompt part is never projected: {tap}"
+    );
 }
