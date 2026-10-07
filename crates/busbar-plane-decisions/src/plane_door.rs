@@ -39,7 +39,7 @@ use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
@@ -49,6 +49,7 @@ use busbar_contract::abi::plane::{
     FROM_KERNEL, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
     PRINCIPAL_OPTIONAL, PRINCIPAL_REQUIRED, ROUTE_DIRECT, SHAPE_WHOLE, UNITS_REPORTED,
 };
+use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -108,6 +109,7 @@ const DIALECT_AUTH: &[DialectAuth] = &[DialectAuth {
     dialect: tail::DIALECT_AUTH[0].0,
     _reserved: 0,
     style: abi_str(tail::DIALECT_AUTH[0].1),
+    params: Blob::ABSENT,
 }];
 
 const SCOPE_KINDS: &[AbiStr] = &[abi_str(tail::SCOPE_KINDS[0])];
@@ -193,6 +195,10 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: ptr::null(),
     refusal_statuses_len: 0,
+    caller_credential_refusal: NONE,
+    admin_routes: ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: Blob::ABSENT,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its need and its tail.
@@ -367,8 +373,8 @@ slot!(
 
 slot!(
     /// `cancel`: a unit is never answered before its far end has, so nothing is moved.
-    Cancel, CancelIn, CancelOut, |_, _, mut out| {
-        out.set(|o| &o.disposition, CANCEL_ABORTED);
+    Cancel, PlaneCancelIn, PlaneCancelOut, |_, _, mut out| {
+        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
         Outcome::Ready
     }
 );

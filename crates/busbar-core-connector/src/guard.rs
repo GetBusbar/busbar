@@ -398,8 +398,11 @@ impl Guard {
         Arc::clone(&self.metadata.read().unwrap_or_else(PoisonError::into_inner))
     }
 
-    fn refuses_private(&self, class: u32) -> bool {
-        self.block_private && PRIVATE_REFUSED_IN.contains(&class)
+    /// Whether a private address is refused: where `block_private_addresses` holds and the class
+    /// is one [`PRIVATE_REFUSED_IN`] names, or wherever the caller's own configuration refuses
+    /// private reach (`strict`, `DEST_REFUSE_PRIVATE`), whatever the deployment says.
+    fn refuses_private(&self, class: u32, strict: bool) -> bool {
+        strict || (self.block_private && PRIVATE_REFUSED_IN.contains(&class))
     }
 
     /// The name arm, before any resolution, under egress class `class`. `Ok(Some(ip))`: the host
@@ -410,6 +413,39 @@ impl Guard {
     ///
     /// The [`Refusal`] the name (or the literal) decides.
     pub fn judge_name(&self, host: &str, class: u32) -> Result<Option<IpAddr>, Refusal> {
+        self.judge_name_as(host, class, false)
+    }
+
+    /// [`Guard::judge_name`], private reach refused whatever the deployment says when `strict`.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refusal`] the name (or the literal) decides.
+    pub fn judge_name_as(
+        &self,
+        host: &str,
+        class: u32,
+        strict: bool,
+    ) -> Result<Option<IpAddr>, Refusal> {
+        self.judge_name_with(host, class, strict, false)
+    }
+
+    /// [`Guard::judge_name_as`] for a destination its need holds a PRIVATE REACH to (`reach`, the
+    /// registration's `abi::plane::TRUST_PRIVATE_REACH`, sealed per need and destination): the host
+    /// is admitted as an allowlist entry naming it would be, for this judgement alone — a private
+    /// address or a loopback name passes, a cloud-metadata name or address never does, and the
+    /// class is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refusal`] the name (or the literal) decides.
+    pub fn judge_name_with(
+        &self,
+        host: &str,
+        class: u32,
+        strict: bool,
+        reach: bool,
+    ) -> Result<Option<IpAddr>, Refusal> {
         let name = norm(host);
         let refuse = |verdict| {
             Err(Refusal {
@@ -431,13 +467,13 @@ impl Guard {
             return refuse(DEST_OBFUSCATED);
         }
         if let Some(ip) = host_ip(&name) {
-            self.judge_address(host, ip, class)?;
+            self.judge_address(host, ip, class, strict, reach)?;
             return Ok(Some(ip));
         }
         // The `localhost` family RFC 6761 reserves to loopback (the metadata names were decided
         // above).
         let loopback_name = name == "localhost" || name.ends_with(".localhost");
-        if loopback_name && self.refuses_private(class) && !allowed {
+        if loopback_name && self.refuses_private(class, strict) && !allowed && !reach {
             return refuse(DEST_INTERNAL);
         }
         Ok(None)
@@ -450,6 +486,38 @@ impl Guard {
     ///
     /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
     pub fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), Refusal> {
+        self.judge_answer_as(host, addrs, class, false)
+    }
+
+    /// [`Guard::judge_answer`], private reach refused whatever the deployment says when `strict`.
+    ///
+    /// # Errors
+    ///
+    /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
+    pub fn judge_answer_as(
+        &self,
+        host: &str,
+        addrs: &[IpAddr],
+        class: u32,
+        strict: bool,
+    ) -> Result<(), Refusal> {
+        self.judge_answer_with(host, addrs, class, strict, false)
+    }
+
+    /// [`Guard::judge_answer_as`] for a destination its need holds a private reach to
+    /// ([`Guard::judge_name_with`]).
+    ///
+    /// # Errors
+    ///
+    /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
+    pub fn judge_answer_with(
+        &self,
+        host: &str,
+        addrs: &[IpAddr],
+        class: u32,
+        strict: bool,
+        reach: bool,
+    ) -> Result<(), Refusal> {
         if addrs.is_empty() {
             return Err(Refusal {
                 verdict: DEST_NO_ADDRESSES,
@@ -459,11 +527,18 @@ impl Guard {
         }
         addrs
             .iter()
-            .try_for_each(|a| self.judge_address(host, *a, class))
+            .try_for_each(|a| self.judge_address(host, *a, class, strict, reach))
     }
 
     /// One address `host` stands for, in the order the module header states.
-    fn judge_address(&self, host: &str, addr: IpAddr, class: u32) -> Result<(), Refusal> {
+    fn judge_address(
+        &self,
+        host: &str,
+        addr: IpAddr,
+        class: u32,
+        strict: bool,
+        reach: bool,
+    ) -> Result<(), Refusal> {
         let name = norm(host);
         let m = self.metadata();
         let metadata = ip_is_cloud_metadata(&addr);
@@ -471,10 +546,11 @@ impl Guard {
         let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));
         // The 1.5.5 carve-outs, a provider dial's only (`Metadata::lifts`): a NAME there admits
         // its metadata answer, as 1.5.5's did; `allow_all_metadata` admits every metadata address
-        // and every extra blocked one.
+        // and every extra blocked one. A need's private reach to the destination admits as a HOST
+        // entry naming it would: never a metadata address.
         let admitted = listed(&self.allow)
             || m.lifts(&name, Some(addr), class)
-            || (!metadata && named(&self.allow));
+            || (!metadata && (named(&self.allow) || reach));
         if admitted {
             return Ok(());
         }
@@ -488,7 +564,7 @@ impl Guard {
         if metadata || listed(&m.blocked) {
             return refuse(DEST_METADATA);
         }
-        if self.refuses_private(class) && ip_is_internal(&addr) {
+        if self.refuses_private(class, strict) && ip_is_internal(&addr) {
             return refuse(DEST_INTERNAL);
         }
         Ok(())
