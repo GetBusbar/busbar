@@ -217,7 +217,11 @@ fn shortest_digits(abs: f64) -> (String, i32) {
     if !(round_trips(&lower) && round_trips(&upper)) {
         return (digits, exp);
     }
-    let even = |d: &str| d.as_bytes().last().is_some_and(|b| (b - b'0') % 2 == 0);
+    let even = |d: &str| {
+        d.as_bytes()
+            .last()
+            .is_some_and(|b| (b - b'0').is_multiple_of(2))
+    };
     if even(&lower) {
         (lower, exp)
     } else {
