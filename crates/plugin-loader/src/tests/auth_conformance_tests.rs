@@ -1,420 +1,323 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: auth`, BOTH WAYS — the auth kind's first both-ways witness at any tag** (DECISIONS #2,
-//! OWNER-LOCKED: "THE COST OF A REAL AUTH WITNESS, IN ORDER", step (5); the #2 row records that the
-//! auth kind had none, v1.5.5 included).
+//! **`kind: auth`, BOTH WAYS, ON THE MEMORY ABI, THROUGH THE HOST'S CONNECTION TABLE** — the auth
+//! kind's login-capable both-ways witness (DECISIONS #2, OWNER-LOCKED: "THE COST OF A REAL AUTH
+//! WITNESS, IN ORDER", step (5); THE DESIGN, compiled-in = dropped-in: a compiled-in plugin exports
+//! the same door as a dropped-in one and is called through the same table).
 //!
-//! Modelled on `export_conformance_tests`: ONE crate — the auth kind's witness, a REAL plugin pulled
-//! from its own repo (the owner's FIXTURES ruling), reached by KIND through
-//! `[package.metadata.busbar.both-ways]` so no test source names a plugin instance; its config and
-//! credentials are data (`tests/fixtures/plugin_artifacts.txt`, `both_ways_auth_*`) — driven two
-//! ways over one script, and the two compared.
+//! ONE crate — the `auth` row of `[package.metadata.busbar.both-ways]`, a REAL token-verifying IdP
+//! plugin pulled from its own repo (the owner's FIXTURES ruling), reached by KIND so no test source
+//! names a plugin instance — registered LINKED (its logic crate's `door::door`, through
+//! [`crate::PluginRegistry::link`]) and DROPPED IN (its `-plugin` crate's `cdylib`, signed
+//! first-party into `plugins/` and found by the scan), each opened by the loader's auth rows
+//! ([`crate::auth_axis::AuthRows`], the axis the kernel opens every `kind: auth` provider through)
+//! on a real dispatcher, BOUND TO A CONNECTION TABLE ([`crate::https_conns::HttpsConns`], standing
+//! in for the process's connector): the plugin holds no socket and no TLS; the table fetches its
+//! JWKS for it from a LOCAL ISSUER ([`crate::test_issuer::Issuer`]: an ES256 key, its JWKS served
+//! only to a need trusting the issuer's certificate, which the plugin names as its `ca_cert_pem`,
+//! and genuinely signed tokens). Both run one script — every token case to its verdict, the login kind, the
+//! authorize URL, a code redeemed at an unreachable token endpoint — and the two registry rows and
+//! the two transcripts must be byte-identical.
 //!
-//! * [`run_compiled_in`] — the witness's `rlib`: its `pub fn open` (step (3)), each request run
-//!   through the `dispatch_compiled_in` twin the export macro emits beside `busbar_call` (step (2)),
-//!   which is `dispatch_auth_enveloped` (step (1)).
-//! * [`run_dropped_in`] — the same crate's `cdylib`, staged and wired by the loader's real load, each
-//!   request sent over its `busbar_call` symbol.
+//! ## The RED arms stay in the file
 //!
-//! [`compiled_in_and_dropped_in_answer_byte_identically`] requires the two WIRES to be byte-identical
-//! and the host to read the dropped-in one as the envelope. The linked door (the `rlib`'s
-//! `BUSBAR_COLD_ENTRY` through [`crate::PluginRegistry::link`]) and the dropped-in door (the `cdylib`
-//! signed into `plugins/`) are compared the same way on the registry row and the opened module.
-//!
-//! ## The RED arm stays in the file
-//!
-//! [`the_pre_envelope_busbar_call_is_not_the_compiled_in_twin`] replays the wire as it was before
-//! step (1) — the real `cdylib` loaded and wired, its `busbar_call` answering the SAME module's
-//! answers BARE — and shows it is not the twin's wire, although the host reads the same answers out
-//! of both. That divergence is what a `busbar_call` that stopped running the enveloped dispatch
-//! would look like; the equivalence test is what refuses it.
+//! [`a_door_judging_another_audience_is_told_apart`] opens the dropped-in door for another
+//! audience: the token the linked door identified is refused, so the transcript equality is not
+//! vacuous. [`a_door_handed_no_connection_table_identifies_no_one`] opens it with no table: it
+//! cannot fetch the JWKS, so it identifies no one — the table is what carries the fetch.
+//! [`a_third_party_signature_is_a_different_row`] signs the same `cdylib` as a third party: the row
+//! differs, so the row equality is not vacuous either.
 
-use super::both_ways::{auth_fixture as fixture, both_doors, cdylib, statement};
-use super::*;
-use crate::tests::artifact;
-use busbar_contract::abi::cold::auth::{AuthRequest, AuthResponse, BeginLoginRequest};
-use busbar_contract::abi::mechanism::observe::Envelope;
-use busbar_contract::auth::{AuthModule, AuthPlugin};
-use busbar_contract::auth_calls::{Verified, VerifyRequest};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use super::both_ways::{cdylib, door_fixture, dropped, dropped_third_party, row, statement};
+use crate::auth_axis::AuthRows;
+use crate::dispatch::{Budgets, DispatchConfig, Dispatcher};
+use crate::https_conns::HttpsConns;
+use crate::test_issuer::Issuer;
+use crate::{LinkedPlugin, PluginRegistry};
+use busbar_contract::auth::{BeginLogin, CompleteLogin, LoginOutcome};
+use busbar_contract::auth_calls::{AuthCalls, LoginCallback, Verified, VerifyRequest};
 use busbar_contract::redacted::Redacted;
-use std::sync::Arc;
 
-/// The plugin's open-time config (data: `both_ways_auth_config`).
-fn cfg() -> &'static str {
-    artifact("both_ways_auth_config")
+/// The both-ways table row this proof reads.
+const PROOF: &str = "auth";
+
+/// The registry name and alias the fixture is stated under (data the test chooses).
+const NAME: &str = "auth-fixture";
+const ALIAS: &str = "the-auth";
+
+/// The audience the issuer's tokens are minted for.
+const AUDIENCE: &str = "api://both-ways";
+
+/// A connection table serving the local issuer's JWKS.
+fn conns() -> Arc<HttpsConns> {
+    let c = Arc::new(HttpsConns::new());
+    c.serve_issuer(issuer());
+    c
 }
 
-/// The candidates the script presents: a token the module must try to verify (its JWKS is
-/// unreachable, so the verdict is a fail-closed refusal), a credential that is not a token, none.
-fn candidates() -> [&'static str; 3] {
-    [artifact("both_ways_auth_token"), "not-a-token", ""]
+/// The ONE local issuer of this test process.
+fn issuer() -> &'static Issuer {
+    static ONE: OnceLock<Issuer> = OnceLock::new();
+    ONE.get_or_init(|| Issuer::start("https://issuer.both-ways.invalid", "both-ways"))
 }
 
-/// The operations both arms run, in order: what the host asks at load (name, cacheability, login
-/// kind), a verdict per candidate, and a login START — which the login-capable module answers with
-/// its authorize URL.
-fn script() -> Vec<AuthRequest> {
-    let mut ops = vec![
-        AuthRequest::Name,
-        AuthRequest::Cacheable,
-        AuthRequest::LoginKind,
+/// The plugin's settings for `audience` (its JWKS on the local issuer, its certificate trusted
+/// through `ca_cert_pem`, explicit login endpoints on an unreachable host), with its client secret.
+fn settings(audience: &str) -> serde_json::Value {
+    let mut s = issuer().settings(audience);
+    s.insert("client_secret".into(), "both-ways-secret".into());
+    serde_json::Value::Object(s)
+}
+
+/// The manifest both doors state, carrying the Statement rendering the linked `door` states.
+fn stated(door: busbar_contract::abi::mechanism::door::DoorFn) -> crate::sign::Manifest {
+    let rendering = crate::dispatch::LinkedRow::of(door)
+        .expect("the door states itself")
+        .statement;
+    crate::sign::Manifest {
+        statement: Some(hex::encode(rendering)),
+        ..statement("auth", NAME, ALIAS, busbar_contract::abi::auth::ABI_VERSION)
+    }
+}
+
+fn dispatcher() -> Arc<Dispatcher> {
+    Arc::new(Dispatcher::new(DispatchConfig {
+        workers: 2,
+        budgets: Budgets::default(),
+        watchdog_period: Duration::from_millis(20),
+    }))
+}
+
+/// The fixture's `cdylib`: the `-plugin` crate of its row's logic crate.
+fn fixture_cdylib() -> Option<Vec<u8>> {
+    let (krate, _) = door_fixture(PROOF);
+    let path = cdylib(&format!("{krate}_plugin"))?;
+    Some(std::fs::read(path).expect("read the cdylib"))
+}
+
+/// The linked and dropped-in registries of the fixture; `None` when its `cdylib` is not built in
+/// this scoped, non-CI run ([`cdylib`] hard-fails under CI).
+fn doors(third_party: bool) -> Option<[PluginRegistry; 2]> {
+    let (krate, door) = door_fixture(PROOF);
+    let lib = fixture_cdylib()?;
+    let linked = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(stated(door), door)])
+        .expect("the linked door admits the plugin");
+    let dropped = if third_party {
+        let mut m = stated(door);
+        m.publisher = "a-third-party".into();
+        dropped_third_party(krate, m, &lib)
+    } else {
+        dropped(krate, stated(door), &lib)
+    };
+    Some([linked, dropped])
+}
+
+/// One verdict as the transcript spells it.
+fn spelled(v: &Verified) -> String {
+    match v {
+        Verified::Identity(id) => format!(
+            "Identity({}, name={:?}, groups={:?})",
+            id.subject, id.name, id.groups
+        ),
+        other => format!("{other:?}"),
+    }
+}
+
+/// One login step as the transcript spells it (an authorize URL by its host and path only: its
+/// query carries the core-minted values of this run).
+fn step(o: &LoginOutcome) -> String {
+    match o {
+        LoginOutcome::Authorize(url) => format!(
+            "Authorize({})",
+            url.split_once('?').map_or(url.as_str(), |(at, _)| at)
+        ),
+        LoginOutcome::Identify(p) => format!("Identify({})", p.id),
+        other => format!("{other:?}"),
+    }
+}
+
+fn presented(token: Option<&str>) -> VerifyRequest {
+    VerifyRequest {
+        credential: token.map(|t| Redacted::new(t.as_bytes().to_vec())),
+        ..VerifyRequest::default()
+    }
+}
+
+/// What one door does, as one comparable transcript. `conns`: the table the opened instance is
+/// bound to (`None`: none handed).
+async fn transcript(
+    registry: PluginRegistry,
+    audience: &str,
+    conns: Option<Arc<HttpsConns>>,
+) -> String {
+    let rows = AuthRows::new(Arc::new(registry), dispatcher());
+    let rows = match conns {
+        Some(c) => rows.with_table(c),
+        None => rows,
+    };
+    let opened: Arc<dyn AuthCalls> = rows
+        .open(ALIAS, ALIAS, &settings(audience))
+        .expect("the plugin opens through its alias");
+    let mut out = vec![format!(
+        "name={} facts={} login_kind={:?}",
+        opened.name(),
+        opened.facts(),
+        opened.login_kind()
+    )];
+    let foreign = Issuer::start("https://issuer.both-ways.invalid", "both-ways");
+    let cases = [
+        (
+            "valid",
+            Some(issuer().mint("alice", &["platform"], AUDIENCE)),
+        ),
+        (
+            "another-key",
+            Some(foreign.mint("alice", &["platform"], AUDIENCE)),
+        ),
+        (
+            "another-audience",
+            Some(issuer().mint("alice", &["platform"], "api://someone-else")),
+        ),
+        ("not-a-token", Some("not-a-token".to_string())),
+        ("none", None),
     ];
-    ops.extend(candidates().iter().map(|c| AuthRequest::Authenticate {
-        credential: (*c).to_string(),
-    }));
-    ops.push(AuthRequest::BeginLogin(BeginLoginRequest {
+    for (case, token) in &cases {
+        let v = Box::into_pin(opened.verify(presented(token.as_deref()))).await;
+        out.push(format!("{case} -> {}", spelled(&v.verified)));
+    }
+    let begun = Box::into_pin(opened.begin_login(BeginLogin {
         redirect_uri: "https://node.example/auth/token".into(),
         state: "s".into(),
         code_challenge: "c".into(),
-        nonce: None,
+        nonce: Some("n".into()),
         scopes: Vec::new(),
-    }));
-    ops
-}
-
-/// The COMPILED-IN build: the constructor this crate LINKS, each request through the plugin's own
-/// `dispatch_compiled_in` — the entry point the plugin publishes beside `busbar_call`, so the host
-/// needs no edge to the author machinery — and what it answers, as the bytes a wire would carry.
-fn run_compiled_in() -> Vec<Vec<u8>> {
-    let module = fixture::open(cfg()).expect("the compiled-in constructor");
-    script()
-        .into_iter()
-        .map(|req| {
-            serde_json::to_vec(&fixture::dispatch_compiled_in(module.as_ref(), req))
-                .expect("encode the compiled-in envelope")
-        })
-        .collect()
-}
-
-/// The auth fixture's `cdylib`, staged and wired by the loader's real load under `display`. `None`
-/// when it is not built in this scoped, non-CI run ([`cdylib`] hard-fails under CI).
-fn wired(display: &str) -> Option<RawPlugin> {
-    let bytes = std::fs::read(cdylib(super::both_ways::fixture("auth").0)?)
-        .expect("read the auth fixture's cdylib");
-    let (lib, staged) =
-        stage::load_library_from_bytes(&bytes, display).expect("stage the auth fixture's cdylib");
-    Some(
-        wire_up_raw(
-            lib,
-            cfg(),
-            display.to_string(),
-            busbar_contract::abi::mechanism::kind::AUTH,
-            busbar_contract::abi::mechanism::kind::AUTH,
-            Some(staged),
-        )
-        .expect("wire up the auth fixture"),
-    )
-}
-
-/// One request over `raw`'s `busbar_call`, and the bytes it answered — the WIRE, before the host reads
-/// it. The buffer is handed back to the plugin's own `busbar_free`.
-fn wire(raw: &RawPlugin, req: &AuthRequest) -> Vec<u8> {
-    let payload = serde_json::to_vec(req).expect("encode the request");
-    let (mut out, mut out_len): (*mut u8, usize) = (std::ptr::null_mut(), 0);
-    // SAFETY: `raw` is a live, wired plugin; the pointers are valid for the call, and the returned
-    // buffer is copied before it is handed back to the plugin's own `free`.
-    let status = unsafe {
-        (raw.call)(
-            raw.handle,
-            payload.as_ptr(),
-            payload.len(),
-            &mut out,
-            &mut out_len,
-        )
-    };
-    assert_eq!(status, STATUS_OK, "busbar_call answered status {status}");
-    let bytes = unsafe { std::slice::from_raw_parts(out, out_len) }.to_vec();
-    unsafe { (raw.free)(out, out_len) };
-    bytes
-}
-
-/// The DROPPED-IN build: the same script over the `cdylib`'s `busbar_call`. Returns the wire bytes and
-/// what the host's ONE wire seam (`RawPlugin::transport_call`) reads out of the same answers, with the
-/// shape it latched.
-fn run_dropped_in() -> Option<(Vec<Vec<u8>>, Vec<String>, u8)> {
-    let raw = wired("auth-both-ways-dropped-in")?;
-    let bytes = script().iter().map(|req| wire(&raw, req)).collect();
-    let read = script()
-        .iter()
-        .map(|req| {
-            let resp: AuthResponse = raw
-                .transport_call(req)
-                .expect("the host reads the dropped-in answer");
-            serde_json::to_string(&resp).expect("encode")
-        })
-        .collect();
-    let shape = raw.shape.load(std::sync::atomic::Ordering::Relaxed);
-    Some((bytes, read, shape))
-}
-
-/// What each compiled-in envelope carries as its `result`, re-encoded — the answers themselves.
-fn answers(wires: &[Vec<u8>]) -> Vec<String> {
-    wires
-        .iter()
-        .map(|w| {
-            let e: Envelope<AuthResponse> = serde_json::from_slice(w).expect("an envelope");
-            serde_json::to_string(&e.result).expect("encode")
-        })
-        .collect()
-}
-
-/// **THE EQUIVALENCE (#2 step (5)).** The auth fixture, compiled in and dropped in, answers the same
-/// script with byte-identical wires, and the host reads the dropped-in wire as the envelope.
-#[test]
-fn compiled_in_and_dropped_in_answer_byte_identically() {
-    let compiled = run_compiled_in();
-    let Some((dropped, read, shape)) = run_dropped_in() else {
-        eprintln!("skip: the auth fixture's cdylib is not built");
-        return;
-    };
-    assert_eq!(
-        compiled
-            .iter()
-            .map(|w| String::from_utf8_lossy(w).into_owned())
-            .collect::<Vec<_>>(),
-        dropped
-            .iter()
-            .map(|w| String::from_utf8_lossy(w).into_owned())
-            .collect::<Vec<_>>(),
-        "compiled-in and dropped-in builds of ONE auth crate must put the same bytes on the wire"
-    );
-    assert_eq!(
-        read,
-        answers(&compiled),
-        "the host reads what the twin answered"
-    );
-    assert_eq!(
-        shape,
-        response_shape::ENVELOPE,
-        "the host latched the envelope"
-    );
-    // Not a vacuous pass: the token was judged (refused — its keys are unreachable), the other
-    // credentials passed, and the login start built the IdP's authorize URL.
-    let script_read = read.join("\n");
-    assert!(
-        script_read.contains("Reject")
-            && script_read.contains("Pass")
-            && script_read.contains(artifact("both_ways_auth_authorize_prefix")),
-        "{script_read}"
-    );
-}
-
-/// **THE RED ARM — the wire before step (1), kept as the witness.** The real `cdylib`, loaded and
-/// wired, its `busbar_call` replaced by one answering what the SAME module answers through the twin,
-/// but BARE — the shape every auth plugin spoke before `dispatch_auth_enveloped`. The host reads the
-/// same answers out of it (so nothing an operator sees moved, and the v1 floor stays honest), and the
-/// wire is NOT the twin's: a `busbar_call` that does not run the enveloped dispatch is a different
-/// wire from the compiled-in door's, which the equivalence above refuses.
-#[test]
-fn the_pre_envelope_busbar_call_is_not_the_compiled_in_twin() {
-    let Some(mut raw) = wired("auth-both-ways-pre-envelope") else {
-        eprintln!("skip: the auth fixture's cdylib is not built");
-        return;
-    };
-    raw.call = pre_envelope_call;
-    raw.free = pre_envelope_free;
-    let bare: Vec<Vec<u8>> = script().iter().map(|req| wire(&raw, req)).collect();
-    let read: Vec<String> = script()
-        .iter()
-        .map(|req| {
-            let resp: AuthResponse = raw.transport_call(req).expect("the bare answer decodes");
-            serde_json::to_string(&resp).expect("encode")
-        })
-        .collect();
-    let compiled = run_compiled_in();
-    assert_eq!(read, answers(&compiled), "the same answers, read");
-    assert_eq!(
-        raw.shape.load(std::sync::atomic::Ordering::Relaxed),
-        response_shape::BARE,
-        "the host latched the bare shape"
-    );
-    assert_ne!(
-        bare, compiled,
-        "a bare busbar_call is a different wire from the compiled-in twin — this inequality is what \
-         `compiled_in_and_dropped_in_answer_byte_identically` exists to refuse"
-    );
-}
-
-/// A `busbar_call` speaking the wire as it was BEFORE step (1): the twin's answer for the SAME
-/// module, unwrapped. It never touches the `cdylib`'s handle; it opens the linked constructor once
-/// per call, which is what makes the answers the same module's.
-unsafe extern "C-unwind" fn pre_envelope_call(
-    _handle: *mut std::os::raw::c_void,
-    req: *const u8,
-    req_len: usize,
-    out: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
-    let req: AuthRequest =
-        serde_json::from_slice(std::slice::from_raw_parts(req, req_len)).expect("decode request");
-    let module = fixture::open(cfg()).expect("the same constructor");
-    let envelope = fixture::dispatch_compiled_in(module.as_ref(), req);
-    let boxed: Box<[u8]> = serde_json::to_vec(&envelope.result)
-        .expect("encode the bare answer")
-        .into_boxed_slice();
-    *out_len = boxed.len();
-    *out = Box::into_raw(boxed) as *mut u8;
-    STATUS_OK
-}
-
-/// Free a buffer [`pre_envelope_call`] allocated.
-unsafe extern "C-unwind" fn pre_envelope_free(ptr: *mut u8, len: usize) {
-    if !ptr.is_null() && len != 0 {
-        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
-    }
-}
-
-/// The verify seam's transcript: the runtime identity, whether it is cacheable, and each verdict.
-fn verify_script(module: &dyn AuthModule) -> String {
-    let verdicts: Vec<String> = candidates()
-        .iter()
-        .map(|c| {
-            let c = (!c.is_empty()).then_some(*c);
-            format!("{c:?} -> {:?}", module.authenticate(c))
-        })
-        .collect();
-    format!(
-        "name={} cacheable={}\n{}",
-        module.name(),
-        module.cacheable(),
-        verdicts.join("\n")
-    )
-}
-
-/// **THE AXIS, BOTH WAYS** (#2 rule (1)). The auth fixture registered through the LINKED door (its
-/// `rlib`'s `BUSBAR_COLD_ENTRY`, through `PluginRegistry::link`) and the DROPPED-IN door (its
-/// `cdylib`, signed into `plugins/`) resolves to the byte-identical registry row, and the module each
-/// door's `open_auth` opens verifies the same.
-///
-/// RED by planting the door bypass the axis replaces — linked rows handed to `link` and never
-/// registered — which leaves the linked registry with no row for the name.
-#[test]
-fn a_linked_and_a_dropped_in_auth_module_register_byte_identical_rows() {
-    let manifest = statement(
-        "auth",
-        "auth-fixture",
-        "the-auth",
-        busbar_contract::abi::auth::ABI_VERSION,
-    );
-    let Some([linked, dropped]) = both_doors(
-        manifest,
-        |registry| {
-            registry
-                .open_auth("the-auth", cfg())
-                .expect("the auth module opens through its alias")
+    }))
+    .await;
+    out.push(format!("begin -> {}", step(&begun)));
+    let completed = Box::into_pin(opened.complete_login(LoginCallback {
+        state: "s".into(),
+        nonce: Some("n".into()),
+        login: CompleteLogin {
+            code: Some("a-code".into()),
+            redirect_uri: Some("https://node.example/auth/token".into()),
+            code_verifier: Some("v".into()),
+            ..CompleteLogin::default()
         },
-        |opened| verify_script(opened.as_ref()),
-    ) else {
+    }))
+    .await;
+    out.push(format!("complete -> {}", step(&completed)));
+    out.join("\n")
+}
+
+/// **THE AXIS, BOTH WAYS.** The linked door and the dropped-in door resolve to the byte-identical
+/// registry row, and the instance each opens — its JWKS fetched by the host's table — answers every
+/// step of the script the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_linked_and_the_dropped_in_auth_door_are_one_plugin() {
+    let Some([linked, dropped]) = doors(false) else {
         eprintln!("skip: the auth fixture's cdylib is not built");
         return;
     };
+    let rows = [row(&linked, NAME), row(&dropped, NAME)];
     assert!(
-        !linked.0.starts_with("no row"),
+        !rows[0].starts_with("no row"),
         "the linked door registered no row: {}",
-        linked.0
+        rows[0]
+    );
+    assert_eq!(rows[0], rows[1], "the two doors must register one row");
+    let (linked_conns, dropped_conns) = (conns(), conns());
+    let a = transcript(linked, AUDIENCE, Some(linked_conns.clone())).await;
+    let b = transcript(dropped, AUDIENCE, Some(dropped_conns.clone())).await;
+    assert_eq!(a, b, "the two doors must answer as one plugin");
+    // Not a vacuous pass: the script did what the plugin is for.
+    assert!(
+        a.contains("valid -> Identity(") && a.contains("\"platform\""),
+        "the valid token identifies its subject with its roles: {a}"
+    );
+    for refused in ["another-key -> Reject", "another-audience -> Reject"] {
+        assert!(a.contains(refused), "{refused}: {a}");
+    }
+    for passed in ["not-a-token -> Pass", "none -> Pass"] {
+        assert!(a.contains(passed), "{passed}: {a}");
+    }
+    assert!(
+        a.contains("begin -> Authorize(https://issuer.both-ways.invalid/authorize)"),
+        "{a}"
     );
     assert!(
-        linked.1.contains("Reject") && linked.1.contains("Pass"),
-        "the linked module judged the token and passed the rest: {}",
-        linked.1
+        a.contains("complete -> Outage"),
+        "a token endpoint nothing answers is an outage: {a}"
     );
-    assert_eq!(linked, dropped, "the two doors must register one row");
-}
-
-/// THE AUTH ROWS LEND THE PRESENTED CREDENTIAL (AUTH-CHAIN-SWITCH, ARCHITECT lane L2-AUTH): the auth
-/// fixture — a REAL plugin, on the cold lane until its door lands (M6-COLD-DELETE) — opened through
-/// the auth rows (`AuthRows::open`, the axis the kernel's chain opens every `kind: auth` provider
-/// through) judges the credential a request presents exactly as its module judges it: the token it
-/// cannot verify is REFUSED (fail-closed), a credential that is not a token and none PASS.
-///
-/// RED before the rows lent it: the request's candidate never reached the module (`ColdAuth` handed
-/// it none), so the token PASSED — a wrong credential was never refused.
-#[test]
-fn the_auth_rows_judge_the_presented_credential_as_the_module_does() {
-    let manifest = statement(
-        "auth",
-        "auth-fixture",
-        "the-auth",
-        busbar_contract::abi::auth::ABI_VERSION,
-    );
-    let registry = Arc::new(super::both_ways::linked(manifest, fixture_entry()));
-    let module = registry
-        .open_auth("the-auth", cfg())
-        .expect("the auth module opens through its alias");
-    let dispatcher = Arc::new(crate::dispatch::Dispatcher::new(
-        crate::dispatch::DispatchConfig::default(),
-    ));
-    let rows = crate::auth_axis::AuthRows::new(registry, dispatcher);
-    let opened = rows
-        .open(
-            "the-auth",
-            "the-auth",
-            &serde_json::Value::String(cfg().to_string()),
-        )
-        .expect("the auth rows open the module");
-    for c in candidates() {
-        let c = (!c.is_empty()).then_some(c);
-        let request = VerifyRequest {
-            credential: c.map(|c| Redacted::new(c.as_bytes().to_vec())),
-            ..VerifyRequest::default()
-        };
-        let want = match module.authenticate(c) {
-            busbar_contract::auth::AuthVerdict::Reject => Verified::Reject,
-            busbar_contract::auth::AuthVerdict::Pass => Verified::Pass,
-            other => panic!("the fixture identifies none of the script's candidates: {other:?}"),
-        };
-        let got = opened.verify_now(&request).map(|a| a.verified);
-        assert_eq!(got, Some(want), "{c:?}");
+    // The fetch went out through the table, to the JWKS the settings name: once per door (cached).
+    for conns in [&linked_conns, &dropped_conns] {
+        let jwks: Vec<_> = conns
+            .sent()
+            .into_iter()
+            .filter(|(_, t)| t == issuer().jwks_url())
+            .collect();
+        assert_eq!(jwks.len(), 1, "one JWKS fetch per door: {:?}", conns.sent());
     }
-    let token = artifact("both_ways_auth_token");
-    let refused = opened.verify_now(&VerifyRequest {
-        credential: Some(Redacted::new(token.as_bytes().to_vec())),
-        ..VerifyRequest::default()
-    });
-    assert_eq!(
-        refused.map(|a| a.verified),
-        Some(Verified::Reject),
-        "the token the module cannot verify is refused through the rows"
-    );
 }
 
-/// The auth fixture's linked entry (its `rlib`'s `BUSBAR_COLD_ENTRY`), by its both-ways row.
-fn fixture_entry() -> &'static busbar_contract::abi::cold::ColdEntry {
-    super::both_ways::fixture("auth").1
-}
-
-/// The same both ways through the LOGIN handle: the payload schema `open_login` reports, and the
-/// verify transcript of the unified handle.
-#[test]
-fn a_linked_and_a_dropped_in_login_handle_answer_identically() {
-    let manifest = statement(
-        "auth",
-        "auth-fixture",
-        "the-auth",
-        busbar_contract::abi::auth::ABI_VERSION,
-    );
-    let Some([linked, dropped]) = both_doors(
-        manifest,
-        |registry| {
-            registry
-                .open_login("auth-fixture", cfg())
-                .expect("the login handle opens through its name")
-        },
-        |(handle, abi): &(Box<dyn AuthPlugin>, u32)| {
-            format!("abi={abi} {}", verify_script(handle.as_ref()))
-        },
-    ) else {
+/// **THE RED ARM OF THE TRANSCRIPT COMPARISON.** The dropped-in door opened for ANOTHER audience
+/// answers the same script differently: the valid token is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_door_judging_another_audience_is_told_apart() {
+    let Some([linked, dropped]) = doors(false) else {
         eprintln!("skip: the auth fixture's cdylib is not built");
         return;
     };
-    assert!(
-        linked.1.contains("Reject") && linked.1.contains("Pass"),
-        "the linked handle judged the token and passed the rest: {}",
-        linked.1
+    let a = transcript(linked, AUDIENCE, Some(conns())).await;
+    let b = transcript(dropped, "api://someone-else", Some(conns())).await;
+    assert!(a.contains("valid -> Identity("), "{a}");
+    assert!(b.contains("valid -> Reject"), "{b}");
+    assert_ne!(
+        a, b,
+        "a door judging another audience must not compare equal — this inequality is what \
+         `the_linked_and_the_dropped_in_auth_door_are_one_plugin` exists to refuse"
     );
-    assert_eq!(
-        linked, dropped,
-        "the two doors must hand back one login handle"
+}
+
+/// **THE RED ARM OF THE CONNECTION TABLE.** The same dropped-in door handed NO table cannot fetch
+/// its JWKS (the plugin holds no socket), so the loader refuses to open it to serve (a door that
+/// declares needs and is bound with none never serves: `LoadError::NoConnectionTable`): the
+/// identity the comparison sees is the table's fetch, not something the plugin did on its own.
+#[test]
+fn a_door_handed_no_connection_table_identifies_no_one() {
+    let Some([_, dropped]) = doors(false) else {
+        eprintln!("skip: the auth fixture's cdylib is not built");
+        return;
+    };
+    let refused = AuthRows::new(Arc::new(dropped), dispatcher())
+        .open(ALIAS, ALIAS, &settings(AUDIENCE))
+        .map(|_| ())
+        .expect_err("a networked auth door handed no connection table must not open to serve");
+    assert!(
+        refused
+            .to_string()
+            .contains("bound with no connection table"),
+        "{refused}"
+    );
+}
+
+/// **THE RED ARM OF THE ROW COMPARISON.** The same `cdylib` signed by a third party is a different
+/// row from the linked first-party one.
+#[test]
+fn a_third_party_signature_is_a_different_row() {
+    let Some([linked, dropped]) = doors(true) else {
+        eprintln!("skip: the auth fixture's cdylib is not built");
+        return;
+    };
+    let dropped_row = row(&dropped, NAME);
+    assert!(!dropped_row.starts_with("no row"), "{dropped_row}");
+    assert_ne!(
+        row(&linked, NAME),
+        dropped_row,
+        "a third-party row must not compare equal to the first-party one"
     );
 }

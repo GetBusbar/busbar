@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use super::super::{
     Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
-    Stored, UNSERVED,
+    Stored, TrustKeyRef, UNSERVED,
 };
 use super::{ServicesDouble, Unserved};
 use crate::abi::mechanism::KindCode;
@@ -88,6 +88,22 @@ const ROWS: &[Row] = &[
             "trust_sight",
             s.trust_sight(&caller(), "peer", "hash", later(l)),
         )
+    }),
+    ("trust_unreached", |s, _| {
+        s.trust_unreached(&caller(), "peer")
+    }),
+    ("trust_sight_item", |s, _| {
+        s.trust_sight_item(&caller(), "peer", "item", "digest")
+    }),
+    ("trust_decide", |s, _| {
+        let key = TrustKeyRef {
+            counterparty: "peer",
+            item: Some("item"),
+        };
+        s.trust_decide(&caller(), key, Some("digest"), true)
+    }),
+    ("trust_serves", |s, _| {
+        s.trust_serves(&caller(), "peer", Some("item"), None)
     }),
     ("trust_due", |s, _| s.trust_due(&caller())),
     ("trust_verify", |s, _| {

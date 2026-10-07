@@ -35,7 +35,7 @@
 
 use super::{
     Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
-    Stored, UNSERVED,
+    Stored, TrustKeyRef, UNSERVED,
 };
 
 /// The answer of a service this double does not serve, for a service that may pend.
@@ -96,6 +96,44 @@ pub trait ServicesDouble: Send + Sync {
         _later: Later,
     ) -> Ran {
         refused()
+    }
+
+    /// `trust.sight` with `TRUST_UNREACHABLE`. Unserved: REFUSED.
+    fn trust_unreached(&self, _caller: &Caller, _counterparty: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.sight_item`. Unserved: REFUSED.
+    fn trust_sight_item(
+        &self,
+        _caller: &Caller,
+        _counterparty: &str,
+        _item: &str,
+        _digest: &str,
+    ) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.decide`. Unserved: REFUSED.
+    fn trust_decide(
+        &self,
+        _caller: &Caller,
+        _key: TrustKeyRef<'_>,
+        _expected: Option<&str>,
+        _approve: bool,
+    ) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.serves`. Unserved: REFUSED.
+    fn trust_serves(
+        &self,
+        _caller: &Caller,
+        _counterparty: &str,
+        _item: Option<&str>,
+        _digest: Option<&str>,
+    ) -> Stored {
+        Stored::refused(UNSERVED)
     }
 
     /// `trust.due`. Unserved: REFUSED.
@@ -250,6 +288,40 @@ impl<T: ServicesDouble> HostServices for T {
 
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
         ServicesDouble::trust_sight(self, caller, counterparty, hash, later)
+    }
+
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        ServicesDouble::trust_unreached(self, caller, counterparty)
+    }
+
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        ServicesDouble::trust_sight_item(self, caller, counterparty, item, digest)
+    }
+
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        ServicesDouble::trust_decide(self, caller, key, expected, approve)
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        ServicesDouble::trust_serves(self, caller, counterparty, item, digest)
     }
 
     fn trust_due(&self, caller: &Caller) -> Stored {
