@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! EVERY BEDROCK CONVERSE USAGE COUNT IS LEDGERED, A DECLARED SLICE, THE CHECKED TOTAL, OR A
-//! NAMED RESIDUAL (MONEY-AUDIT A-F1/A-F4). The census is the pinned wire lock
+//! EVERY BEDROCK CONVERSE USAGE COUNT IS LEDGERED OR A DECLARED SLICE (MONEY-AUDIT A-F1/A-F4;
+//! owner LEDGER-100, 2026-10-03: every reported unit is a ledger line under its meter class). The census is the pinned wire lock
 //! (`testing/llm-conformance/wire/bedrock.wire.json`): every integer member under `usage` and under
 //! `trace.guardrail` has a declared class below, and the reader is driven on the buffered response,
 //! the stream's `metadata` frame and a truncated-body recovery to prove it.
 //!
-//! - `totalTokens` is AWS's sum, never a unit: a gap between it and the ledgered classes is
-//!   reported on the usage identity note (with its WARN) and never ledgered.
-//! - The guardrail policy units AWS bills separately land in no meter class the plane declares:
-//!   each is read, summed per side over every guardrail, and named on one WARN; none is ledgered.
+//! - `totalTokens` is AWS's sum, not a unit of its own: a gap between it and the ledgered classes
+//!   is reported on the usage identity note (with its WARN), and a total ABOVE them ledgers the
+//!   remainder as the open class `unitemized_tokens`.
+//! - The guardrail policy units AWS bills separately are each their own open class
+//!   (`open_class::GUARDRAIL_COUNT_CLASSES`), summed over every guardrail on both sides.
 
 use super::*;
 use busbar_contract::testkit::WarnCapture;
@@ -23,10 +24,11 @@ enum Class {
     Ledgered(i64, i64, i64, i64),
     /// The per-TTL split of `cacheWriteInputTokens`: attribution inside the one cache-write class.
     CacheWriteTtlSlice,
-    /// AWS's stated total: checked against the ledgered classes, never a unit.
+    /// AWS's stated total: checked against the ledgered classes; a total above them ledgers the
+    /// remainder as `unitemized_tokens`.
     StatedTotal,
-    /// A guardrail policy-unit count: read and named on the residual WARN, never ledgered.
-    GuardrailResidual,
+    /// A guardrail policy-unit count: ledgered under its own open class.
+    GuardrailUnits,
     /// A measurement of the assessment itself (its latency, the characters and images it covered):
     /// not a unit AWS bills, which are the policy units above. Read nowhere, ledgered nowhere,
     /// named on no WARN.
@@ -112,7 +114,7 @@ fn class_of(path: &str) -> (Class, Option<(&'static str, String)>) {
     .find_map(|(side, prefix)| path.strip_prefix(prefix).map(|m| (side, m)))
     .unwrap_or_else(|| panic!("`{path}` is in the wire lock with no class"));
     let class = match member.strip_prefix("usage.") {
-        Some(count) if GUARDRAIL_COUNTS.contains(&count) => Class::GuardrailResidual,
+        Some(count) if GUARDRAIL_COUNTS.contains(&count) => Class::GuardrailUnits,
         None if GUARDRAIL_METRICS.contains(&member) => Class::AssessmentMetric,
         _ => panic!("`{path}` is in the wire lock with no class"),
     };
@@ -138,8 +140,12 @@ fn guardrail_trace(side: &str, member: &str) -> serde_json::Value {
 
 type Units = (i64, i64, i64, i64);
 
-/// One path's read: the ledgered units, the identity note, the 5m cache-write attribution.
-type Read = (Units, Option<(u64, u64, i64)>, Option<u64>);
+/// The open classes a usage ledgers, by class.
+type Open = std::collections::BTreeMap<String, u64>;
+
+/// One path's read: the ledgered units, the identity note, the 5m cache-write attribution, the
+/// open classes.
+type Read = (Units, Option<(u64, u64, i64)>, Option<u64>, Open);
 
 fn units(u: &busbar_contract::billing::TokenUsage) -> Units {
     let n = |x: u64| i64::try_from(x).expect("small fixture");
@@ -152,13 +158,19 @@ fn units(u: &busbar_contract::billing::TokenUsage) -> Units {
 }
 
 fn read_of(u: &crate::codec::ir::IrUsage) -> Read {
+    let t = u.to_token_usage();
+    assert!(
+        t.residual_units.is_empty(),
+        "no reported unit is a residual"
+    );
     (
-        units(&u.to_token_usage()),
+        units(&t),
         u.detail
             .usage_identity_note
             .as_ref()
             .map(|n| (n.reported_total, n.summed_total, n.unaccounted)),
         u.detail.cache_creation_5m_input_tokens,
+        t.open_units,
     )
 }
 
@@ -196,19 +208,21 @@ fn read_all_paths(usage: &serde_json::Value, trace: Option<&serde_json::Value>) 
     [
         read_of(&buffered),
         read_of(&streamed),
-        (units(&recovered), None, None),
+        (units(&recovered), None, None, recovered.open_units),
     ]
 }
 
 /// EVERY COUNT IN THE WIRE LOCK HAS A CLASS, AND THE READER HONOURS IT ON EVERY PATH. 7 more of a
 /// ledgered count moves (input, cache read, cache write, output) by exactly its class; a per-TTL
 /// cache-write entry moves nothing beyond its cache write and is attributed to its TTL; 7 more on
-/// `totalTokens` alone ledgers nothing and is reported as a 7-unit gap; 7 of a guardrail count on
-/// each of two guardrails ledgers nothing and is named, summed (14), on the residual WARN. RED
-/// when the reader drops a count (a usage-table row, a guardrail count), mis-classes one, stops
-/// checking the stated total, or the lock gains a count nobody classed.
+/// `totalTokens` alone is reported as a 7-unit gap and ledgers 7 `unitemized_tokens` (a truncated
+/// body recovers the same `usage`, so the same 7); 7 of a guardrail count on each of two
+/// guardrails ledgers 14 under that count's own class (buffered and streamed; a truncated body
+/// recovers the turn's `usage` only). RED when the reader drops a count (a usage-table row, a
+/// guardrail count), mis-classes one, stops checking the stated total, or the lock gains a count
+/// nobody classed.
 #[test]
-fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
+fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
     let counts = lock_counts("response", "");
     assert_eq!(
         counts,
@@ -222,6 +236,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
     );
     let base = serde_json::json!({"inputTokens": 1000, "outputTokens": 100, "totalTokens": 1100});
     let before = read_all_paths(&base, None);
+    let open = |class: &str, n: u64| Open::from([(class.to_string(), n)]);
     for (path, read) in ["buffered", "streamed", "truncated"].iter().zip(&before) {
         assert_eq!(read.1, None, "{path}: the base usage reconciles");
     }
@@ -229,8 +244,10 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
         let (class, guardrail) = class_of(field);
         let mut usage = base.clone();
         let mut trace = None;
-        let mut baseline = before;
+        let mut baseline = before.clone();
         let mut ttl_5m = None;
+        let mut opened = Open::new();
+        let mut truncated_opened = Open::new();
         let (moved, gap) = match class {
             Class::Ledgered(di, dc, dw, dout) => {
                 let name = field.strip_prefix("usage.").expect("usage field");
@@ -251,11 +268,21 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
             }
             Class::StatedTotal => {
                 usage["totalTokens"] = serde_json::json!(1107);
+                opened = open(crate::codec::ir::open_class::UNITEMIZED_TOKENS_CLASS, 7);
+                truncated_opened = opened.clone();
                 ((0, 0, 0, 0), Some((1107, 1100, 7)))
             }
-            Class::GuardrailResidual | Class::AssessmentMetric => {
+            Class::GuardrailUnits | Class::AssessmentMetric => {
                 let (side, member) = guardrail.as_ref().expect("a guardrail member");
                 trace = Some(guardrail_trace(side, member));
+                if let Class::GuardrailUnits = class {
+                    let count = member.strip_prefix("usage.").expect("a policy-unit count");
+                    let (_, class) = crate::codec::ir::open_class::GUARDRAIL_COUNT_CLASSES
+                        .iter()
+                        .find(|(c, _)| *c == count)
+                        .expect("every guardrail count has a class");
+                    opened = open(class, 14);
+                }
                 ((0, 0, 0, 0), None)
             }
         };
@@ -281,24 +308,18 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
                 assert_eq!(a.1, gap, "{path}: `{field}` reports (total, ledgered, gap)");
                 assert_eq!(a.2, ttl_5m, "{path}: `{field}` 5m cache-write attribution");
             }
+            let want = if *path == "truncated" {
+                &truncated_opened
+            } else {
+                &opened
+            };
+            assert_eq!(&a.3, want, "{path}: `{field}` ledgers its open class");
+            assert!(b.3.is_empty(), "{path}: the base ledgers no open class");
         }
         if let (Class::AssessmentMetric, Some((_, member))) = (class, &guardrail) {
             assert!(
                 !cap.messages().iter().any(|m| m.contains(member.as_str())),
                 "`{field}` is no billed unit and is named on no WARN: {:?}",
-                cap.messages()
-            );
-        } else if let Some((side, member)) = guardrail {
-            let count = member.strip_prefix("usage.").expect("a policy-unit count");
-            let named = format!("{side}.{count}=14");
-            assert_eq!(
-                cap.messages()
-                    .iter()
-                    .filter(|m| m.contains("bedrock guardrail policy units") && m.contains(&named))
-                    .count(),
-                2,
-                "`{field}`: the buffered and the streamed read each name `{named}` on the residual \
-                 WARN: {:?}",
                 cap.messages()
             );
         }
@@ -326,7 +347,8 @@ fn a_truncated_body_recovers_the_turns_usage_not_a_guardrails() {
 
 /// A STATED TOTAL THAT DISAGREES WITH THE LEDGERED CLASSES: AWS counts cache tokens inside
 /// `totalTokens`, so 10 in + 5 out + 1000 cache read + 200 cache write is 1215; a body stating 15
-/// is reported (gap -1200), and the ledger holds the itemized counts.
+/// is reported (gap -1200), and the ledger holds the itemized counts: a total BELOW its terms is no
+/// unit, so no `unitemized_tokens` line.
 #[test]
 fn a_total_that_disagrees_is_reported_never_ledgered() {
     let usage = serde_json::json!({
@@ -341,6 +363,7 @@ fn a_total_that_disagrees_is_reported_never_ledgered() {
     for (path, r) in ["buffered", "streamed"].iter().zip(&read) {
         assert_eq!(r.0, (10, 1000, 200, 5), "{path}: the itemized counts only");
         assert_eq!(r.1, Some((15, 1215, -1200)), "{path}: the gap is reported");
+        assert!(r.3.is_empty(), "{path}: no open class: {:?}", r.3);
     }
     assert!(
         cap.contains("usage does not reconcile") && cap.contains("identity=bedrock.usage"),
@@ -349,12 +372,12 @@ fn a_total_that_disagrees_is_reported_never_ledgered() {
     );
 }
 
-/// The residual units the buffered read and the stream's `metadata` frame each carry onto the
-/// ledger projection.
-fn residuals_on_both_paths(
+/// The ledger projection (`TokenUsage`) the buffered read and the stream's `metadata` frame each
+/// carry.
+fn usage_on_both_paths(
     usage: &serde_json::Value,
     trace: Option<&serde_json::Value>,
-) -> [std::collections::BTreeMap<String, u64>; 2] {
+) -> [busbar_contract::billing::TokenUsage; 2] {
     let mut body = serde_json::json!({
         "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
         "stopReason": "end_turn",
@@ -380,53 +403,92 @@ fn residuals_on_both_paths(
             _ => None,
         })
         .expect("the metadata frame emits a MessageDelta");
-    [
-        buffered.to_token_usage().residual_units,
-        streamed.to_token_usage().residual_units,
-    ]
+    [buffered.to_token_usage(), streamed.to_token_usage()]
 }
 
-/// THE RESIDUALS TRAVEL ON THE USAGE, UNBILLED (MONEY LAW, owner 2026-10-02). Guardrail policy
-/// units (7 on each of two guardrails) and a stated total 7 above the itemized sum each reach the
-/// ledger projection as a named residual, on the buffered read and the streamed one, while the
-/// billed tiers stay the itemized counts. A total BELOW its terms is no unbilled count and adds
-/// none. RED when a reader stops carrying a residual it WARNs about.
+/// THE REPORTED UNITS TRAVEL ON THE USAGE, BILLED (owner LEDGER-100, 2026-10-03). Guardrail policy
+/// units (7 on each of two guardrails, on both sides) and a stated total 7 above the itemized sum
+/// each reach both ledger projections as exactly one line under their open class, on the buffered
+/// read and the streamed one, while the token tiers stay the itemized counts and nothing is a
+/// residual. A total BELOW its terms is no unit and adds none. RED before this lane: both were
+/// residuals (`usage.residual`, unbilled).
 #[test]
-fn the_residuals_travel_on_the_usage_unbilled() {
+fn the_reported_units_travel_on_the_usage_billed() {
+    use crate::codec::ir::open_class::{
+        GUARDRAIL_TOPIC_POLICY_UNITS_CLASS, UNITEMIZED_TOKENS_CLASS,
+    };
     let closes = serde_json::json!({"inputTokens": 1000, "outputTokens": 100, "totalTokens": 1100});
-    let trace = guardrail_trace("inputAssessment", "usage.topicPolicyUnits");
-    for (path, residual) in ["buffered", "streamed"]
+    let mut trace = guardrail_trace("inputAssessment", "usage.topicPolicyUnits");
+    trace["guardrail"]["outputAssessments"] =
+        guardrail_trace("outputAssessments", "usage.topicPolicyUnits")["guardrail"]
+            ["outputAssessments"]
+            .clone();
+    for (path, u) in ["buffered", "streamed"]
         .iter()
-        .zip(residuals_on_both_paths(&closes, Some(&trace)))
+        .zip(usage_on_both_paths(&closes, Some(&trace)))
     {
+        assert!(u.residual_units.is_empty(), "{path}: no residual");
+        assert_eq!((u.input, u.output), (1000, 100), "{path}: the token tiers");
+        let lines = crate::codec::usage_census::ledgered(&u);
         assert_eq!(
-            residual,
-            std::collections::BTreeMap::from([(
-                "guardrail.inputAssessment.topicPolicyUnits".to_string(),
-                14
-            )]),
-            "{path}: the guardrail units are a named residual"
+            lines[crate::codec::usage_census::slot(GUARDRAIL_TOPIC_POLICY_UNITS_CLASS)],
+            28,
+            "{path}: 7 on each of two guardrails on both sides, one line"
         );
+        assert_eq!(lines[4..].iter().filter(|n| **n != 0).count(), 1, "{path}");
     }
     let above = serde_json::json!({"inputTokens": 1000, "outputTokens": 100, "totalTokens": 1107});
-    for (path, residual) in ["buffered", "streamed"]
+    for (path, u) in ["buffered", "streamed"]
         .iter()
-        .zip(residuals_on_both_paths(&above, None))
+        .zip(usage_on_both_paths(&above, None))
     {
+        assert!(u.residual_units.is_empty(), "{path}: no residual");
+        assert_eq!((u.input, u.output), (1000, 100), "{path}: the token tiers");
+        let lines = crate::codec::usage_census::ledgered(&u);
         assert_eq!(
-            residual,
-            std::collections::BTreeMap::from([("bedrock.usage.stated_total_gap".to_string(), 7)]),
-            "{path}: the stated total above the itemized sum is a named residual"
+            lines[crate::codec::usage_census::slot(UNITEMIZED_TOKENS_CLASS)],
+            7,
+            "{path}: the stated total above the itemized sum, one line"
         );
+        assert_eq!(lines[4..].iter().filter(|n| **n != 0).count(), 1, "{path}");
     }
     let below = serde_json::json!({"inputTokens": 1000, "outputTokens": 100, "totalTokens": 15});
-    for (path, residual) in ["buffered", "streamed"]
+    for (path, u) in ["buffered", "streamed"]
         .iter()
-        .zip(residuals_on_both_paths(&below, None))
+        .zip(usage_on_both_paths(&below, None))
     {
         assert!(
-            residual.is_empty(),
-            "{path}: a total below its terms is no unbilled count: {residual:?}"
+            u.open_units.is_empty() && u.residual_units.is_empty(),
+            "{path}: a total below its terms is no unit: {u:?}"
         );
     }
+}
+
+/// AN UNREADABLE GUARDRAIL COUNT REFUSES (#42, the rule every billed count reads under): it cannot
+/// be ledgered, and a zero in its place is a bill that disagrees with AWS's invoice. `null` is
+/// absence.
+#[test]
+fn an_unreadable_guardrail_count_refuses_and_null_is_absence() {
+    let usage = serde_json::json!({"inputTokens": 10, "outputTokens": 5});
+    let body = |units: serde_json::Value| {
+        serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": usage,
+            "trace": {"guardrail": {"inputAssessment": {"g1": {"invocationMetrics": {
+                "usage": {"topicPolicyUnits": units}}}}}}
+        })
+    };
+    assert!(BedrockReader
+        .read_response(&body(serde_json::json!("seven")))
+        .is_err());
+    assert!(BedrockReader
+        .read_response(&body(serde_json::json!(7.5)))
+        .is_err());
+    let absent = BedrockReader
+        .read_response(&body(serde_json::Value::Null))
+        .expect("null is absence")
+        .usage
+        .to_token_usage();
+    assert!(absent.open_units.is_empty());
 }

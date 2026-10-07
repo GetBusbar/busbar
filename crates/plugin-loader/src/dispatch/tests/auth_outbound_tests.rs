@@ -255,7 +255,7 @@ fn opened() -> OutboundInstance {
             max_inflight_cap: 64,
             sink: Arc::new(Quiet),
             dispatcher: Adopter::unwatched(),
-            conns: None,
+            conns: crate::dispatch::ConnTable::NoNeeds,
         },
     )
     .expect("the test auth door loads");

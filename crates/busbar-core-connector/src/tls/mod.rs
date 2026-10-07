@@ -154,7 +154,7 @@ pub fn client_identity(
     let key = load_private_key(resolver, key)?;
     Ok(busbar_contract::transport::trust::ClientIdentity {
         cert_chain: chain.into_iter().map(|c| c.as_ref().to_vec()).collect(),
-        private_key: key.secret_der().to_vec(),
+        private_key: key.secret_der().to_vec().into(),
     })
 }
 

@@ -111,13 +111,13 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
 
 use super::super::{
-    called, close, crossings, dispatcher, input, json, open_with, output, ready_step, real_door,
-    validate, Fold, Leg, Recorder, Restated, Subject,
+    bind, called, close, crossings, dispatcher, input, json, open_with, output, ready_step,
+    real_door, validate, Fold, Leg, Recorder, Restated, Subject,
 };
 use super::{secret, stated, undeclared, Stated};
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{
-    load_dropped, load_linked, now_ns, Bind, Dispatcher, Frame, Lent, LinkedRow, NoSink, Plugin,
+    load_dropped, load_linked, now_ns, Bind, ConnTable, Dispatcher, Frame, Lent, LinkedRow, Plugin,
     Reply,
 };
 
@@ -643,12 +643,14 @@ fn load_leg(
     instance: &str,
     conns: Option<Arc<dyn DeclaredConns>>,
 ) -> Plugin<Auth> {
-    let b = Bind {
-        instance: Arc::from(instance),
-        max_inflight_cap: 1024,
-        sink: Arc::new(NoSink),
-        dispatcher: d.adopter(),
-        conns,
+    // A minting style serves its own need on the scripted endpoint; one that mints nothing is
+    // bound as the subject binds any door (its needs, if it declares any, on the subject's table).
+    let b = match conns {
+        Some(table) => Bind {
+            conns: ConnTable::Host(table),
+            ..bind(d, instance)
+        },
+        None => s.bind(d, instance),
     };
     match leg {
         Leg::Linked => load_linked::<Auth>(

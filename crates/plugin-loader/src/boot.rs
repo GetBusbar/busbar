@@ -27,7 +27,7 @@ use crate::dispatch::kinds::{
     transport::Transport,
 };
 use crate::dispatch::{
-    load_dropped_bytes, load_linked, Adopter, Bind, EnvelopeSink, LinkedRow, Plugin,
+    load_dropped_bytes, load_linked, Adopter, Bind, ConnTable, EnvelopeSink, LinkedRow, Plugin,
     PluginLogConfig,
 };
 
@@ -494,7 +494,7 @@ pub fn load_planes(
     metrics: Arc<dyn EnvelopeSink>,
     dispatcher: Adopter,
     max_inflight_cap: u32,
-    conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    conns: ConnTable,
 ) -> Result<Vec<(String, Plugin<Plane>)>, String> {
     let selected: Vec<Selected> = doors
         .iter()
@@ -726,8 +726,8 @@ pub struct LoadRequest<'a> {
     pub dispatcher: Adopter,
     /// The host's clamp on `max_inflight`.
     pub max_inflight_cap: u32,
-    /// The host's one connection table ([`Bind::conns`]).
-    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    /// The host's one connection table, or why the load has none ([`Bind::conns`]).
+    pub conns: ConnTable,
     /// What OPENS each auth instance the load binds, and awaits its `ready`; `None` = bind only.
     pub opening: Option<Opening<'a>>,
 }
@@ -851,17 +851,45 @@ pub fn resolve_secrets(
     resolver: &dyn busbar_contract::secret::SecretResolve,
 ) -> Result<Vec<Vec<u8>>, String> {
     keys.iter()
-        .map(|key| {
-            let Some(found) = take_path(block, key) else {
-                return Ok(Vec::new());
-            };
-            let r: busbar_contract::secret_ref::SecretRef = serde_json::from_value(found)
-                .map_err(|e| format!("settings.{key}: not a secret reference: {e}"))?;
-            resolver
-                .resolve(&r)
-                .map_err(|e| format!("settings.{key}: the secret did not resolve: {e}"))
-        })
+        .map(|path| resolve_one(block, path, resolver))
         .collect()
+}
+
+/// One declared secret of [`resolve_secrets`]: taken out of the block, decoded as a reference and
+/// resolved. Decoding and resolving are separate steps so the decoder's text never shares a message
+/// with anything: a value that is not a reference may be the secret itself, pasted where its
+/// reference belongs, so its decode failure is described by [`not_a_reference`] alone.
+fn resolve_one(
+    block: &mut serde_json::Value,
+    path: &str,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+) -> Result<Vec<u8>, String> {
+    let Some(found) = take_path(block, path) else {
+        return Ok(Vec::new());
+    };
+    let r: busbar_contract::secret_ref::SecretRef =
+        serde_json::from_value(found).map_err(not_a_reference(format!("settings.{path}")))?;
+    resolver
+        .resolve(&r)
+        .map_err(|e| format!("settings.{path}: the secret did not resolve: {e}"))
+}
+
+/// The `map_err` for a settings value that should be a secret REFERENCE and does not decode as one.
+/// `serde_json::Error`'s own `Display` is withheld: a data error quotes the offending value, and a
+/// value that is not a reference may be the secret itself, pasted inline where its reference
+/// belongs (secret-hygiene #53, Check 3: redact at the format site). What survives is WHERE (`at`,
+/// the settings path) and the CLASS of the failure.
+pub(crate) fn not_a_reference(at: String) -> impl FnOnce(serde_json::Error) -> String {
+    move |e: serde_json::Error| {
+        let class = match e.classify() {
+            serde_json::error::Category::Io => "the value could not be read",
+            serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+                "it is not well-formed"
+            }
+            serde_json::error::Category::Data => "a field is missing or has the wrong type",
+        };
+        format!("{at}: not a secret reference: {class} (the decoder's text is withheld)")
+    }
 }
 
 /// Remove and answer the value at the `.`-separated `path` of `v`, if set.

@@ -348,6 +348,57 @@ fn validate_trust_gate_matches_boot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE SIGNING GATE'S REFERENCE reaches the dropped-in tarball under test, even when this build links
+/// a plugin answering to the same alias. scripts/signing-gate.sh writes `store: { module: <ref> }`
+/// and expects an UNSIGNED tarball to be refused. busbar links busbar-store-memory (alias `memory`),
+/// and the registry keeps the first row registered for a name or alias (the linked one), so a gate
+/// that spells the reference by ALIAS resolves the linked store: the unsigned tarball validates
+/// clean and the gate's "unsigned refused" case passes nothing. The reference is read from the
+/// gate's own store arm, so this test fails while the gate spells it by alias.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn the_signing_gate_reference_reaches_the_dropped_in_tarball_past_a_linked_alias() {
+    const CRATE: &str = "busbar-store-memory-plugin";
+    const ALIAS: &str = "memory";
+    let gate = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/signing-gate.sh"),
+    )
+    .expect("read scripts/signing-gate.sh");
+    let arm = gate
+        .lines()
+        .find(|l| l.trim_start().starts_with("store)") && l.contains("REF="))
+        .expect("the gate has a store arm writing REF");
+    let reference = match (arm.contains("$PLUGIN_CRATE"), arm.contains("$PLUGIN_ALIAS")) {
+        (true, false) => CRATE,
+        (false, true) => ALIAS,
+        _ => panic!("the store arm names neither or both of PLUGIN_CRATE/PLUGIN_ALIAS: {arm}"),
+    };
+
+    let dir = fixture_dir("signing-gate-ref");
+    let mut m = plugins::manifest("store", CRATE, "busbar");
+    m.alias = ALIAS.into();
+    std::fs::write(dir.join("plugins/p.tar.gz"), plugins::seal(m, b"lib")).unwrap();
+    write_configs(
+        &dir,
+        &format!(
+            "{}store:\n  module: {reference}\n",
+            plugins_block(&dir, true, false)
+        ),
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    let out = format!("{stdout}{stderr}");
+    assert_eq!(
+        code, 1,
+        "the gate's reference `{reference}` let an unsigned tarball validate: {out}"
+    );
+    assert!(
+        out.contains("was not loaded")
+            && (out.contains("manifest carries no signature") || out.contains("allow_unsigned")),
+        "the refusal is the trust verdict on the tarball: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// FAIL-CLOSED (conflict): two plugins claiming the same alias fail --validate naming BOTH.
 #[cfg(linked_axis_body_ingress)]
 #[test]

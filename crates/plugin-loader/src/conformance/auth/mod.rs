@@ -99,8 +99,8 @@ mod outbound;
 pub use outbound::{red_outbound_double_fetch, red_outbound_wrong_byte};
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, load, open_with, output, ready_step,
-    refresh_with, tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, load, open_with, output, ready_step, refresh_with,
+    tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{now_ns, DispatchConfig, Dispatcher, Done, Frame, Plugin};
@@ -671,7 +671,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
 /// THE INBOUND SCRIPT, over a door whose tail declares `CAP_INBOUND`.
 fn inbound(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) -> Fold {
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let secrets = s.secrets();
     let bad: Vec<Vec<u8>> = k["bad_settings"]
         .as_array()
@@ -737,7 +737,7 @@ fn inbound(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) -> Fold {
         Some((host, _)) => served_by(host),
         None => dispatcher(),
     };
-    let p = load::<Auth>(s, leg, bind(&d, "auth")).expect("the auth door loads");
+    let p = load::<Auth>(s, leg, s.bind(&d, "auth")).expect("the auth door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(
@@ -836,7 +836,7 @@ fn inbound(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) -> Fold {
         Some((_, rotated_host)) => served_by(rotated_host),
         None => d.clone(),
     };
-    let q = load::<Auth>(s, leg, bind(&dq, "auth-rotated")).expect("the auth door loads");
+    let q = load::<Auth>(s, leg, s.bind(&dq, "auth-rotated")).expect("the auth door loads");
     let mut rq = Recorder::new(crossings(&q));
     rq.line("open rotated", 1, || {
         called(&open_with(&q, &rotated, &secrets))

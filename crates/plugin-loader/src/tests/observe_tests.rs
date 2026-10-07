@@ -174,7 +174,7 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
             max_inflight_cap: 64,
             sink: binder.clone(),
             dispatcher: d.adopter(),
-            conns: None,
+            conns: crate::dispatch::ConnTable::Probe,
         },
     )
     .expect("the door binds");

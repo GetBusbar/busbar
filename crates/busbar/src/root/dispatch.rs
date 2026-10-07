@@ -60,10 +60,9 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 pub fn auth_axis(
     registry: Arc<crate::root::loader::PluginRegistry>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
-    Arc::new(RootAuthAxis(crate::root::loader::auth_axis::AuthRows::new(
-        registry,
-        dispatcher(),
-    )))
+    Arc::new(RootAuthAxis(
+        crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher()).with_conns(conns),
+    ))
 }
 
 /// One build's auth rows, with the process's outbound auth instances as its outbound half.
@@ -123,6 +122,12 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
                 },
             ))
     }
+}
+
+/// The process's one connection table, as an auth instance opened to serve declares its needs on
+/// it (read when the instance opens, never at the axis's install).
+fn conns() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
+    crate::root::connector::the().clone()
 }
 
 #[cfg(test)]
