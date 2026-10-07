@@ -15854,7 +15854,7 @@ fn auth_modules_list_inbound_rows_only() {
     let inbound: busbar_kernel::preflight::LinkedAuth =
         ("admin-tokens", busbar_auth_admin_tokens_plugin::door::door);
     assert_eq!(
-        crate::v1::service::inbound_auth_names(&[inbound]),
+        busbar_kernel::preflight::inbound_auth_names(&[inbound]),
         vec!["admin-tokens"]
     );
 }

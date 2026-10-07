@@ -688,23 +688,10 @@ mod catalog_scan_test_hooks {
 /// build to 1.5.5's answer over the rows it really links.
 pub fn auth_modules_compiled_in() -> Vec<&'static str> {
     let mut modules = vec![busbar_kernel::config::KEYS_MODULE];
-    modules.extend(inbound_auth_names(
+    modules.extend(busbar_kernel::preflight::inbound_auth_names(
         busbar_kernel::preflight::linked_auth_rows(),
     ));
     modules
-}
-
-/// The names of the INBOUND auth-chain modules among `rows`: those whose Statement declares an
-/// inbound capability. `build.auth_modules` lists what an operator can name in `auth.chain` /
-/// `admin_auth`, by alias, as 1.5.5 did; a row that only presents an upstream credential (outbound
-/// styles) is not an auth-chain module. Decided from what the plugin declares, never from its name.
-pub(crate) fn inbound_auth_names(
-    rows: &[busbar_kernel::preflight::LinkedAuth],
-) -> Vec<&'static str> {
-    rows.iter()
-        .filter(|r| busbar_plugin_loader::dispatch::kinds::auth::declares_inbound(r.1))
-        .map(|r| r.0)
-        .collect()
 }
 
 /// The removable hook plugins COMPILED INTO this binary (feature-gated). Excludes the always-present,
