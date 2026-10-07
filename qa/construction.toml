@@ -1110,7 +1110,6 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
-  "hooks-ranking",
 ]
 known_missing_deny = [ "plugin-loader",
 ]
@@ -1255,7 +1254,6 @@ known_sites = [
   "crates/busbar-kernel/src/proto/installed.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
-  "crates/plane-example/src/",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
   # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
   # ONE per (code, level, field-name list) and interns it, so the allocation is bounded by the
@@ -2147,9 +2145,14 @@ plane_crates = 3
 # transport 2 -> 1 (EXTRACT-15, item ws, #214): the ws transport crate MOVED OUT with its history to
 # GetBusbar/busbar-transport-ws and busbar pulls it at one pinned rev (root Cargo.toml). Its gates run
 # in that repo's plugin CI. `crates/busbar-transport-*` now matches one: stdio.
+# hook 1 -> 0 (P5 item hook-ranking): the ranking hook crate MOVED OUT with its history to
+# GetBusbar/busbar-hook-ranking, renamed busbar-hooks-ranking -> busbar-hook-ranking (the singular kind
+# name, Part 2 #3; its rename row below), and busbar pulls the logic crate at one pinned rev (root
+# Cargo.toml). Its gates run in that repo's plugin CI. `crates/hook*` now matches no directory: the
+# kind's documented zero in this repo (kind-isolation reads it from its pinned checkout).
 [gate.census.plugin_kinds]
 plane = 5
-hook = 1
+hook = 0
 auth = 0
 secret = 0
 store = 1
@@ -2165,3 +2168,17 @@ abi = 1
 [gate.census.deleted]
 "crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"
 "crates/busbar-mcp" = "P3 DEL-MCP: the mcp plane is served through its door alone; the legacy engine crate is deleted (ARCHITECT 2026-10-05, U11 / Q1)"
+"crates/plane-example" = "TODO P5: delete plane-example (Q128 audit BLOCK 11/12: a fixture plane plugin riding the HOT lane with C-unwind doors)"
+
+# THE RENAME ROWS (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). A moved-out crate excuses its kind's floor
+# drop only when the root pins it as a git dependency at a rev under the package name it had at the
+# base. A crate whose package name changed with the move counts ONLY with BOTH the git pin under the
+# NEW name AND a row here naming old -> new, the commit that moved it and why. A rename with no row
+# stays RED: nothing else says the new crate is the old one. A broken row (a field missing or empty,
+# a commit that does not resolve) is itself a census problem.
+
+[[gate.census.renamed]]
+from = "busbar-hooks-ranking"
+to = "busbar-hook-ranking"
+commit = "3b74ca71fb716fed371b7592b9c445c6a8863630"
+reason = "P5 item hook-ranking: the crate moved to GetBusbar/busbar-hook-ranking under the singular kind name (Part 2 #3, busbar-<kind>-<name>); the root pins busbar-hook-ranking at one rev"

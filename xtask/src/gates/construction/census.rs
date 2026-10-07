@@ -163,6 +163,9 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
     );
 
     // ── the floors themselves, against the base ──────────────────────────────────────────────────
+    // The rename rows are read (and a broken one is refused) whether or not a base is established.
+    let (renamed, problems) = renames(cx, &cfg.doc);
+    bad.extend(problems);
     if let Ok(base) = base_ref(cx) {
         if let Ok(was) = cx.git_show(&base.sha, CEILINGS) {
             if let Ok(doc) = crate::toml_doc::parse_str(&was) {
@@ -171,7 +174,7 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
                 bad.extend(deleted_ledger_findings(&now_deleted, &base_deleted, |d| {
                     cx.abs(d).exists()
                 }));
-                let mut moved = moved_out_by_kind(cx, cfg, &doc, &base.sha, &now_deleted);
+                let mut moved = moved_out_by_kind(cx, cfg, &doc, &base.sha, &now_deleted, &renamed);
                 if let Some(n) = deleted_plane_crates(cx, cfg, &doc, &now_deleted) {
                     moved.insert("plane_crates".to_string(), n as i64);
                 }
@@ -229,6 +232,8 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 /// directories that left the tree as MOVED-OUT plugins or ruled deletions ([`excused_out`]), and
 /// `plane_crates` by the legacy engines deleted under `[gate.census.deleted]`
 /// ([`deleted_plane_crates`], P3 DEL-MCP, ARCHITECT 2026-10-05). Every other drop is RED.
+/// A crate whose package name changed with the move counts only through a rename row ([`renames`],
+/// ARCHITECT 2026-10-03 Q-L7B2-CENSUS).
 fn lowered_floors(
     now_doc: &Document,
     base_doc: &Document,
@@ -263,6 +268,7 @@ fn moved_out_by_kind(
     base_doc: &Document,
     sha: &str,
     deleted: &BTreeSet<String>,
+    renamed: &BTreeMap<String, String>,
 ) -> BTreeMap<String, i64> {
     let root_manifest = cx.read("Cargo.toml").unwrap_or_default();
     let base_kinds = base_doc.table_or_empty("gate.plugin_kinds");
@@ -289,7 +295,7 @@ fn moved_out_by_kind(
         };
         if let Some(n) = excused_out(
             &gone,
-            |dir| moved_out(&[dir.to_string()], package_at_base, &root_manifest).is_some(),
+            |dir| moved_out(&[dir.to_string()], package_at_base, &root_manifest, renamed).is_some(),
             |dir| deleted.contains(dir) && !cx.abs(dir).exists(),
         ) {
             out.insert(format!("plugin_kinds.{kind}"), n as i64);
@@ -348,20 +354,27 @@ fn excused_out(
 /// A plugin crate MOVED OUT (TODO PATH TO DEV-GREEN P5: filter-repo into its own repo, pinned back
 /// in busbar as one git dependency at an exact commit). `Some(gone.len())` when every directory in
 /// `gone` is a crate whose package (`package_at_base`) the root manifest now pins as a git
-/// dependency at a `rev`; `None` when any one is not (deleted, renamed, or pulled by branch), and
-/// for an empty `gone`.
+/// dependency at a `rev`; `None` when any one is not (deleted, or pulled by branch), and for an
+/// empty `gone`.
+///
+/// A RENAMED move (ARCHITECT 2026-10-03, Q-L7B2-CENSUS) counts only when BOTH hold: `renamed` — the
+/// census ledger's rename rows, old package name to new — carries a row for the base package, AND
+/// the root pins the NEW name as a git dependency at a `rev`. A rename with no row is not a move:
+/// nothing but a reviewed row says the new crate is the old one.
 fn moved_out(
     gone: &[String],
     package_at_base: impl Fn(&str) -> Option<String>,
     root_manifest: &str,
+    renamed: &BTreeMap<String, String>,
 ) -> Option<usize> {
     if gone.is_empty() {
         return None;
     }
+    let pinned = |name: &str| crate::gates::workspace_deps::pinned_git_dep(root_manifest, name);
     gone.iter()
         .all(|dir| {
             package_at_base(dir).is_some_and(|name| {
-                crate::gates::workspace_deps::pinned_git_dep(root_manifest, &name)
+                pinned(&name) || renamed.get(&name).is_some_and(|new| pinned(new))
             })
         })
         .then_some(gone.len())
@@ -398,15 +411,71 @@ fn deleted_ledger_findings(
     out
 }
 
+/// THE CENSUS LEDGER'S RENAME ROWS: `[[gate.census.renamed]]`, each `from` (the package name at the
+/// base) -> `to` (the crate name the root now pins), with the `commit` that moved it and the
+/// `reason` (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). Answers the rows as `from -> to`, and one census
+/// problem per row that is not a whole row: a field missing or empty, `from` equal to `to`, a
+/// `from` written twice, or a `commit` that does not resolve. A broken row excuses nothing.
+pub(crate) fn renames(cx: &Ctx, doc: &Document) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut out = BTreeMap::new();
+    let mut problems = Vec::new();
+    for (i, row) in doc.array_of_tables(RENAMED).into_iter().enumerate() {
+        let field = |k: &str| row.str_of(k).map(str::trim).filter(|v| !v.is_empty());
+        let (Some(from), Some(to), Some(commit), Some(_reason)) =
+            (field("from"), field("to"), field("commit"), field("reason"))
+        else {
+            problems.push(format!(
+                "[[{RENAMED}]] row {} is not a whole rename row: it needs `from`, `to`, `commit` and \
+                 `reason`, each non-empty",
+                i + 1
+            ));
+            continue;
+        };
+        if from == to {
+            problems.push(format!(
+                "[[{RENAMED}]] row {} renames `{from}` to itself",
+                i + 1
+            ));
+            continue;
+        }
+        if !cx.git_ref_resolves(commit) {
+            problems.push(format!(
+                "[[{RENAMED}]] {from} -> {to}: its commit `{commit}` does not resolve in this checkout"
+            ));
+            continue;
+        }
+        if out.insert(from.to_string(), to.to_string()).is_some() {
+            problems.push(format!("[[{RENAMED}]] renames `{from}` twice"));
+        }
+    }
+    (out, problems)
+}
+
+/// Where the rename rows live in the ceilings file.
+pub const RENAMED: &str = "gate.census.renamed";
+
+/// The overlay key a self-test plants to answer `git ls-tree -d --name-only <sha> <parent>/` (see
+/// [`base_dirs`]): one directory per line.
+pub const LS_TREE_KEY: &str = "git-ls-tree";
+
 /// The directories the globs `globs` matched at commit `sha`: each glob's parent listed at that
 /// commit (`git ls-tree -d`), kept where the glob matches.
 fn base_dirs(cx: &Ctx, sha: &str, globs: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for g in globs {
         let parent = g.rsplit_once('/').map_or(".", |(p, _)| p);
-        let listed = cx
-            .git_lines(&["ls-tree", "-d", "--name-only", sha, &format!("{parent}/")])
-            .unwrap_or_default();
+        // A self-test's synthetic base answers from the overlay; every real run asks git.
+        let listed = match cx.overlay_command(&format!("{LS_TREE_KEY}:{sha}:{parent}/")) {
+            Some(text) => text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect(),
+            None => cx
+                .git_lines(&["ls-tree", "-d", "--name-only", sha, &format!("{parent}/")])
+                .unwrap_or_default(),
+        };
         for d in listed {
             if glob_matches(g, &d) && !out.contains(&d) {
                 out.push(d);
