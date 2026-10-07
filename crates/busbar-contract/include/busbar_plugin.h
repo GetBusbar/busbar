@@ -639,6 +639,11 @@ extern "C" {
 #define BB_HSVC_MAX_RANDOM_FILL UINT64_C(1024) /* The most bytes one `random.fill` answers. */
 #define BB_HSVC_CONTENT_PASS UINT64_C(0) /* `content.scan`: the content passes. */
 #define BB_HSVC_CONTENT_BLOCK UINT64_C(1) /* `content.scan`: the gate blocked it. */
+#define BB_HSVC_HOOK_GATE UINT32_C(0) /* `hook.call` stage: the calling unit's decision gates. */
+#define BB_HSVC_HOOK_REWRITE UINT32_C(1) /* `hook.call` stage: the calling unit's rewrite chain. */
+#define BB_HSVC_HOOK_FROM_MAX UINT32_C(255) /* The furthest a rewrite chain resumes (`HookCallIn::from`), and the most hooks one chain runs. */
+#define BB_HSVC_HOOK_STOP_MIN UINT64_C(400) /* The least status a stopping hook answers `hook.call` with. */
+#define BB_HSVC_HOOK_STOP_MAX UINT64_C(599) /* The greatest status a stopping hook answers `hook.call` with. */
 #define BB_HSVC_SNAPSHOT_SCOPE_WHOLE UINT32_C(0) /* [`SnapshotReadIn::scope`]: the host recorder's WHOLE snapshot, in its order (kind, then name), */
 #define BB_HSVC_SNAPSHOT_SCOPE_HOOKS UINT32_C(1) /* [`SnapshotReadIn::scope`]: the families the configured hooks REPORT (each hook's own metrics, */
 #define BB_HSVC_SNAPSHOT_SCOPES UINT32_C(2) /* How many scopes there are; a scope at or past it is REFUSED. */
@@ -3563,12 +3568,12 @@ struct bb_hsvc_ContentScanIn {
     bb_hsvc_ServiceBufs into;
 };
 
-/* [`op::HOOK_CALL`]'s `in`: run a hook stage for an in-session sub-operation, over the hook kind's */
+/* [`op::HOOK_CALL`]'s `in` (THE DESIGN, host services; ARCHITECT H2 ruling: op 17): run the calling */
 struct bb_hsvc_HookCallIn {
     bb_hsvc_ServiceHead head;
     uint32_t stage;
-    uint32_t _reserved;
-    const bb_hook_RequestView *view;
+    uint32_t from;
+    const bb_hook_PromptView *prompt;
     bb_hsvc_ServiceBufs into;
 };
 
@@ -5639,8 +5644,8 @@ BB_ASSERT(sizeof(bb_hsvc_HookCallIn) == 72, "bb_hsvc_HookCallIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HookCallIn) == 8, "bb_hsvc_HookCallIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, head) == 0, "bb_hsvc_HookCallIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, stage) == 24, "bb_hsvc_HookCallIn.stage: offset");
-BB_ASSERT(offsetof(bb_hsvc_HookCallIn, _reserved) == 28, "bb_hsvc_HookCallIn._reserved: offset");
-BB_ASSERT(offsetof(bb_hsvc_HookCallIn, view) == 32, "bb_hsvc_HookCallIn.view: offset");
+BB_ASSERT(offsetof(bb_hsvc_HookCallIn, from) == 28, "bb_hsvc_HookCallIn.from: offset");
+BB_ASSERT(offsetof(bb_hsvc_HookCallIn, prompt) == 32, "bb_hsvc_HookCallIn.prompt: offset");
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, into) == 40, "bb_hsvc_HookCallIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_SnapshotReadIn) == 64, "bb_hsvc_SnapshotReadIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_SnapshotReadIn) == 8, "bb_hsvc_SnapshotReadIn: alignment");
