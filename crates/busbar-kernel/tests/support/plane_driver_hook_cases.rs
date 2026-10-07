@@ -47,6 +47,15 @@ fn bound(
     rewrites: Vec<(Duration, Arc<dyn RoutingPolicy>)>,
     gates: Vec<(u16, ResolvedPolicy)>,
 ) -> BoundHooks {
+    counted(rewrites, gates, Arc::new(|| 1))
+}
+
+/// [`bound`], the unit's correlation id off `next_request_id`.
+fn counted(
+    rewrites: Vec<(Duration, Arc<dyn RoutingPolicy>)>,
+    gates: Vec<(u16, ResolvedPolicy)>,
+    next_request_id: Arc<dyn Fn() -> u64 + Send + Sync>,
+) -> BoundHooks {
     BoundHooks {
         rewrites,
         gates,
@@ -55,7 +64,7 @@ fn bound(
         pool_policies: Default::default(),
         taps: StageTaps::default(),
         requested: RequestedSignals::default(),
-        next_request_id: Arc::new(|| 1),
+        next_request_id,
         caller: Arc::new(Nobody),
         dialects: vec!["test-dialect".to_string()],
     }
@@ -283,4 +292,129 @@ async fn a_request_the_plane_cannot_project_is_refused_before_any_attempt() {
         .take_rendered()
         .expect("the plane rendered the refusal");
     assert_eq!(rendered.status, 400);
+}
+
+// ── the request span's correlation id (ARCHITECT RULING D1 2026-10-06) ──────────────────────────
+
+/// Every span opened under the capture: its name and each field as it was given or later recorded.
+type Opened = Arc<Mutex<Vec<(tracing::span::Id, String, Vec<(String, String)>)>>>;
+
+/// A layer keeping every span's name and fields, including those recorded after it opened.
+#[derive(Clone, Default)]
+struct SpanCapture(Opened);
+
+struct Fields<'a>(&'a mut Vec<(String, String)>);
+
+impl tracing::field::Visit for Fields<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0
+            .push((field.name().to_string(), format!("{value:?}")));
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanCapture {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        _: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut fields = Vec::new();
+        attrs.record(&mut Fields(&mut fields));
+        let name = attrs.metadata().name().to_string();
+        self.0.lock().unwrap().push((id.clone(), name, fields));
+    }
+
+    fn on_record(
+        &self,
+        id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        _: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut opened = self.0.lock().unwrap();
+        if let Some((_, _, fields)) = opened.iter_mut().rev().find(|(i, _, _)| i == id) {
+            values.record(&mut Fields(fields));
+        }
+    }
+}
+
+/// Drive one unit of `hooks` under a request span named `forward` (the span the composition root
+/// opens around a unit), every span captured: the spans named `forward`, each with its fields, and
+/// how many correlation ids the binder handed out.
+async fn request_spans(gates: Vec<(u16, ResolvedPolicy)>) -> (Vec<Vec<(String, String)>>, u64) {
+    use tracing::Instrument as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let minted = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counter = Arc::clone(&minted);
+    let next = Arc::new(move || 40 + counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1);
+    let r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(counted(Vec::new(), gates, next)),
+    );
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let capture = SpanCapture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let _default = tracing::subscriber::set_default(subscriber);
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, arrival("/call", b"user:hello"), 0);
+    let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
+    let outcome = drive(&units).instrument(span).await;
+    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
+    let forward = capture
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, name, _)| name == "forward")
+        .map(|(_, _, fields)| fields.clone())
+        .collect();
+    (forward, minted.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// A UNIT NO HOOK BINDS still carries a correlation id on its request span, one id off the
+/// binder's counter, as 1.5.5 stamped one on every forwarded request (v1.5.5
+/// `crates/busbar/src/proxy/engine/mod.rs:144`, recorded on its span at `:152`); and the kernel
+/// opens no `forward` span of its own beside the request span. RED: the request span's
+/// `request_id` stayed empty for a unit no hook binds.
+#[tokio::test]
+async fn a_unit_no_hook_binds_carries_one_correlation_id_on_its_request_span() {
+    let (forward, minted) = request_spans(Vec::new()).await;
+    assert_eq!(
+        forward.len(),
+        1,
+        "the request span is the unit's one `forward` span: {forward:?}"
+    );
+    assert_eq!(minted, 1, "one id per unit");
+    assert_eq!(
+        forward[0],
+        vec![("request_id".to_string(), "41".to_string())],
+        "the request span carries the unit's id"
+    );
+}
+
+/// A UNIT A HOOK BINDS carries on its request span the id its hooks were handed, minted once; and
+/// the kernel opens no second `forward` span (the never-entered `debug_span!("forward")` the hook
+/// stage opened before is deleted). RED: the id went on a second, never-entered `forward` span.
+#[tokio::test]
+async fn a_hooked_unit_carries_its_hooks_correlation_id_on_its_request_span() {
+    let (_, g) = gate(None);
+    let (forward, minted) = request_spans(vec![(0, g)]).await;
+    assert_eq!(
+        forward.len(),
+        1,
+        "the request span is the unit's one `forward` span: {forward:?}"
+    );
+    assert_eq!(minted, 1, "one id per unit, the one its hooks carry");
+    assert_eq!(
+        forward[0],
+        vec![("request_id".to_string(), "41".to_string())],
+        "the request span carries the id the hooks were handed"
+    );
 }

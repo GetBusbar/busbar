@@ -448,6 +448,8 @@ pub struct ServedPlane {
     pub kernel: Arc<KernelServices>,
     /// Its tail's dialects, in order: what a unit's dialect index names.
     pub dialects: Vec<&'static str>,
+    /// Its tail's operation classes, in order: what a unit's operation class index names.
+    pub op_classes: Vec<&'static str>,
 }
 
 /// WHAT ONE GENERATION OF A DOOR PLANE IS SERVED OVER: its section as written, its refresh
@@ -1245,6 +1247,7 @@ pub(crate) fn compose_planes_over(
             live,
             kernel: Arc::clone(&kernel),
             dialects: served_facts.dialects.clone(),
+            op_classes: served_facts.op_classes.clone(),
         });
     }
     Ok(served)
@@ -2912,14 +2915,17 @@ impl DataRoutes {
         let late: crate::root::linked::node::Late =
             Box::new(move || report_of(&money, unit, &facts));
         // THE UNIT'S REQUEST SPAN, as the previous release's forward opened one around the whole
-        // walk (at the hot-path level, so the OTLP export carries it): the pool and the dialect the
-        // request was read in are recorded once the plane has read it.
+        // walk, at the hot-path level so the OTLP export carries it, with its fields (v1.5.5
+        // `crates/busbar/src/proxy/engine/mod.rs:120-125`: `pool`, `ingress`, `op`, `request_id`).
+        // The pool, the dialect the request was read in and its operation are recorded once the
+        // plane has read it; the correlation id by the kernel's hook stage, under this span.
         let span = tracing::span!(
             busbar_kernel::observability::HOTPATH_LEVEL,
             "forward",
             plane = %served.instance,
             pool = tracing::field::Empty,
             ingress = tracing::field::Empty,
+            op = tracing::field::Empty,
             request_id = tracing::field::Empty
         );
         let _taken = {
@@ -2938,11 +2944,20 @@ impl DataRoutes {
             .await
         };
         if let Some(decoded) = units.decoded() {
-            if let Some(pool) = decoded.pool.as_ref() {
-                span.record("pool", String::from_utf8_lossy(pool).as_ref());
-            }
+            // The pool the unit walks, or empty for an entry named directly (1.5.5's pool name for
+            // a model route, v1.5.5 `crates/busbar/src/ingress/dispatch.rs:208-218`).
+            let pool = match decoded.pool.as_ref() {
+                Some(pool) if decoded.route == busbar_contract::abi::plane::ROUTE_POOL => {
+                    String::from_utf8_lossy(pool)
+                }
+                _ => std::borrow::Cow::Borrowed(""),
+            };
+            span.record("pool", pool.as_ref());
             if let Some(dialect) = served.dialects.get(decoded.dialect as usize) {
                 span.record("ingress", *dialect);
+            }
+            if let Some(op) = served.op_classes.get(decoded.op_class as usize) {
+                span.record("op", *op);
             }
         }
         drop(span);

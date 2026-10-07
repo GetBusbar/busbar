@@ -666,7 +666,13 @@ impl Rig {
             body: Arc::from(body),
         };
         let units = self.driver.unit(steps, &far, &caller, arrival, 0);
-        let outcome = drive(&units).await;
+        // The unit is driven under the request span the composition root opens around every unit
+        // (`root/serve.rs`, 1.5.5's `forward`): the kernel records the unit's correlation id on it.
+        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
+        let outcome = {
+            use tracing::Instrument as _;
+            drive(&units).instrument(span).await
+        };
         let rendered = units.take_rendered();
         let (status, fields, body) = match rendered {
             Some(r) => (r.status, r.fields, r.body),

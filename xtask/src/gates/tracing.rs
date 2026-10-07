@@ -1,5 +1,12 @@
 //! `cargo xtask gate tracing` — EVERY SPAN IS BOUND TO AN EXPLICIT LEVEL, SET IN ONE PLACE. The
-//! successor to `scripts/tracing-lint.sh`, rule for rule.
+//! successor to `scripts/tracing-lint.sh`, rule for rule, plus the hand-written spans it never read.
+//!
+//! TWO KINDS OF SUBJECT (ARCHITECT RULING D1 2026-10-06, option (b)). A span is opened either by an
+//! `#[instrument]` attribute or by hand, with a `span!` macro. Both are subjects of the one rule and
+//! both count toward the subject floor. A hand-written span names its level as the `span!` macro's
+//! level argument, and that argument must be `observability::HOTPATH_LEVEL` (by any path): a
+//! `debug_span!`/`info_span!`/… sets its level through the macro's name, and a `span!` handed
+//! `Level::DEBUG` hard-codes it, and either is a level picked somewhere other than the one place.
 //!
 //! A `#[tracing::instrument]` (or the prelude-imported `#[instrument]` form) that omits an explicit
 //! `level = …` silently defaults to INFO — always on, on the hot path — which is what
@@ -50,12 +57,29 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 const SCAN_FLOOR: usize = 130;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
-/// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a
-/// level" is as vacuous over zero SPANS as over zero files, and the files-to-spans ratio is ~150:1
-/// (777 production files, 5 attributes), so every span could leave the tree with the file floor
-/// untouched. Armed at the measured count (arrival.rs 3, ingress/mod.rs 2); like the file floor it
-/// has no override, and lowering it is a reviewable source edit that says which span went where.
+/// nothing about whether the thing this gate judges is still there. "Every span has a level" is as
+/// vacuous over zero SPANS as over zero files, and the files-to-spans ratio is ~150:1, so every span
+/// could leave the tree with the file floor untouched. Armed at 5 (arrival.rs 3, ingress/mod.rs 2);
+/// since ARCHITECT RULING D1 2026-10-06 a hand-written `span!` counts as a subject too, and the tree
+/// holds 7 (the plane's arrival reader's five `#[instrument]`s, the request span the composition
+/// root opens and the kernel's degraded-attempt span). Like the file floor it has no override, and
+/// lowering it is a reviewable source edit that says which span went where.
 const SPAN_FLOOR: usize = 5;
+
+/// The `tracing` macros that open a span by hand. `span!` takes its level as an argument; every
+/// other one names its level in the macro's own name.
+const SPAN_MACROS: &[&str] = &[
+    "span",
+    "trace_span",
+    "debug_span",
+    "info_span",
+    "warn_span",
+    "error_span",
+];
+
+/// The one place a hand-written span's level may come from: the hot-path level constant, by any
+/// path (`HOTPATH_LEVEL`, `observability::HOTPATH_LEVEL`, `busbar_kernel::observability::…`).
+const ONE_PLACE: &str = "HOTPATH_LEVEL";
 
 /// The two findings, spelled ONCE so both the gate and its legacy translator write them the same
 /// way and a parity diff can only be about which spans were found.
@@ -73,13 +97,32 @@ fn finding_unclosed(rel: &str, line: usize) -> String {
     )
 }
 
+/// A hand-written span whose level is not the one place's: the macro that names its own level, or
+/// the `span!` level argument that is not [`ONE_PLACE`].
+fn finding_hand_level(rel: &str, line: usize, how: &str) -> String {
+    format!(
+        "{rel}:{line}: hand-written span {how} — open it with `tracing::span!(observability::\
+         HOTPATH_LEVEL, …)` so its level is set in the one place"
+    )
+}
+
+fn finding_hand_unclosed(rel: &str, line: usize) -> String {
+    format!(
+        "{rel}:{line}: hand-written span macro never closes — its parens do not balance before the \
+         end of the file, so this span AND EVERY LATER SPAN IN THIS FILE went unchecked"
+    )
+}
+
 const CLEAN: &str = "the scan cleared its floor and named nothing";
 
 /// One file's findings: the level-less spans and the attribute that never closed.
 #[derive(Debug, Default)]
 struct Findings {
-    /// How many `#[instrument]` attributes the scan read — the subject count [`SPAN_FLOOR`] judges.
+    /// How many spans the scan read, `#[instrument]` and hand-written — the subject count
+    /// [`SPAN_FLOOR`] judges.
     spans: usize,
+    /// How many of [`Self::spans`] were hand-written.
+    hand: usize,
     level: Vec<String>,
     unclosed: Vec<String>,
 }
@@ -161,6 +204,112 @@ fn declares_level(code: &str) -> bool {
     })
 }
 
+/// Where a hand-written span macro is invoked in BLANKED code, at or after `from`: the char index
+/// of its opening paren and the macro's name. Only `tracing`'s own macros count: a bare name (the
+/// macro imported) or one reached through `tracing::`; `other::span!` and `my_span!` are not spans.
+fn next_span_macro(code: &[char], from: usize) -> Option<(usize, &'static str)> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut i = from;
+    while i + 5 <= code.len() {
+        if code[i..i + 5] != ['s', 'p', 'a', 'n', '!'] {
+            i += 1;
+            continue;
+        }
+        let bang = i + 4;
+        let mut start = i;
+        while start > 0 && ident(code[start - 1]) {
+            start -= 1;
+        }
+        let name: String = code[start..bang].iter().collect();
+        let Some(name) = SPAN_MACROS.iter().copied().find(|m| *m == name) else {
+            i += 5;
+            continue;
+        };
+        // What stands before the name: nothing that continues a path, or `tracing::`.
+        let before: String = code[..start].iter().collect();
+        let before = before.trim_end();
+        let pathed = before.ends_with("::");
+        let tracing_path = before
+            .strip_suffix("::")
+            .map(str::trim_end)
+            .is_some_and(|p| {
+                p.strip_suffix("tracing")
+                    .is_some_and(|q| !q.ends_with(|c: char| ident(c)))
+            });
+        if pathed && !tracing_path {
+            i += 5;
+            continue;
+        }
+        let mut open = bang + 1;
+        while open < code.len() && code[open].is_whitespace() {
+            open += 1;
+        }
+        if code.get(open) == Some(&'(') {
+            return Some((open, name));
+        }
+        i += 5;
+    }
+    None
+}
+
+/// The top-level arguments of a balanced `( … )` group in blanked code starting at its `(`.
+fn top_level_args(group: &str) -> Vec<String> {
+    let mut depth = 0usize;
+    let mut args: Vec<String> = vec![String::new()];
+    for c in group.chars() {
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth == 1 {
+                    continue;
+                }
+            }
+            ')' | ']' | '}' => {
+                if depth == 1 {
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            ',' if depth == 1 => {
+                args.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(a) = args.last_mut() {
+            a.push(c);
+        }
+    }
+    args
+}
+
+/// A complete hand-written span macro's verdict: `None` when its level is the one place's, else how
+/// it is set instead.
+fn hand_span_level(name: &str, group: &str) -> Option<String> {
+    if name != "span" {
+        return Some(format!("`{name}!` sets its level through the macro's name"));
+    }
+    let args = top_level_args(group);
+    let level = args
+        .iter()
+        .map(|a| a.trim())
+        .find(|a| !a.starts_with("target:") && !a.starts_with("parent:"))
+        .unwrap_or("");
+    let is_path = !level.is_empty()
+        && level
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':' || c.is_whitespace());
+    let last = level.rsplit("::").next().unwrap_or("").trim();
+    if is_path && last == ONE_PLACE {
+        None
+    } else {
+        Some(format!(
+            "`span!` hard-codes its level `{}`",
+            level.split_whitespace().collect::<Vec<_>>().join(" ")
+        ))
+    }
+}
+
 /// The statement-window accumulator, per file. An attribute's token stream may span any number of
 /// lines (a multi-line `fields(…)` list is the common shape); it is complete once the accumulated
 /// code has equal `(` and `)` counts — true immediately for a bare `#[instrument]`.
@@ -170,12 +319,16 @@ fn scan_file(rel: &str, text: &str) -> Findings {
     let mut start_line = 0usize;
     let mut code = String::new();
     let mut lex = scan::LexState::default();
+    // A hand-written span macro still open at the end of a line: its line, its name and its
+    // blanked text from its `(`.
+    let mut hand: Option<(usize, &'static str, String)> = None;
 
     for (i, line) in text.lines().enumerate() {
         let is_comment = line.trim_start().starts_with("//");
         // A paren inside a STRING LITERAL or a COMMENT is text, not structure. The state is carried
         // so a `fields(…)` list interrupted by a multi-line literal is still read as one attribute.
         let nostr = scan::blank_code(line, &mut lex);
+        scan_hand_spans(rel, i + 1, &nostr, &mut hand, &mut out);
 
         if !in_attr {
             if is_comment || !opens_instrument_attr(line) {
@@ -203,7 +356,64 @@ fn scan_file(rel: &str, text: &str) -> Findings {
     if in_attr {
         out.unclosed.push(finding_unclosed(rel, start_line));
     }
+    if let Some((line, _, _)) = hand {
+        out.unclosed.push(finding_hand_unclosed(rel, line));
+    }
     out
+}
+
+/// One blanked line's hand-written span macros: the one carried in from earlier lines first, then
+/// each one this line opens, every complete one judged and counted.
+fn scan_hand_spans(
+    rel: &str,
+    line_no: usize,
+    nostr: &str,
+    open: &mut Option<(usize, &'static str, String)>,
+    out: &mut Findings,
+) {
+    if open.is_none() && !nostr.contains("span!") {
+        return;
+    }
+    let chars: Vec<char> = nostr.chars().collect();
+    let mut at = 0usize;
+    loop {
+        let (start, name, mut group, from) = match open.take() {
+            Some((start, name, mut group)) => {
+                group.push('\n');
+                (start, name, group, 0)
+            }
+            None => match next_span_macro(&chars, at) {
+                Some((paren, name)) => (line_no, name, String::new(), paren),
+                None => return,
+            },
+        };
+        let mut depth = group.matches('(').count() - group.matches(')').count();
+        let mut closed_at = None;
+        for (k, c) in chars.iter().enumerate().skip(from) {
+            group.push(*c);
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        closed_at = Some(k);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(k) = closed_at else {
+            *open = Some((start, name, group));
+            return;
+        };
+        out.spans += 1;
+        out.hand += 1;
+        if let Some(how) = hand_span_level(name, &group) {
+            out.level.push(finding_hand_level(rel, start, &how));
+        }
+        at = k + 1;
+    }
 }
 
 /// The finding rows, built from offender lists — the ONE constructor `run` and the legacy
@@ -212,13 +422,14 @@ fn row_level(offenders: &[String]) -> Row {
     if offenders.is_empty() {
         return Row::pass(
             ROW_LEVEL,
-            "every #[instrument] carries an explicit level=",
+            "every #[instrument] carries an explicit level= and every hand-written span the \
+             hot-path level",
             CLEAN,
         );
     }
     Row::fail(
         ROW_LEVEL,
-        "a #[instrument] span defaults to INFO",
+        "a span's level is not set in the one place",
         format!("{} finding(s): {}", offenders.len(), offenders.join(" | ")),
     )
 }
@@ -291,9 +502,11 @@ impl Gate for TracingGate {
         let mut level = Vec::new();
         let mut unclosed = Vec::new();
         let mut spans = 0usize;
+        let mut hand = 0usize;
         for f in &files {
             let found = scan_file(&f.rel_str(), &f.text);
             spans += found.spans;
+            hand += found.hand;
             level.extend(found.level);
             unclosed.extend(found.unclosed);
         }
@@ -304,12 +517,11 @@ impl Gate for TracingGate {
             return Verdict::of(vec![
                 Row::fail(
                     ROW_SCAN_FLOOR,
-                    "the scan found fewer #[instrument] spans than its subject floor",
+                    "the scan found fewer spans than its subject floor",
                     format!(
-                        "{} files walked but only {spans} #[instrument] attribute(s) read, below \
-                         the span floor of {SPAN_FLOOR}. A span that moved or became a hand-rolled \
-                         `span!` took the subject with it: lower SPAN_FLOOR in a diff that says \
-                         which one and why.",
+                        "{} files walked but only {spans} span(s) read ({hand} hand-written), below \
+                         the span floor of {SPAN_FLOOR}. A span that left the tree took the subject \
+                         with it: the floor is never lowered to meet the tree.",
                         files.len()
                     ),
                 ),
@@ -330,8 +542,8 @@ impl Gate for TracingGate {
                 ROW_SCAN_FLOOR,
                 "the crates walk cleared its floor",
                 format!(
-                    "{} files, {spans} #[instrument] span(s) (floors {SCAN_FLOOR} / {SPAN_FLOOR}); \
-                     {CLEAN}",
+                    "{} files, {spans} span(s), {hand} of them hand-written (floors {SCAN_FLOOR} / \
+                     {SPAN_FLOOR}); {CLEAN}",
                     files.len()
                 ),
             ),
@@ -468,9 +680,49 @@ impl Gate for TracingGate {
             ],
         ));
 
-        // ITEM 228: THE SUBJECT FLOOR. Every production span becomes a hand-rolled `span!`; the
-        // file walk still clears 130, and the scan must still refuse to call the empty subject
-        // clean.
+        // ARCHITECT RULING D1 2026-10-06: A HAND-WRITTEN SPAN WITH A HARD-CODED LEVEL IS REFUSED.
+        // The two kernel spans this ruling deleted were `debug_span!`s; a `span!` handed a literal
+        // Level is the same level picked outside the one place, and so is one whose level argument
+        // sits on the next line. The hot-path level by any path (and behind a `target:`) is clean;
+        // a `debug_span!` inside a string, another crate's `span!` and a macro whose name merely
+        // ends in `span` are not spans. Exactly three findings, and which three is the point.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_hand_spans.rs",
+            "pub fn hard_coded() {\n\
+             \x20   let a = tracing::debug_span!(\"forward\", request_id = tracing::field::Empty);\n\
+             \x20   let b = tracing::span!(tracing::Level::DEBUG, \"forward_once\", lane = 1);\n\
+             \x20   let c = span!(\n\
+             \x20       Level::INFO,\n\
+             \x20       \"multi_line\"\n\
+             \x20   );\n\
+             \x20   let d = tracing::span!(HOTPATH_LEVEL, \"one_place\");\n\
+             \x20   let e = ::tracing::span!(target: \"t\",\x20\
+             crate::observability::HOTPATH_LEVEL, \"x\");\n\
+             \x20   let f = \"tracing::debug_span!(\\\"in_a_string\\\")\";\n\
+             \x20   let g = other::span!(Level::DEBUG, \"not_tracing\");\n\
+             \x20   let h = my_span!(Level::DEBUG);\n\
+             }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a hand-written span with a hard-coded level is refused",
+            &[ROW_LEVEL],
+            ov,
+            &[
+                "3 finding(s)",
+                "planted_hand_spans.rs:2: hand-written span `debug_span!`",
+                "planted_hand_spans.rs:3: hand-written span `span!` hard-codes its level \
+                 `tracing::Level::DEBUG`",
+                "planted_hand_spans.rs:4: hand-written span `span!` hard-codes its level \
+                 `Level::INFO`",
+            ],
+        ));
+
+        // ITEM 228: THE SUBJECT FLOOR. Every production span leaves the tree (an `#[instrument]`
+        // line becomes a comment, a hand-written `span!` stops being one); the file walk still
+        // clears 130, and the scan must still refuse to call the empty subject clean.
         let mut ov = Overlay::new();
         let mut planted = 0usize;
         if let Ok(files) = cx.walk(
@@ -479,7 +731,9 @@ impl Gate for TracingGate {
                 .exclude([EXCLUDE_TESTS_DIR]),
         ) {
             for f in &files {
-                if !f.text.lines().any(opens_instrument_attr) {
+                if !f.text.lines().any(opens_instrument_attr)
+                    && scan_file(&f.rel_str(), &f.text).hand == 0
+                {
                     continue;
                 }
                 let text: String = f
@@ -487,9 +741,9 @@ impl Gate for TracingGate {
                     .lines()
                     .map(|l| {
                         if opens_instrument_attr(l) {
-                            "// span moved to a hand-rolled tracing::span!".to_string()
+                            "// span removed".to_string()
                         } else {
-                            l.to_string()
+                            l.replace("span!", "spam!")
                         }
                     })
                     .collect::<Vec<_>>()

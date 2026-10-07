@@ -395,6 +395,8 @@ struct Live {
     error_left: Option<usize>,
     /// The keep rule of the need the attempt opened on.
     keep: ResponseKeep,
+    /// A degraded attempt's span, open for as long as the attempt is (`Span::none()` otherwise).
+    _span: tracing::Span,
 }
 
 /// One unit's state: the egress unit's walk, the attempt in flight, and a health probe's one
@@ -757,6 +759,19 @@ impl EgressFarEnd<'_> {
                 .and_then(|r| r.auth.as_ref())
                 .is_some_and(|a| a.passthrough);
         let provider = route.map(|r| r.provider.clone()).unwrap_or_default();
+        // THE DEGRADED ATTEMPT'S SPAN (a spill into a fallback pool, the least-bad bypass, a queued
+        // slot): the previous release ran each such dispatch under its own span, named for it and
+        // carrying the member's lane (v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:382-387`,
+        // called at `:281`, `:1061`, `:1155`). A member's destination is its lane's index.
+        let span = if degraded {
+            tracing::span!(
+                crate::observability::HOTPATH_LEVEL,
+                "forward_once",
+                lane = member.destination.get()
+            )
+        } else {
+            tracing::Span::none()
+        };
         w.unread = None;
         w.live = Some(Live {
             pool: pool.clone(),
@@ -775,6 +790,7 @@ impl EgressFarEnd<'_> {
             ended: false,
             error_left: None,
             keep: ResponseKeep::default(),
+            _span: span,
         });
         Pick::Member {
             name,
