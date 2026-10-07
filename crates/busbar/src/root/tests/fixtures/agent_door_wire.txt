@@ -19,5 +19,7 @@ audit_action = agent.call
 resource_kind = agent
 # The scope kind a key's grant names an agent under (door.rs SCOPE): `<scope_kind>:<agent id>`.
 scope_kind = agent
-# The class a unit's moved request and response body bytes are counted under (meta.rs CLASS_BYTES).
+# The section's subject noun in the config refusals (a2a/config.rs SUBJECT_NOUN), and the billable
+# class a hop's moved bytes are counted in (meta.rs CLASS_BYTES).
+subject_noun = fronted agent
 bytes_class = bytes
