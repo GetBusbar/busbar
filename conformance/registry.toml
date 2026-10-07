@@ -139,7 +139,7 @@ not_run_reason = "planned 1.6.0 — PAR/DPoP/client-assertion wiring in flight; 
 [[suite]]
 id = "h2"
 standard = "HTTP/2 (RFC 9113)"
-plan = "h2spec against busbar-transport-http"
+plan = "h2spec over TLS (ALPN h2) against the tls: listener"
 tier = "conformant"
 label = "HTTP/2"
 verdict = "conformance-verdict-h2"
