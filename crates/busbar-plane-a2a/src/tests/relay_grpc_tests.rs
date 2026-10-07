@@ -359,6 +359,21 @@ fn a_grpc_error_status_is_the_backends_refusal_with_its_a2a_code() {
     assert_eq!(reply, HopRefusal::BackendError.reply(&json!(7)));
 }
 
+/// A gRPC agent refusing busbar at the HTTP layer (`401`/`403`, no gRPC answer) refuses busbar
+/// itself, as on every binding (predev `relay.rs:1583`: `RelayRefusal::Status`, read by the one
+/// status table, an auth status hard): the hop's reading is hard, so the kernel takes the member
+/// out of its pool's walk. RED: no reading at all, and the member stayed in the walk.
+#[test]
+fn a_grpc_agent_refusing_busbar_at_the_http_layer_reads_hard() {
+    let asked = submission("SendMessage");
+    for status in [401, 403] {
+        let (mut r, _, _) = dialled(&asked, None, false);
+        let reply = whole(vec![r.on_piece(far(Some(status), b"denied", true))]);
+        assert_eq!(reply.status, 502, "status {status}");
+        assert_eq!(r.take_reading(), Some(Reading::Hard), "status {status}");
+    }
+}
+
 /// An answer with no message and no status to read is the engine's `Unframable`: refused by name.
 #[test]
 fn a_grpc_answer_with_no_message_is_refused_by_name() {

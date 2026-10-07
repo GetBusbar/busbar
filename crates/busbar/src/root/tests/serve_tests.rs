@@ -2979,7 +2979,7 @@ mod agent_door {
             tls: Option<tokio_rustls::TlsAcceptor>,
         ) -> Self {
             Self::start_core(
-                status,
+                Arc::new(move |_: &str| status),
                 Arc::new(move |_: &str| answer.to_string()),
                 fields,
                 tls,
@@ -3002,13 +3002,14 @@ mod agent_door {
             answer_of: Arc<dyn Fn(&str) -> String + Send + Sync>,
             tls: Option<tokio_rustls::TlsAcceptor>,
         ) -> Self {
-            Self::start_core(status, answer_of, Vec::new(), tls).await
+            Self::start_core(Arc::new(move |_: &str| status), answer_of, Vec::new(), tls).await
         }
 
-        /// The agent every constructor starts: each relayed request answered `status` with what
-        /// `answer_of` makes of it and the head fields `fields`, its connections secured by `tls`.
+        /// The agent every constructor starts: each relayed request answered at the status
+        /// `status_of` makes of it with what `answer_of` makes of it and the head fields `fields`,
+        /// its connections secured by `tls`.
         async fn start_core(
-            status: u16,
+            status_of: Arc<dyn Fn(&str) -> u16 + Send + Sync>,
             answer_of: Arc<dyn Fn(&str) -> String + Send + Sync>,
             fields: Vec<(&'static str, String)>,
             tls: Option<tokio_rustls::TlsAcceptor>,
@@ -3068,7 +3069,7 @@ mod agent_door {
                     }
                     Some(FarReply {
                         fields: fields.clone(),
-                        ..FarReply::of(status, answer_of(request))
+                        ..FarReply::of(status_of(request), answer_of(request))
                     })
                 }),
                 tls,
@@ -6205,6 +6206,19 @@ mod agent_door {
         /// The agent, each rpc answered `answer` (no message when empty) and its trailers stating
         /// `grpc-status: <status>`.
         async fn ending(answer: Vec<u8>, status: &'static str) -> Self {
+            Self::serving(answer, status, 200, None).await
+        }
+
+        /// [`GrpcAgent::ending`], each rpc answered at the HTTP status `http` (any other than `200`
+        /// a plain refusal, `denied`, no gRPC message or trailers), and its card the one an agent on
+        /// `card_port` serves (its own port's when `None`): two agents serving the same card are
+        /// one deployment registered twice.
+        async fn serving(
+            answer: Vec<u8>,
+            status: &'static str,
+            http: u16,
+            card_port: Option<u16>,
+        ) -> Self {
             use http_body_util::BodyExt as _;
             type Frames = Vec<Result<http_body::Frame<bytes::Bytes>, std::convert::Infallible>>;
             let issuer = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
@@ -6212,9 +6226,10 @@ mod agent_door {
                 .await
                 .expect("a loopback port");
             let port = listener.local_addr().expect("its address").port();
-            let mut held = card(port, "plans the work");
+            let card_port = card_port.unwrap_or(port);
+            let mut held = card(card_port, "plans the work");
             held["supportedInterfaces"] = serde_json::json!([{
-                "url": format!("http://127.0.0.1:{port}/planner"),
+                "url": format!("http://127.0.0.1:{card_port}/planner"),
                 "protocolBinding": surface("grpc_binding"),
                 "protocolVersion": "1.0",
             }]);
@@ -6237,7 +6252,15 @@ mod agent_door {
                                         .await
                                         .map(|c| c.to_bytes().to_vec())
                                         .unwrap_or_default();
-                                    let (media, frames): (&str, Frames) = if get {
+                                    let (media, frames): (&str, Frames) = if !get && http != 200 {
+                                        let _ = sent.send((path, body));
+                                        (
+                                            "text/plain",
+                                            vec![Ok(http_body::Frame::data(
+                                                bytes::Bytes::from_static(b"denied"),
+                                            ))],
+                                        )
+                                    } else if get {
                                         (
                                             "application/json",
                                             vec![Ok(http_body::Frame::data(bytes::Bytes::from(
@@ -6261,7 +6284,7 @@ mod agent_door {
                                         ("application/grpc", frames)
                                     };
                                     hyper::Response::builder()
-                                        .status(200)
+                                        .status(if get { 200 } else { http })
                                         .header("content-type", media)
                                         .body(http_body_util::StreamBody::new(
                                             futures::stream::iter(frames),
@@ -7067,5 +7090,651 @@ mod agent_door {
         for path in [&planner_cert, &planner_key, &payments_cert, &payments_key] {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    // ── FAILOVER POOLS (A2A-FLIP, predev `reroute_pool_tests.rs` and `billed_bytes_tests.rs`): a
+    //    pool in the neutral top-level `pools:` whose members are `agents:` registrations, handed to
+    //    the section as the root hands it (`with_pools`), served through the door ────────────────
+
+    /// What a healthy pool member answers a relayed request: a task it is working on.
+    const TASK_ANSWER: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"far-task","contextId":"far-ctx","status":{"state":"working"}}}"#;
+
+    /// The `agents:` section `entries`, with the pool `planner` of `members` (in that order) handed
+    /// to it as the root hands a named-definition section its unified pools.
+    fn pooled(entries: &str, members: &[&str]) -> String {
+        let key = surface("section");
+        let section: serde_yaml::Value = serde_yaml::from_str(entries).expect("a section");
+        let pools: BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [(
+            "planner".to_string(),
+            busbar_kernel::failover::CandidatePoolCfg {
+                members: members.iter().map(|m| (*m).to_string()).collect(),
+                repeatable: Vec::new(),
+            },
+        )]
+        .into();
+        let sections = super::super::with_pools([(key, section)].into(), &[(key, pools)]);
+        serde_yaml::to_string(&sections[key]).expect("the section writes")
+    }
+
+    /// ONE AGENT REGISTERED TWICE, `planner-a` then `planner-b` at its paths `/planner-a` and
+    /// `/planner-b` (one far end, one card at its origin, so both registrations are approved at
+    /// one fingerprint), pooled as `planner` in that order: each relayed request answered at the
+    /// status `status_of` makes of its whole text, with [`TASK_ANSWER`] on a 2xx and `denied`
+    /// otherwise; and the section registering them.
+    async fn twins(status_of: Arc<dyn Fn(&str) -> u16 + Send + Sync>) -> (Agent, String) {
+        let reply_status = Arc::clone(&status_of);
+        let agent = Agent::start_core(
+            status_of,
+            Arc::new(move |request: &str| {
+                if (200..300).contains(&reply_status(request)) {
+                    TASK_ANSWER.to_string()
+                } else {
+                    "denied".to_string()
+                }
+            }),
+            Vec::new(),
+            None,
+        )
+        .await;
+        let entries = format!(
+            "{}\n{}",
+            agent.entry("planner-a", "1h"),
+            agent.entry("planner-b", "1h")
+        );
+        let section = pooled(&entries, &["planner-a", "planner-b"]);
+        (agent, section)
+    }
+
+    /// Whether `request` (a relayed request, whole) went to the registration `member`.
+    fn to_member(request: &str, member: &str) -> bool {
+        request.starts_with(&format!("POST /{member} "))
+    }
+
+    /// Every relayed request the agent was sent since it was last asked, kept on `log`.
+    fn hear(agent: &mut Agent, log: &mut Vec<String>) {
+        while let Ok(request) = agent.heard.try_recv() {
+            log.push(request);
+        }
+    }
+
+    /// How many of the requests on `log` went to `member`.
+    fn hits(log: &[String], member: &str) -> usize {
+        log.iter().filter(|r| to_member(r, member)).count()
+    }
+
+    /// The pool's primary refuses busbar itself (`401`) and its twin is healthy.
+    fn primary_refused(request: &str) -> u16 {
+        if to_member(request, "planner-a") {
+            401
+        } else {
+            200
+        }
+    }
+
+    /// The task id busbar answered `body` under.
+    fn task_id_of(body: &str) -> String {
+        let doc: serde_json::Value = serde_json::from_str(body).expect("an answer");
+        doc.pointer("/result/id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("the accepted task has busbar's id: {body}"))
+            .to_string()
+    }
+
+    /// THE REROUTE BATTERY (predev `reroute_battery`): the first fresh submission addressed to the
+    /// pool's primary reaches it and its refusal of busbar is the hop's failure (`first`), tripping
+    /// it; the
+    /// second is placed on the twin by the kernel's walk before any socket, answered `200` with a
+    /// result, and the dead primary hears nothing more. `heard` counts each member's requests.
+    async fn reroute_battery(
+        s: &Served,
+        heard: &mut dyn FnMut() -> (usize, usize),
+        (method, params): (&str, &str),
+        first: StatusCode,
+    ) {
+        let (s1, b1) = answered(&s.router, rpc("planner-a", method, params, Some(&s.token))).await;
+        assert_eq!(s1, first, "the first failure is the hop's: {b1}");
+        assert_eq!(heard(), (1, 0), "the primary was dialled, the twin not");
+        let t0 = std::time::Instant::now();
+        let (s2, b2) = answered(&s.router, rpc("planner-a", method, params, Some(&s.token))).await;
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(
+            s2,
+            StatusCode::OK,
+            "the twin serves the rerouted submission: {b2}"
+        );
+        let doc: serde_json::Value = serde_json::from_str(&b2).expect("an answer");
+        assert!(
+            doc.get("result").is_some(),
+            "a served submission has a result: {b2}"
+        );
+        let (a, b) = heard();
+        assert_eq!(a, 1, "the primary untouched on the second call");
+        assert!(b >= 1, "the twin served it");
+    }
+
+    /// THE EQUALITY-CELL INSTRUMENT (`failover-reroute × a2a-client`, predev
+    /// `a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched`),
+    /// JSON-RPC binding. RED on the lane base: the door routed the addressed member alone, so the
+    /// second submission went to the tripped primary again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-reroute";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(primary_refused)).await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let mut log = Vec::new();
+        let mut heard = || {
+            hear(&mut agent, &mut log);
+            (hits(&log, "planner-a"), hits(&log, "planner-b"))
+        };
+        reroute_battery(
+            &s,
+            &mut heard,
+            ("message/send", SEND),
+            StatusCode::BAD_GATEWAY,
+        )
+        .await;
+    }
+
+    /// The same battery on the gRPC binding (predev
+    /// `a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding`): the selection sits
+    /// above the binding axis. Two gRPC agents serving ONE card (one deployment registered twice),
+    /// the primary refusing busbar itself (`UNAUTHENTICATED`; predev's harness answered an HTTP
+    /// `401`, which on this binding does not take the member out of the door's walk: measured in
+    /// job cli-935ec05c-0c73-45dd-8860-28f7c38af158, the second submission went to the primary).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-reroute-grpc";
+        let _published = Published(instance);
+        // UNAUTHENTICATED (16): the gRPC binding's refusal of busbar itself, as a 401 is on
+        // JSON-RPC.
+        let mut primary = GrpcAgent::serving(Vec::new(), "16", 200, None).await;
+        let mut twin =
+            GrpcAgent::serving(grpc_working_answer(), "0", 200, Some(primary.port)).await;
+        let entries = format!(
+            "{}\n{}",
+            primary.entry("planner-a"),
+            twin.entry("planner-b")
+        );
+        let s = served(
+            instance,
+            &pooled(&entries, &["planner-a", "planner-b"]),
+            false,
+            None,
+        );
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let (mut a, mut b) = (0, 0);
+        let mut heard = || {
+            while primary.heard.try_recv().is_ok() {
+                a += 1;
+            }
+            while twin.heard.try_recv().is_ok() {
+                b += 1;
+            }
+            (a, b)
+        };
+        let params = r#"{"message":{"messageId":"m-1","role":"ROLE_USER","parts":[{"text":"PLAN THE MIGRATION"}]}}"#;
+        // The gRPC hop renders a backend's refusal of busbar as its own error (500, -32603).
+        reroute_battery(
+            &s,
+            &mut heard,
+            ("SendMessage", params),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )
+        .await;
+    }
+
+    /// THE PINNING SEMANTICS (predev
+    /// `an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_the_verb`):
+    ///
+    /// (a) a task the walk placed on the twin at submission is READ at the twin, though the caller
+    ///     addresses the pool's primary: the task row names its member, and every other member is
+    ///     declined;
+    /// (b) with the pinned member tripped, the task-scoped verb gets the breaker's refusal naming
+    ///     that member (`503` + `Retry-After`), no other member hears a byte, and the task row is
+    ///     not ended: failover is an admission-time choice, never a migration.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_the_verb() {
+        use std::sync::atomic::{AtomicU16, Ordering};
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-pinned";
+        let _published = Published(instance);
+        let twin_status = Arc::new(AtomicU16::new(200));
+        let status = Arc::clone(&twin_status);
+        let (mut agent, section) = twins(Arc::new(move |request: &str| {
+            if to_member(request, "planner-a") {
+                401
+            } else {
+                status.load(Ordering::SeqCst)
+            }
+        }))
+        .await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let send = || rpc("planner-a", "message/send", SEND, Some(&s.token));
+        let _ = answered(&s.router, send()).await;
+        let (status, body) = answered(&s.router, send()).await;
+        assert_eq!(status, StatusCode::OK, "accepted at the twin: {body}");
+        let task_id = task_id_of(&body);
+        let mut log = Vec::new();
+        hear(&mut agent, &mut log);
+        assert_eq!((hits(&log, "planner-a"), hits(&log, "planner-b")), (1, 1));
+
+        // (a) addressed to the PRIMARY's name, read at the member holding the task.
+        let get = format!(r#"{{"id":"{task_id}"}}"#);
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner-a", "tasks/get", &get, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        hear(&mut agent, &mut log);
+        assert_eq!(
+            hits(&log, "planner-a"),
+            1,
+            "task-scoped traffic never reaches the member not holding it"
+        );
+        assert_eq!(
+            hits(&log, "planner-b"),
+            2,
+            "the read went to the member holding the task"
+        );
+
+        // (b) the pinned member fails until its cell opens: the verb is then refused in the
+        // breaker's words, naming the member it is pinned to, and nothing moves to the primary.
+        twin_status.store(503, Ordering::SeqCst);
+        let mut tripped = false;
+        for _ in 0..32 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner-a", "tasks/get", &get, Some(&s.token)),
+            )
+            .await;
+            if body.contains("breaker_open") {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(
+            tripped,
+            "the pinned member's cell opened within 32 failing reads"
+        );
+        hear(&mut agent, &mut log);
+        let before = (hits(&log, "planner-a"), hits(&log, "planner-b"));
+        assert_eq!(before.0, 1, "no read migrated to the primary");
+        let response = {
+            use tower::ServiceExt as _;
+            s.router
+                .clone()
+                .oneshot(rpc("planner-a", "tasks/get", &get, Some(&s.token)))
+                .await
+                .expect("the router answers")
+        };
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .expect("the refusal carries Retry-After from the cell's own deadline");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("the body");
+        let body = String::from_utf8_lossy(&body).into_owned();
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an envelope");
+        assert_eq!(
+            doc["error"]["message"],
+            format!(
+                "{}.hop.breaker_open: agent `planner-b` is unavailable: its circuit breaker is \
+                 open after repeated backend failures; busbar did not dispatch this request. \
+                 Retry after {retry_after}s",
+                surface("plane_key")
+            ),
+            "the refusal names the member the task is pinned to: {body}"
+        );
+        hear(&mut agent, &mut log);
+        assert_eq!(
+            (hits(&log, "planner-a"), hits(&log, "planner-b")),
+            before,
+            "nothing dispatched, and no migration"
+        );
+        // The task row survives the refusal: a failed READ does not end live work.
+        let (status, listed) = answered(
+            &s.router,
+            rpc("planner-b", "ListTasks", "{}", Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{listed}");
+        let listed: serde_json::Value = serde_json::from_str(&listed).expect("a listing");
+        let row = listed["result"]["tasks"]
+            .as_array()
+            .and_then(|tasks| tasks.iter().find(|t| t["id"] == task_id.as_str()))
+            .unwrap_or_else(|| panic!("the task row survives a refused verb: {listed}"));
+        let state = row["status"]["state"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert!(
+            !state.contains("rejected") && !state.contains("failed"),
+            "the task is not ended: {row}"
+        );
+    }
+
+    /// THE PIN RULE (predev
+    /// `a_member_approved_under_a_different_card_fingerprint_is_refused_never_dispatched`):
+    /// `planner-b` approved under a DIFFERENT card fingerprint is not interchangeable with the
+    /// primary: once the primary is tripped the submission is refused `503` in the walk's words,
+    /// naming its task, and the twin is never dispatched to.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_member_approved_under_a_different_card_fingerprint_is_refused_never_dispatched() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-pin";
+        let _published = Published(instance);
+        let mut primary = Agent::start(401, "denied").await;
+        let mut twin = Agent::start(200, TASK_ANSWER).await;
+        let entries = format!(
+            "{}\n{}",
+            primary.entry("planner-a", "1h"),
+            twin.entry("planner-b", "1h")
+        );
+        let s = served(
+            instance,
+            &pooled(&entries, &["planner-a", "planner-b"]),
+            false,
+            None,
+        );
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let send = || rpc("planner-a", "message/send", SEND, Some(&s.token));
+        let _ = answered(&s.router, send()).await;
+        assert!(primary.relayed(), "the primary was tripped");
+        let (status, body) = answered(&s.router, send()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an envelope");
+        assert_eq!(
+            doc["error"]["message"],
+            format!(
+                "`planner-b` is not interchangeable with `planner-a` in pool `{}:planner`: their \
+                 approved fingerprints differ ({} vs {}), so busbar cannot show they are the same \
+                 deployment and will not move a request between them",
+                surface("resource_kind"),
+                primary.fingerprint(),
+                twin.fingerprint()
+            ),
+            "the refusal says why: {body}"
+        );
+        assert!(
+            doc["error"]["data"].as_array().is_some_and(|d| d
+                .iter()
+                .any(|e| e["resourceType"] == surface("task_resource_type"))),
+            "the refusal names its task: {body}"
+        );
+        assert!(
+            !twin.relayed(),
+            "nothing is dispatched to a member busbar cannot show is the same deployment"
+        );
+        assert!(!primary.relayed(), "nor to the tripped primary");
+    }
+
+    /// DISPOSITION (`disposition × a2a-client`, predev
+    /// `a_client_fault_answer_never_penalizes_the_agent`): a true 4xx from the primary is the
+    /// REQUEST's fault, so the member is never penalized: the next submission still dispatches to
+    /// it (the pool's walk takes its primary first, its members' tiers their declared order), and
+    /// the twin hears nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_client_fault_answer_never_penalizes_the_agent() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-client-fault";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(|request: &str| {
+            if to_member(request, "planner-a") {
+                400
+            } else {
+                200
+            }
+        }))
+        .await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        for _ in 0..2 {
+            let _ = answered(
+                &s.router,
+                rpc("planner-a", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+        }
+        let mut log = Vec::new();
+        hear(&mut agent, &mut log);
+        assert_eq!(
+            hits(&log, "planner-a"),
+            2,
+            "an unpenalized member keeps receiving its own traffic"
+        );
+        assert_eq!(hits(&log, "planner-b"), 0);
+    }
+
+    /// A HOP PINNED TO A POOL MEMBER THE CALLER MAY NO LONGER REACH KEEPS NO FEE (predev
+    /// `billed_bytes_tests::a_hop_pinned_to_a_member_the_caller_may_not_reach_keeps_no_fee`, A2A-3,
+    /// Q35): the control submission reaches the dying primary and keeps its fee; the next is placed
+    /// on the twin and keeps its fee. The caller's grant on the twin is then withdrawn: a
+    /// `tasks/get` addressed to the primary is admitted (its grant stands) and pinned to the twin,
+    /// where it is judged on the twin's grant and refused `403` before any socket, in predev's
+    /// words ("this key" where predev named the key, ruling (B)). That refusal keeps no fee.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hop_pinned_to_a_member_the_caller_may_not_reach_keeps_no_fee() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-pinned-fee";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(primary_refused)).await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let send = || rpc("planner-a", "message/send", SEND, Some(&s.token));
+        let (s1, b1) = answered(&s.router, send()).await;
+        assert_eq!(
+            s1,
+            StatusCode::BAD_GATEWAY,
+            "the control hop reaches the dying primary: {b1}"
+        );
+        let (s2, b2) = answered(&s.router, send()).await;
+        assert_eq!(
+            s2,
+            StatusCode::OK,
+            "the twin accepts the placed submission: {b2}"
+        );
+        let task_id = task_id_of(&b2);
+
+        // The caller's grant on the twin is withdrawn; the primary stays granted.
+        let mut row = s
+            .gov
+            .store()
+            .get_key(&s.key.id)
+            .expect("a read")
+            .expect("the key's row");
+        row.allowed_scopes = Some(vec![agent_scope("planner-a")]);
+        s.gov.store().put_key(&row).expect("the grant is written");
+        s.gov.refresh().expect("the book reloads");
+
+        let mut log = Vec::new();
+        hear(&mut agent, &mut log);
+        let sent = log.len();
+        let get = format!(r#"{{"id":"{task_id}"}}"#);
+        let (s3, b3) = answered(
+            &s.router,
+            rpc("planner-a", "tasks/get", &get, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(
+            s3,
+            StatusCode::FORBIDDEN,
+            "refused at the egress gate for the twin: {b3}"
+        );
+        let doc: serde_json::Value = serde_json::from_str(&b3).expect("an envelope");
+        assert_eq!(doc["error"]["code"], -32004, "{b3}");
+        assert_eq!(
+            doc["error"]["message"],
+            format!(
+                "this key holds no `{}:planner-b` grant, so NO outbound credential is selected for \
+                 it: busbar does not spend its own credential on behalf of a caller that is not \
+                 itself authorised for the backend agent",
+                surface("scope_kind")
+            ),
+            "{b3}"
+        );
+        hear(&mut agent, &mut log);
+        assert_eq!(log.len(), sent, "no member saw the refused hop");
+        let fees: u64 = ["planner-a", "planner-b"]
+            .iter()
+            .flat_map(|m| agent_counts(&s, m))
+            .map(|c| c.fee_count)
+            .sum();
+        assert_eq!(
+            fees, 2,
+            "the two hops that left keep their fees; the hop refused for the twin before the \
+             socket keeps none"
+        );
+    }
+
+    /// THE GRANT ON THE ADDRESSED MEMBER (QP2, coordinator 2026-10-07; predev's admission judged
+    /// it, `receive.rs:235`, before the charge at `:1543`): a caller granted the twin alone,
+    /// addressing the pool's primary, is refused for its grant on the primary (`403`, predev's
+    /// `NotInScope` sentence), before anything is dialled and before anything is charged. RED with
+    /// the pool route unjudged: the walk ran, the request was counted and the refusal was the
+    /// member's identity check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pooled_member_outside_the_callers_grant_is_refused_before_anything_is_charged() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-ungranted";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(|_: &str| 200)).await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let (key, token) = another_caller(&s, "twin-only", Some(vec![agent_scope("planner-b")]));
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner-a", "message/send", SEND, Some(&token)),
+        )
+        .await;
+        assert_not_granted(status, &body, "planner-a");
+        assert!(!agent.relayed(), "nothing was dialled");
+        let usage = s
+            .gov
+            .usage_for(&s.app.cost, &key.id, busbar_kernel::store::now())
+            .expect("a read")
+            .expect("the key exists");
+        assert_eq!(usage.requests, 0, "nothing charged");
+    }
+
+    /// RESUME AT THE HOLDER (predev `receive.rs:1858-1868`): ANY member's interrupted task under
+    /// the caller's `contextId` resumes, AT the member that holds it. A caller granted the twin
+    /// alone sends to the twin: the walk offers the primary first, and the primary (outside the
+    /// caller's grant) is declined, so the task is placed on the twin, which asks for input. With
+    /// the grant widened to both, a message under the same `contextId` addressed to the PRIMARY
+    /// resumes that task at the twin, under its id, and the primary hears nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_interrupted_task_on_any_member_resumes_at_the_member_holding_it() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-resume";
+        let _published = Published(instance);
+        let mut agent = Agent::start_answering(
+            200,
+            Arc::new(|_: &str| {
+                r#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"far-b","contextId":"ctx-pool","status":{"state":"input-required"}}}"#
+                    .to_string()
+            }),
+        )
+        .await;
+        let entries = format!(
+            "{}\n{}",
+            agent.entry("planner-a", "1h"),
+            agent.entry("planner-b", "1h")
+        );
+        let s = served(
+            instance,
+            &pooled(&entries, &["planner-a", "planner-b"]),
+            false,
+            None,
+        );
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let (key, token) = another_caller(&s, "resumer", Some(vec![agent_scope("planner-b")]));
+        let message = r#"{"message":{"kind":"message","messageId":"m-r","role":"user","contextId":"ctx-pool","parts":[{"kind":"text","text":"plan"}]}}"#;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner-b", "message/send", message, Some(&token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "placed on the twin: {body}");
+        let task_id = task_id_of(&body);
+        let mut log = Vec::new();
+        hear(&mut agent, &mut log);
+        assert_eq!((hits(&log, "planner-a"), hits(&log, "planner-b")), (0, 1));
+
+        let mut row = s
+            .gov
+            .store()
+            .get_key(&key.id)
+            .expect("a read")
+            .expect("the key's row");
+        row.allowed_scopes = Some(vec![agent_scope("planner-a"), agent_scope("planner-b")]);
+        s.gov.store().put_key(&row).expect("the grant is written");
+        s.gov.refresh().expect("the book reloads");
+
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner-a", "message/send", message, Some(&token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "resumed: {body}");
+        assert_eq!(
+            task_id_of(&body),
+            task_id,
+            "the interrupted task resumed, under its id"
+        );
+        hear(&mut agent, &mut log);
+        assert_eq!(
+            (hits(&log, "planner-a"), hits(&log, "planner-b")),
+            (0, 2),
+            "resumed at the member holding it, never moved to the primary"
+        );
+    }
+
+    /// A POOLED AGENT HAS NO ONE CARD (predev `receive.rs:1841-1857`): `GetExtendedAgentCard`
+    /// addressed to a pool member is refused `400` (`UnsupportedOperation`) in predev's words,
+    /// after the caller's grant on the agent it addressed, never relayed and nothing charged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_card_read_addressed_to_a_pooled_agent_is_refused_in_predevs_words() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-card";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(|_: &str| 200)).await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner-a", "GetExtendedAgentCard", "{}", Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an envelope");
+        assert_eq!(doc["id"], 1, "{body}");
+        assert_eq!(doc["error"]["code"], -32004, "{body}");
+        assert_eq!(
+            doc["error"]["message"],
+            "GetExtendedAgentCard is not defined for a pooled agent: its members may present \
+             different cards",
+            "{body}"
+        );
+        assert!(!agent.relayed(), "never relayed to a member");
+        assert_eq!(admitted(&s), 0, "nothing charged");
     }
 }

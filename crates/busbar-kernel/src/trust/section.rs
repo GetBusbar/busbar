@@ -209,7 +209,8 @@ pub fn parse_section(
 }
 
 /// The registrations of a plane section, in order: every string key that is not a reserved section
-/// word or the core-owned `work:` bounds.
+/// word, the core-owned `work:` bounds, or the reserved `pools` the host hands a named-definition
+/// section (its failover pools are no registration).
 pub(crate) fn registrations(
     value: &serde_yaml::Value,
 ) -> impl Iterator<Item = (&str, &serde_yaml::Value)> {
@@ -221,6 +222,7 @@ pub(crate) fn registrations(
         .filter(|(k, _)| {
             !busbar_contract::section::RESERVED_SECTION_KEYS.contains(k)
                 && *k != busbar_contract::section::RESERVED_WORK_KEY
+                && *k != busbar_contract::section::RESERVED_POOLS_KEY
         })
 }
 

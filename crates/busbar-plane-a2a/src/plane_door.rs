@@ -42,7 +42,7 @@ use busbar_contract::abi::plane::{
     ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
     PIECE_HAS_STATUS, PIECE_LAST, PIECE_REFUSED, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, RECORD_PUT,
-    REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_SCOPE, UNITS_REPORTED,
+    REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_POOL, ROUTE_SCOPE, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::conn::Host;
 // THE ONE SHARED FAULT READING (ARCHITECT row 68): the breaker's vocabulary, stated on `OnPieceOut`.
@@ -119,6 +119,9 @@ pub struct Unit {
     /// `project` refused a committed rewrite it could not read back: `refusal` answers the unit
     /// predev's internal error ([`unreadable_rewrite`]).
     pub unreadable_rewrite: bool,
+    /// The failover pool the unit routes over (`ROUTE_POOL`): the pool its addressed agent is a
+    /// member of. `None` for every other unit.
+    pub pool: Option<String>,
 }
 
 /// One unit's unary hop, and the answer it is part way through writing.
@@ -173,6 +176,15 @@ pub struct Hop {
     /// busbar's own credential, or left with no answer back, [`hop_refused`]): `refusal` renders
     /// it, and a short `refusal` re-called renders the same again.
     refused: Option<relay::Reply>,
+    /// A unit over a failover pool: the member holding the task it is about, once its first
+    /// ATTEMPT read it off the caller's task records (`Some(None)`: a fresh submission).
+    holder: Option<Option<String>>,
+    /// A fresh submission the walk placed on a member whose approved card fingerprint is not the
+    /// pool primary's: the refusal's words, answered once its task is open.
+    mismatch: Option<String>,
+    /// The ATTEMPT the pool's gate let go (its number; `0` = none yet): its re-entries do not
+    /// judge it again, so the host calls after it keep their handles.
+    gated: u32,
 }
 
 impl Hop {
@@ -200,6 +212,9 @@ impl Hop {
             mint_message_id: false,
             member: String::new(),
             refused: None,
+            holder: None,
+            mismatch: None,
+            gated: 0,
         }
     }
 
@@ -915,10 +930,12 @@ slot!(
                     framed,
                     generation,
                     unreadable_rewrite: false,
+                    pool: None,
                 },
             );
             return Outcome::Ready;
         }
+        let mut pool = None;
         match &agent {
             Some(agent) => {
                 out.route(ROUTE_DIRECT, agent);
@@ -928,10 +945,35 @@ slot!(
                 let Some(def) = section.as_ref().and_then(|s| s.agents.get(agent)) else {
                     return refused(&mut out, &arrival::no_such_agent(agent));
                 };
+                let pooled = section.as_ref().and_then(|s| s.pool_of(agent));
+                // A CARD READ ADDRESSED TO A POOLED AGENT has no one answer across the pool's
+                // members (predev `receive.rs:1841-1857`): refused about the agent it addressed, so
+                // the kernel judges the caller's grant on it first; an agent the kernel's trust
+                // book does not serve is refused for that first, its trust facts stated (a refusal
+                // about an entry states none, abi/plane "A refused arrival").
+                if let (Some(_), Disposition::Request { row, id, .. }) = (&pooled, &disposition) {
+                    if row.op == crate::ops::OP_AGENT_CARD
+                        && verdict(plane, agent) == busbar_contract::abi::host::service::DISTRUST_NONE
+                    {
+                        return refused(&mut out, &arrival::pooled_card(id.clone()));
+                    }
+                }
                 if let Err(refusal) =
                     admit_addressed(plane, (agent, def), generation, request.as_ref(), &mut out)
                 {
                     return refused(&mut out, &refusal);
+                }
+                // AN AGENT IN A FAILOVER POOL (predev `receive.rs` `pool_of`): a relayed unit routes
+                // over the POOL, so the kernel's one walk picks the member, primary first (each
+                // member's declared tier); the caller's grant on the agent it addressed is judged
+                // on the trust counterparty it states. A verb the plane answers itself stays the
+                // addressed agent's, as predev answered it before the pool was read
+                // (`receive.rs:1590` before `:1839`).
+                if let Some((name, _)) = pooled {
+                    if hop.is_some() {
+                        out.route(ROUTE_POOL, name);
+                        pool = Some(name.to_string());
+                    }
                 }
             }
             None => {
@@ -970,6 +1012,7 @@ slot!(
             framed,
             generation,
             unreadable_rewrite: false,
+            pool,
         };
         keep(&plane.units, MAX_UNITS, given.unit, unit);
         Outcome::Ready
@@ -1048,6 +1091,7 @@ fn arrive_card(
             framed: None,
             generation,
             unreadable_rewrite: false,
+            pool: None,
         },
     );
     Outcome::Ready
@@ -1534,6 +1578,177 @@ fn stands(
     }
 }
 
+/// ONE ATTEMPT OF A UNIT OVER A FAILOVER POOL, as [`pool_gate`] judges it: the pool, its members in
+/// declared order (the first the primary), the member the kernel's walk picked, the agent the unit
+/// addressed, and the caller's reference.
+struct PoolGate<'a> {
+    /// The pool, as its refusal names it (`agent:<pool>`, predev's walk key).
+    pool: &'a str,
+    members: &'a [String],
+    member: &'a str,
+    addressed: Option<&'a str>,
+    caller: &'a str,
+    /// The refresh generation the unit arrived under: the held cards it reads are that one's.
+    generation: u64,
+}
+
+/// What [`pool_gate`] decided for one ATTEMPT.
+enum Gate {
+    /// The attempt goes on to the member.
+    Go,
+    /// The member is one this unit may not be sent to: declined, nothing sent, the walk moves on
+    /// (an empty `VERDICT_RETRY`, ARCHITECT round 4 Q-L3B-SURFACES (h)).
+    Decline,
+    /// The caller's whole answer, before anything is sent.
+    Refuse(relay::Reply),
+    /// A host call pends: the piece runs again from the top.
+    Pending,
+}
+
+/// THE POOL'S MEMBER FOR THIS ATTEMPT (predev `route.rs` `select_member` and `hop_facts`, over the
+/// kernel's one walk, which offers the members primary first):
+///
+/// * a hop that already LEFT for a member is not sent to another: failover is an admission-time
+///   choice, never a retry (docs/a2a.md "A reroute is not a retry");
+/// * a request about a task (named, or an interrupted task resumed under its `contextId`) is
+///   PINNED to the member holding it, as the caller's task records say ([`task_hop::holder`]):
+///   every other member is declined, so a member the walk cannot admit refuses the verb in the
+///   breaker's words and nothing migrates; pinned to a member other than the one addressed, it is
+///   judged on that member's grant, refused `403` before the socket (predev `hop_facts`);
+/// * a FRESH submission takes the member the walk placed it on: a member other than the one
+///   addressed is declined when the caller's grant does not reach it or the kernel's trust book
+///   does not serve it (predev's eligibility, pre-`tried`), and a member past the primary whose
+///   held card's fingerprint is not the primary's is refused once the task is open
+///   ([`not_interchangeable`]).
+fn pool_gate(
+    reach: &Reach<'_>,
+    hop: &mut Hop,
+    pass: &mut crate::task_door::Pass,
+    gate: &PoolGate<'_>,
+) -> Gate {
+    if hop.left {
+        return Gate::Decline;
+    }
+    let holder = match read_holder(reach, hop, pass, gate.caller, gate.members) {
+        Poll::Pending => return Gate::Pending,
+        Poll::Ready(holder) => holder,
+    };
+    let elsewhere = gate.addressed.is_some_and(|a| a != gate.member);
+    match holder {
+        Some(holder) if holder != gate.member => Gate::Decline,
+        Some(_) if elsewhere => match entitled(reach, pass, &door::agent_resource(gate.member)) {
+            true => Gate::Go,
+            false => {
+                let standing = busbar_contract::abi::host::service::ENTITLEMENT_STANDING;
+                let live = entitled(reach, pass, standing);
+                Gate::Refuse(reply_of(&arrival::pinned_ungranted(
+                    hop.relay.id().clone(),
+                    &door::agent_resource(gate.member),
+                    live,
+                )))
+            }
+        },
+        Some(_) => Gate::Go,
+        None => {
+            if elsewhere
+                && (!entitled(reach, pass, &door::agent_resource(gate.member))
+                    || verdict(reach.plane, gate.member)
+                        != busbar_contract::abi::host::service::DISTRUST_NONE)
+            {
+                return Gate::Decline;
+            }
+            if let Some(primary) = gate.members.first().filter(|p| *p != gate.member) {
+                let (a, b) = (
+                    approved_fingerprint(reach.plane, primary, gate.generation),
+                    approved_fingerprint(reach.plane, gate.member, gate.generation),
+                );
+                if a.is_none() || a != b {
+                    hop.mismatch = Some(arrival::not_interchangeable(
+                        gate.pool,
+                        (primary, a.as_deref()),
+                        (gate.member, b.as_deref()),
+                    ));
+                }
+            }
+            Gate::Go
+        }
+    }
+}
+
+/// The member holding the task a pooled unit's request is about ([`task_hop::holder`]), read once
+/// per unit and kept on its hop; `None` for a fresh submission, and where there is nothing to read
+/// it with.
+fn read_holder(
+    reach: &Reach<'_>,
+    hop: &mut Hop,
+    pass: &mut crate::task_door::Pass,
+    caller: &str,
+    members: &[String],
+) -> Poll<Option<String>> {
+    if let Some(holder) = hop.holder.clone() {
+        return Poll::Ready(holder);
+    }
+    let (Some(envelope), Some(now), Some(mut via)) =
+        (hop.request.as_ref(), reach.now(), reach.via(pass.issued))
+    else {
+        return Poll::Ready(None);
+    };
+    let holder = match task_hop::holder(&mut via, envelope, caller, now, members) {
+        Err(Halt::Pending) => return Poll::Pending,
+        Err(Halt::Failed(_)) => None,
+        Ok(holder) => holder,
+    };
+    pass.issued = via.issued();
+    hop.holder = Some(holder.clone());
+    Poll::Ready(holder)
+}
+
+/// `entitlement.check` of the unit's caller for `target` (an agent's scope, or the principal's
+/// standing), on the piece's next handle; a check the host cannot answer is no entitlement.
+fn entitled(reach: &Reach<'_>, pass: &mut crate::task_door::Pass, target: &str) -> bool {
+    let handle = CompletionHandle {
+        ticket: reach.ticket,
+        seq: pass.issued,
+        _reserved: 0,
+    };
+    pass.issued += 1;
+    reach
+        .plane
+        .services
+        .is_some_and(|services| services.entitled(handle, target).unwrap_or(false))
+}
+
+/// THE APPROVED CARD FINGERPRINT of `agent` (predev's pin: the approved canonical card
+/// fingerprint): its held card's, when the kernel's trust book serves it; `None` (which never
+/// matches) when nothing is approved or held.
+fn approved_fingerprint(plane: &A2aDoor, agent: &str, generation: u64) -> Option<String> {
+    if verdict(plane, agent) != busbar_contract::abi::host::service::DISTRUST_NONE {
+        return None;
+    }
+    let card = plane.cards.at(agent, generation)?;
+    crate::a2a::card::fingerprint(&card).ok()
+}
+
+/// THE NOT-INTERCHANGEABLE REFUSAL (predev `route::render_pin_mismatch`): `503`, `-32004`, the
+/// walk's own words, naming the task the hop opened.
+fn not_interchangeable(hop: &Hop, reason: String) -> relay::Reply {
+    let refusal = arrival::Refusal {
+        status: arrival::STATUS_UNAVAILABLE,
+        id: Some(hop.relay.id().clone()),
+        code: arrival::CODE_UNSUPPORTED_OPERATION,
+        message: reason,
+    };
+    let body = match hop.relay.task() {
+        Some(task) => crate::identity::about_task(&refusal, &task.task_id),
+        None => refusal.envelope(),
+    };
+    relay::Reply {
+        status: refusal.status,
+        content_type: arrival::JSON_MEDIA_TYPE,
+        body: serde_json::to_vec(&body).unwrap_or_default(),
+    }
+}
+
 /// A refusal as the caller's whole answer: its status, and its envelope.
 fn reply_of(refusal: &arrival::Refusal) -> relay::Reply {
     relay::Reply {
@@ -1616,8 +1831,14 @@ fn piece(
         .and_then(|s| s.agents.get(member))
         .cloned();
     let addressed = unit.agent.clone();
+    let generation = unit.generation;
     let framed = unit.framed;
     let target_line = unit.envelope.is_some() && framed.is_none();
+    // The failover pool the unit routes over, and its members in declared order.
+    let pooled: Option<(String, Vec<String>)> = unit.pool.as_ref().and_then(|name| {
+        let members = unit.section.as_ref()?.pools.get(name)?.clone();
+        Some((name.clone(), members))
+    });
     let pass = &mut unit.pass;
     let Some(hop) = unit.hop.as_mut() else {
         return (Outcome::Refused, false);
@@ -1634,7 +1855,47 @@ fn piece(
     // (after `more = 1`: no bytes, no flags, no attempt); either way it is served from what is owed.
     let continues = hop.outbox.live
         && (hop.outbox.recall || (bytes.is_empty() && given.flags == 0 && given.attempt_no == 0));
+    // A POOLED UNIT THE WALK FOUND NO MEMBER FOR (its caller's body, handed with no member before
+    // the walk's refusal): the member holding its task is read, so the open breaker's refusal
+    // names the member it is pinned to (predev's pinned refusal), never the pool.
+    if let (false, Some((_, members))) = (continues, pooled.as_ref()) {
+        if given.from == FROM_CALLER
+            && given_member.is_empty()
+            && read_holder(reach, hop, pass, caller, members).is_pending()
+        {
+            return (Outcome::Pending, false);
+        }
+    }
     if !continues {
+        // THE POOL'S MEMBER, judged before anything else this ATTEMPT does: declined (the walk
+        // moves on, nothing sent), refused, or let go ([`pool_gate`]).
+        let mut pool_refusal = None;
+        let ungated = attempt && hop.gated != given.attempt_no;
+        if let (true, Some((name, members))) = (ungated, pooled.as_ref()) {
+            // The pool as predev's walk named it: its breaker key, `agent:<pool>`.
+            let pool = door::agent_resource(name);
+            let gate = PoolGate {
+                pool: &pool,
+                members,
+                member,
+                addressed: addressed.as_deref(),
+                caller,
+                generation,
+            };
+            match pool_gate(reach, hop, pass, &gate) {
+                Gate::Pending => return (Outcome::Pending, false),
+                Gate::Decline => {
+                    out.set(|o| &o.verdict, VERDICT_RETRY);
+                    return (Outcome::Ready, false);
+                }
+                Gate::Refuse(reply) => {
+                    hop.gated = given.attempt_no;
+                    hop.admitted = true;
+                    pool_refusal = Some(reply);
+                }
+                Gate::Go => hop.gated = given.attempt_no,
+            }
+        }
         let mut writes = std::mem::take(&mut hop.held_writes);
         // THE ADMISSION GATE (the engine's ordered gate, its artifact step), on the ATTEMPT's first
         // entry: an agent whose recorded state is not `approved` is refused before anything else
@@ -1662,7 +1923,7 @@ fn piece(
             }
             _ => None,
         };
-        let opened = if let Some(reply) = admission {
+        let opened = if let Some(reply) = pool_refusal.or(admission) {
             Some(reply)
         } else if attempt {
             // The skill the agent's held card matched at admission (ARCHITECT ruling B2).
@@ -1673,6 +1934,26 @@ fn piece(
             }
         } else {
             None
+        };
+        // A FRESH SUBMISSION ON A MEMBER NOT INTERCHANGEABLE WITH THE POOL'S PRIMARY (predev
+        // `route::render_pin_mismatch`): refused once its task is open, so the caller keeps an id,
+        // and the task ends `rejected` ("we did not accept this work").
+        let opened = match (opened, hop.mismatch.take()) {
+            (None, Some(reason)) if attempt => {
+                busbar_contract::diag_debug!(
+                    crate::diagnostics::A2A_POOL_NOT_INTERCHANGEABLE,
+                    reason = %reason,
+                    "a2a: the pool's members are not interchangeable; the submission is not accepted"
+                );
+                if hop.relay.task().is_some_and(|t| !t.addressed) {
+                    hop.settle.push(Settled::Reported {
+                        state: crate::a2a::task::TaskState::Rejected,
+                        backend_id: None,
+                    });
+                }
+                Some(not_interchangeable(hop, reason))
+            }
+            (opened, _) => opened,
         };
         // VERIFY-ON-CALL, then THE HOP'S TRUST GATE: after the task is opened (the engine's order:
         // its local verbs and the addressed task's lookup first), the agent's card is re-verified
@@ -2162,7 +2443,16 @@ slot!(
                             }
                             _ => None,
                         };
-                        Some((id, u.agent.clone()))
+                        // A unit over a failover pool names the member its task is pinned to
+                        // (predev's pinned hop: the member's own breaker), else the POOL, whose
+                        // walk found nothing admissible (predev `route.rs`: `agent_id: pool_name`).
+                        let pinned = u.hop.as_ref().and_then(|h| h.holder.clone()).flatten();
+                        let named = match (&u.pool, pinned) {
+                            (Some(_), Some(holder)) => Some(holder),
+                            (Some(pool), None) => Some(pool.clone()),
+                            (None, _) => u.agent.clone(),
+                        };
+                        Some((id, named))
                     })?;
                     // An unaddressed unit names the agent the engine would have selected for it:
                     // the one serving agent of its catalogue (1.5.5's `select`, before the breaker).

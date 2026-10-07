@@ -1169,7 +1169,10 @@ impl Relay {
                     STATUS_OK
                 }
                 None => {
-                    self.reading = None;
+                    // An agent refusing busbar at the HTTP layer (`401`/`403`, no gRPC answer)
+                    // refuses busbar itself, as on every binding (predev `relay.rs:1583`: a
+                    // non-2xx status is the one status table's to read, an auth status hard).
+                    self.reading = matches!(status, 401 | 403).then_some(Reading::Hard);
                     return self.unframable();
                 }
             }

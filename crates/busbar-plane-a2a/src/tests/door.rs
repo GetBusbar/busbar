@@ -361,6 +361,44 @@ fn a_valid_section_reads_and_a_bad_entry_is_refused_in_the_grammars_words() {
     assert!(err.contains("`agents.vendor`: `url:` must be an"), "{err}");
 }
 
+/// THE HOST'S FAILOVER POOLS at the section's reserved `pools` key (the neutral top-level `pools:`
+/// whose members are `agents:` registrations, handed by the root's `with_pools`) are lifted off the
+/// section before it is read: the registrations read in the order written, and each pool's
+/// members in the order declared, the first its primary (predev `receive.rs` `pool_of`). RED
+/// before the lift: `pools` is read as a registration and the whole section is refused.
+#[test]
+fn the_hosts_failover_pools_are_lifted_off_the_section_in_declared_order() {
+    // Written as text: the registrations' order is the order written.
+    let (b, a) = (
+        endpoint("vendor", "/planner-b"),
+        endpoint("vendor", "/planner-a"),
+    );
+    let section = format!(
+        r#"{{"planner-b": {{"url": "{b}", "pin": {{"mechanism": "unpinned"}}}},
+            "pools": {{"planner": {{"members": ["planner-b", {{"name": "planner-a"}}],
+                                    "repeatable": [], "member_granted": true}}}},
+            "planner-a": {{"url": "{a}", "pin": {{"mechanism": "unpinned"}}}}}}"#
+    );
+    let cfg = read_settings(section.as_bytes()).expect("the section reads");
+    assert_eq!(
+        cfg.agents.keys().collect::<Vec<_>>(),
+        ["planner-b", "planner-a"],
+        "the registrations, as written; `pools` is none of them"
+    );
+    assert_eq!(cfg.pools["planner"], ["planner-b", "planner-a"]);
+    assert_eq!(
+        cfg.pool_of("planner-a"),
+        Some((
+            "planner",
+            ["planner-b".to_string(), "planner-a".to_string()].as_slice()
+        ))
+    );
+    assert_eq!(cfg.pool_of("vendor"), None);
+    // A section with no pools reads as it always did.
+    let plain = one_agent("vendor", &endpoint("vendor", "/a2a"));
+    assert!(read_settings(&plain).expect("valid").pools.is_empty());
+}
+
 #[test]
 fn every_route_is_one_line_of_the_dialect_in_mount_order() {
     use Line::{Document, Framed, Open, Target};

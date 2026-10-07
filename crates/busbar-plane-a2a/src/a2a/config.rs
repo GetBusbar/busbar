@@ -334,6 +334,23 @@ pub struct AgentsCfg {
     /// The registrations. Insertion-ordered, so catalogue construction and every operator-facing
     /// listing are deterministic rather than hash-ordered.
     pub agents: indexmap::IndexMap<String, AgentDefCfg>,
+    /// THE FAILOVER POOLS the host hands the section at its reserved `pools` key (the neutral
+    /// top-level `pools:` whose members are `agents:` registrations): each pool's members, in the
+    /// order declared, the first the primary. Lifted off the section before it is read
+    /// ([`crate::door::read_settings`]); empty when it states none.
+    pub pools: indexmap::IndexMap<String, Vec<String>>,
+}
+
+impl AgentsCfg {
+    /// The pool `agent` is a member of, by name, and its members in declared order: the first pool
+    /// naming it, in the order the section states them.
+    #[must_use]
+    pub fn pool_of(&self, agent: &str) -> Option<(&str, &[String])> {
+        self.pools
+            .iter()
+            .find(|(_, members)| members.iter().any(|m| m == agent))
+            .map(|(name, members)| (name.as_str(), members.as_slice()))
+    }
 }
 
 impl<'de> Deserialize<'de> for AgentsCfg {
@@ -368,6 +385,7 @@ impl<'de> Deserialize<'de> for AgentsCfg {
             all_agent_hooks: section.hooks,
             all_agent_upstream_credentials: section.upstream_credentials,
             agents: section.entries,
+            pools: indexmap::IndexMap::new(),
         })
     }
 }
