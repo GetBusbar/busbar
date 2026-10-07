@@ -603,3 +603,92 @@ fn pointer_tokens_are_escaped_so_a_key_cannot_forge_a_location() {
     .expect_err("refused");
     assert_eq!(err.pointer, "/a~1b");
 }
+
+/// An address the connector destination guard refuses is refused in a tool argument too: the
+/// argument check used the 1.5.5 plaintext predicate, which misses these ranges. The zone forms
+/// are spelled `%25lo` as a URL carries them; the host reader percent-decodes to `%lo` and
+/// `host_ip` strips the zone before parsing.
+#[test]
+fn an_address_the_connector_guard_refuses_is_refused_in_an_argument_too() {
+    let urls = [
+        "http://198.18.0.1/x",
+        "http://192.0.0.8/x",
+        "http://0.1.2.3/x",
+        "http://[::ffff:198.18.0.1]/x",
+        "http://[::1%25lo]/x",
+        "http://[fe80::1%25eth0]/x",
+        "http://224.0.0.1/x",
+        "http://255.255.255.255/x",
+        "http://[ff02::1]/x",
+    ];
+    assert_eq!(urls.len(), 9);
+    for url in urls {
+        let err = guard(&nested_uri_schema(), &nested_uri_args(url), public())
+            .err()
+            .unwrap_or_else(|| panic!("`{url}` must be refused, but it passed"));
+        assert!(
+            matches!(err.why, ArgWhy::InternalHost(_)),
+            "`{url}` must be refused AS internal, got {err:?}"
+        );
+    }
+}
+
+/// The internal-range table, one representative per range, pinned against `ip_is_internal`, and
+/// every internal row is refused by the argument check as an `http://<addr>/x` URL.
+#[test]
+fn the_internal_range_table_is_pinned() {
+    let internal = [
+        "127.0.0.1",
+        "10.0.0.1",
+        "172.16.0.1",
+        "192.168.0.1",
+        "169.254.0.1",
+        "0.0.0.0",
+        "0.1.2.3",
+        "100.64.0.1",
+        "192.0.0.8",
+        "198.18.0.1",
+        "255.255.255.255",
+        "224.0.0.1",
+        "192.0.2.1",
+        "198.51.100.1",
+        "203.0.113.1",
+        "::1",
+        "::",
+        "fc00::1",
+        "fe80::1",
+        "ff02::1",
+        "::ffff:10.0.0.1",
+        "64:ff9b::a00:1",
+    ];
+    // 6to4 (2002::/16) and Teredo (2001::/32) are a known gap in both predicates; they are pinned
+    // as not internal so that a change to that is visible here.
+    let not_internal = ["8.8.8.8", "2606:4700::1111", "2002::1", "2001::1"];
+    for addr in internal {
+        let ip: std::net::IpAddr = addr.parse().expect("table entry parses");
+        assert!(
+            busbar_contract::net::ip_is_internal(&ip),
+            "`{addr}` must be internal"
+        );
+        let url = if ip.is_ipv6() {
+            format!("http://[{addr}]/x")
+        } else {
+            format!("http://{addr}/x")
+        };
+        let err = guard(&nested_uri_schema(), &nested_uri_args(&url), public())
+            .err()
+            .unwrap_or_else(|| panic!("`{url}` must be refused, but it passed"));
+        // 169.254.0.0/16 is judged as cloud metadata before the internal check runs.
+        assert!(
+            matches!(err.why, ArgWhy::InternalHost(_) | ArgWhy::CloudMetadata(_)),
+            "`{url}` must be refused AS internal or metadata, got {err:?}"
+        );
+    }
+    for addr in not_internal {
+        let ip: std::net::IpAddr = addr.parse().expect("table entry parses");
+        assert!(
+            !busbar_contract::net::ip_is_internal(&ip),
+            "`{addr}` must not be internal"
+        );
+    }
+}
