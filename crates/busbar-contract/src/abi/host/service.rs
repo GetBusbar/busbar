@@ -160,10 +160,14 @@ pub mod op {
     pub const TRUST_SERVES: u32 = 25;
     /// `trust.decide`.
     pub const TRUST_DECIDE: u32 = 26;
+    /// `trust.state`.
+    pub const TRUST_STATE: u32 = 27;
+    /// `session.emit`.
+    pub const SESSION_EMIT: u32 = 28;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 27;
+pub const SERVICES: u32 = 29;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -183,6 +187,8 @@ pub const fn may_pend(service: u32) -> bool {
             | op::TRUST_SIGHT_ITEM
             | op::TRUST_SERVES
             | op::TRUST_DECIDE
+            | op::TRUST_STATE
+            | op::SESSION_EMIT
     ) && service < SERVICES
 }
 
@@ -615,6 +621,33 @@ pub const UNDECIDED_UNKNOWN: u64 = 6;
 /// approvable.
 pub const UNDECIDED_ROOTLESS: u64 = 7;
 
+/// [`op::TRUST_STATE`]'s `in`: the KERNEL'S TRUST STATE of one counterparty and its items, as the
+/// core-admin `GET /api/v1/admin/trust` lists it, for a plane's own administrative views. `value` =
+/// the counterparty's `KEY_*` state; one span per item, in item order: key = the item, value =
+/// `<state word>\0<approved digest or empty>\0<last sighted digest or empty>`, the word one of
+/// `new`, `same`, `drifted`, `quarantined`, `approved`. Short-buffer rule. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustStateIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// Where the items go.
+    pub into: ServiceBufs,
+}
+
+/// `trust.state`'s value: sighted (or declared) and never approved, or revoked: refused.
+pub const KEY_NEW: u64 = 1;
+/// `trust.state`'s value: approved, and its last sighting is what was approved.
+pub const KEY_SAME: u64 = 2;
+/// `trust.state`'s value: approved, and its last sighting moved from it: refused until re-approved.
+pub const KEY_DRIFTED: u64 = 3;
+/// `trust.state`'s value: quarantined: refused until re-approved (or its pin is seen again).
+pub const KEY_QUARANTINED: u64 = 4;
+/// `trust.state`'s value: approved, and not sighted since.
+pub const KEY_APPROVED: u64 = 5;
+
 /// [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the
 /// kernel holds for `counterparty` (the operator's out-of-band material its declared pin names).
 /// The key selects the algorithm; a signature's header is only checked against it. `value` = a
@@ -965,6 +998,45 @@ pub const DISK_OPEN_FAILED: u64 = 1;
 /// A FAILED `disk.append`'s `ServiceOut::value`: the file opened, and writing the bytes failed.
 pub const DISK_APPEND_FAILED: u64 = 2;
 
+// ── carrier sessions ──────────────────────────────────────────────────────────────────────────
+
+/// The head field a CARRIER SESSION's arrivals carry, naming the session they arrived over: the
+/// root states it on every unit it opens from a session that holds one carrier open (a process's
+/// own stdin/stdout), and never lets a caller state it. Its value is the session's number, in
+/// decimal; a plugin hands that number back to [`op::SESSION_EMIT`].
+pub const CARRIER_SESSION_FIELD: &str = "busbar-carrier-session";
+
+/// [`op::SESSION_EMIT`]'s `in`: write `bytes`, UNSOLICITED, on the open carrier session `session`
+/// (its number, as [`CARRIER_SESSION_FIELD`] named it), outside any unit: a notification, a request
+/// of the plugin's own, a keepalive. Unbilled; the host attributes it to the session's verified
+/// principal and audits it as a session event. A session that is not open, or not the calling
+/// instance's, is REFUSED. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SessionEmitIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The session.
+    pub session: u64,
+    /// The bytes, written as they are.
+    pub bytes: Blob,
+}
+
+/// `session.emit`'s `in`: a session is named (never `0`) and something is written.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for no session or no bytes.
+pub const fn check_session_emit_in(i: &SessionEmitIn) -> Result<(), Fault> {
+    if i.session == 0 {
+        return Err(fault(Rule::Missing, "session_emit.session"));
+    }
+    if i.bytes.len == 0 {
+        return Err(fault(Rule::Missing, "session_emit.bytes"));
+    }
+    Ok(())
+}
+
 // ── the table ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service
@@ -1030,6 +1102,10 @@ pub struct HostSlots {
     pub trust_serves: Option<ServiceFn>,
     /// [`op::TRUST_DECIDE`], in [`TrustDecideIn`]. A tail addition.
     pub trust_decide: Option<ServiceFn>,
+    /// [`op::TRUST_STATE`], in [`TrustStateIn`]. A tail addition.
+    pub trust_state: Option<ServiceFn>,
+    /// [`op::SESSION_EMIT`], in [`SessionEmitIn`].
+    pub session_emit: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -1505,6 +1581,24 @@ pub fn check_trust_decide(
     )
 }
 
+/// `trust.state`'s answer: a `KEY_*` state, and the items into the caller's buffers.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_state(
+    i: &TrustStateIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        into(op::TRUST_STATE, i.into, (KEY_NEW, KEY_APPROVED)),
+    )
+}
+
 /// `trust.due`'s answer.
 ///
 /// # Errors
@@ -1634,6 +1728,19 @@ pub fn check_need_admit(
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
     answer(ret, &i.head, out, bare(op::NEED_ADMIT, (0, 0)))
+}
+
+/// `session.emit`'s answer: the common rules, nothing written back.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_session_emit(
+    i: &SessionEmitIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(ret, &i.head, out, bare(op::SESSION_EMIT, (0, 0)))
 }
 
 /// `trust.verify`'s answer: the common rules, and on READY no span, and bytes only with the two

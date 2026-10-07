@@ -6,7 +6,6 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
     "crates/busbar-llm",
-    "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-contract",
@@ -259,31 +258,8 @@ proptest = "1"
 # DER minting on ring only. `pem` (and its base64 0.23) is a test-only need: the members whose tests
 # write PEM add the feature on their dev/test-support declaration.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
-# ── MCP, from the specification authors' own crate ─────────────────────────────────────────────
-# `rmcp` implements the stable `2026-07-28` revision — precisely the one busbar targets — while
-# staying compatible with `2025-11-25` and earlier.
-#
-# `default-features = false` is LOAD-BEARING here, unlike `oauth-as` above where the crate's default
-# set is already empty. rmcp's defaults pull `server`, `macros`, `schemars`, `base64`, `uuid` and
-# `transport-async-rw`; what busbar wants is the protocol VOCABULARY and nothing else. Features are
-# turned on per member, one at a time, each with a reason.
-#
-# THE TWO FAMILIES THAT MUST NEVER BE ENABLED — stated here because a feature list is exactly where
-# this slips in unnoticed:
-#   auth, auth-client-credentials-jwt
-#       a SECOND OAuth implementation, beside `oauth_as/` and the `PlaneAdmission` verifier. Two
-#       implementations of one security concern that can disagree is the class behind three of this
-#       release's security defects. rmcp's auth is client-side helper code written for an agent
-#       author; busbar is a resource server AND an authorization server. Different problems.
-#   reqwest*, transport-streamable-http-*, transport-child-process, transport-io
-#       a second HTTP client and a second transport, both of which bypass the dispatch-time
-#       resolve-then-pin in busbar's own — one DNS resolution per hop, every returned address
-#       judged, the connection made to the address that was judged. Same objection recorded against
-#       `a2a-client-lf`, same answer.
-#
-# Cost, measured with `cargo tree -e normal`: +18 crate names in the lock, **+3 in the binary**
-# (`rmcp`, `chrono`, `pastey`).
-rmcp = { version = "3.1.2", default-features = false }
+# `rmcp` (MCP's protocol-vocabulary crate) is STRUCK: its one member, `busbar-mcp`, is deleted (P3
+# DEL-MCP, ARCHITECT 2026-10-05), and `workspace-deps:no-orphans` refuses a pin nothing inherits.
 # THE LINE COUNTER'S PARSER, and the only reason either of these is a direct dependency of anything
 # in this workspace. `cargo xtask loc` is the ONE instrument that answers "how many lines of
 # production Rust is this tree", and the three wrong answers it replaces were each a regex or a

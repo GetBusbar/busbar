@@ -753,3 +753,7 @@ fn row_of(
 #[cfg(test)]
 #[path = "tests/book_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/serve_gate_tests.rs"]
+mod serve_gate_tests;
