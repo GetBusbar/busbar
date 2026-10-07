@@ -925,6 +925,22 @@ impl crate::plane_host::egress_trust::EgressTrustHost for TlsEgressTrust {
     fn secure_layer(&self) -> Option<Arc<dyn crate::secure::SecureLayer>> {
         Some(Arc::clone(&self.0))
     }
+    fn judge_name(&self, host: &str, _: u32) -> Result<(), crate::host_services::DestRefusal> {
+        loopback_literal_listed(host)
+    }
+}
+
+/// The name arm of a test binary with no deployment guard: the loopback literal every fixture binds
+/// is admitted, as an operator lists `127.0.0.1` / `::1` in `advanced.allow_destinations`; every
+/// other host is refused, as the pass-through refuses it (fail closed).
+pub fn loopback_literal_listed(host: &str) -> Result<(), crate::host_services::DestRefusal> {
+    use crate::plane_host::egress_trust::EgressTrustHost as _;
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    match bare.parse::<IpAddr>() {
+        Ok(ip) if ip.is_loopback() => Ok(()),
+        _ => crate::plane_host::egress_trust::PassThroughEgressTrust
+            .judge_name(host, busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER),
+    }
 }
 
 /// TEST SEAM: carry `layer` as the wrap every client in this test binary is built over, in the

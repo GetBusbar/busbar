@@ -67,9 +67,23 @@ pub(crate) fn judged_name(judge: Option<&Arc<dyn DestJudge>>, host: &str) -> Res
     let verdict = match (judge, egress_trust_host()) {
         (Some(j), _) => j.judge_host(host, EGRESS_PROVIDER),
         (None, Some(seam)) => seam.judge_name(host, EGRESS_PROVIDER),
-        (None, None) => PassThroughEgressTrust.judge_name(host, EGRESS_PROVIDER),
+        (None, None) => no_guard_name(host),
     };
     verdict.map_err(|refusal| Box::new(refusal) as BoxError)
+}
+
+/// The name arm in a process with no guard behind the seam: every host refused (fail closed).
+#[cfg(not(any(test, feature = "test-support")))]
+fn no_guard_name(host: &str) -> Result<(), crate::host_services::DestRefusal> {
+    PassThroughEgressTrust.judge_name(host, EGRESS_PROVIDER)
+}
+
+/// The name arm in a TEST binary no composition root boots: the loopback literal every fixture binds
+/// is admitted (as an operator lists it in `advanced.allow_destinations`); every other host is
+/// refused, fail closed, as in a shipped process with no guard.
+#[cfg(any(test, feature = "test-support"))]
+fn no_guard_name(host: &str) -> Result<(), crate::host_services::DestRefusal> {
+    crate::egress::fixtures::loopback_literal_listed(host)
 }
 
 /// An answer the target's own resolution produced, judged whole as [`judged`] judges one. The
