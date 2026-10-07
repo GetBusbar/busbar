@@ -219,7 +219,7 @@ fn the_stored_credential_rides_the_record_and_never_an_answer() {
         held.authentication,
         Some(DeliveryAuth {
             scheme: "Bearer".into(),
-            credentials: "s3cret".into(),
+            credentials: busbar_contract::Redacted::new("s3cret".into()),
         })
     );
     assert!(!format!("{held:?}").contains("s3cret"));
@@ -253,7 +253,7 @@ fn a_record_without_the_credential_field_reads_as_none() {
     let kept = PushConfig {
         authentication: Some(DeliveryAuth {
             scheme: "Basic".into(),
-            credentials: "abc".into(),
+            credentials: busbar_contract::Redacted::new("abc".into()),
         }),
         ..old
     };

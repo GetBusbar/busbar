@@ -188,7 +188,7 @@ fn the_request_is_a_post_to_the_callbacks_path_with_the_credential_only_once_hel
         "t1",
         Some(DeliveryAuth {
             scheme: "Bearer".into(),
-            credentials: "s3cret".into(),
+            credentials: busbar_contract::Redacted::new("s3cret".into()),
         }),
     );
     assert_eq!(
@@ -208,7 +208,7 @@ fn a_terminal_tasks_last_delivery_forgets_its_credential() {
     let d = Deliveries::new();
     let auth = DeliveryAuth {
         scheme: "Basic".into(),
-        credentials: String::new(),
+        credentials: busbar_contract::Redacted::default(),
     };
     d.remember_auth("t1", Some(auth));
     let last = Delivery::of(&task("t1", TaskState::Completed)).expect("a callback");
@@ -224,7 +224,7 @@ fn a_terminal_tasks_last_delivery_forgets_its_credential() {
 fn the_credential_never_prints() {
     let auth = DeliveryAuth {
         scheme: "Bearer".into(),
-        credentials: "s3cret".into(),
+        credentials: busbar_contract::Redacted::new("s3cret".into()),
     };
     assert!(!format!("{auth:?}").contains("s3cret"));
     assert_eq!(auth.header_value(), "Bearer s3cret");
@@ -469,9 +469,13 @@ fn reached_addresses_are_bounded() {
 fn the_credential_round_trips_through_the_record_and_stays_redacted() {
     let auth = DeliveryAuth {
         scheme: "Bearer".into(),
-        credentials: "s3cret".into(),
+        credentials: busbar_contract::Redacted::new("s3cret".into()),
     };
     let bytes = serde_json::to_vec(&auth).expect("serializes");
+    assert_eq!(
+        bytes, br#"{"scheme":"Bearer","credentials":"s3cret"}"#,
+        "the sealed field keeps the record's plain-string form"
+    );
     let back: DeliveryAuth = serde_json::from_slice(&bytes).expect("reads");
     assert_eq!(back, auth);
     assert!(!format!("{back:?}").contains("s3cret"));
