@@ -2359,6 +2359,13 @@ impl FarEnd for DoorFar<'_, '_> {
         }
     }
 
+    /// The plane's fault reading of the answer it was handed reaches the walk's breaker.
+    fn judged(&self, token: &Pass<Route>, fault: u8) {
+        if let Some(far) = self.far() {
+            far.judged(token, fault);
+        }
+    }
+
     async fn write(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
         match self.far() {
             Some(far) => far.write(token, request).await,
