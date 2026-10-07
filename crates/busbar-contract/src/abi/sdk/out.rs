@@ -239,6 +239,10 @@ unsafe impl Scalar for crate::abi::plane::OutField {}
 unsafe impl Scalar for crate::abi::transport::FramePiece {}
 unsafe impl Scalar for crate::abi::transport::FramerYield {}
 unsafe impl Scalar for crate::abi::transport::HeadSlots {}
+unsafe impl Scalar for crate::abi::transport::FrameSpan {}
+unsafe impl Scalar for crate::abi::transport::DatagramRoute {}
+unsafe impl Scalar for crate::abi::transport::RendezvousTerms {}
+unsafe impl Scalar for crate::abi::transport::DatagramYield {}
 unsafe impl Scalar for crate::abi::store::CellGrant {}
 
 /// A slot's `out`, as a safe body is handed it: read anything, set scalars, and hand pointers to
