@@ -333,12 +333,12 @@ pub fn target_of(url: &str) -> Option<String> {
 }
 
 /// WHAT THE FAR END'S ANSWER SAYS ABOUT THE FAR END (the breaker's reading; the engine's
-/// `classify_hop`, read where the answer's structure still exists): a well-formed protocol answer —
-/// a result, or an error the protocol defines, at whatever status it came — is the destination
-/// answering, the WORK failing and not the wire; a `401`/`403` is a hard refusal of busbar itself;
-/// a `5xx` or `429` with no protocol answer in it is transient, as is a `2xx` whose body is not a
-/// usable answer; any other `4xx` is the caller's. An answer this table does not read states
-/// nothing, and the kernel's status table reads it.
+/// `classify_hop`, read where the answer's structure still exists, in the engine's ORDER: the
+/// status first, COORDINATOR ruling 2026-10-07 on finding A, predev `relay.rs:1813-1819`). Any
+/// status outside `2xx` is the status table's alone, whatever its body says ([`status_reading`]);
+/// only on a `2xx` is the body read: a result, or an error the protocol defines, is the destination
+/// answering, the WORK failing and not the wire (predev `:1575`), and a body that is no usable
+/// answer is transient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reading {
     /// The destination answered.
@@ -355,35 +355,32 @@ pub enum Reading {
 /// answer to `id` ([`Reading`]).
 #[must_use]
 pub fn reading_of(status: u32, body: &[u8], id: &Value, binding: Binding) -> Option<Reading> {
-    if matches!(status, 401 | 403) {
-        return Some(Reading::Hard);
+    if !(200..300).contains(&status) {
+        return Some(status_reading(status));
     }
-    if (200..300).contains(&status) {
-        let answer = match binding {
-            // A gRPC answer is read once transcoded to the JSON-RPC envelope it is.
-            Binding::JsonRpc | Binding::Grpc => read_answer(status, body, id),
-            // A 2xx body that is not JSON cannot be framed: the engine recorded nothing for it.
-            Binding::HttpJson => read_rest_answer(status, body, id)?,
-        };
-        return Some(match answer {
-            Ok(_) | Err(HopRefusal::BackendError) => Reading::Healthy,
-            Err(_) => Reading::Transient,
-        });
-    }
-    // Outside 2xx: an error the protocol defines, correlated to the request, is still the
-    // destination answering (the JSON-RPC binding's error envelope).
-    let protocol = binding == Binding::JsonRpc
-        && body.len() <= MAX_REPLY_BYTES
-        && serde_json::from_slice::<Value>(body)
-            .ok()
-            .is_some_and(|envelope| read_response(&envelope, id).is_ok());
-    if protocol {
-        return Some(Reading::Healthy);
-    }
+    let answer = match binding {
+        // A gRPC answer is read once transcoded to the JSON-RPC envelope it is.
+        Binding::JsonRpc | Binding::Grpc => read_answer(status, body, id),
+        // A 2xx body that is not JSON cannot be framed: the engine recorded nothing for it.
+        Binding::HttpJson => read_rest_answer(status, body, id)?,
+    };
+    Some(match answer {
+        Ok(_) | Err(HopRefusal::BackendError) => Reading::Healthy,
+        Err(_) => Reading::Transient,
+    })
+}
+
+/// THE STATUS TABLE: the reading of an answer at a status outside `2xx`, its body unread (predev
+/// `classify_hop` `:1583-1586`: `normalize_raw_error(from_status(status))`, the class's disposition
+/// in `classify`). `401`/`403` are `Auth`, hard; `429` (`RateLimit`), `408` (`Timeout`), `529`
+/// (`Overloaded`) and every `5xx` (`ServerError`) are transient; every other status, a true `4xx`
+/// or a `1xx`/`3xx` reaching the error path, is `ClientError`, the caller's, recording nothing.
+#[must_use]
+pub fn status_reading(status: u32) -> Reading {
     match status {
-        429 | 500..=599 => Some(Reading::Transient),
-        400..=499 => Some(Reading::Caller),
-        _ => None,
+        401 | 403 => Reading::Hard,
+        408 | 429 | 500..=599 => Reading::Transient,
+        _ => Reading::Caller,
     }
 }
 
@@ -1168,6 +1165,11 @@ impl Relay {
 
     /// The caller's answer to a far end's whole answer at `status`, read as one document.
     fn whole(&mut self, status: u32) -> Answer {
+        // THE STATUS FIRST (COORDINATOR ruling 2026-10-07 on finding A; predev `relay.rs:1813-1819`
+        // reads a non-2xx before any framing, on every binding): the head's status outside `2xx` is
+        // the status table's reading, whatever answer the body or its trailers then frame. A gRPC
+        // head states no status of its own (`0`): its trailers say how the call ended.
+        let head = (status != 0 && !(200..300).contains(&status)).then(|| status_reading(status));
         let status = if self.binding == Binding::Grpc {
             match self.grpc_envelope() {
                 Some(envelope) => {
@@ -1175,18 +1177,23 @@ impl Relay {
                     STATUS_OK
                 }
                 None => {
-                    // An agent refusing busbar at the HTTP layer (`401`/`403`, no gRPC answer)
-                    // refuses busbar itself, as on every binding (predev `relay.rs:1583`: a
-                    // non-2xx status is the one status table's to read, an auth status hard).
-                    self.reading = matches!(status, 401 | 403).then_some(Reading::Hard);
+                    // No gRPC answer: a non-2xx head is the status table's (an agent refusing
+                    // busbar at the HTTP layer, `401`/`403`, hard, as on every binding); a 2xx one
+                    // framed nothing, which the engine recorded nothing for (`Unframable`).
+                    self.reading = head;
                     return self.unframable();
                 }
             }
         } else {
             status
         };
-        self.reading = reading_of(status, &self.far, &self.id, self.binding);
-        if let Some(ended) = self.grpc.ended.as_ref().filter(|e| !e.ok()) {
+        self.reading = head.or_else(|| reading_of(status, &self.far, &self.id, self.binding));
+        if let Some(ended) = self
+            .grpc
+            .ended
+            .as_ref()
+            .filter(|e| !e.ok() && head.is_none())
+        {
             // UNAUTHENTICATED and PERMISSION_DENIED refuse busbar itself, as a 401/403 does.
             if matches!(ended.code, 7 | 16) {
                 self.reading = Some(Reading::Hard);
