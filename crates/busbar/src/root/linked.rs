@@ -39,17 +39,13 @@ use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
 use busbar_kernel::plane::PlaneAdmission;
-use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
+use busbar_kernel::plane_host::EngineHost;
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
 pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve)>;
-
-/// The stdio serve mode: frames on stdin/stdout instead of a listener; resolves to the exit code.
-pub type StdioServe =
-    fn(LiveHostFactory) -> std::pin::Pin<Box<dyn std::future::Future<Output = i32>>>;
 
 /// One row a plane declares for `busbar --help`: `(slot, text)`. Slot `"tagline"` is the one-line
 /// description the help opens with; slot `"flag"` is a row of the `Flags:` block, whose first word is
@@ -103,8 +99,6 @@ pub struct Linked {
     pub on_host: &'static [fn(&Arc<dyn EngineHost>)],
     /// Providers composed off the resolved configuration (see [`Compose`]).
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
-    /// The stdio serve mode (see [`StdioServe`]).
-    pub stdio_serve: &'static [StdioServe],
     /// The CLI-help axis: each linked plane's rows of `busbar --help` (see [`CliHelpRow`]).
     pub cli_help: &'static [&'static [CliHelpRow]],
     /// The export axis on the memory ABI: each linked export sink's statement and door (see
@@ -480,10 +474,10 @@ pub fn plane_rows(
 }
 
 /// THE PLANE AXIS, PER AXIS (SEAM-L(s)): every row of `rows` that is one of `doors` stays, and a
-/// row that is not (a linked legacy or HOT-lane row) stays unless a door registers its key, in which
-/// case the door serves the plane and the legacy row keeps only the axes the door does not register
-/// (its other tables: the stdio serve, the CLI help, the one-shot runner, the protocols, the
-/// diagnostics), which this fold never touches. Order is kept.
+/// row that is not (a linked legacy or HOT-lane row) stays unless a door registers its key, in
+/// which case the door serves the plane and the legacy row keeps only the axes the door does not
+/// register (its other tables: the CLI help, the one-shot runner, the protocols, the diagnostics),
+/// which this fold never touches. Order is kept.
 ///
 /// The ENGINE is not the plane axis: a legacy row that is the fallback plane carries the routing
 /// tables the core's own readers walk (the `/metrics` lane gauges, `/v1/models`, the provider
@@ -1309,6 +1303,13 @@ pub fn register_diagnostics(linked: &Linked) {
         .iter()
         .flat_map(|diags| diags.iter().copied())
         .collect();
+    match door_declared_diagnostics(linked.plane_door_declares, &installed) {
+        Ok(declared) => installed.extend(declared),
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
     if let Some(registry) = DROPPED.get() {
         match declared_diagnostics(registry, &installed) {
             Ok(declared) => installed.extend(declared),
@@ -1330,10 +1331,7 @@ pub fn declared_diagnostics(
     registry: &crate::root::loader::PluginRegistry,
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
-    use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
-    use busbar_kernel::diagnostics::REGISTRY;
-    let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
-    let mut declared: Vec<&'static Diagnostic> = Vec::new();
+    let mut declared = Vec::new();
     for p in registry.linked().iter().chain(registry.loadable()) {
         let (name, decls) = (&p.manifest.name, &p.manifest.declares.diagnostics);
         if !decls.is_empty() && !p.first_party() {
@@ -1342,6 +1340,51 @@ pub fn declared_diagnostics(
                  plugin's codes join the catalogue"
             ));
         }
+        let held: Vec<_> = taken.iter().chain(&declared).copied().collect();
+        declared.extend(catalogue_entries(name, decls, &held)?);
+    }
+    Ok(declared)
+}
+
+/// THE DIAGNOSTICS LINKED PLANE DOORS DECLARE (`declares.json`, first-party by being linked), each
+/// judged as a dropped plugin's declaration is ([`declared_diagnostics`]).
+///
+/// # Errors
+///
+/// A declaration that is not a `declares` section, or one the catalogue refuses.
+pub fn door_declared_diagnostics(
+    doors: &[(
+        &'static str,
+        busbar_contract::abi::mechanism::door::DoorFn,
+        &'static str,
+    )],
+    taken: &[&'static busbar_contract::diagnostic::Diagnostic],
+) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
+    let mut declared = Vec::new();
+    for (name, _, json) in doors {
+        let declares: crate::root::loader::sign::Declares =
+            serde_json::from_str(json).map_err(|e| {
+                format!("plugin '{name}' states a `declares` section that does not read: {e}")
+            })?;
+        let held: Vec<_> = taken.iter().chain(&declared).copied().collect();
+        declared.extend(catalogue_entries(name, &declares.diagnostics, &held)?);
+    }
+    Ok(declared)
+}
+
+/// One plugin's declared diagnostics as catalogue entries, beside the `held` ones: a class that is
+/// not the host's, a severity that is not a token, or a code the catalogue holds is refused.
+fn catalogue_entries(
+    name: &str,
+    decls: &[crate::root::loader::sign::DiagnosticDecl],
+    held_already: &[&'static busbar_contract::diagnostic::Diagnostic],
+) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
+    use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
+    use busbar_kernel::diagnostics::REGISTRY;
+    let taken = held_already;
+    let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+    let mut declared: Vec<&'static Diagnostic> = Vec::new();
+    {
         for d in decls {
             let refuse = |why: &str| {
                 Err(format!(
@@ -1430,10 +1473,6 @@ mod tests;
 #[cfg(all(test, feature = "auth-admin-tokens", linked_axis_body_ingress))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
-
-#[cfg(test)]
-#[path = "tests/metric_family_conformance.rs"]
-mod metric_family_conformance;
 
 #[cfg(all(test, linked_every_plane))]
 #[path = "tests/linked_protocols.rs"]

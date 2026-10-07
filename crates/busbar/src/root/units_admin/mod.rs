@@ -1052,6 +1052,8 @@ pub struct CoreGovernance {
     records: Option<PlaneRecordSink>,
     /// The node's `Idempotency-Key` replay cache for the two Q71(2) writes (contract D-3).
     replays: Arc<bound::ReplayCache>,
+    /// The kernel's trust book, for the three trust verbs. No keys until a root binds it.
+    trust: TrustDesk,
 }
 
 impl CoreGovernance {
@@ -1080,7 +1082,15 @@ impl CoreGovernance {
             planes: no_planes(),
             records: None,
             replays: Arc::new(bound::ReplayCache::new()),
+            trust: no_trust(),
         }
+    }
+
+    /// Bind the kernel's trust book (the three trust verbs).
+    #[must_use]
+    pub fn trusting(mut self, trust: TrustDesk) -> Self {
+        self.trust = trust;
+        self
     }
 
     /// Bind the node's `Idempotency-Key` replay cache (contract D-3).
@@ -1228,6 +1238,20 @@ impl busbar_core_admin::Governance for CoreGovernance {
             }
             KernelVerb::PlaneFacts => {
                 return bound::plane_facts_effect(&self.request.path, &*self.planes)
+                    .map(|a| a.pack());
+            }
+            // ARCHITECT 2026-10-06: the operator's trust decisions, on the kernel's trust book.
+            // Idempotent by their own rule (the same key twice is the same answer), so no replay.
+            KernelVerb::GetTrust => {
+                return bound::trust_list_effect(&self.trust).map(|a| a.pack());
+            }
+            KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
+                let decision = if verb == KernelVerb::TrustApprove {
+                    busbar_kernel::trust::book::Ruling::Approve
+                } else {
+                    busbar_kernel::trust::book::Ruling::Revoke
+                };
+                return bound::trust_decide_effect(request, decision, &self.trust)
                     .map(|a| a.pack());
             }
             // The two writes replay under contract D-3: a retry carrying the same `Idempotency-Key`
@@ -2682,6 +2706,9 @@ pub struct AdminBinding {
     /// Where `plane_record_write` lands a record: the plane-facing store seam. `None` until a root
     /// binds one, and the verb then refuses rather than accept a write nothing keeps.
     pub records: Option<PlaneRecordSink>,
+    /// The kernel's trust book the three trust verbs read and decide over (ARCHITECT 2026-10-06).
+    /// No keys until a root binds the kernel's composed services.
+    pub trust: TrustDesk,
     /// THE NODE'S `Idempotency-Key` REPLAY CACHE for `plane_record_write` and `commit_upgrade`
     /// (contract D-3). Node-level, because a unit's governance value lives for one request; built on
     /// first use over [`AdminBinding::claims`], so a durable node journals each claim exactly as the
@@ -2822,6 +2849,7 @@ impl AdminBinding {
             pools: no_pools(),
             planes: no_planes(),
             records: None,
+            trust: no_trust(),
             replays: Arc::new(std::sync::OnceLock::new()),
             units: AdminUnits::new(),
         }
@@ -3145,7 +3173,7 @@ pub(crate) fn admit(
 /// the unit's decision, from its own closed table, and not this step's.
 pub(crate) fn route(
     binding: &AdminBinding,
-    store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+    store: crate::root::kernel::VerbStoreHandle,
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     token: &Pass<Route>,
     ctx: &UnitCtx,
@@ -3208,6 +3236,7 @@ pub(crate) fn route(
             .granted(granted)
             .pooled(Arc::clone(&binding.pools))
             .planed(Arc::clone(&binding.planes), binding.records.clone())
+            .trusting(Arc::clone(&binding.trust))
             .replaying(Arc::clone(binding.replays.get_or_init(|| {
                 Arc::new(match &binding.claims {
                     Some(journal) => bound::ReplayCache::with_journal(Arc::clone(journal)
@@ -3215,7 +3244,7 @@ pub(crate) fn route(
                     None => bound::ReplayCache::new(),
                 })
             }))),
-            StoreRef(store),
+            store,
             ArrivalNonce(request.at),
             PackedReplay,
             CONFIG_CLASS_RULES,
@@ -3778,7 +3807,7 @@ impl RegisteredUnits for AdminPlane {
     ) -> SeatVerdict<Route> {
         route(
             &root.admin,
-            Arc::clone(&root.store),
+            root.store.clone(),
             &root.admin_token,
             token,
             ctx,
@@ -3840,52 +3869,6 @@ trait TapAdmin: Sized {
 }
 
 impl<S: busbar_contract::caps::Step> TapAdmin for SeatVerdict<S> {}
-
-/// The store the verbs unit is handed, behind the published ABI.
-///
-/// A thin newtype rather than a second implementation: the adapter the loader already builds is what
-/// answers, and this exists only because the unit takes its store by value while the root holds one
-/// for the whole node.
-struct StoreRef(Arc<dyn busbar_contract::verb_store::Store + Send + Sync>);
-
-impl busbar_contract::verb_store::Store for StoreRef {
-    fn chain_break(
-        &self,
-        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.chain_break(admin)
-    }
-
-    fn store_restore(
-        &self,
-        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.store_restore(admin, backup_ref)
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.reseal_epoch_floor(admin)
-    }
-
-    fn replay_new_verb(
-        &self,
-        key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        self.0.replay_new_verb(key)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        key: &(String, String),
-        response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.commit_new_verb_replay(key, response)
-    }
-}
 
 /// The nonce a one-time secret is bound to.
 ///
@@ -3978,7 +3961,8 @@ mod adjust;
 pub use adjust::RecordedCounts;
 pub(crate) mod bound;
 pub use bound::{
-    live_admin_door, live_planes, live_records, no_planes, PlaneLookup, PlaneRecordSink,
+    live_admin_door, live_planes, live_records, no_planes, no_trust, PlaneLookup, PlaneRecordSink,
+    TrustDesk,
 };
 mod claims;
 pub use claims::RootClaimJournal;
