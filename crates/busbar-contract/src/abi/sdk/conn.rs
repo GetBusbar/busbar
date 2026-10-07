@@ -20,7 +20,7 @@ use std::task::Poll;
 
 use crate::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IoIn, ReplyIn, ReplyPiece, RequestIn,
-    RequestPiece, StreamFacts, StreamIn, UpgradeIn,
+    RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_CREDENTIAL_UNAVAILABLE,
 };
 use crate::abi::host::service::{
     op, ClockNowIn, ClockReading, DiskAppendIn, DiskWritten, HostSlots, NeedAdmitIn, ServiceFn,
@@ -41,6 +41,9 @@ pub enum ConnFailure {
     Failed(String),
     /// The host refused the call (the egress class, an undeclared need), with its text, verbatim.
     Refused(String),
+    /// The host refused the request because the credential it is sent with, re-resolved for this
+    /// request, is unavailable (`CAUSE_CREDENTIAL_UNAVAILABLE`): nothing was sent.
+    CredentialUnavailable,
     /// The host faulted.
     Fault,
 }
@@ -54,6 +57,9 @@ impl std::fmt::Display for ConnFailure {
             Self::Refused(t) if !t.is_empty() => t.as_str(),
             Self::Failed(_) => "the connector failed the call",
             Self::Refused(_) => "the connector refused the call",
+            Self::CredentialUnavailable => {
+                "the request's credential is unavailable; nothing was sent"
+            }
             Self::Fault => "the connector faulted",
         })
     }
@@ -335,7 +341,11 @@ impl Connector<'_> {
             }
             Outcome::Refused => {
                 self.cause.set(out.value);
-                Poll::Ready(Err(ConnFailure::Refused(host_text(out.error))))
+                Poll::Ready(Err(if out.value == CAUSE_CREDENTIAL_UNAVAILABLE {
+                    ConnFailure::CredentialUnavailable
+                } else {
+                    ConnFailure::Refused(host_text(out.error))
+                }))
             }
             Outcome::Fault => Poll::Ready(Err(ConnFailure::Fault)),
         }

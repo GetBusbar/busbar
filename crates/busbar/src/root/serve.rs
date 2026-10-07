@@ -1019,6 +1019,14 @@ pub(crate) fn compose_planes_over(
             }
             _ => driver,
         };
+        // A plane whose tail takes a refusal as a piece first is handed it on the unit's own
+        // ticket, before `refusal` renders it.
+        let driver =
+            if served_facts.tail_flags & busbar_contract::abi::plane::TAIL_REFUSED_PIECE != 0 {
+                driver.with_refused_piece()
+            } else {
+                driver
+            };
         let routes = snapshot
             .admin_routes
             .iter()

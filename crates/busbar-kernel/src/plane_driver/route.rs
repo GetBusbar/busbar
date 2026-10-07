@@ -26,9 +26,10 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE, EMIT_DONE,
-    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, RECORD_AUDIT, VERDICT_RETRY,
+    reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE,
+    EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED,
+    RECORD_AUDIT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -351,6 +352,8 @@ struct Piece {
     src: Src,
     /// The piece lends the far end's kept response head fields.
     head: bool,
+    /// With `PIECE_REFUSED`: the refusal's reason code (`OnPieceIn::reason`); `0` otherwise.
+    reason: u32,
 }
 
 impl Piece {
@@ -363,6 +366,7 @@ impl Piece {
             attempt_no: 0,
             src: Src::None,
             head: false,
+            reason: 0,
             ..self
         }
     }
@@ -440,6 +444,7 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         },
         head_fields_len: if p.head { bufs.head.len() } else { 0 },
         passthrough: u32::from(bufs.passthrough),
+        reason: p.reason,
         ..blank_in()
     };
     (input, blank_out())
@@ -534,6 +539,9 @@ enum Toward<'r> {
     /// A duplex session's caller side: an answer bound for the far end ([`EMIT_TO_FAR_END`]) is
     /// gathered as a turn's request; any other goes to the caller.
     Session(&'r mut OutboundRequest),
+    /// The refused piece's answer (`PIECE_REFUSED`): its record writes are written and nothing it
+    /// emits goes anywhere; the unit's refusal is rendered by `refusal`.
+    Nowhere,
 }
 
 /// Where a unit's host buffers go when its pump ends: every `on_piece` of the unit lends this
@@ -855,6 +863,9 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         let mut attempt_no = 0;
         // Why the previous attempt failed over, for the next attempt's `routing` stage tap.
         let mut failed: Option<&'static str> = None;
+        // An attempt's request went out toward its far end: a walk that then ends with no member
+        // left ended a unit whose hop left and heard nothing back.
+        let mut left = false;
         'attempt: loop {
             attempt_no += 1;
             if let Some(t) = turn {
@@ -885,9 +896,25 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 Ok(Pick::Exhausted {
                     status,
                     retry_after,
-                }) => return End::Exhausted(status, retry_after),
+                }) => {
+                    if left {
+                        // The walk's exhaustion terminal is refused as `BreakerOpen` (the route
+                        // step's `End::Exhausted`): the refused piece names that reason.
+                        if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
+                            return end;
+                        }
+                    }
+                    return End::Exhausted(status, retry_after);
+                }
                 Ok(Pick::Vetoed { status, text }) => return End::Vetoed(status, text),
-                Ok(Pick::Refused(reason)) => return End::Failed(reason),
+                Ok(Pick::Refused(reason)) => {
+                    if reason == ReasonCode::CredentialUnavailable {
+                        if let Err(end) = self.refused_piece(run, reason).await {
+                            return end;
+                        }
+                    }
+                    return End::Failed(reason);
+                }
                 Err(end) => return end,
             };
             run.bufs.member.clear();
@@ -915,6 +942,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 attempt_no,
                 src: Src::None,
                 head: false,
+                reason: 0,
             };
             let body = Piece {
                 from: FROM_CALLER,
@@ -958,6 +986,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     None => End::Failed(ReasonCode::DestinationUnreachable),
                 };
             }
+            left = true;
             match turn_wait(run, turn, self.far.send(run.token, request)).await {
                 Ok(true) => {}
                 // Not sent, so nothing reached the caller: fail over.
@@ -1012,6 +1041,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     attempt_no: 0,
                     src: Src::Input,
                     head,
+                    reason: 0,
                 };
                 match self.push(run, far, &mut Toward::Caller).await {
                     Step::End(end) => return end,
@@ -1024,6 +1054,33 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 }
             }
         }
+    }
+
+    /// THE REFUSED PIECE, for a plane whose tail states `TAIL_REFUSED_PIECE`: before the unit is
+    /// refused for `reason` (its member's credential unavailable before anything was dialled, or
+    /// the walk ending with no member left after its request went out), the plane is handed the
+    /// refusal as a piece first, on the unit's own ticket (`PIECE_REFUSED`, the reason in
+    /// `OnPieceIn::reason`): its record writes are written, so the plane changes what it holds
+    /// through the host's records as any piece does (a ticketless `refusal` reads none), and
+    /// nothing it emits goes anywhere. Then the unit is refused, rendered by `refusal`, as it is
+    /// for every other plane; a plane without the bit is sent nothing. `Err` = the unit ended on
+    /// the crossing.
+    async fn refused_piece(&self, run: &mut Pumping<'_>, reason: ReasonCode) -> Result<(), End> {
+        if self.driver.refused_piece {
+            let piece = Piece {
+                from: FROM_KERNEL,
+                flags: PIECE_REFUSED | PIECE_LAST,
+                status: (0, 0),
+                attempt_no: 0,
+                src: Src::None,
+                head: false,
+                reason: reason_code(reason),
+            };
+            if let Step::End(end) = self.push(run, piece, &mut Toward::Nowhere).await {
+                return Err(end);
+            }
+        }
+        Ok(())
     }
 
     /// Push one piece: the crossing, the one short re-call, the backpressure loop, the units, and
@@ -1129,9 +1186,12 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             let far = match toward {
                 Toward::FarEnd(_) => true,
                 Toward::Session(_) => out.flags & EMIT_TO_FAR_END != 0,
-                Toward::Caller => false,
+                Toward::Caller | Toward::Nowhere => false,
             };
             match toward {
+                // The refused piece's answer: its record writes are written (above); its output
+                // goes nowhere and it bills nothing.
+                Toward::Nowhere => return Step::Answered(out.flags & EMIT_DONE != 0),
                 Toward::FarEnd(request) | Toward::Session(request) if far => {
                     if out.flags & EMIT_TO_FAR_END != 0 {
                         if out.verb.len != 0 {

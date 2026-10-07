@@ -30,8 +30,8 @@ use busbar_contract::abi::plane::{
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_KERNEL,
-    ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE,
+    REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -198,6 +198,8 @@ struct Double {
     declared: InstanceDecl,
     /// Its duplex sessions (a `/session` arrival states `ROUTE_SESSION`): see [`Sessions`].
     sessions: Arc<Sessions>,
+    /// The reason of every refused piece (`PIECE_REFUSED`) it was handed.
+    refused: Mutex<Vec<u32>>,
 }
 
 /// The double's sessions: the streams open, the caller pieces each read (stream, bytes), the
@@ -229,6 +231,9 @@ unsafe fn bytes<'a>(b: Blob) -> &'a [u8] {
         std::slice::from_raw_parts(b.ptr, b.len)
     }
 }
+
+/// What the double answers a refused piece with: never the caller's.
+const NOT_FOR_THE_CALLER: &[u8] = b"not-for-the-caller";
 
 /// The words the double's `/refuse-words` arrival states for its refusal.
 const REFUSAL_WORDS: &[u8] = b"the body is not a document";
@@ -304,6 +309,28 @@ impl Double {
             return (ready(Outcome::Fault), Hold::No);
         };
         self.tickets.lock().unwrap().insert(t, i.unit);
+        if i.from == FROM_KERNEL && i.flags & PIECE_REFUSED != 0 {
+            // THE REFUSED PIECE: the plane writes the record `refused` = the reason's code, and
+            // answers bytes, a status and done, none of which may reach the caller.
+            self.refused.lock().unwrap().push(i.reason);
+            let mut at = 0;
+            let key = put(i, &mut at, b"refused");
+            let value = put(i, &mut at, i.reason.to_string().as_bytes());
+            *i.records_buf = RecordWrite {
+                kind: 0,
+                op: RECORD_PUT,
+                key,
+                value,
+            };
+            o.records_written = 1;
+            o.arena_written = at as u64;
+            let n = NOT_FOR_THE_CALLER.len().min(i.reply_cap);
+            std::ptr::copy_nonoverlapping(NOT_FOR_THE_CALLER.as_ptr(), i.reply_buf, n);
+            o.emitted = n as u64;
+            o.reply_status = 299;
+            o.flags = EMIT_DONE;
+            return (ready(Outcome::Ready), Hold::No);
+        }
         let mut units = self.units.lock().unwrap();
         let u = units.entry(i.unit).or_default();
         let piece = bytes(i.bytes);
@@ -2160,4 +2187,223 @@ async fn a_vetoed_units_refusal_names_the_hook_and_writes_its_rejected_row() {
             common::principal().as_str().to_string(),
         )]
     );
+}
+
+// ── a refusal handed to the plane as a piece first (`TAIL_REFUSED_PIECE`) ───────────────────────
+
+/// A far end whose walk picks `m0` first when it `sends` (the attempt's request goes out and
+/// nothing comes back: its credential no longer resolves, or its connection fails), then answers
+/// `then`: the walk's credential refusal, or its exhaustion terminal. Without `sends` the walk
+/// answers `then` at once and no request goes out.
+struct Gone {
+    sends: bool,
+    then: busbar_kernel::plane_driver::Pick,
+}
+
+impl busbar_kernel::plane_driver::FarEnd for Gone {
+    fn member<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = busbar_kernel::plane_driver::Pick> + Send + 'a {
+        use busbar_kernel::plane_driver::Pick;
+        let pick = if attempt_no == 1 && self.sends {
+            Pick::Member {
+                name: "m0".to_string(),
+                pool: "pool-a".to_string(),
+                passthrough: false,
+                provider: "acme".to_string(),
+            }
+        } else {
+            self.then.clone()
+        };
+        async move { pick }
+    }
+
+    async fn send(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+
+    async fn next(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<busbar_kernel::plane_driver::FarPiece> {
+        None
+    }
+
+    async fn write(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+}
+
+/// Run one unit over `far` through the one loop; its outcome.
+async fn drive_gone(
+    units: &busbar_kernel::plane_driver::PlaneUnits<'_, common::TestUnits, Gone, cases::Caller>,
+) -> busbar_contract::caps::Outcome {
+    use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
+    use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
+    let kernel = Kernel::new();
+    let (gauge, canary, leases, meter) = (
+        ConcurrencyGauge::new(),
+        busbar_contract::caps::Canary::new(),
+        LeaseCell::new(),
+        AccrualMeter::new(),
+    );
+    let cell = common::cell(&kernel);
+    let run = Run {
+        cell: &cell,
+        parent: None,
+        leases: &leases,
+        gauge: &gauge,
+        canary: &canary,
+        meter: &meter,
+    };
+    match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
+        Ended::Settled { end, .. } => end.outcome(),
+        Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
+    }
+}
+
+/// What one unit over [`Gone`] came to, on a driver that `takes` the refused piece or not: its
+/// outcome, the reasons of the refused pieces the plane was handed, the `refused` record as the
+/// host holds it, and whether anything the refused piece emitted reached the caller.
+struct Came {
+    outcome: busbar_contract::caps::Outcome,
+    refused: Vec<u32>,
+    written: Stored,
+    leaked: bool,
+}
+
+async fn came(far: Gone, takes: bool) -> Came {
+    let s = records();
+    let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    r.driver = r.driver.with_records(Arc::clone(&s), instance());
+    if takes {
+        r.driver = r.driver.with_refused_piece();
+    }
+    let (steps, caller) = (common::TestUnits::passing(), cases::Caller::default());
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/x", b"x"), 0);
+    let outcome = drive_gone(&units).await;
+    let rendered = units.take_rendered().expect("the refusal is rendered");
+    let body = String::from_utf8_lossy(&rendered.body).into_owned();
+    assert!(body.starts_with("refused:"), "takes={takes}: {body}");
+    let leaked = caller.text().contains("not-for-the-caller") || caller.status() == Some(299);
+    let refused = r.plane.refused.lock().unwrap().clone();
+    Came {
+        outcome,
+        refused,
+        written: get(&s, b"refused"),
+        leaked,
+    }
+}
+
+/// A UNIT REFUSED `credential_unavailable` IS HANDED TO A PLANE WHOSE TAIL TAKES IT AS A PIECE
+/// FIRST (`TAIL_REFUSED_PIECE`, `PlaneDriver::with_refused_piece`): a `FROM_KERNEL` piece flagged
+/// `PIECE_REFUSED` and last, carrying the reason, on the unit's own ticket; its record writes are
+/// written, nothing it emits reaches the caller, and the unit is then refused and rendered by
+/// `refusal` as before. RED arm: a plane without the bit is sent no such piece, writes nothing, and
+/// is refused exactly as today.
+#[tokio::test]
+async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_takes_it() {
+    use busbar_contract::caps::{Outcome as Unit, ReasonCode, StepName};
+    let code = busbar_contract::abi::plane::reason_code(ReasonCode::CredentialUnavailable);
+    let gone = || Gone {
+        sends: true,
+        then: busbar_kernel::plane_driver::Pick::Refused(ReasonCode::CredentialUnavailable),
+    };
+    for takes in [true, false] {
+        let c = came(gone(), takes).await;
+        assert!(
+            matches!(
+                c.outcome,
+                Unit::Failed(StepName::Route, ReasonCode::CredentialUnavailable)
+            ),
+            "takes={takes}: the unit ends as a credential refusal does without the bit: {:?}",
+            c.outcome
+        );
+        assert!(
+            !c.leaked,
+            "takes={takes}: nothing the refused piece emitted reached the caller"
+        );
+        if takes {
+            assert_eq!(c.refused, vec![code]);
+            assert_eq!(
+                (c.written.value, c.written.bytes),
+                (svc::FOUND, code.to_string().into_bytes()),
+                "the refused piece's record write is written"
+            );
+        } else {
+            assert!(c.refused.is_empty(), "no refused piece");
+            assert_eq!(c.written.value, svc::ABSENT, "nothing written");
+        }
+    }
+}
+
+/// A UNIT WHOSE REQUEST WENT OUT AND WHOSE WALK THEN ENDED WITH NO MEMBER LEFT (its connection
+/// failed, or closed unanswered) is handed to a plane whose tail takes it as a refused piece first,
+/// naming the reason it is refused for (`breaker_open`, the walk's exhaustion terminal); a walk
+/// that exhausted before any request went out hands none. RED arm: a plane without the bit is sent
+/// no such piece and its unit ends exactly as the bit's does.
+#[tokio::test]
+async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() {
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_driver::Pick;
+    let code = busbar_contract::abi::plane::reason_code(ReasonCode::BreakerOpen);
+    let exhausted = || Pick::Exhausted {
+        status: 503,
+        retry_after: Some(2),
+    };
+    let taken = came(
+        Gone {
+            sends: true,
+            then: exhausted(),
+        },
+        true,
+    )
+    .await;
+    let without = came(
+        Gone {
+            sends: true,
+            then: exhausted(),
+        },
+        false,
+    )
+    .await;
+    assert_eq!(
+        format!("{:?}", taken.outcome),
+        format!("{:?}", without.outcome),
+        "the unit ends the same with the bit and without it"
+    );
+    assert_eq!(taken.refused, vec![code]);
+    assert_eq!(
+        (taken.written.value, taken.written.bytes),
+        (svc::FOUND, code.to_string().into_bytes()),
+        "the refused piece's record write is written"
+    );
+    assert!(!taken.leaked && !without.leaked);
+    assert!(without.refused.is_empty(), "no bit, no refused piece");
+    assert_eq!(without.written.value, svc::ABSENT);
+    let unsent = came(
+        Gone {
+            sends: false,
+            then: exhausted(),
+        },
+        true,
+    )
+    .await;
+    assert!(
+        unsent.refused.is_empty(),
+        "a walk that exhausted before any request went out hands no refused piece"
+    );
+    assert_eq!(unsent.written.value, svc::ABSENT);
 }

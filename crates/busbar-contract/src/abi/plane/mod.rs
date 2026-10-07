@@ -329,6 +329,17 @@ pub const TAIL_PROBES: u32 = 1 << 1;
 /// then the entry's rewrite chain runs; no stage tap and no route policy fires. Without it the
 /// hooks run in the routed order: the rewrite chain, the request taps, then the route decision.
 pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
+/// [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop
+/// may hold state the plane must end: when the walk refuses the unit
+/// [`crate::caps::ReasonCode::CredentialUnavailable`] (the member's credential, re-resolved for the
+/// attempt, no longer resolves, and nothing was dialled), or ends it with no member left after an
+/// attempt's request went out (the walk's exhaustion terminal, refused
+/// [`crate::caps::ReasonCode::BreakerOpen`]), the kernel hands `on_piece` a [`FROM_KERNEL`] piece
+/// flagged [`PIECE_REFUSED`] and [`PIECE_LAST`], carrying that reason in [`OnPieceIn::reason`], on
+/// the unit's own ticket: the plane's record writes on that answer are written, as any piece's are,
+/// and nothing it emits reaches the caller. Then the unit is refused as it is without the bit:
+/// `refusal` renders it. Without the bit no such piece is sent.
+pub const TAIL_REFUSED_PIECE: u32 = 1 << 3;
 
 /// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
 /// without verifying a caller. Without it, the route takes one.
@@ -471,6 +482,10 @@ pub const PIECE_FIELDS: u32 = 1 << 3;
 /// with whatever it tells the session about the move, or with nothing. See
 /// the catalogue-moved tick in this module's documentation.
 pub const PIECE_CATALOGUE_MOVED: u32 = 1 << 4;
+/// [`OnPieceIn::flags`]: the REFUSED PIECE. With [`FROM_KERNEL`], [`PIECE_LAST`],
+/// `attempt_no == 0` and no bytes, the unit is about to be refused for [`OnPieceIn::reason`]. Sent
+/// only to a plane whose tail states [`TAIL_REFUSED_PIECE`]; see it for when.
+pub const PIECE_REFUSED: u32 = 1 << 5;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
 pub const EMIT_TO_FAR_END: u32 = 1;
@@ -1061,7 +1076,8 @@ pub struct TrustKey {
 pub struct PlaneTail {
     /// The tail head.
     pub head: KindTailHead,
-    /// [`TAIL_FALLBACK`] | [`TAIL_PROBES`]; any other bit refuses the load.
+    /// [`TAIL_FALLBACK`] | [`TAIL_PROBES`] | [`TAIL_HOOKS_GATED`] | [`TAIL_REFUSED_PIECE`]; any
+    /// other bit refuses the load.
     pub flags: u32,
     /// `INGRESS_*` bits.
     pub ingress: u32,
@@ -1550,8 +1566,9 @@ pub struct OnPieceIn {
     /// caller's own credential to the far end (the operator configured its upstream credentials as
     /// passthrough), `0` otherwise and before any attempt.
     pub passthrough: u32,
-    /// Alignment padding.
-    pub _reserved_tail: u32,
+    /// With [`PIECE_REFUSED`]: the code of the reason the unit was refused for ([`reason_code`]);
+    /// `0` on every other piece. Laid in what was the struct's tail padding.
+    pub reason: u32,
 }
 
 /// `on_piece`'s `out`.

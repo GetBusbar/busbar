@@ -27,8 +27,8 @@ use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLA
 use busbar_contract::abi::plane::{
     AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
     CLAIM_PATTERN, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_PEER_KEY,
-    MECHANISM_ROOT, PIN_FINGERPRINT, SHAPE_PIECEWISE, TAIL_HOOKS_GATED, TRUST_PIN,
-    TRUST_PRIVATE_REACH, TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
+    MECHANISM_ROOT, PIN_FINGERPRINT, SHAPE_PIECEWISE, TAIL_HOOKS_GATED, TAIL_REFUSED_PIECE,
+    TRUST_PIN, TRUST_PRIVATE_REACH, TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
@@ -348,8 +348,11 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     // THE HOOK ORDER 1.5.5 USED FOR THIS PLANE (ARCHITECT ruling Q-FOLD-A2A-2; spec Part 3 section
     // 12 "Hooks", per attachment where 1.5.5 differed): the agent's gates screen the projected
     // `{tool, arguments}` first, keyed on the request's session, fail-closed, a veto at the hook's
-    // own status; then its `prompt: rw` rewrites, each applied here in `project`.
-    flags: TAIL_HOOKS_GATED,
+    // own status; then its `prompt: rw` rewrites, each applied here in `project`. And a hop refused
+    // for busbar's own credential, or one that left and heard nothing back, is handed here as a
+    // piece first, on the unit's own ticket, so its task is ended through the host's records (the
+    // engine's `end_task`).
+    flags: TAIL_HOOKS_GATED | TAIL_REFUSED_PIECE,
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM,
     dispatch_shape: SHAPE_PIECEWISE,
     _reserved: 0,
