@@ -1541,18 +1541,13 @@ fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAut
 /// The claimant the kernel's own data routes are lines of.
 const CORE_CLAIMANT: &str = "core";
 
-/// The data listener's own framer: a claim over a carrier that composes over it is an upgrade line.
-const DATA_CARRIER: &str = "http";
-
-/// THE UPGRADE CARRIERS: the linked wires that compose over the data listener's own framer, whose
-/// claims are upgrade lines (their connection handed over after the head) and served as sessions.
+/// THE UPGRADE CARRIERS: every linked claim whose unit 0 opens at an UPGRADE, read off the door
+/// Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names another). Their
+/// lines are handed over after the head and served as sessions; the handoff target on an upgrade
+/// is the claim that owns the requested scheme.
 #[must_use]
 pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
-    transports
-        .iter()
-        .filter(|t| t.composes_over.contains(&DATA_CARRIER))
-        .map(|t| t.key)
-        .collect()
+    transports.iter().flat_map(|t| (t.upgrades)()).collect()
 }
 
 /// How many messages a session route's pipe queues each way before the sender waits.
@@ -2322,7 +2317,8 @@ impl DataRoutes {
             .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key.clone();
         // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
-        // framer that is not the data listener's own; that framer frames this stream alone.
+        // framer whose claim rows state it rides a stream (an upgrade or a session, Q128 U7); that
+        // framer frames this stream alone. A claim stating neither is the data listener's own.
         let carrier = self.served.planes[plane]
             .snapshot
             .claims
@@ -3108,7 +3104,7 @@ fn framed_by(
     if carrier == lines::LINE_CARRIER {
         return None;
     }
-    serve_framed::stream_framer(carrier, DATA_CARRIER, framer_for)
+    serve_framed::stream_framer(carrier, framer_for)
 }
 
 /// THE LINE CARRIER: a process's own stdin/stdout, one carrier session, one unit per line (SEAM-S1).
