@@ -118,7 +118,10 @@ impl futures::io::AsyncRead for CarrierIo {
         if self.closed || out.is_empty() {
             return Poll::Ready(Ok(0));
         }
-        self.carrier.poll_read(self.conn, cx, out).map_err(io_error)
+        self.carrier
+            .poll_read(self.conn, cx, out)
+            .map_ok(|c| c.len)
+            .map_err(io_error)
     }
 }
 
@@ -135,7 +138,7 @@ impl futures::io::AsyncWrite for CarrierIo {
             return Poll::Ready(Ok(0));
         }
         self.carrier
-            .poll_write(self.conn, cx, bytes)
+            .poll_write(self.conn, cx, bytes, false)
             .map_err(io_error)
     }
 

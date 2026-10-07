@@ -230,6 +230,22 @@ pub fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
         .collect()
 }
 
+/// A scheme a transport entry claims past its own, in the registry under its own key (the entry's
+/// wire serves it; ONE ENTRY PER PLUGIN, the schemes are its claims).
+struct Claimed(&'static str);
+
+impl Plugin for Claimed {
+    fn key(&self) -> &'static str {
+        self.0
+    }
+    fn kind(&self) -> busbar_contract::Kind {
+        busbar_contract::Kind::Transport
+    }
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::TRANSPORT_ABI
+    }
+}
+
 /// One folded wire: its row as the composition check reads it, and the built transport.
 pub type Built = (Registered, Arc<dyn Transport>);
 
@@ -238,10 +254,15 @@ pub type Built = (Registered, Arc<dyn Transport>);
 pub struct DroppedDoor {
     /// Its registry key: its own claim.
     pub key: &'static str,
+    /// Every scheme it claims, its own first (each is registered under its own key).
+    pub claims: Vec<&'static str>,
     /// The layers it declares.
     pub composes_over: Vec<&'static str>,
     /// The entry, served.
     pub wire: Arc<dyn Transport>,
+    /// The opened door the wire serves: the entry the connector serves for it, after the linked
+    /// rows (`crate::root::connector::boot`).
+    pub door: Arc<dyn busbar_core_connector::framer::FramerDoor>,
 }
 
 /// The transports a plugins directory contributes, by the lane each image speaks.
@@ -330,10 +351,10 @@ pub fn compose(
         };
         let row = pending.remove(ready);
         let lower = row.composes_over().iter().find_map(|l| at(&built, l));
-        let (transport, adapter): (Arc<dyn Transport>, _) = match row {
+        let (transport, adapter, claims): (Arc<dyn Transport>, _, Vec<&'static str>) = match row {
             Row::Linked(row) => {
                 let lower = lower.map(|i| Arc::clone(&built[i].0 .1));
-                ((row.build)(lower, settings), None)
+                ((row.build)(lower, settings), None, (row.claims)())
             }
             Row::Dropped(wire) => {
                 let lower = lower.and_then(|i| built[i].1.as_deref());
@@ -344,16 +365,35 @@ pub fn compose(
                     }
                 })?;
                 let adapter = Arc::new(adapter);
-                (Arc::clone(&adapter) as Arc<dyn Transport>, Some(adapter))
+                (
+                    Arc::clone(&adapter) as Arc<dyn Transport>,
+                    Some(adapter),
+                    vec![wire.key()],
+                )
             }
-            Row::Door(door) => (Arc::clone(&door.wire), None),
+            Row::Door(door) => (Arc::clone(&door.wire), None, door.claims.clone()),
         };
         let registered = Registered {
             key: row.key(),
             composes_over: row.composes_over(),
             composed_over: transport.composed_over(),
         };
-        built.push(((registered, transport), adapter));
+        // ONE ENTRY, ITS SCHEMES ITS CLAIMS (TRANSPORT-STACK, ONE ENTRY PER PLUGIN): every scheme
+        // the entry claims past its own is registered under its own key, served by the same wire,
+        // composed over nothing (no transport names another).
+        let also: Vec<&'static str> = claims
+            .into_iter()
+            .filter(|c| *c != registered.key)
+            .collect();
+        built.push(((registered, Arc::clone(&transport)), adapter));
+        for key in also {
+            let claimed = Registered {
+                key,
+                composes_over: &[],
+                composed_over: None,
+            };
+            built.push(((claimed, Arc::clone(&transport)), None));
+        }
     }
     Ok(built.into_iter().map(|(built, _)| built).collect())
 }
@@ -377,7 +417,7 @@ pub fn seal(
         compose(linked.transports, dropped, &settings)?
             .into_iter()
             .unzip();
-    let registry = register_all(&transports, linked.claims)?;
+    let registry = register_all(&registered, &transports, linked.claims)?;
 
     let claims = plane_claims(linked.claims);
     let sealed = seal_claims(&claims);
@@ -464,12 +504,21 @@ fn check_claim_transports(
 ///
 /// The registry refused an entry — a duplicate key, or a kind it does not take.
 fn register_all(
+    registered: &[Registered],
     transports: &[Arc<dyn Transport>],
     planes: &[LinkedClaims],
 ) -> Result<Registry, BootRefusal> {
     let mut registry = Registry::new();
     let core = core_planes();
-    let transports = transports.iter().map(|t| Arc::clone(t) as Arc<dyn Plugin>);
+    // A row registered under a scheme its entry claims past its own is the same wire under another
+    // key: registered as that claim, so the registry's key is the scheme.
+    let transports = registered.iter().zip(transports).map(|(row, t)| {
+        if row.key == t.key() {
+            Arc::clone(t) as Arc<dyn Plugin>
+        } else {
+            Arc::new(Claimed(row.key)) as Arc<dyn Plugin>
+        }
+    });
     let planes = planes.iter().chain(core.iter()).map(|row| (row.plane)());
     for plugin in transports.chain(planes).collect::<Vec<_>>() {
         registry.register(plugin).map_err(BootRefusal::Registry)?;

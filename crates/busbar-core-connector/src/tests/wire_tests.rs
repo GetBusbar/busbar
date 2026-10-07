@@ -16,19 +16,39 @@ use futures::StreamExt;
 use super::*;
 use crate::support::{worker, Knobs, TestDoor};
 
-fn wire() -> Arc<HostWire> {
-    Arc::new(HostWire::new(Arc::new(TestDoor::identity("bytes"))).unwrap())
+/// `w`, its framed connections riding the test carrier (`support::via`) as the root's wires ride
+/// the serving connector's address carrier.
+fn carried(w: HostWire) -> HostWire {
+    w.riding(Arc::new(|| Some(crate::support::via().door)))
 }
 
-/// A dialled and an accepted end of one connection, and the address dialled.
+fn wire() -> Arc<HostWire> {
+    Arc::new(carried(
+        HostWire::new(Arc::new(framing(TestDoor::identity("bytes")))).unwrap(),
+    ))
+}
+
+/// `door` stated a FRAMER: its connections ride the test carrier (`support::via`), framed by it.
+fn framing(door: TestDoor) -> TestDoor {
+    let _ = crate::support::via();
+    door.with_role(busbar_contract::abi::transport::ROLE_FRAMER)
+}
+
+/// A dialled and an accepted end of one connection, and the address dialled: the test carrier
+/// listens and accepts the far end the wire dials.
 async fn pair(w: &Arc<HostWire>) -> (Conn, Conn, String) {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = l.local_addr().unwrap().to_string();
-    let (client, far) = tokio::join!(w.dial_authority(&addr), l.accept());
+    let via = crate::support::via();
+    let (listener, mut side, local) =
+        crate::listen::listen_through(&via, "127.0.0.1:0").expect("the carrier listens");
+    let addr = local.to_string();
+    let accept =
+        std::future::poll_fn(|cx| crate::listen::accept_through(&via, listener, &mut side, cx));
+    let (client, far) = tokio::join!(w.dial_authority(&addr), accept);
     let (far, peer) = far.unwrap();
-    let server = w
-        .accepted(far.into_std().unwrap(), peer.to_string())
-        .unwrap();
+    let crate::listen::Got::Carried(far) = far else {
+        panic!("the carrier accepted");
+    };
+    let server = w.accepted(far, peer.to_string()).unwrap();
     (client.unwrap(), server, addr)
 }
 
@@ -58,7 +78,6 @@ fn byte_exact_both_ways_through_the_framer() {
         assert_eq!(read_n(&w, &client, 5).await, b"reply");
         assert_ne!(client.id(), server.id(), "two connections, two ids");
         assert_eq!(w.key(), "bytes");
-        assert_eq!(w.composed_over(), None);
         assert_eq!(w.arrival(&server).transport_chain, vec!["bytes"]);
     });
 }
@@ -78,7 +97,7 @@ fn a_text_frame_arrives_as_text_at_the_seam() {
                     ..Knobs::default()
                 },
             );
-            let w = Arc::new(HostWire::new(Arc::new(door)).unwrap());
+            let w = Arc::new(carried(HostWire::new(Arc::new(framing(door))).unwrap()));
             let (client, server, _l) = pair(&w).await;
             w.write(&client, StreamId(0), ScratchBytes::new(b"{}"), false)
                 .await
@@ -96,8 +115,8 @@ fn a_text_frame_arrives_as_text_at_the_seam() {
 fn a_text_write_reaches_the_framer_as_text() {
     worker().block_on(async {
         for text in [true, false] {
-            let door = Arc::new(TestDoor::identity("bytes"));
-            let w = Arc::new(HostWire::new(door.clone()).unwrap());
+            let door = Arc::new(framing(TestDoor::identity("bytes")));
+            let w = Arc::new(carried(HostWire::new(door.clone()).unwrap()));
             let (client, server, _l) = pair(&w).await;
             w.write(&client, StreamId(0), ScratchBytes::new(b"{}"), text)
                 .await
@@ -336,7 +355,7 @@ fn a_reset_from_the_far_end_ends_the_frames_and_deregisters() {
 #[test]
 fn the_dial_budget_defaults_to_the_constant_and_with_dial_timeout_replaces_it() {
     assert_eq!(DIAL_TIMEOUT, Duration::from_secs(10));
-    let w = HostWire::new(Arc::new(TestDoor::identity("bytes"))).unwrap();
+    let w = HostWire::new(Arc::new(framing(TestDoor::identity("bytes")))).unwrap();
     assert_eq!(w.dial_timeout, DIAL_TIMEOUT);
     let w = w.with_dial_timeout(Duration::from_millis(250));
     assert_eq!(w.dial_timeout, Duration::from_millis(250));
@@ -349,8 +368,7 @@ fn the_dial_budget_defaults_to_the_constant_and_with_dial_timeout_replaces_it() 
 #[test]
 fn a_dial_to_a_non_routable_address_returns_within_the_bound_with_the_mapped_error() {
     worker().block_on(async {
-        let w = HostWire::new(Arc::new(TestDoor::identity("bytes")))
-            .unwrap()
+        let w = carried(HostWire::new(Arc::new(framing(TestDoor::identity("bytes")))).unwrap())
             .with_dial_timeout(Duration::from_millis(200));
         let started = std::time::Instant::now();
         let r = tokio::time::timeout(Duration::from_secs(8), w.dial_authority("192.0.2.1:9"))
@@ -383,10 +401,16 @@ fn a_unit0_refusal_whose_send_fails_still_finalises_and_returns_the_error() {
         let w = wire();
         let (_client, server, _l) = pair(&w).await;
         let held = w.get(server.id()).expect("held");
-        let Some(Io::Socket(sock)) = held.socket() else {
-            panic!("an accepted connection is on the host's socket");
+        let Some(Io::Carried(carried)) = held.socket() else {
+            panic!("an accepted connection is a carried one");
         };
-        sock.get_ref().shutdown(std::net::Shutdown::Write).unwrap();
+        busbar_contract::io_host::IoHost::shut(
+            crate::hostio::process().as_ref(),
+            crate::support::OWNER,
+            carried.handle().expect("the host's handle"),
+            busbar_contract::abi::host::io::DIR_WRITE,
+        )
+        .unwrap();
         assert!(!held.closed.load(Ordering::Acquire));
         let refusal = busbar_contract::unit::Refusal {
             step: busbar_contract::unit::Step::Arrival,
@@ -507,24 +531,19 @@ fn the_read_chunk_is_sixteen_kib_and_debug_names_the_wire() {
     assert!(shown.contains("bytes"), "{shown}");
 }
 
-/// RED (SEAM-4f): an entry that COMPOSES OVER a layer is served here built over that layer: it
-/// answers the layer it was built over (what the registry's boot check holds against its
-/// declaration), refuses to be built over one it does not declare, and ADOPTS the stream the layer
-/// under it hands up — what the lower framer held first — framing both ways from there; a stream
-/// handed up by another layer is a handoff mismatch.
+/// AN ENTRY ADOPTS THE STREAM ANOTHER ENTRY HANDS UP (ARCHITECT Q128 U7: no transport names another,
+/// so which entry adopts an upgraded stream is the connector's choice, never a list the entry
+/// states): a FRAMER over the host's socket adopts what the carrier under it detached (what it held
+/// first) and frames both ways from there.
 #[test]
-fn a_composing_entry_adopts_the_stream_its_lower_layer_hands_up() {
+fn a_framer_adopts_the_stream_another_entry_hands_up() {
     worker().block_on(async {
-        let upper = || Arc::new(TestDoor::new("msg", &["msg"], &["bytes"], Knobs::default()));
-        assert!(
-            HostWire::new(upper()).is_err(),
-            "not over the host's socket"
+        let upper = Arc::new(
+            TestDoor::new("msg", &["msg"], &[], Knobs::default())
+                .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
         );
-        assert!(HostWire::composed(upper(), Some("other")).is_err());
-        assert!(HostWire::composed(Arc::new(TestDoor::identity("bytes")), None).is_err());
-        let composed = HostWire::composed(upper(), Some("bytes")).expect("built over bytes");
-        assert_eq!(composed.composed_over(), Some("bytes"));
-        assert_eq!(composed.key(), "msg");
+        let framer = HostWire::new(upper).expect("a framer over the host's socket");
+        assert_eq!(framer.key(), "msg");
 
         let lower = wire();
         let (client, server, _l) = pair(&lower).await;
@@ -534,25 +553,17 @@ fn a_composing_entry_adopts_the_stream_its_lower_layer_hands_up() {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         let raw = lower.detach(&server).expect("hands up");
-        let adopted = composed
+        let adopted = framer
             .adopt_from(raw, Vec::new(), None)
             .await
             .expect("adopted");
-        assert_eq!(read_n(&composed, &adopted, 5).await, b"early");
-        composed
+        assert_eq!(read_n(&framer, &adopted, 5).await, b"early");
+        framer
             .write(&adopted, StreamId(0), ScratchBytes::new(b"over"), false)
             .await
             .unwrap();
         assert_eq!(read_n(&lower, &client, 4).await, b"over");
-        composed.close(adopted, CloseReason::Normal);
-
-        let (_c2, s2, _l2) = pair(&lower).await;
-        let raw = lower.detach(&s2).expect("hands up");
-        let other = RawStream::new("other", raw.peer().to_owned(), raw.into_io());
-        assert_eq!(
-            composed.adopt_from(other, Vec::new(), None).await.err(),
-            Some(TransportError::HandoffMismatch)
-        );
+        framer.close(adopted, CloseReason::Normal);
     });
 }
 
@@ -565,7 +576,7 @@ fn a_dialled_framing_is_begun_with_the_full_declared_target() {
     worker().block_on(async {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: &'static str = Box::leak(l.local_addr().unwrap().to_string().into_boxed_str());
-        let door = Arc::new(TestDoor::new(
+        let door = Arc::new(framing(TestDoor::new(
             "bytes",
             &["bytes"],
             &[],
@@ -573,8 +584,10 @@ fn a_dialled_framing_is_begun_with_the_full_declared_target() {
                 authority: Some(addr),
                 ..Knobs::default()
             },
-        ));
-        let w = HostWire::new(Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>).unwrap();
+        )));
+        let w = carried(
+            HostWire::new(Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>).unwrap(),
+        );
         let target = format!("bytes://{addr}/the/declared/path?q=1");
         let (dialled, far) = tokio::join!(w.dial_target(&target), l.accept());
         dialled.expect("dialled at the authority locate read off the target");
@@ -585,7 +598,7 @@ fn a_dialled_framing_is_begun_with_the_full_declared_target() {
             "the framer was handed the whole declared target"
         );
 
-        let secure = Arc::new(TestDoor::new(
+        let secure = Arc::new(framing(TestDoor::new(
             "bytes",
             &["bytes"],
             &[],
@@ -594,8 +607,10 @@ fn a_dialled_framing_is_begun_with_the_full_declared_target() {
                 secure_name: Some("localhost"),
                 ..Knobs::default()
             },
-        ));
-        let w = HostWire::new(Arc::clone(&secure) as Arc<dyn crate::framer::FramerDoor>).unwrap();
+        )));
+        let w = carried(
+            HostWire::new(Arc::clone(&secure) as Arc<dyn crate::framer::FramerDoor>).unwrap(),
+        );
         assert_eq!(
             w.dial_target(&target).await.err(),
             Some(TransportError::AddressRefused)

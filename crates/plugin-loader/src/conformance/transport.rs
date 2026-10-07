@@ -72,8 +72,9 @@
 //!   carry, at least 1, over a sink of [`TIGHT_WIRE`] wire bytes, [`TIGHT_FRAME`] frame bytes and
 //!   ONE piece (so every frame's pieces are counted alone).
 //!
-//! A carrier (`ROLE_CARRIER`) has no script here: no carrier is on the roster, and a carrier's
-//! suite fails rather than skip.
+//! THE SCRIPT IS CHOSEN BY THE DECLARED ROLE ([`script_for`]): a FRAMER runs the framer script above;
+//! a CARRIER runs the carrier script (`super::carrier`: listen/accept, dial, read, write, flush,
+//! shut and arrival over the suite's host I/O). An unknown role fails the suite.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, OutHead, Outcome};
 use busbar_contract::abi::transport::{
@@ -88,6 +89,32 @@ use super::{
     close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick, validate,
     Fold, Leg, Recorder, Subject,
 };
+use busbar_contract::abi::transport::ROLE_CARRIER;
+
+/// The script a transport's declared role runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Script {
+    /// The framer script (this module).
+    Framer,
+    /// The carrier script (`super::carrier`).
+    Carrier,
+}
+
+/// Which script a transport's declared `role` runs. Any other role is not a transport this suite
+/// knows, and fails.
+///
+/// # Errors
+///
+/// The role is no known role.
+pub(super) fn script_for(role: u32) -> Result<Script, String> {
+    match role {
+        ROLE_FRAMER => Ok(Script::Framer),
+        ROLE_CARRIER => Ok(Script::Carrier),
+        other => Err(format!(
+            "UnknownRole: the transport declares role {other}, neither ROLE_CARRIER nor ROLE_FRAMER"
+        )),
+    }
+}
 use crate::dispatch::kinds::transport::{Transport, TransportFacts};
 use crate::dispatch::{Called, Frame, InFrame, OutFrame, Plugin};
 
@@ -554,10 +581,14 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .context::<TransportFacts>()
         .cloned()
         .expect("a transport states its tail");
-    assert_eq!(
-        facts.role, ROLE_FRAMER,
-        "no carrier is on the roster: the carrier role's script is not written"
-    );
+    match script_for(facts.role) {
+        Ok(Script::Framer) => {}
+        Ok(Script::Carrier) => {
+            drop(p);
+            return super::carrier::fold(s, leg);
+        }
+        Err(why) => panic!("{why}"),
+    }
     let mut want: Vec<(String, Want)> = Vec::new();
     let mut r = Recorder::new(crossings(&p));
 
@@ -1064,6 +1095,10 @@ fn contract(fold: &Fold, want: &[(String, Want)]) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/conformance_role_tests.rs"]
+mod role_tests;
 
 #[cfg(test)]
 #[path = "../tests/conformance_transport_opening_tests.rs"]

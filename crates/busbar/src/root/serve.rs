@@ -1390,18 +1390,18 @@ fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAut
 #[cfg(linked_axis_node)]
 const CORE_CLAIMANT: &str = "core";
 
-/// The data listener's own framer: a claim over a carrier that composes over it is an upgrade line.
+/// The data listener's own framer: a stream whose claim's carrier another framer answers is framed
+/// by that framer alone (ARCHITECT 4l, `serve_framed::stream_framer`). Upgrade lines are read off the
+/// door Statements, not off this name ([`upgrade_carriers`]).
 const DATA_CARRIER: &str = "http";
 
-/// THE UPGRADE CARRIERS: the linked wires that compose over the data listener's own framer, whose
-/// claims are upgrade lines (their connection handed over after the head) and served as sessions.
+/// THE UPGRADE CARRIERS: every linked claim whose unit 0 opens at an UPGRADE, read off the door
+/// Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names another). Their
+/// lines are handed over after the head and served as sessions; the handoff target on an upgrade
+/// is the claim that owns the requested scheme.
 #[must_use]
 pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
-    transports
-        .iter()
-        .filter(|t| t.composes_over.contains(&DATA_CARRIER))
-        .map(|t| t.key)
-        .collect()
+    transports.iter().flat_map(|t| (t.upgrades)()).collect()
 }
 
 /// How many messages a session route's pipe queues each way before the sender waits.

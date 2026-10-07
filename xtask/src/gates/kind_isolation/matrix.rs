@@ -3093,7 +3093,6 @@ pub fn selftest<'a>(
 
     // THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324): a dialect module's
     // native item-id prefix (`ws`) is the provider's word; a real transport `ws` still counts.
-    // The plane crate has no transport cell, so a reference that counts is an `unlisted-cell`.
     let prefix_case = |file: &'static str, line: &'static str| {
         let cx = cx.clone();
         move || {
@@ -3102,7 +3101,6 @@ pub fn selftest<'a>(
         }
     };
     let responses_mod = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
-    let transport_raised = ["unlisted-cell", "busbar-plane-llm \u{d7} transport"];
     report.push(prove_rows_green(
         cx,
         gate,
@@ -3114,35 +3112,13 @@ pub fn selftest<'a>(
             "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
         ),
     ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "a real transport `ws` reference in the same dialect module still counts",
-        &[ROW_MATRIX],
-        {
-            // `busbar-transport-ws` left the workspace (befd20dc37), so `ws` is no needle until a
-            // census transport crate teaches it. Plant one (empty) beside the real reference; the
-            // green control above keeps its own in-tree vocabulary so the dialect-prefix mask is
-            // proven, not flooded.
-            let base = prefix_case(responses_mod, "const PLANTED_CARRIER: &str = \"ws\";");
-            move || with_transport(base(), "ws")
-        },
-        &transport_raised,
-    ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "an id-prefix literal outside a dialect module still counts",
-        &[ROW_MATRIX],
-        {
-            let base = prefix_case(
-                "crates/busbar-plane-llm/src/codec/proto_stream.rs",
-                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
-            );
-            move || with_transport(base(), "ws")
-        },
-        &transport_raised,
-    ));
+    // …and THE RED HALF IS PROVEN ON THE CELL, not here. The pinned transport checkouts are crates
+    // of the census (ARCHITECT W4B-Q1), so `http` and `sse` are needles on the unplanted tree and
+    // `busbar-plane-llm × transport` is already a measured cell: the debt-free subject takes its
+    // `unlisted-cell` out of view, and presence cannot see one more hit in it. A real `ws` in the
+    // dialect module and an id-prefix literal outside one each raise the cell by exactly one in
+    // `tests::the_dialect_id_prefix_literal_is_masked_and_a_real_ws_still_counts`, over the
+    // tree the gate reads (the pinned mount beneath).
 
     // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
     // `files.len() < MIN_SCANNED` into `false && …` and the whole battery stayed green: every other
@@ -4622,6 +4598,58 @@ mod tests {
             cell_count(key, "busbar-plugin-loader", "plane") > base,
             "the decisions plane's registry key `\"decision\"` written as a bare literal still \
              counts, auth-named file or not"
+        );
+    }
+
+    /// THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324), measured on the cell
+    /// over the tree the gate reads — the pinned checkouts mounted beneath (ARCHITECT W4B-Q1), so
+    /// `ws` is a transport needle because `busbar-transport-ws` is a crate of the census. In a
+    /// dialect module the id-prefix literal adds nothing to `busbar-plane-llm × transport`; a real
+    /// `ws` reference in the same module, and the same id-prefix const outside a dialect module,
+    /// each add exactly one. (The cell is measured on the unplanted tree — `http`, `sse` — so the
+    /// selftest's debt-free subject cannot see a rise in it; this is where the rise is proven.)
+    #[test]
+    fn the_dialect_id_prefix_literal_is_masked_and_a_real_ws_still_counts() {
+        let real = Ctx::workspace().expect("the workspace opens");
+        let count = |file: &str, line: &str| {
+            let mut ov = crate::ctx::Overlay::new();
+            if !file.is_empty() {
+                let body = real.read(file).expect("the planted file reads");
+                ov.set(file, format!("{body}\n{line}\n"));
+            }
+            let cx = super::super::pinned::with_pinned(&real.with_overlay(ov));
+            let crates = crates_of(&cx);
+            assert!(
+                crates.iter().any(|c| c.name == "busbar-transport-ws"),
+                "the pinned ws checkout is a crate of the census"
+            );
+            let (matrix, _, _) = measure(&cx, &crates).expect("the matrix measures");
+            matrix
+                .get(&("busbar-plane-llm".to_string(), "transport"))
+                .map_or(0, |c| c.count)
+        };
+        let responses_mod = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
+        let base = count("", "");
+        assert_eq!(
+            count(
+                responses_mod,
+                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";"
+            ),
+            base,
+            "a dialect module's native item-id prefix literal is the provider's word"
+        );
+        assert_eq!(
+            count(responses_mod, "const PLANTED_CARRIER: &str = \"ws\";"),
+            base + 1,
+            "a real transport `ws` reference in the same dialect module still counts"
+        );
+        assert_eq!(
+            count(
+                "crates/busbar-plane-llm/src/codec/proto_stream.rs",
+                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";"
+            ),
+            base + 1,
+            "an id-prefix literal outside a dialect module still counts"
         );
     }
 

@@ -7,8 +7,9 @@
 //! None of that may move a finding. A store crate is planted over the real tree — declared by its
 //! `lib.rs`, so it is compiled source — naming a plane crate and the ledger it declares no
 //! dependency on, and writing plane vocabulary eight ways, one of them a homoglyph. The findings
-//! the plant produces are pinned as the serial gate reported them: the two undeclared crate paths
-//! on the vocabulary row, and on the matrix row the planted file's own hit count and the
+//! the plant produces are pinned as the serial gate reported them: the three undeclared crate paths
+//! on the vocabulary row (`busbar-transport-http` is a crate of the census through its pinned
+//! checkout, ARCHITECT W4B-Q1, so naming it is the same undeclared reach as naming the plane), and on the matrix row the planted file's own hit count and the
 //! confusable it carries. Nothing pinned here depends on what the rest of the tree measures.
 
 use std::path::PathBuf;
@@ -74,8 +75,12 @@ fn a_planted_store_crate_coupling_is_found_exactly_as_the_serial_gate_found_it()
         .split("undeclared-crate-path")
         .filter(|f| f.contains(PLANT))
         .collect();
-    assert_eq!(planted.len(), 2, "{}", vocab.detail);
-    for (line, owner) in [(2, "busbar-plane-llm"), (10, "busbar-kernel-ledger")] {
+    assert_eq!(planted.len(), 3, "{}", vocab.detail);
+    for (line, owner) in [
+        (2, "busbar-plane-llm"),
+        (3, "busbar-transport-http"),
+        (10, "busbar-kernel-ledger"),
+    ] {
         let at = format!("{PLANT}:{line}");
         let says = format!(
             "busbar-store-memory (store crate) names `{owner}` and declares no dependency on it in \

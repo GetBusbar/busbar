@@ -20,14 +20,19 @@
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
 //! * [`udp`] is the host's datagram socket: one bound port, a peer per datagram.
 //!
-//! * [`io`] is readiness on the per-worker reactor (`io.{register, poll_ready, clear_ready,
-//!   deregister}`); [`socket`] the host's OS sockets; [`stream`] a host socket as a byte stream.
-//! * [`framer`] drives one transport entry's framer table host-side; [`compose`] builds a dialled
-//!   connection as socket -> \[TLS\] -> framer; [`pool`] keeps a dialled connection whose exchange
-//!   finished whole for the next open to the same place; [`listen`] binds one listener per inbound need and
-//!   composes each accepted connection the same way, begun on the accept side; [`registry`] is the
-//!   view of which entry serves which scheme; [`wire`] presents a framer entry over host sockets to
-//!   the kernel's transport seam.
+//! * [`hostio`] is THE HOST'S I/O (`io.*`): the one place that holds an OS handle (a stream, a
+//!   listener, a program's pipes) and moves bytes over it, admitting only what the destination
+//!   guard judged; [`io`] is readiness on the per-worker reactor (`io.{register, poll_ready,
+//!   clear_ready, deregister}`) and [`socket`] the OS sockets, both its tools.
+//! * [`carrier`] drives one carrier entry's slots (listen, accept, dial, read, write, flush, shut,
+//!   arrival) inline on a connection's two sides: the bottom of every connection, and this crate's
+//!   only way to the wire.
+//! * [`framer`] drives one transport entry's framer table host-side; [`compose`] builds a
+//!   connection as carrier -> \[TLS\] -> framer; [`pool`] keeps a dialled connection whose exchange
+//!   finished whole for the next open to the same place; [`listen`] has the carrier listen for each
+//!   inbound need and composes each accepted connection the same way, begun on the accept side;
+//!   [`registry`] is the view of which entry serves which scheme; [`wire`] presents an entry over
+//!   carried connections to the kernel's transport seam.
 //! * [`process`] builds the process's one connector for the root: the deployment's one destination
 //!   guard behind the one dial judge, and the default outbound trust.
 //!
@@ -40,12 +45,14 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod carrier;
 pub mod compose;
 pub mod dtls;
 pub mod endpoint;
 pub mod framed_stream;
 pub mod framer;
 pub mod guard;
+pub mod hostio;
 pub mod io;
 mod line;
 pub mod listen;
@@ -54,7 +61,6 @@ pub mod process;
 mod program;
 pub mod registry;
 pub mod socket;
-pub mod stream;
 /// The TLS test kit (far ends, the recording TLS fixture server, a private test CA) for this crate's
 /// tests that need a real handshake, and (feature `test-support`) a plugin repo's conformance test:
 /// TLS stays in the connector, even in a test.
@@ -76,6 +82,7 @@ use busbar_contract::abi::host::conn::connector::{
 };
 use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_PLAINTEXT, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
+use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
     Piece, PieceKind, PollConns, Ticket, NO_TICKET,
@@ -85,9 +92,11 @@ use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
 use crate::compose::{
-    Connection, Dial, Failure, Planned, DEFAULT_OPEN_TIMEOUT, EXCHANGE_STREAM, WRITE_BUFFER_BYTES,
+    Connection, Dial, Failure, Planned, Via, DEFAULT_OPEN_TIMEOUT, EXCHANGE_STREAM,
+    WRITE_BUFFER_BYTES,
 };
 use crate::framer::FramerDoor;
+use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
 use crate::pool::{PoolKey, PoolPosture, Pools};
@@ -389,6 +398,8 @@ pub struct Connector {
     /// Each member's auth binding, by (instance, need, target origin): what a plugin's own request
     /// to that member is authenticated with ([`DeclaredConns::bind_auth`]).
     auths: Mutex<HashMap<(InstanceId, NeedId, String), busbar_contract::conn::ConnAuth>>,
+    /// THE HOST'S I/O every carrier is served from ([`hostio`]): the one holder of OS handles.
+    io: Arc<HostIo>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -412,6 +423,7 @@ impl Default for Connector {
             anchored: Mutex::new(HashMap::new()),
             reaching: Mutex::new(HashMap::new()),
             auths: Mutex::new(HashMap::new()),
+            io: hostio::process(),
         }
     }
 }
@@ -473,6 +485,68 @@ impl Connector {
             judge,
             ..Self::default()
         }
+    }
+
+    /// The same connector serving its carriers from `io`: the host I/O the process's dispatcher serves
+    /// every carrier instance (`io.*`), so what the connector admits is what the carriers reach.
+    #[must_use]
+    pub fn with_io(mut self, io: Arc<HostIo>) -> Self {
+        self.io = io;
+        self
+    }
+
+    /// The host I/O this connector's carriers are served from.
+    #[must_use]
+    pub fn io(&self) -> &Arc<HostIo> {
+        &self.io
+    }
+
+    /// THE CARRIER OF A NETWORK ADDRESS, as a connection rides it: the first loaded carrier whose
+    /// own claim selects on the local port ([`registry::Transports::address_carrier`]); `None` =
+    /// none is loaded.
+    #[must_use]
+    pub fn address_via(&self) -> Option<Via> {
+        let view = self.transports.read().expect("transports");
+        view.address_carrier().map(|e| Via {
+            door: Arc::clone(&e.door),
+            io: Arc::clone(&self.io),
+        })
+    }
+
+    /// What a need served by `door` rides: a CARRIER is carried as itself (no framer); a FRAMER
+    /// rides the address carrier ([`Connector::address_via`]).
+    fn ride_on(&self, door: &Arc<dyn FramerDoor>) -> Option<(Option<Arc<dyn FramerDoor>>, Via)> {
+        if door.facts().role == ROLE_CARRIER {
+            return Some((
+                None,
+                Via {
+                    door: Arc::clone(door),
+                    io: Arc::clone(&self.io),
+                },
+            ));
+        }
+        self.address_via().map(|via| (Some(Arc::clone(door)), via))
+    }
+
+    /// A dial of `dial` over the entry `door` serves, located: the framer's `locate`, or a carrier
+    /// carried as itself reading its target as an authority.
+    fn plan(&self, door: &Arc<dyn FramerDoor>, dial: Dial) -> Result<Planned, Failure> {
+        match self.ride_on(door) {
+            Some((Some(framer), via)) => Planned::locate(framer, via, dial),
+            Some((None, via)) => Planned::carried(via, dial),
+            None => Err(Failure::Refused(
+                "no carrier is loaded to reach an address".into(),
+            )),
+        }
+    }
+
+    /// Where `target` goes, per the entry `door` serves: its authority, security and name.
+    fn located(&self, door: &Arc<dyn FramerDoor>, target: &str) -> Option<framer::Located> {
+        if door.facts().role == ROLE_CARRIER {
+            let claim = door.facts().claims.first().copied().unwrap_or_default();
+            return compose::carried_at(claim, target).ok();
+        }
+        framer::locate(door.as_ref(), target).ok()
     }
 
     /// The same connector keeping dialled connections under `posture` (the deployment's
@@ -642,8 +716,8 @@ impl Connector {
     /// THE MEMBER-PROGRAM NEED (`busbar_contract::section::MEMBER_PROGRAM`): `owner`'s outbound
     /// `need` reaches each member's own program (its pipes framed by the entry serving
     /// `transport`), ONE long-lived connection per member, carried as a program need is
-    /// ([`Connector::record_program`]: operator-infrastructure only, no auth style, an entry that
-    /// frames a byte stream directly). A member whose program is unchanged keeps its running
+    /// ([`Connector::record_program`]: operator-infrastructure only, no auth style, a CARRIER
+    /// entry). A member whose program is unchanged keeps its running
     /// program across the re-declaration; one that is gone or changed is retired.
     ///
     /// # Errors
@@ -660,7 +734,7 @@ impl Connector {
         let served = {
             let view = self.transports.read().expect("transports");
             view.serving(&spec.transport)
-                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .filter(|served| served.entry.door.facts().role == ROLE_CARRIER)
                 .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
         };
         let carried = spec.direction == DIRECTION_OUTBOUND
@@ -689,7 +763,10 @@ impl Connector {
                 let member = kept.unwrap_or_else(|| {
                     Arc::new(program::Member::new(
                         p.clone(),
-                        Arc::clone(&door),
+                        Via {
+                            door: Arc::clone(&door),
+                            io: Arc::clone(&self.io),
+                        },
                         alpn.clone(),
                     ))
                 });
@@ -716,8 +793,7 @@ impl Connector {
     /// THE PROGRAM NEED: `owner`'s outbound `need` dials `program` (its pipes, framed by the entry
     /// serving `transport`). Carried only in the operator-infrastructure class (the operator wrote
     /// the program into config), with no auth style (no credential rides a pipe), over an entry
-    /// that frames a byte stream directly (it composes over nothing, as a framer over the host's
-    /// socket does).
+    /// that is a CARRIER (its tail's role: a byte stream carried as itself).
     ///
     /// # Errors
     ///
@@ -732,7 +808,7 @@ impl Connector {
         let served = {
             let view = self.transports.read().expect("transports");
             view.serving(&spec.transport)
-                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .filter(|served| served.entry.door.facts().role == ROLE_CARRIER)
                 .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
         };
         let carried = spec.direction == DIRECTION_OUTBOUND
@@ -789,7 +865,9 @@ impl Connector {
         if listeners.contains_key(&(owner, need)) {
             return Err(ConnError::Refused);
         }
-        let l = Listening::bind(door, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)?;
+        let (framer, via) = self.ride_on(&door).ok_or(ConnError::Refused)?;
+        let l =
+            Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)?;
         let addr = l.local_addr();
         listeners.insert((owner, need), Arc::new(Mutex::new(l)));
         Ok(addr)
@@ -981,7 +1059,7 @@ impl Connector {
         drop(kept);
         *held.line.lock().expect("line") = None;
         self.let_go(held, &line, stream, false);
-        let planned = Planned::locate(r.door, r.dial).map_err(|f| map(&f))?;
+        let planned = self.plan(&r.door, r.dial).map_err(|f| map(&f))?;
         match self.dial_judged(planned, r.egress_class, r.judged_class, &[], r.reach)? {
             (Some(conn), _) => {
                 self.ride(held, conn);
@@ -1294,14 +1372,15 @@ impl DeclaredConns for Connector {
         }
     }
 
-    /// A need is framed when the entry serving its transport composes over another claim (a framer
-    /// above a carrier, http's kind); an entry directly over the host's socket is a raw stream.
+    /// A need is framed when the entry serving its transport is a FRAMER (its tail's role, ARCHITECT
+    /// ruling Q128 U7: http's kind, over the carrier the connector chose); a CARRIER entry is a raw
+    /// stream.
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
         self.over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .is_some_and(|d| !d.door.facts().composes_over.is_empty())
+            .is_some_and(|d| d.door.facts().role == ROLE_FRAMER)
     }
 
     fn serves_scheme(&self, transport: &str) -> bool {
@@ -1437,7 +1516,11 @@ impl Conns for Connector {
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
-            let conn = Connection::spawn(door, &program, dial).map_err(|f| map(&f))?;
+            let via = Via {
+                door,
+                io: Arc::clone(&self.io),
+            };
+            let conn = Connection::spawn(&via, &program, dial).map_err(|f| map(&f))?;
             // A program is a dialled, single-use line (no pool, no judgement): its one exchange
             // rides EXCHANGE_STREAM, as a freshly dialled connection's does.
             let line = Line::new(conn);
@@ -1485,7 +1568,8 @@ impl Conns for Connector {
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
-            let conn = Connection::dial_unix(door, dial, path).map_err(|f| map(&f))?;
+            let (framer, via) = self.ride_on(&door).ok_or(ConnError::Refused)?;
+            let conn = Connection::dial_unix(framer, &via, dial, path).map_err(|f| map(&f))?;
             // A unix-domain dial is a dialled, single-use line (no pool, no judgement), as a
             // program's is: its one exchange rides EXCHANGE_STREAM.
             let line = Line::new(conn);
@@ -1511,7 +1595,7 @@ impl Conns for Connector {
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
         };
-        let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
+        let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
         // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
         // destination is held to them; one that pins the far end's key and is not secured has no
         // key to hold, and is refused before any judgement or dial.
@@ -1546,8 +1630,7 @@ impl Conns for Connector {
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.
         if let Some(declared) = declared_target {
-            let located =
-                framer::locate(door.as_ref(), &declared).map_err(|_| ConnError::Refused)?;
+            let located = self.located(&door, &declared).ok_or(ConnError::Refused)?;
             if !located.authority.eq_ignore_ascii_case(planned.authority())
                 || located.secure != planned.secure()
             {
@@ -1610,7 +1693,7 @@ impl Conns for Connector {
                     Err((stream, _)) => {
                         line.leave(stream, false);
                         self.pools.drop_line(*shard, key, &line);
-                        planned = Planned::locate(redial.door, redial.dial).map_err(|f| map(&f))?;
+                        planned = self.plan(&redial.door, redial.dial).map_err(|f| map(&f))?;
                     }
                 }
             }
@@ -1778,9 +1861,7 @@ impl PollConns for Connector {
             .expect("needs")
             .get(&(owner, need))
             .map(|d| Arc::clone(&d.door));
-        let located = door
-            .as_ref()
-            .and_then(|door| framer::locate(door.as_ref(), target).ok());
+        let located = door.as_ref().and_then(|door| self.located(door, target));
         let at = located.map(|l| (owner, need, l.authority.to_ascii_lowercase()));
         if anchors.is_empty() {
             // Nothing to hold: any earlier seal for the destination is dropped.
@@ -1822,7 +1903,7 @@ impl PollConns for Connector {
             .get(&(owner, need))
             .map(|d| Arc::clone(&d.door))
             .ok_or(ConnError::Refused)?;
-        let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
+        let located = self.located(&door, target).ok_or(ConnError::Refused)?;
         if member.is_empty() {
             return Err(ConnError::Refused);
         }

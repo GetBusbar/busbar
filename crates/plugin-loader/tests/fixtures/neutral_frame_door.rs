@@ -14,7 +14,8 @@
 //! handed to `emit`/`refuse` are the wire bytes, `encode` renders an envelope as its body alone
 //! (fields are refused), `detach`/`adopt` hand unconsumed bytes across, and `locate` reads
 //! `host:port` (or `frame://host:port`). No op pends or asks for a deadline; a full sink is
-//! back-pressure (`YIELD_MORE`). Every carrier op is refused: the socket is the host's.
+//! back-pressure (`YIELD_MORE`). It states the FRAMER role and every carrier op is refused: it
+//! rides whatever carrier the connector dials or accepts with, and is never one.
 //!
 //! ONE STREAM (`SIDE_ACCEPT_STREAM`, ARCHITECT 4l): a framing begun on that side frames one stream
 //! whose head the host's own framer carries. Its messages are one length byte and that many bytes:
@@ -106,6 +107,9 @@ const TAIL: TransportTail = TransportTail {
         size: std::mem::size_of::<TransportTail>() as u32,
         _reserved: 0,
     },
+    // An identity FRAMER (ARCHITECT ruling Q128 U7: the role is stated, never derived from
+    // composes_over). It answers no carrier op, so it states no carrier: a door stated a carrier is
+    // one the connector may pick as its address carrier, and this one would refuse every dial.
     role: ROLE_FRAMER,
     framing: FRAMING_STREAM,
     facts: 0,

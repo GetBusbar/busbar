@@ -27,6 +27,7 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::slot;
 use busbar_core_connector::{
+    carrier::{Carry, Side},
     framer::{Call, Crossed, DoorFacts, FramerDoor},
     wire::HostWire,
 };
@@ -75,8 +76,6 @@ pub fn row_bind(row: &str) -> Bind {
 pub struct Dispatched {
     plugin: Plugin<TransportKind>,
     facts: DoorFacts,
-    /// The customer settings its tail declares, by their 1.5.5 config paths.
-    declared: Vec<&'static str>,
 }
 
 /// The deployment's value of the transport setting at config path `path`, as the door's settings
@@ -157,14 +156,14 @@ impl Dispatched {
         let facts = DoorFacts {
             name: plugin.name().to_owned(),
             claims: stated.claims,
+            role: stated.role,
             composes_over: stated.composes_over,
+            ported: stated.ported,
             status_rows: stated.status_rows,
         };
-        Ok(Self {
-            plugin,
-            facts,
-            declared: stated.settings,
-        })
+        // A carrier moves bytes over the host's I/O (`io.*`): the process's one, the connector's.
+        let _ = dispatcher().install_io(busbar_core_connector::hostio::process());
+        Ok(Self { plugin, facts })
     }
 }
 
@@ -180,9 +179,68 @@ fn go<I: InFrame, O: OutFrame>(p: &Plugin<TransportKind>, s: u32, i: &mut I, o: 
     }
 }
 
+/// One side of a carried connection: an inline ticket of the process's one dispatcher, the one
+/// every transport door is adopted by (its wakes route there).
+struct InlineSide(super::loader::dispatch::InlineTicket);
+
+impl Side for InlineSide {
+    fn ticket(&self) -> busbar_contract::abi::mechanism::ticket::Ticket {
+        self.0.ticket()
+    }
+
+    fn register(&self, waker: &std::task::Waker) {
+        self.0.register(waker);
+    }
+}
+
+/// One INLINE crossing on `ticket` (a RESUME when `resume`): the host's `in`/`out` copied in, the
+/// answer copied back.
+fn go_inline<I: InFrame, O: OutFrame>(
+    p: &Plugin<TransportKind>,
+    ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+    resume: bool,
+    s: u32,
+    i: &mut I,
+    o: &mut O,
+) -> Crossed {
+    let mut f = Frame::new(*i, *o);
+    let c = p.call_inline(ticket, resume, s, &mut f);
+    *i = f.input;
+    *o = f.out;
+    Crossed {
+        outcome: c.outcome,
+        error: c.error,
+    }
+}
+
 impl FramerDoor for Dispatched {
     fn facts(&self) -> &DoorFacts {
         &self.facts
+    }
+
+    fn side(&self) -> Option<Box<dyn Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
+            return None;
+        }
+        dispatcher()
+            .inline_ticket()
+            .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
+    }
+
+    fn carry(&self, side: &dyn Side, resume: bool, call: Carry<'_>) -> Crossed {
+        let (p, t) = (&self.plugin, side.ticket());
+        match call {
+            Carry::Listen(i, o) => go_inline(p, t, resume, slot::LISTEN, i, o),
+            Carry::Accept(i, o) => go_inline(p, t, resume, slot::ACCEPT, i, o),
+            Carry::Dial(i, o) => go_inline(p, t, resume, slot::DIAL, i, o),
+            Carry::Read(i, o) => go_inline(p, t, resume, slot::READ, i, o),
+            Carry::Write(i, o) => go_inline(p, t, resume, slot::WRITE, i, o),
+            Carry::Flush(i, o) => go_inline(p, t, resume, slot::FLUSH, i, o),
+            Carry::Shut(i, o) => go_inline(p, t, resume, slot::SHUT, i, o),
+            Carry::Arrival(i, o) => go_inline(p, t, resume, slot::ARRIVAL, i, o),
+            // `cancel` is made on no ticket: the ticket it cancels rides its `in`.
+            Carry::Cancel(i, o) => go(p, life::CANCEL, i, o),
+        }
     }
 
     fn cross(&self, call: Call<'_>) -> Crossed {
@@ -207,30 +265,12 @@ impl FramerDoor for Dispatched {
 /// upgrades still speak `busbar_contract::Transport`, so the root wraps a [`HostWire`] in this and
 /// every method ONLY delegates. Transitional: `RootWire` deletes with the legacy stack at TODO step 36.
 ///
-/// A COMPOSING entry (SEAM-4f/4n: a message framer over an upgraded http connection) binds and
-/// accepts through the layer it was built over, and adopts each connection that layer hands up; a
-/// listener whose configuration names one of the settings the entry declares (the body cap, the
-/// message ceiling) frames its connections with the entry opened under those settings.
+/// No entry composes over another (ARCHITECT Q128 U7; `BUSBAR-1.6.0.md` :4721): every inbound
+/// socket is the connector's listener's, and a stream an entry hands up is adopted by the entry the
+/// connector picks, so this adapter binds, accepts and adopts nothing itself.
 pub struct RootWire {
     wire: HostWire,
-    /// The layer a composing entry was built over: it binds and accepts for the entry.
-    lower: Option<Arc<dyn busbar_contract::Transport>>,
-    /// The entry opened anew under other settings (a linked row's; `None` = never re-opened).
-    reopen: Option<Reopen>,
-    /// The settings the entry declares, and the ones it was opened with.
-    declared: Vec<&'static str>,
-    settings: busbar_contract::transport::TransportSettings,
-    /// The entry each listener's connections are framed by, where its configuration named its own
-    /// settings, by listener id.
-    listening: std::sync::Mutex<std::collections::HashMap<u64, Arc<dyn FramerDoor>>>,
 }
-
-/// The entry, opened anew under `settings`.
-pub type Reopen = Box<
-    dyn Fn(&busbar_contract::transport::TransportSettings) -> Result<Arc<dyn FramerDoor>, String>
-        + Send
-        + Sync,
->;
 
 impl std::fmt::Debug for RootWire {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -241,69 +281,10 @@ impl std::fmt::Debug for RootWire {
 }
 
 impl RootWire {
-    /// `wire`, built over `lower`, its entry declaring `declared` and opened under `settings`.
+    /// `wire`, presented at the legacy seam.
     #[must_use]
-    pub fn new(
-        wire: HostWire,
-        lower: Option<Arc<dyn busbar_contract::Transport>>,
-        declared: Vec<&'static str>,
-        settings: busbar_contract::transport::TransportSettings,
-    ) -> Self {
-        Self {
-            wire,
-            lower,
-            reopen: None,
-            declared,
-            settings,
-            listening: std::sync::Mutex::new(std::collections::HashMap::new()),
-        }
-    }
-
-    /// The same wire, able to open its entry anew under a listener's own settings.
-    #[must_use]
-    pub fn reopening(mut self, reopen: Reopen) -> Self {
-        self.reopen = Some(reopen);
-        self
-    }
-
-    /// The settings a listener's configuration `view` names for the entry, where it names any of
-    /// the ones the entry declares at another value than the entry was opened with.
-    fn viewed(
-        &self,
-        view: &dyn busbar_contract::TransportConfigView,
-    ) -> Option<busbar_contract::transport::TransportSettings> {
-        let mut s = self.settings;
-        for path in &self.declared {
-            let int = || view.get_int(path);
-            match *path {
-                "limits.request_body_max_bytes" => {
-                    if let Some(v) = int().and_then(|v| usize::try_from(v).ok()) {
-                        s.request_body_max_bytes = v;
-                    }
-                }
-                "limits.upstream_request_timeout_secs" => {
-                    if let Some(v) = int().and_then(|v| u64::try_from(v).ok()) {
-                        s.request_timeout_secs = v;
-                    }
-                }
-                "advanced.upstream_h2_prior_knowledge" => {
-                    if let Some(v) = view.get_bool(path) {
-                        s.upstream_h2_prior_knowledge = v;
-                    }
-                }
-                "advanced.upstream_http1_only" => {
-                    if let Some(v) = view.get_bool(path) {
-                        s.upstream_http1_only = v;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let same = s.request_body_max_bytes == self.settings.request_body_max_bytes
-            && s.request_timeout_secs == self.settings.request_timeout_secs
-            && s.upstream_h2_prior_knowledge == self.settings.upstream_h2_prior_knowledge
-            && s.upstream_http1_only == self.settings.upstream_http1_only;
-        (!same).then_some(s)
+    pub fn new(wire: HostWire) -> Self {
+        Self { wire }
     }
 }
 
@@ -327,60 +308,22 @@ impl busbar_contract::Transport for RootWire {
         self.wire.arrival(conn)
     }
 
-    /// An entry over the host's socket listens through nothing here: every inbound socket is the
-    /// connector's listener's (the one listener source, ARCHITECT ruling 2026-09-30). A composing
-    /// entry binds through the layer it was built over, its listener's own settings noted.
+    /// An entry listens through nothing here: every inbound socket is the connector's listener's
+    /// (the one listener source, ARCHITECT ruling 2026-09-30).
     fn listen<'a>(
         &'a self,
-        cfg: &'a dyn busbar_contract::TransportConfigView,
-        keys: &'a busbar_contract::TransportKeyHandle,
+        _cfg: &'a dyn busbar_contract::TransportConfigView,
+        _keys: &'a busbar_contract::TransportKeyHandle,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Listener> {
-        use busbar_contract::transport::wire::TransportError;
-        Box::pin(async move {
-            let lower = self
-                .lower
-                .as_ref()
-                .filter(|_| self.wire.composes())
-                .ok_or(TransportError::Refused)?;
-            let own = match (self.viewed(cfg), &self.reopen) {
-                (Some(s), Some(reopen)) => Some(reopen(&s).map_err(|_| TransportError::Refused)?),
-                _ => None,
-            };
-            let listener = lower.listen(cfg, keys).await?;
-            if let Some(door) = own {
-                self.listening
-                    .lock()
-                    .expect("listening")
-                    .insert(listener.id(), door);
-            }
-            Ok(listener)
-        })
+        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::Refused) })
     }
 
-    /// A composing entry accepts what the layer under it accepted, adopting the stream it hands up
-    /// (framed under its listener's own settings, where they were named).
+    /// Nothing is accepted here: the connector's listener accepts.
     fn accept<'a>(
         &'a self,
-        l: &'a busbar_contract::transport::wire::Listener,
+        _l: &'a busbar_contract::transport::wire::Listener,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
-        use busbar_contract::transport::wire::TransportError;
-        Box::pin(async move {
-            let lower = self
-                .lower
-                .as_ref()
-                .filter(|_| self.wire.composes())
-                .ok_or(TransportError::Closed)?;
-            let conn = lower.accept(l).await?;
-            let below = lower.arrival(&conn).transport_chain;
-            let raw = lower.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
-            let door = self
-                .listening
-                .lock()
-                .expect("listening")
-                .get(&l.id())
-                .cloned();
-            self.wire.adopt_from(raw, below, door).await
-        })
+        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::Closed) })
     }
 
     fn dial<'a>(
@@ -418,24 +361,15 @@ impl busbar_contract::Transport for RootWire {
         self.wire.encode_envelope(fields, body, arena)
     }
 
-    /// A composing entry ([`HostWire::composed`]) adopts the stream the layer under it hands up
-    /// (`from`'s own detach); an entry over the host's socket adopts nothing.
+    /// Nothing is adopted at this seam: which entry adopts a handed-up stream is the connector's
+    /// choice (ARCHITECT Q128 U7).
     fn adopt<'a>(
         &'a self,
-        from: &'a dyn busbar_contract::Transport,
+        _from: &'a dyn busbar_contract::Transport,
         conn: busbar_contract::transport::wire::Conn,
         keys: &'a busbar_contract::TransportKeyHandle,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
-        if !self.wire.composes() {
-            return self.wire.adopt(conn, keys);
-        }
-        Box::pin(async move {
-            let below = from.arrival(&conn).transport_chain;
-            let raw = from
-                .detach(&conn)
-                .ok_or(busbar_contract::transport::wire::TransportError::HandoffMismatch)?;
-            self.wire.adopt_from(raw, below, None).await
-        })
+        self.wire.adopt(conn, keys)
     }
 
     fn detach(
@@ -445,8 +379,9 @@ impl busbar_contract::Transport for RootWire {
         self.wire.detach(conn)
     }
 
+    /// No entry is composed over another.
     fn composed_over(&self) -> Option<&'static str> {
-        self.wire.composed_over()
+        None
     }
 
     fn close(
@@ -468,8 +403,21 @@ impl busbar_contract::Transport for RootWire {
     }
 }
 
+/// Where a served wire's framed connections find their carrier: the root hands the process's
+/// connector's address carrier (`crate::root::connector::address_carrier`); a mount with no root
+/// hands none, and a framed dial on it is refused.
+pub type Riding = Option<busbar_core_connector::carrier::AddressCarrier>;
+
+/// `wire`, riding `riding` when one is handed.
+fn ride(wire: HostWire, riding: Riding) -> HostWire {
+    match riding {
+        Some(carrier) => wire.riding(carrier),
+        None => wire,
+    }
+}
+
 /// A door, opened with the deployment's `settings` and served over the host's sockets, presented
-/// at the legacy transport seam.
+/// at the legacy transport seam, its framed connections riding `riding`.
 ///
 /// # Errors
 ///
@@ -477,23 +425,37 @@ impl busbar_contract::Transport for RootWire {
 pub fn host_wire(
     plugin: Plugin<TransportKind>,
     settings: &busbar_contract::transport::TransportSettings,
+    riding: Riding,
 ) -> Result<Arc<dyn busbar_contract::Transport>, String> {
-    let door = Dispatched::open(plugin, settings)?;
-    let declared = door.declared.clone();
-    Ok(Arc::new(RootWire::new(
-        HostWire::new(Arc::new(door))?,
-        None,
-        declared,
-        *settings,
-    )))
+    served(plugin, settings, riding).map(|(_, wire)| wire)
+}
+
+/// An opened door and the wire the legacy seam presents over it.
+pub type Served = (Arc<dyn FramerDoor>, Arc<dyn busbar_contract::Transport>);
+
+/// [`host_wire`], and the opened door itself: the one instance the connector serves as an entry and
+/// the legacy seam presents (a dropped-in door is opened once).
+///
+/// # Errors
+///
+/// As [`host_wire`].
+pub fn served(
+    plugin: Plugin<TransportKind>,
+    settings: &busbar_contract::transport::TransportSettings,
+    riding: Riding,
+) -> Result<Served, String> {
+    let door: Arc<dyn FramerDoor> = Arc::new(Dispatched::open(plugin, settings)?);
+    let wire = Arc::new(RootWire::new(ride(
+        HostWire::new(Arc::clone(&door))?,
+        riding,
+    )));
+    Ok((door, wire))
 }
 
 /// A linked row's build: its door admitted through the one validation, bound under the row's name
-/// `row` ([`row_bind`]), opened with the deployment's `settings`, served over the host's sockets. A
-/// door that frames the host's socket takes no lower layer; one that COMPOSES OVER a layer (SEAM-4f:
-/// a message framer over an upgraded http connection) is built over `lower`, the layer the registry
-/// folded under it ([`HostWire::composed`]), so the row can be door-only: its entry's `door` is its
-/// one face, on the registry and on the connector alike.
+/// `row` ([`row_bind`]), opened with the deployment's `settings`, served over the host's sockets. No
+/// entry composes over another (ARCHITECT Q128 U7), so the layer the registry hands a build is not
+/// read: the carrier is the connector's choice from the target's scheme (`riding`, [`Riding`]).
 ///
 /// # Panics
 ///
@@ -502,61 +464,42 @@ pub fn host_wire(
 pub fn build(
     row: &str,
     door: DoorFn,
-    lower: Option<Arc<dyn busbar_contract::Transport>>,
+    _lower: Option<Arc<dyn busbar_contract::Transport>>,
     settings: &busbar_contract::transport::TransportSettings,
+    riding: Riding,
 ) -> Arc<dyn busbar_contract::Transport> {
-    let label = row.to_owned();
-    let open = move |s: &busbar_contract::transport::TransportSettings| {
-        LinkedRow::of(door)
-            .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(&label)))
-            .map_err(|e| e.to_string())
-            .and_then(|plugin| Dispatched::open(plugin, s))
-    };
-    open(settings)
-        .and_then(|door| composed_wire_of(door, lower, settings))
-        .map(|wire| {
-            Arc::new(wire.reopening(Box::new(move |s| {
-                open(s).map(|d| Arc::new(d) as Arc<dyn FramerDoor>)
-            }))) as Arc<dyn busbar_contract::Transport>
-        })
+    LinkedRow::of(door)
+        .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
+        .map_err(|e| e.to_string())
+        .and_then(|plugin| Dispatched::open(plugin, settings))
+        .and_then(|door| HostWire::new(Arc::new(door)))
+        .map(|wire| ride(wire, riding))
+        .map(|wire| Arc::new(RootWire::new(wire)) as Arc<dyn busbar_contract::Transport>)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
-/// [`host_wire`], or, for a door that composes over a layer, the wire built over `lower` (`None`
-/// where the composition carries none of its layers: the registry's boot check names it).
+/// Every scheme a linked row's door claims, its own first, read off the door's Statement (ONE ENTRY
+/// PER PLUGIN: the schemes are its claims). The seal registers each under its own key.
 ///
-/// # Errors
+/// # Panics
 ///
-/// The door would not open, or `lower` is not a layer it declares.
-pub fn composed_wire(
-    plugin: Plugin<TransportKind>,
-    lower: Option<Arc<dyn busbar_contract::Transport>>,
-    settings: &busbar_contract::transport::TransportSettings,
-) -> Result<Arc<dyn busbar_contract::Transport>, String> {
-    let door = Dispatched::open(plugin, settings)?;
-    Ok(Arc::new(composed_wire_of(door, lower, settings)?))
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.claims)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
-/// The wire over an opened entry: over the host's socket, or built over `lower`.
-fn composed_wire_of(
-    door: Dispatched,
-    lower: Option<Arc<dyn busbar_contract::Transport>>,
-    settings: &busbar_contract::transport::TransportSettings,
-) -> Result<RootWire, String> {
-    let declared = door.declared.clone();
-    if door.facts.composes_over.is_empty() {
-        return Ok(RootWire::new(
-            HostWire::new(Arc::new(door))?,
-            None,
-            declared,
-            *settings,
-        ));
-    }
-    let over = lower.as_ref().map(|l| busbar_contract::Plugin::key(&**l));
-    Ok(RootWire::new(
-        HostWire::composed(Arc::new(door), over)?,
-        lower,
-        declared,
-        *settings,
-    ))
+/// The claims a linked row's door opens at an UPGRADE (their row's `unit0_trigger`), read off the
+/// door's Statement: the data door's upgrade lines (ARCHITECT ruling Q128 U7).
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.upgrades)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }

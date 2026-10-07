@@ -52,10 +52,12 @@ const THROUGH_THE_CONNECTOR: &str = "data door listening through the connector";
 const REQUEST: &str = "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
 const EXCHANGE: &str = include_str!("fixtures/transport_dropped_in_exchange.txt");
 
-/// The in-tree transport `cdylib` and the key it declares, found by KIND beside the binary and
-/// pinned to the wire this build's linked layers compose over (`common::plugins::
-/// transport_cdylib_under`): the one wire that can sit under them, never merely the newest door in
-/// the target directory. Under CI a missing artifact is a hard failure, never a silent skip.
+/// The in-tree transport `cdylib` and the key it declares, found by KIND beside the binary
+/// (`common::plugins::transport_cdylib_under`). No linked layer composes over another (ARCHITECT
+/// ruling Q128 U7: no transport names another), so no key is needed under them and any transport
+/// door beside the binary is the proof's subject: a linked key's tarball is refused as a second
+/// plugin with that key, an unlinked key's registers through the one fold. Under CI a missing
+/// artifact is a hard failure, never a silent skip.
 fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
     let under: Vec<&str> = LINKED_TRANSPORTS
         .iter()
@@ -89,8 +91,13 @@ fn free_port() -> u16 {
 /// The transport `cdylib` packed as an UNSIGNED `kind: transport` tarball (the config opts into
 /// unsigned plugins, as the CLI fixtures do).
 fn drop_in(dir: &Path, lib: &[u8]) {
-    let bytes = common::plugins::pack_stated("transport", "dropped-wire", lib, "acme");
-    std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
+    drop_in_as(dir, lib, "dropped-wire");
+}
+
+/// The wire dropped in under the plugin name `name`.
+fn drop_in_as(dir: &Path, lib: &[u8], name: &str) {
+    let bytes = common::plugins::pack_stated("transport", name, lib, "acme");
+    std::fs::write(dir.join("plugins").join(format!("{name}.tar.gz")), bytes).unwrap();
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
@@ -261,6 +268,40 @@ fn masked(raw: &[u8]) -> String {
         .join("\r\n")
 }
 
+/// The carrier each data worker's listener accepts through, read off the node's last log
+/// (`carrier=<claim>` on [`THROUGH_THE_CONNECTOR`]; `host` when the connector serves none).
+fn carriers(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("out.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(THROUGH_THE_CONNECTOR))
+        .filter_map(|l| {
+            plain(l)
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix("carrier="))
+                .map(|c| c.trim_matches('"').to_owned())
+        })
+        .collect()
+}
+
+/// `line` with its terminal colour sequences (`ESC [ ... m`) taken out.
+fn plain(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c in chars.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The pinned exchange, in the wire's own line endings.
 fn pinned() -> String {
     EXCHANGE.trim_end_matches('\n').replace('\n', "\r\n")
@@ -289,6 +330,11 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             through, WORKERS,
             "each of the {WORKERS} data workers listens through the connector"
         );
+        assert_eq!(
+            carriers(&dir),
+            vec![key.to_owned(); WORKERS],
+            "every data worker accepts through the linked carrier"
+        );
         // RED: the same wire dropped in on a key this build links is refused at boot, as a second
         // linked row with that key is — two transport plugins declaring one key.
         drop_in(&dir, &lib);
@@ -300,17 +346,13 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             "stderr:\n{stderr}"
         );
     } else {
-        // RED: with no wire dropped in, the layers composed over the unlinked key have nothing
-        // under them, and the node refuses to boot — so whatever serves below crossed the plugin.
-        let out = refused(&dir);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
-        assert!(
-            stderr.contains(&format!("composes over `{key}`")),
-            "stderr:\n{stderr}"
-        );
-        // THE BUILD OVER THE DROPPED-IN WIRE SERVES: the one request answers the exchange the
-        // linked build answers, byte for byte but the clock.
+        // NO TRANSPORT NAMES ANOTHER (ARCHITECT ruling Q128 U7): nothing composes over the unlinked
+        // key, so the build boots and serves without it — the carrier under the data door is the
+        // connector's choice, not a registered row.
+        let (served, _, _) = serve_once(&dir, data_port, WORKERS);
+        assert_eq!(served, pinned(), "no layer waits on the unlinked key");
+        // THE DROPPED-IN WIRE REGISTERS THROUGH THE ONE FOLD: the build over it serves the
+        // exchange the linked build answers, byte for byte but the clock.
         drop_in(&dir, &lib);
         let (served, _, through) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(
@@ -324,6 +366,43 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             through, WORKERS,
             "each of the {WORKERS} data workers listens through the connector"
         );
+        // THE ADDRESS CARRIER IS THE DECLARATION'S, NEVER A FRAMER: the data door accepts through
+        // the dropped-in carrier, by its claim — and still does with the neutral frame door dropped
+        // in beside it and declared FIRST (the plugins directory's sorted order): a framer is never
+        // an address carrier, whatever its claim reads.
+        assert_eq!(
+            carriers(&dir),
+            vec![key.to_owned(); WORKERS],
+            "every data worker accepts through the dropped-in carrier"
+        );
+        if let Some(neutral) = common::plugins::neutral_frame_door_bytes() {
+            drop_in_as(&dir, &neutral, "a-neutral-framer");
+            let (served, _, through) = serve_once(&dir, data_port, WORKERS);
+            assert_eq!(
+                served,
+                pinned(),
+                "a framer beside the carrier moves no byte"
+            );
+            assert_eq!(through, WORKERS);
+            assert_eq!(
+                carriers(&dir),
+                vec![key.to_owned(); WORKERS],
+                "the neutral framer, declared first, is never the address carrier"
+            );
+            std::fs::remove_file(dir.join("plugins").join("a-neutral-framer.tar.gz")).unwrap();
+        } else {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "the neutral frame door is built beside the binary under CI"
+            );
+        }
+        // RED: and it DID register — a second copy of the same wire is a second transport plugin
+        // declaring one key, refused at boot exactly as the linked build refuses the first.
+        drop_in_as(&dir, &lib, "dropped-wire-again");
+        let out = refused(&dir);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
+        assert!(stderr.contains(&format!("{key:?}")), "stderr:\n{stderr}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -85,6 +85,7 @@ use busbar_contract::abi::auth::{
 };
 // THE PLANE AND TRANSPORT KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
 use busbar_contract::abi::host::conn::connector as hconn;
+use busbar_contract::abi::host::io as hio;
 use busbar_contract::abi::host::service as hsvc;
 use busbar_contract::abi::plane as pkind;
 use busbar_contract::abi::transport as tkind;
@@ -1052,7 +1053,7 @@ fn compute_layout() -> String {
     record!(
         s,
         MechHostTables,
-        [size, _reserved, ctx, wake, conns, services]
+        [size, _reserved, ctx, wake, conns, services, io]
     );
     record!(
         s,
@@ -1554,8 +1555,12 @@ fn compute_layout() -> String {
     record!(s, tkind::DialIn, [head, dest]);
     record!(s, tkind::ConnOut, [head, conn]);
     record!(s, tkind::ReadIn, [head, conn, buf, cap]);
-    record!(s, tkind::WriteIn, [head, conn, bytes, len]);
-    record!(s, tkind::IoOut, [head, len]);
+    record!(
+        s,
+        tkind::WriteIn,
+        [head, conn, bytes, len, flags, _reserved]
+    );
+    record!(s, tkind::IoOut, [head, len, flags, _reserved]);
     record!(s, tkind::ConnIn, [head, conn]);
     record!(s, tkind::ShutIn, [head, conn, reason, _reserved]);
     record!(s, tkind::ArrivalIn, [head, conn, peer_buf, peer_cap]);
@@ -2071,6 +2076,25 @@ fn compute_layout() -> String {
     );
     record!(s, hconn::RequestIn, [head, stream, buf, len, piece]);
     // The host services (abi/host/service.rs) and the call shape they share with the connector.
+    // THE HOST'S I/O TABLE (`abi/host/io.rs`, `io.*`).
+    record!(
+        s,
+        hio::IoSlots,
+        [size, slots, open, listen, accept, read, write, ready, shut, close, spawn, ends]
+    );
+    record!(s, hio::OpenIn, [head, addr]);
+    record!(s, hio::ListenIn, [head, bind, addr_buf, addr_cap]);
+    record!(s, hio::AddrIn, [head, handle, addr_buf, addr_cap]);
+    record!(s, hio::ReadIn, [head, handle, buf, cap]);
+    record!(s, hio::WriteIn, [head, handle, bytes, len]);
+    record!(s, hio::ReadyIn, [head, handle, dir, _reserved]);
+    record!(s, hio::ShutIn, [head, handle, how, _reserved]);
+    record!(s, hio::HandleIn, [head, handle]);
+    record!(
+        s,
+        hio::SpawnIn,
+        [head, program, args, args_len, env, env_len]
+    );
     record!(s, hsvc::ServiceHead, [size, op, handle]);
     record!(
         s,

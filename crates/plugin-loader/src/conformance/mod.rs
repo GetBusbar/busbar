@@ -102,8 +102,10 @@ use crate::dispatch::{
 use crate::tcp_conns::TcpConns;
 
 mod auth;
+mod carrier;
 mod export;
 mod hook;
+pub mod host_io;
 mod plane;
 mod secret;
 mod store;

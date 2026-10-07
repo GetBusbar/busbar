@@ -29,8 +29,9 @@ pub mod boot;
 pub mod carrier;
 /// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
 /// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
-/// dev-dependency turns it on; no busbar build ships it.
-#[cfg(feature = "conformance")]
+/// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
+/// transport row through it too (`transport_door_conformance_tests`).
+#[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
@@ -1328,8 +1329,8 @@ mod store_door_conformance_tests;
 #[path = "tests/secret_door_conformance_tests.rs"]
 mod secret_door_conformance_tests;
 
-/// `kind: transport` over the REAL `tcp` door, both ways: the shipped linked door against the pinned
-/// cdylib, one script, equal transcripts and exact crossing counts.
+/// `kind: transport` over the REAL shipped carrier, both ways: the linked door against the pinned
+/// cdylib, through the published suite's carrier script, equal folds and exact crossing counts.
 #[cfg(test)]
 #[path = "tests/transport_door_conformance_tests.rs"]
 mod transport_door_conformance_tests;

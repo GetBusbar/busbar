@@ -902,6 +902,7 @@ fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
         wake: None,
         conns: std::ptr::null(),
         services: &HOST_SLOTS,
+        io: std::ptr::null(),
     };
     busbar_contract::abi::sdk::Services::of(&tables).expect("the table is handed")
 }
