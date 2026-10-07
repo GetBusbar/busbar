@@ -30,8 +30,17 @@ use crate::store_adapter::{
 };
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_contract::verb_store::Store as VerbStore;
-use busbar_kernel_wal::Record;
 use std::sync::Arc;
+
+/// A record as the shipping seam sees one: its identity and nothing else (the log's own record and
+/// its framing are the log's).
+struct Shipped(u64, u64);
+
+impl busbar_contract::ship::ShippedRecord for Shipped {
+    fn identity(&self) -> (u64, u64) {
+        (self.0, self.1)
+    }
+}
 
 /// The build's store fixture (reached by kind), as the published operations' backing.
 fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
@@ -184,7 +193,7 @@ fn concurrent_shippers_never_split_the_count_from_the_head() {
             let mut shipper = adapter.shipper();
             for seq in 1..=PER_SHIPPER {
                 shipper
-                    .ship(&[Record::new(lane, seq, b"x".to_vec())])
+                    .ship(&[Shipped(lane, seq)])
                     .expect("a batch is acknowledged, never refused");
             }
         }));
@@ -362,10 +371,7 @@ fn the_shipper_seam_acknowledges_a_batch_and_keeps_the_head() {
     let mut shipper = adapter.shipper();
     assert_eq!(adapter.head(), None, "nothing shipped yet");
     shipper
-        .ship(&[
-            Record::new(7, 1, b"a".to_vec()),
-            Record::new(7, 2, b"b".to_vec()),
-        ])
+        .ship(&[Shipped(7, 1), Shipped(7, 2)])
         .expect("a batch on a published store is acknowledged, never refused");
     assert_eq!(adapter.shim_state().records_shipped, 2);
     assert_eq!(
@@ -375,9 +381,7 @@ fn the_shipper_seam_acknowledges_a_batch_and_keeps_the_head() {
     );
     shipper.ship(&[]).expect("an empty batch");
     assert_eq!(adapter.head(), Some((7, 2)), "an empty batch moves nothing");
-    shipper
-        .ship(&[Record::new(7, 3, b"c".to_vec())])
-        .expect("a later batch");
+    shipper.ship(&[Shipped(7, 3)]).expect("a later batch");
     assert_eq!(adapter.shim_state().records_shipped, 3);
     assert_eq!(adapter.head(), Some((7, 3)));
 }

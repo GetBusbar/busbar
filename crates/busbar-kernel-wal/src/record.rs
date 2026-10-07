@@ -123,6 +123,13 @@ impl Record {
     }
 }
 
+/// What a shipper sees of a record: its identity, and nothing of its framing.
+impl busbar_contract::ship::ShippedRecord for Record {
+    fn identity(&self) -> (u64, u64) {
+        Record::identity(self)
+    }
+}
+
 /// One frame's header as a reader recovers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameHeader {

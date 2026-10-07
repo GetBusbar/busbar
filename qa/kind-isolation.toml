@@ -1303,16 +1303,6 @@ why     = "busbar-plugin-loader names busbar-contract: declared shipped, 1 decla
 drain   = "none while busbar-plugin-loader is the loader TCB; the row records the edge so a NEW plugin-tooling -> contract coupling is visible on the landing that adds it."
 
 [[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-kernel-wal"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 — the loader/plugin tooling is the TRUSTED COMPUTING BASE; it names kernel directly and the kind rules do not rule on its edges (ARCHITECTURE_TCB plugin-tooling -> kernel)."
-why     = "busbar-plugin-loader names busbar-kernel-wal: declared shipped, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while busbar-plugin-loader is the loader TCB; the row records the edge so a NEW plugin-tooling -> kernel coupling is visible on the landing that adds it."
-
-[[dep]]
 from    = "busbar-kernel-egress"
 to      = "busbar-kernel-breaker"
 half    = "test"

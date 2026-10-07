@@ -731,7 +731,7 @@ impl Journal {
     /// A journal over a memory-buffered log shipping through `shipper` — the shape a deployment that
     /// names a store but no data directory runs.
     #[must_use]
-    pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper>, clock: Clock) -> Self {
+    pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper<Record>>, clock: Clock) -> Self {
         Journal::over(Wal::memory_buffered_to(shipper, clock), node)
     }
 
@@ -744,7 +744,7 @@ impl Journal {
     pub fn in_directory(
         node: u64,
         dir: impl AsRef<std::path::Path>,
-        shipper: Box<dyn Shipper>,
+        shipper: Box<dyn Shipper<Record>>,
         clock: Clock,
     ) -> Result<Self, OpenError> {
         Ok(Journal::over(Wal::in_directory(dir, shipper, clock)?, node))

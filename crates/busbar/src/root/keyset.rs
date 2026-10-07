@@ -257,10 +257,10 @@ pub fn bind(
                 Some(key) => key,
                 None => {
                     let seed = mint_seed_hex()?;
-                    busbar_kernel_wal::durable::write_with(
+                    busbar_kernel::durable::write_with(
                         &file,
                         format!("{seed}\n").as_bytes(),
-                        busbar_kernel_wal::durable::DurableOpts {
+                        busbar_kernel::durable::DurableOpts {
                             mode: Some(0o600),
                             exclusive: true,
                         },

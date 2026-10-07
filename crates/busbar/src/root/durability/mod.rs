@@ -2111,7 +2111,7 @@ impl MigrationRecords for JournalMigrationRecords<'_> {
 /// As [`build_for_node`].
 pub fn build(
     cfg: &DurabilityConfig,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
     legacy_rows: Box<dyn LegacyRows>,
 ) -> Result<Durability, OpenError> {
     build_for_node(cfg, 0, shipper, legacy_rows)
@@ -2191,7 +2191,7 @@ pub fn node_book_over(history: HistorySource) -> NodeBook {
 pub fn build_for_node(
     cfg: &DurabilityConfig,
     node: u64,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
     legacy_rows: Box<dyn LegacyRows>,
 ) -> Result<Durability, OpenError> {
     build_with_cards(
@@ -2214,7 +2214,7 @@ pub fn build_for_node(
 pub fn build_priced(
     cfg: &DurabilityConfig,
     node: u64,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
     legacy_rows: Box<dyn LegacyRows>,
     history: HistorySource,
 ) -> Result<Durability, OpenError> {
@@ -2231,7 +2231,7 @@ pub fn build_priced(
 pub fn build_with_cards(
     cfg: &DurabilityConfig,
     node: u64,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
     legacy_rows: Box<dyn LegacyRows>,
     history: HistorySource,
     cards: Option<&'static crate::root::kernel::RootHistory>,

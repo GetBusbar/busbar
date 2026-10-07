@@ -992,7 +992,6 @@ dependencies = [
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook",
  "busbar-export-webhook-plugin",
- "busbar-kernel-wal",
  "busbar-plugin-example-plane",
  "busbar-secret-env",
  "busbar-store-memory",

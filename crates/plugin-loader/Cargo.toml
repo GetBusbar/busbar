@@ -11,7 +11,7 @@ license = "Apache-2.0"
 # signing engine (`sign`) and tarball writer (`tarball`), so it lives beside them. It moved here from
 # `busbar-plugin-sdk` (batch 68/69 D1): an optional feature on the SDK is still an edge in the closure
 # of every plugin that names the SDK (`kind-isolation:closure` scores the union of feature
-# configurations), and this crate carries `busbar-kernel-wal`. Here it
+# configurations), and this crate is host machinery. Here it
 # reaches no plugin's closure: no plugin-kind crate may name this crate.
 #
 # OPTIONAL ON PURPOSE. This crate is in the `busbar` binary's graph, and `jsonschema` is tooling that
@@ -150,8 +150,6 @@ busbar-contract = { path = "../busbar-contract" }
 # seams (the same division as `SliceStore`): the ledger states WHAT an opening figure is and folds
 # it; this crate reads the rows and names the contract alone (Part 2 #33: plugin infrastructure is
 # one crate atop the one contract crate).
-# The durable-write primitive (`durable`) and the log's shipper seam (`store_adapter`).
-busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 # The former `busbar-plugin-sign` crate's own dependencies, moved in with its body
 # (DECISIONS #33). Verify + sign only, no key generation and therefore no RNG: the
 # engine-facing half stays RNG-free and `keygen` keeps its OS RNG on the tooling side.
