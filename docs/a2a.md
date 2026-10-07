@@ -53,7 +53,7 @@ Naming an agent `hooks` or `upstream_credentials` is refused at parse (`crates/b
 | `pin` | object | **yes** | — | The out-of-band trust root. Required even when it is `unpinned`. |
 | `pin.mechanism` | `jws_issuer_key` \| `cert_spki` \| `mtls` \| `unpinned` | **yes** | — | |
 | `pin.key` | string | required for the three rooted mechanisms; **refused** for `unpinned` | — | JWS verification key, or a certificate SPKI hash. |
-| `pin.fingerprint` | string | no | absent | The approved canonical card fingerprint, where you already have one. Absent means "capture it at `connect` and let me approve it", which is the normal first registration. |
+| `pin.fingerprint` | string | no | absent | The canonical card fingerprint you expect, where you already have one: the fingerprint an approval must match. It is intent, not an approval: the registration stays pending, and serves nothing, until an operator runs `approve`. Absent means "capture it at `connect` and let me approve it", which is the normal first registration. |
 | `client_identity` | object | **required** when `pin.mechanism: mtls`; optional otherwise; **refused** on an `http://` URL | absent | The certificate Busbar PRESENTS to this endpoint. |
 | `client_identity.cert` | `SecretRef` | yes (within the block) | — | PEM chain, leaf first. |
 | `client_identity.key` | `SecretRef` | yes (within the block) | — | PEM private key (PKCS#8, PKCS#1 or SEC1). **There is deliberately no way to write PEM bytes here** — an inlined private key is a private key in every config dump, every `--validate` output, every admin GET and every version-history row. |

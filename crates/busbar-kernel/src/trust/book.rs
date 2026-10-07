@@ -7,10 +7,14 @@
 //!
 //! * **The policy** is the instance's [`TrustEntry`] map, as [`super::section`] parsed it from the
 //!   plane's declared trust keys. A counterparty the map does not name is refused, never judged.
-//! * **The pin.** A declared fingerprint is the pin from the start. With none, a counterparty is
-//!   NEW until the operator approves it (`POST /api/v1/admin/trust/approve`, [`TrustBook::decide`]),
-//!   which pins the catalogue it last reported: a first sighting pins nothing (ARCHITECT
-//!   2026-10-06), and every sighting before the approval answers [`Sight::New`].
+//! * **The pin.** A counterparty is NEW until the operator approves it (`POST
+//!   /api/v1/admin/trust/approve`, [`TrustBook::decide`]), which pins the catalogue it last
+//!   reported: a first sighting pins nothing (ARCHITECT 2026-10-06). With no declared fingerprint,
+//!   every sighting before the approval answers [`Sight::New`]. A declared fingerprint is the
+//!   operator's INTENT, not an observation (coordinator ruling 2026-10-07, OWNER 2026-09-28): it is
+//!   what sightings are judged against, so another hash drifts, but it approves nothing. The
+//!   counterparty stays pending, refused by the Approve step and listed NEW, until the operator
+//!   approves it.
 //! * **Drift.** A hash other than the pin answers [`Sight::Drifted`] once and demotes the
 //!   counterparty; every sighting after that answers [`Sight::Quarantined`] until the pin is seen
 //!   again. That clean sighting clears the demotion, unless the declared recovery backoff since the
@@ -77,8 +81,12 @@ pub enum Unjudged {
 /// One counterparty's state.
 #[derive(Debug, Clone, Default)]
 struct Subject {
-    /// The approved catalogue hash: the declared fingerprint, or the one the operator approved.
+    /// The catalogue hash sightings are judged against: the declared fingerprint, or the one the
+    /// operator approved.
     pinned: Option<String>,
+    /// The pin is a declared fingerprint the operator has not approved: intent, not an approval.
+    /// The Approve step refuses the counterparty until [`TrustBook::decide`] approves it.
+    pending: bool,
     /// The catalogue hash the last sighting reported.
     last_seen: Option<String>,
     quarantined: bool,
@@ -126,8 +134,10 @@ pub enum Distrust {
 
 impl Subject {
     fn declared(entry: &TrustEntry) -> Self {
+        let pinned = declared_pin(entry);
         Self {
-            pinned: declared_pin(entry),
+            pending: pinned.is_some(),
+            pinned,
             ..Self::default()
         }
     }
@@ -159,7 +169,7 @@ impl Subject {
             } else {
                 KeyState::Quarantined
             }
-        } else if self.pinned.is_none() || self.revoked {
+        } else if self.pinned.is_none() || self.revoked || self.pending {
             KeyState::New
         } else if self.confirmed {
             KeyState::Same
@@ -302,7 +312,7 @@ impl TrustBook {
     /// Admit (or re-admit) `instance` with its parsed trust entries. `demoted` are the durable
     /// demotions to replay, `(counterparty, recorded at, ms)`; one for a counterparty the entries do
     /// not name is ignored. On a re-admit a counterparty keeps its state unless its declared pin
-    /// changed, which is the operator's re-approval and starts it afresh.
+    /// changed, which starts it afresh: pending again until the operator approves it.
     pub fn admit<'a>(
         &self,
         instance: &Arc<str>,
@@ -495,6 +505,7 @@ impl TrustBook {
                     .ok_or(Undecided::NothingSighted)?;
                 s.confirmed = s.pinned.as_ref() == Some(&at) && s.confirmed;
                 s.pinned = Some(at.clone());
+                s.pending = false;
                 s.quarantined = false;
                 s.revoked = false;
                 s.ledger.last_drift_ms = None;
@@ -559,6 +570,7 @@ impl TrustBook {
                 }
                 (None, Some(at)) => {
                     s.pinned = Some(at.clone());
+                    s.pending = false;
                     s.revoked = false;
                 }
                 (None, None) => s.revoked = true,
@@ -636,8 +648,9 @@ impl TrustBook {
     }
 
     /// THE KERNEL'S APPROVE over the trust facts a plane stated for a unit of `instance`: the
-    /// counterparty is declared, sighted (pinned) and not quarantined, and a named item is
-    /// approved there at exactly the digest it is offered at.
+    /// counterparty is declared, approved by the operator (a declared fingerprint alone approves
+    /// nothing) and not quarantined, and a named item is approved there at exactly the digest it is
+    /// offered at.
     ///
     /// # Errors
     ///
@@ -664,8 +677,10 @@ impl TrustBook {
             return Err(Distrust::NotApproved);
         }
         let Some(item) = facts.item else {
-            // Item-less: the counterparty's catalogue must be approved (pinned).
+            // Item-less: the counterparty's catalogue must be approved. A declared fingerprint
+            // still pending is intent, not an approval, and is refused like an unapproved sighting.
             return match (&s.pinned, &s.last_seen) {
+                (Some(_), _) if s.pending => Err(Distrust::NotApproved),
                 (Some(_), _) => Ok(()),
                 (None, None) => Err(Distrust::Unsighted),
                 (None, Some(_)) => Err(Distrust::NotApproved),
