@@ -393,8 +393,8 @@ impl PlaneDriver {
     }
 
     /// Hand this plane a unit's refusal as a piece first (`abi::plane::TAIL_REFUSED_PIECE`, which
-    /// its tail states: an unavailable credential, or no member left after the unit's request went
-    /// out): the [`PIECE_REFUSED`] piece on the unit's own ticket, whose record writes are written,
+    /// its tail states: an unavailable credential, or no member left, whether or not the unit's request
+    /// went out): the [`PIECE_REFUSED`] piece on the unit's own ticket, whose record writes are written,
     /// before `refusal` renders it.
     ///
     /// [`PIECE_REFUSED`]: busbar_contract::abi::plane::PIECE_REFUSED
