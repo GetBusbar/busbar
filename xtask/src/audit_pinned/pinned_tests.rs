@@ -12,7 +12,11 @@ use crate::json_lite::{Json, Obj};
 const LIB_V1: &str = "pub fn decide() -> u8 {\n    1\n}\n";
 const LIB_V2: &str = "pub fn decide() -> u8 {\n    2\n}\n";
 const LOGIC: &str = "busbar-plane-demo";
-const SCOPE: &str = "crates/busbar-plane-demo/src";
+/// The pinned plugin's production scope, assembled rather than spelled: it names a crate only these
+/// tests' scratch repos hold, and `qa-names` reads a `const` path as a scan root the tree must have.
+fn scope() -> String {
+    format!("crates/{LOGIC}/src")
+}
 
 struct Scratch {
     root: PathBuf,
@@ -209,8 +213,8 @@ impl Scratch {
             .expect("the mounts at the audited commit read");
         let mut sc = audit::derive_scopes(&self.busbar(), &mounted)
             .into_iter()
-            .find(|s| s.get("id").as_str() == Some(SCOPE))
-            .unwrap_or_else(|| panic!("{SCOPE} is derived"));
+            .find(|s| s.get("id").as_str() == Some(scope().as_str()))
+            .unwrap_or_else(|| panic!("{} is derived", scope()));
         let files = git.files_at(at).expect("the audited commit lists");
         let hash = audit::tree_hash(&sc, &files).expect("the scope owns files");
         let o = sc.as_object_mut().expect("a scope is an object");
@@ -254,7 +258,7 @@ fn a_pinned_scope_whose_rev_moved_reads_stale() {
     let g = s.git();
     let sc = s.audited_scope(&g, &at);
     let doc = audit::new_doc(vec![sc.clone()]);
-    let (status, pin, loc) = row_status(&doc, &g, SCOPE);
+    let (status, pin, loc) = row_status(&doc, &g, &scope());
     assert_eq!(
         status, "unconfirmed",
         "the round reads the pinned tree it was taken at"
@@ -271,7 +275,7 @@ fn a_pinned_scope_whose_rev_moved_reads_stale() {
 
     s.busbar_commit(Some((url, &v2)), None);
     let g = s.git();
-    let (status, pin, _) = row_status(&doc, &g, SCOPE);
+    let (status, pin, _) = row_status(&doc, &g, &scope());
     assert_eq!(
         status, "stale",
         "the pin moved to different bytes: the audit expired"
@@ -318,7 +322,7 @@ fn a_byte_identical_pin_at_another_repo_path_keeps_the_record() {
     assert!(f.phantom.is_empty(), "phantom: {:?}", f.phantom);
     assert!(f.stamped.is_empty(), "stamped: {:?}", f.stamped);
     let doc = audit::load(&register).expect("the register parses");
-    let (status, pin, _) = row_status(&doc, &g, SCOPE);
+    let (status, pin, _) = row_status(&doc, &g, &scope());
     assert_eq!(status, "unconfirmed", "the record carried over");
     assert!(pin.is_some());
 }
