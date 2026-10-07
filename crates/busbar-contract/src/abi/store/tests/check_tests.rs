@@ -1047,3 +1047,69 @@ fn append_batch_epoch_on_failed_is_fault() {
         Err(WRITTEN_ON_FAILED)
     );
 }
+
+// ── a distinct fault field per arm (SPEC §11.13 "a distinct message per arm") ────────────────
+
+/// The field a reserve answer's FAULT names.
+fn reserve_field(
+    outcome: Outcome,
+    out: &ReserveOut,
+    cells: &[UnitCell],
+    grants: &[CellGrant],
+) -> &'static str {
+    check_reserve(outcome, out, cells, 2, grants)
+        .expect_err("the answer is built to be a FAULT")
+        .field
+}
+
+#[test]
+fn reserve_ready_with_a_reason_names_its_own_field() {
+    let out = reserve_out(1, RESERVE_EXHAUSTED, RESERVE_NO_FAILED_CELL);
+    let field = reserve_field(R, &out, &[cell(1)], &[grant(1)]);
+    assert_eq!(field, "store.reserve.ready_reason");
+}
+
+#[test]
+fn reserve_short_answer_with_a_reason_names_its_own_field() {
+    let out = ReserveOut {
+        reason: RESERVE_EXHAUSTED,
+        ..short_reserve(3)
+    };
+    let field = reserve_field(F, &out, &[cell(1), cell(1), cell(1)], &[]);
+    assert_eq!(field, "store.reserve.short_reason");
+}
+
+#[test]
+fn reserve_failed_with_a_reason_out_of_range_names_its_own_field() {
+    let out = reserve_out(0, RESERVE_NO_CAP + 1, RESERVE_NO_FAILED_CELL);
+    let field = reserve_field(F, &out, &[cell(1)], &[]);
+    assert_eq!(field, "store.reserve.failed_reason");
+}
+
+#[test]
+fn reserve_arms_that_share_a_rule_do_not_share_a_field() {
+    let ready = reserve_field(
+        R,
+        &reserve_out(1, RESERVE_EXHAUSTED, RESERVE_NO_FAILED_CELL),
+        &[cell(1)],
+        &[grant(1)],
+    );
+    let short = reserve_field(
+        F,
+        &ReserveOut {
+            reason: RESERVE_EXHAUSTED,
+            ..short_reserve(3)
+        },
+        &[cell(1), cell(1), cell(1)],
+        &[],
+    );
+    let failed = reserve_field(
+        F,
+        &reserve_out(0, RESERVE_NO_CAP + 1, RESERVE_NO_FAILED_CELL),
+        &[cell(1)],
+        &[],
+    );
+    assert_ne!(ready, short);
+    assert_ne!(ready, failed);
+    assert_ne!(short, failed);
+}
