@@ -15831,14 +15831,18 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
 /// linked test planes by its `fallback` flag, never by name.
 fn free_open_units() -> serde_json::Value {
     crate::ensure_seam();
-    busbar_kernel::plane::registry::plane_decls()
+    let fallback = busbar_kernel::plane::registry::plane_decls()
         .iter()
         .find(|decl| decl.fallback)
-        .expect("the linked test planes carry the fallback plane")
+        .expect("the linked test planes carry the fallback plane");
+    // A fee unit is no priced class (SEAM-L(m)): a door plane declares its fee units among its
+    // billable classes, and a card may not name them.
+    fallback
         .billable_classes
         .iter()
         .map(|c| c.class)
         .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+        .filter(|c| !fallback.fee_units.contains(c))
         .map(|c| (c.to_string(), serde_json::json!(0)))
         .collect::<serde_json::Map<_, _>>()
         .into()
