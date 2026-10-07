@@ -1097,9 +1097,9 @@ fn an_opening_states_the_engines_answer_should_the_store_refuse_its_writes() {
         Opened::Hop { unrecorded, .. } => unrecorded,
         Opened::Refused(reply) => panic!("refused: {reply:?}"),
     };
-    let mut desk = desk();
+    let mut first = desk();
     let fresh = unrecorded(opened(
-        &mut desk,
+        &mut first,
         &send(json!({ "message": { "messageId": "m" } })),
         ALICE,
     ))
