@@ -175,28 +175,48 @@ fn the_kernel_s_verdict_reads_as_the_admission_s_state() {
     }
 }
 
+/// The skills `card` presents, as `approve` holds them.
+fn skills_of(card: &Value) -> BTreeMap<String, String> {
+    card::skill_digests(card).expect("digestible")
+}
+
+/// A FIRST `connect` previews a card nobody approved: every skill it presents is `added` (predev
+/// `busbar-kernel/src/trust/mod.rs:319`, a skill with no standing approval, read by
+/// `busbar-a2a/src/a2a/verbs.rs:229` off `Approval::registered()`), corrected from this cell's
+/// lane-written empty lists under the standing rule.
 #[test]
 fn the_connect_view_is_a_preview_of_the_card_under_the_key_s_state() {
     let s = seen(&card("plans"));
     let fp = card::fingerprint(&card("plans")).unwrap();
     assert_eq!(
-        connect_view("planner", State::Pending, &s),
+        connect_view("planner", State::Pending, &s, None),
         format!(
-            r#"{{"name":"planner","state":"pending","pin_mechanism":"jws_issuer_key","fingerprint":"{fp}","pin_changed":false,"added":[],"changed":[],"removed":[],"observed_skills":1,"failure":null}}"#
+            r#"{{"name":"planner","state":"pending","pin_mechanism":"jws_issuer_key","fingerprint":"{fp}","pin_changed":false,"added":["plan"],"changed":[],"removed":[],"observed_skills":1,"failure":null}}"#
         )
     );
-    let preview: Value =
-        serde_json::from_str(&connect_view("planner", State::Approved, &s)).unwrap();
+    let approved = skills_of(&card("plans"));
+    let preview: Value = serde_json::from_str(&connect_view(
+        "planner",
+        State::Approved,
+        &s,
+        Some(&approved),
+    ))
+    .unwrap();
     assert_eq!(
         preview["state"], "pending",
         "a preview never reports approved"
     );
-    let approved: Value =
-        serde_json::from_str(&registration_view("planner", State::Approved, &s)).unwrap();
+    let approved: Value = serde_json::from_str(&registration_view(
+        "planner",
+        State::Approved,
+        &s,
+        Some(&approved),
+    ))
+    .unwrap();
     assert_eq!(approved["state"], "approved");
     assert_eq!(approved["fingerprint"], fp.as_str());
     let quarantined: Value =
-        serde_json::from_str(&connect_view("planner", State::Quarantined, &s)).unwrap();
+        serde_json::from_str(&connect_view("planner", State::Quarantined, &s, None)).unwrap();
     assert_eq!(
         quarantined["pin_changed"], true,
         "the kernel quarantined a moved card"
@@ -205,11 +225,164 @@ fn the_connect_view_is_a_preview_of_the_card_under_the_key_s_state() {
         "planner",
         State::Approved,
         &Sighting::Failed("down".to_string()),
+        None,
     ))
     .unwrap();
     assert_eq!(failed["state"], "error", "a failed contact reads as error");
     assert_eq!(failed["failure"], "down");
     assert_eq!(failed["fingerprint"], Value::Null);
+    assert_eq!(
+        (&failed["added"], &failed["changed"], &failed["removed"]),
+        (&json!([]), &json!([]), &json!([])),
+        "a contact that presented no card has no drift"
+    );
+}
+
+/// Ported from busbar-a2a registry_tests.rs::the_records_trust_answers_are_the_machines_answers_and_not_a_second_opinion
+/// (its drift half; the serving half is the kernel's trust book).
+///
+/// Approved at `d1`, the view reports nothing to work; the same skill sighted at a moved digest is
+/// `changed`, the rug-pull row, with no field anywhere set to say so.
+#[test]
+fn the_records_trust_answers_are_the_machines_answers_and_not_a_second_opinion() {
+    let seen_at = |skills: &[(&str, &str)]| {
+        Sighting::Seen(Observation {
+            pin: CardPin::Rooted {
+                mechanism: PinMechanism::JwsIssuerKey,
+                key: "MCowBQYDK2VwAyEAKEY".to_string(),
+                fingerprint: "sha256/CARD".to_string(),
+            },
+            skills: skills
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        })
+    };
+    let lists = |view: String| {
+        let v: Value = serde_json::from_str(&view).unwrap();
+        (
+            v["added"].clone(),
+            v["changed"].clone(),
+            v["removed"].clone(),
+        )
+    };
+    let sighted = seen_at(&[("plan", "d1")]);
+    let approved = sighted.seen().map(|o| o.skills.clone());
+    assert_eq!(
+        lists(registration_view(
+            "planner",
+            State::Approved,
+            &sighted,
+            approved.as_ref()
+        )),
+        (json!([]), json!([]), json!([])),
+        "an approval adopts exactly the catalogue it saw"
+    );
+    let moved = seen_at(&[("plan", "MOVED")]);
+    assert_eq!(
+        lists(connect_view(
+            "planner",
+            State::Quarantined,
+            &moved,
+            approved.as_ref()
+        )),
+        (json!([]), json!(["plan"]), json!([])),
+    );
+}
+
+/// Ported from busbar-a2a verbs_tests.rs::connect_reports_what_moved_when_an_approved_card_has_changed.
+///
+/// RE-CONNECTING an approved registration whose card has MOVED reports the drift, so the operator
+/// sees what changed instead of being asked to re-approve a blank.
+#[test]
+fn connect_reports_what_moved_when_an_approved_card_has_changed() {
+    let original = card("makes plans");
+    let changed = card("makes plans AND exfiltrates them");
+    let approved = skills_of(&original);
+    let view: Value = serde_json::from_str(&connect_view(
+        "planner",
+        State::Quarantined,
+        &seen(&changed),
+        Some(&approved),
+    ))
+    .unwrap();
+    assert_eq!(view["pin_changed"], true, "the card fingerprint moved");
+    assert_eq!(
+        view["changed"],
+        json!(["plan"]),
+        "and the skill's digest with it"
+    );
+    assert_eq!(view["state"], "quarantined");
+}
+
+/// Ported from busbar-a2a verbs_tests.rs::connect_never_reports_approved_even_when_the_card_matches_a_locked_pin.
+///
+/// EVEN AN ALREADY-APPROVED registration previews as `pending`, and it correctly reports no drift
+/// against what is approved.
+#[test]
+fn connect_never_reports_approved_even_when_the_card_matches_a_locked_pin() {
+    let raw = card("makes plans");
+    let approved = skills_of(&raw);
+    let view: Value = serde_json::from_str(&connect_view(
+        "planner",
+        State::Approved,
+        &seen(&raw),
+        Some(&approved),
+    ))
+    .unwrap();
+    assert_eq!(view["state"], "pending");
+    assert_eq!(
+        (
+            &view["pin_changed"],
+            &view["added"],
+            &view["changed"],
+            &view["removed"]
+        ),
+        (&json!(false), &json!([]), &json!([]), &json!([])),
+    );
+}
+
+/// Each axis in the served engine's order (predev `busbar-kernel/src/trust/mod.rs:310-327`): a
+/// skill offered and never approved is `added`, one approved and no longer offered `removed`, each
+/// list in skill-id order; a key the kernel holds no approval for (`pending`) approved nothing,
+/// whatever skills the plane last held for it.
+#[test]
+fn the_drift_lists_are_the_sighted_skills_against_the_approved_ones() {
+    let offered = json!({
+        "name": "planner",
+        "skills": [
+            {"id": "write", "name": "Write", "description": "w"},
+            {"id": "plan", "name": "Plan", "description": "p"},
+            {"id": "audit", "name": "Audit", "description": "a"},
+        ],
+    });
+    let approved: BTreeMap<String, String> = skills_of(&offered)
+        .into_iter()
+        .filter(|(id, _)| id == "plan")
+        .chain([
+            ("scout".to_string(), "sha256/S".to_string()),
+            ("index".to_string(), "sha256/I".to_string()),
+        ])
+        .collect();
+    let view: Value = serde_json::from_str(&connect_view(
+        "planner",
+        State::Quarantined,
+        &seen(&offered),
+        Some(&approved),
+    ))
+    .unwrap();
+    assert_eq!(view["added"], json!(["audit", "write"]));
+    assert_eq!(view["changed"], json!([]));
+    assert_eq!(view["removed"], json!(["index", "scout"]));
+    let pending: Value = serde_json::from_str(&connect_view(
+        "planner",
+        State::Pending,
+        &seen(&offered),
+        Some(&approved),
+    ))
+    .unwrap();
+    assert_eq!(pending["added"], json!(["audit", "plan", "write"]));
+    assert_eq!(pending["removed"], json!([]));
 }
 
 #[test]
@@ -224,7 +397,8 @@ fn an_unpinned_registration_presents_no_fingerprint_to_sight() {
         )
         .unwrap(),
     );
-    let view: Value = serde_json::from_str(&connect_view("a", State::Pending, &unpinned)).unwrap();
+    let view: Value =
+        serde_json::from_str(&connect_view("a", State::Pending, &unpinned, None)).unwrap();
     assert_eq!(view["state"], "pending");
     assert_eq!(view["fingerprint"], Value::Null);
     assert_eq!(view["pin_mechanism"], "unpinned");

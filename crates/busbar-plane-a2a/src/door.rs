@@ -646,9 +646,16 @@ pub fn dealt_section(settings: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 /// With a readable `public_url` the plane is admitted: it states its audience and its
 /// protected-resource metadata document, and it claims its routes. Without one it claims nothing,
 /// as the engine does today: a plane with no public base has no audience a token could name.
+///
+/// A section that registers no agent (`fronts` false: an `agents:` section carrying only its
+/// reserved section-level keys) states no route at all: no claim, no audience, no metadata
+/// document, and not busbar's public push callback. Those keys are defaults FOR agents, and the
+/// served engine mounted nothing for an empty set (predev `busbar-a2a/src/a2a/plane.rs:231-233`,
+/// coordinator ruling Q1(b), 2026-10-07); the kernel still loads the plane, its section being
+/// present (LAW 7). Its trust verbs stay stated, and answer every name `404`: none is registered.
 #[must_use]
-pub fn snapshot_spec(public_url: Option<&str>) -> SnapshotSpec {
-    let admitted = public_url.and_then(|p| {
+pub fn snapshot_spec(public_url: Option<&str>, fronts: bool) -> SnapshotSpec {
+    let admitted = public_url.filter(|_| fronts).and_then(|p| {
         Some((
             crate::a2a::public::absolute(p, crate::MOUNT_PATH)?,
             crate::a2a::public::absolute(p, crate::METADATA_PATH)?,
@@ -660,10 +667,15 @@ pub fn snapshot_spec(public_url: Option<&str>) -> SnapshotSpec {
     };
     SnapshotSpec {
         claims,
+        // The public push callback is the last admin route, so dropping it leaves every trust
+        // verb at its index in [`ADMIN_VERBS`], which `serve` is handed.
         admin_routes: ADMIN_ROUTES
             .iter()
             .zip(ADMIN_VERBS)
             .zip(ADMIN_AUDIT_VERBS)
+            .filter(|((r, _), _)| {
+                fronts || r.flags & busbar_contract::abi::plane::ROUTE_PUBLIC == 0
+            })
             .map(|((r, (verb, target)), audit)| {
                 AdminRouteSpec::new(verb, target, r.flags).audited(audit)
             })

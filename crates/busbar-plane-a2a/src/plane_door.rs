@@ -663,7 +663,7 @@ slot!(
             trust: Keyed::new(),
         };
         plane.published(generation);
-        let spec = door::snapshot_spec(plane.public_url.as_deref());
+        let spec = door::snapshot_spec(plane.public_url.as_deref(), !cfg.agents.is_empty());
         out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, cfg);
         instance.open(plane);
         Outcome::Ready
@@ -681,7 +681,7 @@ slot!(
             Ok(cfg) => cfg,
             Err(refusal) => return out.fail(refusal),
         };
-        let spec = door::snapshot_spec(plane.public_url.as_deref());
+        let spec = door::snapshot_spec(plane.public_url.as_deref(), !cfg.agents.is_empty());
         let generation = input.get().generation;
         // THE CARDS A KEPT REGISTRATION HOLDS are held under the new generation too: the apply
         // keeps the operator's approval (it is the kernel's trust book's, ARCHITECT
@@ -690,6 +690,7 @@ slot!(
         // (b), coordinator 2026-10-07). A registration the apply changed holds none until it is
         // looked at again.
         let (before, held_at) = (plane.generations.current(), plane.newest());
+        let mut approvals = std::collections::BTreeMap::new();
         for (name, def) in &cfg.agents {
             let kept = before
                 .as_ref()
@@ -698,12 +699,27 @@ slot!(
             if let Some(card) = plane.cards.at(name, held_at).filter(|_| kept) {
                 plane.cards.hold(name, generation, (*card).clone());
             }
+            // The skills it was approved at go with the kept approval, for the trust view's drift.
+            if let Some(approved) = plane.trust.get(name).and_then(|s| s.approved).filter(|_| kept)
+            {
+                approvals.insert(name.clone(), approved);
+            }
         }
         out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, cfg);
         plane.published(generation);
         // EVERY REGISTRATION STARTS AGAIN at the fail-closed floor, as the engine rebuilt each one
-        // on a config apply (`A2aPlane::from_config_carrying`): nothing approved, nothing sighted.
-        plane.trust.with_all(std::collections::BTreeMap::clear);
+        // on a config apply (`A2aPlane::from_config_carrying`): nothing sighted. A kept
+        // registration keeps the skills its kept approval was made at.
+        plane.trust.with_all(|m| {
+            m.clear();
+            for (name, approved) in approvals {
+                let standing = crate::trust::Standing {
+                    approved: Some(approved),
+                    ..Default::default()
+                };
+                m.insert(name, standing);
+            }
+        });
         Outcome::Ready
     }
 );
@@ -2856,7 +2872,9 @@ fn verify_on_call(
         ticket: reach.ticket,
         base: pass.issued,
     };
-    let (looked, issued) = match look(&at, member, def, hop.verifying.take()) {
+    let parked = hop.verifying.take();
+    let held = (&plane.flights, plane.host.as_ref(), reach.ticket);
+    let (looked, issued) = match looking(held, || look(&at, member, def, parked)) {
         Ok(done) => done,
         Err(parked) => {
             hop.verifying = Some(parked);
@@ -2879,6 +2897,35 @@ fn verify_on_call(
         }
     }
     Poll::Ready(serving)
+}
+
+/// THE LOOK OF A UNIT HOLDING ITS AGENT'S FLIGHT (`held`: the flights, the host that wakes, the
+/// unit's ticket), run as `look`. A panic in it is never caught here: it unwinds out of `on_piece`,
+/// which the SDK's boundary answers FAULT and the kernel ends the unit on as `PlanePanic`
+/// (`busbar-kernel/src/plane_driver/route.rs`), so the unit is refused and no verdict is recorded
+/// (predev `ingress_tests.rs::a_panicking_reverify_reraises_and_latches_unreachable_never_swallowed`:
+/// a panicking reverify re-raised and was never folded into a verdict). On its way out it releases
+/// the flight it held, landing nothing, and wakes every unit that waited on it to look for itself,
+/// as a cancelled unit's look does: the kernel sends a faulted unit no `cancel`, and a flight left
+/// held by it would wedge every later unit for the agent behind a look that never lands.
+fn looking<T>(held: (&Flights, Option<&Host>, Ticket), look: impl FnOnce() -> T) -> T {
+    /// Dropped only by an unwinding look: a look that returns forgets it.
+    struct Unwinding<'p>(&'p Flights, Option<&'p Host>, Ticket);
+    impl Drop for Unwinding<'_> {
+        fn drop(&mut self) {
+            let woken = self.0.abandon(self.2);
+            if let Some(host) = self.1 {
+                for waiter in woken {
+                    host.wake(waiter);
+                }
+            }
+        }
+    }
+    let (flights, host, ticket) = held;
+    let unwinding = Unwinding(flights, host, ticket);
+    let looked = look();
+    std::mem::forget(unwinding);
+    looked
 }
 
 /// ONE AGENT'S LOOK IN FLIGHT (the engine's `VerifyGate` flight): how many looks have landed, the
@@ -3078,6 +3125,7 @@ slot!(
                 &name,
                 state_now(plane),
                 &looked.sighting,
+                standing.approved.as_ref(),
             );
             standing.sighting = looked.sighting;
             plane.trust.insert(name, standing);
@@ -3102,10 +3150,14 @@ slot!(
         if let Some(card) = looked.card {
             plane.cards.hold(&name, plane.newest(), card);
         }
+        // THE SKILLS APPROVED, held for the trust view's drift lists (ruling Q2): the card this
+        // approval adopted, which `agrees` matched to the fingerprint the operator named.
+        standing.approved = looked.sighting.seen().map(|seen| seen.skills.clone());
         let view = crate::trust::registration_view(
             &name,
             state_now(plane),
             &looked.sighting,
+            standing.approved.as_ref(),
         );
         standing.sighting = looked.sighting;
         plane.trust.insert(name, standing);
