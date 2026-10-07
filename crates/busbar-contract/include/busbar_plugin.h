@@ -507,10 +507,12 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_FIELDS UINT16_C(16) /* [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers), */
 #define BB_TRANSPORT_PIECE_CONTINUED UINT16_C(32) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier */
 #define BB_TRANSPORT_PIECE_TEXT UINT16_C(64) /* [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire */
+#define BB_TRANSPORT_PIECE_WRITABLE UINT16_C(256) /* [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
 #define BB_TRANSPORT_YIELD_ENDED UINT32_C(1) /* [`FramerYield::flags`]: no frame follows on this connection. */
 #define BB_TRANSPORT_YIELD_MORE UINT32_C(2) /* [`FramerYield::flags`]: a buffer filled; call the same op again once drained. */
 #define BB_TRANSPORT_YIELD_HAS_DEADLINE UINT32_C(4) /* [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then. */
+#define BB_TRANSPORT_YIELD_STREAM_FULL UINT32_C(8) /* [`FramerYield::flags`], on `emit` only: the bytes were taken and the stream's queue is at its */
 #define BB_TRANSPORT_METHOD_GET UINT32_C(1) /* `GET`. */
 #define BB_TRANSPORT_METHOD_HEAD UINT32_C(2) /* `HEAD`. */
 #define BB_TRANSPORT_METHOD_POST UINT32_C(4) /* `POST`. */
