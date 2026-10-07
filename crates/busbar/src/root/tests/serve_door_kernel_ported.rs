@@ -230,7 +230,6 @@ async fn the_callers_per_connection_fields_never_reach_the_far_end() {
 /// (its nominated field): a field the caller's `connection` field nominates is per-connection too
 /// and never reaches the far end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: the door's arrival drops the caller's `connection` field (NEVER_KEPT) before the plane and the far end see the head, so a field it nominates is forwarded; the legacy engine (owner rule 2026-10-02, not in 1.5.5) dropped it (root/contract change)"]
 async fn a_field_the_callers_connection_nominates_never_reaches_the_far_end() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-ported-nominated";

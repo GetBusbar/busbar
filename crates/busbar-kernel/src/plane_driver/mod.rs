@@ -481,6 +481,33 @@ impl PlaneDriver {
 /// A head's fields, name and value, in order.
 pub type HeadFields = Vec<(Vec<u8>, Vec<u8>)>;
 
+/// THE CALLER'S HEAD AS IT CROSSES TO THE PLANE: its fields in order, but the contract's
+/// `NEVER_KEPT` ones (the credentials, and the caller's connection's own fields, `connection` among
+/// them) and every field the caller's `connection` field nominates, which is per-connection like it
+/// (RFC 9110 section 7.6.1). They go where `connection` goes: once it is struck, nothing downstream
+/// can tell a field it nominated from any other, and that field would be forwarded to a far end.
+#[must_use]
+pub fn caller_head(headers: &axum::http::HeaderMap) -> HeadFields {
+    use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
+    let nominated: Vec<&[u8]> = headers
+        .get_all(axum::http::header::CONNECTION)
+        .iter()
+        .map(axum::http::HeaderValue::as_bytes)
+        .collect();
+    headers
+        .iter()
+        .filter(|(n, _)| {
+            let n = n.as_str();
+            !NEVER_KEPT.contains(&n)
+                && !busbar_contract::abi::transport::fields::hop_by_hop(
+                    n,
+                    nominated.iter().copied(),
+                )
+        })
+        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect()
+}
+
 /// What arrived: the claim it matched and the caller's request, as the kernel keeps it.
 #[derive(Debug, Clone)]
 pub struct Arrival {
