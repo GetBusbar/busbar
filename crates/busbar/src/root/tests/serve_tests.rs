@@ -820,12 +820,14 @@ mod tools_door {
         assert!(rig.all_ended(), "the refused unit ended");
     }
 
-    /// FAILOVER-REROUTE: a pool of two registrations walked by the kernel's ONE walk. The primary's
-    /// transient failure fails the call over to its twin before the caller hears anything (the pool
-    /// names the tool repeatable). One failure benches nothing (1.5.5): the primary stays in the
-    /// pool's rotation, call after call, until its failures cross the trip threshold — every call
-    /// still answered by the twin — and its cell, then open, keeps every NEXT call off it
-    /// entirely: the walk admits the twin first, and the primary is never touched again.
+    /// FAILOVER-REROUTE: a pool of two registrations walked by the kernel's ONE walk, in the pool's
+    /// DECLARED ORDER (the root states each member's tier as its index; predev's MCP engine walked
+    /// `failover::InOrder`, busbar-mcp `reroute.rs:292`). The primary's transient failure fails the
+    /// call over to its twin before the caller hears anything (the pool names the tool repeatable).
+    /// One failure benches nothing (1.5.5): the primary is tried FIRST on every call, until its
+    /// failures cross the trip threshold — every call still answered by the twin — and its cell,
+    /// then open, keeps every NEXT call off it entirely: the walk admits the twin first, and the
+    /// primary is never touched again.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_pool_member_reroutes_the_next_call_to_its_twin_through_the_walk() {
         let _one = PUBLISHING.lock().await;
@@ -838,10 +840,10 @@ mod tools_door {
             "fs:\n  url: \"http://127.0.0.1:{bad}/rpc\"\n  {PIN}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n\
              fs2:\n  url: \"http://127.0.0.1:{good}/rpc\"\n  {PIN}\n  \
-             tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n\
-             pools:\n  twins: {{ members: [fs, fs2], repeatable: [read_file], member_granted: true }}\n"
+             tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n"
         ))
         .expect("a section");
+        let tools = pooled(tools, "twins", &["fs", "fs2"], &["read_file"]);
         let rig = rig_tools(instance, bad, tools, &|app| app);
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
@@ -859,15 +861,13 @@ mod tools_door {
             "and the call failed over to its twin"
         );
 
-        // Below the trip the primary is not benched: the rotation offers it again, and each of its
-        // failures is still answered by the twin, until its failures trip its cell.
+        // Below the trip the primary is not benched and is the FIRST member of every call (declared
+        // order, never a rotation): each call tries it, and each of its failures is still answered by
+        // the twin, until its failures trip its cell. RED under a rotation: every other call would
+        // skip the primary.
         let mut failed = 1;
         let mut sent = 1;
         while failed < trip_calls() {
-            assert!(
-                sent < 4 * trip_calls(),
-                "the primary left the rotation after {failed} failure(s), below the trip"
-            );
             let (status, answer) =
                 call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
             sent += 1;
@@ -876,7 +876,13 @@ mod tools_door {
                 answer["result"]["content"][0]["text"], "from the server",
                 "call {sent}: {answer}"
             );
-            failed += calls(&mut bad_heard);
+            assert_eq!(
+                calls(&mut bad_heard),
+                1,
+                "call {sent}: the primary is tried first on every call below the trip, after \
+                 {failed} failure(s)"
+            );
+            failed += 1;
             assert_eq!(calls(&mut good_heard), 1, "call {sent}: the twin served it");
         }
 
@@ -902,6 +908,78 @@ mod tools_door {
             u64::try_from(sent).expect("a count"),
             "every call, one unit each"
         );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// The `tools:` section `section` with the pool `name` of `members` (in that order, `repeatable`
+    /// naming the tools it may repeat) handed to it AS THE ROOT HANDS a named-definition section its
+    /// unified pools (`with_pools`: each member `{name, tier}`, its tier its declared index).
+    fn pooled(
+        section: serde_yaml::Value,
+        name: &str,
+        members: &[&str],
+        repeatable: &[&str],
+    ) -> serde_yaml::Value {
+        let key = surface("section");
+        let pools: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> =
+            [(
+                name.to_string(),
+                busbar_kernel::failover::CandidatePoolCfg {
+                    members: members.iter().map(|m| (*m).to_string()).collect(),
+                    repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
+                },
+            )]
+            .into();
+        let mut sections = crate::root::serve::with_pools([(key, section)].into(), &[(key, pools)]);
+        sections.remove(key).expect("the section is handed back")
+    }
+
+    /// A POOL IS WALKED IN ITS DECLARED ORDER: with both members healthy, every call is served by
+    /// the PRIMARY (the first member the pool names) and the twin is never reached. Predev's MCP
+    /// engine walked a tool pool `failover::InOrder` (busbar-mcp `reroute.rs:292`:
+    /// `busbar_kernel::failover::InOrder::new(&s.tried, self.members.len())`); on the door the root
+    /// states each member's tier as its declared index and the kernel's walk takes the lowest tier
+    /// that can take the request. RED: the weighted rotation the walk falls back to with no tier
+    /// sends every other call to the twin.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pool_serves_every_call_from_its_primary_while_it_is_healthy() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-in-order";
+        let _published = Published(instance);
+        let (primary, mut primary_heard) = tool_server().await;
+        let (twin, mut twin_heard) = tool_server().await;
+        let d = tool_digest();
+        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "fs:\n  url: \"http://127.0.0.1:{primary}/rpc\"\n  {PIN}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n\
+             fs2:\n  url: \"http://127.0.0.1:{twin}/rpc\"\n  {PIN}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n"
+        ))
+        .expect("a section");
+        let tools = pooled(tools, "twins", &["fs", "fs2"], &["read_file"]);
+        let rig = rig_tools(instance, primary, tools, &|app| app);
+        let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
+        let sent = 4;
+        for n in 1..=sent {
+            let (status, answer) =
+                call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
+            assert_eq!(status, StatusCode::OK, "call {n}: {answer}");
+            assert_eq!(
+                answer["result"]["content"][0]["text"], "from the server",
+                "call {n}: {answer}"
+            );
+            assert_eq!(
+                calls(&mut primary_heard),
+                1,
+                "call {n}: the primary, first in the pool's declared order, served it"
+            );
+            assert_eq!(
+                calls(&mut twin_heard),
+                0,
+                "call {n}: the twin is not reached while the primary is healthy"
+            );
+        }
+        assert_eq!(rig.admitted(), sent, "every call, one unit each");
         assert!(rig.all_ended(), "every unit ended");
     }
 
