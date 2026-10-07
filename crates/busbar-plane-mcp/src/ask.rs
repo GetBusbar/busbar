@@ -336,6 +336,11 @@ pub enum AskRefusal {
         /// The capability.
         capability: String,
     },
+    /// The host's clock could not be read: the state's window can be neither stamped nor judged.
+    ClockUnavailable {
+        /// The capability.
+        capability: String,
+    },
 }
 
 impl AskRefusal {
@@ -349,6 +354,7 @@ impl AskRefusal {
             AskRefusal::Unsolicited { .. } => "ask_unsolicited_state",
             AskRefusal::Unanswered { .. } => "ask_unanswered",
             AskRefusal::NoSealer { .. } => "ask_no_sealer",
+            AskRefusal::ClockUnavailable { .. } => "ask_clock_unavailable",
         }
     }
 
@@ -414,6 +420,13 @@ impl std::fmt::Display for AskRefusal {
                 f,
                 "the retry of `{capability}` answered none of the requested inputs (expected \
                  `{missing}`)."
+            ),
+            AskRefusal::ClockUnavailable { capability } => write!(
+                f,
+                "`{capability}` is configured to request input, but the host's clock could not be \
+                 read, so the window of the `requestState` the protocol requires can be neither \
+                 stamped nor checked. The call is refused rather than served with a state judged \
+                 at no time."
             ),
             AskRefusal::NoSealer { capability } => write!(
                 f,

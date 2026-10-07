@@ -2065,13 +2065,17 @@ pub fn decide_ask(
     if !site.rounds.is_empty() && seal.as_deref_mut().is_some_and(|s| s.sign(b"").is_none()) {
         seal = None;
     }
-    // No clock, no sealer: a state's window cannot be judged (or stamped) at a time that was not
-    // read, so a host whose clock fails refuses as one with no signing key does.
-    let now = seal.as_deref_mut().and_then(DoorSeal::now);
-    if now.is_none() {
-        seal = None;
-    }
-    let now = now.unwrap_or_default();
+    // A state's window is stamped and judged at a time the host's clock gave: a clock that fails
+    // refuses (never the epoch), in words that name the clock and not the signing key.
+    let now = match seal.as_deref_mut().map(DoorSeal::now) {
+        Some(None) if !site.rounds.is_empty() || retry.state.is_some() => {
+            return AskDecision::Refuse(crate::ask::AskRefusal::ClockUnavailable {
+                capability: site.capability.to_string(),
+            });
+        }
+        Some(now) => now.unwrap_or_default(),
+        None => 0,
+    };
     let bind = crate::ask::Bind {
         principal: site.principal,
         method: site.method,
@@ -2248,7 +2252,7 @@ pub const CLOCK_UNAVAILABLE: &str = "the host's clock could not be read, so the 
 ///
 /// # Errors
 ///
-/// The refusal for a state that cannot be sealed: no clock reading, or no signature.
+/// `Unavailable` naming the clock when it cannot be read, `NoSealer` when the state cannot be signed.
 #[doc(hidden)]
 pub fn seal_relayed<'b>(
     seal: &mut DoorSeal<'_>,
@@ -2261,7 +2265,12 @@ pub fn seal_relayed<'b>(
     let no_sealer = || crate::call::AskRefusal::NoSealer {
         server: server.to_string(),
     };
-    let now = seal.now().ok_or_else(no_sealer)?;
+    let now = seal
+        .now()
+        .ok_or_else(|| crate::call::AskRefusal::Unavailable {
+            server: server.to_string(),
+            reason: CLOCK_UNAVAILABLE.to_string(),
+        })?;
     crate::ask::relay_state_for(bind(now), digest, leg, ttl_secs, seal).ok_or_else(no_sealer)
 }
 

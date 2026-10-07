@@ -220,10 +220,16 @@ fn busbars_own_state_is_refused_when_the_clock_fails() {
     // A clock that fails (whether served and failing, or not served) judges nothing: refused.
     for table in [&FAILS, &UNSERVED] {
         let d = decide_on(table, &spent, &rounds, &retry);
-        assert!(matches!(d, AskDecision::Refuse(_)), "refused, got {d:?}");
+        assert!(
+            matches!(d, AskDecision::Refuse(AskRefusal::ClockUnavailable { .. })),
+            "refused for the clock, got {d:?}"
+        );
         // And no state is minted at the epoch.
         let d = decide_on(table, &spent, &rounds, &caps());
-        assert!(matches!(d, AskDecision::Refuse(_)), "no mint, got {d:?}");
+        assert!(
+            matches!(d, AskDecision::Refuse(AskRefusal::ClockUnavailable { .. })),
+            "no mint, got {d:?}"
+        );
     }
 }
 
@@ -260,7 +266,10 @@ fn a_relayed_state_is_refused_when_the_clock_fails() {
     );
     for table in [&FAILS, &UNSERVED] {
         let d = decide_on(table, &spent, &none, &retry);
-        assert!(matches!(d, AskDecision::Refuse(_)), "refused, got {d:?}");
+        assert!(
+            matches!(d, AskDecision::Refuse(AskRefusal::ClockUnavailable { .. })),
+            "refused for the clock, got {d:?}"
+        );
     }
 }
 
