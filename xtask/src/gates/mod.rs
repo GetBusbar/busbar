@@ -2077,11 +2077,15 @@ pub fn execute_strict(gate: &dyn Gate, cx: &Ctx) -> Verdict {
 /// The single exception is DECLARED, NAMED and stale-checked: [`Gate::informational`] rows are
 /// PASS by construction, so they are held to being exercised rather than to going red, and a
 /// declaration that no longer names an owed row is itself refused.
+///
+/// VERDICT AND COVERAGE ONLY (ARCHITECT 2026-10-07, ruling (a)). This is the judge every test that
+/// runs a gate's self-test uses, and a test runs inside `cargo test` / nextest, where the cores are
+/// shared with every other test process: a timing budget read there is a flake by construction
+/// (Law 8: an instrument must not report by noise). The work-unit BUDGET is judged in exactly one
+/// place, `cargo xtask selftest` ([`verify_selftest`]), where scheduling is controlled and an
+/// over-budget contended reading is re-taken serially.
 pub fn verify_report(gate: &dyn Gate, report: &Report<'_>) -> Result<(), Vec<String>> {
-    let reading = budget_verdict(selftest_budget(gate.name()), report.units(), 1, || {
-        report.units()
-    });
-    verify_report_with(gate, report, &reading)
+    judge_report(gate, report, None)
 }
 
 /// THE BUDGET'S VERDICT ON ONE BATTERY, AND AN OVER-BUDGET CONTENDED READING RE-TAKEN SERIALLY
@@ -2144,19 +2148,79 @@ pub fn budget_verdict(
     }
 }
 
+/// THE BUDGET'S READING OF `report`, `gate`'s self-test as just taken over `cx`, with an
+/// over-budget contended battery re-taken once at `--jobs 1` ([`budget_verdict`]). Read by
+/// `cargo xtask selftest` alone ([`verify_selftest`]); no test judges the budget.
+pub fn budget_reading(gate: &dyn Gate, report: &Report<'_>, cx: &Ctx) -> BudgetVerdict {
+    budget_reading_within(gate, report, cx, selftest_budget(gate.name()))
+}
+
+/// [`budget_reading`] against `budget` rather than the table's.
+pub fn budget_reading_within(
+    gate: &dyn Gate,
+    report: &Report<'_>,
+    cx: &Ctx,
+    budget: f64,
+) -> BudgetVerdict {
+    let jobs = report.jobs();
+    let reading = budget_verdict(budget, report.units(), jobs, || {
+        println!(
+            "  ...over budget at --jobs {jobs} ({:.0} work units): re-taking the battery at \
+             --jobs 1 to read it as the budget was measured",
+            report.units()
+        );
+        set_selftest_jobs(1);
+        let started = std::time::Instant::now();
+        let watchdog = Watchdog::arm(
+            gate.name(),
+            gate.owed(),
+            selftest_ceiling_from_env(gate.name()),
+        );
+        let serial = gate.selftest(cx);
+        let _ = serial.cases();
+        drop(watchdog);
+        set_selftest_jobs(jobs);
+        println!(
+            "  ...the serial re-take took {:.1}s",
+            started.elapsed().as_secs_f64()
+        );
+        serial.units()
+    });
+    if let Some(line) = reading.retake_line() {
+        println!("  budget: {line}");
+    }
+    reading
+}
+
+/// THE `cargo xtask selftest` JUDGE: [`verify_report`]'s verdict and coverage, AND the work-unit
+/// budget read through [`budget_reading`], so an over-budget contended reading is re-taken serially
+/// before it counts. The one place the budget is judged.
+pub fn verify_selftest(gate: &dyn Gate, report: &Report<'_>, cx: &Ctx) -> Result<(), Vec<String>> {
+    verify_report_with(gate, report, &budget_reading(gate, report, cx))
+}
+
 /// [`verify_report`] with the budget judged by `reading` ([`budget_verdict`]).
 pub fn verify_report_with(
     gate: &dyn Gate,
     report: &Report<'_>,
     reading: &BudgetVerdict,
 ) -> Result<(), Vec<String>> {
+    judge_report(gate, report, Some(reading))
+}
+
+/// The verdict, the coverage and, with a `reading`, the budget.
+fn judge_report(
+    gate: &dyn Gate,
+    report: &Report<'_>,
+    reading: Option<&BudgetVerdict>,
+) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
 
     // THE BUDGET. See [`SELFTEST_BUDGETS`]: an unmeasured selftest is one that grows until the
     // runner kills it, and a killed job is neither green nor red.
-    let budget = reading.budget;
-    let spent = reading.spent();
-    if reading.over() {
+    if let Some(reading) = reading.filter(|r| r.over()) {
+        let budget = reading.budget;
+        let spent = reading.spent();
         let slowest = report
             .slowest()
             .map(|(n, t)| format!(" Slowest case: `{n}`, {:.1}s.", t.as_secs_f64()))
