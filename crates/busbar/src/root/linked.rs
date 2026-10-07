@@ -470,16 +470,52 @@ pub fn plane_rows(
 /// case the door serves the plane and the legacy row keeps only the axes the door does not register
 /// (its other tables: the stdio serve, the CLI help, the one-shot runner, the protocols, the
 /// diagnostics), which this fold never touches. Order is kept.
+///
+/// The ENGINE is not the plane axis: a legacy row that is the fallback plane carries the routing
+/// tables the core's own readers walk (the `/metrics` lane gauges, `/v1/models`, the provider
+/// merge), so a door taking its key takes them over ([`with_the_engine_of`]) rather than leaving the
+/// node with none.
 #[must_use]
 pub fn doors_own_their_plane_keys(
     rows: Vec<&'static PlaneDecl>,
     doors: &[&'static PlaneDecl],
 ) -> Vec<&'static PlaneDecl> {
-    rows.into_iter()
-        .filter(|row| {
-            doors.iter().any(|d| std::ptr::eq(*d, *row)) || !doors.iter().any(|d| d.key == row.key)
+    let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
+    let legacy_of = |key: &str| rows.iter().copied().find(|r| r.key == key && !is_door(r));
+    rows.iter()
+        .copied()
+        .filter(|row| is_door(row) || !doors.iter().any(|d| d.key == row.key))
+        .map(|row| match legacy_of(row.key) {
+            Some(legacy) if is_door(row) => with_the_engine_of(row, legacy),
+            _ => row,
         })
         .collect()
+}
+
+/// THE DOOR ROW, CARRYING THE ENGINE ITS KEY'S LEGACY ROW HELD: the fallback flag and the hooks the
+/// kernel builds and reads the fallback plane's routing tables through (`build_runtime`, `viewer`,
+/// `resolve_provider`, `on_swap`), each the legacy row's; every other word stays the door's. A legacy
+/// row holding none of them leaves the door's row as it is.
+fn with_the_engine_of(door: &'static PlaneDecl, legacy: &PlaneDecl) -> &'static PlaneDecl {
+    let holds_an_engine = legacy.fallback
+        || legacy.build_runtime.is_some()
+        || legacy.viewer.is_some()
+        || legacy.resolve_provider.is_some()
+        || legacy.on_swap.is_some();
+    if !holds_an_engine {
+        return door;
+    }
+    Box::leak(Box::new(PlaneDecl {
+        declaration: PlaneDeclaration {
+            fallback: legacy.fallback,
+            ..door.declaration
+        },
+        build_runtime: legacy.build_runtime,
+        viewer: legacy.viewer,
+        resolve_provider: legacy.resolve_provider,
+        on_swap: legacy.on_swap,
+        ..*door
+    }))
 }
 
 /// TWO DOORS ON ONE AXIS: a plane key registered by two door rows (each `(row name, key)`) is a

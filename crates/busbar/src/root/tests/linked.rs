@@ -1146,6 +1146,62 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     );
 }
 
+/// SEAM-L(s), THE ENGINE RIDES THE KEY: a door taking the key of the legacy row that is the fallback
+/// plane takes over that row's engine (the fallback flag, the runtime it builds and the view the
+/// core's own readers walk) and keeps every other word of its own. RED: the fold dropped the legacy
+/// row whole, so with a linked llm door the node had no fallback runtime and `/metrics` lost its lane
+/// gauges (`metrics_scrape_boot_window` under `--features llm-on-driver`).
+#[test]
+fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
+    let base = &native("seam-l-engine")[0];
+    let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+        declaration: PlaneDeclaration {
+            fallback: true,
+            ..base.declaration
+        },
+        build_runtime: Some(|_, _| Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),
+        viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
+        ..*base
+    }));
+    let door: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+        declaration: PlaneDeclaration {
+            config_section: "seam-l-door-section",
+            ..base.declaration
+        },
+        ..*base
+    }));
+    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]);
+    assert_eq!(rows.len(), 1, "one row serves the key");
+    let row = rows[0];
+    assert!(!std::ptr::eq(row, legacy), "the door serves the plane");
+    assert_eq!(
+        row.config_section, "seam-l-door-section",
+        "the door's own words stay"
+    );
+    assert!(
+        row.fallback,
+        "the fallback plane is still the fallback plane"
+    );
+    assert!(
+        row.build_runtime.is_some() && row.viewer.is_some(),
+        "the engine's runtime and view ride the key"
+    );
+    let folded = merged_boot_plane_decls(&rows, &[]);
+    let kept = folded
+        .iter()
+        .find(|d| d.key == "seam-l-engine")
+        .expect("the key is registered");
+    assert!(
+        kept.fallback && kept.viewer.is_some(),
+        "the boot fold keeps it"
+    );
+    // A legacy row with no engine leaves the door's row untouched (the shared-key case above).
+    let plain = &native("seam-l-plain")[0];
+    let plain_door = &native("seam-l-plain")[0];
+    let rows = doors_own_their_plane_keys(vec![plain, plain_door], &[plain_door]);
+    assert!(std::ptr::eq(rows[0], plain_door), "nothing to carry");
+}
+
 /// SEAM-L(s): a key two door rows both register on the same axis is a boot refusal naming both.
 #[test]
 fn a_key_two_doors_register_refuses_the_boot_naming_both() {
