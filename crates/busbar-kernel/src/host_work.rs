@@ -466,10 +466,13 @@ impl WorkBook {
         Ok((before, w.clone()))
     }
 
-    /// Put `work` back as it stood before a settle the store refused.
+    /// Put `work`'s settle back as it stood before a settle the store refused (its state, its
+    /// settle stamp and its record; a unit that resumed it meanwhile stays bound).
     pub fn restore(&self, handle: u64, work: Work) {
         if let Some(w) = self.lock().handles.get_mut(&handle) {
-            *w = work;
+            w.live = work.live;
+            w.settled_ms = work.settled_ms;
+            w.record = work.record;
         }
     }
 

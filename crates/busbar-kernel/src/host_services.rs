@@ -411,6 +411,30 @@ impl Drop for OwedClaim {
     }
 }
 
+/// A settle the book has marked and the store has not yet taken. Dropped unwritten (the pool
+/// refused its job and dropped it unrun, or the store refused the write) it puts the handle back as
+/// it stood, so the book never says settled while the store says live.
+struct Unwritten {
+    book: Arc<WorkBook>,
+    handle: u64,
+    before: Option<Work>,
+}
+
+impl Unwritten {
+    /// The store took the settle: the book's mark stands.
+    fn written(mut self) {
+        self.before = None;
+    }
+}
+
+impl Drop for Unwritten {
+    fn drop(&mut self) {
+        if let Some(before) = self.before.take() {
+            self.book.restore(self.handle, before);
+        }
+    }
+}
+
 /// Run `job` on `pool` and answer what it returns through `later`; FAILED if the pool refuses it.
 fn submit(pool: &dyn Offload, later: Later, job: impl FnOnce() -> Stored + Send + 'static) -> Ran {
     let owed = Owed(Some(later));
@@ -2068,14 +2092,20 @@ impl HostServices for KernelServices {
             self.work.restore(handle, before);
             return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
         };
-        let book = Arc::clone(&self.work);
+        // DURABLE BEFORE ANSWERED, AND THE BOOK AGREES WITH THE STORE: a settle the pool drops
+        // unrun, or the store refuses, puts the handle back live.
+        let unwritten = Unwritten {
+            book: Arc::clone(&self.work),
+            handle,
+            before: Some(before),
+        };
         let rows = Arc::clone(&records.reads);
         let key = work_key(&caller.instance, &settled.reference);
         submit(pool, later, move || {
             if rows.record_put(WORK_SCHEMA, &key, &row).is_err() {
-                book.restore(handle, before);
                 return failed(STORE_FAILED);
             }
+            unwritten.written();
             Stored::ready(0)
         })
     }
