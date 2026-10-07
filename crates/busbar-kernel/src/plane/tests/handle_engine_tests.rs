@@ -689,8 +689,12 @@ fn the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first() {
     assert_eq!(before, engine.len(), "a read changed the working set");
 }
 
+/// AN IDLE ACTIVE HANDLE IS NEVER EVICTED, AND NEVER SETTLED BY THE SWEEP (`BUSBAR-1.6.0.md` THE
+/// DESIGN §1, "Admission bounds live work; nothing evicts it"; ARCHITECT 2026-10-07 K2-H5 (ii)). A
+/// second submit far past any idle age claims the sweep, and the handle the plane never settled is
+/// still ACTIVE after it: only the plane ends live work, and live work is bounded at admission.
 #[test]
-fn an_idle_active_handle_is_abandoned_by_the_next_sweep() {
+fn an_idle_active_handle_stays_active_through_the_next_sweep() {
     let engine = DurableHandleEngine::new();
     submit_demo(
         &engine,
@@ -703,7 +707,7 @@ fn an_idle_active_handle_is_abandoned_by_the_next_sweep() {
         },
         0,
     );
-    // A later submit at now past the abandon ceiling transitions the idle handle to terminal.
+    // A second submit far past any idle age claims the sweep; the idle handle is untouched by it.
     submit_demo(
         &engine,
         DemoRow {
@@ -715,9 +719,84 @@ fn an_idle_active_handle_is_abandoned_by_the_next_sweep() {
         },
         1000,
     );
+    let idle = engine
+        .meta("idle")
+        .expect("an active handle is never evicted");
     assert!(
-        engine.meta("idle").unwrap().terminal,
-        "the idle handle was settled by the abandon rule"
+        !idle.terminal,
+        "the sweep settled an idle ACTIVE handle; only the plane may end live work"
+    );
+    assert_eq!(idle.updated_at, 0, "the sweep moved an idle ACTIVE handle");
+}
+
+/// A SWEEP NEVER TRANSITIONS AN ACTIVE HANDLE, HOWEVER LONG IT IDLES. The sweep touches only
+/// terminal handles: whatever the idle age at which a submit claims it, an ACTIVE handle's
+/// meta is unchanged, its durable row is unchanged and its chain gains no event — no transition
+/// was written for it, so none was asked of the plane. The submits also carry the working set past
+/// `max_retained`, and the idle handle is not the one that pays for it.
+#[test]
+fn a_sweep_never_transitions_an_active_handle_however_long_it_idles() {
+    let store = Arc::new(MemStore::default());
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(Arc::clone(&store) as Arc<dyn PlaneStore>);
+    let live = |id: &str, at: u64| DemoRow {
+        id: id.to_string(),
+        owner: "o".into(),
+        updated_at: at,
+        terminal: false,
+        cursor: 0,
+    };
+    submit_demo(&engine, live("idle", 0), 0);
+    let meta_before = engine.meta("idle").expect("resident");
+    let rows_of = |store: &MemStore| -> Vec<PlaneRecord> {
+        store
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.id == "idle")
+            .cloned()
+            .collect()
+    };
+    let events_of = |store: &MemStore| -> Vec<PlaneRecord> {
+        store
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.id == "idle" || r.parent.as_deref() == Some("idle"))
+            .cloned()
+            .collect()
+    };
+    let rows_before = rows_of(&store);
+    let events_before = events_of(&store);
+
+    // Each submit lands in a new second, so each one claims and runs the sweep.
+    for (i, now) in [101u64, 1_000, 86_401, 1_000_000, 1 << 40]
+        .into_iter()
+        .enumerate()
+    {
+        submit_demo(&engine, live(&format!("next{i}"), now), now);
+        assert_eq!(
+            engine.meta("idle").as_ref(),
+            Some(&meta_before),
+            "the sweep at now={now} moved or dropped an ACTIVE handle"
+        );
+        assert_eq!(
+            rows_of(&store),
+            rows_before,
+            "the sweep at now={now} wrote the ACTIVE handle's row"
+        );
+        assert_eq!(
+            events_of(&store),
+            events_before,
+            "the sweep at now={now} appended to the ACTIVE handle's chain"
+        );
+    }
+    assert_eq!(
+        engine.len(),
+        6,
+        "every handle is active, so nothing was evicted though the set is past `max_retained` (4)"
     );
 }
 
