@@ -1116,7 +1116,17 @@ pub use busbar_kernel::proxy::auth_failure_status_and_kind;
 /// envelope. Using the shared builder means the auth path, the forward path, and the route/fallback
 /// path CANNOT diverge on error shape or headers — each protocol writer keeps its own error `kind`,
 /// status, and any header attach it needs consistent with each other, all outside this crate.
-fn unauthorized_response(app: &crate::state::App, path: &str) -> Response {
+fn unauthorized_response(
+    app: &crate::state::App,
+    path: &str,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+) -> Response {
+    // A DOOR ROUTE'S 401 (spec Part 3 section 12, "Refusals"): the kernel decided it, exactly as on
+    // any data-plane path; the route's plane renders it, unit-less, in the route's refusal dialect
+    // for the request target. Every other path keeps the residual data plane's envelope.
+    if let Some((refuse, target)) = door {
+        return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
+    }
     let ingress = ingress_for_path(app, path);
     // The dialect names the PROTOCOL whose bad-credential status, `kind` and copy a client expects.
     // A mounted, audience-bound plane names its own wire format, which has no registered protocol
@@ -1520,8 +1530,8 @@ async fn external_admin_module(
 /// The 503 an admin chain that could not be judged answers, in the frozen v1 envelope
 /// (`{error:{code:"unavailable"}}`).
 fn admin_unavailable_response(why: AdminUnavailable) -> Response {
-    let e = crate::admin::v1::contract::AdminError::Unavailable(why.message().to_string());
-    crate::admin::v1::json::err_json(&e)
+    let e = crate::admin::gate::ApiError::Unavailable(why.message().to_string());
+    crate::admin::gate::err_json(&e)
 }
 
 /// The ADMIN-SCOPE CEILING for an identifying module (`max_admin_scope:`): the operator credential
@@ -1721,7 +1731,7 @@ fn admin_scope_for(
 /// most-frequent error must carry the SAME `{error:{code,message}}` shape tooling branches on;
 /// the data plane keeps protocol-native 401 shaping (`unauthorized_response`).
 fn admin_unauthorized_response() -> Response {
-    let e = crate::admin::v1::contract::AdminError::Unauthorized;
+    let e = crate::admin::gate::ApiError::Unauthorized;
     let body = serde_json::json!({
         "error": { "code": e.code(), "message": e.message() }
     })
@@ -1754,7 +1764,7 @@ fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
 /// A 429 in the frozen admin error envelope — the per-principal mutation budget is spent. Carries
 /// `Retry-After: 60` (the fixed window length): a compliant client backs off without guessing.
 fn rate_limited_response() -> Response {
-    let e = crate::admin::v1::contract::AdminError::RateLimited;
+    let e = crate::admin::gate::ApiError::RateLimited;
     let body = serde_json::json!({
         "error": { "code": e.code(), "message": e.message() }
     })
@@ -1781,6 +1791,7 @@ fn rate_limited_response() -> Response {
 fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     path: &str,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
 ) -> Response {
     // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
     // mounted plane is tapped as that plane's dialect rather than as whichever residual-plane
@@ -1811,7 +1822,7 @@ fn unauthorized_with_completion_taps(
         busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
             &app.tap_hooks_response,
             &shape,
-            crate::hooks::wire::HookStageProjection {
+            busbar_contract::hook_wire::HookStageProjection {
                 at: "response",
                 model: None,
                 attempt_number: None,
@@ -1828,7 +1839,7 @@ fn unauthorized_with_completion_taps(
             &host,
         );
     }
-    unauthorized_response(app, path)
+    unauthorized_response(app, path, door)
 }
 
 /// Axum middleware layer that validates auth before routing.
@@ -1852,6 +1863,18 @@ pub(crate) async fn auth_middleware(
     // downstream handler time is never attributed to auth. No-op unless `BUSBAR_PROFILE` is set.
     let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
+    // THE DOOR ROUTE THIS REQUEST MATCHES, resolved FIRST (spec Part 3 section 12: route, then
+    // authenticate): a `401` this middleware decides on it is rendered by the route's plane. `None`
+    // on every residual data-plane path, which keeps its envelope byte for byte.
+    // `(the route's plane rendering, the request target it renders for)`.
+    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
+        core_routes.door_refusal(&path, req.method()).map(|refuse| {
+            let target = req
+                .uri()
+                .path_and_query()
+                .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
+            (refuse.clone(), target)
+        });
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
     // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The
@@ -1938,7 +1961,7 @@ pub(crate) async fn auth_middleware(
                          did not verify.",
                         None,
                     ),
-                    None => unauthorized_response(&app, &path),
+                    None => unauthorized_response(&app, &path, door.as_ref()),
                 });
             }
         }
@@ -2002,7 +2025,7 @@ pub(crate) async fn auth_middleware(
             // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
             AdminDoor::Denied => return Err(admin_unauthorized_response()),
         };
-        let required = crate::admin::v1::contract::required_scope(req.method(), &path);
+        let required = crate::admin::gate::required_scope(req.method(), &path);
         if !scope.allows(required) {
             // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
             // an operator wants to see) — but at most once per (principal, window). The durable
@@ -2051,7 +2074,7 @@ pub(crate) async fn auth_middleware(
             // predicate, so it can be enumerated and cross-checked against
             // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
             let rel = path
-                .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
+                .strip_prefix(crate::admin::gate::ADMIN_PREFIX)
                 .unwrap_or(&path);
             let class = crate::ratelimit::classify_mutation(rel);
             let actor = principal
@@ -2167,7 +2190,7 @@ pub(crate) async fn auth_middleware(
             && req.headers().contains_key(X_AMZ_CONTENT_SHA256)
             && req.headers().contains_key(X_AMZ_DATE);
         if !structurally_valid {
-            return Err(unauthorized_response(&app, &path));
+            return Err(unauthorized_response(&app, &path, door.as_ref()));
         }
         // BODY INTEGRITY: a SigV4 signature only binds the payload if we re-hash the actual bytes
         // and confirm they match the signed `x-amz-content-sha256` (which the signature covers).
@@ -2189,7 +2212,7 @@ pub(crate) async fn auth_middleware(
         let Ok(body_bytes) =
             axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
         else {
-            return Err(unauthorized_response(&app, &path));
+            return Err(unauthorized_response(&app, &path, door.as_ref()));
         };
         req = Request::from_parts(parts, Body::from(body_bytes.clone()));
         // Governance is always constructed (RAM by default); if somehow absent there is no store
@@ -2205,9 +2228,9 @@ pub(crate) async fn auth_middleware(
                 // signed-headers mismatch, bad signature, OR a body whose bytes don't match the
                 // signed x-amz-content-sha256) maps to the identical native auth error — the
                 // distinction is logged inside the verifier, never surfaced, so there is no oracle.
-                Err(()) => return Err(unauthorized_response(&app, &path)),
+                Err(()) => return Err(unauthorized_response(&app, &path, door.as_ref())),
             },
-            None => return Err(unauthorized_response(&app, &path)),
+            None => return Err(unauthorized_response(&app, &path, door.as_ref())),
         }
     } else {
         // Not `run_chain_cached` directly: a plugin chain does blocking I/O on a Tokio worker. The
@@ -2285,7 +2308,11 @@ pub(crate) async fn auth_middleware(
                     None,
                 ));
             }
-            return Err(unauthorized_with_completion_taps(&app, &path));
+            return Err(unauthorized_with_completion_taps(
+                &app,
+                &path,
+                door.as_ref(),
+            ));
         }
         Err(IdentityRefusal::NoGrant) => {
             if let Some(adm) = admission.as_ref() {
@@ -2296,7 +2323,11 @@ pub(crate) async fn auth_middleware(
                     None,
                 ));
             }
-            return Err(unauthorized_with_completion_taps(&app, &path));
+            return Err(unauthorized_with_completion_taps(
+                &app,
+                &path,
+                door.as_ref(),
+            ));
         }
     }
 

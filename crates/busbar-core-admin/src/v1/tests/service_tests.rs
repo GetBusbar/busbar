@@ -266,7 +266,7 @@ fn build_with_hook_enforces_grant_immutability() {
 
 // ── plugin admin surface (tarball world) ────────────────────────────────────────────────────
 
-use busbar_plugin_loader::sign::{sign, Manifest, SigningKey};
+use busbar_kernel::plugin_admission::sign::{sign, Manifest, SigningKey};
 
 /// A unique temp plugins directory for one test (isolated so parallel tests never collide).
 fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
@@ -302,7 +302,7 @@ fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Man
         kind: "store".into(),
         version: version.into(),
         publisher: publisher.into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
+        abi_version: *busbar_kernel::plugin_admission::supported_abi("store")
             .iter()
             .max()
             .expect("store abi"),
@@ -324,7 +324,7 @@ fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Man
 /// Package a signed plugin tarball in memory.
 fn signed_tarball(key: &SigningKey, m: Manifest, lib: &[u8]) -> Vec<u8> {
     let m = sign(key, m, lib);
-    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
+    busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
 /// Build a service over an App whose plugins dir + `plugins.*` posture are the given ones.
@@ -368,7 +368,7 @@ fn inspect_previews_a_trusted_candidate_without_installing() {
     let dir = tmp_plugins_dir("inspect-ok");
     let mut m = test_manifest("acme-store-preview", "preview", "acme", "1.0.0");
     m.kind = "secret".into();
-    m.abi_version = *busbar_plugin_loader::supported_abi("secret")
+    m.abi_version = *busbar_kernel::plugin_admission::supported_abi("secret")
         .iter()
         .max()
         .expect("secret abi");
@@ -380,8 +380,9 @@ fn inspect_previews_a_trusted_candidate_without_installing() {
         })
         .to_string(),
     );
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"lib bytes");
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(b"lib bytes");
+    let tarball =
+        busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
 
     let v = svc.inspect_plugin(&tarball).expect("inspect succeeds");
@@ -413,8 +414,9 @@ fn inspect_previews_a_trusted_candidate_without_installing() {
 fn inspect_reports_rejected_trust_rather_than_erroring() {
     let dir = tmp_plugins_dir("inspect-rejected");
     let mut m = test_manifest("acme-store-untrusted", "untrusted", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"lib bytes");
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(b"lib bytes");
+    let tarball =
+        busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
     // STRICT posture: no publishers allowlisted, no allow_unsigned opt-in.
     let svc = svc_with(dir, strict_posture());
 
@@ -443,7 +445,8 @@ fn inspect_rejects_invalid_tarball() {
 fn inspect_rejects_oversized_tarball_before_unpacking() {
     let dir = tmp_plugins_dir("inspect-oversized");
     let svc = svc_with(dir, unsigned_ok_posture());
-    let huge = vec![0u8; (busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES + 1) as usize];
+    let huge =
+        vec![0u8; (busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES + 1) as usize];
     let err = svc.inspect_plugin(&huge).unwrap_err();
     assert!(
         matches!(&err, AdminError::Validation(msg) if msg.contains("byte cap")),
@@ -462,8 +465,9 @@ fn inspect_bounds_pathological_schema_nesting_depth() {
     // A tiny document that nests far past the depth cap: `[[[[...]]]]`.
     let bomb = format!("{}{}", "[".repeat(500), "]".repeat(500));
     m.settings_schema = Some(bomb);
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"lib bytes");
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(b"lib bytes");
+    let tarball =
+        busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
     let svc = svc_with(dir, unsigned_ok_posture());
 
     let v = svc
@@ -540,8 +544,8 @@ fn install_strict_posture_rejects_unsigned() {
     let dir = tmp_plugins_dir("strict");
     let lib = b"\x7fELF junk that would crash if ever dlopened";
     let mut m = test_manifest("acme-store-x", "x", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     let svc = svc_with(dir.clone(), strict_posture());
     let err = svc.install_store_plugin("x.tar.gz", &tarball).unwrap_err();
     assert!(
@@ -592,8 +596,8 @@ pub(crate) fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
     let lib = b"junk lib bytes of a linked plugin";
     let mut m = test_manifest(name, alias, "acme", "1.0.0");
     m.statement = Some(hex::encode(restated(&statement, version)));
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
 /// THE ONE-VERSION RULE AT THE ADMIN INSTALL (ARCHITECT C'), SAME VERSION: uploading a copy of a
@@ -644,8 +648,8 @@ fn install_of_a_linked_plugin_stating_no_version_is_refused() {
     let (canonical, key, version, _) = linked_store();
     let lib = b"junk lib bytes of a linked plugin";
     let mut m = test_manifest(canonical, key, "acme", &version);
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     let err = svc
         .install_store_plugin("copy.tar.gz", &tarball)
         .unwrap_err();
@@ -687,8 +691,8 @@ fn install_catalog_remove_roundtrip() {
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-junk", "junkstore", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
 
     let view = svc
         .install_store_plugin("junk.tar.gz", &tarball)
@@ -736,8 +740,8 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-cache", "cachestore", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     svc.install_store_plugin("cache.tar.gz", &tarball)
         .expect("install");
 
@@ -756,8 +760,8 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
     // invalidation call required.
     let lib2 = b"junk lib bytes two";
     let mut m2 = test_manifest("acme-store-cache-2", "cachestore2", "acme", "1.0.0");
-    m2.sha256 = busbar_plugin_loader::sign::sha256_hex(lib2);
-    let tarball2 = busbar_plugin_loader::tarball::package(&m2, "lib.so", lib2).unwrap();
+    m2.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib2);
+    let tarball2 = busbar_kernel::plugin_admission::tarball::package(&m2, "lib.so", lib2).unwrap();
     svc.install_store_plugin("cache2.tar.gz", &tarball2)
         .expect("install");
 
@@ -908,8 +912,8 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     let dir = tmp_plugins_dir("single-flight");
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-sf", "sfstore", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("sf.tar.gz"), &tarball).unwrap();
 
     let app = crate::new_test_app()
@@ -1169,8 +1173,8 @@ fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
     // a rollback (the floor was lowered, but the signature/opt-in gate still fails).
     let lib = b"unsigned prior artifact";
     let mut m = test_manifest("acme-store-x", "x", "acme", "1.4.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("unsigned.tar.gz"), &tarball).unwrap();
     let err = svc
         .resolve_plugin_rollback("unsigned.tar.gz", &empty)
@@ -1190,8 +1194,8 @@ fn catalog_does_not_dlopen_an_untrusted_plugin() {
     let svc = svc_with(dir.clone(), strict_posture());
     let lib = b"\x7fELF definitely not a loadable library";
     let mut m = test_manifest("acme-store-evil", "evil", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("evil.tar.gz"), &tarball).unwrap();
 
     let cat = svc.store_plugin_catalog();
@@ -1387,7 +1391,7 @@ async fn list_groups_projects_the_limit_tree() {
     let svc = AdminService::new(app);
 
     let page = svc
-        .list_groups(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
+        .list_groups(0, crate::v1::contract::LIST_LIMIT_DEFAULT)
         .await
         .expect("list ok");
     // BTreeMap order: "team" < "user:bob".
@@ -1444,16 +1448,14 @@ async fn list_groups_is_cursor_paginated() {
         .next_cursor
         .as_deref()
         .expect("more rows remain -> a next_cursor is present");
-    let start2 =
-        busbar_kernel::admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
+    let start2 = crate::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
 
     let p2 = svc.list_groups(start2, 2).await.expect("list ok");
     assert_eq!(p2.items.len(), 2);
     let names: Vec<&str> = p2.items.iter().map(|g| g.name.as_str()).collect();
     assert_eq!(names, vec!["g2", "g3"]);
     let c2 = p2.next_cursor.as_deref().expect("one row remains");
-    let start3 =
-        busbar_kernel::admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
+    let start3 = crate::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
 
     let p3 = svc.list_groups(start3, 2).await.expect("list ok");
     assert_eq!(p3.items.len(), 1, "final page holds the remainder");
@@ -1785,7 +1787,7 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     let find = |window: &str, pool: Option<&str>| {
         view.buckets
             .iter()
-            .find(|b| b.window == window && b.pool.as_deref() == pool)
+            .find(|b| b.window == window && b.scope.as_deref() == pool)
             .unwrap_or_else(|| panic!("bucket ({window}, {pool:?}) missing: {:?}", view.buckets))
     };
 
@@ -1839,7 +1841,7 @@ async fn get_group_usage_unknown_group_not_found() {
 /// same counts). A downstream FinOps consumer's parser keeps working across the upgrade.
 #[test]
 fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
-    use busbar_kernel::admin::v1::contract::UsageBreakdown;
+    use crate::v1::contract::UsageBreakdown;
     let b = UsageBreakdown {
         tokens_input: 100,
         tokens_output: 40,
@@ -1889,7 +1891,7 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     assert!(view
         .buckets
         .iter()
-        .any(|b| b.budget_cap == Some(500) && b.pool.as_deref() == Some("frontier")));
+        .any(|b| b.budget_cap == Some(500) && b.scope.as_deref() == Some("frontier")));
 }
 
 // ---- fleet-wide usage read: store-failure logging ----
@@ -3273,7 +3275,7 @@ mod usage_as_of {
         let err = read_as_of(gov, src, payg, Some(7))
             .await
             .expect_err("a snapshot that does not exist is a refusal");
-        let busbar_kernel::admin::v1::contract::AdminError::Validation(msg) = &err else {
+        let crate::v1::contract::AdminError::Validation(msg) = &err else {
             panic!("expected a client-safe validation refusal, got {err:?}");
         };
         assert!(
@@ -3291,7 +3293,7 @@ mod usage_as_of {
         let err = read_no_source_as_of(gov, payg, Some(0))
             .await
             .expect_err("there is no snapshot of a history that does not exist");
-        let busbar_kernel::admin::v1::contract::AdminError::Validation(msg) = &err else {
+        let crate::v1::contract::AdminError::Validation(msg) = &err else {
             panic!("expected a client-safe validation refusal, got {err:?}");
         };
         assert!(
@@ -3891,7 +3893,7 @@ mod plane_fees_on_admin_usage {
     /// instant — 3 tools calls at 3, 2 pools calls at the flat 5, 4 fee-less plane calls at 0.
     #[test]
     fn the_dated_read_prices_a_planes_row_at_its_own_fee() {
-        use busbar_kernel::admin::v1::contract::UsageBreakdown;
+        use crate::v1::contract::UsageBreakdown;
         let cost = cost();
         let history = busbar_kernel::cost::History::opening(cost.card().clone(), 0);
         let view = history.current();
@@ -4026,7 +4028,7 @@ mod plane_fees_on_admin_usage {
     async fn serve_calls_view(
         cost: fn() -> busbar_kernel::cost::CostModel,
         calls: &[Call],
-    ) -> (i64, busbar_kernel::admin::v1::contract::UsageView) {
+    ) -> (i64, crate::v1::contract::UsageView) {
         use busbar_kernel::cost::{plane_fee_lane, PER_SESSION};
         let gov = gov();
         let app = crate::new_test_app()
@@ -4147,7 +4149,7 @@ mod plane_fees_on_admin_usage {
     /// rest), never a second pricing added on top.
     #[tokio::test]
     async fn a_planes_class_rides_its_usage_row_with_its_count_and_its_cost() {
-        use busbar_kernel::admin::v1::contract::ClassUsage;
+        use crate::v1::contract::ClassUsage;
         let calls = [Call::Tool, Call::Tool, Call::Tool];
         let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &calls).await;
         let want = std::collections::BTreeMap::from([(
@@ -4160,7 +4162,7 @@ mod plane_fees_on_admin_usage {
         let row = view
             .by_model
             .iter()
-            .find(|r| r.provider == FEE_PLANE)
+            .find(|r| r.upstream == FEE_PLANE)
             .expect("the plane's row");
         assert_eq!(row.usage.classes, want, "the row carries its class");
         assert_eq!(view.total.classes, want, "the total sums it");
@@ -4239,7 +4241,7 @@ mod plane_fees_on_admin_usage {
     /// pools row carrying 1,000,000 search units at 3 micro-units and 1 request at the flat 5.
     #[test]
     fn the_dated_read_prices_a_rows_classes_as_the_fallback_does() {
-        use busbar_kernel::admin::v1::contract::UsageBreakdown;
+        use crate::v1::contract::UsageBreakdown;
         use busbar_kernel::cost::PER_SESSION;
         let cost = carded_cost(70_000, 3, 40);
         let history = busbar_kernel::cost::History::opening(cost.card().clone(), 0);
