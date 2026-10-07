@@ -17,19 +17,22 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET, measured at [`FLOOR`] against the real count and raised as the tree grows, never
-//!   lowered to accommodate a scan that stopped finding things.
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 948 on predev 5e672d125d), not a margin
+//!   below it: one file fewer is refused until a reviewed diff re-measures. It is raised as the
+//!   tree grows, never lowered to accommodate a scan that stopped finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
-//!   a tree that shrank; only this catches one crate quietly leaving the scan while 700 other files
-//!   keep the total comfortably above the floor.
+//!   a tree that shrank; only this catches one crate quietly leaving the scan while the other files
+//!   keep the total above the floor.
 
 use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 
-/// The aggregate floor — A RATCHET. Measured at 725 non-test `.rs` files under `crates/` on the
-/// 1.6.0 integration tree; set below that with room for a genuine consolidation, and raised when
-/// the tree grows. Lowering it is how a gate stops reading the repository without saying so, so a
-/// diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 700;
+/// The aggregate floor — A RATCHET. Measured at 948 non-test `.rs` files under `crates/` across 24
+/// crates on predev 5e672d125d, and pinned AT that number (it was 700 against a population of 725,
+/// then left standing while the tree grew, so 248 files could vanish with every row green). A drop
+/// below 948 is refused until a reviewed diff re-measures; the selftest plant removes one file and
+/// fails if the floor sits under the count. Lowering it is how a gate stops reading the repository
+/// without saying so, so a diff that lowers it is the diff to refuse.
+pub const FLOOR: usize = 948;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.
