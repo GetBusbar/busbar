@@ -629,6 +629,24 @@ pub struct Served {
     /// opened on while they run: the process's one node's.
     #[cfg(linked_axis_node)]
     pub post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
+    /// The framer that answers a claim, by its name: what frames a stream that arrived on a claim
+    /// another framer than the data listener's own answers (ARCHITECT 4l). `None` = the process's
+    /// one connector's.
+    pub framers: Option<StreamFramers>,
+}
+
+/// The framer that answers a claim, by its name (`Connector::framer_for`).
+#[derive(Clone)]
+pub struct StreamFramers(pub Arc<FramerFor>);
+
+/// A lookup of the framer that answers a claim, by its name.
+pub type FramerFor =
+    dyn Fn(&str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>> + Send + Sync;
+
+impl std::fmt::Debug for StreamFramers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StreamFramers")
+    }
 }
 
 impl Served {
@@ -2051,6 +2069,68 @@ impl DataRoutes {
             .get(claim as usize)
             .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key.clone();
+        // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
+        // framer that is not the data listener's own; that framer frames this stream alone.
+        let carrier = self.served.planes[plane]
+            .snapshot
+            .claims
+            .get(claim as usize)
+            .map(|c| c.carrier.clone());
+        if let Some((door, carrier)) = carrier.and_then(|c| {
+            serve_framed::stream_framer(&c, DATA_CARRIER, |s| self.framer_for(s)).map(|d| (d, c))
+        }) {
+            let head: Vec<(String, Vec<u8>)> = arrival
+                .fields
+                .iter()
+                .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone()))
+                .collect();
+            let target = String::from_utf8_lossy(&arrival.target).into_owned();
+            let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
+                door, &carrier, &target, &head,
+            ) else {
+                return stated(
+                    (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
+                    Body::empty(),
+                );
+            };
+            let messages = match stream.ingest(&body, true) {
+                Ok(messages) => messages,
+                Err(why) => {
+                    let status = refusal_status(ReasonCode::DecodeFailed);
+                    return match stream.refuse(why.error.as_bytes(), status) {
+                        Ok(block) => serve_framed::whole(status, &block),
+                        Err(_) => stated((status, Vec::new()), Body::empty()),
+                    };
+                }
+            };
+            let arrival = Arrival {
+                body: Arc::from(messages.concat()),
+                ..arrival
+            };
+            let stream: serve_framed::Shared = Arc::new(Mutex::new(Some(stream)));
+            let (inner, reply) = IngressCaller::arriving(body);
+            let (trailers, trailed) = oneshot::channel();
+            let caller = serve_framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
+            let unit = async move {
+                let caller = caller;
+                self.drive(
+                    plane,
+                    app,
+                    (principal, key, credential),
+                    open,
+                    &caller,
+                    arrival,
+                    None,
+                )
+                .await
+            };
+            return reply
+                .with_trailers(trailed)
+                .answer_with(Box::pin(unit), move |rendered| {
+                    serve_framed::refused(&stream, rendered)
+                })
+                .await;
+        }
         let (caller, reply) = IngressCaller::arriving(body);
         let unit = async move {
             let caller = caller;
@@ -2066,6 +2146,18 @@ impl DataRoutes {
             .await
         };
         reply.answer(Box::pin(unit)).await
+    }
+
+    /// The framer that answers the claim `scheme`: the served planes' resolver, else the process's
+    /// one connector's.
+    fn framer_for(
+        &self,
+        scheme: &str,
+    ) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>> {
+        match &self.served.framers {
+            Some(f) => (f.0)(scheme),
+            None => crate::root::connector::the().framer_for(scheme),
+        }
     }
 
     fn frames_lock(
@@ -2171,13 +2263,13 @@ impl DataRoutes {
     /// A NESTED unit (`nesting`) is a child of its parent: it runs one level deeper, its door
     /// accrues against the parent's hold cell, and the node drives it under the parent.
     #[allow(clippy::too_many_arguments)]
-    async fn drive(
+    async fn drive<C: SessionCaller + Stated + Send + Sync>(
         &self,
         plane: usize,
         app: Arc<busbar_kernel::state::App>,
         (principal, key, credential): UnitCaller,
         open: bool,
-        caller: &IngressCaller,
+        caller: &C,
         arrival: Arrival,
         nesting: Option<Nesting>,
     ) -> Option<Rendered> {
@@ -2447,6 +2539,8 @@ type Head = (u32, HeadFields);
 pub struct IngressReply {
     head: oneshot::Receiver<Head>,
     body: mpsc::Receiver<Bytes>,
+    /// The answer's trailers, where a framer renders a close after its body (ARCHITECT 4l).
+    trailers: Option<oneshot::Receiver<axum::http::HeaderMap>>,
 }
 
 impl IngressCaller {
@@ -2472,6 +2566,7 @@ impl IngressCaller {
             IngressReply {
                 head,
                 body: reply_body,
+                trailers: None,
             },
         )
     }
@@ -2480,6 +2575,18 @@ impl IngressCaller {
     #[must_use]
     pub fn stated(&self) -> Option<u32> {
         Some(self.stated.load(std::sync::atomic::Ordering::Acquire)).filter(|s| *s != 0)
+    }
+}
+
+/// A caller side that knows the status its unit stated its head with.
+pub(crate) trait Stated {
+    /// The status, once the unit stated its head.
+    fn stated(&self) -> Option<u32>;
+}
+
+impl Stated for IngressCaller {
+    fn stated(&self) -> Option<u32> {
+        IngressCaller::stated(self)
     }
 }
 
@@ -2526,15 +2633,46 @@ impl IngressReply {
     /// plane fault; a field the wire cannot carry is not sent.
     pub async fn response(self) -> Option<Response> {
         let head = self.head.await.ok()?;
-        Some(stated(head, Body::new(ReplyBody(self.body, None))))
+        Some(stated(
+            head,
+            Body::new(ReplyBody(self.body, None, self.trailers)),
+        ))
+    }
+
+    /// The same reply, its body followed by the trailers `trailers` delivers (a framer's close).
+    #[must_use]
+    pub fn with_trailers(mut self, trailers: oneshot::Receiver<axum::http::HeaderMap>) -> Self {
+        self.trailers = Some(trailers);
+        self
     }
 
     /// THE UNIT, SERVED: `unit` runs here until it states its head, then inside the response's
     /// body as the body is read, so a caller that goes away drops it (the driver's client-drop
     /// path). A unit that ends with no head answers what it rendered (a refusal or failure before
     /// any byte), or the driver's plane-fault status when it rendered nothing.
-    pub async fn answer(self, mut unit: DrivenUnit) -> Response {
-        let IngressReply { mut head, body } = self;
+    pub async fn answer(self, unit: DrivenUnit) -> Response {
+        self.answer_with(unit, |rendered| match rendered {
+            Some(r) => stated((r.status, r.fields), Body::from(r.body)),
+            None => stated(
+                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                Body::empty(),
+            ),
+        })
+        .await
+    }
+
+    /// [`IngressReply::answer`], a unit that ends with no head answered by `unrendered` from what
+    /// it rendered (a framed stream's framer closes it, ARCHITECT 4l).
+    pub async fn answer_with(
+        self,
+        mut unit: DrivenUnit,
+        unrendered: impl FnOnce(Option<Rendered>) -> Response,
+    ) -> Response {
+        let IngressReply {
+            mut head,
+            body,
+            trailers,
+        } = self;
         let first = tokio::select! {
             biased;
             h = &mut head => Ok(h.ok()),
@@ -2549,7 +2687,7 @@ impl IngressReply {
                 let whole = collect(body, unit).await;
                 return stated(unlengthed(h), Body::from(whole));
             }
-            Ok(Some(h)) => return stated(h, Body::new(ReplyBody(body, Some(unit)))),
+            Ok(Some(h)) => return stated(h, Body::new(ReplyBody(body, Some(unit), trailers))),
             Ok(None) => unit.await,
             Err(rendered) => match head.try_recv() {
                 // The unit ended in the poll that stated its head: a whole answer is every piece it
@@ -2562,17 +2700,11 @@ impl IngressReply {
                     }
                     return stated(unlengthed(h), Body::from(whole));
                 }
-                Ok(h) => return stated(h, Body::new(ReplyBody(body, None))),
+                Ok(h) => return stated(h, Body::new(ReplyBody(body, None, trailers))),
                 Err(_) => rendered,
             },
         };
-        match rendered {
-            Some(r) => stated((r.status, r.fields), Body::from(r.body)),
-            None => stated(
-                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
-                Body::empty(),
-            ),
-        }
+        unrendered(rendered)
     }
 }
 
@@ -2657,9 +2789,14 @@ fn stated((status, fields): Head, body: Body) -> Response {
     response
 }
 
-/// The response body: the pieces the unit writes, in order, until its caller side is dropped; and
-/// the unit itself, driven as the body is read, while it runs.
-struct ReplyBody(mpsc::Receiver<Bytes>, Option<DrivenUnit>);
+/// The response body: the pieces the unit writes, in order, until its caller side is dropped; the
+/// unit itself, driven as the body is read, while it runs; and the trailers a framer's close
+/// rendered, after the last piece, where the answer has them.
+struct ReplyBody(
+    mpsc::Receiver<Bytes>,
+    Option<DrivenUnit>,
+    Option<oneshot::Receiver<axum::http::HeaderMap>>,
+);
 
 impl http_body::Body for ReplyBody {
     type Data = Bytes;
@@ -2675,11 +2812,32 @@ impl http_body::Body for ReplyBody {
                 this.1 = None;
             }
         }
-        this.0
-            .poll_recv(cx)
-            .map(|piece| piece.map(|bytes| Ok(http_body::Frame::data(bytes))))
+        match this.0.poll_recv(cx) {
+            std::task::Poll::Ready(Some(bytes)) => {
+                std::task::Poll::Ready(Some(Ok(http_body::Frame::data(bytes))))
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+            std::task::Poll::Ready(None) => {
+                let Some(trailers) = &mut this.2 else {
+                    return std::task::Poll::Ready(None);
+                };
+                match std::future::Future::poll(std::pin::Pin::new(trailers), cx) {
+                    std::task::Poll::Pending => std::task::Poll::Pending,
+                    std::task::Poll::Ready(sent) => {
+                        this.2 = None;
+                        std::task::Poll::Ready(
+                            sent.ok().map(|map| Ok(http_body::Frame::trailers(map))),
+                        )
+                    }
+                }
+            }
+        }
     }
 }
+
+#[cfg(linked_axis_node)]
+#[path = "serve_framed.rs"]
+mod serve_framed;
 
 #[cfg(test)]
 #[path = "tests/serve.rs"]
@@ -2701,3 +2859,7 @@ mod door_tests;
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_money.rs"]
 mod money_tests;
+
+#[cfg(all(test, linked_axis_node))]
+#[path = "tests/serve_framed.rs"]
+mod framed_tests;
