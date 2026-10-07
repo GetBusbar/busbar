@@ -37,8 +37,8 @@ pub struct DeclaredPin {
     /// The operator's out-of-band material, verbatim; `None` when absent or blank.
     pub key: Option<String>,
     /// The fingerprint the operator declared, where the declaration allows one and the operator
-    /// wrote it: the hash sightings are judged against, so another one drifts. Intent, never an
-    /// approval: the counterparty stays pending until the operator approves it.
+    /// wrote it. Intent, never an approval: the counterparty stays pending, and nothing drifts,
+    /// until the operator approves it.
     pub fingerprint: Option<String>,
 }
 

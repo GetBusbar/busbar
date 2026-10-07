@@ -11,11 +11,12 @@
 //!   /api/v1/admin/trust/approve`, [`TrustBook::decide`]), which pins the catalogue it last
 //!   reported: a first sighting pins nothing (ARCHITECT 2026-10-06). With no declared fingerprint,
 //!   every sighting before the approval answers [`Sight::New`]. A declared fingerprint is the
-//!   operator's INTENT, not an observation (coordinator ruling 2026-10-07, OWNER 2026-09-28): it is
-//!   what sightings are judged against, so another hash drifts, but it approves nothing. The
-//!   counterparty stays pending until the operator approves it: a sighting of the declared
-//!   fingerprint answers [`Sight::New`], the Approve step refuses it and every item there, and it
-//!   is listed NEW.
+//!   operator's INTENT, not an observation (coordinator ruling 2026-10-07, OWNER 2026-09-28): it
+//!   approves nothing. The counterparty stays pending until the operator approves it: every
+//!   sighting answers [`Sight::New`], at the declared fingerprint or any other hash, and nothing
+//!   drifts before the approval (coordinator 2026-10-07, #555 round 3); the last verdict is
+//!   [`Sight::New`]; the Approve step refuses it and every item there; and it is listed NEW. A
+//!   demotion replayed for it still holds it quarantined until its pin is seen again.
 //! * **Drift.** A hash other than the pin answers [`Sight::Drifted`] once and demotes the
 //!   counterparty; every sighting after that answers [`Sight::Quarantined`] until the pin is seen
 //!   again. That clean sighting clears the demotion, unless the declared recovery backoff since the
@@ -86,8 +87,8 @@ struct Subject {
     /// operator approved.
     pinned: Option<String>,
     /// The pin is a declared fingerprint the operator has not approved: intent, not an approval.
-    /// Sightings of it answer [`Sight::New`], and the Approve step refuses the counterparty and
-    /// every item there, until [`TrustBook::decide`] approves it.
+    /// Every sighting answers [`Sight::New`] and drifts nothing, and the Approve step refuses the
+    /// counterparty and every item there, until [`TrustBook::decide`] approves it.
     pending: bool,
     /// The catalogue hash the last sighting reported.
     last_seen: Option<String>,
@@ -156,7 +157,7 @@ impl Subject {
     fn verdict(&self) -> Sight {
         if self.quarantined {
             Sight::Quarantined
-        } else if self.pinned.is_none() || self.revoked {
+        } else if self.pinned.is_none() || self.revoked || self.pending {
             Sight::New
         } else {
             Sight::Same
@@ -381,7 +382,14 @@ impl TrustBook {
             // NEW until the operator approves what it reports: a first sighting pins nothing.
             return Ok((Sight::New, Effect::None));
         }
-        if pinned != Some(hash) {
+        let at_pin = pinned == Some(hash);
+        if s.pending && !s.quarantined {
+            // A declared fingerprint never approved: pending whatever is reported, and nothing
+            // drifts before the approval, at the declared fingerprint or any other hash.
+            s.confirmed = at_pin;
+            return Ok((Sight::New, Effect::None));
+        }
+        if !at_pin {
             s.ledger.drift_observations += 1;
             s.ledger.last_drift_ms = Some(now_ms);
             if s.quarantined {
@@ -393,11 +401,7 @@ impl TrustBook {
         if !s.quarantined {
             s.confirmed = true;
             return Ok((
-                if s.revoked || s.pending {
-                    Sight::New
-                } else {
-                    Sight::Same
-                },
+                if s.revoked { Sight::New } else { Sight::Same },
                 Effect::None,
             ));
         }
