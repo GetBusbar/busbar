@@ -84,10 +84,6 @@ busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # authenticate through the auth plugin the composition root links for it, from its own repo, at the
 # SAME pinned rev plugin-loader's both-ways proof drives. Dev-only: the library names no auth plugin.
 busbar-auth-admin-tokens-plugin = { workspace = true }
-# The export axis the named-map tests resolve `module: prometheus` against: the scrape sink LINKED
-# into the test binary, as the composition root links it into the shipped one — from its own repo, at
-# the SAME pinned rev the composition root links.
-busbar-export-prometheus = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 axum = { workspace = true, features = ["http1"] }
 reqwest = { workspace = true, features = ["json"] }
