@@ -1636,26 +1636,6 @@ reason = "ARCHITECT EXT-PILOT design (owner rulings 2026-09-25: one repo per plu
 
 [[dep]]
 from    = "busbar-kernel"
-to      = "busbar-secret-env"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "The composition root links the shipped secret sources on its secret axis ([package.metadata.busbar.linked] secret-env / secret-file, roster def 1); the kernel names neither in production. `kernel -> secret` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row holds a TEST-SUPPORT stand-in edge, not a shipped coupling. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-kernel names busbar-secret-env as `fixture-secret-env`: declared normal, optional in the shipped graph, enabled ONLY by the kernel's `test-support` feature (`dep:fixture-secret-env`) — the stand-in secret axis (`test_support::secrets`) a test build without a root resolves through; no default or shipped feature turns the edge on. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "delete the `fixture-secret-env` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their secret rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-secret-env)."
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-secret-file"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "The composition root links the shipped secret sources on its secret axis ([package.metadata.busbar.linked] secret-env / secret-file, roster def 1); the kernel names neither in production. `kernel -> secret` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row holds a TEST-SUPPORT stand-in edge, not a shipped coupling. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-kernel names busbar-secret-file as `fixture-secret-file`: declared normal, optional in the shipped graph, enabled ONLY by the kernel's `test-support` feature (`dep:fixture-secret-file`) — the stand-in secret axis (`test_support::secrets`) a test build without a root resolves through; no default or shipped feature turns the edge on. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "delete the `fixture-secret-file` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their secret rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-secret-file)."
-
-[[dep]]
-from    = "busbar-kernel"
 to      = "busbar-export-prometheus"
 half    = "test"
 count   = "1"

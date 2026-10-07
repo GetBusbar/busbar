@@ -957,9 +957,11 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
 /// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN, "Plugins" and the plugin ABI; TODO
 /// step 28). `env` and `file` are secret plugins the kernel reaches through the root's
 /// `SecretAxis`, not rows of the cold-kind registry and not a name the resolver matches: the
-/// registry holds no secret row for either, and a resolution's failure text is the plugin's own,
-/// unwrapped (1.5.5's). A dropped-in cold plugin spelling `env` does not take the name: the resolver
-/// asks the linked plugins first, and the cold lane only for a module none of them answers.
+/// registry holds no secret row for either, and a resolution's failure text is the module's own,
+/// unwrapped (here the in-crate secret double's; the shipped source's 1.5.5 words through the root's
+/// axis are `root::linked`'s `the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher`).
+/// A dropped-in cold plugin spelling `env` does not take the name: the resolver asks the linked
+/// plugins first, and the cold lane only for a module none of them answers.
 ///
 /// RED by planting the shortcut back: a registry row answering `env` fails the first assert.
 #[test]
@@ -990,8 +992,7 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
         .expect_err("an unset variable refuses");
     assert_eq!(
         missing,
-        "secret env:BUSBAR_K5B_NO_SUCH_VARIABLE cannot resolve: environment variable \
-         'BUSBAR_K5B_NO_SUCH_VARIABLE' is unset"
+        "secret double (env): variable BUSBAR_K5B_NO_SUCH_VARIABLE is unset"
     );
 
     let dir = tmp_plugin_dir("linked-secret");

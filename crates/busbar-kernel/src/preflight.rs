@@ -144,7 +144,8 @@ pub type HookAxisBuild =
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
-/// shipped secret sources as the secret axis, and the test axis for the exports.
+/// in-crate secret double ([`crate::test_support::secrets`]) as the secret axis, and the test axis
+/// for the exports.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
     stores: &[fixture_store::linked::STORE],

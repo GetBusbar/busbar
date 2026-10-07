@@ -708,8 +708,6 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin-loader",
- "busbar-secret-env",
- "busbar-secret-file",
  "busbar-store-memory",
  "bytes",
  "crc32fast",

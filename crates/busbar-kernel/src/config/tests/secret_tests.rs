@@ -5,8 +5,9 @@
 
 use super::*;
 
-/// The env built-in resolves a set variable, trims trailing newlines in the string form, and
-/// fails closed on unset / empty values.
+/// The env module resolves a set variable, the string form trims trailing newlines, and an unset /
+/// empty value is fail-closed, the module's refusal passed through (the in-crate secret double's
+/// words; the shipped source's own are proven at the root, `root/tests/linked_secret_sources.rs`).
 #[test]
 fn env_module_resolves_and_fails_closed() {
     let var = format!("BUSBAR_SECRET_TEST_{}", std::process::id());
@@ -22,11 +23,12 @@ fn env_module_resolves_and_fails_closed() {
     assert!(err.contains("unset"), "unset env is fail-closed: {err}");
     std::env::set_var(&var, "");
     let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
-    assert!(err.contains("EMPTY"), "empty env is fail-closed: {err}");
+    assert!(err.contains("is empty"), "empty env is fail-closed: {err}");
     std::env::remove_var(&var);
 }
 
-/// The file built-in resolves file bytes and fails closed on a missing or empty file.
+/// The file module resolves file bytes and fails closed on a missing or empty file (the double's
+/// words, as above).
 #[test]
 fn file_module_resolves_and_fails_closed() {
     let path = std::env::temp_dir().join(format!("busbar-secret-{}.txt", std::process::id()));
@@ -39,16 +41,17 @@ fn file_module_resolves_and_fails_closed() {
     assert_eq!(resolve_linked_string(&r).unwrap(), "file-secret");
     std::fs::write(&path, b"").unwrap();
     let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
-    assert!(err.contains("EMPTY"), "empty file is fail-closed: {err}");
+    assert!(err.contains("is empty"), "empty file is fail-closed: {err}");
     let _ = std::fs::remove_file(&path);
     let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
-    assert!(err.contains("cannot resolve"), "missing file fails: {err}");
+    assert!(err.contains("unreadable"), "missing file fails: {err}");
 }
 
-/// A whitespace-only (or empty) `env:` NAME — not value — must be rejected at the settings-shape
-/// layer (`self_env_var_checked`), never silently treated as "no name given, fall through" or
-/// "look up an env var literally named '   '". Distinct from `env_module_resolves_and_fails_closed`
-/// above, which covers the RESOLVED VALUE being empty, not the configured variable name itself.
+/// A whitespace-only (or empty) `env:` NAME — not value — is refused by the module as a settings-shape
+/// error, and the kernel passes that refusal through, never treating it as "no name given, fall
+/// through" (the double's words; the shipped source's 1.5.5 "requires settings.key" is proven at the
+/// root). Distinct from `env_module_resolves_and_fails_closed` above, which covers the RESOLVED
+/// VALUE being empty, not the configured variable name itself.
 #[test]
 fn env_whitespace_only_name_is_rejected() {
     for bad in ["", "   ", "\t\n"] {
@@ -59,7 +62,7 @@ fn env_whitespace_only_name_is_rejected() {
                 "whitespace-only env name {bad:?} must be rejected"
             ));
         assert!(
-            err.contains("requires settings.key"),
+            err.contains("settings.key is missing or blank"),
             "whitespace-only env name {bad:?} must fail the settings-shape check, got: {err}"
         );
     }
@@ -76,7 +79,7 @@ fn file_whitespace_only_path_is_rejected() {
                 "whitespace-only file path {bad:?} must be rejected"
             ));
         assert!(
-            err.contains("requires settings.path"),
+            err.contains("settings.path is missing or blank"),
             "whitespace-only file path {bad:?} must fail the settings-shape check, got: {err}"
         );
     }
