@@ -730,8 +730,25 @@ fn drift(
     approved: Option<&BTreeMap<String, String>>,
     sighting: &Sighting,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
-    let _ = (approved, sighting);
-    (Vec::new(), Vec::new(), Vec::new())
+    let (mut added, mut changed, mut removed) = (Vec::new(), Vec::new(), Vec::new());
+    let Some(seen) = sighting.seen() else {
+        return (added, changed, removed);
+    };
+    let none = BTreeMap::new();
+    let approved = approved.unwrap_or(&none);
+    for (id, digest) in &seen.skills {
+        match approved.get(id) {
+            Some(at) if at == digest => {}
+            Some(_) => changed.push(id.clone()),
+            None => added.push(id.clone()),
+        }
+    }
+    for id in approved.keys() {
+        if !seen.skills.contains_key(id) {
+            removed.push(id.clone());
+        }
+    }
+    (added, changed, removed)
 }
 
 /// The view, `state` being the state the verb answers and `kernel` the kernel's own verdict: a key
