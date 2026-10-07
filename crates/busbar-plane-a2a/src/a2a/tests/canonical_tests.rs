@@ -118,8 +118,8 @@ fn a_large_integer_canonicalizes_as_its_double() {
     assert_eq!(c(&json!(9007199254740993u64)), "9007199254740992");
     assert_eq!(c(&json!(9007199254740995u64)), "9007199254740996");
     assert_eq!(c(&json!(u64::MAX)), "18446744073709552000");
-    assert_eq!(c(&json!(i64::MIN)), "-9223372036854775808");
-    assert_eq!(c(&json!(i64::MIN + 1)), "-9223372036854775808");
+    assert_eq!(c(&json!(i64::MIN)), "-9223372036854776000");
+    assert_eq!(c(&json!(i64::MIN + 1)), "-9223372036854776000");
     assert_eq!(c(&json!(-9007199254740993i64)), "-9007199254740992");
 }
 
