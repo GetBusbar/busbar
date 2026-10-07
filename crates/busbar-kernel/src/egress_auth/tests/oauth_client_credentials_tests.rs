@@ -106,19 +106,23 @@ fn build_accepts_a_secret_containing_a_colon() {
 // Azure AD v1), and absence (defaulting to 1 h) — a strict u64 breaks minting for those IdPs.
 #[test]
 fn token_response_tolerates_expires_in_as_number_string_or_absent() {
-    let num: TokenResponse =
+    let num: super::super::TokenResponse =
         serde_json::from_str(r#"{"access_token":"a","expires_in":3600}"#).unwrap();
     assert_eq!(num.expires_in, 3600);
-    let s: TokenResponse =
+    let s: super::super::TokenResponse =
         serde_json::from_str(r#"{"access_token":"a","expires_in":"7200"}"#).unwrap();
     assert_eq!(s.expires_in, 7200);
-    let absent: TokenResponse = serde_json::from_str(r#"{"access_token":"a"}"#).unwrap();
-    assert_eq!(absent.expires_in, super::super::default_expires_in());
+    let absent: super::super::TokenResponse =
+        serde_json::from_str(r#"{"access_token":"a"}"#).unwrap();
+    assert_eq!(
+        absent.expires_in,
+        busbar_kernel_identity::egress_auth::default_expires_in()
+    );
     // Also tolerate a JSON float and a decimal string (truncated toward zero).
-    let float: TokenResponse =
+    let float: super::super::TokenResponse =
         serde_json::from_str(r#"{"access_token":"a","expires_in":3600.0}"#).unwrap();
     assert_eq!(float.expires_in, 3600);
-    let decimal_str: TokenResponse =
+    let decimal_str: super::super::TokenResponse =
         serde_json::from_str(r#"{"access_token":"a","expires_in":"3600.9"}"#).unwrap();
     assert_eq!(decimal_str.expires_in, 3600);
 }

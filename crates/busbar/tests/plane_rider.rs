@@ -80,7 +80,8 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: None,
+        // These rows read the clock only: the plane's need is not declared, bound as a probe.
+        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
     };
     let plugin = match way {
         Way::Linked => {

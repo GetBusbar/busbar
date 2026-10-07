@@ -13,6 +13,7 @@ fn begun(wire: &[u8]) -> Vec<Step> {
         answer: yielded_line(wire, &[], &[], 0, true),
         crossed: 1,
         pinned: 1,
+        resumes: 0,
     }]
 }
 

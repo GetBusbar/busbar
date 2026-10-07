@@ -742,7 +742,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     // This lib-test app links no plane registry, so every named-map section is served and the list
-    // runs on to `tools`/`agents`; on a 1.5.5-shaped config (no mcp:/agents:) those two are not
+    // runs on to `tools`/`agents`; on a 1.5.5-shaped config (no plane sections) those two are not
     // sections and the list ends `…, or `export`` — the oracle cell
     // `admin.ops|DeleteOverlaySection|not-found` pins that form. The SHAPE is what this pins.
     assert_eq!(
@@ -3658,8 +3658,8 @@ async fn test_admin_v1_identity_provider_rejects_an_unknown_module() {
     );
     assert!(
         msg.contains("keys") && msg.contains("admin-tokens"),
-        "the refusal lists the valid modules, the way the `streams:` error names its whole valid \
-         set: {body}"
+        "the refusal lists the valid modules, the way every other section's module refusal names \
+         its whole valid set: {body}"
     );
     let after = admin(client.get(format!(
         "http://{addr}/api/v1/admin/identity-providers/typo"
@@ -3803,7 +3803,7 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: dispatcher.adopter(),
-                    conns: None,
+                    conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
                 },
             )
             .ok()?;
@@ -3899,12 +3899,14 @@ async fn drive_named_map_errors() {
     };
     let ok_def = |section: &str| match section {
         "identity-providers" => r#"{"module":"keys"}"#.to_string(),
-        // The MCP plane has no backing plugin, so its valid definition names no `module:` at all —
+        // The tools plane has no backing plugin, so its valid definition names no `module:` —
         // which is exactly the asymmetry `NamedMapSection::requires_module` exists to carry.
         "tools" => r#"{"url":"https://x/","pin":{"mechanism":"unpinned"}}"#.to_string(),
-        // The A2A plane's entries are NOT plugin instances, so a legal definition here names a URL
+        // The agents plane's entries are NOT plugin instances, so a legal definition names a URL
         // and a pin rather than a module. That asymmetry is the reason `requires_module()` exists.
-        "agents" => r#"{"url":"https://a2a.example/x","pin":{"mechanism":"unpinned"}}"#.to_string(),
+        "agents" => {
+            r#"{"url":"https://agent.example/x","pin":{"mechanism":"unpinned"}}"#.to_string()
+        }
         _ => r#"{"module":"prometheus","settings":{"buffer_seconds":30}}"#.to_string(),
     };
     // (label, method, relative path, If-Match, body, want status, want code)
@@ -3975,7 +3977,7 @@ async fn drive_named_map_errors() {
                     // A pin whose mechanism needs material and carries none. On the other sections
                     // the equivalent nonsense is an empty `module:`; the CONDITION being witnessed
                     // (`Validation/InvalidConfig`) is the same one either way.
-                    r#"{"url":"https://a2a.example/x","pin":{"mechanism":"jws_issuer_key"}}"#
+                    r#"{"url":"https://agent.example/x","pin":{"mechanism":"jws_issuer_key"}}"#
                         .to_string()
                 } else {
                     r#"{"module":""}"#.to_string()

@@ -1436,7 +1436,7 @@ mod transport_pin {
                 key_pin: Some(server.pin.clone()),
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![client.der.clone()],
-                    private_key: client.key.clone(),
+                    private_key: client.key.clone().into(),
                 }),
                 private_reach: false,
             };
@@ -1473,7 +1473,7 @@ mod transport_pin {
                 key_pin: None,
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![leaf.der.clone()],
-                    private_key: b"not a key".to_vec(),
+                    private_key: b"not a key".to_vec().into(),
                 }),
                 private_reach: false,
             };

@@ -1,3 +1,4 @@
+use busbar_kernel::audit_ring;
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::proto::PROTO_ANTHROPIC;
 use busbar_kernel::test_support::warn_capture::WarnCapture;
@@ -116,10 +117,10 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
     );
     let hook_plugins = body["build"]["hook_plugins"].as_array().unwrap();
     assert_eq!(
-            hook_plugins.iter().any(|m| m == "ranking"),
-            cfg!(feature = "hooks-ranking"),
-            "hook_plugins must contain `ranking` iff the hooks-ranking feature is compiled in: {hook_plugins:?}"
-        );
+        hook_plugins.iter().any(|m| m == "ranking"),
+        cfg!(feature = "hooks-ranking"),
+        "hook_plugins must contain `ranking` iff the hooks-ranking feature is compiled in: {hook_plugins:?}"
+    );
     // Topology keys are present and numeric (exact counts depend on the TestApp fixture).
     assert!(body["topology"]["pools"].is_number());
     assert!(body["topology"]["models"].is_number());
@@ -9281,15 +9282,15 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     // emits that action against this resource, and a large concurrent audit-writing burst could in
     // principle evict this test's own `signing_key.report` row before the read. Latent; accepted —
     // bracketing by seq would narrow the window but not defeat eviction.
-    let rows = busbar_kernel::audit_ring::AUDIT.list_filtered(
+    let rows = audit_ring::AUDIT.list_filtered(
         0,
-        busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
+        audit_ring::MAX_AUDIT_ENTRIES,
         None,
         Some("signing-key"),
     );
     assert!(
-        rows.iter().any(|e| e.action == "signing_key.report"
-            && e.outcome == busbar_kernel::audit_ring::OUTCOME_APPLIED),
+        rows.iter()
+            .any(|e| e.action == "signing_key.report" && e.outcome == audit_ring::OUTCOME_APPLIED),
         "the report is recorded under a verb that does not claim a mutation"
     );
     assert!(
@@ -9848,7 +9849,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     let v_before = before["config_version"].as_u64().unwrap();
 
     // PUT live-swappable sections only. The card configures EVERY billable class the pools plane
-    // declares: `search_units` has no reserved tier, so it is
+    // declares: the open classes have no reserved tier, so each is
     // named under `units:` — 0 makes it free — or the whole PUT is refused 400.
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
@@ -9856,7 +9857,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             serde_json::json!({
                 "per_request_fee": 7,
                 "rate_card": { "m0": {
-                    "input_utok": 1.5, "output_utok": 2.0, "units": { "search_units": 0 }
+                    "input_utok": 1.5, "output_utok": 2.0, "units": free_open_units()
                 } },
                 "limits": { "tls_handshake_timeout_secs": 30 }
             })
@@ -10279,12 +10280,12 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
 
     // Both PUTs must APPLY — an unchecked refusal of the first one made the preservation assertion
     // below fail for a reason it never named. The card configures every billable class the pools
-    // plane declares: `search_units` under `units:`, 0 = free.
+    // plane declares: every open class under `units:`, 0 = free.
     let first = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({ "rate_card": { "m0": {
-                "input_utok": 9.0, "units": { "search_units": 0 }
+                "input_utok": 9.0, "units": free_open_units()
             } } })
             .to_string(),
         )
@@ -10430,7 +10431,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     // so a concurrently-running sibling's legitimate APPLIED reset can land between this test's own
     // two REJECTED rows and fail the "never APPLIED" assertion. Same pattern as
     // `test_admin_v1_restart_refuses_when_it_cannot_restart`'s baseline_seq bracketing.
-    let baseline_seq = busbar_kernel::audit_ring::AUDIT
+    let baseline_seq = audit_ring::AUDIT
         .list(1)
         .first()
         .map(|e| e.seq)
@@ -10462,24 +10463,20 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         reset.text().await
     );
 
-    let rows: Vec<_> = busbar_kernel::audit_ring::AUDIT
-        .list_filtered(
-            0,
-            busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
-            None,
-            Some("overlay:root"),
-        )
+    let rows: Vec<_> = audit_ring::AUDIT
+        .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, Some("overlay:root"))
         .into_iter()
         .filter(|e| e.seq > baseline_seq)
         .collect();
     assert!(
-        rows.iter().any(|e| e.action == "overlay.reset"
-            && e.outcome == busbar_kernel::audit_ring::OUTCOME_REJECTED),
+        rows.iter()
+            .any(|e| e.action == "overlay.reset" && e.outcome == audit_ring::OUTCOME_REJECTED),
         "the corrupt-overlay reset must be audited as REJECTED, never APPLIED: {rows:?}"
     );
     assert!(
-        !rows.iter().any(|e| e.action == "overlay.reset"
-            && e.outcome == busbar_kernel::audit_ring::OUTCOME_APPLIED),
+        !rows
+            .iter()
+            .any(|e| e.action == "overlay.reset" && e.outcome == audit_ring::OUTCOME_APPLIED),
         "a corrupt-overlay reset must never be recorded as a successful apply: {rows:?}"
     );
 
@@ -11077,7 +11074,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     // the binary writes to, unscoped by principal (every admin-token test shares the SAME fixed
     // operator principal id, so scoping by principal would not distinguish this test's rows from a
     // concurrent sibling's). Rows from THIS test's own restart attempts are bracketed by seq.
-    let baseline_seq = busbar_kernel::audit_ring::AUDIT
+    let baseline_seq = audit_ring::AUDIT
         .list(1)
         .first()
         .map(|e| e.seq)
@@ -11156,8 +11153,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 
     // Every refusal is audited — the operator's only evidence, since a real restart takes the
     // connection that would have carried the response.
-    let entries =
-        busbar_kernel::audit_ring::AUDIT.list(busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES);
+    let entries = audit_ring::AUDIT.list(audit_ring::MAX_AUDIT_ENTRIES);
     let restarts: Vec<_> = entries
         .iter()
         .filter(|e| e.action == "admin.restart" && e.seq > baseline_seq)
@@ -11169,7 +11165,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     assert!(
         restarts
             .iter()
-            .all(|e| e.outcome == busbar_kernel::audit_ring::OUTCOME_REJECTED),
+            .all(|e| e.outcome == audit_ring::OUTCOME_REJECTED),
         "a refused restart must never be recorded as applied: {restarts:?}"
     );
 }
@@ -11701,4 +11697,23 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
     );
 
     handle.abort();
+}
+
+/// Every open class the fallback plane (the pools plane a `rate_card` lane falls through to)
+/// declares, at 0 (owner LEDGER-100: each reported count is a declared class, and a present card
+/// configures every one, Q29/Q35), read off the plane's own declaration; the plane is found among the
+/// linked test planes by its `fallback` flag, never by name.
+fn free_open_units() -> serde_json::Value {
+    crate::ensure_seam();
+    busbar_kernel::plane::registry::plane_decls()
+        .iter()
+        .find(|decl| decl.fallback)
+        .expect("the linked test planes carry the fallback plane")
+        .billable_classes
+        .iter()
+        .map(|c| c.class)
+        .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+        .map(|c| (c.to_string(), serde_json::json!(0)))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
 }
