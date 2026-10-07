@@ -427,6 +427,13 @@ impl WorkBook {
     /// Mark `instance`'s live handle `handle` settled with `record` at `now_ms`, answering the
     /// handle as it stood (to restore if the store refuses), or the refusal.
     ///
+    /// THE SETTLE IS SCOPED WHILE THE HANDLE'S UNIT RUNS (ARCHITECT 2026-10-07 K4-11 (B)): while
+    /// the unit that opened the handle, or the unit that last resumed it, is in flight by the
+    /// kernel's unit table (`in_flight`), only `owner` (the principal of the unit the settling
+    /// crossing serves) settles it when it is the handle's; anyone else is refused as a handle
+    /// nobody holds is. Once those units have ended (a lapse ends a unit too), the instance
+    /// settles it from any unit (the plane's sweeps). Nothing the plane says decides which.
+    ///
     /// # Errors
     ///
     /// [`refusal::NOT_A_HANDLE`] or [`refusal::SETTLED`].
@@ -434,6 +441,8 @@ impl WorkBook {
         &self,
         instance: &str,
         handle: u64,
+        owner: Option<&Owner>,
+        in_flight: &dyn Fn(u64) -> bool,
         record: Vec<u8>,
         now_ms: u64,
     ) -> Result<(Work, Work), &'static str> {
@@ -443,6 +452,10 @@ impl WorkBook {
             .get_mut(&handle)
             .filter(|w| *w.instance == *instance)
             .ok_or(refusal::NOT_A_HANDLE)?;
+        let unit_runs = w.opened_by.into_iter().chain(w.bound).any(in_flight);
+        if unit_runs && owner != Some(&w.owner) {
+            return Err(refusal::NOT_A_HANDLE);
+        }
         if !w.live {
             return Err(refusal::SETTLED);
         }

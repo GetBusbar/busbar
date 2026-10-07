@@ -2036,7 +2036,7 @@ impl HostServices for KernelServices {
     fn work_settle(
         &self,
         caller: &Caller,
-        _unit: Option<u64>,
+        unit: Option<u64>,
         handle: u64,
         record: &[u8],
         later: Later,
@@ -2049,14 +2049,21 @@ impl HostServices for KernelServices {
             return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
         }
         let now_ms = (self.wall_ms)();
-        let (before, settled) =
-            match self
-                .work
-                .settle(&caller.instance, handle, record.to_vec(), now_ms)
-            {
-                Ok(v) => v,
-                Err(why) => return Ran::Now(Stored::refused(why)),
-            };
+        // The kernel's own measure of who may settle: the serving unit's principal, and whether
+        // the handle's units are still in its unit table.
+        let owner = self.owner_of_unit(unit);
+        let in_flight = |u: u64| self.units.get(u).is_some();
+        let (before, settled) = match self.work.settle(
+            &caller.instance,
+            handle,
+            owner.as_ref(),
+            &in_flight,
+            record.to_vec(),
+            now_ms,
+        ) {
+            Ok(v) => v,
+            Err(why) => return Ran::Now(Stored::refused(why)),
+        };
         let Some(row) = settled.row() else {
             self.work.restore(handle, before);
             return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
