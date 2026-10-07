@@ -2266,6 +2266,12 @@ mod agent_door {
         let agent = Agent::start(200, ANSWER).await;
         // Composing the door registers its folded declaration, as boot installs it.
         let _s = served(instance, &agent.entry("planner", "1h"), false, None);
+        // The config fixture's provider names the registry's residual-default dialect; in a test
+        // binary the protocol set is installed by whichever test installs it first, so the cell
+        // installs the linked declarations itself, as the root's other config-fixture cells do.
+        for decls in crate::LINKED.protocols {
+            busbar_kernel::proto::register_test_protocols(decls);
+        }
         let with_fees = |per_request: i64, per_session: i64| {
             let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
                 busbar_kernel::config::SecretRef::none(),
