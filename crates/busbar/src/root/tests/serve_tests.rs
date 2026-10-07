@@ -5538,6 +5538,9 @@ mod agent_door {
                 } }),
                 "{body}"
             );
+            // A read of the failed task is a relayed hop too, refused the same way (match predev:
+            // busbar-a2a receive.rs:2186-2207, a credential that cannot be minted answers every
+            // relayed verb, GetTask included, `fail_task`'s 502 naming the task).
             let (status, body) = answered(
                 &s.router,
                 rpc(
@@ -5548,11 +5551,25 @@ mod agent_door {
                 ),
             )
             .await;
-            assert_eq!(status, StatusCode::OK, "{body}");
-            let row: serde_json::Value = serde_json::from_str(&body).expect("the task");
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
             assert_eq!(
-                row["result"]["status"]["state"], "failed",
-                "the task row is closed failed: {body}"
+                serde_json::from_str::<serde_json::Value>(&body).expect("the envelope"),
+                serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
+                    "code": -32006,
+                    "message": "the backend agent did not complete this task",
+                    "data": [info.clone(), {
+                        "@type": "type.googleapis.com/google.rpc.ResourceInfo",
+                        "resourceType": surface("task_resource_type"),
+                        "resourceName": failed,
+                    }],
+                } }),
+                "{body}"
+            );
+            // The row is busbar's own, read from busbar's own list (a local verb).
+            let state = listed_state(&s, &failed).await;
+            assert!(
+                ["failed", "TASK_STATE_FAILED"].contains(&state.as_str()),
+                "the task row is closed failed: {state}"
             );
 
             let (status, body) = answered(
