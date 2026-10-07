@@ -972,6 +972,25 @@ slot!(
         if let Disposition::Refused(refusal) = &disposition {
             return refused_arrival(&mut out, refusal.status, refusal_text(refusal));
         }
+        // ADMISSION BOUNDS LIVE WORK; NOTHING EVICTS IT: a full table refuses the new arrival, before
+        // anything else is stated of it, and every unit it holds goes on. Arrivals racing the last
+        // free places overshoot by no more than the instance's in-flight bound.
+        let at_cap = plane
+            .units
+            .with_all(|held| held.len() >= MAX_UNITS && !held.contains_key(&input.get().unit));
+        if at_cap {
+            let refusal = crate::tool_arrival::Refusal {
+                status: STATUS_BUSY,
+                id: None,
+                code: crate::codec::CODE_REFUSED,
+                message: format!(
+                    "this server holds {MAX_UNITS} requests in flight, the most it will; retry \
+                     when some have finished"
+                ),
+                data: Some(serde_json::json!({ "reason": "capacity" })),
+            };
+            return refused_arrival(&mut out, refusal.status, refusal_text(&refusal));
+        }
         let Some(op_class) = op_class(&disposition) else {
             return Outcome::Failed;
         };
@@ -1092,29 +1111,7 @@ slot!(
             line: line_unit,
             child_work: ChildWork::default(),
         };
-        // ADMISSION BOUNDS LIVE WORK; NOTHING EVICTS IT: a full table refuses the new arrival, and
-        // every unit it holds goes on.
-        let key = input.get().unit;
-        let admitted = plane.units.with_all(|held| {
-            let full = held.len() >= MAX_UNITS && !held.contains_key(&key);
-            if !full {
-                held.insert(key, unit);
-            }
-            !full
-        });
-        if !admitted {
-            let refusal = crate::tool_arrival::Refusal {
-                status: STATUS_BUSY,
-                id: None,
-                code: crate::codec::CODE_REFUSED,
-                message: format!(
-                    "this server holds {MAX_UNITS} requests in flight, the most it will; retry \
-                     when some have finished"
-                ),
-                data: Some(serde_json::json!({ "reason": "capacity" })),
-            };
-            return refused_arrival(&mut out, refusal.status, refusal_text(&refusal));
-        }
+        plane.units.insert(input.get().unit, unit);
         Outcome::Ready
     }
 );
