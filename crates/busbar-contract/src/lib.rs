@@ -84,6 +84,9 @@ pub mod kinds;
 // The media carriers (#83a SD-2b), re-expressed over `bounded::SlabBytes`.
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod media;
+// THE MIGRATION SEAMS: the legacy-row shapes and the three traits the store adapter implements and
+// the ledger's migration consumes (the same division `slice` makes).
+pub mod migration;
 // The one URL and host reader (the destination-guard audit): pure, outside `abi/`.
 pub mod net;
 #[allow(missing_docs)]
