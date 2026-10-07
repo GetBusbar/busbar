@@ -3131,6 +3131,72 @@ mod agent_door {
         );
     }
 
+    // ── VERIFY-ON-CALL'S PARITY CELLS (the engine's `verify_tests`, through the agent door) ───────
+
+    /// AN UNREACHABLE CARD AT VERIFY FAILS CLOSED ON THE CALL PATH (the engine's
+    /// `verify_tests::an_unreachable_card_at_verify_fails_closed_on_the_call_path`; ARCHITECT
+    /// 2026-10-07: the background reverify keeps the kernel's last verdict, the call-path verify of
+    /// a hop fails closed). The approved agent goes dark between two delegations: the next one's
+    /// look cannot reach its card, and the hop is refused with the hop gate's predev bytes (`503`,
+    /// `-32004`, "this agent is not currently serving", naming its task) without dialling; the
+    /// kernel's verdict is untouched (still `approved`), so once the card answers again the next
+    /// call's look serves it. RED before the fix: the door served the hop on the kernel's kept
+    /// verdict and dialled the dark agent (`agent.relayed()` true, no `503`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreachable_card_at_verify_fails_closed_on_the_call_path() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-unreachable-on-call";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "0s"), false, None);
+        approve(&s, "planner").await;
+        let send = || rpc("planner", "message/send", SEND, Some(&s.token));
+        let (status, body) = answered(&s.router, send()).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the approved agent is served: {body}"
+        );
+        assert!(agent.relayed(), "the approved agent was dialled");
+
+        // THE VENDOR GOES DARK between the approval and the next delegation.
+        agent.go_down();
+        let (status, body) = answered(&s.router, send()).await;
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a card busbar could not re-verify on the call path fails the hop closed: {body}"
+        );
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an envelope");
+        assert_eq!(doc["error"]["code"], -32004, "{body}");
+        assert_eq!(
+            doc["error"]["message"], "this agent is not currently serving",
+            "{body}"
+        );
+        assert!(
+            doc["error"]["data"].as_array().is_some_and(|d| d
+                .iter()
+                .any(|e| e["resourceType"] == surface("task_resource_type"))),
+            "the refusal names its task: {body}"
+        );
+        assert!(!agent.relayed(), "the refused hop never reached the agent");
+        let (_, state) = trust_key(&s, "planner").await;
+        assert_eq!(
+            state, "approved",
+            "the kernel's last verdict is untouched by an unreachable card"
+        );
+
+        // BACK UP: the next call looks again and is served on the verdict the kernel kept.
+        agent.down.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (status, body) = answered(&s.router, send()).await;
+        assert_eq!(status, StatusCode::OK, "reachable again, served: {body}");
+        assert!(agent.relayed(), "dialled again");
+    }
+
     // ── THE HOOK PARITY CELLS ON THE DOOR PATH (the engine's `hook_gate_tests` / `hook_tap_tests`,
     //    each driven through the a2a door and the driver's gate-first hook stage). ────────────────
 

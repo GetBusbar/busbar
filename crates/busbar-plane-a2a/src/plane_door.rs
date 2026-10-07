@@ -2504,8 +2504,13 @@ fn verify_on_call(
         return Poll::Ready(false);
     };
     // SERVING is the kernel's verdict on the agent's key, and not a suspension of the plane's.
+    // A CARD THE LAST LOOK COULD NOT REACH OR VERIFY FAILS THE HOP CLOSED (ARCHITECT 2026-10-07,
+    // predev baseline: `receive::verify_agent_on_call` recorded `Error`, which its hop gate refused):
+    // the hop is refused here without asking `trust.serves`, and the kernel's last verdict, which
+    // the look's `trust.unreachable` kept, is left untouched.
     let serves = |standing: &crate::trust::Standing| {
         standing.suspension.is_none()
+            && !matches!(standing.sighting, crate::trust::Sighting::Failed(_))
             && verdict(plane, member) == busbar_contract::abi::host::service::DISTRUST_NONE
     };
     // A UNIT WAITING ON ANOTHER'S LOOK takes its verdict, never a look of its own — unless that
