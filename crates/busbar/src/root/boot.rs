@@ -583,7 +583,7 @@ pub fn load_door_planes() {
         std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
         crate::root::dispatch::dispatcher().adopter(),
         u32::MAX,
-        Some(conns),
+        crate::root::loader::dispatch::ConnTable::Host(conns),
     )
     .unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");

@@ -1865,8 +1865,9 @@ pub struct DoorStoreAxis {
     pub dispatcher: Arc<Dispatcher>,
     /// Where each store instance's plugin log goes.
     pub logs: crate::dispatch::PluginLogConfig,
-    /// The host's one connection table ([`crate::dispatch::Bind::conns`]).
-    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    /// The host's one connection table, or why a store opens with none
+    /// ([`crate::dispatch::Bind::conns`]).
+    pub conns: crate::dispatch::ConnTable,
     /// The node's one `op_id` allocator.
     pub mint: OpIdMint,
 }
