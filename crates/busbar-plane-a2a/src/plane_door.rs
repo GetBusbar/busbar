@@ -508,6 +508,8 @@ pub struct A2aDoor {
     pub(crate) cards: crate::cards::Cards,
     /// The push notifications waiting for delivery, and the webhook credentials they present.
     pub(crate) deliveries: crate::push::Deliveries,
+    /// The delivery attempt in flight across a PENDING `tick`, which `drive` carries on.
+    pub(crate) attempting: crate::push_door::Attempting,
     /// Busbar's own callback tokens, by the task each names ([`crate::push::Tokens`]).
     pub(crate) tokens: crate::push::Tokens,
     /// The push-volume bound on busbar's own callback ([`crate::push::PushLimiter`]).
@@ -676,6 +678,7 @@ slot!(
             backends: Keyed::new(),
             cards: crate::cards::Cards::new(),
             deliveries: crate::push::Deliveries::new(),
+            attempting: crate::push_door::Attempting::default(),
             tokens: crate::push::Tokens::new(),
             pushes: crate::push::PushLimiter::new(),
             newest: Keyed::new(),
@@ -771,8 +774,14 @@ slot!(
 );
 
 slot!(
-    /// `drive`: no session has unsolicited output.
-    Drive, PlaneDriveIn, PlaneDriveOut, |_, _, _| { Outcome::Ready }
+    /// `drive`: no session has unsolicited output; a push delivery the last `tick` left PENDING
+    /// goes on ([`crate::push_door::drive`]).
+    Drive, PlaneDriveIn, PlaneDriveOut, |instance, _, _| {
+        match instance.get() {
+            Some(plane) => crate::push_door::drive(plane, &instance),
+            None => Outcome::Ready,
+        }
+    }
 );
 
 slot!(

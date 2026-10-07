@@ -12,9 +12,12 @@
 //!   byte for the retry's jitter, then the destination judge over the callback, its name resolved,
 //!   then predev's anti-rebinding rule over the judged addresses
 //!   ([`crate::push::Deliveries::rebound`]), then one exchange over the plane's outbound `open-web`
-//!   need ([`crate::door::NEED_OPEN_WEB`]) landing only on those addresses. The attempt parks on
-//!   the op's ticket across its PENDING entries and makes the same host calls in the same order on
-//!   each (the replay rule). Its end settles the queue and is OWED to the task's chain.
+//!   need ([`crate::door::NEED_OPEN_WEB`]) landing only on those addresses. An attempt whose
+//!   exchange pends ends its `tick` PENDING (a driver ticket's op is never resumed) and goes on
+//!   through `drive` ([`drive`]), held in plane memory across the entries, each making the same host
+//!   calls in the same order (the replay rule). Its end settles the queue and is OWED to the task's
+//!   chain. A queued notification wakes the driver ticket ([`queue`]), so the kernel runs `drive`
+//!   and then re-polls `tick` (R-PUSH) to attempt it at once.
 //! * A relayed piece of the same caller FILES what is owed ([`file_owed`]), one chain change per
 //!   task, never on the task the piece itself moves. A plane's record writes ride `on_piece`'s
 //!   answer and nothing else (`BUSBAR-1.6.0.md`, the design's host services and the plane's journal
@@ -33,6 +36,7 @@ use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::exchange::{exchange, Exchange};
+use busbar_contract::abi::sdk::publish::Keyed;
 use busbar_contract::abi::sdk::{Instance, Services};
 
 use crate::a2a::task::Task;
@@ -263,22 +267,41 @@ fn attempt(
     }
 }
 
-/// `tick`: ONE due notification attempted (see the module note); PENDING while its exchange is.
-/// A door opened without host tables, or a tick that may not pend, attempts nothing.
+/// THE ATTEMPT IN FLIGHT, held in plane memory with the clock of the tick that began it: the
+/// instance has one driver ticket, so at most one delivery is attempted at a time. A tick that
+/// pends ends there (a driver ticket's op is never resumed: `abi::mechanism::lifecycle`, the
+/// dispatcher's driver-ticket note), so what pended goes on through `drive` ([`drive`]).
+#[derive(Default)]
+pub(crate) struct Attempting(Keyed<(), (Flight, u64)>);
+
+impl Attempting {
+    fn take(&self) -> Option<(Flight, u64)> {
+        self.0.remove(&())
+    }
+
+    fn hold(&self, flight: Flight, now_ns: u64) {
+        self.0.insert((), (flight, now_ns));
+    }
+}
+
+/// `tick`: ONE due notification attempted (see the module note); PENDING while its exchange is,
+/// which ends the tick and leaves the attempt to `drive`. A tick starts the driver ticket's next
+/// cycle, so an attempt a drive had not finished begins again from its delivery. A door opened
+/// without host tables, or a tick that may not pend, attempts nothing.
 pub(crate) fn tick(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>, now_ns: u64) -> Outcome {
-    let (Some(host), Some(services)) = (plane.host.as_ref(), plane.services) else {
+    let Some(ticket) = ticket_of(plane, instance) else {
         return Outcome::Ready;
     };
-    let ticket = instance.ticket();
-    if ticket.is_none() {
-        return Outcome::Ready;
-    }
     let deliveries = &plane.deliveries;
     // This op runs on the instance's driver ticket: the one a queued delivery wakes.
-    let driver = *host;
-    deliveries.arm(|| Box::new(move || driver.wake(ticket)));
-    let mut flight = match instance.resume::<Flight>() {
-        Some(flight) => *flight,
+    if let Some(host) = plane.host {
+        deliveries.arm(|| Box::new(move || host.wake(ticket)));
+    }
+    let flight = match plane.attempting.take() {
+        Some((held, _)) => Flight {
+            delivery: held.delivery,
+            exchange: None,
+        },
         None => match deliveries.next_due(now_ns) {
             Some(delivery) => Flight {
                 delivery,
@@ -287,6 +310,37 @@ pub(crate) fn tick(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>, now_ns: u6
             None => return Outcome::Ready,
         },
     };
+    advance(plane, ticket, flight, now_ns)
+}
+
+/// `drive`: the attempt a `tick` left PENDING goes on, the wake on the driver ticket being its
+/// service's (the replay rule: the same host calls in the same order, each completed one answered
+/// as it was). With no attempt in flight there is nothing to do.
+pub(crate) fn drive(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>) -> Outcome {
+    let Some(ticket) = ticket_of(plane, instance) else {
+        return Outcome::Ready;
+    };
+    match plane.attempting.take() {
+        Some((flight, now_ns)) => advance(plane, ticket, flight, now_ns),
+        None => Outcome::Ready,
+    }
+}
+
+/// The driver ticket this op runs on, when the door has the host it needs to attempt a delivery.
+fn ticket_of(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>) -> Option<Ticket> {
+    plane.host.as_ref()?;
+    plane.services?;
+    let ticket = instance.ticket();
+    (!ticket.is_none()).then_some(ticket)
+}
+
+/// One entry of `flight`'s attempt, begun at `now_ns`: held again while its exchange pends, else
+/// settled.
+fn advance(plane: &A2aDoor, ticket: Ticket, mut flight: Flight, now_ns: u64) -> Outcome {
+    let (Some(host), Some(services)) = (plane.host.as_ref(), plane.services) else {
+        return Outcome::Ready;
+    };
+    let deliveries = &plane.deliveries;
     let mut calls = Calls {
         host,
         services,
@@ -295,7 +349,7 @@ pub(crate) fn tick(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>, now_ns: u6
     let jitter = calls.jitter();
     match attempt(&mut calls, deliveries, &mut flight) {
         Poll::Pending => {
-            instance.park(flight);
+            plane.attempting.hold(flight, now_ns);
             Outcome::Pending
         }
         Poll::Ready((end, reached)) => {
