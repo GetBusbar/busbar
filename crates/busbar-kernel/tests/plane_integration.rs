@@ -854,8 +854,11 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         door_checked > 0,
         "no door-plane route was walked, so the reciprocal half of the boundary was never asserted"
     );
+    // Three since the residual model routes left this router (a door plane serves them) and
+    // `/metrics/hooks` left the core route set (owner law 2026-09-27: the kernel owns no route that
+    // exists for one plugin; the scrape sink mounts it).
     assert!(
-        checked >= 4,
+        checked >= 3,
         "the walk covered only {checked} guarded core routes, which is fewer than the surface this \
          binary mounts — the enumeration is not seeing the router"
     );
