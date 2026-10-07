@@ -1126,6 +1126,15 @@ pub struct PlaneTail {
     /// to the admin mount (the kernel keys it under the mount when it merges the admin document);
     /// absent = none. A tail addition.
     pub admin_openapi: Blob,
+    /// THE PLANE'S STREAM CEILING, seconds (ARCHITECT ruling 2026-10-07, STREAM-CEILING): how long a
+    /// unit whose `arrive` stated [`ROUTE_STREAM`] may run, measured from the moment its route is
+    /// known. The kernel stamps it as the unit's deadline, so it bounds the whole streamed answer
+    /// and a caller that stops reading it alike: when it passes, the unit is cut
+    /// (`DeadlineExceeded`) and bills what it delivered (Part 2 #62). `0` = NO ceiling: the
+    /// streamed answer runs to its own end and a stalled caller holds it until the caller goes, as
+    /// the previous release served it. A tail addition: a tail whose `size` ends before it
+    /// states `0`.
+    pub stream_ceiling_secs: u64,
 }
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
