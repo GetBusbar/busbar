@@ -576,10 +576,16 @@ run_a2a_tck() {
   local tckwork="${A2A_TCK_WORK:-${WORK}/a2a-tck-work}"
   rm -rf "${tckwork}/out"
   local waivers="${repo}/testing/a2a-tck/subject-waivers.json"
-  A2A_SUBJECT_BUSBAR_BIN="$BIN" A2A_TCK_WORK="$tckwork" \
+  # The report directory is PINNED here and read back from the same variable. boot.sh --tck writes
+  # each leg's report to `$A2A_TCK_WORK/out-<leg>` unless A2A_TCK_OUT says otherwise (so two legs can
+  # never share a file), while this reader looked at `$A2A_TCK_WORK/out`: the suite ran, passed its
+  # own gate, and the ledger then recorded `_no_output` for a report that was sitting one directory
+  # over. It was never a boot race, so there is nothing to wait for or retry.
+  local tckout="${tckwork}/out"
+  A2A_SUBJECT_BUSBAR_BIN="$BIN" A2A_TCK_WORK="$tckwork" A2A_TCK_OUT="$tckout" \
     bash "${repo}/scripts/a2a-subject/boot.sh" --tck \
     >"${WORK}/a2a-tck.log" 2>&1 || true
-  local report="${tckwork}/out/subject.json"
+  local report="${tckout}/subject.json"
   if [ ! -s "$report" ]; then
     record "a2a.tck|_no_output" FAIL "A2A TCK leg produced no per-requirement report at $report" \
       "see ${WORK}/a2a-tck.log"
