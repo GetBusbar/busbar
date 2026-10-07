@@ -434,6 +434,46 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
     });
 }
 
+/// RED (Autobahn 3.2, 3.3, 4.1.3, 4.1.4, 4.2.3, 4.2.4, 5.15 NON-STRICT): the far side's frames
+/// ENDED in the same answer that handed up its last message (a ws peer breaking the protocol right
+/// after a message, here a peer that sent a message and half-closed), and the host still answers
+/// that message: `YIELD_ENDED` says no frame follows, not that this side may no longer write. On
+/// the parent the answer was refused as `Closed`, so the peer heard the close and no answer.
+#[test]
+fn a_message_handed_up_with_the_frames_end_is_still_answered() {
+    worker().block_on(async {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let heard = tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            s.write_all(b"hello").await.unwrap();
+            s.shutdown().await.unwrap();
+            let mut got = Vec::new();
+            let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut got)).await;
+            got
+        });
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let mut c = Connection::dial(door, dial(&far)).unwrap();
+        assert_eq!(gather(&mut c, 5).await, b"hello");
+        assert_eq!(next(&mut c).await, Ok(None), "the far side's frames ended");
+        let waker = std::task::Waker::noop();
+        let took = c.emit(
+            0,
+            b"answer",
+            true,
+            false,
+            &mut std::task::Context::from_waker(waker),
+        );
+        assert_eq!(
+            took,
+            Ok(6),
+            "the answer to the last message is still written"
+        );
+        c.close();
+        assert_eq!(heard.await.unwrap(), b"answer", "and the far side hears it");
+    });
+}
+
 /// WHY A CONNECTION FAILED, named by stage and the underlying error's own words (ARCHITECT
 /// ruling on a plane's guard words): a closed port fails the socket's open with the socket's own error
 /// (the one this host's own connect to it answers); a far end whose certificate no anchor signs

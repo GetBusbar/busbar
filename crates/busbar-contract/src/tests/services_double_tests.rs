@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use super::super::{
-    Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
-    UNSERVED,
+    Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
+    Stored, UNSERVED,
 };
 use super::{ServicesDouble, Unserved};
 use crate::abi::mechanism::KindCode;
@@ -164,6 +164,12 @@ const ROWS: &[Row] = &[
             messages: Vec::new(),
         };
         now("hook_call", s.hook_call(&caller(), Some(1), ask, later(l)))
+    }),
+    ("snapshot_read", |s, _| {
+        match s.snapshot_read(&caller(), 0) {
+            Snapshot::Refused(why) => Stored::refused(why),
+            other => panic!("snapshot_read: an unserved snapshot is refused, not {other:?}"),
+        }
     }),
 ];
 

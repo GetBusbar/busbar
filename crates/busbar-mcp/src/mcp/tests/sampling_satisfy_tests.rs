@@ -469,8 +469,9 @@ include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 /// Install every test-linked plane exactly as the composition root installs it in production: its
 /// protocol declarations, its plane row (the fallback row `TestApp::build` seeds the data-plane
 /// runtime slot from) and its ingress seams, the completion synthesizer the sampling re-entry drives
-/// among them. Idempotent: every entry's install is first-wins.
-fn install_linked_planes() {
+/// among them. Idempotent: every entry's install is first-wins. Shared with the runtime-slot battery
+/// (`runtime_slot_tests.rs`), which registers the fallback plane while Apps are being built.
+pub(crate) fn install_linked_planes() {
     for entry in TEST_LINKED {
         register_test_plane_seam(entry);
     }

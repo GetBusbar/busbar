@@ -175,6 +175,11 @@ pub trait HostServices: Send + Sync {
     /// serves none, REFUSED), pinned to the generation it was bound under. READY with the stage's
     /// `value` (`HookCallIn`'s), the bytes a rewrite or a stopping hook's words.
     fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran;
+
+    /// `snapshot.read`: the host's metric families of `scope` (`abi::host::service`'s
+    /// `SNAPSHOT_SCOPE_*`, a kind-neutral argument), lent only to the crossing the host granted
+    /// them; the loader lays them out in the caller's buffer. Never pends.
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> Snapshot;
 }
 
 /// A `hook.call` request, as the host copied it out of the caller's `in` (validated:
@@ -189,6 +194,17 @@ pub struct HookAsk {
     pub system: Option<String>,
     /// The prompt's messages, `(role, text)`, in order.
     pub messages: Vec<(String, String)>,
+}
+
+/// What `snapshot.read` answers, before the loader lays it out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Snapshot {
+    /// The families, in the host's order.
+    Families(Vec<crate::export_calls::Family>),
+    /// Not ready yet (the recorder is not installed): the caller answers "not ready, retry".
+    NotReady,
+    /// Refused, for this reason (the caller was not granted the snapshot, or the host has none).
+    Refused(&'static str),
 }
 
 /// A `unit.nest` request, as the host copied it out of the caller's `in`.

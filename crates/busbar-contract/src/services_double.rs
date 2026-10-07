@@ -34,8 +34,8 @@
 //! it does not call.
 
 use super::{
-    Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
-    UNSERVED,
+    Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
+    Stored, UNSERVED,
 };
 
 /// The answer of a service this double does not serve, for a service that may pend.
@@ -203,6 +203,11 @@ pub trait ServicesDouble: Send + Sync {
     fn hook_call(&self, _caller: &Caller, _unit: Option<u64>, _ask: HookAsk, _later: Later) -> Ran {
         refused()
     }
+
+    /// `snapshot.read`. Unserved (a host with no snapshot for this caller): REFUSED.
+    fn snapshot_read(&self, _caller: &Caller, _scope: u32) -> Snapshot {
+        Snapshot::Refused(UNSERVED)
+    }
 }
 
 /// The double that serves nothing: every service answers as an unserved host's.
@@ -324,6 +329,10 @@ impl<T: ServicesDouble> HostServices for T {
 
     fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
         ServicesDouble::hook_call(self, caller, unit, ask, later)
+    }
+
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> Snapshot {
+        ServicesDouble::snapshot_read(self, caller, scope)
     }
 }
 
