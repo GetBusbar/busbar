@@ -34,13 +34,16 @@ use busbar_contract::abi::hook::{
     MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome as AbiOutcome, Span};
-use busbar_contract::abi::plane::{ProjectIn, ProjectOut, CLAIM_PROBE, SPAN_ABSENT};
+use busbar_contract::abi::plane::{
+    units_bill, ProjectIn, ProjectOut, UnitCount, CLAIM_PROBE, SPAN_ABSENT,
+};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
+use busbar_contract::records::UNIT_OUTPUT;
 use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 
 use super::{blob, FarEnd, PlaneUnits};
@@ -1688,8 +1691,15 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     }
 
     /// THE `response` STAGE TAP, once per unit: `gate` = the hooks refused it (the synthetic
-    /// `rejected_by_gate`), else a 2xx is `ok` and anything else `failed`.
+    /// `rejected_by_gate`), else a 2xx is `ok` and anything else `failed`. An answer with no
+    /// reported units carries no response-phase signal.
     pub(crate) fn response_tap(&self, gate: bool, status: u32) {
+        self.response_tap_with(gate, status, &[]);
+    }
+
+    /// The `response` stage tap of an answer whose head carried `units` (the plane's reported
+    /// counts on that answer): the declared response-phase signals are read from them.
+    pub(crate) fn response_tap_with(&self, gate: bool, status: u32, units: &[UnitCount]) {
         let mut st = self.lock();
         if st.responded {
             return;
@@ -1718,12 +1728,39 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     Some(outcome),
                     Some(status),
                 ),
-                SignalBag::default(),
+                response_signals(hooks.requested, &self.driver.billable_classes, units),
                 &*hooks.groups,
             );
         }
         st.responded = true;
     }
+}
+
+/// THE RESPONSE-PHASE CATALOG SIGNALS of an answer, read off the units the plane reported on it
+/// (THE DESIGN, Money: the plane reports the units). `response_tokens_out` is the billing count
+/// reported under the plane's billable class named [`UNIT_OUTPUT`], pushed only when some hook
+/// declared it and the answer reported one: a buffered answer's head carries its whole report, a
+/// stream still flowing at head time has reported none, and a transfer that read no usage reported
+/// none, so on those the key is absent (the catalog's absent-when-unknown rule). The default,
+/// nothing-declared path returns the empty bag.
+fn response_signals(wants: RequestedSignals, classes: &[String], units: &[UnitCount]) -> SignalBag {
+    let mut signals = SignalBag::default();
+    if wants.wants(Signal::ResponseTokensOut) {
+        let output = classes
+            .iter()
+            .position(|c| c == UNIT_OUTPUT)
+            .and_then(|i| u32::try_from(i).ok())
+            .and_then(|class| {
+                units
+                    .iter()
+                    .find(|u| u.class == class && units_bill(u.source))
+            })
+            .map(|u| u.amount);
+        if let Some(output) = output {
+            signals.push(Signal::ResponseTokensOut, SignalValue::U64(output));
+        }
+    }
+    signals
 }
 
 /// Step 2: the global request-stage taps, fire-and-forget; a `prompt: ro` tap is handed the

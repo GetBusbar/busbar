@@ -58,7 +58,8 @@ use crate::proxy::egress_unit::{
 };
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::transport::{
-    STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
+    FAULT_HARD, FAULT_TRANSIENT, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER,
+    STATUS_SUCCESS,
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{Pass, Route};
@@ -316,6 +317,7 @@ impl Egress {
                 live: None,
                 probe: None,
                 failed: None,
+                unread: None,
             }),
             probe_of: None,
             described: None,
@@ -351,6 +353,7 @@ impl Egress {
                 live: None,
                 probe: Some(member),
                 failed: None,
+                unread: None,
             }),
             probe_of: Some(destination),
             described: None,
@@ -402,6 +405,22 @@ struct State {
     /// Why the last attempt failed over, in the walk's failover vocabulary (the `routing` stage
     /// tap's `previous_failure`).
     failed: Option<&'static str>,
+    /// A success answer the far end ended cleanly, whose last piece the plane has not yet read:
+    /// the plane's reading of it ([`FarEnd::judged`]) still decides its breaker record and its
+    /// budget unit.
+    unread: Option<Unread>,
+}
+
+/// A success answer that ended at the far end before the plane read its last piece.
+struct Unread {
+    pool: String,
+    /// The pool the breaker's trip is counted under.
+    metric_pool: String,
+    destination: DestinationId,
+    /// One unit of lifetime budget was spent on the success.
+    spent: bool,
+    /// A byte of the streamed answer was delivered.
+    delivered: bool,
 }
 
 /// ONE UNIT'S FAR END over its [`Egress`].
@@ -732,6 +751,7 @@ impl EgressFarEnd<'_> {
                 .and_then(|r| r.auth.as_ref())
                 .is_some_and(|a| a.passthrough);
         let provider = route.map(|r| r.provider.clone()).unwrap_or_default();
+        w.unread = None;
         w.live = Some(Live {
             pool: pool.clone(),
             member,
@@ -1283,9 +1303,11 @@ impl EgressFarEnd<'_> {
         self.end(false)
     }
 
-    /// The answer ended: `clean` keeps the budget unit its success spent.
+    /// The answer ended: `clean` keeps the budget unit its success spent, until the plane's
+    /// reading of the answer says otherwise ([`Self::judge`]).
     fn end(&self, clean: bool) -> FarPiece {
         let mut w = self.lock();
+        let mut unread = None;
         if let Some(live) = w.live.as_mut() {
             if !clean && live.spent && !live.delivered {
                 // A delivery that did not complete gives its budget unit back unless a byte of a
@@ -1293,13 +1315,91 @@ impl EgressFarEnd<'_> {
                 // #77(2)); a buffered answer delivered nothing (v1.5.5 `engine/mod.rs:329-353`).
                 self.egress.breaker.refund_budget(live.member.destination);
             }
+            if clean && live.answered && live.error_left.is_none() && self.probe_of.is_none() {
+                unread = Some(Unread {
+                    pool: live.pool.clone(),
+                    metric_pool: Self::metric_pool(&live.pool, &live.member).to_string(),
+                    destination: live.member.destination,
+                    spent: live.spent,
+                    delivered: live.delivered,
+                });
+            }
             live.spent = false;
             live.ended = true;
         }
         self.settle(&mut w);
+        w.unread = unread;
         FarPiece {
             last: true,
             ..FarPiece::default()
+        }
+    }
+
+    /// THE PLANE'S READING OF A SUCCESS ANSWER (`OnPieceOut::fault`, one of the transport kind's
+    /// `FAULT_*`), whether the answer reported a count that bills (`billed`), and whether its reply
+    /// to the caller is complete (`done`). The head's success was recorded and its budget unit spent
+    /// when the head arrived; the plane's reading of the whole answer settles both, by ONE rule:
+    ///
+    /// * a transient or hard fault is the destination's, so a COMPENSATING outcome is recorded
+    ///   against the member; and an answer the destination failed that came to nothing (no byte of
+    ///   a streamed answer delivered, spec Part 2 #62, and no count billed) gives its budget unit
+    ///   back. 1.5.5 did exactly this for a 2xx it could not translate (v1.5.5
+    ///   `crates/busbar/src/proxy/engine/mod.rs:575-588`) and recorded the fault, keeping the unit,
+    ///   for a stream's terminal error after its first byte
+    ///   (`crates/busbar/src/proxy/response_body.rs:451-480`); a failed generation the far end
+    ///   charged for keeps its unit too (owner ruling Q31: the far end served);
+    /// * no fault (or the caller's) leaves the success standing and keeps the unit, even when the
+    ///   plane ends the reply before the far end's last byte: the far end served, and an answer the
+    ///   plane could not hand on (one over its translation cap) is not the destination's fault
+    ///   (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:358-377`).
+    ///
+    /// A non-success answer was recorded on its head and a cut answer when it was cut: neither is
+    /// read again here.
+    fn judge(&self, token: &Pass<Route>, fault: u8, billed: bool, done: bool) {
+        if self.probe_of.is_some() {
+            return;
+        }
+        let failed = match fault {
+            FAULT_TRANSIENT => Some(Outcome::Transient { retry_after: None }),
+            FAULT_HARD => Some(Outcome::HardDown),
+            _ => None,
+        };
+        let e = self.egress;
+        let mut w = self.lock();
+        let reading = match w.live.as_mut() {
+            Some(live) if live.answered && !live.ended && live.error_left.is_none() => {
+                let reading = Unread {
+                    pool: live.pool.clone(),
+                    metric_pool: Self::metric_pool(&live.pool, &live.member).to_string(),
+                    destination: live.member.destination,
+                    spent: live.spent,
+                    delivered: live.delivered,
+                };
+                if failed.is_some() || done {
+                    // Settled here: the unit given back below on a fault, kept otherwise.
+                    live.spent = false;
+                }
+                if done {
+                    // The plane's reply is complete: the rest of the far end's answer is never read.
+                    live.ended = true;
+                }
+                Some(reading)
+            }
+            Some(_) => None,
+            None => w.unread.take(),
+        };
+        if let (Some(u), Some(outcome)) = (&reading, failed) {
+            if e.breaker
+                .observe(&u.pool, u.destination, outcome, e.clock.now_secs(), token)
+            {
+                e.telemetry.breaker_trip(&u.metric_pool, u.destination);
+            }
+            if u.spent && !u.delivered && !billed {
+                e.breaker.refund_budget(u.destination);
+            }
+        }
+        if done && w.live.as_ref().is_some_and(|l| l.ended) {
+            self.settle(&mut w);
         }
     }
 
@@ -1533,6 +1633,10 @@ impl FarEnd for EgressFarEnd<'_> {
 
     fn failure(&self, _token: &Pass<Route>) -> Option<&'static str> {
         self.lock().failed
+    }
+
+    fn judged(&self, token: &Pass<Route>, fault: u8, billed: bool, done: bool) {
+        self.judge(token, fault, billed, done);
     }
 
     fn constrain(&self, _token: &Pass<Route>, constraint: Constraint) {

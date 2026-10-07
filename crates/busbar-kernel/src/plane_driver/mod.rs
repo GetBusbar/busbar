@@ -224,6 +224,9 @@ pub struct PlaneDriver {
     hooks: Option<Arc<dyn HookBinder>>,
     /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
     audit: Arc<dyn AuditSink>,
+    /// The plane's billable class names, in its tail's order: a [`UnitCount::class`] indexes
+    /// them. Empty until the root states them ([`PlaneDriver::with_billable_classes`]).
+    billable_classes: Arc<[String]>,
 }
 
 /// WHERE A DOOR UNIT'S AUDIT ROW GOES (ARCHITECT SEAM-L(k)): a plane writes its unit's audit row
@@ -347,6 +350,7 @@ impl PlaneDriver {
             sessions: Mutex::default(),
             hooks: None,
             audit: Arc::new(CoreAudit),
+            billable_classes: Arc::from(Vec::new()),
         })
     }
 
@@ -377,6 +381,15 @@ impl PlaneDriver {
     #[must_use]
     pub fn with_hooks(mut self, binder: Arc<dyn HookBinder>) -> Self {
         self.hooks = Some(binder);
+        self
+    }
+
+    /// The plane's billable class names, in its tail's order (the Statement's billable classes):
+    /// what a reported [`UnitCount::class`] names, so a response-stage signal reads the count of
+    /// the class it is about.
+    #[must_use]
+    pub fn with_billable_classes(mut self, classes: impl IntoIterator<Item = String>) -> Self {
+        self.billable_classes = classes.into_iter().collect();
         self
     }
 
