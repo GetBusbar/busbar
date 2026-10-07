@@ -16,7 +16,7 @@
 //! kernel's fact that none came) and the wait the answer's frame stated, already in whole seconds.
 //! No number, no namespace, no header and no body crosses into this unit.
 
-use crate::classify::{self, Disposition, Reading};
+use crate::classify::{self, Disposition, Reading, WireFault};
 use crate::Outcome;
 
 /// One upstream answer, as this unit classifies it: the [`Reading`] and the wait the upstream asked
@@ -55,6 +55,9 @@ pub mod label {
     /// `ClientFault` short-circuits before the label is used) but a real value all the same — never
     /// a placeholder a future caller could mistake for "unset".
     pub const CLIENT_FAULT: &str = Disposition::ClientFault.label();
+    /// A healthy destination's answer, recorded as a success. Never a failure's label: a
+    /// [`Disposition::ClientFault`] records no failure telemetry.
+    pub const HEALTHY: &str = "healthy";
 }
 
 /// Fold a classified [`Disposition`] into the [`Outcome`] this unit's state machine acts on and the
@@ -89,7 +92,13 @@ pub fn outcome_and_label(
 #[must_use]
 pub fn classify_upstream(status: UpstreamStatus) -> Classified {
     let disposition = classify::classify(status.reading);
-    let (outcome, label) = outcome_and_label(disposition, status.retry_after);
+    // HEALTHY: the destination answered, whatever the status. It is relayed as a caller's answer
+    // is, and recorded as a success, never as nothing: a cell its answers reach recovers on them.
+    let (outcome, label) = if status.reading == Reading::Answered(Some(WireFault::Healthy)) {
+        (Outcome::Success, label::HEALTHY)
+    } else {
+        outcome_and_label(disposition, status.retry_after)
+    };
     Classified {
         disposition,
         outcome,

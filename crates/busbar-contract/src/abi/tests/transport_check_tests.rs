@@ -909,8 +909,10 @@ fn every_fault_row_is_checked() {
         check_fault_rows(&[fault_row(0, 1, 9, u32::from(FAULT_NONE))], 1),
         f(Rule::UnknownCode, "fault_row.fault")
     );
+    let healthy = u32::from(FAULT_HEALTHY);
+    assert_eq!(check_fault_rows(&[fault_row(0, 1, 9, healthy)], 1), Ok(()));
     assert_eq!(
-        check_fault_rows(&[fault_row(0, 1, 9, hard + 1)], 1),
+        check_fault_rows(&[fault_row(0, 1, 9, healthy + 1)], 1),
         f(Rule::UnknownCode, "fault_row.fault")
     );
 }
@@ -957,7 +959,9 @@ fn a_pieces_fault_reading_is_known_and_reads_its_code() {
     p.flags = PIECE_END_OF_FRAME | PIECE_HAS_CODE;
     p.fault = FAULT_TRANSIENT;
     assert_eq!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8), Ok(()));
-    p.fault = FAULT_HARD + 1;
+    p.fault = FAULT_HEALTHY;
+    assert_eq!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8), Ok(()));
+    p.fault = FAULT_HEALTHY + 1;
     assert_eq!(
         check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8),
         f(Rule::UnknownCode, "framer.piece.fault")

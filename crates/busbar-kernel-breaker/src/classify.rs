@@ -15,7 +15,10 @@
 //! The four readings carry 1.5.5's four arms exactly: a hard reading is the old `HardDown` (every
 //! pool's cell trips), a transient one the old `TransientUpstream` (the stated wait floors the
 //! cooldown), a caller's or an unstated one the old `ClientFault` (nothing recorded), and no answer
-//! at all the old network failure, which is transient.
+//! at all the old network failure, which is transient. A fifth reading, HEALTHY, is 1.5.5's count of
+//! a well-formed protocol error from a reachable destination as a success: it is relayed as a
+//! caller's answer is (`ClientFault`, the destination is not penalised), and
+//! [`crate::port::classify_upstream`] records it as a [`crate::Outcome::Success`].
 
 /// The transport's fault reading, as the contract owns it.
 pub use busbar_contract::transport::wire::WireFault;
@@ -49,6 +52,8 @@ pub const fn classify(reading: Reading) -> Disposition {
         Reading::NoAnswer => StatusClass::Network.disposition(),
         Reading::Answered(Some(WireFault::Hard)) => Disposition::HardDown,
         Reading::Answered(Some(WireFault::Transient)) => Disposition::TransientUpstream,
-        Reading::Answered(Some(WireFault::Caller) | None) => Disposition::ClientFault,
+        Reading::Answered(Some(WireFault::Caller | WireFault::Healthy) | None) => {
+            Disposition::ClientFault
+        }
     }
 }

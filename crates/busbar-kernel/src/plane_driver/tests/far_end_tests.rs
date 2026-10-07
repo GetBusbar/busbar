@@ -22,7 +22,9 @@ use crate::proxy::egress_unit::{
     },
     Failover, Member, OnExhausted, Pool, WeightedFloor,
 };
-use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
+use busbar_contract::abi::transport::{
+    FAULT_CALLER, FAULT_HARD, FAULT_HEALTHY, FAULT_NONE, FAULT_TRANSIENT,
+};
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{
@@ -270,6 +272,7 @@ impl Breaker for Book {
                 Outcome::RecordNothing,
                 "client_fault",
             ),
+            Some(WireFault::Healthy) => (Disposition::ClientFault, Outcome::Success, "healthy"),
         };
         Classified {
             disposition,
@@ -558,10 +561,12 @@ fn request() -> OutboundRequest {
     }
 }
 
-/// Drain one attempt's answer: its pieces until the last.
+/// Drain one attempt's answer: its pieces until the last, each read by a plane that states no
+/// fault reading of its own (the route hands every far-end piece's reading on, `FarEnd::judged`).
 async fn drain(far: &EgressFarEnd<'_>, t: &Pass<Route>) -> Vec<FarPiece> {
     let mut out = Vec::new();
     while let Some(p) = far.next(t).await {
+        far.judged(t, FAULT_NONE);
         let last = p.last;
         out.push(p);
         if last {
@@ -575,6 +580,17 @@ fn route() -> UnitRoute {
     UnitRoute {
         pool: POOL.into(),
         ..UnitRoute::default()
+    }
+}
+
+/// Hand the plane the rest of the answer, each piece read with no fault reading, through its last.
+async fn read_out(far: &EgressFarEnd<'_>, t: &Pass<Route>) {
+    loop {
+        let p = far.next(t).await.expect("a piece through the last");
+        far.judged(t, FAULT_NONE);
+        if p.last {
+            return;
+        }
     }
 }
 
@@ -760,8 +776,14 @@ async fn a_401_takes_the_member_down_and_is_relayed_to_the_plane() {
     assert!(!p.fail_over, "a hard-down is the plane's to render: {p:?}");
     assert_eq!(p.status, Some((401, 2)));
     assert_eq!(p.bytes, b"no", "the answer reaches the plane as it came");
-    // The plane read it and states no fault reading of its own: the transport's is recorded.
+    // The plane read it and states no fault reading of its own: the wait holds to the answer's
+    // end, and once its last piece is read with none, the transport's reading is recorded.
     far.judged(&t, FAULT_NONE);
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "the plane's reading is awaited"
+    );
+    read_out(&far, &t).await;
     assert_eq!(
         *r.book.observed.lock().unwrap(),
         vec![(DestinationId::new(1), Outcome::HardDown)]
@@ -833,8 +855,10 @@ async fn a_caller_fault_is_relayed_as_it_came() {
     assert!(!p.fail_over);
     assert_eq!(p.status, Some((400, 2)));
     assert_eq!(p.bytes, b"bad request");
-    // The plane read it and states no reading of its own: the transport's is recorded.
+    // The plane read it and states no reading of its own: once the answer's last piece is read
+    // with none, the transport's is recorded.
     far.judged(&t, FAULT_NONE);
+    read_out(&far, &t).await;
     assert_eq!(
         *r.book.observed.lock().unwrap(),
         vec![(DestinationId::new(1), Outcome::RecordNothing)]
@@ -1671,6 +1695,175 @@ async fn a_failed_over_answer_is_recorded_at_once_with_the_transports_reading() 
     assert!(far.send(&t, request()).await);
     let p = far.next(&t).await.expect("a piece");
     assert!(p.fail_over);
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )]
+    );
+}
+
+// ── ARCHITECT row 68: the plane's HEALTHY reading, and the deferral it rides on ────────────────────
+
+/// A relayed 502 (an at-most-once unit: the plane reads its answer) and the plane's reading of it.
+async fn relayed_502(fault: Option<u8>) -> Vec<(DestinationId, Outcome)> {
+    let r = rig(
+        &[(
+            "a.test",
+            Script::Answer(502, None, vec![b"{\"error\":\"upstream\"}"]),
+        )],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        once: true,
+        ..route()
+    });
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over, "{p:?}");
+    assert_eq!(p.status.map(|s| s.0), Some(502));
+    // The head is read with no reading: the record waits for the plane's.
+    far.judged(&t, FAULT_NONE);
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "a non-success head's record waits for the plane's reading"
+    );
+    loop {
+        let p = far.next(&t).await.expect("a piece through the last");
+        far.judged(
+            &t,
+            if p.last {
+                fault.unwrap_or(FAULT_NONE)
+            } else {
+                FAULT_NONE
+            },
+        );
+        if p.last {
+            break;
+        }
+    }
+    let observed = r.book.observed.lock().unwrap().clone();
+    observed
+}
+
+/// RED (row 68): a 502 the plane reads as HEALTHY records a SUCCESS against the destination (a
+/// well-formed protocol error from a reachable destination, as 1.5.5 counted it).
+#[tokio::test]
+async fn a_502_the_plane_reads_healthy_records_success() {
+    assert_eq!(
+        relayed_502(Some(FAULT_HEALTHY)).await,
+        vec![(DestinationId::new(1), Outcome::Success)]
+    );
+}
+
+/// A 502 the plane reads as TRANSIENT records a failure.
+#[tokio::test]
+async fn a_502_the_plane_reads_transient_records_a_failure() {
+    assert_eq!(
+        relayed_502(Some(FAULT_TRANSIENT)).await,
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )]
+    );
+}
+
+/// A 502 the plane reads through its last piece with no reading falls back to the status table
+/// (the transport's reading: transient).
+#[tokio::test]
+async fn a_502_with_no_plane_reading_falls_back_to_the_status_table() {
+    assert_eq!(
+        relayed_502(None).await,
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )]
+    );
+}
+
+/// A 401 the plane reads as HARD records a hard-down.
+#[tokio::test]
+async fn a_401_the_plane_reads_hard_records_hard_down() {
+    let r = rig(
+        &[("a.test", Script::Answer(401, None, vec![b"refused"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over, "{p:?}");
+    far.judged(&t, FAULT_HARD);
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(DestinationId::new(1), Outcome::HardDown)]
+    );
+}
+
+/// A 502 whose HEAD reaches the plane with an empty body (the plane cannot read it yet), then its
+/// body, at most once so the plane reads it.
+fn head_then_body_502() -> Rig {
+    rig(
+        &[(
+            "a.test",
+            Script::Answer(502, None, vec![b"", b"{\"error\":\"upstream\"}"]),
+        )],
+        OnExhausted::Status503,
+        None,
+    )
+}
+
+/// RED (row 68, the a2a lane's measurement): the head piece read with NO reading keeps the hold;
+/// the body piece the plane reads as HEALTHY takes it and records a SUCCESS.
+#[tokio::test]
+async fn a_502_head_with_no_reading_then_a_healthy_body_records_success() {
+    let r = head_then_body_502();
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        once: true,
+        ..route()
+    });
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let head = far.next(&t).await.expect("the head");
+    assert_eq!(head.status.map(|s| s.0), Some(502));
+    assert!(head.bytes.is_empty(), "{head:?}");
+    far.judged(&t, FAULT_NONE);
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "a head read with no reading keeps the hold"
+    );
+    let body = far.next(&t).await.expect("the body");
+    assert!(!body.bytes.is_empty() && !body.last, "{body:?}");
+    far.judged(&t, FAULT_HEALTHY);
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(DestinationId::new(1), Outcome::Success)]
+    );
+}
+
+/// The head read with no reading, then the unit settles with none stated: the status table
+/// decides (the transport's reading, transient).
+#[tokio::test]
+async fn a_502_head_with_no_reading_settled_unread_records_by_the_table() {
+    let r = head_then_body_502();
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        once: true,
+        ..route()
+    });
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let _ = far.next(&t).await.expect("the head");
+    far.judged(&t, FAULT_NONE);
+    assert!(r.book.observed.lock().unwrap().is_empty());
+    drop(far);
     assert_eq!(
         *r.book.observed.lock().unwrap(),
         vec![(

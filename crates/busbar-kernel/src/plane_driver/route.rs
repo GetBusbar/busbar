@@ -177,7 +177,8 @@ pub trait FarEnd: Sync {
     }
     /// THE PLANE'S FAULT READING of the far end's answer it was just handed: `fault` is the
     /// plane's `OnPieceOut::fault` (`FAULT_NONE` when it states none). The breaker records the
-    /// plane's reading where it states one, the transport's otherwise. The default reads nothing.
+    /// plane's first stated reading of a relayed non-success answer (healthy: a success), the
+    /// transport's when the answer's last piece was read with none. The default reads nothing.
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         let _ = (token, fault);
     }

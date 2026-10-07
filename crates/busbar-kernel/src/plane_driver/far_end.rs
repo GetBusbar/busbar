@@ -58,7 +58,7 @@ use crate::proxy::egress_unit::{
 };
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::transport::{
-    STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
+    FAULT_NONE, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{KernelSeal, Pass, Route};
@@ -381,8 +381,9 @@ struct Live {
     keep: ResponseKeep,
     /// A relayed non-success answer not yet recorded against the destination: the transport's
     /// reading waits for the plane's own reading of the same answer ([`FarEnd::judged`]), which
-    /// wins where the plane states one. Recorded with the transport's reading when the plane
-    /// states none, or when the attempt settles first.
+    /// wins where the plane states one (healthy included: a success). Recorded with the
+    /// transport's reading when the plane has read the answer's last piece and stated none, or
+    /// when the attempt settles first.
     unjudged: Option<Unjudged>,
 }
 
@@ -539,6 +540,17 @@ impl EgressFarEnd<'_> {
             e.journal.abandoned(&live.record);
         }
         drop(live.permit.take());
+    }
+
+    /// Settle an attempt whose answer has ENDED, unless the plane's reading of that answer is still
+    /// awaited: the plane is handed the answer's last piece next, and its reading of it
+    /// ([`FarEnd::judged`]) records the answer and settles the attempt. A unit that drops, or an
+    /// attempt that moves on, before that settles it as ever (the transport's reading stands).
+    fn settle_read(&self, w: &mut State) {
+        if w.live.as_ref().is_some_and(|l| l.unjudged.is_some()) {
+            return;
+        }
+        self.settle(w);
     }
 
     /// Record one classified answer against the live attempt's destination: the observation, a
@@ -1150,8 +1162,9 @@ impl EgressFarEnd<'_> {
         let piece = cap(live, piece);
         delivered(live, &piece, self.route.wants_stream);
         if piece.last {
-            // The rest is never read: the connection closes and the member's slot frees.
-            self.settle(&mut w);
+            // The rest is never read: the connection closes and the member's slot frees, once the
+            // plane has read this last piece where its reading is awaited.
+            self.settle_read(&mut w);
         }
         piece
     }
@@ -1200,7 +1213,7 @@ impl EgressFarEnd<'_> {
             live.spent = false;
             live.ended = true;
         }
-        self.settle(&mut w);
+        self.settle_read(&mut w);
         FarPiece {
             last: true,
             ..FarPiece::default()
@@ -1294,7 +1307,7 @@ impl EgressFarEnd<'_> {
                 },
             );
             if piece.last {
-                self.settle(&mut w);
+                self.settle_read(&mut w);
             }
             return piece;
         }
@@ -1326,8 +1339,18 @@ impl Drop for EgressFarEnd<'_> {
 impl FarEnd for EgressFarEnd<'_> {
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         let mut w = self.lock();
-        if let Some(live) = w.live.as_mut() {
+        let Some(live) = w.live.as_mut() else {
+            return;
+        };
+        // THE DEFERRAL (ARCHITECT row 68): a relayed non-success answer is recorded on the plane's
+        // FIRST STATED reading of it. A piece the plane reads with no reading (`FAULT_NONE`) keeps
+        // the wait, bounded by the answer: once its last piece has been read with none, the
+        // transport's reading (the status table) decides, as it does when the unit drops first.
+        if fault != FAULT_NONE || live.ended {
             self.record_unjudged(live, Some((token, fault)));
+        }
+        if live.ended {
+            self.settle(&mut w);
         }
     }
 

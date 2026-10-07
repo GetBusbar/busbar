@@ -479,10 +479,11 @@ extern "C" {
 #define BB_TRANSPORT_STATUS_CALLER_FAULT UINT8_C(2) /* Status class: the caller's fault. */
 #define BB_TRANSPORT_STATUS_FAR_END_FAULT UINT8_C(3) /* Status class: the far end's fault. */
 #define BB_TRANSPORT_STATUS_OTHER UINT8_C(4) /* Status class: other. */
-#define BB_TRANSPORT_FAULT_NONE UINT8_C(0) /* Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's */
+#define BB_TRANSPORT_FAULT_NONE UINT8_C(0) /* Fault reading: none stated — no reading, the status table decides. On a frame piece that table */
 #define BB_TRANSPORT_FAULT_CALLER UINT8_C(1) /* Fault reading: the caller's own fault. The destination is healthy and nothing is recorded. */
 #define BB_TRANSPORT_FAULT_TRANSIENT UINT8_C(2) /* Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the */
 #define BB_TRANSPORT_FAULT_HARD UINT8_C(3) /* Fault reading: the destination itself is down for every caller (its credential or its account */
+#define BB_TRANSPORT_FAULT_HEALTHY UINT8_C(4) /* Fault reading: the destination is HEALTHY. It answered; the breaker records a SUCCESS against */
 #define BB_TRANSPORT_STATUS_AT_NONE UINT8_C(0) /* [`Claim::status_at`]: no status. */
 #define BB_TRANSPORT_STATUS_AT_FIRST_FRAME UINT8_C(1) /* [`Claim::status_at`]: the first frame carries the status. */
 #define BB_TRANSPORT_STATUS_AT_TERMINAL UINT8_C(2) /* [`Claim::status_at`]: the terminal frame carries the status. */

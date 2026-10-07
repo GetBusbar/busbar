@@ -68,6 +68,9 @@ pub enum WireFault {
     /// The destination is down for every caller (a refused credential or account): every pool's
     /// cell for it trips.
     Hard,
+    /// The destination answered and is healthy, whatever the answer's status: a SUCCESS is
+    /// recorded against it, and the answer is relayed as it came.
+    Healthy,
 }
 
 impl WireFault {
@@ -79,6 +82,7 @@ impl WireFault {
             crate::abi::transport::FAULT_CALLER => Some(Self::Caller),
             crate::abi::transport::FAULT_TRANSIENT => Some(Self::Transient),
             crate::abi::transport::FAULT_HARD => Some(Self::Hard),
+            crate::abi::transport::FAULT_HEALTHY => Some(Self::Healthy),
             _ => None,
         }
     }

@@ -345,9 +345,11 @@ pub const STATUS_FAR_END_FAULT: u8 = 3;
 /// Status class: other.
 pub const STATUS_OTHER: u8 = 4;
 
-/// Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's
-/// (it records nothing against the destination): a framer that states no fault table never trips
-/// anything.
+/// Fault reading: none stated — no reading, the status table decides. On a frame piece that table
+/// is the framer's own fault table, and an answer it covers with no reading is read as the
+/// caller's (nothing is recorded against the destination): a framer that states no fault table
+/// never trips anything. On a plane's `OnPieceOut::fault` it is the transport's reading of the
+/// same answer that stands.
 pub const FAULT_NONE: u8 = 0;
 /// Fault reading: the caller's own fault. The destination is healthy and nothing is recorded.
 pub const FAULT_CALLER: u8 = 1;
@@ -357,6 +359,10 @@ pub const FAULT_TRANSIENT: u8 = 2;
 /// Fault reading: the destination itself is down for every caller (its credential or its account
 /// was refused), so every pool's cell for it trips at once.
 pub const FAULT_HARD: u8 = 3;
+/// Fault reading: the destination is HEALTHY. It answered; the breaker records a SUCCESS against
+/// it whatever the answer's status (a well-formed protocol error from a reachable destination, as
+/// 1.5.5 counted it: "the backend was reachable and answered"). The answer is relayed as it came.
+pub const FAULT_HEALTHY: u8 = 4;
 
 /// [`Claim::status_at`]: no status.
 pub const STATUS_AT_NONE: u8 = 0;
@@ -491,7 +497,7 @@ pub struct FaultRow {
     pub lo: u32,
     /// The highest code, inclusive.
     pub hi: u32,
-    /// The fault reading (`FAULT_CALLER` | `FAULT_TRANSIENT` | `FAULT_HARD`).
+    /// The fault reading (`FAULT_CALLER` | `FAULT_TRANSIENT` | `FAULT_HARD` | `FAULT_HEALTHY`).
     pub fault: u32,
 }
 

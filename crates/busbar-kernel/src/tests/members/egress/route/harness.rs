@@ -339,6 +339,11 @@ impl Breaker for TestBreaker {
                 label: disposition::HARD_DOWN,
             },
             (Some(WireFault::Transient), _) | (None, None) => transient,
+            (Some(WireFault::Healthy), _) => Classified {
+                disposition: Disposition::ClientFault,
+                outcome: Outcome::Success,
+                label: disposition::TRANSIENT,
+            },
             (Some(WireFault::Caller), _) | (None, Some(_)) => Classified {
                 disposition: Disposition::ClientFault,
                 outcome: Outcome::RecordNothing,

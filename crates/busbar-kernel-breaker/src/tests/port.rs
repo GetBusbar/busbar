@@ -128,3 +128,13 @@ fn the_stated_wait_floors_only_a_transient_fault() {
         Outcome::Transient { retry_after: None }
     );
 }
+
+/// HEALTHY (ARCHITECT row 68): the destination answered, whatever the status. Relayed as a
+/// caller's answer is, and recorded as a SUCCESS, never as nothing.
+#[test]
+fn a_healthy_reading_is_a_relayed_success() {
+    let healthy = answered(Some(WireFault::Healthy), Some(30));
+    assert_eq!(healthy.disposition, Disposition::ClientFault);
+    assert_eq!(healthy.outcome, Outcome::Success);
+    assert_eq!(healthy.label, label::HEALTHY);
+}

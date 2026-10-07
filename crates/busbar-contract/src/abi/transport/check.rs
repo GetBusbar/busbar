@@ -16,7 +16,7 @@ use super::{
     AcceptOut, ArrivalOut, Claim, ConnFacts, FaultRow, FinishIn, FramePiece, FrameSpan, FramerOut,
     HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
     CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH,
-    FAULT_CALLER, FAULT_HARD, FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED,
+    FAULT_CALLER, FAULT_HEALTHY, FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED,
     PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
     PIECE_TEXT, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL,
     STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
@@ -262,7 +262,7 @@ pub fn check_framer(
         code(
             u64::from(p.fault),
             0,
-            u64::from(FAULT_HARD),
+            u64::from(FAULT_HEALTHY),
             "framer.piece.fault",
         )?;
         // The fault reading is a reading OF the piece's code: a piece with no code reads none.
@@ -557,7 +557,7 @@ pub fn check_fault_rows(rows: &[FaultRow], claims_len: u64) -> Result<(), Fault>
         code(
             u64::from(r.fault),
             u64::from(FAULT_CALLER),
-            u64::from(FAULT_HARD),
+            u64::from(FAULT_HEALTHY),
             "fault_row.fault",
         )?;
     }

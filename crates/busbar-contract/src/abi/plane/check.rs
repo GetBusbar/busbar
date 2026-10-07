@@ -415,11 +415,11 @@ fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
 /// `on_piece`'s breaker fault reading: a known `FAULT_*` (the transport kind's one vocabulary), none
 /// on an answer that is not READY, and its padding zero.
 fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
-    use crate::abi::transport::{FAULT_HARD, FAULT_NONE};
+    use crate::abi::transport::{FAULT_HEALTHY, FAULT_NONE};
     code(
         u64::from(out.fault),
         0,
-        u64::from(FAULT_HARD),
+        u64::from(FAULT_HEALTHY),
         "on_piece.fault",
     )?;
     if out.fault != FAULT_NONE && outcome != Outcome::Ready {
