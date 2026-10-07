@@ -5,9 +5,9 @@
 //! through the root rows' secret axis) — every fail-closed branch of its happy AND error paths
 //! ("env var unset", "file empty", "unknown module", "non-UTF-8 where a text secret is required")
 //! gets an explicit assertion. A kernel test build answers the axis with the in-crate secret double
-//! (`test_support::secrets`, ARCHITECT R-FIX3), so a refusal asserted here is the double's, passed
-//! through verbatim; the shipped `env` / `file` sources' own rules (the blank, regular-file and
-//! size-cap guards) and words are proven where they are linked, at the composition root
+//! (`test_support::secrets`, ARCHITECT R-FIX3), whose refusal text is the shipped sources' byte for
+//! byte, passed through verbatim; the sources' own further rules (the blank, regular-file and
+//! size-cap guards) are proven where they are linked, at the composition root
 //! (`crates/busbar/src/root/tests/linked_secret_sources.rs`). The secret-module contract's half of
 //! that suite is the contract's (`crates/busbar-contract/tests/mutation_hardening_secret_contract.rs`).
 
@@ -45,7 +45,7 @@ fn resolve_linked_env_empty_value_is_fail_closed() {
     let var = unique("ENV_EMPTY");
     std::env::set_var(&var, "");
     let err = resolve_linked(&SecretRef::env(&var)).unwrap_err();
-    assert!(err.contains("is empty"), "{err}");
+    assert!(err.contains("EMPTY"), "{err}");
     assert!(err.contains(&var), "{err}");
     std::env::remove_var(&var);
 }
@@ -108,7 +108,7 @@ fn resolve_linked_file_empty_file_is_fail_closed() {
     let path = temp_path("FILE_EMPTY");
     std::fs::write(&path, b"").unwrap();
     let err = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
-    assert!(err.contains("is empty"), "{err}");
+    assert!(err.contains("EMPTY"), "{err}");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -116,7 +116,7 @@ fn resolve_linked_file_empty_file_is_fail_closed() {
 fn resolve_linked_file_missing_file_is_an_error() {
     let path = temp_path("FILE_MISSING"); // never created
     let err = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
-    assert!(err.contains("unreadable"), "{err}");
+    assert!(err.contains("cannot resolve"), "{err}");
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn resolve_linked_string_non_utf8_is_an_error() {
 fn resolve_linked_string_propagates_the_underlying_resolve_error() {
     let path = temp_path("STR_MISSING");
     let err = resolve_linked_string(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
-    assert!(err.contains("unreadable"), "{err}");
+    assert!(err.contains("cannot resolve"), "{err}");
 }
 
 // ── operator-supplied input: padded and binary credentials, mis-encoded variables ──────────────

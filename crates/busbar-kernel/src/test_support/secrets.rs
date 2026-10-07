@@ -5,32 +5,27 @@
 //! [`SecretCalls`], the seam the composition root installs and the kernel names nothing behind —
 //! answered in process, so the kernel's tests resolve `{ env: VAR }` / `{ file: PATH }` references
 //! with no secret plugin linked (ARCHITECT R-FIX3, 2026-09-26: a behaviour double the kernel's own
-//! tests need lives in-crate, linked only). It is not a plugin, not a door and not a copy of one:
-//! its refusal words are its own, so a kernel test that pins a rendered refusal pins the kernel's
-//! passing of a module's text through verbatim, never a plugin's wording. The shipped `env` / `file`
-//! plugins' own behaviour and their 1.5.5 words are proven where they are linked, at the
-//! composition root (`crates/busbar/src/root/tests/linked_secret_sources.rs` and
-//! `root/tests/linked.rs`).
+//! tests need lives in-crate, linked only). It is not a plugin and not a door, and it names neither
+//! plugin crate.
 //!
-//! It answers by the two module aliases the contract names ([`SECRET_MODULE_ENV`],
-//! [`SECRET_MODULE_FILE`]) and honours what the contract asks of every secret module
-//! ([`busbar_contract::secret::SecretModule::resolve`]): fail-closed on a missing setting, a missing
-//! source and an empty value, and a refusal text that names the source, never the value. A value it
-//! returns is the source's bytes, untouched. Beyond that it does nothing a plugin does on its own
-//! account (no regular-file check, no size cap, no blank rule): what the kernel does with a value or
-//! a refusal is what the kernel's tests prove.
+//! FAITHFUL TEXT (coordinator ruling on #565, 2026-10-07): every refusal the double produces is the
+//! shipped source's, byte for byte, and its error kind is the source's; each string cites the line
+//! of the pinned source it reproduces (`busbar-secret-env` at rev 495318c, `secret-env/src/lib.rs`;
+//! `busbar-secret-file` at rev 479c833, `secret-file/src/lib.rs` — the revs the workspace root
+//! pins). A rev bump that changes a refusal changes it here too; the root's suite
+//! (`crates/busbar/src/root/tests/linked_secret_sources.rs`, `root/tests/linked.rs`) pins the real
+//! sources' words through the linked axis, so the two cannot drift silently apart.
 //!
-//! - `env` reads the variable `settings.key` names: unset is `NotFound`; set but not UTF-8, or
-//!   empty, is `Invalid`.
-//! - `file` reads the file `settings.path` names: an I/O failure is `NotFound` when nothing is
-//!   there and `Unavailable` otherwise; an empty file is `Invalid`.
-//! - A settings document that is not a JSON object, or a missing / blank `key` / `path`, is
-//!   `Invalid`.
+//! It produces a subset of the sources' refusals, the ones the kernel's tests need: a settings
+//! document that is not a JSON object, a missing / blank `key` / `path`, an unset or non-UTF-8
+//! variable, an unreadable file, an empty value. The sources' own guards beyond those (the blank
+//! value / blank file rule, the regular-file check, the size cap) are theirs alone and are proven at
+//! the root. A value it returns is the source's bytes, untouched.
 
 use std::sync::Arc;
 
 use busbar_contract::abi::secret::{
-    ERROR_KIND_INVALID, ERROR_KIND_NOT_FOUND, ERROR_KIND_UNAVAILABLE,
+    ERROR_KIND_DENIED, ERROR_KIND_INVALID, ERROR_KIND_NOT_FOUND, ERROR_KIND_UNAVAILABLE,
 };
 use busbar_contract::redacted::Redacted;
 use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
@@ -61,67 +56,89 @@ fn refused(error_kind: u32, text: String) -> SecretRefused {
     SecretRefused { error_kind, text }
 }
 
-/// The non-blank string setting `field` of a settings document.
-fn setting(settings: &[u8], module: &str, field: &str) -> Result<String, SecretRefused> {
+/// The env source's refusal of a missing / blank `key` (secret-env/src/lib.rs:42-45 @ 495318c).
+const ENV_NEEDS_KEY: &str = "secret module 'env' requires settings.key naming the environment \
+     variable (e.g. `{ env: MY_VAR }` or `{ module: env, settings: { key: MY_VAR } }`)";
+
+/// The file source's refusal of a missing / blank `path` (secret-file/src/lib.rs:83-86 @ 479c833).
+const FILE_NEEDS_PATH: &str = "secret module 'file' requires settings.path naming the file \
+     (e.g. `{ file: /run/secrets/x }` or `{ module: file, settings: { path: /run/secrets/x } }`)";
+
+/// The non-blank string setting `field` of a settings document; `missing` is the source's refusal
+/// when it is absent or blank.
+fn setting(settings: &[u8], field: &str, missing: &str) -> Result<String, SecretRefused> {
     let doc: serde_json::Map<String, serde_json::Value> = if settings.is_empty() {
         serde_json::Map::new()
     } else {
         serde_json::from_slice(settings).map_err(|e| {
+            // secret-env/src/lib.rs:95 @ 495318c; secret-file/src/lib.rs:141 @ 479c833.
             refused(
                 ERROR_KIND_INVALID,
-                format!("secret double ({module}): settings are not a JSON object: {e}"),
+                format!("secret settings are not a JSON object: {e}"),
             )
         })?
     };
     match doc.get(field).and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => Ok(v.to_string()),
-        _ => Err(refused(
-            ERROR_KIND_INVALID,
-            format!("secret double ({module}): settings.{field} is missing or blank"),
-        )),
+        _ => Err(refused(ERROR_KIND_INVALID, missing.to_string())),
     }
 }
 
 fn resolve_env(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
-    let var = setting(settings, SECRET_MODULE_ENV, SECRET_ENV_SETTING_KEY)?;
+    let var = setting(settings, SECRET_ENV_SETTING_KEY, ENV_NEEDS_KEY)?;
     let Some(raw) = std::env::var_os(&var) else {
+        // secret-env/src/lib.rs:55-57 @ 495318c (NotFound).
         return Err(refused(
             ERROR_KIND_NOT_FOUND,
-            format!("secret double (env): variable {var} is unset"),
+            format!("secret env:{var} cannot resolve: environment variable '{var}' is unset"),
         ));
     };
     let value = raw.into_string().map_err(|_| {
+        // secret-env/src/lib.rs:62-67 @ 495318c (Invalid).
         refused(
             ERROR_KIND_INVALID,
-            format!("secret double (env): variable {var} is set but not UTF-8"),
+            format!(
+                "secret env:{var} cannot resolve: environment variable '{var}' IS SET but its \
+                 value is not valid UTF-8, so it cannot be read as a secret — this is an \
+                 ENCODING problem, not a missing variable; re-export it as UTF-8 (setting it \
+                 again will not help)"
+            ),
         )
     })?;
     if value.is_empty() {
+        // secret-env/src/lib.rs:68-71 @ 495318c (Invalid).
         return Err(refused(
             ERROR_KIND_INVALID,
-            format!("secret double (env): variable {var} is empty"),
+            format!(
+                "secret env:{var} resolved to an EMPTY value; a secret must be non-empty \
+                 (fail-closed)"
+            ),
         ));
     }
     Ok(value.into_bytes())
 }
 
 fn resolve_file(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
-    let path = setting(settings, SECRET_MODULE_FILE, SECRET_FILE_SETTING_PATH)?;
+    let path = setting(settings, SECRET_FILE_SETTING_PATH, FILE_NEEDS_PATH)?;
     let bytes = std::fs::read(&path).map_err(|e| {
-        let kind = if e.kind() == std::io::ErrorKind::NotFound {
-            ERROR_KIND_NOT_FOUND
-        } else {
-            ERROR_KIND_UNAVAILABLE
+        // The kind is the source's io mapping (secret-file/src/lib.rs:62-67 @ 479c833), the text
+        // its io refusal (secret-file/src/lib.rs:68 @ 479c833).
+        let kind = match e.kind() {
+            std::io::ErrorKind::NotFound => ERROR_KIND_NOT_FOUND,
+            std::io::ErrorKind::PermissionDenied => ERROR_KIND_DENIED,
+            std::io::ErrorKind::Other => ERROR_KIND_INVALID,
+            _ => ERROR_KIND_UNAVAILABLE,
         };
-        refused(
-            kind,
-            format!("secret double (file): {path} unreadable: {e}"),
-        )
+        refused(kind, format!("secret file:{path} cannot resolve: {e}"))
     })?;
     if bytes.is_empty() {
+        // secret-file/src/lib.rs:112-115 @ 479c833 (Invalid).
         return Err(refused(
             ERROR_KIND_INVALID,
-            format!("secret double (file): {path} is empty"),
+            format!(
+                "secret file:{path} resolved to an EMPTY file; a secret must be non-empty \
+                 (fail-closed)"
+            ),
         ));
     }
     Ok(bytes)
