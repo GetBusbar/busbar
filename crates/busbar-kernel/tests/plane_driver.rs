@@ -1570,6 +1570,45 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     );
 }
 
+/// THE GRANT IS JUDGED BEFORE THE TRUST FACTS (ruling (a), coordinator 2026-10-07: the ordered
+/// gate is identity, grant, then the counterparty's standing). A unit whose caller the
+/// deployment's Approve refuses (`scope_denied`) is refused for that, at Approve, even when the
+/// counterparty it states is one the book does not trust: a grant refusal never tells the caller
+/// the counterparty's trust state. RED before the order: the unit was refused `untrusted`. The
+/// control: the same untrusted facts under a deployment that grants are refused `untrusted`.
+#[tokio::test]
+async fn the_kernels_approve_judges_the_grant_before_the_trust_facts() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    let services = stored();
+    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let (steps, far, caller) = (
+        common::TestUnits::refusing(StepName::Approve, ReasonCode::ScopeDenied),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/trusted/stranger", b"x"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert_eq!(
+        outcome,
+        Outcome::Refused(StepName::Approve, ReasonCode::ScopeDenied),
+        "the grant's refusal, not the counterparty's standing"
+    );
+    let body = units
+        .take_rendered()
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .unwrap_or_default();
+    assert!(!body.contains("untrusted"), "{body}");
+    let (outcome, _) = approved(&driver, "/trusted/stranger").await;
+    assert!(untrusted(&outcome), "granted, the book judges: {outcome:?}");
+}
+
 // ── the plane's own work bounds (its section's reserved `work:`) ────────────────────────────────
 
 /// A PLANE'S `work:` BOUNDS OVERRIDE THE HOST'S (spec POOLS-VERBS: the reserved `work: {max_live,

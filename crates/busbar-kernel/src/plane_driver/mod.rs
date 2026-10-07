@@ -77,8 +77,8 @@ use busbar_contract::abi::plane::{
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
     Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate, Consumption, Decode,
-    Dial, Encode, Grant, HoldAccrual, Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode,
-    Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
+    Dial, Encode, Grant, HoldAccrual, KernelSeal, Meter, OpClassId, Outcome, Pass, PrincipalId,
+    ReasonCode, Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
@@ -1112,10 +1112,13 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06: trust is the kernel's Approve step; a plane
-    /// states facts and judges none): the trust facts the plane's `arrive` stated are judged
-    /// against the kernel's trust book first, and a unit the book does not trust is refused
-    /// [`ReasonCode::Untrusted`] before the deployment's own Approve runs; a unit that states none
-    /// goes straight to it.
+    /// states facts and judges none). The deployment's own Approve (the caller's grant over the
+    /// unit's route) runs FIRST, and its refusal stands; only a unit it admits has the trust facts
+    /// the plane's `arrive` stated judged against the kernel's trust book, and one the book does
+    /// not trust is refused [`ReasonCode::Untrusted`]. A unit that states none is the deployment's
+    /// answer alone. The order is the ordered gate's (identity, grant, then the counterparty's
+    /// standing; ruling (a), coordinator 2026-10-07): a caller the grant refuses is never told the
+    /// counterparty's trust state.
     fn approve(
         &self,
         token: &Pass<Approve>,
@@ -1123,25 +1126,35 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> StepAnswer<Approve> {
+        let granted = self.steps.approve(token, ctx, principal, destinations);
         let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
-        if let Some(t) = stated {
-            let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-            let (counterparty, item, digest) = (
-                text(&t.counterparty),
-                t.item.as_deref().map(text),
-                t.digest.as_deref().map(text),
-            );
-            let facts = TrustFacts {
-                counterparty: &counterparty,
-                item: item.as_deref(),
-                digest: digest.as_deref(),
-            };
-            if let Err(why) = self.driver.services.trust_judge(&self.driver.label, &facts) {
-                self.lock().distrust = Some(why);
-                return StepAnswer::refuse(token, Refusal::new(ReasonCode::Untrusted));
-            }
+        let Some(t) = stated else {
+            return granted;
+        };
+        let facts = match granted.into_result(&KernelSeal::acquire_for_kernel()) {
+            Ok(facts) => facts,
+            Err(refusal) => return StepAnswer::refuse(token, refusal),
+        };
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let (counterparty, item, digest) = (
+            text(&t.counterparty),
+            t.item.as_deref().map(text),
+            t.digest.as_deref().map(text),
+        );
+        let stated = TrustFacts {
+            counterparty: &counterparty,
+            item: item.as_deref(),
+            digest: digest.as_deref(),
+        };
+        if let Err(why) = self
+            .driver
+            .services
+            .trust_judge(&self.driver.label, &stated)
+        {
+            self.lock().distrust = Some(why);
+            return StepAnswer::refuse(token, Refusal::new(ReasonCode::Untrusted));
         }
-        self.steps.approve(token, ctx, principal, destinations)
+        StepAnswer::proceed(token, facts)
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
