@@ -6786,13 +6786,14 @@ mod agent_door {
     /// The same battery on the gRPC binding (predev
     /// `a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding`): the selection sits
     /// above the binding axis. Two gRPC agents serving ONE card (one deployment registered twice),
-    /// the primary answering `401`.
+    /// the primary refusing busbar itself (`UNAUTHENTICATED`, predev's `401`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-pool-reroute-grpc";
         let _published = Published(instance);
-        let mut primary = GrpcAgent::serving(grpc_working_answer(), "0", 401, None).await;
+        // UNAUTHENTICATED (16): the gRPC binding's refusal of busbar itself, as a 401 is.
+        let mut primary = GrpcAgent::serving(Vec::new(), "16", 200, None).await;
         let mut twin =
             GrpcAgent::serving(grpc_working_answer(), "0", 200, Some(primary.port)).await;
         let entries = format!(

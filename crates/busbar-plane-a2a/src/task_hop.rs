@@ -173,7 +173,7 @@ pub fn holder(
         .into_iter()
         .filter(|r| {
             r.context_id == context
-                && members.iter().any(|m| *m == r.agent_id)
+                && members.contains(&r.agent_id)
                 && TaskState::parse(&r.state).is_ok_and(TaskState::is_interrupted)
         })
         .collect();

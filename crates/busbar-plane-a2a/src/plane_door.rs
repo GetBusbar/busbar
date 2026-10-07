@@ -926,6 +926,19 @@ slot!(
                 let Some(def) = section.as_ref().and_then(|s| s.agents.get(agent)) else {
                     return refused(&mut out, &arrival::no_such_agent(agent));
                 };
+                let pooled = section.as_ref().and_then(|s| s.pool_of(agent));
+                // A CARD READ ADDRESSED TO A POOLED AGENT has no one answer across the pool's
+                // members (predev `receive.rs:1841-1857`): refused about the agent it addressed, so
+                // the kernel judges the caller's grant on it first; an agent the kernel's trust
+                // book does not serve is refused for that first, its trust facts stated (a refusal
+                // about an entry states none, abi/plane "A refused arrival").
+                if let (Some(_), Disposition::Request { row, id, .. }) = (&pooled, &disposition) {
+                    if row.op == crate::ops::OP_AGENT_CARD
+                        && verdict(plane, agent) == busbar_contract::abi::host::service::DISTRUST_NONE
+                    {
+                        return refused(&mut out, &arrival::pooled_card(id.clone()));
+                    }
+                }
                 if let Err(refusal) =
                     admit_addressed(plane, (agent, def), generation, request.as_ref(), &mut out)
                 {
@@ -934,16 +947,10 @@ slot!(
                 // AN AGENT IN A FAILOVER POOL (predev `receive.rs` `pool_of`): a relayed unit routes
                 // over the POOL, so the kernel's one walk picks the member, primary first (each
                 // member's declared tier); the caller's grant on the agent it addressed is judged
-                // on the trust counterparty it states. A card read has no one answer across a
-                // pool's members, so it is refused, after the grant on the agent it addressed. A
-                // verb the plane answers itself stays the addressed agent's, as predev answered it
-                // before the pool was read (`receive.rs:1590` before `:1839`).
-                if let Some((name, _)) = section.as_ref().and_then(|s| s.pool_of(agent)) {
-                    if let Disposition::Request { row, id, .. } = &disposition {
-                        if row.op == crate::ops::OP_AGENT_CARD {
-                            return refused(&mut out, &arrival::pooled_card(id.clone()));
-                        }
-                    }
+                // on the trust counterparty it states. A verb the plane answers itself stays the
+                // addressed agent's, as predev answered it before the pool was read
+                // (`receive.rs:1590` before `:1839`).
+                if let Some((name, _)) = pooled {
                     if hop.is_some() {
                         out.route(ROUTE_POOL, name);
                         pool = Some(name.to_string());
@@ -1823,7 +1830,7 @@ fn piece(
     // names the member it is pinned to (predev's pinned refusal), never the pool.
     if let (false, Some((_, members))) = (continues, pooled.as_ref()) {
         if given.from == FROM_CALLER && given_member.is_empty() {
-            if let Poll::Pending = read_holder(reach, hop, pass, caller, members) {
+            if read_holder(reach, hop, pass, caller, members).is_pending() {
                 return (Outcome::Pending, false);
             }
         }

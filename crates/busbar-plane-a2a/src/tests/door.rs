@@ -329,20 +329,18 @@ fn a_valid_section_reads_and_a_bad_entry_is_refused_in_the_grammars_words() {
 /// before the lift: `pools` is read as a registration and the whole section is refused.
 #[test]
 fn the_hosts_failover_pools_are_lifted_off_the_section_in_declared_order() {
-    let url = |name: &str| endpoint("vendor", &format!("/{name}"));
-    let section = serde_json::json!({
-        "planner-b": { "url": url("planner-b"), "pin": { "mechanism": "unpinned" } },
-        "planner-a": { "url": url("planner-a"), "pin": { "mechanism": "unpinned" } },
-        "pools": {
-            "planner": {
-                "members": ["planner-b", { "name": "planner-a" }],
-                "repeatable": [],
-                "member_granted": true,
-            }
-        },
-    });
-    let cfg =
-        read_settings(&serde_json::to_vec(&section).expect("json")).expect("the section reads");
+    // Written as text: the registrations' order is the order written.
+    let (b, a) = (
+        endpoint("vendor", "/planner-b"),
+        endpoint("vendor", "/planner-a"),
+    );
+    let section = format!(
+        r#"{{"planner-b": {{"url": "{b}", "pin": {{"mechanism": "unpinned"}}}},
+            "pools": {{"planner": {{"members": ["planner-b", {{"name": "planner-a"}}],
+                                    "repeatable": [], "member_granted": true}}}},
+            "planner-a": {{"url": "{a}", "pin": {{"mechanism": "unpinned"}}}}}}"#
+    );
+    let cfg = read_settings(section.as_bytes()).expect("the section reads");
     assert_eq!(
         cfg.agents.keys().collect::<Vec<_>>(),
         ["planner-b", "planner-a"],

@@ -623,15 +623,18 @@ pub fn read_settings(settings: &[u8]) -> Result<AgentsCfg, String> {
     read_section(settings)
 }
 
+/// Each failover pool's members, by pool name, in the order declared.
+type Pools = indexmap::IndexMap<String, Vec<String>>;
+
 /// The section's reserved `pools` key taken off `settings`: the rest of the section (its keys in
 /// the order written), and each pool's members, in the order declared (a member written as an
 /// object names its entry under `name`). `None` when the section states no pools.
-fn lift_pools(settings: &[u8]) -> Option<(Vec<u8>, indexmap::IndexMap<String, Vec<String>>)> {
+fn lift_pools(settings: &[u8]) -> Option<(Vec<u8>, Pools)> {
     use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
     let mut section: indexmap::IndexMap<String, serde_json::Value> =
         serde_json::from_slice(settings).ok()?;
     let stated = section.shift_remove(RESERVED_POOLS_KEY)?;
-    let pools: indexmap::IndexMap<String, Vec<String>> = stated
+    let pools: Pools = stated
         .as_object()
         .into_iter()
         .flatten()
