@@ -469,15 +469,17 @@
     "crates/busbar-kernel-audit/src"
    ],
    "tree_hash": "74889e16f979be05153dd6cece65aa1ebd096198e8410ac94232f55da9ac18c2",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "LOW": 5
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 6,
+    "NIT": 0
    },
-   "report": "Fixed record schema holds with no content and no price; chain, window, head walks, signatures and amendments verify. Breaks the no-static-seam rule: the amendment journal and its durable sink are process-global statics. Head anchors reset on every restart and the anchor read is never served; the record has no node field; a duplicate digest framing arm is dead. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "The fixed record carries no content and no price, and its chain, window, signature and amendment walks verify. The node's amendment journal and its durable sink are process-global statics, and the sink is a trait-object seam that the composition root installs into the kernel. The record has no node field, so neither its digest, its signature nor the range read says which node sealed it. After a restart the head read answers with a null head on a non-empty chain and every earlier anchor is gone. The anchor read is never served, and several items are never constructed. Read fully.",
+   "auditor": "opus-ledger-kernel-audit",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-audit/src/tests"
@@ -494,6 +496,20 @@
       "LOW": 5
      },
      "report": "Fixed record schema holds with no content and no price; chain, window, head walks, signatures and amendments verify. Breaks the no-static-seam rule: the amendment journal and its durable sink are process-global statics. Head anchors reset on every restart and the anchor read is never served; the record has no node field; a duplicate digest framing arm is dead. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-kernel-audit",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "74889e16f979be05153dd6cece65aa1ebd096198e8410ac94232f55da9ac18c2",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 1,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The fixed record carries no content and no price, and its chain, window, signature and amendment walks verify. The node's amendment journal and its durable sink are process-global statics, and the sink is a trait-object seam that the composition root installs into the kernel. The record has no node field, so neither its digest, its signature nor the range read says which node sealed it. After a restart the head read answers with a null head on a non-empty chain and every earlier anchor is gone. The anchor read is never served, and several items are never constructed. Read fully."
     }
    ]
   },
@@ -504,15 +520,17 @@
     "crates/busbar-kernel-breaker/src"
    ],
    "tree_hash": "18c6f43cf5645d31ca39ba88e43c42ac28d00aff63105dfadad56c746fcaf3a3",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
     "HIGH": 2,
-    "LOW": 2
+    "MEDIUM": 2,
+    "LOW": 5,
+    "NIT": 0
    },
-   "report": "The kernel breaker understands protocols: it classifies HTTP status bands and gRPC status codes, parses the Retry-After header, and names a vendor, a plane and a dialect error code, breaking Law 1 and the kernel byte-pump rule. Two error normalizers ship and disagree on a status-less failure; the probe journal and warn-once diagnostics are never constructed. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "The kernel breaker still understands protocols. It classifies HTTP status bands and a gRPC status table, parses the Retry-After header, and names a vendor, a plane and a dialect error code. A second failure can overwrite an armed cooldown and cut short an upstream's Retry-After. A frame with no status number is read as a network failure, but its only production caller expects nothing to be recorded. Two disagreeing normalizers ship side by side, and the probe journal, warn-once sink and exhaustion helper never run. Read fully.",
+   "auditor": "opus-ledger-kernel-breaker",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-breaker/src/tests"
@@ -529,6 +547,20 @@
       "LOW": 2
      },
      "report": "The kernel breaker understands protocols: it classifies HTTP status bands and gRPC status codes, parses the Retry-After header, and names a vendor, a plane and a dialect error code, breaking Law 1 and the kernel byte-pump rule. Two error normalizers ship and disagree on a status-less failure; the probe journal and warn-once diagnostics are never constructed. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-kernel-breaker",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "18c6f43cf5645d31ca39ba88e43c42ac28d00aff63105dfadad56c746fcaf3a3",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 2,
+      "LOW": 5,
+      "NIT": 0
+     },
+     "report": "The kernel breaker still understands protocols. It classifies HTTP status bands and a gRPC status table, parses the Retry-After header, and names a vendor, a plane and a dialect error code. A second failure can overwrite an armed cooldown and cut short an upstream's Retry-After. A frame with no status number is read as a network failure, but its only production caller expects nothing to be recorded. Two disagreeing normalizers ship side by side, and the probe journal, warn-once sink and exhaustion helper never run. Read fully."
     }
    ]
   },
@@ -1008,14 +1040,35 @@
    "paths": [
     "crates/busbar-contract/include"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "3806ae0704e477473c1b0094e6d4fd97308c543e32c040365207bb89c4ef41cf",
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 2,
+    "NIT": 0
+   },
+   "report": "The generated C header carries a do-not-edit banner and uses only fixed-width integer types, explicit reserved padding, extern \"C\" guards and enum typedefs over fixed ints. Per-kind ABI versions match the design (mechanism 2, store 3, secret 2, auth 3, hook 2, export 3, plane 1, transport 1). No retired constants, poll slot or cold-lane symbols appear, and identifiers name only kinds. Ten structs matched their Rust definitions. Three structures carry no size or alignment assertion, and many comments are truncated or carry internal review prose. Read fully except the bulk body, which was sampled.",
+   "auditor": "sonnet-ledger-contract-include",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "sonnet-ledger-contract-include",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "3806ae0704e477473c1b0094e6d4fd97308c543e32c040365207bb89c4ef41cf",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 2,
+      "NIT": 0
+     },
+     "report": "The generated C header carries a do-not-edit banner and uses only fixed-width integer types, explicit reserved padding, extern \"C\" guards and enum typedefs over fixed ints. Per-kind ABI versions match the design (mechanism 2, store 3, secret 2, auth 3, hook 2, export 3, plane 1, transport 1). No retired constants, poll slot or cold-lane symbols appear, and identifiers name only kinds. Ten structs matched their Rust definitions. Three structures carry no size or alignment assertion, and many comments are truncated or carry internal review prose. Read fully except the bulk body, which was sampled."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/dialects",
@@ -2138,16 +2191,18 @@
    "paths": [
     "crates/store-memory/src/tests"
    ],
-   "tree_hash": "9a7a4f99234583680f164304391f1729f3474af17393e8a4d58a2c066dfe3506",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "tree_hash": "f0dc343ede9c84bf5cf8c2df634311087a3bd0489ad35c785617df4b1c928409",
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "LOW": 2
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 3,
+    "NIT": 0
    },
-   "report": "Breaks the rule that an active work handle is never evicted: the memory store's tests assert that a task record written through the record leg is deleted after 31 days on write age alone with no settled check, contradicting the crate's own conformance suite. The tests also use a contract test kit, and their prose names sibling stores and a plane. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "The memory store's unit tests now hold the record leg to the never-evict rule. A task record written forty days ago survives repeated writes, and a control in the same test proves the age sweep really ran on usage windows. The production store matches this: the record map has no age sweep and no delete verb. Three low items remain. The tests run the shared epoch and slice cases from the contract's test kit. Test prose names sibling store backends and a plane. One test comment misdescribes which clock stamps a revocation. Read fully.",
+   "auditor": "opus-ledger-store-memory-tests",
    "fixed_at": null,
    "rounds": [
     {
@@ -2161,6 +2216,20 @@
       "LOW": 2
      },
      "report": "Breaks the rule that an active work handle is never evicted: the memory store's tests assert that a task record written through the record leg is deleted after 31 days on write age alone with no settled check, contradicting the crate's own conformance suite. The tests also use a contract test kit, and their prose names sibling stores and a plane. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-store-memory-tests",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "f0dc343ede9c84bf5cf8c2df634311087a3bd0489ad35c785617df4b1c928409",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The memory store's unit tests now hold the record leg to the never-evict rule. A task record written forty days ago survives repeated writes, and a control in the same test proves the age sweep really ran on usage windows. The production store matches this: the record map has no age sweep and no delete verb. Three low items remain. The tests run the shared epoch and slice cases from the contract's test kit. Test prose names sibling store backends and a plane. One test comment misdescribes which clock stamps a revocation. Read fully."
     }
    ]
   },
@@ -2376,16 +2445,18 @@
    "paths": [
     ".github"
    ],
-   "tree_hash": "dbd9aab61f1f62e9fb9cc0053241daee3949a402bc0c89f21de57fde17f64fbb",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "tree_hash": "f2141c9396b05066acebeccf9ca4f86e151f20ff2407d7926ac6ca591fe73f6d",
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "LOW": 3
+    "HIGH": 0,
+    "MEDIUM": 2,
+    "LOW": 2,
+    "NIT": 0
    },
-   "report": "The release contract requires a published 1.5-era store plugin to load as ready on every 1.6.0 target, which the no-legacy-loading rule forbids; the downstream notify list is an unread hand-kept old roster; the fleet dependency policy approves database and directory drivers that open their own sockets against its own socket ban. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "The release contract now expects the published 1.5-era store plugin to be refused at boot, matching the no-legacy-loading rule, so the earlier blocking finding is gone. Still open: the fleet dependency policy approves database, cache and directory client crates that open their own sockets while its own ban rejects the same crates; the declared count floor on trained builds is read by nothing, and the tests the contract cites do not exist; the downstream notify roster is read by no code; the runner-label lint config is wired to nothing. Read fully.",
+   "auditor": "sonnet-ledger-dot-github",
    "fixed_at": null,
    "exclude": [
     ".github/workflows",
@@ -2404,6 +2475,20 @@
       "LOW": 3
      },
      "report": "The release contract requires a published 1.5-era store plugin to load as ready on every 1.6.0 target, which the no-legacy-loading rule forbids; the downstream notify list is an unread hand-kept old roster; the fleet dependency policy approves database and directory drivers that open their own sockets against its own socket ban. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "sonnet-ledger-dot-github",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "f2141c9396b05066acebeccf9ca4f86e151f20ff2407d7926ac6ca591fe73f6d",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 2,
+      "LOW": 2,
+      "NIT": 0
+     },
+     "report": "The release contract now expects the published 1.5-era store plugin to be refused at boot, matching the no-legacy-loading rule, so the earlier blocking finding is gone. Still open: the fleet dependency policy approves database, cache and directory client crates that open their own sockets while its own ban rejects the same crates; the declared count floor on trained builds is read by nothing, and the tests the contract cites do not exist; the downstream notify roster is read by no code; the runner-label lint config is wired to nothing. Read fully."
     }
    ]
   },
@@ -2503,16 +2588,18 @@
    "paths": [
     "testing/a2a-tck"
    ],
-   "tree_hash": "ac50d746d5a76e6e56ffa1db1eeb26fe95568af15043fb4e5375d77dead7b13f",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "tree_hash": "054209d8ac047d36a6ca2fa1b802cc6bc86c1ea7160994816be834c04cb7d3c1",
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "LOW": 3
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 2,
+    "NIT": 0
    },
-   "report": "Breaks Law 10: the subject gate forgives the three push-delivery failures by id without evaluating the stated reason, and silently excuses every SKIPPED requirement, including any the control executes. The waiver ledger cites moved source paths and records the plane running its own webhook guard and delivery socket. Code read fully, baselines sampled.",
-   "auditor": "opus-q128-architecture",
+   "report": "The subject gate now evaluates every forgiveness: each waived push-delivery failure and each justified skip carries a premise the gate checks against the run, and an unnamed skip is refused, so both earlier gate defects are gone. What remains is the plane the waiver ledger rests on: the push-delivery waiver's premise is a plane-local webhook guard, and that plane resolves DNS itself and runs its own destination guard. The ledger also cites moved source paths, and the skip premises read a report key nothing in the tree produces. Read fully.",
+   "auditor": "sonnet-ledger-a2a-tck",
    "fixed_at": null,
    "rounds": [
     {
@@ -2526,6 +2613,20 @@
       "LOW": 3
      },
      "report": "Breaks Law 10: the subject gate forgives the three push-delivery failures by id without evaluating the stated reason, and silently excuses every SKIPPED requirement, including any the control executes. The waiver ledger cites moved source paths and records the plane running its own webhook guard and delivery socket. Code read fully, baselines sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "sonnet-ledger-a2a-tck",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "054209d8ac047d36a6ca2fa1b802cc6bc86c1ea7160994816be834c04cb7d3c1",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 2,
+      "NIT": 0
+     },
+     "report": "The subject gate now evaluates every forgiveness: each waived push-delivery failure and each justified skip carries a premise the gate checks against the run, and an unnamed skip is refused, so both earlier gate defects are gone. What remains is the plane the waiver ledger rests on: the push-delivery waiver's premise is a plane-local webhook guard, and that plane resolves DNS itself and runs its own destination guard. The ledger also cites moved source paths, and the skip premises read a report key nothing in the tree produces. Read fully."
     }
    ]
   },
@@ -2626,15 +2727,17 @@
     "testing/plane-copies"
    ],
    "tree_hash": "ca12226cb59599e34633b44cf7a4270cca60cede7ced41e31da7f66407755fa9",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "LOW": 2
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 2,
+    "NIT": 0
    },
-   "report": "The credential fixture pins the kernel still presenting six named vendors' outbound credentials with kernel tests naming them, breaking Law 1; two files are now one-sided goldens of deleted kernel code still described as two-copy drift guards, and consumers floor at a single row. Data sampled.",
-   "auditor": "opus-q128-architecture",
+   "report": "The kernel no longer presents any vendor's credential by name: the presenter is driven by a declared scheme, and the vendor protocol constants are compiled only for tests. What remains is that the kernel crate's test for the credential fixture still builds six vendor-named twins with vendor key prefixes and header names. Two fixtures are one-sided goldens of deleted host code still described as two-copy drift guards, and the consumers that exist floor at a single row against hundreds. Read fully except bulk fixture rows.",
+   "auditor": "sonnet-ledger-plane-copies",
    "fixed_at": null,
    "rounds": [
     {
@@ -2648,6 +2751,20 @@
       "LOW": 2
      },
      "report": "The credential fixture pins the kernel still presenting six named vendors' outbound credentials with kernel tests naming them, breaking Law 1; two files are now one-sided goldens of deleted kernel code still described as two-copy drift guards, and consumers floor at a single row. Data sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "sonnet-ledger-plane-copies",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "ca12226cb59599e34633b44cf7a4270cca60cede7ced41e31da7f66407755fa9",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 2,
+      "NIT": 0
+     },
+     "report": "The kernel no longer presents any vendor's credential by name: the presenter is driven by a declared scheme, and the vendor protocol constants are compiled only for tests. What remains is that the kernel crate's test for the credential fixture still builds six vendor-named twins with vendor key prefixes and header names. Two fixtures are one-sided goldens of deleted host code still described as two-copy drift guards, and the consumers that exist floor at a single row against hundreds. Read fully except bulk fixture rows."
     }
    ]
   },
@@ -2673,15 +2790,17 @@
     "testing/voice-conformance"
    ],
    "tree_hash": "97a3346bc37b24dffb98b00a67591191912c0ac516f9664a174bc7011d3c2647",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "LOW": 4
+    "HIGH": 3,
+    "MEDIUM": 2,
+    "LOW": 5,
+    "NIT": 0
    },
-   "report": "Breaks Law 11 and Law 3: one leg certifies in-process tool execution and requires busbar to intercept and drop client tool replies by content; two legs certify the plane dialing its own provider socket behind a plane-local destination guard. All legs drive a legacy crate over a test double, the leg floor sits far under today's count, and the budget hard-close check cannot fail. Code read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "One leg still certifies that a client's tool reply naming a call the node is not waiting on is refused and carried on no wire, and the plane it drives still executes tools in-process through an echo executor wired into the mounted runtime. Two legs still certify the plane dialing its own provider socket under a plane-chosen destination policy. The budget hard-close check can now fail but its failure is discarded by design, a harness that dies after some results passes, the leg floor is 3 against 14 legs, and prose is stale. Read fully except fixtures and part of the harness.",
+   "auditor": "sonnet-ledger-voice-conformance",
    "fixed_at": null,
    "rounds": [
     {
@@ -2695,6 +2814,20 @@
       "LOW": 4
      },
      "report": "Breaks Law 11 and Law 3: one leg certifies in-process tool execution and requires busbar to intercept and drop client tool replies by content; two legs certify the plane dialing its own provider socket behind a plane-local destination guard. All legs drive a legacy crate over a test double, the leg floor sits far under today's count, and the budget hard-close check cannot fail. Code read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "sonnet-ledger-voice-conformance",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "97a3346bc37b24dffb98b00a67591191912c0ac516f9664a174bc7011d3c2647",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 2,
+      "LOW": 5,
+      "NIT": 0
+     },
+     "report": "One leg still certifies that a client's tool reply naming a call the node is not waiting on is refused and carried on no wire, and the plane it drives still executes tools in-process through an echo executor wired into the mounted runtime. Two legs still certify the plane dialing its own provider socket under a plane-chosen destination policy. The budget hard-close check can now fail but its failure is discarded by design, a harness that dies after some results passes, the leg floor is 3 against 14 legs, and prose is stale. Read fully except fixtures and part of the harness."
     }
    ]
   },
@@ -2823,15 +2956,17 @@
     "conformance"
    ],
    "tree_hash": "0c69162620973ed683ff998831699077c476000ca5389f80a8ae067afafdbd49",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "LOW": 4
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 3,
+    "NIT": 0
    },
-   "report": "The claim pipeline renders nothing green without a fresh pass, but the committed verdict records the decisions plane suite failing because no route serves its operation; the README is stale, the registry's green heading tops suites with no verdict, one verdict breaks its own schema with no evidence, and the suite roster is hand-kept with no floor. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "The claim pipeline renders nothing green without a fresh passing verdict, and the committed manifest correctly shows no claim anywhere; the two committed failing verdicts are product evidence, not an instrument defect, so no blocking finding is raised for the instrument. Real defects: the suite roster, which defines the whole must-pass set, is hand-kept with no floor tying it to the five planes; the README describes built tooling as unbuilt; the registry headings and a not-run reason contradict the verdicts on disk; one verdict carries null fields its schema forbids and nothing validates verdicts against the schema. Read fully.",
+   "auditor": "sonnet-ledger-conformance",
    "fixed_at": null,
    "rounds": [
     {
@@ -2845,6 +2980,20 @@
       "LOW": 4
      },
      "report": "The claim pipeline renders nothing green without a fresh pass, but the committed verdict records the decisions plane suite failing because no route serves its operation; the README is stale, the registry's green heading tops suites with no verdict, one verdict breaks its own schema with no evidence, and the suite roster is hand-kept with no floor. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "sonnet-ledger-conformance",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "0c69162620973ed683ff998831699077c476000ca5389f80a8ae067afafdbd49",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The claim pipeline renders nothing green without a fresh passing verdict, and the committed manifest correctly shows no claim anywhere; the two committed failing verdicts are product evidence, not an instrument defect, so no blocking finding is raised for the instrument. Real defects: the suite roster, which defines the whole must-pass set, is hand-kept with no floor tying it to the five planes; the README describes built tooling as unbuilt; the registry headings and a not-run reason contradict the verdicts on disk; one verdict carries null fields its schema forbids and nothing validates verdicts against the schema. Read fully."
     }
    ]
   },

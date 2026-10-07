@@ -183,7 +183,7 @@ pub const ROW_FACES: &str = "kind-isolation:faces";
 /// THE LEGACY DRAIN'S EXPIRY. Ship-only: a `[[transitional]]` row exists because a 1.5.x crate is
 /// retiring, and the tag is where "it retired" is checked.
 pub const ROW_DRAIN: &str = "kind-isolation:legacy-drain";
-/// Every data plane runs the WHOLE strict step list.
+/// Every data plane runs its steps of the strict list, and none of the kernel's (Approve, Admit).
 pub const ROW_STEPS: &str = "kind-isolation:plane-steps";
 /// One wire, one registration.
 pub const ROW_WIRES: &str = "kind-isolation:transport-registration";
@@ -5124,10 +5124,12 @@ const EGRESS_HOME: &str = "busbar-core-connector";
 /// in-role vocabulary.
 const CONNECTOR_INROLE_WORDS: &[&str] = &["egress", "pool", "provider"];
 
-/// Every `fn <name>` in a crate's shipped source, with the file, line and the body's blanked text.
+/// Every `fn <name>` in a crate's shipped source, with the file, line, its signature's blanked
+/// text (the `fn` line up to the body's opening brace) and the body's.
 struct FnBody {
     file: String,
     line: usize,
+    sig: String,
     body: String,
 }
 
@@ -5160,6 +5162,22 @@ fn fn_bodies(cx: &Ctx, dir: &str) -> BTreeMap<String, Vec<FnBody>> {
             if name.is_empty() {
                 continue;
             }
+            let mut sig = String::new();
+            for l in &lines[i..] {
+                match l.find('{') {
+                    Some(at) => {
+                        sig.push_str(&l[..at]);
+                        break;
+                    }
+                    None => {
+                        sig.push_str(l);
+                        sig.push(' ');
+                    }
+                }
+                if l.trim_end().ends_with(';') {
+                    break;
+                }
+            }
             let mut depth = 0i32;
             let mut body = String::new();
             let mut started = false;
@@ -5185,6 +5203,7 @@ fn fn_bodies(cx: &Ctx, dir: &str) -> BTreeMap<String, Vec<FnBody>> {
             out.entry(name).or_default().push(FnBody {
                 file: rel.clone(),
                 line: i + 1,
+                sig,
                 body,
             });
         }
@@ -5196,6 +5215,82 @@ fn fn_bodies(cx: &Ctx, dir: &str) -> BTreeMap<String, Vec<FnBody>> {
 /// step is declared and not run — the compiler is satisfied, the trait is implemented, and the loop
 /// the plane is supposed to be running stops there.
 const SHORT_CIRCUITS: &[&str] = &["todo!", "unimplemented!", "unreachable!"];
+
+/// THE KERNEL'S OWN DECISIONS: `approve` and `admit` (ARCHITECT 2026-10-06: trust and admission
+/// are the kernel's Approve and Admit steps — "one uniform workflow, Authenticate·Verify·Approve·
+/// Admit"; a plane STATES its facts and decides neither). The plane trait declares neither, so they
+/// are not in [`plane_owned_steps`]; a plane that implements one anyway is a second decider beside
+/// the kernel's, and the finding is that it does.
+const KERNEL_DECIDED_STEPS: &[&str] = &["approve", "admit"];
+
+/// What makes a function an implementation of a STEP rather than a function that shares a step's
+/// name (a codec's `admit(stream_id)`): its signature names the step machinery — a unit, a stage
+/// pass or verdict, or the facts a step answers with.
+const STEP_SIGNATURE_WORDS: &[&str] = &[
+    "Unit<",
+    "Pass<",
+    "SeatVerdict<",
+    "StepAnswer<",
+    "ScopeFacts",
+    "AdmitFacts",
+];
+
+/// THE SLOTS A DOOR PLANE OWES: a plane served through its memory-ABI door (`abi::plane::Ops`)
+/// runs no step of the loop itself — the kernel's driver runs every step and asks the plane through
+/// these slots — so its door must name them in its `kind_ops` table.
+const DOOR_PLANE_SLOTS: &[&str] = &["arrive", "on_piece", "refusal"];
+
+/// What a plane crate serves through: the legacy `Plane` trait (an `impl … Plane for`), its
+/// memory-ABI door (a `plugin_door!` over `abi::plane::Ops`, with the `kind_ops` slots it names), or
+/// neither.
+struct PlaneFaces {
+    legacy: bool,
+    door_slots: Option<BTreeSet<String>>,
+}
+
+fn plane_faces(cx: &Ctx, dir: &str) -> PlaneFaces {
+    let mut faces = PlaneFaces {
+        legacy: false,
+        door_slots: None,
+    };
+    let Ok(files) = cx.walk(&WalkSpec::new([dir]).ext("rs")) else {
+        return faces;
+    };
+    for f in &files {
+        if !is_shipped_source(&f.rel_str()) {
+            continue;
+        }
+        let code: String = scan::production_lines(&f.text)
+            .into_iter()
+            .map(|(_, l)| l)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if code.split("impl").skip(1).any(|rest| {
+            rest.split('{')
+                .next()
+                .is_some_and(|h| h.contains("Plane for "))
+        }) {
+            faces.legacy = true;
+        }
+        if code.contains("abi::plane::Ops") {
+            if let Some(at) = code.find("kind_ops") {
+                let table = &code[at..];
+                let table = &table[..table.find('}').unwrap_or(table.len())];
+                let named: BTreeSet<String> = table
+                    .split([',', '{'])
+                    .filter_map(|e| e.split(':').next())
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                faces
+                    .door_slots
+                    .get_or_insert_with(BTreeSet::new)
+                    .extend(named);
+            }
+        }
+    }
+    faces
+}
 
 fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let steps = match plane_owned_steps(cx) {
@@ -5225,6 +5320,35 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let mut offenders: Vec<String> = Vec::new();
     for c in &planes {
         let bodies = fn_bodies(cx, &c.dir);
+        for step in KERNEL_DECIDED_STEPS {
+            for b in bodies.get(*step).into_iter().flatten() {
+                if STEP_SIGNATURE_WORDS.iter().any(|w| b.sig.contains(w)) {
+                    offenders.push(format!(
+                        "kernel-step\t{}:{}\t{} implements `{step}` — Approve and Admit are the \
+                         kernel's decisions over the facts a plane states, and a plane that runs \
+                         its own is a second decider the kernel's audit does not see",
+                        b.file, b.line, c.name
+                    ));
+                }
+            }
+        }
+        // A DOOR PLANE with no legacy face: the kernel's driver runs every step, and the plane owes
+        // the slots it is asked through. A plane with neither face owes the legacy steps (and
+        // reads as missing each).
+        let faces = plane_faces(cx, &c.dir);
+        if let (false, Some(slots)) = (faces.legacy, &faces.door_slots) {
+            for slot in DOOR_PLANE_SLOTS {
+                if !slots.contains(*slot) {
+                    offenders.push(format!(
+                        "missing-slot\t{}\t{} is a door plane and its door names no `{slot}` — \
+                         the kernel's driver runs every step and asks a door plane through its \
+                         slots, so one it does not name is a step nothing answers",
+                        c.dir, c.name
+                    ));
+                }
+            }
+            continue;
+        }
         for step in &steps {
             let Some(found) = bodies.get(step) else {
                 offenders.push(format!(
@@ -5251,18 +5375,20 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     if offenders.is_empty() {
         return Row::pass(
             ROW_STEPS,
-            "every data plane implements the whole strict step list",
+            "every data plane implements its steps of the strict list and none of the kernel's",
             format!(
-                "{} plane(s) × {} step(s) read off {STEP_TABLE_FILE} and {PLANE_TRAIT_FILE}: {}",
+                "{} plane(s) × {} step(s) read off {STEP_TABLE_FILE} and {PLANE_TRAIT_FILE}: {} \
+                 (the kernel's own, implemented by no plane: {})",
                 planes.len(),
                 steps.len(),
-                steps.join(", ")
+                steps.join(", "),
+                KERNEL_DECIDED_STEPS.join(", ")
             ),
         );
     }
     Row::fail(
         ROW_STEPS,
-        "a data plane does not run the whole strict step list",
+        "a data plane does not run its steps of the strict list, or runs one of the kernel's",
         format!(
             "{} finding(s) over {} plane(s): {}",
             offenders.len(),
@@ -9040,6 +9166,68 @@ impl Gate for KindIsolationGate {
             &[ROW_STEPS],
             ov,
             &["missing-step", "busbar-plane-mcp"],
+        ));
+
+        // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
+        // own, and an `admit` of its own, each with a step's signature. Planted in the a2a plane,
+        // which implements neither, so the only finding is the plant.
+        for step in KERNEL_DECIDED_STEPS {
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/busbar-plane-a2a/src/planted_decision.rs",
+                format!(
+                    "impl Foo {{\n    fn {step}<'u>(&self, u: &Unit<'u>) -> bool {{\n        \
+                     true\n    }}\n}}\n"
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                format!("a plane implementing `{step}`, a step the kernel decides, is refused"),
+                &[ROW_STEPS],
+                ov,
+                &["kernel-step", step, "planted_decision.rs"],
+            ));
+        }
+        // …and NOT a function that only shares the name: a codec's `admit(id)` is no step.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-a2a/src/planted_decision.rs",
+            "impl Foo {\n    fn admit(&self, id: &str) -> bool {\n        id.is_empty()\n    }\n}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a plane function that only shares a kernel step's name is not that step",
+            &[ROW_STEPS],
+            ov,
+        ));
+
+        // A DOOR PLANE: with its legacy face gone, the decisions plane is served through its door
+        // alone, and its steps are the kernel driver's — green — unless its door names no
+        // `on_piece`, a slot nothing answers — red.
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-decisions/src/plane.rs");
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a door plane with no legacy face runs its steps through the kernel's driver",
+            &[ROW_STEPS],
+            ov,
+        ));
+        let door = "crates/busbar-plane-decisions/src/plane_door.rs";
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-decisions/src/plane.rs");
+        if let Ok(text) = cx.read(door) {
+            ov.set(door, text.replace("on_piece: Safe<OnPiece>,", ""));
+        }
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a door plane whose door names no `on_piece` is a step nothing answers",
+            &[ROW_STEPS],
+            ov,
+            &["missing-slot", "busbar-plane-decisions", "on_piece"],
         ));
 
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,
