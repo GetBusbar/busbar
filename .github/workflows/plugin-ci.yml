@@ -339,6 +339,9 @@ jobs:
         working-directory: plugin
         env:
           CRATE: ${{ inputs.plugin_crate }}
+          # THE RELEASE GUARD, ARMED FOR THE WHOLE STEP (M6/contract): every suite run here refuses
+          # a debug build (`the_suite_runs_in_the_profile_it_was_asked_to`), the RED run included.
+          BUSBAR_EXPECT_RELEASE: "1"
         run: |
           set -euo pipefail
           suite="the_linked_and_the_dropped_in_door_are_one_plugin red_a_moved_crossing_count_is_refused red_a_door_at_another_kind_abi_is_refused red_a_failing_ready_refuses_the_boot red_a_networked_door_with_no_connection_table_is_refused the_declared_needs_are_the_statements the_suite_runs_in_the_profile_it_was_asked_to"
@@ -349,11 +352,11 @@ jobs:
           for t in $suite; do
             grep -qx "$t: test" "$list" || { echo "::error::the published suite's test '$t' is not in the conformance target"; exit 1; }
           done
-          out="$(BUSBAR_EXPECT_RELEASE=1 cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee /dev/stderr)"
+          out="$(cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee /dev/stderr)"
           for t in $suite; do
             printf '%s\n' "$out" | grep -qx "test $t ... ok" || { echo "::error::the published suite's test '$t' did not RUN green"; exit 1; }
           done
-          if red="$(BUSBAR_CONFORMANCE_RED=count BUSBAR_EXPECT_RELEASE=1 cargo test --release --locked -p "$CRATE" --test conformance -- --exact the_linked_and_the_dropped_in_door_are_one_plugin 2>&1)"; then
+          if red="$(BUSBAR_CONFORMANCE_RED=count cargo test --release --locked -p "$CRATE" --test conformance -- --exact the_linked_and_the_dropped_in_door_are_one_plugin 2>&1)"; then
             printf '%s\n' "$red" >&2
             echo "::error::RED: the both-ways arm passed with a pinned crossing count moved"; exit 1
           fi

@@ -1912,12 +1912,8 @@ impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
 mod tests;
 
 #[cfg(test)]
-#[path = "tests/store_v3_conformance_tests.rs"]
-mod conformance_tests;
-
-#[cfg(test)]
-#[path = "tests/store_v3_crossing_conformance_tests.rs"]
-mod crossing_conformance_tests;
+#[path = "tests/store_v3_shortcut_tests.rs"]
+mod shortcut_tests;
 
 #[cfg(test)]
 #[path = "tests/store_v3_deadline_tests.rs"]

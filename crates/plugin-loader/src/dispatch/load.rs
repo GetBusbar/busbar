@@ -153,6 +153,34 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
     rendering.map(Some)
 }
 
+/// Where the door `path`'s library exports, and its ops table, live in this process while the
+/// library is open: `(door, ops)` addresses, read with the library loaded (it is unloaded after,
+/// on the reaper). `None` when it exports no door. The published conformance suite proves with
+/// them that its dropped-in door is an image of its own, never the linked door it is compared
+/// against (`conformance::both_ways`).
+///
+/// # Errors
+/// `dlopen` failed.
+#[cfg(feature = "conformance")]
+pub(crate) fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, LoadError> {
+    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
+    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; `lib` outlives every use of it.
+    let door = match unsafe { lib.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) } {
+        Ok(door) => door,
+        Err(_) => return Ok(None),
+    };
+    let at = door();
+    let ops = if at.is_null() {
+        0
+    } else {
+        // SAFETY: a non-NULL door answer is a `'static` door of the library's; only its `ops` word
+        // is read, unaligned, while the library is open.
+        unsafe { std::ptr::addr_of!((*at).ops).read_unaligned() as usize }
+    };
+    drop(Lib(Some(lib), None));
+    Ok(Some((at as usize, ops)))
+}
+
 /// Why a plugin was refused. Every refusal names the value it saw and the host's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]

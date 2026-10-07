@@ -218,14 +218,16 @@ impl Subject {
         let inputs: serde_json::Value = serde_json::from_str(inputs)
             .unwrap_or_else(|e| panic!("conformance.json is not JSON: {e}"));
         assert!(inputs.is_object(), "conformance.json is not a JSON object");
-        Self {
+        let s = Self {
             door,
             cdylib_crate,
             inputs,
             host: None,
             anchors: None,
             namespace: None,
-        }
+        };
+        s.apply_env();
+        s
     }
 
     /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
@@ -424,40 +426,87 @@ impl Subject {
         }
     }
 
-    /// Set the environment the plugin's inputs name (`inputs.env`: name → value; `null` unsets).
+    /// Set the environment the plugin's inputs name (`inputs.env`: name → value; `null` unsets),
+    /// ONCE PER PROCESS, before any fold: every subject is made through [`Subject::new`], which
+    /// applies it, so no emitted test reaches a plugin before the environment is in place, and no
+    /// fold runs while it changes (a plugin, and the dropped image's own std, read it without the
+    /// test's lock). The environment is the process's: a second subject naming ANOTHER environment
+    /// is refused (one `conformance.json` per test binary). Idempotent.
+    ///
+    /// # Panics
+    /// When an environment other than the one already applied is named.
     pub fn apply_env(&self) {
+        static APPLIED: std::sync::OnceLock<serde_json::Map<String, serde_json::Value>> =
+            std::sync::OnceLock::new();
         let Some(env) = self.inputs.get("env").and_then(|e| e.as_object()) else {
             return;
         };
-        for (k, v) in env {
-            match v {
-                serde_json::Value::Null => std::env::remove_var(k),
-                serde_json::Value::String(s) => std::env::set_var(k, s),
-                other => std::env::set_var(k, other.to_string()),
+        let applied = APPLIED.get_or_init(|| {
+            for (k, v) in env {
+                match v {
+                    serde_json::Value::Null => std::env::remove_var(k),
+                    serde_json::Value::String(s) => std::env::set_var(k, s),
+                    other => std::env::set_var(k, other.to_string()),
+                }
             }
-        }
+            env.clone()
+        });
+        assert_eq!(
+            applied, env,
+            "conformance.json's `env` is the process's: one environment per test binary"
+        );
     }
 }
 
-/// `crate_snake`'s cdylib beside the running test binary (`target/<profile>/`, its `deps/` or its
-/// `examples/`).
+/// The environment variable naming the DROPPED image explicitly: the path of the cdylib this run's
+/// cargo build produced (`cargo build --message-format=json`'s artifact for the plugin crate;
+/// `plugin-ci.yml`'s conformance step sets it). It wins over every other image.
+pub const CDYLIB_ENV: &str = "BUSBAR_CONFORMANCE_CDYLIB";
+
+/// `crate_snake`'s cdylib, CHOSEN EXPLICITLY, never by age (audit loader-conformance #13):
+///
+/// 1. the path [`CDYLIB_ENV`] names (this run's cargo build output);
+/// 2. else the image cargo UPLIFTED for the crate's latest build (`target/<profile>/<lib>` or
+///    `target/<profile>/examples/<lib>`, unhashed: cargo's own pointer to that unit's newest
+///    output);
+/// 3. else the ONE hashed image under `deps/` (or `examples/`); several images with different
+///    bytes (stale builds, another feature set's hash) are refused, naming them and
+///    [`CDYLIB_ENV`], since nothing says which one this run built.
 ///
 /// # Panics
-/// When it is not built.
+/// When none is built, the named one does not exist, or the choice is ambiguous.
 #[must_use]
 pub fn cdylib_of(crate_snake: &str) -> PathBuf {
+    if let Some(named) = std::env::var_os(CDYLIB_ENV) {
+        let named = PathBuf::from(named);
+        assert!(
+            named.is_file(),
+            "{CDYLIB_ENV} names {named:?}, which is not a built library"
+        );
+        return named;
+    }
     let exe = std::env::current_exe().expect("the test binary has a path");
     let profile = exe
         .parent()
         .and_then(Path::parent)
         .expect("target/<profile>");
+    choose_cdylib(profile, crate_snake).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// [`cdylib_of`]'s choice under `profile` (`target/<profile>`), [`CDYLIB_ENV`] aside.
+///
+/// # Errors
+/// None is built, or several different images are and none is uplifted.
+pub(crate) fn choose_cdylib(profile: &Path, crate_snake: &str) -> Result<PathBuf, String> {
     let name = crate::plugin_library_filename(crate_snake);
+    let uplifted = [profile.join(&name), profile.join("examples").join(&name)];
+    if let Some(up) = uplifted.iter().find(|p| p.is_file()) {
+        return Ok(up.clone());
+    }
     let (prefix, suffix) = name
         .split_once(crate_snake)
         .expect("the library name carries the crate's");
-    // `deps/` (a lib target's cdylib, hashed or not) and `examples/` (an in-tree crate whose
-    // dropped-in door is a `cdylib` example).
-    let in_deps = ["deps", "examples"]
+    let mut hashed: Vec<PathBuf> = ["deps", "examples"]
         .iter()
         .filter_map(|d| std::fs::read_dir(profile.join(d)).ok())
         .flatten()
@@ -468,19 +517,63 @@ pub fn cdylib_of(crate_snake: &str) -> PathBuf {
                 .and_then(|f| f.strip_prefix(prefix))
                 .and_then(|f| f.strip_suffix(suffix))
                 .and_then(|f| f.strip_prefix(crate_snake))
-                .is_some_and(|stem| {
-                    stem.is_empty()
-                        || stem.strip_prefix('-').is_some_and(|h| {
-                            !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())
-                        })
-                })
-        });
-    std::iter::once(profile.join(&name))
-        .chain(in_deps)
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-        .max()
-        .map(|(_, p)| p)
-        .unwrap_or_else(|| panic!("the plugin's cdylib ({name}) is not built under {profile:?}"))
+                .and_then(|stem| stem.strip_prefix('-'))
+                .is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+        .collect();
+    hashed.sort();
+    // One image under two names (a hard link, a copy) is one image.
+    let mut images: Vec<(Vec<u8>, PathBuf)> = Vec::new();
+    for p in hashed {
+        let bytes = std::fs::read(&p).unwrap_or_default();
+        if !images.iter().any(|(b, _)| *b == bytes) {
+            images.push((bytes, p));
+        }
+    }
+    match images.len() {
+        0 => Err(format!(
+            "the plugin's cdylib ({name}) is not built under {profile:?}"
+        )),
+        1 => Ok(images.remove(0).1),
+        _ => Err(format!(
+            "the plugin's cdylib ({name}) is built more than once under {profile:?} ({:?}); \
+             name this run's image in {CDYLIB_ENV}",
+            images.iter().map(|(_, p)| p).collect::<Vec<_>>()
+        )),
+    }
+}
+
+/// **THE DROPPED DOOR IS AN IMAGE OF ITS OWN**: the dropped-in library's door and ops table are not
+/// the linked door's (a library whose door resolved into the test binary's own, or the test
+/// binary itself picked as the image, would compare a door with itself).
+///
+/// # Panics
+/// When the library exports no door, or its door or ops table is the linked door's.
+pub fn distinct_images(s: &Subject) {
+    distinct(s.door, &s.cdylib()).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// [`distinct_images`] of the linked `door` and the library at `path`.
+///
+/// # Errors
+/// The library does not load, exports no door, or answers the linked door or its ops table.
+pub(crate) fn distinct(door: DoorFn, path: &Path) -> Result<(), String> {
+    let (dropped, ops) = crate::dispatch::load::door_addresses_of_library(path)
+        .map_err(|e| format!("the dropped image {path:?} does not load: {e}"))?
+        .ok_or_else(|| format!("the dropped image {path:?} exports no door"))?;
+    let linked = door();
+    if linked.is_null() {
+        return Err("the door function answered NULL".into());
+    }
+    // SAFETY: a door function answers a `'static` door; only its `ops` word is read.
+    let linked_ops = unsafe { std::ptr::addr_of!((*linked).ops).read_unaligned() } as usize;
+    if dropped == linked as usize || ops == linked_ops {
+        return Err(format!(
+            "the dropped image {path:?} answers the LINKED door (door {dropped:#x}, ops {ops:#x}): \
+             the two legs would compare one image with itself"
+        ));
+    }
+    Ok(())
 }
 
 /// THE PER-FOLD NAMESPACE PLACEHOLDER (Q-P4-8): `{fold}` anywhere in `conformance.json`'s
@@ -540,10 +633,43 @@ impl Leg {
     }
 }
 
-/// A dispatcher of the leg's own.
+/// A dispatcher of the leg's own, registered with the fold running on this thread, so the fold's
+/// end can read what it counted ([`woken`]).
 #[must_use]
 pub fn dispatcher() -> Arc<Dispatcher> {
-    Arc::new(Dispatcher::new(DispatchConfig::default()))
+    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    FOLD_DISPATCHERS.with(|f| f.borrow_mut().push(Arc::clone(&d)));
+    d
+}
+
+thread_local! {
+    /// The dispatchers made on this thread since the last [`woken`]: a fold's.
+    static FOLD_DISPATCHERS: std::cell::RefCell<Vec<Arc<Dispatcher>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// **EVERY WAIT WAS WOKEN** (THE DESIGN A.4.3: "`bb_deadline_without_wake_total` must be 0 in every
+/// conformance script"): no op of the dispatchers made on this thread since the last call (a
+/// fold's) answered PENDING and was settled by its deadline with its wake still owed. Clears the
+/// registration. A door that misses a wake and is rescued by a deadline fails here, however its
+/// steps answered.
+///
+/// # Errors
+/// How many ops a deadline, not a wake, ended.
+pub fn woken() -> Result<(), String> {
+    let lost: u64 = FOLD_DISPATCHERS
+        .with(|f| std::mem::take(&mut *f.borrow_mut()))
+        .iter()
+        .map(|d| d.stats().deadline_without_wake)
+        .sum();
+    if lost == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "bb_deadline_without_wake_total = {lost}: an op that answered PENDING was ended by its \
+             deadline, never woken (THE DESIGN A.4.3)"
+        ))
+    }
 }
 
 /// The bind the kernel makes: a label, the inflight clamp, no envelope sink, the adopting
@@ -1087,8 +1213,18 @@ pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, _s: &Subject, p: &Plugin<K>, 
 
 // ---- the kind dispatch ----
 
-/// One leg's fold, by the kind its door states.
+/// One leg's fold, by the kind its door states; every wait in it woken ([`woken`]).
 fn fold(s: &Subject, leg: Leg) -> Fold {
+    // A fold's dispatchers are its own: none made before it is read.
+    let _ = woken();
+    let fold = kind_fold(s, leg);
+    if let Err(e) = woken() {
+        panic!("{leg:?}: {e}");
+    }
+    fold
+}
+
+fn kind_fold(s: &Subject, leg: Leg) -> Fold {
     match s.kind() {
         KindCode::Store => store::fold(s, leg),
         KindCode::Secret => secret::fold(s, leg),
@@ -1114,6 +1250,7 @@ pub fn both_ways(s: &Subject) {
         s.stated(),
         "the dropped-in library must state exactly the linked door's Statement"
     );
+    distinct_images(s);
     let red = std::env::var(RED_ENV).is_ok_and(|v| v == "count");
     // Networked: its needs are SERVED by the suite's table (it dials a real endpoint); a door whose
     // needs the suite cannot serve binds as a probe and dials nothing.
@@ -1390,8 +1527,9 @@ pub fn red_ready(s: &Subject) {
         let name = p.name().to_owned();
         let held = p.clone();
         let (before, _) = crossings(&held).read();
+        let minted = store::LegMint::take(0);
         let refused =
-            crate::store_v3::LoadedStore::open(p, Arc::clone(&d), &settings, store::leg_mint)
+            crate::store_v3::LoadedStore::open(p, Arc::clone(&d), &settings, minted.mint())
                 .map(|_| ())
                 .expect_err("a failing ready refuses the store's open");
         assert_eq!(
@@ -1622,6 +1760,9 @@ pub fn needs_declared(s: &Subject, manifest_dir: &str) {
 
 /// THE PROFILE GUARD: asked for the release binary (M6/contract), the suite refuses a debug build.
 /// `debug` is the caller's `cfg!(debug_assertions)` (the plugin's test crate's, not this one's).
+/// The ASK is CI's: `plugin-ci.yml`'s conformance step sets [`EXPECT_RELEASE_ENV`] for the whole
+/// step, so the release requirement is enforced where a plugin is admitted; a direct local
+/// `cargo test` (no variable) runs the suite in whatever profile it was built in.
 ///
 /// # Panics
 /// When the release binary was asked for and this is a debug build.

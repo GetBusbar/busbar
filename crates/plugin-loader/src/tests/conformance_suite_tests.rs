@@ -987,3 +987,264 @@ mod hook_on_tickets {
         assert_eq!((first_after - first, resumes_after - resumes), (1, 1));
     }
 }
+
+/// EVERY WAIT WAS WOKEN (THE DESIGN A.4.3, audit loader-conformance #10): the fold's end requires
+/// `bb_deadline_without_wake_total` = 0 on every dispatcher the fold made.
+mod deadline_without_wake {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, Outcome, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
+
+    use super::super::{bind, dispatcher, on_ticket, open, woken};
+    use crate::dispatch::{in_head, load_linked, now_ns, out_head, Frame, LinkedRow};
+    use crate::dispatch_test_plugin as plug;
+    use crate::dispatch_tests::TestKind;
+
+    fn frame(mode: &'static [u8]) -> Frame<TickIn, TickOut> {
+        let mut head = in_head();
+        head.extensions = Blob {
+            ptr: mode.as_ptr(),
+            len: mode.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        Frame::new(
+            TickIn {
+                head,
+                now_ns: now_ns(),
+            },
+            TickOut {
+                head: out_head(),
+                next_tick_ns: 0,
+            },
+        )
+    }
+
+    fn after(d: Duration) -> u64 {
+        now_ns().saturating_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+    }
+
+    /// GREEN: an op that pends and is woken ends by its wake; the fold's check passes.
+    #[test]
+    fn a_wait_that_is_woken_passes() {
+        let _ = woken();
+        let d = dispatcher();
+        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let p = load_linked::<TestKind>(&row, bind(&d, "woken")).expect("it loads");
+        assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
+        let c = on_ticket(
+            &p,
+            &d,
+            slot::TICK,
+            frame(plug::PEND_AFTER),
+            DeadlineClass::Call,
+            after(Duration::from_secs(10)),
+            Arc::new(()),
+        );
+        assert_eq!(c.outcome, Outcome::Ready);
+        woken().unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    /// RED: a door that misses its wake and is rescued by its deadline fails the fold's check,
+    /// though the op itself answered (its deadline's `cancel`).
+    #[test]
+    fn red_a_wait_a_deadline_ended_is_refused() {
+        let _ = woken();
+        let d = dispatcher();
+        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let p = load_linked::<TestKind>(&row, bind(&d, "unwoken")).expect("it loads");
+        assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
+        let c = on_ticket(
+            &p,
+            &d,
+            slot::TICK,
+            frame(plug::PEND_HOLD),
+            DeadlineClass::Call,
+            after(Duration::from_millis(50)),
+            Arc::new(()),
+        );
+        assert_ne!(c.outcome, Outcome::Ready, "the deadline ended it");
+        let e = woken().expect_err("a deadline, not a wake, ended an op");
+        assert!(e.contains("bb_deadline_without_wake_total = 1"), "{e}");
+    }
+}
+
+/// THE DROPPED IMAGE, CHOSEN EXPLICITLY (audit loader-conformance #13): never the newest file by
+/// age, and never the linked door itself.
+mod dropped_image {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+
+    use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+
+    use super::super::{cdylib_of, choose_cdylib, distinct, CDYLIB_ENV};
+
+    /// A fresh `target/<profile>` of this test's own, with `deps/` and `examples/`.
+    struct Profile(PathBuf);
+
+    impl Profile {
+        fn new(tag: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "bbconf-cdylib-{}-{tag}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            for sub in ["deps", "examples"] {
+                std::fs::create_dir_all(dir.join(sub)).expect("a profile dir");
+            }
+            Self(dir)
+        }
+
+        /// `<lib>` of `krate`, in `sub` (`""` for the profile root), `-hash` when given.
+        fn put(&self, sub: &str, krate: &str, hash: Option<&str>, bytes: &[u8]) -> PathBuf {
+            let name = crate::plugin_library_filename(krate);
+            let name = match hash {
+                Some(h) => name.replacen(krate, &format!("{krate}-{h}"), 1),
+                None => name,
+            };
+            let at = self.0.join(sub).join(name);
+            std::fs::write(&at, bytes).expect("an image");
+            at
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Profile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// RED: two different builds of the crate under `deps/` (a stale one, another feature set's)
+    /// are refused, naming the explicit choice — never the newer file picked by its age.
+    #[test]
+    fn red_two_different_builds_are_refused_never_the_newest_picked() {
+        let p = Profile::new("two");
+        p.put("deps", "plug", Some("aaaa"), b"the stale build");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let newest = p.put("deps", "plug", Some("bbbb"), b"another build");
+        let e = choose_cdylib(p.path(), "plug").expect_err("ambiguous");
+        assert!(e.contains(CDYLIB_ENV), "{e}");
+        assert_ne!(choose_cdylib(p.path(), "plug").ok(), Some(newest));
+    }
+
+    /// One image under two names (cargo's hard link) is one image; the image cargo UPLIFTED for
+    /// the crate's latest build wins over every hashed one; none is a failure.
+    #[test]
+    fn one_image_is_found_and_the_uplifted_build_wins() {
+        let p = Profile::new("one");
+        assert!(choose_cdylib(p.path(), "plug").is_err(), "none built");
+        let only = p.put("deps", "plug", Some("aaaa"), b"one build");
+        p.put("examples", "plug", Some("cccc"), b"one build");
+        let chosen = choose_cdylib(p.path(), "plug").expect("one image");
+        assert_eq!(std::fs::read(chosen).ok(), std::fs::read(&only).ok());
+        p.put("deps", "plug", Some("bbbb"), b"another build");
+        let up = p.put("examples", "plug", None, b"the latest build");
+        assert_eq!(choose_cdylib(p.path(), "plug").ok(), Some(up));
+    }
+
+    static DROPPED_DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// A "linked" door that is in truth the dropped image's own.
+    extern "C" fn the_dropped_images_door() -> *const Door {
+        DROPPED_DOOR.load(Ordering::SeqCst)
+    }
+
+    /// RED: a dropped image that answers the LINKED door (its door resolved into the test binary's,
+    /// or the binary itself picked) is refused; the real dropped image is an image of its own.
+    #[test]
+    fn red_a_dropped_image_answering_the_linked_door_is_refused() {
+        let built = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.parent()?.parent()?.join("examples")))
+            .is_some_and(|d| {
+                d.join(crate::plugin_library_filename("plane_door_plugin"))
+                    .exists()
+            });
+        if !built {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "the plane_door_plugin example cdylib is not built under CI"
+            );
+            eprintln!("skip: the plane_door_plugin example cdylib is not built");
+            return;
+        }
+        let path = cdylib_of("plane_door_plugin");
+        distinct(crate::plane_door_plugin::door, &path).unwrap_or_else(|e| panic!("{e}"));
+        // SAFETY: the fixture's image; held open (leaked) so its door stays valid.
+        let lib = unsafe { libloading::Library::new(&path) }.expect("the image loads");
+        let door: DoorFn = *unsafe { lib.get::<DoorFn>(b"busbar_plugin_door\0") }
+            .expect("the image exports its door");
+        std::mem::forget(lib);
+        DROPPED_DOOR.store(door().cast_mut(), Ordering::SeqCst);
+        let e = distinct(the_dropped_images_door, &path).expect_err("one image twice");
+        assert!(e.contains("answers the LINKED door"), "{e}");
+    }
+}
+
+/// THE SUITE MUTATES NO PROCESS STATE UNDER A RUNNING FOLD (audit loader-conformance #5).
+mod no_shared_state {
+    use super::super::store::LegMint;
+    use super::super::Subject;
+
+    /// RED: a fold's op ids never restart under it when another fold opens (the shared counter
+    /// reset at each open re-minted ids the running fold had already used).
+    #[test]
+    fn red_a_second_fold_opening_never_restarts_the_first_folds_op_ids() {
+        let a = LegMint::take(7);
+        let used: Vec<_> = (0..3).map(|_| (a.mint())()).collect();
+        // Another fold opens (and mints nothing yet): the running fold counts on.
+        let b = LegMint::take(7);
+        let next = (a.mint())();
+        assert!(
+            !used.contains(&next),
+            "the running fold re-minted an op id it had used: {next:?}"
+        );
+        assert_eq!(
+            (next.node(), next.counter()),
+            (7, 4),
+            "a fold counts on, whatever other fold opens"
+        );
+        let other = (b.mint())();
+        assert_eq!(
+            (other.node(), other.counter()),
+            (7, 1),
+            "each fold counts from 1 on its node's half"
+        );
+    }
+
+    /// The environment `conformance.json` names is set ONCE, before any fold (every subject is
+    /// made through `Subject::new`); RED: a second, different environment is refused, never set
+    /// under folds already running.
+    #[test]
+    fn red_the_environment_is_set_once_and_another_is_refused() {
+        const VAR: &str = "BBCONF_SUITE_ENV_PROBE";
+        let named = |v: &str| format!(r#"{{ "env": {{ "{VAR}": "{v}" }} }}"#);
+        let _first = Subject::new(
+            crate::dispatch_test_plugin::busbar_plugin_door,
+            "unused",
+            &named("one"),
+        );
+        assert_eq!(std::env::var(VAR).as_deref(), Ok("one"));
+        let _again = Subject::new(
+            crate::dispatch_test_plugin::busbar_plugin_door,
+            "unused",
+            &named("one"),
+        );
+        let refused = std::panic::catch_unwind(|| {
+            Subject::new(
+                crate::dispatch_test_plugin::busbar_plugin_door,
+                "unused",
+                &named("two"),
+            )
+        });
+        assert!(refused.is_err(), "a second environment was accepted");
+        assert_eq!(std::env::var(VAR).as_deref(), Ok("one"), "and never set");
+    }
+}
