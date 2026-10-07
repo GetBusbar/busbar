@@ -3430,10 +3430,6 @@ mod agent_door {
     ///   approval can agree with.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_agent_doors_trust_verbs_refuse_in_their_declared_taxonomy() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-verb-errors";
         let _published = Published(instance);
@@ -3555,9 +3551,6 @@ mod agent_door {
     #[test]
     fn the_admin_crates_door_double_states_the_linked_doors_statement() {
         // A build that links no agent door has nothing for this cell to pin.
-        if linked_door().is_none() {
-            return;
-        }
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         let reg =
             registration(linked_probe(door(), "agent-door-statement")).expect("the door binds");
