@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2519,
+    "total": 2518,
     "by_plane": {
       "a2a": 468,
-      "core": 990,
+      "core": 989,
       "llm": 149,
       "mcp": 912
     },
@@ -93,7 +93,7 @@
       "neutrality": 22,
       "ops.raw": 1,
       "ops.scrape": 16,
-      "plugins": 14,
+      "plugins": 13,
       "plugins.abi": 1,
       "queue": 2,
       "route.529": 2,
@@ -36183,23 +36183,6 @@
         "name": "plugin-list.sh",
         "args": [
           "hashicorp-vault"
-        ]
-      },
-      "outcome": "ok",
-      "why": "--list-plugins with the published tarball: kind/alias/signature/STATUS line",
-      "bindings": [
-        "PB-11"
-      ]
-    },
-    {
-      "id": "plugins.load|headroom-hook",
-      "plane": "core",
-      "family": "plugins",
-      "driver": "script",
-      "script": {
-        "name": "plugin-list.sh",
-        "args": [
-          "headroom-hook"
         ]
       },
       "outcome": "ok",

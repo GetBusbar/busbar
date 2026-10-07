@@ -1,7 +1,7 @@
 {
   "binary": "<oracle-cache>/1.5.5/busbar",
   "version": "busbar 1.5.5",
-  "recorded": 1016,
+  "recorded": 1015,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
   "harness_rev": "b3a611c252825abced4537b654f91ed02dae9d627c7625b16327a5f5c09645be",
   "host_triple": "x86_64-unknown-linux-gnu",

@@ -2293,7 +2293,6 @@ plugins.load|auth-github	PASS	script plugin-list.sh: status 0
 plugins.load|auth-ldap	PASS	script plugin-list.sh: status 0	
 plugins.load|auth-oidc	PASS	script plugin-list.sh: status 0	
 plugins.load|hashicorp-vault	PASS	script plugin-list.sh: status 0	
-plugins.load|headroom-hook	PASS	script plugin-list.sh: status 0	
 plugins.load|store-mysql	PASS	script plugin-list.sh: status 0	
 plugins.load|store-postgres	PASS	script plugin-list.sh: status 0	
 plugins.load|store-sqlite	PASS	script plugin-list.sh: status 0	

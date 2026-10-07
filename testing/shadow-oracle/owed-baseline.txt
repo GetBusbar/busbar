@@ -943,7 +943,6 @@ plugins.load|auth-github
 plugins.load|auth-ldap
 plugins.load|auth-oidc
 plugins.load|hashicorp-vault
-plugins.load|headroom-hook
 plugins.load|store-mysql
 plugins.load|store-postgres
 plugins.load|store-sqlite
