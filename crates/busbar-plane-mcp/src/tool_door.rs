@@ -1299,6 +1299,7 @@ fn verify_on_call(
                 // The verify fetch carries the member's down-scope (token_exchange) or the caller's
                 // lent credential (passthrough) through the connector binding (Q-L3B-DOOR-EXCHANGE).
                 let url = def.url.clone();
+                let timeout_ms = leg_timeout_ms(def);
                 let scope = crate::tool_scope::exchanges(
                     def,
                     held.section.effective_upstream_credentials(server),
@@ -1317,7 +1318,7 @@ fn verify_on_call(
                             .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
                             .collect(),
                         body: request.body,
-                        timeout_ms: CONNECT_TIMEOUT_MS,
+                        timeout_ms,
                     }
                 });
                 let std::task::Poll::Ready(answer) = answer else {
@@ -2909,9 +2910,23 @@ fn exchange_at(
 /// The JSON-RPC id a `connect`'s `tools/list` carries: one request, correlated by this id.
 const CONNECT_REQUEST_ID: u64 = 1;
 
-/// How long a `connect`'s fetch may take: an upstream is not trusted to answer, and an operator
-/// verb that hangs is one that gets killed and retried.
-const CONNECT_TIMEOUT_MS: u64 = 30_000;
+/// The documented default of a registration's `timeout:` (docs/mcp.md: `30s`), in milliseconds: the
+/// budget of one outbound leg when the operator states none.
+const DEFAULT_LEG_TIMEOUT_MS: u64 = 30_000;
+
+/// THE BUDGET OF ONE OUTBOUND LEG to registration `def`, milliseconds: its configured `timeout:`
+/// (validated at boot, `0` refused there), else [`DEFAULT_LEG_TIMEOUT_MS`]. It rides the leg's
+/// request head as `timeout_ms` and the host clamps it to the op's deadline class (ARCHITECT ruling
+/// on `timeout:`; BUSBAR-1.6.0.md, deadline classes). Used by the tool-list re-check on the call path
+/// (verify-on-call) and by the operator's `connect`: an upstream is not trusted to answer, and a
+/// fetch the operator bounded at ten seconds may not hang for thirty.
+pub(crate) fn leg_timeout_ms(def: &crate::tools_config::McpServerDefCfg) -> u64 {
+    def.timeout
+        .as_deref()
+        .and_then(|t| busbar_contract::duration::parse_duration_secs(t).ok())
+        .filter(|secs| *secs > 0)
+        .map_or(DEFAULT_LEG_TIMEOUT_MS, |secs| secs.saturating_mul(1000))
+}
 
 /// THE SIGHTING a `connect`'s exchange landed: the server's tool list re-hashed, or why the contact
 /// failed, in the served engine's words.
@@ -3064,7 +3079,7 @@ slot!(
                                 .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
                                 .collect(),
                             body: request.body,
-                            timeout_ms: CONNECT_TIMEOUT_MS,
+                            timeout_ms: leg_timeout_ms(&def),
                         })
                         .map(|e| e.as_member(name.as_str()))
                     }
