@@ -1182,50 +1182,18 @@ pub fn provider_routes(
         .collect()
 }
 
-/// ONE PROVIDER'S DIALECT FACTS as a door plane is handed them at open (THE DESIGN §4;
-/// `PlaneOpenIn::providers`): its name, its resolved `protocol` and its `error_map` as one JSON
-/// object (`None` = it states none).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DialectFacts {
-    /// The provider's `providers:` key.
-    pub name: String,
-    /// Its resolved `protocol`.
-    pub protocol: String,
-    /// Its `error_map`, as JSON; `None` = none stated.
-    pub error_map: Option<Vec<u8>>,
-}
-
-/// THE DIALECT FACTS OF THE PROVIDERS `section` REFERENCES (each `models.<m>.provider`, the
-/// reserved model map's), one per provider in the order first referenced, read off `providers`. A
-/// reference naming no configured provider is skipped: `resolve` already refused it.
+/// THE DIALECT FACTS OF THE PROVIDERS `section` REFERENCES, read off `providers` through the one
+/// builder the probe's open uses too ([`busbar_contract::plane_calls::dialect_facts`]).
 #[must_use]
 pub fn dialect_facts(
     section: &serde_yaml::Value,
     providers: &BTreeMap<String, ProviderRoute>,
-) -> Vec<DialectFacts> {
-    let mut out: Vec<DialectFacts> = Vec::new();
-    let referenced = section
-        .get(RESERVED_MODELS_KEY)
-        .and_then(serde_yaml::Value::as_mapping)
-        .into_iter()
-        .flat_map(|m| m.values())
-        .filter_map(|entry| entry.get(MODEL_PROVIDER_KEY)?.as_str());
-    for name in referenced {
-        if out.iter().any(|f| f.name == name) {
-            continue;
-        }
-        let Some(p) = providers.get(name) else {
-            continue;
-        };
-        out.push(DialectFacts {
-            name: name.to_string(),
-            protocol: p.protocol.clone(),
-            error_map: (!p.error_map.is_empty())
-                .then(|| serde_json::to_vec(&p.error_map).ok())
-                .flatten(),
-        });
-    }
-    out
+) -> Vec<busbar_contract::plane_calls::DialectFacts> {
+    busbar_contract::plane_calls::dialect_facts(section, |name| {
+        providers
+            .get(name)
+            .map(|p| (p.protocol.clone(), p.error_map.clone()))
+    })
 }
 
 /// One auth plugin serving a style: its instance, opened for its outbound styles, and the style as

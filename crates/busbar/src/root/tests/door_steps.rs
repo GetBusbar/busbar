@@ -2719,6 +2719,7 @@ pub(crate) mod door_boundary {
             tool_defs: &tools,
             public_url: Some(PUBLIC_URL),
             prior: None,
+            providers: None,
         })
         .expect("the door builds from its section")
     }

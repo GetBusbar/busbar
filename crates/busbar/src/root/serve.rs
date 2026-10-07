@@ -1161,7 +1161,7 @@ fn open(
     section: &serde_yaml::Value,
     public_url: Option<&str>,
     owned: &serde_json::Map<String, serde_json::Value>,
-    dialects: &[crate::root::door_steps::DialectFacts],
+    dialects: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
     let mut section = section.clone();
@@ -1175,32 +1175,8 @@ fn open(
         serde_json::to_vec(owned).map_err(|e| format!("its owned sections: {e}"))?
     };
     let url = public_url.unwrap_or_default();
-    let text = |s: &str| AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    };
     // Each points into `dialects`, which outlives the call.
-    let providers: Vec<busbar_contract::abi::plane::ProviderFacts> = dialects
-        .iter()
-        .map(|d| busbar_contract::abi::plane::ProviderFacts {
-            name: text(&d.name),
-            protocol: text(&d.protocol),
-            error_map: match &d.error_map {
-                Some(json) => Blob {
-                    ptr: json.as_ptr(),
-                    len: json.len(),
-                    fmt: BLOB_JSON,
-                    flags: 0,
-                },
-                None => Blob {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                    fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
-                    flags: 0,
-                },
-            },
-        })
-        .collect();
+    let providers = crate::root::loader::dispatch::kinds::plane::provider_facts(dialects);
     let mut frame = Frame::new(
         PlaneOpenIn {
             open: OpenIn {

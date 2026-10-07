@@ -462,14 +462,19 @@ fn with_listing_door(
         trust_keys: Vec::new(),
         caller_credential_refusal: None,
         validate: Arc::new(|_: &[u8]| Ok(())),
-        facing: Arc::new(move |_: &[u8], _: &[u8], _: Option<&str>| {
-            Ok(DoorFacing {
-                listed: names.iter().map(|n| (*n).to_string()).collect(),
-                ..DoorFacing::default()
-            })
-        }),
+        facing: Arc::new(
+            move |_: &[u8],
+                  _: &[u8],
+                  _: Option<&str>,
+                  _: &[busbar_contract::plane_calls::DialectFacts]| {
+                Ok(DoorFacing {
+                    listed: names.iter().map(|n| (*n).to_string()).collect(),
+                    ..DoorFacing::default()
+                })
+            },
+        ),
     };
-    let facing = (reg.facing)(b"", b"", None).expect("faces");
+    let facing = (reg.facing)(b"", b"", None, &[]).expect("faces");
     let decl = fold(reg).expect("the listing door folds");
     let mut t = topology();
     t.install_plane_runtime(

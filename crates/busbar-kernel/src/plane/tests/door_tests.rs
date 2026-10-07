@@ -85,18 +85,23 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
             }
             Ok(())
         }),
-        facing: Arc::new(|_: &[u8], _: &[u8], public_url: Option<&str>| {
-            Ok(busbar_contract::plane_calls::DoorFacing {
-                claims: vec![
-                    ("/fleet".to_string(), "first"),
-                    ("/fleet/{id}".to_string(), "first"),
-                    ("/.well-known/fleet".to_string(), "second"),
-                ],
-                admission: public_url
-                    .map(|u| (format!("{u}/fleet"), format!("{u}/.well-known/fleet"))),
-                listed: Vec::new(),
-            })
-        }),
+        facing: Arc::new(
+            |_: &[u8],
+             _: &[u8],
+             public_url: Option<&str>,
+             _: &[busbar_contract::plane_calls::DialectFacts]| {
+                Ok(busbar_contract::plane_calls::DoorFacing {
+                    claims: vec![
+                        ("/fleet".to_string(), "first"),
+                        ("/fleet/{id}".to_string(), "first"),
+                        ("/.well-known/fleet".to_string(), "second"),
+                    ],
+                    admission: public_url
+                        .map(|u| (format!("{u}/fleet"), format!("{u}/.well-known/fleet"))),
+                    listed: Vec::new(),
+                })
+            },
+        ),
     }
 }
 
@@ -238,7 +243,7 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
             NAMED,
             serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
         ),
-        facing: (reg.facing)(b"{}", b"", Some("https://gw.example")).expect("faces"),
+        facing: (reg.facing)(b"{}", b"", Some("https://gw.example"), &[]).expect("faces"),
     };
     assert_eq!(
         (decl.claims)(&slot),
@@ -255,7 +260,7 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
         "https://gw.example/.well-known/fleet"
     );
     let unbound = DoorSlot {
-        facing: (reg.facing)(b"{}", b"", None).expect("faces"),
+        facing: (reg.facing)(b"{}", b"", None, &[]).expect("faces"),
         ..slot
     };
     assert!(
@@ -300,17 +305,23 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     let owned_key: &'static str = "door_fold_owned_block";
     let mut reg = registration("door-fold-owned", NAMED);
     reg.owns = vec![owned_key];
-    reg.facing = Arc::new(|_: &[u8], owned: &[u8], _: Option<&str>| {
-        let doc: serde_json::Value = serde_json::from_slice(owned).map_err(|e| e.to_string())?;
-        let audience = doc["door_fold_owned_block"]["uri"]
-            .as_str()
-            .map(|u| (u.to_string(), format!("{u}/meta")));
-        Ok(busbar_contract::plane_calls::DoorFacing {
-            claims: Vec::new(),
-            admission: audience,
-            listed: Vec::new(),
-        })
-    });
+    reg.facing = Arc::new(
+        |_: &[u8],
+         owned: &[u8],
+         _: Option<&str>,
+         _: &[busbar_contract::plane_calls::DialectFacts]| {
+            let doc: serde_json::Value =
+                serde_json::from_slice(owned).map_err(|e| e.to_string())?;
+            let audience = doc["door_fold_owned_block"]["uri"]
+                .as_str()
+                .map(|u| (u.to_string(), format!("{u}/meta")));
+            Ok(busbar_contract::plane_calls::DoorFacing {
+                claims: Vec::new(),
+                admission: audience,
+                listed: Vec::new(),
+            })
+        },
+    );
     let decl = fold(reg).expect("folds");
     assert_eq!(decl.owned_config_sections, &[owned_key]);
     let block: serde_yaml::Value = serde_yaml::from_str("uri: 'https://gw.example/x'").unwrap();
@@ -327,6 +338,7 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
         tool_defs: &section,
         public_url: None,
         prior: None,
+        providers: None,
     };
     let slot = (decl.build)(&ctx).expect("a slot");
     let adm = (decl.admission)(&*slot).expect("an audience from its owned block");
@@ -345,13 +357,15 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
 fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
     use busbar_contract::records::{ScopeRef, VirtualKey};
     let mut reg = registration("door-fold-listed", NAMED);
-    reg.facing = Arc::new(|_: &[u8], _: &[u8], _: Option<&str>| {
-        Ok(busbar_contract::plane_calls::DoorFacing {
-            listed: vec!["zeta".to_string(), "alpha".to_string()],
-            ..Default::default()
-        })
-    });
-    let facing = (reg.facing)(b"", b"", None).expect("faces");
+    reg.facing = Arc::new(
+        |_: &[u8], _: &[u8], _: Option<&str>, _: &[busbar_contract::plane_calls::DialectFacts]| {
+            Ok(busbar_contract::plane_calls::DoorFacing {
+                listed: vec!["zeta".to_string(), "alpha".to_string()],
+                ..Default::default()
+            })
+        },
+    );
+    let facing = (reg.facing)(b"", b"", None, &[]).expect("faces");
     let decl = fold(reg).expect("folds");
     let slot = DoorSlot {
         section: DoorSection::new(NAMED, serde_yaml::Value::Null),
@@ -387,4 +401,80 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     > = std::collections::BTreeMap::new();
     assert!(listed(&empty, None).is_empty());
+}
+
+/// RED, THE PROBE IS HANDED ITS PROVIDERS' DIALECT FACTS (THE DESIGN section 4): a door's build
+/// hands its probe's open the providers its section's `models.<m>.provider` entries reference,
+/// once each in the order first referenced, with their resolved `protocol` and `error_map`, through
+/// the one builder the served open uses; a plane that resolves each model's dialect from them
+/// states its claims from them. A build with no resolved providers hands none.
+#[test]
+fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
+    let mut reg = registration("door-fold-dialects", NAMED);
+    reg.facing = Arc::new(
+        |_: &[u8],
+         _: &[u8],
+         _: Option<&str>,
+         dialects: &[busbar_contract::plane_calls::DialectFacts]| {
+            Ok(busbar_contract::plane_calls::DoorFacing {
+                claims: dialects
+                    .iter()
+                    .map(|d| {
+                        let map = String::from_utf8_lossy(d.error_map.as_deref().unwrap_or(b"-"));
+                        (format!("/{}/{}/{map}", d.name, d.protocol), "first")
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+        },
+    );
+    let decl = fold(reg).expect("folds");
+    let provider = |yaml: &str| -> crate::config::providers::ProviderCfg {
+        serde_yaml::from_str(yaml).expect("a provider")
+    };
+    let providers: std::collections::HashMap<String, crate::config::providers::ProviderCfg> = [
+        (
+            "eng-a".to_string(),
+            provider("protocol: one\nbase_url: http://a\napi_key: {env: A}\nerror_map: {'429': rate_limited}\n"),
+        ),
+        (
+            "eng-b".to_string(),
+            provider("protocol: two\nbase_url: http://b\napi_key: {env: B}\nerror_map: {}\n"),
+        ),
+        (
+            "unused".to_string(),
+            provider("protocol: one\nbase_url: http://u\napi_key: {env: U}\nerror_map: {}\n"),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let section = DoorSection::new(
+        NAMED,
+        serde_yaml::from_str(
+            "models: {m1: {provider: eng-a}, m2: {provider: eng-b}, m3: {provider: eng-a}}",
+        )
+        .unwrap(),
+    );
+    let ctx = |providers| BuildCtx {
+        endpoint_slot: None,
+        agent_defs: &(),
+        tool_defs: &section,
+        public_url: None,
+        prior: None,
+        providers,
+    };
+    let slot = (decl.build)(&ctx(Some(&providers))).expect("a slot");
+    let slot = slot.downcast_ref::<DoorSlot>().expect("a door slot");
+    let claimed: Vec<&str> = slot.facing.claims.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(
+        claimed,
+        [r#"/eng-a/one/{"429":"rate_limited"}"#, "/eng-b/two/-"],
+        "referenced, once each, in order, with their dialect fields"
+    );
+    let slot = (decl.build)(&ctx(None)).expect("a slot");
+    let slot = slot.downcast_ref::<DoorSlot>().expect("a door slot");
+    assert!(
+        slot.facing.claims.is_empty(),
+        "no resolved providers, none handed"
+    );
 }

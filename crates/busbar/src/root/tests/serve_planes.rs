@@ -221,6 +221,8 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
         eprintln!("skip: the test plane's cdylib is not built in this scoped run");
         return;
     };
+    // The kernel's host services the plane's open is handed, as a composition installs them.
+    let _late = composed_services();
     let route = |protocol: &str, error_map: &[(&str, &str)]| ProviderRoute {
         base_url: "http://127.0.0.1:9".to_string(),
         protocol: protocol.to_string(),
@@ -267,6 +269,10 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     );
     let none = dialect_facts(&serde_yaml::Value::Null, &providers);
     assert!(none.is_empty(), "a section that references none hands none");
+    // A second instance (an instance opens once): a section that references none is handed none.
+    let Some(plane) = bound("serve-open-dialect-none", &dispatcher) else {
+        return;
+    };
     let snapshot = super::open(
         &plane,
         &serde_yaml::Value::Null,
