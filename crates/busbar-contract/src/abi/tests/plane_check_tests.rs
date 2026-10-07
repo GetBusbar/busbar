@@ -520,7 +520,9 @@ fn the_catalogue_bits_share_no_bit_with_their_neighbours() {
         PIECE_END_OF_FRAME,
         PIECE_LAST,
         PIECE_HAS_STATUS,
+        PIECE_FIELDS,
         PIECE_CATALOGUE_MOVED,
+        PIECE_CUT,
     ];
     let emit_bits = [
         EMIT_TO_FAR_END,
@@ -536,6 +538,48 @@ fn the_catalogue_bits_share_no_bit_with_their_neighbours() {
             }
         }
     }
+}
+
+/// THE CUT (ARCHITECT RULING U11 Q1 2026-10-06): `PIECE_CUT` is a known `OnPieceIn::flags` bit,
+/// valid only on the far end's last piece; a cut on any other piece, a bit the contract does not
+/// define and an unknown `from` are FAULT (RED arms).
+#[test]
+fn a_cut_is_known_and_only_ends_the_far_ends_answer() {
+    assert_eq!(check_piece_in(FROM_FAR_END, PIECE_CUT | PIECE_LAST), Ok(()));
+    assert_eq!(
+        check_piece_in(FROM_FAR_END, PIECE_CUT | PIECE_LAST | PIECE_HAS_STATUS),
+        Ok(()),
+        "a cut head"
+    );
+    for flags in [
+        0,
+        PIECE_LAST,
+        PIECE_END_OF_FRAME | PIECE_HAS_STATUS,
+        PIECE_FIELDS,
+        PIECE_CATALOGUE_MOVED,
+    ] {
+        assert_eq!(check_piece_in(FROM_FAR_END, flags), Ok(()), "{flags}");
+    }
+    assert_eq!(
+        check_piece_in(FROM_FAR_END, PIECE_CUT),
+        f(Rule::Contradiction, "on_piece_in.cut"),
+        "a cut is the last piece"
+    );
+    for from in [FROM_CALLER, FROM_KERNEL] {
+        assert_eq!(
+            check_piece_in(from, PIECE_CUT | PIECE_LAST),
+            f(Rule::Contradiction, "on_piece_in.cut"),
+            "{from}: only the far end is cut"
+        );
+    }
+    assert_eq!(
+        check_piece_in(FROM_FAR_END, PIECE_CUT << 1),
+        f(Rule::UnknownCode, "on_piece_in.flags")
+    );
+    assert_eq!(
+        check_piece_in(3, PIECE_LAST),
+        f(Rule::UnknownCode, "on_piece_in.from")
+    );
 }
 
 #[test]
@@ -2799,7 +2843,7 @@ fn an_arrivals_route_flags_are_once_and_session() {
     }
     let mut o: ArriveOut = z();
     o.route = ROUTE_LOCAL;
-    o.route_flags = ROUTE_STREAM << 1;
+    o.route_flags = ROUTE_COUNTED << 1;
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route_flags")
@@ -2813,6 +2857,69 @@ fn an_arrivals_route_flags_are_once_and_session() {
         f(Rule::Contradiction, "arrive.pool"),
         "a refused arrival opens no session"
     );
+}
+
+/// THE COUNTED REFUSAL (ARCHITECT RULING U11 Q3 2026-10-06; abi/plane "A refused arrival", rule
+/// 7): a REFUSED arrival whose dialect read the request states `ROUTE_COUNTED`, alone, whether or
+/// not it names an entry; an admitted unit never states it, an answer that is neither admitted nor
+/// refused states no route flag, and a refusal stating any other route bit is FAULT (RED arms).
+#[test]
+fn a_refused_arrival_alone_may_be_counted() {
+    let mut o: ArriveOut = z();
+    o.refusal = 7;
+    o.refusal_status = 404;
+    o.route_flags = ROUTE_COUNTED;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        Ok(()),
+        "a refusal its dialect read"
+    );
+    let mut about = o;
+    about.refusal_status = 503;
+    about.route = ROUTE_DIRECT;
+    about.pool = s("planner");
+    assert_eq!(
+        check_arrive(Refused, &about, &[], 4, &bounds()),
+        Ok(()),
+        "a counted refusal about an entry"
+    );
+    about.route_flags = ROUTE_COUNTED | ROUTE_ONCE;
+    assert_eq!(
+        check_arrive(Refused, &about, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.route_flags"),
+        "a refusal about an entry states no other route bit"
+    );
+    for other in [ROUTE_ONCE, ROUTE_SESSION, ROUTE_STREAM, ROUTE_COUNTED << 1] {
+        let mut o = o;
+        o.route_flags = ROUTE_COUNTED | other;
+        assert_eq!(
+            check_arrive(Refused, &o, &[], 4, &bounds()),
+            f(Rule::Contradiction, "arrive.pool"),
+            "{other}: a refusal states the counted bit alone"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    o.route_flags = ROUTE_COUNTED;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.route_flags"),
+        "an admitted unit is never a counted refusal"
+    );
+    for outcome in [Pending, Failed] {
+        let mut o: ArriveOut = z();
+        o.units_needed = u32::from(outcome == Failed);
+        o.route_flags = ROUTE_COUNTED;
+        assert_eq!(
+            check_arrive(outcome, &o, &[], 0, &bounds()),
+            f(Rule::Contradiction, "arrive.pool"),
+            "{outcome:?}"
+        );
+    }
+    for bit in [ROUTE_ONCE, ROUTE_SESSION, ROUTE_STREAM] {
+        assert_eq!(ROUTE_COUNTED & bit, 0, "{bit} and the counted bit overlap");
+    }
+    assert_eq!(ROUTE_COUNTED.count_ones(), 1);
 }
 
 /// THE STICKY-ROUTING KEY (ARCHITECT Q1 ArriveOut, 2026-10-05): a READY arrival may state an

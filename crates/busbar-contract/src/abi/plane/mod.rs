@@ -134,6 +134,9 @@
 //!    dialect) is held: the kernel judges the caller's identity and its grant over that entry
 //!    first (a refusal there wins), then renders this refusal before admission, so nothing is
 //!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault).
+//! 7. A COUNTED REFUSAL (ARCHITECT RULING U11 Q3 2026-10-06): a REFUSED `arrive` whose dialect read
+//!    the request states [`ROUTE_COUNTED`] in [`ArriveOut::route_flags`], its only bit there, and
+//!    the request is counted as one its dialect refused, whatever its status.
 //!
 //! [`RefusalOut::status`] lets the rendering name the status its dialect answers with; `0` keeps
 //! the one the kernel chose. The gate-rejected audit marker is the kernel's: it sets it from
@@ -434,6 +437,16 @@ pub const ROUTE_SESSION: u8 = 2;
 /// not a refund (Part 2 #62). Unset, the answer is the caller's whole or not at all.
 pub const ROUTE_STREAM: u8 = 4;
 
+/// [`ArriveOut::route_flags`], on a REFUSED arrival only: a dialect READ this request, so it is
+/// COUNTED as a request its dialect refused, whatever its status (ARCHITECT RULING U11 Q3
+/// 2026-10-06). Unset, a refused arrival that no dialect read (a path no dialect claims, a verb a
+/// path does not take) is counted only as its status says. See "A refused arrival", rule 7.
+pub const ROUTE_COUNTED: u8 = 8;
+const _: () = assert!(
+    ROUTE_COUNTED.count_ones() == 1
+        && ROUTE_COUNTED & (ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM) == 0
+);
+
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
@@ -461,6 +474,16 @@ pub const PIECE_FIELDS: u32 = 1 << 3;
 /// with whatever it tells the session about the move, or with nothing. See
 /// the catalogue-moved tick in this module's documentation.
 pub const PIECE_CATALOGUE_MOVED: u32 = 1 << 4;
+/// [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_LAST`]: the far end ENDED BEFORE ITS END
+/// (a CUT): its body closed, or its transfer failed or ran past its ceiling, before its framing
+/// said the answer was complete (ARCHITECT RULING U11 Q1 2026-10-06). The plane ends the caller's
+/// reply as its dialect ends one cut short (an in-band error, or nothing) and answers with its
+/// verdict: a failure verdict ([`VERDICT_RETRY`], [`VERDICT_HARD`]) on its closing answer reports
+/// the reply cut, which the kernel seals as a PARTIAL end when a byte of the reply reached the
+/// caller before the cut and as an ERROR when none did; a success verdict reports the reply
+/// whole, sealed as its status says (a retry verdict before the caller's first byte fails over, as
+/// on any piece). A plane that does not read the bit sees a last piece.
+pub const PIECE_CUT: u32 = 1 << 5;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
 pub const EMIT_TO_FAR_END: u32 = 1;
@@ -514,6 +537,7 @@ const _: () = assert!(one_bit_each(&[
     PIECE_HAS_STATUS,
     PIECE_FIELDS,
     PIECE_CATALOGUE_MOVED,
+    PIECE_CUT,
 ]));
 const _: () = assert!(one_bit_each(&[
     EMIT_TO_FAR_END,
@@ -1418,8 +1442,9 @@ pub struct ArriveOut {
     /// [`ROUTE_POOL`] on every
     /// other outcome.
     pub route: u8,
-    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`], [`ROUTE_STREAM`]); `0`
-    /// on every other outcome. A tail addition, in what was padding.
+    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`], [`ROUTE_STREAM`]); on
+    /// REFUSED: [`ROUTE_COUNTED`] or `0`; `0` on every other outcome. A tail addition, in what was
+    /// padding.
     pub route_flags: u8,
     /// Alignment padding.
     pub _route_reserved: [u8; 6],
