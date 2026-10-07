@@ -101,7 +101,7 @@ busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-trans
 busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "84b3fc400c2f63fe7bf9ad87dae3ac35d970defe" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "e7b88a2ddcdc5a01fcb2a6b7ba6d5148e295f222" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "396513f75d2a3c11a0c0bc660119798b11b47e93" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
 busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "c22578acc927269f27e25dcef41ff7a4d91403ee" }
