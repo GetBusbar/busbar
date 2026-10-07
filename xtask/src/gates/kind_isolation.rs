@@ -538,7 +538,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // It is stated here for every kind in `truths::PLUGIN_KINDS`, not kind by kind as each one's
     // first crate happened to reach the contract — `store`, `plane` and `transport` were granted
     // that way and `auth`, `hooks`, `secret` and `export` were not, so the day the dependency-wall
-    // wave repointed `busbar-hooks-ranking` at the contract, the plugin DOING what #40 asks was
+    // wave repointed `busbar-hook-ranking` at the contract, the plugin DOING what #40 asks was
     // scored `new-forbidden-edge`. `the_wall_is_granted_for_every_plugin_kind` holds this block to
     // the seven; [`is_the_wall`] is the same rule where an edge or a vocabulary cell is judged.
     ("auth", "contract"),
@@ -2660,6 +2660,21 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         Half::Test => cold_witness_edges(cx, crates),
         Half::Shipped => BTreeSet::new(),
     };
+    // A REVIEWED RENAME IS THE EDGE IT RENAMES. A plugin crate that left the tree under a new name
+    // (P5: `busbar-hooks-ranking` -> `busbar-hook-ranking`) is the same crate only through a row of
+    // the construction census's rename ledger (`[[gate.census.renamed]]`, ARCHITECT 2026-10-03
+    // Q-L7B2-CENSUS (A)): a whole row whose commit resolves, which that gate holds. An edge to the
+    // NEW name pre-exists exactly when the base had it under the OLD one. A rename with no row is a
+    // new edge, as before; a broken row renames nothing (the construction gate reds it).
+    let renamed_from: BTreeMap<String, String> = cx
+        .read(crate::gates::construction::CEILINGS)
+        .ok()
+        .and_then(|t| crate::toml_doc::parse_str(&t).ok())
+        .map(|doc| crate::gates::construction::census::renames(cx, &doc).0)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(old, new)| (new, old))
+        .collect();
     match base::read(cx) {
         Ok(base) => {
             for e in &measured {
@@ -2667,7 +2682,9 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 if implied == "allowed" || implied == "tcb" {
                     continue;
                 }
-                if base.has_edge(&e.from, &e.to, half.word()) {
+                if pre_existing(&renamed_from, &e.from, &e.to, |from, to| {
+                    base.has_edge(from, to, half.word())
+                }) {
                     continue;
                 }
                 if witness.contains(&(e.from.clone(), e.to.clone())) {
@@ -7138,11 +7155,11 @@ impl Gate for KindIsolationGate {
             // shape — row, edge and user — however the real `hook` row moves.
             let witness = |dev: bool, extra_user: bool| {
                 let rel = "crates/plugin-loader/Cargo.toml";
-                let fixture = "busbar-hooks-ranking = { path = \"../hooks-ranking\" }\n";
+                let fixture = "busbar-hook-ranking = { workspace = true }\n";
                 let table = "[package.metadata.busbar.both-ways]\n";
                 let mut m = cx.read(rel).unwrap_or_default().replacen(
                     table,
-                    &format!("{table}hook = \"busbar-hooks-ranking\"\n"),
+                    &format!("{table}hook = \"busbar-hook-ranking\"\n"),
                     1,
                 );
                 m = if dev {
@@ -7175,7 +7192,7 @@ impl Gate for KindIsolationGate {
                     REGISTRY_FILE,
                     format!(
                         "{}\n\n[[dep]]\nfrom    = \"busbar-plugin-loader\"\nto      = \
-                         \"busbar-hooks-ranking\"\nhalf    = \"{}\"\ncount   = \"1\"\nverdict = \
+                         \"busbar-hook-ranking\"\nhalf    = \"{}\"\ncount   = \"1\"\nverdict = \
                          \"not-allowed\"\ncite    = \"planted by the self-test\"\nwhy     = \"the \
                          hook kind's both-ways witness\"\ndrain   = \"none\"\n",
                         cx.read(REGISTRY_FILE).unwrap_or_default().trim_end(),
@@ -7213,7 +7230,7 @@ impl Gate for KindIsolationGate {
                 witness(false, false),
                 &[
                     "new-forbidden-edge",
-                    "busbar-plugin-loader -> busbar-hooks-ranking",
+                    "busbar-plugin-loader -> busbar-hook-ranking",
                 ],
             ));
             // …and a fixture any test other than a conformance test uses is a plugin the tooling
@@ -7226,7 +7243,7 @@ impl Gate for KindIsolationGate {
                 witness(true, true),
                 &[
                     "new-forbidden-edge",
-                    "busbar-plugin-loader -> busbar-hooks-ranking",
+                    "busbar-plugin-loader -> busbar-hook-ranking",
                 ],
             ));
 
@@ -7549,7 +7566,7 @@ impl Gate for KindIsolationGate {
 
             // THE #40 WALL, BOTH WAYS. A plugin-kind crate whose one dependency is busbar-contract
             // IS DECISIONS #40(a) — `hooks -> contract` was scored `new-forbidden-edge` plus an
-            // unlisted `[[dep]]`, `[[cell]]` and `[[edge]]` the day `busbar-hooks-ranking` was
+            // unlisted `[[dep]]`, `[[cell]]` and `[[edge]]` the day `busbar-hook-ranking` was
             // repointed at the contract, for doing exactly what the wall asks. GREEN on the shipped
             // graph, the test graph and the vocabulary matrix alike, with a source file that names
             // the contract the way every plugin does. And the same crate reaching `busbar-kernel` is
@@ -7606,11 +7623,11 @@ impl Gate for KindIsolationGate {
             let mut ov = manifest_plant(
                 "crates/busbar-kernel-planted",
                 "busbar-kernel-planted",
-                &["busbar-hooks-ranking"],
+                &["busbar-hook-ranking"],
             );
             ov.set(
                 REGISTRY_FILE,
-                planted_dep_row(cx, "busbar-kernel-planted", "busbar-hooks-ranking"),
+                planted_dep_row(cx, "busbar-kernel-planted", "busbar-hook-ranking"),
             );
             report.push(prove_rows_red(
                 cx,
@@ -7620,7 +7637,7 @@ impl Gate for KindIsolationGate {
                 ov,
                 &[
                     "unsupported-verdict",
-                    "busbar-kernel-planted -> busbar-hooks-ranking",
+                    "busbar-kernel-planted -> busbar-hook-ranking",
                     "kernel -> hooks",
                 ],
             ));
@@ -7654,12 +7671,12 @@ impl Gate for KindIsolationGate {
                 manifest_plus(
                     cx,
                     "crates/busbar-core-admin/Cargo.toml",
-                    "[dependencies.busbar-hooks-ranking]\npath = \"../hooks-ranking\"\n",
+                    "[dependencies.busbar-hook-ranking]\nworkspace = true\n",
                 ),
             );
             ov.set(
                 REGISTRY_FILE,
-                planted_dep_row(cx, "busbar-core-admin", "busbar-hooks-ranking"),
+                planted_dep_row(cx, "busbar-core-admin", "busbar-hook-ranking"),
             );
             report.push(prove_rows_red(
                 cx,
@@ -7669,7 +7686,7 @@ impl Gate for KindIsolationGate {
                 ov,
                 &[
                     "unsupported-verdict",
-                    "busbar-core-admin -> busbar-hooks-ranking",
+                    "busbar-core-admin -> busbar-hook-ranking",
                     "cleanliness -> hooks",
                 ],
             ));
@@ -10615,6 +10632,82 @@ fn manifest_plus(cx: &Ctx, rel: &str, extra: &str) -> String {
 
 /// A planted `Cargo.toml` for `dir`, declaring `name` and depending on `deps`. `set` rather than an
 /// `Edit::Create` so the same helper serves both a brand-new crate and a rewrite of a real one.
+/// Whether `from -> to` pre-dates this branch: the base declares it, or `to` is the NEW name of a
+/// crate a reviewed rename row (`renamed_from`: new name -> old name, the construction census's
+/// `[[gate.census.renamed]]`) moved, and the base declares `from -> <old name>`. A rename with no
+/// reviewed row is no rename here: the edge under the new name is new.
+fn pre_existing(
+    renamed_from: &BTreeMap<String, String>,
+    from: &str,
+    to: &str,
+    base_has: impl Fn(&str, &str) -> bool,
+) -> bool {
+    base_has(from, to)
+        || renamed_from
+            .get(to)
+            .is_some_and(|old| base_has(from, old.as_str()))
+}
+
+#[cfg(test)]
+mod pre_existing_tests {
+    use super::*;
+
+    fn base(from: &str, to: &str) -> bool {
+        (from, to) == ("busbar-kernel", "busbar-hooks-ranking")
+    }
+
+    fn reviewed() -> BTreeMap<String, String> {
+        [(
+            "busbar-hook-ranking".to_string(),
+            "busbar-hooks-ranking".to_string(),
+        )]
+        .into()
+    }
+
+    #[test]
+    fn an_edge_the_base_declares_pre_exists() {
+        assert!(pre_existing(
+            &BTreeMap::new(),
+            "busbar-kernel",
+            "busbar-hooks-ranking",
+            base
+        ));
+    }
+
+    #[test]
+    fn a_reviewed_rename_is_the_edge_it_renames() {
+        assert!(pre_existing(
+            &reviewed(),
+            "busbar-kernel",
+            "busbar-hook-ranking",
+            base
+        ));
+    }
+
+    /// RED: with no reviewed rename row, the edge under the new name is one this branch introduced.
+    #[test]
+    fn an_unreviewed_rename_is_a_new_edge() {
+        assert!(!pre_existing(
+            &BTreeMap::new(),
+            "busbar-kernel",
+            "busbar-hook-ranking",
+            base
+        ));
+    }
+
+    /// RED: a reviewed row renames one crate, not every edge that lands on the new name from a
+    /// crate the base never reached the old one from.
+    #[test]
+    fn a_reviewed_rename_does_not_excuse_another_crate_s_edge() {
+        assert!(!pre_existing(
+            &reviewed(),
+            "busbar-core-admin",
+            "busbar-hook-ranking",
+            base
+        ));
+    }
+}
+
 fn manifest_plant(dir: &str, name: &str, deps: &[&str]) -> Overlay {
     let mut body = format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n\n[dependencies]\n");
     for d in deps {
