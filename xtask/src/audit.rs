@@ -230,6 +230,9 @@ pub struct Git {
 
 pub type TrackedTree = Result<std::sync::Arc<BTreeMap<String, String>>, String>;
 
+/// Every file the ledger reads at one commit (tracked plus mounted), and the pinned mounts in it.
+pub type Universe = (BTreeMap<String, String>, Vec<std::sync::Arc<Mount>>);
+
 /// A full 40- (or 64-) hex commit id: the only rev spelling whose tree cannot change under a memo.
 fn is_full_oid(rev: &str) -> bool {
     matches!(rev.len(), 40 | 64) && rev.chars().all(|c| c.is_ascii_hexdigit())
@@ -277,10 +280,7 @@ impl Git {
     }
 
     /// [`Git::files_at`] and the mounts it laid, from one read of the tree.
-    pub fn universe_at(
-        &self,
-        rev: &str,
-    ) -> Result<(BTreeMap<String, String>, Vec<std::sync::Arc<Mount>>), String> {
+    pub fn universe_at(&self, rev: &str) -> Result<Universe, String> {
         let tracked = self.tracked_at(rev)?;
         let mut all = (*tracked).clone();
         let mut mounts = Vec::new();
