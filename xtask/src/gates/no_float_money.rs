@@ -2196,18 +2196,58 @@ impl Gate for NoFloatMoneyGate {
             &["snapshot/money.rs"],
         ));
 
-        // A FLOAT UNDER A `/tests/` DIRECTORY IS A FIXTURE'S NUMBER, not the money path's.
-        let mut ov = Overlay::new();
-        ov.set(
-            format!("{LEDGER_SRC}/tests/planted_fixture.rs"),
-            format!("fn f() {{ let _: {float_ty} = 1.0; }}\n"),
-        );
-        report.push(Case {
-            name: "a float under a /tests/ directory is excluded".to_string(),
-            covers: vec![ROW_NO_FLOAT.to_string()],
-            expected: crate::gates::Expect::Green,
-            got: verdict_expect(self, &cx.with_overlay(ov)),
-        });
+        // ── TEST SCOPE IS THE DECLARING `mod`'S CFG GATE, NOT THE FILE'S NAME (audit X3 #8) ────
+        //
+        // A test-shaped name declared WITHOUT the gate is compiled into the crate and is scanned;
+        // the same file declared under `#[cfg(test)]` is a fixture's number and is not.
+        let ledger_lib = format!("{LEDGER_SRC}/lib.rs");
+        let fixture = format!("fn f() {{ let _: {float_ty} = 1.0; }}\n");
+        for (what, file, decl, red) in [
+            (
+                "an un-gated `*_tests.rs` module in the ledger",
+                format!("{LEDGER_SRC}/planted_tests.rs"),
+                "\npub mod planted_tests;\n",
+                true,
+            ),
+            (
+                "an un-gated module under the ledger's `tests/` directory",
+                format!("{LEDGER_SRC}/tests/planted_fixture.rs"),
+                "\n#[path = \"tests/planted_fixture.rs\"]\npub mod planted_fixture;\n",
+                true,
+            ),
+            (
+                "a `#[cfg(test)]`-declared module under the ledger's `tests/` directory",
+                format!("{LEDGER_SRC}/tests/planted_fixture.rs"),
+                "\n#[cfg(test)]\n#[path = \"tests/planted_fixture.rs\"]\nmod planted_fixture;\n",
+                false,
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set(&file, fixture.clone());
+            if let Err(e) = Edit::Append(decl.to_string()).apply(cx, &ledger_lib, &mut ov) {
+                report.note_infra_failure(format!(
+                    "no-float-money selftest: could not declare a planted module in {ledger_lib} ({e})"
+                ));
+                continue;
+            }
+            if red {
+                report.push(prove_red(
+                    cx,
+                    self,
+                    format!("a float in {what} is scanned (compiled into the crate)"),
+                    &[ROW_NO_FLOAT],
+                    ov,
+                    &[&float_ty, "planted_"],
+                ));
+            } else {
+                report.push(Case {
+                    name: format!("a float in {what} is test scope and stays green"),
+                    covers: vec![ROW_NO_FLOAT.to_string()],
+                    expected: crate::gates::Expect::Green,
+                    got: verdict_expect(self, &cx.with_overlay(ov)),
+                });
+            }
+        }
 
         // A COMMENT-ONLY MENTION IS PROSE. The rule that exempts it is the rule that lets the money
         // path document the ban.
@@ -2279,6 +2319,19 @@ impl Gate for NoFloatMoneyGate {
                 "a line break inside the chain",
                 "v\n        .as_u64()\n        .unwrap_or(0)",
             ),
+            // AUDIT X3 #11: THE ZERO IS DECIDED BY VALUE, NOT BY A LIST OF SPELLINGS.
+            ("a 0u16 literal", "v.as_u64().unwrap_or(0u16 as u64)"),
+            ("a 0i16 literal", "v.as_i64().unwrap_or(0i16 as i64) as u64"),
+            ("u64::MIN", "v.as_u64().unwrap_or(u64::MIN)"),
+            (
+                "unwrap_or_else(Default::default)",
+                "v.as_u64().unwrap_or_else(Default::default)",
+            ),
+            ("a map_or zero", "v.as_u64().map_or(0, |n| n)"),
+            (
+                "an if-let with a zero else",
+                "if let Some(n) = v.as_u64() { n } else { 0 }",
+            ),
         ] {
             report.push(plant(
                 cx,
@@ -2291,6 +2344,114 @@ impl Gate for NoFloatMoneyGate {
                 )),
                 &["planted_spelling"],
             ));
+        }
+
+        // AUDIT X3 #11: THE COUNT SEAM ITSELF IS SCANNED. It was skipped by name as "the seam being
+        // replaced" while it is the live reader the handlers call.
+        report.push(plant(
+            cx,
+            self,
+            "a defaulted count read in the LLM codec's count seam (`usage_count.rs`) is flagged",
+            &[ROW_COUNT_READ],
+            "crates/busbar-plane-llm/src/codec/usage_count.rs",
+            Edit::Append(
+                "\npub fn planted_seam(v: &serde_json::Value) -> u64 {\n    v.as_u64().unwrap_or(0)\n}\n"
+                    .to_string(),
+            ),
+            &["usage_count.rs", "planted_seam"],
+        ));
+
+        // AUDIT X3 #8, the count-read half: an un-gated `*_tests.rs` module is production.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-llm/src/planted_census_tests.rs",
+            "pub fn planted(v: &serde_json::Value) -> u64 {\n    v.as_u64().unwrap_or(0)\n}\n",
+        );
+        match Edit::Append("\npub mod planted_census_tests;\n".to_string()).apply(
+            cx,
+            "crates/busbar-plane-llm/src/lib.rs",
+            &mut ov,
+        ) {
+            Ok(()) => report.push(prove_red(
+                cx,
+                self,
+                "a defaulted count read in an un-gated `*_tests.rs` module is flagged",
+                &[ROW_COUNT_READ],
+                ov,
+                &["planted_census_tests"],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not declare a planted module in the llm plane ({e})"
+            )),
+        }
+
+        // ── AUDIT X3 #7: AN ALLOWANCE IS ITS `fn` AND ITS EXACT COUNT ──────────────────────────
+        //
+        // 1. A NEW defaulted read placed right after two allowed media-format reads, in the same
+        //    item, is a finding: it used to sit inside the allowance's 200-byte window and ride it.
+        let twilio = "crates/busbar-plane-streaming/src/twilio.rs";
+        match cx.read(twilio) {
+            Ok(text) => {
+                let at = "            if encoding != ASSUMED_ENCODING";
+                if text.contains(at) {
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        twilio,
+                        text.replacen(
+                            at,
+                            &format!(
+                                "            let _planted_billed = mf.get(\"usage\").and_then(serde_json::Value::as_u64).unwrap_or(0);\n{at}"
+                            ),
+                            1,
+                        ),
+                    );
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "a new defaulted read beside allowed ones in the same `fn` is a finding",
+                        &[ROW_COUNT_READ],
+                        ov,
+                        &["twilio.rs", "decode", "3 defaulted read(s)"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "no-float-money selftest: {twilio} no longer spells `{at}`"
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read {twilio} ({e})"
+            )),
+        }
+
+        // 2. AN ALLOWANCE WHOSE READ IS GONE FAILS THE ROW. It used to be a note on a PASS.
+        let u64_at = "crates/busbar-plane-streaming/src/codec/ir/codec/mod.rs";
+        match cx.read(u64_at) {
+            Ok(text) => {
+                let from = "and_then(Value::as_u64).unwrap_or_default()";
+                if text.contains(from) {
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        u64_at,
+                        text.replacen(from, "and_then(Value::as_u64).unwrap_or(7)", 1),
+                    );
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "an allowance that matches no defaulted read fails the row",
+                        &[ROW_COUNT_READ],
+                        ov,
+                        &["u64_at", "matched NO"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "no-float-money selftest: {u64_at} no longer spells `{from}`"
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read the u64_at allowance's file ({e})"
+            )),
         }
 
         // A NON-ZERO DEFAULT IS OUT OF SCOPE, on purpose: it substitutes a value the author chose
@@ -2349,11 +2510,22 @@ impl Gate for NoFloatMoneyGate {
         }
 
         // ── THE PERSISTED-COUNT DISCRIMINATOR ─────────────────────────────────────────────────
-        let record_home = PERSISTED_RECORD_HOMES
-            .iter()
-            .copied()
-            .find(|p| cx.exists(p))
-            .unwrap_or(PERSISTED_RECORD_HOMES[0]);
+        //
+        // AUDIT X3 #12: THE HOMES ARE DERIVED. A serialised record holding a `Count` OUTSIDE the
+        // contract's `records.rs` — the mcp plane's persisted rows — is a home too.
+        report.push(plant(
+            cx,
+            self,
+            "a Serialize record holding a Count with no scale, outside records.rs, is flagged",
+            &[ROW_COUNT_SCALE],
+            "crates/busbar-plane-mcp/src/record.rs",
+            Edit::Append(
+                "\n#[derive(serde::Serialize)]\npub struct PlantedMcpRow {\n    pub tokens: Count,\n}\n"
+                    .to_string(),
+            ),
+            &["plane-mcp/src/record.rs", "names no scale"],
+        ));
+        let record_home = "crates/busbar-contract/src/records.rs";
         report.push(plant(
             cx,
             self,
@@ -2390,11 +2562,13 @@ impl Gate for NoFloatMoneyGate {
         // THE INSTRUMENT: the root that reads as empty. A ledger crate that moved or was renamed must
         // be REFUSED, not scanned as zero hits and printed green.
         let mut ov = Overlay::new();
-        match cx.walk(&WalkSpec::new([LEDGER_SRC]).ext("rs").exclude([
-            EXCLUDE_TESTS_DIR,
-            EXCLUDE_TESTS_FILE,
-            CARD_BUILD_BOUNDARY,
-        ])) {
+        // EVERY file goes, test files included: a test file whose declaring parent is gone has no
+        // gate over it any more and reads as production.
+        match cx.walk(
+            &WalkSpec::new([LEDGER_SRC])
+                .ext("rs")
+                .exclude([CARD_BUILD_BOUNDARY]),
+        ) {
             Ok(files) => {
                 for f in &files {
                     ov.remove(&f.rel);
