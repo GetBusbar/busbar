@@ -3417,6 +3417,164 @@ mod agent_door {
         );
     }
 
+    /// THE AGENT DOOR'S TRUST VERBS' DECLARED ERRORS, driven through the admin router by the door's
+    /// own `serve` op (ARCHITECT Q-L3B-VERBS), the door published as the root publishes it. Moved
+    /// here from busbar-core-admin's `drive_door_verb_errors` (P2 D4: that crate links no loader,
+    /// so it witnesses the same taxonomy over its door double):
+    /// * an unregistered name is `404 not_found` on `connect` and `approve` (before anything is
+    ///   read);
+    /// * `approve` whose body is not the one-field `{"fingerprint": …}` document (an unknown field
+    ///   beside it) is `400 invalid_request`, naming the one field the body may carry;
+    /// * `approve` naming a fingerprint for an agent whose card cannot be fetched (nothing listens
+    ///   on its port) is `400 invalid_request`: the look reports the card unauthenticated, which no
+    ///   approval can agree with.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_agent_doors_trust_verbs_refuse_in_their_declared_taxonomy() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-verb-errors";
+        let _published = Published(instance);
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("a port")
+            .local_addr()
+            .expect("its address")
+            .port();
+        let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let section = format!(
+            "closed: {{url: 'http://127.0.0.1:{closed}/closed', allow_private: true, pin: \
+             {{mechanism: jws_issuer_key, key: '{}'}}}}",
+            key_info(&issuer)
+        );
+        let s = served(instance, &section, false, None);
+        for path in ["/agents/nope/connect", "/agents/nope/approve"] {
+            let (status, body) = admin(&s, path, r#"{"fingerprint": "sha256:aa"}"#).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+            assert_eq!(body["error"]["code"], "not_found", "{path}: {body}");
+        }
+        let (status, body) = admin(
+            &s,
+            "/agents/closed/approve",
+            r#"{"fingerprint": "sha256:aa", "and": "more"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], "invalid_request", "{body}");
+        assert!(
+            body.to_string().contains("fingerprint"),
+            "the malformed-body refusal names the one field the body may carry: {body}"
+        );
+        let (status, body) = admin(
+            &s,
+            "/agents/closed/approve",
+            r#"{"fingerprint": "sha256:aa"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], "invalid_request", "{body}");
+        assert!(
+            body.to_string().contains("nothing to approve"),
+            "the invalid-config refusal says the card could not be authenticated: {body}"
+        );
+    }
+
+    /// The registration facts `reg` states, as data: every field but its two judges.
+    fn statement_of(reg: &busbar_contract::plane_calls::PlaneRegistration) -> serde_json::Value {
+        let routes: Vec<serde_json::Value> = reg
+            .admin_routes
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "verb": r.verb,
+                    "target": r.target,
+                    "flags": r.flags,
+                    "audit_verb": r.audit_verb,
+                })
+            })
+            .collect();
+        let trust_keys: Vec<serde_json::Value> = reg
+            .trust_keys
+            .iter()
+            .map(|k| {
+                let mechanisms: Vec<serde_json::Value> = k
+                    .mechanisms
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "token": m.token,
+                            "root": m.root,
+                            "peer_key": m.peer_key,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "key": k.key,
+                    "role": format!("{:?}", k.role),
+                    "fingerprint": k.fingerprint,
+                    "default": k.default,
+                    "mechanisms": mechanisms,
+                })
+            })
+            .collect();
+        let openapi = reg.admin_openapi.map(|b| {
+            serde_json::from_slice::<serde_json::Value>(b).expect("the admin OpenAPI blob is JSON")
+        });
+        serde_json::json!({
+            "key": reg.key,
+            "section": reg.section,
+            "owns": reg.owns,
+            "consumes": reg.consumes,
+            "secret_refs": reg.secret_refs,
+            "admin_routes": routes,
+            "admin_openapi": openapi,
+            "label": reg.label,
+            "subject_noun": reg.subject_noun,
+            "admin_noun": reg.admin_noun,
+            "audit_kind": reg.audit_kind,
+            "signing": reg.signing.map(|(d, p)| [d, p]),
+            "dialects": reg.dialects,
+            "scope_kinds": reg.scope_kinds,
+            "billable_classes": reg.billable_classes.iter().map(|(c, f)| [*c, *f]).collect::<Vec<_>>(),
+            "fee_units": reg.fee_units,
+            "record_kinds": reg.record_kinds,
+            "trust_keys": trust_keys,
+            "caller_credential_refusal": reg.caller_credential_refusal,
+        })
+    }
+
+    /// THE ADMIN CRATE'S DOOR DOUBLE STATES WHAT THE LINKED DOOR STATES. busbar-core-admin links no
+    /// loader (P2 D4), so its tests fold a double of this door from data
+    /// (`busbar-core-admin/src/tests/door_double_statement.json`): its admin routes, the OpenAPI
+    /// fragment its committed `openapi.json` carries, its nouns, its trust keys and every other fact
+    /// a registration states. Here, where the loader links, that data is pinned to the linked
+    /// door's own Statement, read through the loader's one load and its registration reader, as
+    /// the composition root folds it: the admin crate's drift test holds the door's entry, not a
+    /// copy that drifted from it.
+    #[test]
+    fn the_admin_crates_door_double_states_the_linked_doors_statement() {
+        // A build that links no agent door has nothing for this cell to pin.
+        if linked_door().is_none() {
+            return;
+        }
+        use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+        let reg =
+            registration(linked_probe(door(), "agent-door-statement")).expect("the door binds");
+        let stated = statement_of(&reg);
+        let double: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../busbar-core-admin/src/tests/door_double_statement.json"
+        ))
+        .expect("the double's statement is JSON");
+        assert_eq!(
+            stated,
+            double,
+            "busbar-core-admin's door double no longer states the linked door's Statement; the door \
+             states:\n{}",
+            serde_json::to_string_pretty(&stated).unwrap_or_default()
+        );
+    }
+
     /// CANCELLATION IS A WAKE (ARCHITECT Q-DEL-A2A-TIMED-WAKE): the unit holding an agent's card
     /// look is abandoned mid-look (its caller goes away while the card is slow), and the unit
     /// waiting on that look proceeds at once — it takes the flight over, looks for itself and is
