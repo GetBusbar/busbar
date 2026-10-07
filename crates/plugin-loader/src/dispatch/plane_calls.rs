@@ -20,8 +20,8 @@ use busbar_contract::abi::plane::{
     RefusalStatus, ServeIn, ServeOut,
 };
 use busbar_contract::plane_calls::{
-    Answered, CancelWrite, Cancelled, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls,
-    ServeInFlight,
+    Answered, ArrivedTrust, CancelWrite, Cancelled, Grow, InstanceDecl, Lent, PieceInFlight,
+    PlaneCalls, ServeInFlight,
 };
 
 use super::kinds::plane::Plane;
@@ -92,6 +92,16 @@ impl PlaneCalls for PlaneInstance {
 
     fn arrived_affinity(&self, out: &ArriveOut) -> Option<Vec<u8>> {
         crate::dispatch::plugin::copy_str(out.affinity)
+    }
+
+    fn arrived_trust(&self, out: &ArriveOut) -> Option<ArrivedTrust> {
+        use crate::dispatch::plugin::copy_str;
+        let counterparty = copy_str(out.trust_counterparty).filter(|c| !c.is_empty())?;
+        Some(ArrivedTrust {
+            counterparty,
+            item: copy_str(out.trust_item).filter(|c| !c.is_empty()),
+            digest: copy_str(out.trust_digest).filter(|c| !c.is_empty()),
+        })
     }
 
     fn arrived_refusal(&self, out: &ArriveOut) -> Option<Vec<u8>> {

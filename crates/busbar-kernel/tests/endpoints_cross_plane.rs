@@ -10,7 +10,7 @@
 //! hooks `None`/no-op) would leave every one of these reading the empty `EMPTY_VIEW` projection, which
 //! is a different, false-negative failure than what these tests exist to pin. That only type-checks
 //! with ONE `busbar_kernel` in the graph, which is exactly what an integration-test target gives. See
-//! `plane_integration.rs`'s header for the same rationale, first written there.
+//! `crates/busbar/tests/plane_integration.rs`'s header for the same rationale, first written there.
 //!
 //! `endpoints::{stats, list_models, list_models_v1beta}` were widened from `pub(crate)` to `pub` for
 //! exactly this move — nothing about the tests themselves changed; they still drive the real handler

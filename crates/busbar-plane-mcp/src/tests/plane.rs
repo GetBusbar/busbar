@@ -2,7 +2,7 @@
 //! measures implementation and nothing else; still a direct child module, so `use
 //! super::*` reaches the private items it always did.
 
-use super::{finish_of, member_of, refusal_render, sampling_destination, Codec};
+use super::{finish_of, member_of, refusal_words, sampling_destination, Codec};
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::unit::{AbortBy, FailureReason, RefusalReason, Step, UnitEnd};
 
@@ -15,7 +15,7 @@ fn verify_and_route_reach_one_declared_sampling_destination() {
     assert_eq!(
         sampling_destination(),
         DestinationFacts::NestedPlane {
-            op: crate::meta::SAMPLING_OP,
+            op: crate::tool_meta::SAMPLING_OP,
         }
     );
     let DestinationFacts::NestedPlane { op } = sampling_destination() else {
@@ -29,9 +29,9 @@ fn verify_and_route_reach_one_declared_sampling_destination() {
 /// Totality is the point: a reason with no row would be a caller who is told nothing, and the
 /// contract's reason list is closed precisely so this can be checked rather than hoped for.
 /// EVERY reason the kernel closes a unit for, so a new variant cannot be added without deciding what
-/// this dialect answers it with. Exhaustive against `busbar_contract::unit::RefusalReason` (42
-/// variants); `refusal_render`'s own match is `_`-free, so the two lists are kept in step on purpose.
-const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
+/// this dialect answers it with. Exhaustive against `busbar_contract::unit::RefusalReason` (43
+/// variants); `refusal_words`'s own match is `_`-free, so the two lists are kept in step on purpose.
+const ALL_REFUSAL_REASONS: [RefusalReason; 43] = [
     RefusalReason::InFlightCap,
     RefusalReason::CursorBudget,
     RefusalReason::CredentialBudget,
@@ -74,12 +74,13 @@ const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
     RefusalReason::Superseded,
     RefusalReason::ClientGone,
     RefusalReason::DeadlineExceeded,
+    RefusalReason::Untrusted,
 ];
 
 #[test]
 fn every_refusal_reason_has_an_answer() {
     for reason in ALL_REFUSAL_REASONS {
-        let (code, message) = refusal_render(reason);
+        let (code, message) = refusal_words(reason);
         assert!(
             crate::jsonrpc::CODES.contains(&code),
             "{reason:?} renders unknown code {code}"
@@ -113,7 +114,7 @@ fn no_operational_refusal_is_answered_as_an_internal_fault() {
         RefusalReason::Superseded,
         RefusalReason::DeadlineExceeded,
     ] {
-        let (code, _) = refusal_render(reason);
+        let (code, _) = refusal_words(reason);
         assert_ne!(
             code,
             crate::jsonrpc::CODE_INTERNAL,
@@ -132,7 +133,7 @@ fn a_refusal_leaks_nothing_about_the_money() {
         RefusalReason::OverdraftCeiling,
         RefusalReason::StaleSlice,
     ] {
-        let (_, message) = refusal_render(reason);
+        let (_, message) = refusal_words(reason);
         for leak in ["budget", "bucket", "frozen", "price", "slice", "overdraft"] {
             assert!(
                 !message.to_ascii_lowercase().contains(leak),

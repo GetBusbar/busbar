@@ -213,9 +213,16 @@ pub fn required_scope(verb: KernelVerb) -> VerbScope {
 /// and the [`ReplayEncoder`] the admin plane's own writer implements.
 /// `config_class_rules` is data rather than a fifth type parameter — a `&'static` table has
 /// no behaviour to seal behind a trait.
-pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> {
+pub struct Verbs<
+    G: Governance,
+    S: Store + ?Sized,
+    N: NonceSource,
+    E: ReplayEncoder<MintedKeyOutcome>,
+> {
     governance: G,
-    store: S,
+    /// The node's store, shared with the composition that built it; `None` on a node with no
+    /// configured store, where each disaster-recovery verb is refused as a store failure.
+    store: Option<Arc<S>>,
     nonce_source: N,
     replay_encoder: E,
     config_class_rules: &'static [ConfigClassRule],
@@ -224,7 +231,7 @@ pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<Minte
     limiter: MutationLimiter,
 }
 
-impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>>
+impl<G: Governance, S: Store + ?Sized, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>>
     Verbs<G, S, N, E>
 {
     /// Build a fresh executor over the four bound seams. `config_class_rules` is the composition
@@ -234,7 +241,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     /// re-minting replay path.
     pub fn new(
         governance: G,
-        store: S,
+        store: Option<Arc<S>>,
         nonce_source: N,
         replay_encoder: E,
         config_class_rules: &'static [ConfigClassRule],
@@ -515,7 +522,15 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     /// `cfg(test)` so it is not a way for a caller to route around the gates below.
     #[cfg(test)]
     fn store_for_test(&self) -> &S {
-        &self.store
+        self.store.as_deref().expect("these tests bind a store")
+    }
+
+    /// The bound store, or the refusal a node with none answers: there is nothing for the verb to
+    /// reach, so it fails as a store failure rather than succeeding over nothing.
+    fn bound_store(&self) -> Result<&S, busbar_contract::verb_store::StoreError> {
+        self.store
+            .as_deref()
+            .ok_or(busbar_contract::verb_store::StoreError::Failed)
     }
 
     /// The gate the three disaster-recovery verbs run through before they reach the store.
@@ -562,8 +577,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             posture,
             approval,
         )?;
-        self.store
-            .chain_break(admin)
+        self.bound_store()
+            .and_then(|store| store.chain_break(admin))
             .map_err(store_error_into_refusal)
     }
 
@@ -588,8 +603,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             posture,
             approval,
         )?;
-        self.store
-            .store_restore(admin, backup_ref)
+        self.bound_store()
+            .and_then(|store| store.store_restore(admin, backup_ref))
             .map_err(store_error_into_refusal)
     }
 
@@ -612,8 +627,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             posture,
             approval,
         )?;
-        self.store
-            .reseal_epoch_floor(admin)
+        self.bound_store()
+            .and_then(|store| store.reseal_epoch_floor(admin))
             .map_err(store_error_into_refusal)
     }
 }
