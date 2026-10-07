@@ -1840,6 +1840,25 @@ async fn the_pools_doors_webhook_receiver_serves_a_signed_delivery_once() {
         (401, Vec::new())
     );
     assert_eq!(far.served(), 0, "a webhook reaches no member");
+    // ANTI-ENUMERATION (Q88): the answer is a pure function of the delivery, never of what busbar
+    // holds. A response id busbar never saw and one from another caller are answered exactly as any
+    // other: the same status, and the same body but for the id the sender itself sent back.
+    let mut answers = Vec::new();
+    for (n, id) in ["resp_xyz789", "resp_never_issued", "resp_another_tenants"]
+        .into_iter()
+        .enumerate()
+    {
+        let body = COMPLETED.replace("resp_xyz789", id);
+        let head = signed_head(&format!("msg_anti_{n}"), WEBHOOK_KEY, &body);
+        let (status, ack) = deliver(&rig.router, &path, &head, &body).await;
+        answers.push((status, String::from_utf8_lossy(&ack).replace(id, "<id>")));
+    }
+    assert!(
+        answers.windows(2).all(|w| w[0] == w[1]),
+        "known, unknown and foreign ids answer alike: {answers:?}"
+    );
+    assert_eq!(answers[0].0, 200);
+    assert_eq!(far.served(), 0, "no lookup reached a far end");
 }
 
 /// UNCONFIGURED: with no owned webhook section the plane states no public route, so the path

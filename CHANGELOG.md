@@ -703,6 +703,17 @@ each dialect translates, field by field, is listed in the generated
 
 ### Added
 
+- **The llm plane answers the OpenAI Responses webhook, when configured (new in 1.6.0; Q88, owner
+  ANSWERED 2026-09-27).** A background Responses turn delivers its result as a signed webhook; the
+  plane answers it at `POST /v1/llm/webhooks/openai` once its own section states the receiver,
+  `llm_webhooks: { openai: { style: webhook-signature } }`, and acknowledges the verified event with
+  its `resp_…` id. The signature is checked before the plane is reached, by an `identity-providers:`
+  entry whose module is `busbar-auth-webhook-signature` (Standard Webhooks, its `signing-secret` by
+  secret reference); a replayed `webhook-id` is refused; a missing or wrong signature and a replay
+  are each `401`, alike. A `style` no configured entry serves refuses the boot. Off until configured:
+  with no `llm_webhooks` section no route is stated, so a 1.5.5 configuration sees 1.5.5's bytes.
+  The dev-era `webhook-receiver` cargo feature and `BUSBAR_LLM_WEBHOOK_SECRET` are not how it is
+  switched on.
 - **A plugin's inbound listener binds what its settings block states, capped at 1024 connections.**
   A need a plugin declares inbound names a settings block `{listen, tls: {cert, key, client_ca?},
   max_conns?}` (1.5.5's `listen` / `tls` shape; `cert` and `key` are secret references). The listener
