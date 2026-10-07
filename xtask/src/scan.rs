@@ -585,3 +585,153 @@ pub fn split_comment_line(line: &str, in_block: &mut bool) -> (String, String) {
 pub fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
     split_comment_line(line, in_block).0
 }
+
+/// EVERY FILE WHOSE MODULE IS DECLARED UNDER A TEST-ONLY `cfg`, among `files` (repo-relative path,
+/// text) — and, transitively, every file a test-scoped file declares. A file's scope is set by how
+/// it is DECLARED, never by what it is called: a `tests.rs`, a `*_tests.rs` or a file under a
+/// `tests/` directory that some module declares WITHOUT the gate is compiled into the crate, and is
+/// production.
+///
+/// "Gated" is [`test_scope`]'s answer for the brace-less `mod name;` line, so `#[cfg(test)]`,
+/// `#[cfg(any(test, …))]` and an attribute stacked over a `#[path]` all count, and
+/// `#[cfg(not(test))]` does not. A declaration resolves to `#[path = "…"]` against the declaring
+/// file's directory, or to `<base>/name.rs` and `<base>/name/mod.rs`, where `<base>` is the
+/// declaring file's directory for `mod.rs`/`lib.rs`/`main.rs` and `<dir>/<stem>` otherwise.
+///
+/// The answer is only as wide as `files`: a file whose declaring parent is not in the set is NOT
+/// marked, so it reads as production — the direction that reds rather than the direction that
+/// passes. A crate's top-level `tests/` directory (separate test targets, declared by nobody) is
+/// the caller's to leave out of `files`.
+pub fn cfg_test_module_files<'a, I>(files: I) -> std::collections::BTreeSet<String>
+where
+    I: IntoIterator<Item = (String, &'a str)>,
+{
+    use std::collections::{BTreeMap, BTreeSet};
+    // parent -> [(child, gated)]
+    let edges: BTreeMap<String, std::sync::Arc<Vec<(String, bool)>>> = files
+        .into_iter()
+        .map(|(rel, text)| {
+            let e = module_edges(&rel, text);
+            (rel, e)
+        })
+        .collect();
+    let mut test: BTreeSet<String> = edges
+        .values()
+        .flat_map(|e| e.iter())
+        .filter(|(_, gated)| *gated)
+        .map(|(c, _)| c.clone())
+        .collect();
+    loop {
+        let more: Vec<String> = test
+            .iter()
+            .filter_map(|f| edges.get(f))
+            .flat_map(|e| e.iter())
+            .map(|(c, _)| c.clone())
+            .filter(|c| !test.contains(c))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        test.extend(more);
+    }
+    test
+}
+
+/// The `mod` declarations of one file as (child path, gated) — MEMOISED on the path and the bytes.
+/// A gate re-asks for the same unchanged files once per selftest case; the answer is a pure function
+/// of the two.
+fn module_edges(rel: &str, text: &str) -> std::sync::Arc<Vec<(String, bool)>> {
+    use std::hash::{Hash, Hasher};
+    type Memo = std::collections::BTreeMap<u64, std::sync::Arc<Vec<(String, bool)>>>;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rel.hash(&mut h);
+    text.hash(&mut h);
+    let key = h.finish();
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(found) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return std::sync::Arc::clone(found);
+    }
+    let mut out = Vec::new();
+    if let Some((dir, name)) = rel.rsplit_once('/') {
+        let stem = name.strip_suffix(".rs").unwrap_or(name);
+        let base = if matches!(stem, "mod" | "lib" | "main") {
+            dir.to_string()
+        } else {
+            format!("{dir}/{stem}")
+        };
+        let mut path_attr: Option<String> = None;
+        for l in test_scope(text) {
+            let code = l.code.trim();
+            // `#[path = "…"]` on its own line, or ahead of the `mod` on the same line.
+            if let Some(p) = code.find("#[path").and_then(|i| path_attribute(&code[i..])) {
+                path_attr = Some(p);
+                if brace_less_mod(code).is_none() {
+                    continue;
+                }
+            }
+            let Some(m) = brace_less_mod(code) else {
+                if !code.is_empty() && !code.starts_with("#[") {
+                    path_attr = None;
+                }
+                continue;
+            };
+            match path_attr.take() {
+                Some(p) => out.push((normalize_rel(&format!("{dir}/{p}")), l.gated)),
+                None => {
+                    out.push((format!("{base}/{m}.rs"), l.gated));
+                    out.push((format!("{base}/{m}/mod.rs"), l.gated));
+                }
+            }
+        }
+    }
+    let out = std::sync::Arc::new(out);
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, std::sync::Arc::clone(&out));
+    out
+}
+
+/// `#[path = "tests/x.rs"]` → `tests/x.rs`.
+fn path_attribute(code: &str) -> Option<String> {
+    let rest = code.strip_prefix("#[path")?;
+    let rest = rest.trim_start().strip_prefix('=')?;
+    let rest = rest.trim_start().strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// `pub mod x;` / `#[cfg(test)] mod x;` → `x`, for the BRACE-LESS form only (an inline
+/// `mod x { … }` declares no file). A leading attribute on the same line is read past.
+fn brace_less_mod(code: &str) -> Option<String> {
+    let mut rest = code.strip_suffix(';')?.trim();
+    while rest.starts_with("#[") {
+        let close = rest.find(']')?;
+        rest = rest[close + 1..].trim_start();
+    }
+    let rest = rest
+        .strip_prefix("pub(crate) ")
+        .or_else(|| rest.strip_prefix("pub(super) "))
+        .or_else(|| rest.strip_prefix("pub "))
+        .unwrap_or(rest);
+    let name = rest.strip_prefix("mod ")?.trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// `a/./b/../c` → `a/c`, so a `#[path]` that climbs resolves to the key a walk yields.
+fn normalize_rel(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "." | "" => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
