@@ -108,8 +108,12 @@ fn dialled(
         panic!("no attempt on the gRPC binding");
     };
     let bytes = serde_json::to_vec(envelope).expect("json");
-    let Answer::ToFarEnd(message) = r.on_piece(caller(&bytes)) else {
-        panic!("no message for the far end");
+    // A request message whose every field is its default is zero bytes: nothing to send beside the
+    // head (the grpc transport frames the empty message).
+    let message = match r.on_piece(caller(&bytes)) {
+        Answer::ToFarEnd(message) => message,
+        Answer::Nothing => Vec::new(),
+        other => panic!("no message for the far end: {other:?}"),
     };
     (r, attempt, message)
 }
