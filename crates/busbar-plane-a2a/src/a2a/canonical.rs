@@ -125,17 +125,20 @@ fn write_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// RFC 8785 section 3.2.2.3: numbers print as ECMAScript `Number.prototype.toString`, so `1.0` is
-/// `1` and the exponent form carries an explicit sign. Integers that arrived as integers are printed
-/// from their integer representation, which keeps a `u64` beyond f64's exact range exact.
+/// RFC 8785 section 3.2.2.3: EVERY number is an IEEE-754 double, printed as ECMAScript
+/// `Number.prototype.toString`. That includes a number that arrived as an integer: `9007199254740993`
+/// is the double `9007199254740992` and canonicalizes as that, because the signer's canonicalizer
+/// (any conforming JCS implementation) parsed it into a double before printing. Printing the integer
+/// exactly would verify a correctly signed card against a different document.
 fn number(n: &serde_json::Number) -> Result<String, CanonicalError> {
-    if let Some(i) = n.as_i64() {
-        return Ok(i.to_string());
-    }
-    if let Some(u) = n.as_u64() {
-        return Ok(u.to_string());
-    }
-    let f = n.as_f64().ok_or(CanonicalError::NonFiniteNumber)?;
+    // `as f64` on an integer rounds to nearest, ties to even, which is what an ECMAScript parse does.
+    let f = if let Some(i) = n.as_i64() {
+        i as f64
+    } else if let Some(u) = n.as_u64() {
+        u as f64
+    } else {
+        n.as_f64().ok_or(CanonicalError::NonFiniteNumber)?
+    };
     if !f.is_finite() {
         return Err(CanonicalError::NonFiniteNumber);
     }
