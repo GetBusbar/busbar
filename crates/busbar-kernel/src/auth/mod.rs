@@ -735,18 +735,30 @@ impl AuthMiddleware {
             // credential. The name is the instance, so the cache key must be the name.
             let cache_hit = cache_here.and_then(|(c, cred)| c.get(provider, cred, now));
             let was_hit = cache_hit.is_some();
-            let outcome = match cache_hit {
-                Some(hit) => hit,
+            let (outcome, replay) = match cache_hit {
+                Some(hit) => (hit, None),
                 None => {
-                    let o = judge(entry, head.request(candidate, now), reach).await;
+                    let (o, replay) = judge(entry, head.request(candidate, now), reach).await;
                     if cache_here.is_some() && matches!(o, AuthVerdict::Pass) {
                         pending_pass.push(provider.as_str());
                     }
-                    o
+                    (o, replay)
                 }
             };
             match outcome {
                 AuthVerdict::Identify(principal) => {
+                    // THE REPLAY CLAIM (THE DESIGN §6 "Inbound verify"): an identity that carries a
+                    // replay key is admitted once within its time to live; a key already claimed,
+                    // or no store to claim it in, is denied. It is never cached: the next sighting
+                    // must meet the claim again.
+                    if let Some(replay) = replay.as_deref() {
+                        let claimed = gov.is_some_and(|g| {
+                            inbound::claim_replay(&*g.store(), entry.calls.name(), replay, now)
+                        });
+                        if !claimed {
+                            return ChainVerdict::Denied;
+                        }
+                    }
                     if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
                         for name in &pending_pass {
                             c.put(name, cred, &AuthVerdict::Pass, now, g);
@@ -759,7 +771,7 @@ impl AuthMiddleware {
                         // every use makes that bound unreachable. See
                         // `busbar-kernel-identity/src/chain.rs` for the sibling implementation this
                         // mirrors.
-                        if cache_here.is_some() && !was_hit {
+                        if cache_here.is_some() && !was_hit && replay.is_none() {
                             c.put(
                                 provider,
                                 cred,
@@ -898,18 +910,32 @@ impl AuthMiddleware {
 }
 
 /// ONE POSITION'S VERDICT over `request` (its candidate lent), reached as `reach` says.
-async fn judge(entry: &ChainEntry, request: VerifyRequest, reach: Reach) -> AuthVerdict {
-    match reach {
+async fn judge(
+    entry: &ChainEntry,
+    request: VerifyRequest,
+    reach: Reach,
+) -> (
+    AuthVerdict,
+    Option<Box<busbar_contract::auth_calls::Replay>>,
+) {
+    let answer = match reach {
         // A sync caller: on the spot; a door that must wait answers REFUSED there, and is
         // submitted and awaited where the caller polls.
         Reach::Inline => match entry.calls.verify_now(&request) {
-            Some(answer) => chain_verdict_of(answer),
-            None => chain_verdict_of(Box::into_pin(entry.calls.verify(request)).await),
+            Some(answer) => answer,
+            None => Box::into_pin(entry.calls.verify(request)).await,
         },
-        Reach::RequestPath if entry.offload => offload_cold(entry.calls.clone(), request).await,
+        Reach::RequestPath if entry.offload => {
+            return (offload_cold(entry.calls.clone(), request).await, None);
+        }
         // A door (or an in-process stand-in): ONE submitted `verify`, awaited.
-        Reach::RequestPath => chain_verdict_of(Box::into_pin(entry.calls.verify(request)).await),
-    }
+        Reach::RequestPath => Box::into_pin(entry.calls.verify(request)).await,
+    };
+    let replay = match &answer.verified {
+        Verified::Identity(id) => id.replay.clone(),
+        _ => None,
+    };
+    (chain_verdict_of(answer), replay)
 }
 
 /// M6-COLD-DELETE: a COLD position's `verify` on the blocking pool, bounded by
@@ -2682,6 +2708,8 @@ pub mod stand_in;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+pub mod inbound;
 
 #[cfg(test)]
 #[path = "tests/plugin_chain_tests.rs"]

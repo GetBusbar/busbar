@@ -101,6 +101,9 @@ pub mod plane_decisions;
 #[cfg(linked_axis_node)]
 pub mod plane_node;
 pub mod policy;
+/// A public route's caller, verified under the auth scheme its plane named.
+#[cfg(linked_axis_node)]
+pub mod public_verify;
 pub mod registry;
 pub mod serve;
 pub mod transports;

@@ -1949,6 +1949,11 @@ pub fn build_app_from_config(
         base_hook_names,
         admin_chain: cfg.admin_auth.clone(),
         admin_modules,
+        inbound_schemes: Arc::new(crate::auth::inbound::InboundSchemes::new(
+            &cfg.identity_providers,
+            plugin_registry.clone(),
+            secret_resolver.clone(),
+        )),
         login_methods,
         public_url: cfg.public_url.clone(),
         // One container plane, and the dispatch table that governs it, are built from ONE validated

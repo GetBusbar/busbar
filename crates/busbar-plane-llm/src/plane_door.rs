@@ -69,10 +69,10 @@ use busbar_contract::abi::plane::{
     UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
-use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
+use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, AUDIT_NONE, RECORD_AUDIT};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
-use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
+use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{
     open_failed, Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot, Services,
 };
@@ -127,6 +127,8 @@ const SECTIONS: &[Section] = &[
     section(sections::PROVIDERS, SECTION_CONSUMED),
     section(sections::MODELS, SECTION_CONSUMED),
     section(sections::LIMITS, SECTION_CONSUMED),
+    // The plane's own: the webhook receivers it answers on public routes (new in 1.6.0).
+    section(crate::exchange::webhook::SECTION, 0),
 ];
 
 const OPS: &[OpClassId] = <LlmPlane as PlaneMeta>::OP_CLASSES;
@@ -526,6 +528,9 @@ pub struct LlmDoor {
     units: Mutex<HashMap<u64, UnitState>>,
     tickets: Mutex<HashMap<Ticket, u64>>,
     services: Option<Services>,
+    /// The public webhook routes its owned section states, in the order its snapshot states them:
+    /// `serve`'s route index names one.
+    webhooks: Vec<AdminRouteSpec>,
 }
 
 /// A lock, through a poisoning: the maps it guards hold no invariant a panicking holder breaks.
@@ -599,9 +604,10 @@ pub fn claims() -> Vec<ClaimSpec> {
 }
 
 /// The generation's snapshot: the plane's claims.
-fn snapshot() -> SnapshotSpec {
+fn snapshot(webhooks: &[AdminRouteSpec]) -> SnapshotSpec {
     SnapshotSpec {
         claims: claims(),
+        admin_routes: webhooks.to_vec(),
         ..SnapshotSpec::default()
     }
 }
@@ -1081,14 +1087,20 @@ slot!(
             Ok(shaping) => shaping,
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
+        let webhooks = match crate::exchange::webhook::routes(input.field(|i| &i.owned).bytes()) {
+            Ok(routes) => routes,
+            Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
+        };
         let door = LlmDoor {
             generations: Generations::new(),
             shapings: Mutex::new(BTreeMap::from([(open.generation, Arc::new(shaping))])),
             units: Mutex::new(HashMap::new()),
             tickets: Mutex::new(HashMap::new()),
             services: open.host().and_then(|h| Services::of(&h)),
+            webhooks,
         };
-        out.publish(|o| &o.snapshot, &door.generations, open.generation, &snapshot());
+        let spec = snapshot(&door.webhooks);
+        out.publish(|o| &o.snapshot, &door.generations, open.generation, &spec);
         instance.open(door);
         Outcome::Ready
     }
@@ -1105,7 +1117,8 @@ slot!(
             Err(words) => return out.fail(Refusal::refused(words)),
         };
         guard(&door.shapings).insert(input.generation, Arc::new(shaping));
-        out.publish(|o| &o.snapshot, &door.generations, input.generation, &snapshot());
+        let spec = snapshot(&door.webhooks);
+        out.publish(|o| &o.snapshot, &door.generations, input.generation, &spec);
         Outcome::Ready
     }
 );
@@ -1365,8 +1378,24 @@ slot!(
 );
 
 slot!(
-    /// `serve`: the plane publishes no admin route.
-    Serve, ServeIn, ServeOut, |_, _, _| { Outcome::Refused }
+    /// `serve`: a public webhook route its owned section states, its caller already verified by the
+    /// kernel under the route's scheme (the plane never sees the secret): the event acknowledged.
+    Serve, ServeIn, ServeOut, |instance, input, mut out| {
+        let Some(door) = instance.get() else {
+            return Outcome::Failed;
+        };
+        let route = input.get().route as usize;
+        if door.webhooks.get(route).is_none() {
+            return Outcome::Refused;
+        }
+        let (status, body) = crate::exchange::webhook::receive(input.field(|i| &i.body).bytes());
+        let fields: &[(&str, &str)] = if body.is_empty() {
+            &[]
+        } else {
+            &[("content-type", "application/json")]
+        };
+        out.answer(&input, status, fields, &body, AUDIT_NONE)
+    }
 );
 
 slot!(

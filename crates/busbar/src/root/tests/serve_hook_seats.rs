@@ -440,6 +440,54 @@ pub(super) struct RigOpts<'a> {
     pub affinity_header: Option<&'a str>,
     /// Each member's lifetime request budget (`None`: unlimited).
     pub lane_budget: Option<i64>,
+    /// The plane's owned webhook section configures its `openai` receiver, its callers verified under the
+    /// `webhook-signature` scheme by a Standard Webhooks instance holding [`WEBHOOK_SECRET`].
+    pub webhook: bool,
+}
+
+/// The Standard Webhooks signing secret the rig's `webhook-signature` instance holds (`whsec_` +
+/// base64 of the key [`WEBHOOK_KEY`]).
+pub(super) const WEBHOOK_KEY: &[u8] = b"busbar-webhook-test-key-0123456789";
+
+/// [`WEBHOOK_KEY`] as the secret's configured spelling.
+pub(super) fn webhook_secret() -> String {
+    use base64::Engine as _;
+    format!(
+        "whsec_{}",
+        base64::engine::general_purpose::STANDARD.encode(WEBHOOK_KEY)
+    )
+}
+
+/// THE `webhook-signature` INSTANCE the rig's App serves the scheme with: the linked auth row,
+/// opened through the root's auth axis with Standard Webhooks settings and [`webhook_secret`].
+fn webhook_schemes() -> busbar_kernel::auth::inbound::InboundSchemes {
+    busbar_kernel::preflight::install_linked_auth(
+        crate::LINKED.auths,
+        crate::root::auth_bindings::operator_words(),
+    );
+    busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
+    let registry = Arc::new(
+        busbar_kernel::preflight::plugins_preflight(
+            None,
+            None,
+            &busbar_kernel::config::IdentityProviders::new(),
+            &HashMap::new(),
+            &busbar_kernel::config::PluginsCfg::default(),
+            &busbar_kernel::config::ExportCfg::default(),
+        )
+        .expect("the linked rows"),
+    );
+    let door = crate::root::dispatch::auth_axis(registry)
+        .open(
+            "busbar-auth-webhook-signature",
+            "identity-providers.openai-hooks",
+            &serde_json::json!({"variant": "standard-webhooks", "signing-secret": webhook_secret()}),
+        )
+        .expect("the linked webhook-signature row opens");
+    busbar_kernel::auth::inbound::InboundSchemes::opened(HashMap::from([(
+        "webhook-signature".to_string(),
+        vec![door],
+    )]))
 }
 
 /// THE LLM DOOR, SERVED END TO END, as production composes it: the data router built with the
@@ -461,6 +509,11 @@ pub(super) struct DoorRig {
     gate_seat: Arc<SeatProbe>,
     read: Arc<dyn Fn() -> Ledger + Send + Sync>,
     tokens: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// The boot's answer to the composed planes' public route schemes (`refuse_unserved`): over no
+    /// `identity-providers:` at all, then over one entry serving `webhook-signature`.
+    pub scheme_check: (Result<(), String>, Result<(), String>),
+    /// The public routes the composed planes state: `(verb, target)`.
+    pub public_routes: Vec<(String, String)>,
 }
 
 impl DoorRig {
@@ -654,7 +707,19 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         serde_yaml::from_str(&defs_yaml).expect("the providers");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
     let providers = provider_routes(&cfg.providers);
-    let sections = kernel_sections(&cfg);
+    let mut sections = kernel_sections(&cfg);
+    if opts.webhook {
+        // The plane's one owned section, by the name its Statement states.
+        let owned = *plane
+            .served()
+            .owns
+            .first()
+            .expect("the door states its webhook section");
+        sections.insert(
+            owned,
+            serde_yaml::from_str("{openai: {style: webhook-signature}}").expect("the section"),
+        );
+    }
     let model_pools = crate::root::model_egress::ModelPools::of(&cfg);
 
     // THE MONEY: a signing governance book with one minted key (in a budgeted group when asked),
@@ -724,6 +789,11 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
 
     // THE GENERATION: the lanes, the pool, the fee, and the four seats.
     let mut builder = busbar_kernel::test_support::TestApp::new()
+        .inbound_schemes(if opts.webhook {
+            webhook_schemes()
+        } else {
+            busbar_kernel::auth::inbound::InboundSchemes::none()
+        })
         .keys_chain()
         .governance(Arc::clone(&gov))
         .cost(cost);
@@ -863,6 +933,25 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     .expect("the door serving the pools map composes");
     let _ = std::fs::remove_file(&key_file);
     served.post = Some(Arc::clone(&post));
+    let public_routes = served
+        .planes
+        .iter()
+        .flat_map(|p| p.snapshot.admin_routes.iter())
+        .filter(|r| r.flags & busbar_contract::abi::plane::ROUTE_PUBLIC != 0)
+        .map(|r| (r.verb.clone(), r.target.clone()))
+        .collect();
+    let scheme_check = {
+        let none = busbar_kernel::config::IdentityProviders::new();
+        let mut one = busbar_kernel::config::IdentityProviders::new();
+        one.insert(
+            "openai-hooks".to_string(),
+            serde_yaml::from_str("{module: busbar-auth-webhook-signature}").expect("an entry"),
+        );
+        (
+            crate::root::public_verify::refuse_unserved(&served, &none),
+            crate::root::public_verify::refuse_unserved(&served, &one),
+        )
+    };
     let doors = door_routes(
         served,
         || CARD.pin(),
@@ -884,6 +973,8 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         gate_seat: ranker,
         read,
         tokens,
+        scheme_check,
+        public_routes,
     }
 }
 

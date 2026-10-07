@@ -810,7 +810,8 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
 // (`super::hook_seat_tests::rig`), and reads the capability where the kernel keeps it.
 #[cfg(linked_fold_on_driver)]
 use super::hook_seat_tests::{
-    chunk, far_end_answering, far_end_scripted, rig, RigOpts, Script, REWRITTEN,
+    chunk, far_end_answering, far_end_scripted, rig, webhook_secret, RigOpts, Script, REWRITTEN,
+    WEBHOOK_KEY,
 };
 #[cfg(linked_fold_on_driver)]
 use super::planes_tests::{Published as Withdrawn, PUBLISHING as ONE_PUBLISHER};
@@ -1701,4 +1702,317 @@ async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
         moved >= 2,
         "the default header is not this pool's key: {before:?} -> {after:?}"
     );
+}
+
+// ── THE INBOUND RESPONSES WEBHOOK RECEIVER (new in 1.6.0; ARCHITECT Q2, 2026-10-06) ─────────────
+
+/// A completed background turn's webhook body.
+#[cfg(linked_fold_on_driver)]
+const COMPLETED: &str = r#"{"id":"evt_abc123","type":"response.completed","created_at":1700000900,"data":{"id":"resp_xyz789"}}"#;
+
+/// HMAC-SHA256 of `data` under `key` (RFC 2104 over the RustCrypto digest: an independent witness
+/// of the plugin's own `ring` HMAC).
+#[cfg(linked_fold_on_driver)]
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let pad = |b: u8| block.iter().map(|k| k ^ b).collect::<Vec<u8>>();
+    let inner = Sha256::new()
+        .chain_update(pad(0x36))
+        .chain_update(data)
+        .finalize();
+    Sha256::new()
+        .chain_update(pad(0x5c))
+        .chain_update(inner)
+        .finalize()
+        .to_vec()
+}
+
+/// The Standard Webhooks head for `body` sent as message `id` now, signed under `key`.
+#[cfg(linked_fold_on_driver)]
+fn signed_head(id: &str, key: &[u8], body: &str) -> Vec<(String, String)> {
+    use base64::Engine as _;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock")
+        .as_secs()
+        .to_string();
+    let signed = format!("{id}.{ts}.{body}");
+    let sig = base64::engine::general_purpose::STANDARD.encode(hmac_sha256(key, signed.as_bytes()));
+    vec![
+        ("content-type".to_string(), "application/json".to_string()),
+        ("webhook-id".to_string(), id.to_string()),
+        ("webhook-timestamp".to_string(), ts),
+        ("webhook-signature".to_string(), format!("v1,{sig}")),
+    ]
+}
+
+/// One unauthenticated POST of `body` to `path` with `head`: its status and body.
+#[cfg(linked_fold_on_driver)]
+async fn deliver(
+    router: &axum::Router,
+    path: &str,
+    head: &[(String, String)],
+    body: &str,
+) -> (u16, Vec<u8>) {
+    use tower::ServiceExt as _;
+    let mut req = axum::http::Request::builder().method("POST").uri(path);
+    for (n, v) in head {
+        req = req.header(n.as_str(), v.as_str());
+    }
+    let response = router
+        .clone()
+        .oneshot(
+            req.body(axum::body::Body::from(body.to_string()))
+                .expect("a request"),
+        )
+        .await
+        .expect("the router answers");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("the body")
+        .to_vec();
+    (status, bytes)
+}
+
+/// The receiver a configured rig's plane states: its one public route's target.
+#[cfg(linked_fold_on_driver)]
+fn receiver(rig: &super::hook_seat_tests::DoorRig) -> String {
+    match rig.public_routes.as_slice() {
+        [(verb, target)] if verb == "POST" => target.clone(),
+        other => panic!("one public POST route: {other:?}"),
+    }
+}
+
+/// CONFIGURED (the plane's owned webhook section, `openai.style: webhook-signature`): a delivery
+/// signed under the scheme instance's secret is served by the plane's `serve` (the event
+/// acknowledged with its correlation id); a missing signature, a wrong one and a replayed message
+/// id are each 401, alike, and never reach the plane. RED without the kernel's verify: every
+/// delivery would be served.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_webhook_receiver_serves_a_signed_delivery_once() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-webhook";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            webhook: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert!(webhook_secret().starts_with("whsec_"));
+    let path = receiver(&rig);
+    let signed = signed_head("msg_1", WEBHOOK_KEY, COMPLETED);
+    let (status, body) = deliver(&rig.router, &path, &signed, COMPLETED).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let ack: serde_json::Value = serde_json::from_slice(&body).expect("a JSON acknowledgement");
+    assert_eq!(
+        ack,
+        serde_json::json!({"received": true, "response_id": "resp_xyz789", "type": "response.completed"})
+    );
+    // Missing: no signature header at all.
+    let unsigned = vec![("content-type".to_string(), "application/json".to_string())];
+    assert_eq!(
+        deliver(&rig.router, &path, &unsigned, COMPLETED).await,
+        (401, Vec::new())
+    );
+    // Wrong: signed under another key.
+    let forged = signed_head("msg_2", b"another-key", COMPLETED);
+    assert_eq!(
+        deliver(&rig.router, &path, &forged, COMPLETED).await,
+        (401, Vec::new())
+    );
+    // Replayed: the first message id again, freshly and correctly signed.
+    let replay = signed_head("msg_1", WEBHOOK_KEY, COMPLETED);
+    assert_eq!(
+        deliver(&rig.router, &path, &replay, COMPLETED).await,
+        (401, Vec::new())
+    );
+    assert_eq!(far.served(), 0, "a webhook reaches no member");
+}
+
+/// UNCONFIGURED: with no owned webhook section the plane states no public route, so the path is
+/// what 1.5.5 answered there (a keyed caller's fallback not-found), and a signed delivery is never
+/// served.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unconfigured_webhook_receiver_states_no_route() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let path = {
+        let instance = "serve-door-webhook-path";
+        let _published = Withdrawn(instance);
+        let configured = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                webhook: true,
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        receiver(&configured)
+    };
+    let instance = "serve-door-webhook-absent";
+    let _published = Withdrawn(instance);
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert!(rig.public_routes.is_empty(), "no route stated");
+    let signed = signed_head("msg_1", WEBHOOK_KEY, COMPLETED);
+    let (status, _) = deliver(&rig.router, &path, &signed, COMPLETED).await;
+    assert_ne!(status, 200, "no receiver answers");
+    let keyed = rig
+        .send(
+            "POST",
+            &path,
+            Some(serde_json::from_str(COMPLETED).expect("json")),
+        )
+        .await;
+    assert_eq!(
+        keyed.0,
+        404,
+        "the fallback's not-found: {}",
+        String::from_utf8_lossy(&keyed.2)
+    );
+}
+
+/// A ROUTE WHOSE SCHEME NO INSTANCE SERVES refuses the boot, naming the route and the scheme; one
+/// `identity-providers:` entry whose module serves the scheme admits it; an unconfigured receiver
+/// names no scheme to check.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_webhook_scheme_no_identity_provider_serves_refuses_the_boot() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-webhook-unserved";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let configured = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            webhook: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let refused = configured
+        .scheme_check
+        .0
+        .clone()
+        .expect_err("no instance serves the scheme");
+    let route = format!("POST {}", receiver(&configured));
+    assert!(
+        refused.contains(&route) && refused.contains("'webhook-signature'"),
+        "{refused}"
+    );
+    assert_eq!(
+        configured.scheme_check.1,
+        Ok(()),
+        "an entry serving it admits it"
+    );
+    drop(configured);
+    drop(_published);
+    let instance = "serve-door-webhook-unserved-absent";
+    let _published = Withdrawn(instance);
+    let absent = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        absent.scheme_check.0,
+        Ok(()),
+        "no receiver, no scheme to serve"
+    );
+}
+
+/// A STREAM THE CALLER LEAVES MID-RELAY BILLS WHAT ITS READERS COUNTED (1.5.5's drop arm: "only the
+/// streaming reader's usage is consulted"): a same-dialect stream whose far end reported its input
+/// usage in its opening frame bills it when the caller goes after the first bytes, never 0 (the
+/// plane's cancel answers OK_PARTIAL and the reader's running counts are its checkpoint).
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_a_stream_the_caller_dropped_what_its_readers_counted() {
+    use http_body_util::BodyExt as _;
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-stream-drop";
+    let _published = Withdrawn(instance);
+    let start = r#"{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":25,"output_tokens":1}}}"#;
+    let block =
+        r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
+    let delta =
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#;
+    let event =
+        |name: &str, data: &str| chunk(format!("event: {name}\ndata: {data}\n\n").as_bytes());
+    let far = far_end_scripted(Script {
+        head: STREAM_HEAD.to_string(),
+        pieces: vec![
+            (0, event("message_start", start)),
+            (0, event("content_block_start", block)),
+            (0, event("content_block_delta", delta)),
+            (5_000, Vec::new()),
+        ],
+        finish: None,
+    })
+    .await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some("anthropic"),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let response = rig
+        .open(
+            "POST",
+            "/v1/messages",
+            Some(
+                serde_json::json!({"model": "p", "max_tokens": 16, "stream": true,
+                "messages": [{"role": "user", "content": "hi"}]}),
+            ),
+            &[("anthropic-version", "2023-06-01")],
+        )
+        .await;
+    assert_eq!(response.status().as_u16(), 200);
+    let mut body = response.into_body();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+        .await
+        .expect("the first frames arrive before the far end's hold")
+        .expect("a frame")
+        .expect("relayed");
+    assert!(first.data_ref().is_some_and(|b| !b.is_empty()));
+    drop(body);
+    let rig = std::sync::Arc::new(rig);
+    let next = {
+        let rig = std::sync::Arc::clone(&rig);
+        tokio::spawn(async move { rig.chat().await })
+    };
+    assert_ne!(
+        rig.tokens_after().await,
+        0,
+        "the reader counted the far end's input usage before the caller left"
+    );
+    next.abort();
 }

@@ -639,6 +639,16 @@ drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis
 
 [[dep]]
 from    = "busbar"
+to      = "busbar-auth-webhook-signature"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 / §6 step 3 — the composition root is the one thing that names all three axes; the auth plugin whose inbound verify a door plane's public route names by scheme is linked on the `auths` axis (Part 3 \"Inbound webhooks\"; ARCHITECT Q2 webhook receiver, 2026-10-06); Part 3 §12 \"The switch\" (the llm fold's development-only `llm-on-driver` carries it)."
+why     = "busbar names busbar-auth-webhook-signature: declared optional (feature `auth-webhook-signature`, carried by the llm fold's `llm-on-driver` switch, not in `default`) in the shipped graph, 1 declaration(s) at this commit — the root compiles in the auth plugin serving the `webhook-signature` scheme the llm plane's webhook receiver names (root public_verify over the App's InboundSchemes). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"

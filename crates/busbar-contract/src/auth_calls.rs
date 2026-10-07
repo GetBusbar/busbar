@@ -23,6 +23,8 @@ use crate::auth::{BeginLogin, CompleteLogin, LoginKind, LoginOutcome};
 
 /// One inbound request at one AUTH POINT, as the host hands it to `verify` (THE DESIGN, "Auth
 /// points and guest lists"). Owned: the answer is awaited, so nothing here borrows the request.
+/// Cloned to lend one request to each verifier of a route's scheme in turn.
+#[derive(Clone)]
 pub struct VerifyRequest {
     /// The point the call is made at.
     pub point: AuthPoint,

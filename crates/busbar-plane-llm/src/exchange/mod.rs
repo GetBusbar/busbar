@@ -10,6 +10,7 @@ pub mod project;
 pub mod refuse;
 pub mod reply;
 pub mod shaping;
+pub mod webhook;
 
 use busbar_contract::codec::OperationHandler;
 use busbar_contract::protocol::ProtocolDecl;

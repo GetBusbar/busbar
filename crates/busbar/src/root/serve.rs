@@ -2046,12 +2046,28 @@ fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
             let method = METHODS
                 .into_iter()
                 .find(|m| m.as_str().eq_ignore_ascii_case(&r.verb))?;
+            // The scheme its callers are verified under (spec Part 3 "Inbound webhooks"); none: the
+            // route is served to an unauthenticated caller, as before.
+            let scheme: Option<Arc<str>> =
+                (!r.style.is_empty()).then(|| Arc::from(r.style.as_str()));
             Some(PlaneRouteSpec {
                 path: r.target.clone(),
                 method,
                 auth: RouteAuth::None,
                 handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                    let scheme = scheme.clone();
                     Box::pin(async move {
+                        let head = match scheme {
+                            Some(scheme) => {
+                                match crate::root::public_verify::verified(&scheme, &ctx).await {
+                                    Ok(head) => head,
+                                    Err(status) => {
+                                        return axum::response::IntoResponse::into_response(status)
+                                    }
+                                }
+                            }
+                            None => ctx.headers.clone(),
+                        };
                         let target = ctx
                             .uri
                             .path_and_query()
@@ -2060,7 +2076,7 @@ fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
                             ctx.method.as_str(),
                             &ctx.path,
                             &target,
-                            &ctx.headers,
+                            &head,
                             ctx.body,
                         )
                         .await

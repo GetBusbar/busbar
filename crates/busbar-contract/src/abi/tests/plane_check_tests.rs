@@ -939,7 +939,7 @@ fn a_public_routes_style_is_bounded_text_on_a_public_route_alone() {
     let style = "webhook-signature";
     let mut r = AdminRoute {
         verb: s("POST"),
-        target: s("/v1/llm/webhooks/openai"),
+        target: s("/webhooks/sender"),
         flags: ROUTE_PUBLIC,
         _reserved: 0,
         audit_verb: z(),

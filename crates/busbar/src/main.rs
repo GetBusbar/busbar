@@ -776,6 +776,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The model-serving pools the plane serving the `pools` map walks, with every bound the
     // configuration states (`root::model_egress`).
     let door_model_pools = root::model_egress::ModelPools::of(&cfg);
+    // The `identity-providers:` a door plane's public route scheme is served by, captured before
+    // `cfg` is consumed: a route naming a scheme none serves refuses the boot.
+    #[cfg(linked_axis_node)]
+    let door_identity_providers = cfg.identity_providers.clone();
     // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
     // section key: each door plane's section carries its own pools (DoorPools), captured before
     // `cfg` is consumed.
@@ -946,6 +950,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         }),
     )
     .unwrap_or_else(|e| die(e));
+    #[cfg(linked_axis_node)]
+    root::public_verify::refuse_unserved(&served, &door_identity_providers)
+        .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's

@@ -417,6 +417,16 @@ pub const STATEMENT: Statement = with_tail(
 
 busbar_contract::auth_verify_door!(WebhookSignature, STATEMENT);
 
+/// THE COMPILED-IN ENTRY a composition root's `auths` row names: the door at
+/// `compiled_in::door::door`, the same [`door`] the dropped-in build exports (compiled-in =
+/// dropped-in).
+pub mod compiled_in {
+    /// The door.
+    pub mod door {
+        pub use crate::door;
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/instance_tests.rs"]
 mod tests;

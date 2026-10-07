@@ -836,6 +836,8 @@ pub struct TestApp {
     /// empty chain (the operator credential alone, runs inline). A test that needs the OFFLOAD path populates
     /// this with a boxed test module.
     admin_modules: Option<crate::auth::AdminAuthChain>,
+    /// The instances serving each inbound auth scheme; `None` = none.
+    inbound_schemes: Option<crate::auth::inbound::InboundSchemes>,
     /// Resolved hosted-login methods (1.5.2). `None` = empty (no hosted login). A test that
     /// drives `GET /auth/token` populates this with a test login module.
     login_methods: Option<crate::auth::token::LoginMethods>,
@@ -1010,6 +1012,7 @@ impl TestApp {
             auth: None,
             admin_chain: None,
             admin_modules: None,
+            inbound_schemes: None,
             login_methods: None,
             public_url: None,
             oauth_as: None,
@@ -1455,6 +1458,12 @@ impl TestApp {
     /// the production default 1-cent flat fee.
     pub fn cost(mut self, c: crate::cost::CostModel) -> Self {
         self.cost = Some(std::sync::Arc::new(c));
+        self
+    }
+
+    /// The instances serving each inbound auth scheme a public route may name.
+    pub fn inbound_schemes(mut self, schemes: crate::auth::inbound::InboundSchemes) -> Self {
+        self.inbound_schemes = Some(schemes);
         self
     }
 
@@ -1981,6 +1990,10 @@ impl TestApp {
             login_methods: std::sync::Arc::new(
                 self.login_methods
                     .unwrap_or_else(crate::auth::token::LoginMethods::empty),
+            ),
+            inbound_schemes: std::sync::Arc::new(
+                self.inbound_schemes
+                    .unwrap_or_else(crate::auth::inbound::InboundSchemes::none),
             ),
             public_url: self.public_url,
             // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through `mount_plane` /

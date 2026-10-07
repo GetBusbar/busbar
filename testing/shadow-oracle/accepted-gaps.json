@@ -129,6 +129,12 @@
       "cells": "^streams\\|",
       "owner": "streaming-plane",
       "rationale": "the streams family is a 1.6.0 plane: 1.5.5 never served it, so the 1.5.5 golden holds no reference for these cells and owed-baseline.txt never listed them. Their reference is golden/1.6.0-pre/, recorded from the pinned pre-fold predev build, and the cells carry no 1.5.5 claim."
+    },
+    {
+      "id": "llm-webhook-receiver-new-in-1.6.0",
+      "cells": "^llm\\|webhook\\|",
+      "owner": "llm-plane",
+      "rationale": "the OpenAI Responses webhook receiver (POST /v1/llm/webhooks/openai, stated only by the llm plane's own `llm_webhooks:` section) is new 1.6.0 surface (BUSBAR-1.6.0.md F26 CORRECTION; ARCHITECT Q2 webhook receiver, 2026-10-06): v1.5.5 had no receiver, so the 1.5.5 golden owes no cell for it and none is recorded. Its behaviour is held by the door tests (root/tests/serve_door.rs: signed served, missing/wrong/replayed 401, unconfigured no route, unserved scheme refuses the boot) and the plane's tests/exchange_webhook.rs."
     }
   ]
 }
