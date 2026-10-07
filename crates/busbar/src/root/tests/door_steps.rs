@@ -1362,6 +1362,7 @@ impl busbar_contract::conn::PollConns for Sealing {
         &self,
         _: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
+        _: &str,
         target: &str,
         _: &busbar_contract::transport::trust::Anchors,
     ) -> Result<(), busbar_contract::conn::ConnError> {

@@ -269,6 +269,12 @@ type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 /// the destination's authority (lower-case, `host:port`).
 type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
 
+/// The trust anchors sealed per REGISTRATION, by the need's owner, the need and the registration's
+/// name: the authority (lower-case, `host:port`) of its own target and what it is held to there
+/// (`None`: the registration holds no anchors, and borrows none of another registration's).
+type MemberAnchored =
+    Mutex<HashMap<(InstanceId, NeedId, String), (String, Option<Arc<tls::client::Sealed>>)>>;
+
 /// The listeners, one per inbound need, by the need's owner and need.
 type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>;
 
@@ -382,6 +388,9 @@ pub struct Connector {
     pools: Pools,
     /// The trust anchors each sealed destination's connections are held to.
     anchored: Anchored,
+    /// The trust anchors each sealed REGISTRATION's own connections are held to: two registrations
+    /// at one authority each present their own client identity and hold their own pin.
+    member_anchored: MemberAnchored,
     /// The REGISTRATIONS holding a PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`), by the need's
     /// owner, the need and the registration's name, each with the authority (lower-case,
     /// `host:port`) of its own target ([`PollConns::seal_reach`]).
@@ -410,6 +419,7 @@ impl Default for Connector {
             listeners: Mutex::new(HashMap::new()),
             pools: Pools::new(PoolPosture::NONE),
             anchored: Mutex::new(HashMap::new()),
+            member_anchored: Mutex::new(HashMap::new()),
             reaching: Mutex::new(HashMap::new()),
             auths: Mutex::new(HashMap::new()),
         }
@@ -1516,13 +1526,32 @@ impl Conns for Connector {
         let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
         // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
         // destination is held to them; one that pins the far end's key and is not secured has no
-        // key to hold, and is refused before any judgement or dial.
-        let anchors = self
-            .anchored
-            .lock()
-            .expect("anchors")
-            .get(&(caller, need, planned.authority().to_ascii_lowercase()))
-            .cloned();
+        // key to hold, and is refused before any judgement or dial. An open naming a registration
+        // sealed at this authority is held to THAT registration's anchors alone (or none, where it
+        // holds none), never to another registration's at the same `host:port`.
+        let authority = planned.authority().to_ascii_lowercase();
+        let own = (!desc.member.is_empty())
+            .then(|| {
+                self.member_anchored
+                    .lock()
+                    .expect("anchors")
+                    .get(&(caller, need, desc.member.to_owned()))
+                    .filter(|(at, _)| *at == authority)
+                    .map(|(_, sealed)| sealed.clone())
+            })
+            .flatten();
+        // The registration whose own anchors the dial is held to, if any: a pooled line is lent
+        // only to an open held to the same.
+        let anchored_as = own.is_some().then(|| desc.member.to_owned());
+        let anchors = match own {
+            Some(sealed) => sealed,
+            None => self
+                .anchored
+                .lock()
+                .expect("anchors")
+                .get(&(caller, need, authority))
+                .cloned(),
+        };
         if anchors
             .as_ref()
             .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
@@ -1576,6 +1605,7 @@ impl Conns for Connector {
                     name: planned.name().map(str::to_owned),
                     class: (judged_class, egress_class),
                     reach,
+                    anchored_as,
                 },
             )
         });
@@ -1771,6 +1801,7 @@ impl PollConns for Connector {
         &self,
         owner: InstanceId,
         need: NeedId,
+        member: &str,
         target: &str,
         anchors: &busbar_contract::transport::trust::Anchors,
     ) -> Result<(), ConnError> {
@@ -1784,20 +1815,41 @@ impl PollConns for Connector {
             .as_ref()
             .and_then(|door| framer::locate(door.as_ref(), target).ok());
         let at = located.map(|l| (owner, need, l.authority.to_ascii_lowercase()));
-        if anchors.is_empty() {
-            // Nothing to hold: any earlier seal for the destination is dropped.
-            if let Some(at) = at {
-                self.anchored.lock().expect("anchors").remove(&at);
+        let sealed = match (&at, anchors.is_empty()) {
+            (_, true) => None,
+            (None, false) => return Err(ConnError::Refused),
+            (Some(_), false) => Some(Arc::new(
+                tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?,
+            )),
+        };
+        // A REGISTRATION'S anchors are kept under its name too: an open naming it, at its own
+        // authority, is held to what it holds there (or to nothing, where it holds nothing), apart
+        // from every other registration at that `host:port`.
+        if !member.is_empty() {
+            let key = (owner, need, member.to_owned());
+            let mut by_member = self.member_anchored.lock().expect("anchors");
+            match &at {
+                Some((_, _, authority)) => {
+                    by_member.insert(key, (authority.clone(), sealed.clone()));
+                }
+                None => {
+                    by_member.remove(&key);
+                }
             }
-            return Ok(());
         }
-        let at = at.ok_or(ConnError::Refused)?;
-        let sealed =
-            tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?;
-        self.anchored
-            .lock()
-            .expect("anchors")
-            .insert(at, Arc::new(sealed));
+        let Some(at) = at else {
+            return Ok(());
+        };
+        let mut anchored = self.anchored.lock().expect("anchors");
+        match sealed {
+            Some(sealed) => {
+                anchored.insert(at, sealed);
+            }
+            // Nothing to hold: any earlier seal for the destination is dropped.
+            None => {
+                anchored.remove(&at);
+            }
+        }
         Ok(())
     }
 

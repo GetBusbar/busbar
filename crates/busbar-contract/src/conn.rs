@@ -618,6 +618,10 @@ pub trait PollConns: Conns {
     /// connector itself — the far end's key pin enforced, busbar's client identity presented — and
     /// its facts say what was observed ([`ConnFacts::peer_key_pin`],
     /// [`ConnFacts::client_identity`]). Empty anchors drop any earlier seal for that target.
+    /// A non-empty `member` keys the seal to that REGISTRATION ([`OpenDesc::member`]): an open
+    /// naming it, to its own target's authority, is held to its anchors alone (none, where they are
+    /// empty), so two registrations at one `host:port` each present their own client identity and
+    /// hold their own pin; an open naming no sealed registration is held to the destination's.
     /// Host-side only, never lowered: the root seals what its configuration states.
     ///
     /// # Errors
@@ -629,10 +633,11 @@ pub trait PollConns: Conns {
         &self,
         owner: InstanceId,
         need: NeedId,
+        member: &str,
         target: &str,
         anchors: &crate::transport::trust::Anchors,
     ) -> Result<(), ConnError> {
-        let _ = (owner, need, target);
+        let _ = (owner, need, member, target);
         if anchors.is_empty() {
             Ok(())
         } else {
