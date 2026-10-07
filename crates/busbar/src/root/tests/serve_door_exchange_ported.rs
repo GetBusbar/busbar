@@ -62,7 +62,7 @@ fn bearer(rig: &super::hook_seat_tests::DoorRig) -> String {
 fn requests_total(scrape: &str, labels: &[(&str, &str)]) -> u64 {
     scrape
         .lines()
-        .filter(|l| l.starts_with(busbar_kernel::metrics::REQUESTS_TOTAL))
+        .filter(|l| l.starts_with(busbar_kernel::snapshot::REQUESTS_TOTAL))
         .filter(|l| {
             labels
                 .iter()
@@ -244,7 +244,7 @@ async fn refused_and_counted(instance: &'static str, path: &str, body: &[u8]) ->
     )
     .await;
     let labels = [("pool", "unresolved"), ("outcome", "client_error")];
-    let before = requests_total(&busbar_kernel::metrics::render(), &labels);
+    let before = requests_total(&busbar_kernel::snapshot::render(), &labels);
     let auth = bearer(&rig);
     let (status, _, _) = raw(
         &rig,
@@ -256,7 +256,7 @@ async fn refused_and_counted(instance: &'static str, path: &str, body: &[u8]) ->
         body.to_vec(),
     )
     .await;
-    let after = requests_total(&busbar_kernel::metrics::render(), &labels);
+    let after = requests_total(&busbar_kernel::snapshot::render(), &labels);
     assert_eq!(far.served(), 0, "a refused arrival dials nothing");
     (status, before, after)
 }
@@ -348,14 +348,14 @@ async fn a_pool_the_key_may_not_reach_is_refused_counted_and_charged_nothing() {
     )
     .await;
     let labels = [("outcome", "client_error")];
-    let before = requests_total(&busbar_kernel::metrics::render(), &labels);
+    let before = requests_total(&busbar_kernel::snapshot::render(), &labels);
     let (status, _, _) = rig.chat().await;
     assert_eq!(status, 403, "the pool is not the key's");
-    let scrape = busbar_kernel::metrics::render();
+    let scrape = busbar_kernel::snapshot::render();
     let after = requests_total(&scrape, &labels);
     assert!(after > before, "counted: before={before} after={after}");
     assert!(
-        scrape.contains(busbar_kernel::metrics::REQUEST_DURATION_SECONDS),
+        scrape.contains(busbar_kernel::snapshot::REQUEST_DURATION_SECONDS),
         "the duration is observed"
     );
     let (_, spend, _, billable) = rig.ledger_after(1).await;
