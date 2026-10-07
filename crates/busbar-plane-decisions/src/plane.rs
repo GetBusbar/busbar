@@ -15,8 +15,8 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, Unit, UnitEnd, UsageLocator,
+    UsageLocators,
 };
 use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -331,32 +331,6 @@ impl Plane for DecisionPlane {
         // Both operations are provider/account-scoped hops — jev owns no record of its own a unit
         // could resolve against instead (see records.rs's module note).
         self.upstream_destination()
-    }
-
-    fn approve<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        let mut facts = ScopeFacts::default();
-        if let Some(p) = self.provider() {
-            let _ = facts.resources.push(ResourceLocator {
-                kind: "decision_provider",
-                name: p.id,
-            });
-        }
-        facts
-    }
-
-    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        AdmitFacts {
-            // jev's request carries no lane name of its own; the lane is the configured provider's,
-            // and the trust unit re-derives it against the allow-list.
-            lane_locator: None,
-            // jev's dialect gives a caller no way to declare a ceiling on the answer.
-            max_response_ptrs: busbar_contract::bounded::BoundedVec::new(),
-            // The priced input is the whole request document.
-            input_span: Some(busbar_contract::bounded::Span {
-                start: 0,
-                end: u.body().body().len(),
-            }),
-        }
     }
 
     fn route<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {

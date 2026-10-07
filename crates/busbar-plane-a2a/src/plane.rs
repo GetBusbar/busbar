@@ -13,7 +13,7 @@
 //! handed back an empty table because the arena could not allocate one; it can, and this does.
 
 use busbar_contract::abi::plane::{class_of_refusal, RefusalClass};
-use busbar_contract::bounded::{BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span};
+use busbar_contract::bounded::{FactValue, Facts, Ir, ScratchBytes};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -21,8 +21,8 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, Unit, UnitEnd, UsageLocator,
+    UsageLocators,
 };
 use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -799,36 +799,6 @@ impl Plane for A2aPlane {
             },
             // Everything else is a hop to the agent.
             _ => self.upstream_destination(u),
-        }
-    }
-
-    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        let mut facts = ScopeFacts::default();
-        // The resource is the agent, under the kind the codec already names it by. The plane says
-        // WHAT is being asked for; which scope that requires, and whether this principal holds it,
-        // is the scope unit's answer and never this plane's.
-        if let Some(agent) = self.agent_for(u) {
-            let _ = facts.resources.push(ResourceLocator {
-                kind: "agent",
-                name: agent.id,
-            });
-        }
-        facts
-    }
-
-    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        AdmitFacts {
-            // The lane is not in the request. It is a property of the agent the operator
-            // configured, and the trust unit re-derives it against the allow-list.
-            lane_locator: None,
-            // This protocol gives a caller no way to declare a ceiling on the answer, so no
-            // place is named for one.
-            max_response_ptrs: BoundedVec::new(),
-            // The priced input is the whole request document.
-            input_span: Some(Span {
-                start: 0,
-                end: u.body().body().len(),
-            }),
         }
     }
 

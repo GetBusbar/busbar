@@ -31,7 +31,7 @@ fn verify_and_route_reach_one_declared_sampling_destination() {
 /// EVERY reason the kernel closes a unit for, so a new variant cannot be added without deciding what
 /// this dialect answers it with. Exhaustive against `busbar_contract::unit::RefusalReason` (42
 /// variants); `refusal_render`'s own match is `_`-free, so the two lists are kept in step on purpose.
-const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
+const ALL_REFUSAL_REASONS: [RefusalReason; 43] = [
     RefusalReason::InFlightCap,
     RefusalReason::CursorBudget,
     RefusalReason::CredentialBudget,
@@ -74,6 +74,7 @@ const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
     RefusalReason::Superseded,
     RefusalReason::ClientGone,
     RefusalReason::DeadlineExceeded,
+    RefusalReason::Untrusted,
 ];
 
 #[test]

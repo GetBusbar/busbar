@@ -684,6 +684,8 @@ pub enum RefusalCode {
     ClientGone = 40,
     /// `DeadlineExceeded`.
     DeadlineExceeded = 41,
+    /// `Untrusted`.
+    Untrusted = 42,
 }
 
 impl RefusalCode {
@@ -731,6 +733,7 @@ impl RefusalCode {
         RefusalCode::Superseded,
         RefusalCode::ClientGone,
         RefusalCode::DeadlineExceeded,
+        RefusalCode::Untrusted,
     ];
 
     /// The number on the wire.
@@ -806,6 +809,7 @@ pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
         ReasonCode::Superseded => RefusalCode::Superseded,
         ReasonCode::ClientGone => RefusalCode::ClientGone,
         ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
+        ReasonCode::Untrusted => RefusalCode::Untrusted,
     }
 }
 
@@ -860,6 +864,7 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::Superseded => ReasonCode::Superseded,
         RefusalCode::ClientGone => ReasonCode::ClientGone,
         RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
+        RefusalCode::Untrusted => ReasonCode::Untrusted,
     })
 }
 
@@ -966,7 +971,8 @@ impl RefusalCode {
             RefusalCode::ScopeDenied
             | RefusalCode::PoolNotPermitted
             | RefusalCode::HookVeto
-            | RefusalCode::GroupFrozen => C::Forbidden,
+            | RefusalCode::GroupFrozen
+            | RefusalCode::Untrusted => C::Forbidden,
             RefusalCode::BodyTooLarge
             | RefusalCode::CursorBudget
             | RefusalCode::CredentialBudget => C::TooLarge,
@@ -1111,6 +1117,14 @@ pub const TRUST_RECOVERY_BACKOFF: u32 = 3;
 /// registration's trust anchors beside its pin, and the connector's one guard honours it on every
 /// connection the need opens to that destination. It carries no default and no mechanisms.
 pub const TRUST_PRIVATE_REACH: u32 = 4;
+/// [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to
+/// an object whose field [`TrustKey::default`] names holds the digest the operator approved the
+/// item at (`{<item>: {<field>: "<digest>"}}`). The kernel seeds the counterparty's approved items
+/// from it at every admit (an edit is the operator's re-approval); an item written with a blank or
+/// absent digest is allowed but approved at none, and is served at none. The core-admin trust verbs
+/// approve and revoke on top of it. It carries no mechanisms and no flags; its `default` is
+/// required.
+pub const TRUST_ITEM_APPROVALS: u32 = 5;
 /// [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`.
 pub const PIN_FINGERPRINT: u32 = 1;
 /// [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key
@@ -1163,11 +1177,12 @@ pub struct TrustKey {
     /// The key, as written inside one registration.
     pub key: AbiStr,
     /// [`TRUST_PIN`] | [`TRUST_REVERIFY_TTL`] | [`TRUST_RECOVERY_BACKOFF`] |
-    /// [`TRUST_PRIVATE_REACH`].
+    /// [`TRUST_PRIVATE_REACH`] | [`TRUST_ITEM_APPROVALS`].
     pub role: u32,
     /// [`PIN_FINGERPRINT`] on a pin; `0` otherwise.
     pub flags: u32,
-    /// A duration key's value when a registration writes none; absent = zero. A pin has none.
+    /// A duration key's value when a registration writes none; absent = zero. A pin has none. On a
+    /// [`TRUST_ITEM_APPROVALS`] key: the field of each item's object holding its approved digest.
     pub default: AbiStr,
     /// A pin's mechanisms; empty for a duration key.
     pub mechanisms: *const PinMechanism,
@@ -1574,6 +1589,21 @@ pub struct ArriveOut {
     /// key, with no plane or protocol knowledge. Absent (NULL, `0`) = no affinity, and absent on
     /// every other outcome. Plane memory, valid until the instance's next call. A tail addition.
     pub affinity: AbiStr,
+    /// On READY: THE TRUST FACTS the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
+    /// Approve step, and a plane states facts and judges none): the COUNTERPARTY, a name among the
+    /// trust entries the plane's section declares (its trust keys). The kernel's Approve judges it
+    /// against its trust book (declared, sighted, not quarantined) and refuses the unit
+    /// [`RefusalCode::Untrusted`] otherwise. Absent = the unit rests on no counterparty, and nothing
+    /// is judged; absent on every other outcome. Plane memory, valid until the instance's next
+    /// call. A tail addition.
+    pub trust_counterparty: AbiStr,
+    /// With `trust_counterparty`: the ITEM the unit uses there (a tool, a skill: the plane's own
+    /// per-item trust key), opaque to the kernel; the kernel requires it sighted and approved at
+    /// `trust_digest`. Absent = the counterparty as a whole.
+    pub trust_item: AbiStr,
+    /// With `trust_item`: the DIGEST the item is offered at now, as the plane observed it,
+    /// opaque to the kernel. Absent = the item's last sighting (`trust.sight_item`) stands.
+    pub trust_digest: AbiStr,
 }
 
 /// `on_piece`'s `in`.
@@ -1773,6 +1803,13 @@ pub struct RefusalIn {
     /// With [`REFUSAL_GATE`]: the name of the hook that vetoed the unit, opaque bytes; absent on
     /// every other refusal. A tail addition.
     pub hook: AbiStr,
+    /// With [`RefusalCode::Untrusted`]: why the kernel's Approve did not trust the unit's stated
+    /// facts (`abi::host::service::DISTRUST_*`, the one trust vocabulary, `trust.serves`'s too),
+    /// so the plane renders the words its dialect has for each (an unknown item as not found, a
+    /// known one ungranted as refused); `0` on every other refusal. A tail addition.
+    pub trust: u32,
+    /// Alignment padding.
+    pub _trust_reserved: u32,
 }
 
 /// `refusal`'s `out`.
