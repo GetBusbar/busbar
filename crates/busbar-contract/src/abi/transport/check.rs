@@ -295,9 +295,45 @@ pub fn check_datagram(
     routes: &[DatagramRoute],
     routes_cap: u64,
 ) -> Result<(), Fault> {
-    // RED: the rules are not judged yet.
-    let _ = (outcome, out, routes, routes_cap);
-    Ok(())
+    let d = &out.datagram;
+    let y = &out.yielded;
+    let n = u64::from(d.routes_len);
+    within(n, routes_cap.min(MAX_ROUTES), "datagram.routes_len")?;
+    if outcome == Outcome::Failed && (n != 0 || d.request != PATH_REQUEST_NONE) {
+        return Err(fault(Rule::Contradiction, "datagram.failed_routed"));
+    }
+    for r in first(routes, n, "datagram.routes")? {
+        if r.len == 0 {
+            return Err(fault(Rule::Missing, "datagram.route.len"));
+        }
+        range(r.offset, r.len, y.wire_len, "datagram.route.bytes")?;
+        if r.path == 0 {
+            return Err(fault(Rule::Missing, "datagram.route.path"));
+        }
+        code(
+            u64::from(r.lane),
+            u64::from(LANE_CLEAR),
+            u64::from(LANE_SECURED),
+            "datagram.route.lane",
+        )?;
+    }
+    code(
+        u64::from(d.request),
+        u64::from(PATH_REQUEST_NONE),
+        u64::from(PATH_REQUEST_REBIND),
+        "datagram.request",
+    )?;
+    let named = match d.request {
+        PATH_REQUEST_BIND => d.request_from == 0 && d.request_to != 0,
+        PATH_REQUEST_REBIND => {
+            d.request_from != 0 && d.request_to != 0 && d.request_from != d.request_to
+        }
+        _ => d.request_from == 0 && d.request_to == 0,
+    };
+    if !named {
+        return Err(fault(Rule::Contradiction, "datagram.request.paths"));
+    }
+    check_terms(&d.terms, y.frame_len)
 }
 
 /// Rendezvous terms: absent whole, or every credential nonempty and the fingerprint exactly
@@ -307,8 +343,48 @@ pub fn check_datagram(
 ///
 /// The rule the terms break.
 pub fn check_terms(t: &RendezvousTerms, frame_len: u64) -> Result<(), Fault> {
-    // RED: the rules are not judged yet.
-    let _ = (t, frame_len);
+    code(
+        u64::from(t.role),
+        u64::from(HANDSHAKE_NONE),
+        u64::from(HANDSHAKE_ANSWERS),
+        "datagram.terms.role",
+    )?;
+    let spans = [
+        (t.local_user, "datagram.terms.local_user"),
+        (t.local_secret, "datagram.terms.local_secret"),
+        (t.remote_user, "datagram.terms.remote_user"),
+        (t.remote_secret, "datagram.terms.remote_secret"),
+        (t.peer_fingerprint, "datagram.terms.peer_fingerprint"),
+    ];
+    if t.role == HANDSHAKE_NONE {
+        for (s, field) in spans
+            .into_iter()
+            .chain([(t.candidates, "datagram.terms.candidates")])
+        {
+            if s != FrameSpan::default() {
+                return Err(fault(Rule::SpanNotAbsent, field));
+            }
+        }
+        return Ok(());
+    }
+    for (s, field) in spans {
+        if s.len == 0 {
+            return Err(fault(Rule::Missing, field));
+        }
+        range(s.offset, s.len, frame_len, field)?;
+    }
+    range(
+        t.candidates.offset,
+        t.candidates.len,
+        frame_len,
+        "datagram.terms.candidates",
+    )?;
+    if t.peer_fingerprint.len != FINGERPRINT_BYTES {
+        return Err(fault(
+            Rule::Contradiction,
+            "datagram.terms.peer_fingerprint.len",
+        ));
+    }
     Ok(())
 }
 
@@ -319,8 +395,21 @@ pub fn check_terms(t: &RendezvousTerms, frame_len: u64) -> Result<(), Fault> {
 ///
 /// The rule the item breaks.
 pub fn check_keying(k: &KeyingMaterial) -> Result<(), Fault> {
-    // RED: the rules are not judged yet.
-    let _ = k;
+    if k.size as usize != core::mem::size_of::<KeyingMaterial>() {
+        return Err(fault(Rule::Foreign, "keying.size"));
+    }
+    if k.profile == 0 {
+        return Err(fault(Rule::Missing, "keying.profile"));
+    }
+    if k.len == 0 {
+        return Err(fault(Rule::Missing, "keying.len"));
+    }
+    if k.len as u64 > MAX_KEYING_BYTES {
+        return Err(fault(Rule::OverMax, "keying.len"));
+    }
+    if k.bytes.is_null() {
+        return Err(fault(Rule::NullWithCount, "keying.bytes"));
+    }
     Ok(())
 }
 
