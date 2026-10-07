@@ -2,8 +2,22 @@
   "components": {
     "schemas": {
       "A2aTrustView": {
-        "description": "THE TRUST VIEW of one registered agent: what `connect` answers with.\n\nIts state is the kernel's verdict on the agent's trust key (approving is the operator's act on\nthe generic `/admin/trust`), or the plane's own `suspended`/`error`.",
+        "description": "THE TRUST VIEW of one registered agent — what both verbs answer with.\n\nThe sibling of the tool-serving plane's trust view and shaped like it on purpose: an\noperator console rendering both planes should be rendering one component. It is NOT the same\ntype, because the two planes' capability vocabularies differ (a `tools:` entry has an approved\ndigest per tool; an `agents:` entry has a skill set on a card) and merging them would mean one\nof the planes filling in fields that mean nothing to it.",
         "properties": {
+          "added": {
+            "description": "Offered now, never ruled on.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "changed": {
+            "description": "Approved, but offered at a DIFFERENT digest. THIS IS THE RUG-PULL ROW.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "failure": {
             "description": "Why the contact failed, when it did.",
             "type": [
@@ -12,7 +26,7 @@
             ]
           },
           "fingerprint": {
-            "description": "THE CANONICAL CARD FINGERPRINT the card presented: what this look sighted on the kernel's\ntrust book, and so what an approval of the agent's key approves.",
+            "description": "THE CANONICAL CARD FINGERPRINT AN OPERATOR IS BEING ASKED TO APPROVE. Surfaced explicitly\nrather than left for a caller to dig out, because this is the one string that goes in front\nof the human and `approve` refuses anything else.",
             "type": [
               "string",
               "null"
@@ -27,12 +41,23 @@
             "minimum": 0,
             "type": "integer"
           },
+          "pin_changed": {
+            "description": "The presented identity is not the locked one. Its own axis: adopting a new identity is a\ndifferent act from adopting new content.",
+            "type": "boolean"
+          },
           "pin_mechanism": {
             "description": "The operator's word for the authenticity root, as the OBSERVED pin names it. Never\ninterpreted by the machine.",
             "type": "string"
           },
+          "removed": {
+            "description": "Approved, and no longer offered.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "state": {
-            "description": "`pending`, `approved`, `quarantined`, `suspended` or `error`: the kernel's verdict on the\nagent's trust key, the plane's own anomaly suspension, or a failed contact.",
+            "description": "`pending`, `approved`, `quarantined`, `suspended` or `error`. DERIVED on every read from the\nstanding approval and the sighting, so there is no stored state to go stale.",
             "type": "string"
           }
         },
@@ -41,6 +66,10 @@
           "state",
           "pin_mechanism",
           "fingerprint",
+          "pin_changed",
+          "added",
+          "changed",
+          "removed",
           "observed_skills",
           "failure"
         ],
@@ -312,6 +341,20 @@
         "description": "A money figure: a decimal integer carried as TEXT. The ledger keeps money in 128-bit integers and\nJSON's number is a double, exact only to 2^53; a nano-unit total passes that on a busy day, and a\nfigure that silently lost its last digits would still look like money.",
         "pattern": "^-?[0-9]+$",
         "type": "string"
+      },
+      "ApproveReq": {
+        "additionalProperties": false,
+        "description": "The `approve` request body. ONE required field, and it is required because it is the operator's\nevidence that they looked.",
+        "properties": {
+          "fingerprint": {
+            "description": "The canonical card fingerprint EXACTLY as `connect` reported it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint"
+        ],
+        "type": "object"
       },
       "AuditChainHeadView": {
         "description": "`GET /audit/head`: where the audit record chain is now, and the recipe a verifier applies.",
@@ -4933,9 +4976,9 @@
         "x-busbar-required-scope": "full"
       }
     },
-    "/api/v1/admin/agents/{name}/connect": {
+    "/api/v1/admin/agents/{name}/approve": {
       "post": {
-        "operationId": "PostAgentsNameConnect",
+        "operationId": "PostAgentsNameApprove",
         "parameters": [
           {
             "in": "path",
@@ -4946,6 +4989,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -4955,7 +5008,17 @@
                 }
               }
             },
-            "description": "OK (the agent's key's state on the kernel's trust book and the fingerprint the card presented, which this look sighted; a first sighting is `pending` until the operator approves `<instance>/<agent>` on `/admin/trust`; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"
+            "description": "OK (the registration's state AFTER the approval, read off the live registry)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body / unknown field, invalid config; nothing changed"
           },
           "401": {
             "content": {
@@ -5016,7 +5079,95 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report what it presented and the state its trust key stands in. Approves nothing: approving is the operator's act on /admin/trust",
+        "summary": "Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused",
+        "x-busbar-plane": "agents",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/agents/{name}/connect": {
+      "post": {
+        "operationId": "PostAgentsNameConnect",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aTrustView"
+                }
+              }
+            },
+            "description": "OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: unknown resource"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
         "x-busbar-plane": "agents",
         "x-busbar-required-scope": "full"
       }
