@@ -448,6 +448,11 @@ macro_rules! hyper_io {
                 pub head: Option<HeadWords>,
                 /// The stream's frames are over (`PIECE_END`): its last piece, with no bytes.
                 pub end: bool,
+                /// The framer's own fault reading of this piece, where it reads the answer from
+                /// something other than `status` (a bare HTTP answer on a gRPC call, its status
+                /// mapped to the call's numbering but its fault read by its HTTP band). `None`:
+                /// [`fill`]'s `fault_of(status)`. Read only on a piece that states a status.
+                pub fault: Option<u8>,
             }
 
             impl Piece {
@@ -464,6 +469,7 @@ macro_rules! hyper_io {
                         continued: false,
                         head: None,
                         end: false,
+                        fault: None,
                     }
                 }
                 /// `stream`'s frames are over: it ends whole (`PIECE_END`).
@@ -613,7 +619,7 @@ macro_rules! hyper_io {
                         flags |= PIECE_HAS_CODE;
                         fp.code = u32::from(code);
                         fp.status_class = class_of(code);
-                        fp.fault = fault_of(code);
+                        fp.fault = piece.fault.unwrap_or_else(|| fault_of(code));
                     }
                     if let Some(secs) = piece.retry_after_secs {
                         flags |= PIECE_HAS_RETRY_AFTER;
