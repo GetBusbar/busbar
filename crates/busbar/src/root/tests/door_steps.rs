@@ -1844,3 +1844,117 @@ fn a_pools_reach_follows_its_fallback_and_the_declared_words() {
         "a fallback pool does not reach back into the pool that spilled into it"
     );
 }
+
+/// A UNIT ITS PLANE ANSWERS AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`, COORDINATOR ruling
+/// 2026-10-07), plane-neutral: resolved on the caller's grant of the plane's scope kind exactly as
+/// `ROUTE_SCOPE` is, then routed NOWHERE: the one entry the grant reaches is the steps' resolved
+/// entry (lent to the plane), no route is sealed, and a pool the entry is a member of is never
+/// read, where the same unit routed by scope walks that pool. Zero or several reachable entries
+/// resolve none and are refused `no_destination` at admission, the several named in the refusal's
+/// words. RED before the value: a scope-local unit resolved nothing and routed nowhere it could be
+/// answered at.
+#[test]
+fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere() {
+    use busbar_contract::abi::plane::{ROUTE_SCOPE, ROUTE_SCOPE_LOCAL};
+    use busbar_contract::caps::{
+        Admit, Admittance, Dial, OpClassId, PrincipalId, ReasonCode, Verify,
+    };
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    use busbar_kernel::plane_driver::DriverSteps;
+    use busbar_kernel::teller::{UnitCtx, Units};
+    use busbar_kernel::test_support::tokens;
+    let facts = super::door_facts("p", &["seat"], &[], &[], "a", Vec::new());
+    let p = pools("a: {}\nb: {}\npools:\n  both:\n    members: [a, b]\n    member_granted: true");
+    let ctx = UnitCtx {
+        key: busbar_contract::UnitKey::new(1),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let principal = PrincipalId::new("vk_seat");
+    let steps = |reach: &[&str]| {
+        super::DoorSteps::new(
+            &facts,
+            &p,
+            std::sync::Arc::new(|_: &str| None),
+            busbar_kernel::test_support::TestApp::new().build(),
+            None,
+            super::DoorCaller {
+                principal: principal.clone(),
+                key: Some(std::sync::Arc::new(VirtualKey {
+                    id: "vk_seat".into(),
+                    allowed_scopes: Some(
+                        reach
+                            .iter()
+                            .map(|n| ScopeRef {
+                                kind: "seat".to_string(),
+                                value: (*n).to_string(),
+                            })
+                            .collect(),
+                    ),
+                    ..VirtualKey::default()
+                })),
+                open: false,
+                arrived: 0,
+                records: None,
+                depth: 0,
+                credential: None,
+            },
+        )
+    };
+    let verified = |s: &super::DoorSteps<'_>, class: u8| {
+        s.decoded(&ctx, OpClassId::new("op"), class, None);
+        s.verify(
+            &tokens::pass::<Verify>(),
+            &tokens::grant::<Dial>(),
+            &ctx,
+            &principal,
+        )
+        .into_result(&tokens::seal())
+        .expect("verify proceeds")
+    };
+
+    // ONE reaches: resolved, nothing sealed, no route (its pool unread).
+    let one = steps(&["a"]);
+    let sealed = verified(&one, ROUTE_SCOPE_LOCAL);
+    assert!(sealed.is_empty(), "no destination is sealed");
+    assert_eq!(one.resolved(&ctx), Some(b"a".to_vec()), "the one entry");
+    assert_eq!(one.routed(), None, "routed nowhere: no pool, no walk");
+    // The same reach routed by scope walks the pool its one entry is a member of.
+    let relayed = steps(&["a"]);
+    let _ = verified(&relayed, ROUTE_SCOPE);
+    assert_eq!(relayed.resolved(&ctx), None);
+    assert_eq!(
+        relayed.routed().map(|(label, _)| label),
+        Some("both".to_string()),
+        "a relayed unit is widened to its entry's pool"
+    );
+
+    // ZERO and SEVERAL reach: none resolved, refused `no_destination` at admission.
+    for reach in [&[][..], &["a", "b"][..]] {
+        let s = steps(reach);
+        let _ = verified(&s, ROUTE_SCOPE_LOCAL);
+        assert_eq!(s.resolved(&ctx), None, "{reach:?}");
+        let refused = s
+            .admit(
+                &tokens::pass::<Admit>(),
+                &tokens::grant::<Admittance>(),
+                &ctx,
+                &principal,
+                &[],
+                &busbar_contract::slice::GroupLeaseSlip::default(),
+            )
+            .into_result(&tokens::seal());
+        let Err(refused) = refused else {
+            panic!("{reach:?}: refused at admission");
+        };
+        assert_eq!(refused.reason(), ReasonCode::NoDestination, "{reach:?}");
+        assert_eq!(
+            s.refusal_words(ReasonCode::NoDestination),
+            Some(reach.join(", ").into_bytes()),
+            "the reachable entries named in its words: {reach:?}"
+        );
+    }
+}

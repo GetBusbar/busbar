@@ -8794,17 +8794,6 @@ mod agent_door {
         );
     }
 
-    /// The upstream attempts counted for any member of the `planner` pool, over every lane.
-    fn planner_attempts() -> f64 {
-        let family = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
-        let lines: Vec<String> = busbar_kernel::snapshot::render()
-            .lines()
-            .filter(|l| l.starts_with(&format!("{family}{{")) && l.contains("pool=\"planner"))
-            .map(str::to_string)
-            .collect();
-        total(&lines)
-    }
-
     /// The audit rows the kernel's chain holds past `before` for `agent`'s resource.
     fn audited(before: u64, agent: &str) -> usize {
         let resource = format!("{}:{agent}", surface("resource_kind"));
@@ -8895,13 +8884,13 @@ mod agent_door {
     }
 
     /// THE TWIN, the pool's primary HEALTHY: a caller granted the twin alone lists its tasks
-    /// unaddressed and is answered at the twin, the one agent its grant reaches, with nothing
-    /// dialled and no upstream attempt counted, audited under the twin (the same ruling and predev
-    /// lines). RED: the list was walked over the twin's pool to its healthy primary and answered and
-    /// audited as the primary, an agent outside the caller's grant.
+    /// unaddressed and is answered at the twin, the one agent its grant reaches, audited under the
+    /// twin (the same ruling and predev lines). The far end both members are served at counts every
+    /// request each member was sent, and every card fetch: none, on either. RED: the list was
+    /// walked over the twin's pool to its healthy primary and answered and audited as the primary,
+    /// an agent outside the caller's grant.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unaddressed_local_verb_never_walks_to_a_healthy_primary_outside_the_grant() {
-        busbar_kernel::snapshot::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-pool-local-healthy";
         let _published = Published(instance);
@@ -8913,22 +8902,88 @@ mod agent_door {
         let mut log = Vec::new();
         hear(&mut agent, &mut log);
         let before = chain().last().map_or(0, |e| e.seq);
-        let attempts = planner_attempts();
+        let fetched = agent.fetches();
 
         let (status, body) = answered(&s.router, rpc("", "tasks/list", "{}", Some(&token))).await;
         assert_eq!(status, StatusCode::OK, "answered by busbar itself: {body}");
         let mut heard = Vec::new();
         hear(&mut agent, &mut heard);
-        assert!(heard.is_empty(), "no egress at all: {heard:?}");
-        assert!(
-            (planner_attempts() - attempts).abs() < f64::EPSILON,
-            "no upstream attempt counted"
+        assert_eq!(
+            (hits(&heard, "planner-a"), hits(&heard, "planner-b")),
+            (0, 0),
+            "neither member was sent a request: {heard:?}"
         );
+        assert!(heard.is_empty(), "no egress at all: {heard:?}");
+        assert_eq!(agent.fetches(), fetched, "no card was fetched either");
         assert_eq!(
             (audited(before, "planner-a"), audited(before, "planner-b")),
             (0, 1),
             "audited under the twin, the one agent the caller's grant reaches"
         );
+    }
+
+    /// MONEY: AN UNADDRESSED LOCAL VERB BILLS WHAT PREDEV BILLED (`ROUTE_SCOPE_LOCAL` counted,
+    /// COORDINATOR ruling 2026-10-07). This cell touches money: it reads the presenting key's
+    /// ledger and the node's book. Predev resolved an unaddressed unit to the one agent its grant
+    /// reaches (origin/predev `crates/busbar-a2a/src/a2a/receive.rs:1264` `select`), named its
+    /// resource `agent:<id>` (`:1290`), admitted it on that agent's lane, counting its
+    /// `per_request` fee unit (`:1543`), answered the local verb with no refund (`:1577`), and
+    /// metered it on that resource (`:1717` `meter_request`: one request, no tokens), exactly as
+    /// it billed the same verb addressed (`metered_verbs_tests.rs:131`,
+    /// `list_tasks_is_metered_under_the_agent_it_was_admitted_on`: one row on `agent:planner`, one
+    /// request). Unaddressed and addressed `tasks/list` each bill one request, one fee unit (the
+    /// card's `per_request` 2), no bytes, on ONE line under the agent's own lane, and neither dials
+    /// the agent. RED with `ROUTE_COUNTED` dropped: the unaddressed list bills nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unaddressed_local_verb_bills_what_predev_billed_on_the_agents_own_line() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-local-billed";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let priced = Priced {
+            bytes_rate: None,
+            fee: 2,
+            budget: 1_000,
+        };
+        let s = served_priced(instance, &agent.entry("planner", "1h"), &priced);
+        approve(&s, "planner").await;
+        let billed = |target: &'static str| {
+            let s = &s;
+            async move {
+                let before = (Billed::of(s), agent_counts(s, "planner").len());
+                let (status, body) =
+                    answered(&s.router, rpc(target, "tasks/list", "{}", Some(&s.token))).await;
+                assert_eq!(status, StatusCode::OK, "[{target}] answered: {body}");
+                let after = Billed::of(s);
+                let lines = agent_counts(s, "planner");
+                assert_eq!(
+                    lines.len(),
+                    before.1 + 1,
+                    "[{target}] one line on the agent's own lane: {lines:?}"
+                );
+                let line = lines.last().cloned().expect("the line");
+                (
+                    after.requests - before.0.requests,
+                    after.fees - before.0.fees,
+                    after.bytes - before.0.bytes,
+                    after.spend - before.0.spend,
+                    counted(&line, busbar_contract::plane::PER_REQUEST),
+                    counted(&line, surface("bytes_class")),
+                )
+            }
+        };
+        let addressed = billed("planner").await;
+        let unaddressed = billed("").await;
+        assert_eq!(
+            addressed,
+            (1, 1, 0, 2, 1, 0),
+            "the addressed list: one request, one fee unit at 2, no bytes (predev's control)"
+        );
+        assert_eq!(
+            unaddressed, addressed,
+            "the unaddressed list bills exactly what the addressed one does, on the same line"
+        );
+        assert!(!agent.relayed(), "neither list dialled the agent");
     }
 
     /// A CONFIG APPLY KEEPS THE POOL (`DoorApply::apply`): the generation an apply installs holds
