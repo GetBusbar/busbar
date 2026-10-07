@@ -953,6 +953,193 @@ mod agent_door {
         /// The paths the door's routes were mounted at on the data router, as its construction
         /// was handed them.
         routes: Vec<String>,
+        /// The bytes a record key must hold for the cell's store to refuse writing it
+        /// ([`Refusing`]); `None` = the store takes every write.
+        refuse: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    }
+
+    /// THE CELL'S STORE, REFUSING ON CUE (predev's `RefuseOneTaskRow`, `local_tests.rs:1300-1356`):
+    /// the door-opened store's calls, each delegated, except a record put whose key holds the bytes
+    /// the cell named, which it refuses as a full disk would. Empty bytes name every key (a store
+    /// that takes no write at all); nothing named, nothing refused.
+    struct Refusing {
+        inner: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+        named: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    }
+
+    impl Refusing {
+        fn refuses(&self, key: &[u8]) -> bool {
+            self.named
+                .lock()
+                .expect("unpoisoned")
+                .as_deref()
+                .is_some_and(|n| n.is_empty() || key.windows(n.len()).any(|w| w == n))
+        }
+    }
+
+    impl busbar_contract::store_calls::StoreCalls for Refusing {
+        fn reserve<'a>(
+            &'a self,
+            op: busbar_contract::abi::store::OpId,
+            epoch: u64,
+            cells: &'a [busbar_contract::abi::sdk::store::Cell<'a>],
+        ) -> busbar_contract::store_calls::StoreCall<'a, Vec<busbar_contract::abi::sdk::store::Grant>>
+        {
+            self.inner.reserve(op, epoch, cells)
+        }
+        fn slice_release<'a>(
+            &'a self,
+            op: busbar_contract::abi::store::OpId,
+            epoch: u64,
+            items: &'a [(u64, u64)],
+        ) -> busbar_contract::store_calls::StoreCall<'a, Vec<u64>> {
+            self.inner.slice_release(op, epoch, items)
+        }
+        fn add_usage_batch<'a>(
+            &'a self,
+            op: busbar_contract::abi::store::OpId,
+            cells: &'a [(&'a str, u64, busbar_contract::records::UsageDelta)],
+        ) -> busbar_contract::store_calls::StoreCall<'a, ()> {
+            self.inner.add_usage_batch(op, cells)
+        }
+        fn add_metering_batch<'a>(
+            &'a self,
+            op: busbar_contract::abi::store::OpId,
+            deltas: &'a [busbar_contract::records::MeteringDelta],
+        ) -> busbar_contract::store_calls::StoreCall<'a, ()> {
+            self.inner.add_metering_batch(op, deltas)
+        }
+        fn append_audit_batch<'a>(
+            &'a self,
+            op: busbar_contract::abi::store::OpId,
+            entries: &'a [busbar_contract::records::AuditRecord],
+        ) -> busbar_contract::store_calls::StoreCall<'a, ()> {
+            self.inner.append_audit_batch(op, entries)
+        }
+        fn window_caps<'a>(
+            &'a self,
+            op: busbar_contract::abi::store::OpId,
+            caps: &'a [busbar_contract::abi::sdk::store::Cap<'a>],
+        ) -> busbar_contract::store_calls::StoreCall<'a, ()> {
+            self.inner.window_caps(op, caps)
+        }
+        fn append_batch<'a>(
+            &'a self,
+            op: busbar_contract::abi::store::OpId,
+            stream: &'a str,
+            records: &'a [busbar_contract::kinds::RecordBytes],
+        ) -> busbar_contract::store_calls::StoreCall<'a, busbar_contract::kinds::Head> {
+            self.inner.append_batch(op, stream, records)
+        }
+        fn heads(
+            &self,
+        ) -> busbar_contract::store_calls::StoreCall<'_, Vec<(String, busbar_contract::kinds::Head)>>
+        {
+            self.inner.heads()
+        }
+        fn session_put<'a>(
+            &'a self,
+            session: u64,
+            node: &'a str,
+            principal: &'a str,
+        ) -> busbar_contract::store_calls::StoreCall<'a, ()> {
+            self.inner.session_put(session, node, principal)
+        }
+        fn session_remove(&self, session: u64) -> busbar_contract::store_calls::StoreCall<'_, ()> {
+            self.inner.session_remove(session)
+        }
+        fn sessions_for<'a>(
+            &'a self,
+            principal: &'a str,
+        ) -> busbar_contract::store_calls::StoreCall<'a, Vec<(u64, String)>> {
+            self.inner.sessions_for(principal)
+        }
+        fn record_put<'a>(
+            &'a self,
+            schema: &'a str,
+            key: &'a [u8],
+            value: &'a busbar_contract::kinds::RecordBytes,
+        ) -> busbar_contract::store_calls::StoreCall<'a, ()> {
+            if self.refuses(key) {
+                return Box::pin(async {
+                    Err(busbar_contract::store_calls::StoreFailure::Refused(
+                        "disk is full".to_string(),
+                    ))
+                });
+            }
+            self.inner.record_put(schema, key, value)
+        }
+        fn record_get<'a>(
+            &'a self,
+            schema: &'a str,
+            key: &'a [u8],
+        ) -> busbar_contract::store_calls::StoreCall<'a, Option<busbar_contract::kinds::RecordBytes>>
+        {
+            self.inner.record_get(schema, key)
+        }
+        fn record_scan<'a>(
+            &'a self,
+            schema: &'a str,
+            prefix: &'a [u8],
+            limit: u32,
+        ) -> busbar_contract::store_calls::StoreCall<
+            'a,
+            Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
+        > {
+            self.inner.record_scan(schema, prefix, limit)
+        }
+        fn upsert_plane_record<'a>(
+            &'a self,
+            record: busbar_contract::records::PlaneRecordRef<'a>,
+        ) -> busbar_contract::store_calls::StoreCall<'a, ()> {
+            self.inner.upsert_plane_record(record)
+        }
+        fn get_plane_record<'a>(
+            &'a self,
+            kind: &'a str,
+            id: &'a str,
+        ) -> busbar_contract::store_calls::StoreCall<'a, Option<Vec<u8>>> {
+            self.inner.get_plane_record(kind, id)
+        }
+        fn append_plane_record<'a>(
+            &'a self,
+            op: busbar_contract::abi::store::OpId,
+            record: busbar_contract::records::PlaneRecordRef<'a>,
+        ) -> busbar_contract::store_calls::StoreCall<'a, ()> {
+            self.inner.append_plane_record(op, record)
+        }
+        fn list_plane_records<'a>(
+            &'a self,
+            kind: &'a str,
+            selector: &'a busbar_contract::records::PlaneSelector<'a>,
+        ) -> busbar_contract::store_calls::StoreCall<'a, Vec<Vec<u8>>> {
+            self.inner.list_plane_records(kind, selector)
+        }
+        fn delete_plane_record<'a>(
+            &'a self,
+            kind: &'a str,
+            id: &'a str,
+        ) -> busbar_contract::store_calls::StoreCall<'a, ()> {
+            self.inner.delete_plane_record(kind, id)
+        }
+        fn redeem_plane_token<'a>(
+            &'a self,
+            kind: &'a str,
+            token: &'a str,
+            expires_at: u64,
+            now: u64,
+        ) -> busbar_contract::store_calls::StoreCall<'a, bool> {
+            self.inner.redeem_plane_token(kind, token, expires_at, now)
+        }
+        fn plane_token_live<'a>(
+            &'a self,
+            kind: &'a str,
+            token: &'a str,
+            expires_at: u64,
+            now: u64,
+        ) -> busbar_contract::store_calls::StoreCall<'a, bool> {
+            self.inner.plane_token_live(kind, token, expires_at, now)
+        }
     }
 
     /// How the cell's App faces the world beside the door's routes.
@@ -1258,11 +1445,15 @@ mod agent_door {
             )
             .expect("governance"),
         );
-        assert!(gov.attach_store_calls(
-            opened
+        // The store's calls as the cell's [`Refusing`] store, which takes every write until a cell
+        // names the keys it refuses.
+        let refuse = Arc::new(std::sync::Mutex::new(None));
+        assert!(gov.attach_store_calls(Arc::new(Refusing {
+            inner: opened
                 .calls
-                .expect("a door-opened store has its record slots")
-        ));
+                .expect("a door-opened store has its record slots"),
+            named: Arc::clone(&refuse),
+        })));
         let services = super::super::LateServices::new();
         // The kernel's services judge every destination by the deployment's one guard, as boot
         // composes them (`dest.judge`: the card fetch's per-hop guard reads it).
@@ -1529,6 +1720,7 @@ mod agent_door {
             book: Arc::clone(&book.durability),
             post: end,
             routes,
+            refuse,
         }
     }
 
@@ -6654,6 +6846,264 @@ mod agent_door {
                 "a token for an ended task authorised a `{state}` report: {body}"
             );
         }
+    }
+
+    // ── A WRITE THE STORE REFUSES: the engine's answer for the write its verb could not make
+    //    durable, not the kernel's words (busbar-a2a local.rs, receive.rs) ────────────────────────
+
+    /// The status and the whole JSON document `req` is answered with.
+    async fn document(
+        s: &Served,
+        req: axum::http::Request<axum::body::Body>,
+    ) -> (StatusCode, serde_json::Value) {
+        let (status, body) = answered(&s.router, req).await;
+        let doc = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("the answer is not one JSON document ({e}): {body}"));
+        (status, doc)
+    }
+
+    /// Ported from busbar-a2a a2a/tests/local_tests.rs::a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_error
+    /// (`local_tests.rs:1257-1435`). THE DELETE IS HONEST: when the store refuses the config's
+    /// removal the verb does not answer as if deleted. The caller gets predev's internal error,
+    /// `500` (`rpcerror.rs:296`) with `-32603` and its words, echoing the request id
+    /// (`local.rs:729-745`), never the kernel's `503` `-32004`; the config stays registered; and
+    /// once the store takes writes again, the retry removes it everywhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_error() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-delete-refused";
+        let _published = Published(instance);
+        let agent =
+            Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+                .await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let task = open_task(&s).await;
+        let (status, body) = answered(
+            &s.router,
+            rpc(
+                "planner",
+                "CreateTaskPushNotificationConfig",
+                &create_config(&task),
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the config is registered: {body}");
+        let addressed = serde_json::json!({ "taskId": task, "id": "caller-config" }).to_string();
+
+        *s.refuse.lock().expect("unpoisoned") = Some(task.as_bytes().to_vec());
+        let (status, doc) = document(
+            &s,
+            rpc(
+                "planner",
+                "DeleteTaskPushNotificationConfig",
+                &addressed,
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(
+            (status, doc),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
+                    "code": -32603,
+                    "message": "the push notification config could not be deleted; retry the delete",
+                } })
+            ),
+            "a delete whose durable clear failed answers the engine's internal error, never OK"
+        );
+
+        // The store recovers: the config is still registered, and the caller's RETRY removes it.
+        *s.refuse.lock().expect("unpoisoned") = None;
+        let (status, doc) = document(
+            &s,
+            rpc(
+                "planner",
+                "GetTaskPushNotificationConfig",
+                &addressed,
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        assert_eq!(
+            doc["result"]["url"], "https://1.1.1.1/hook",
+            "the config was kept: nothing pretended it was cleared"
+        );
+        let (status, doc) = document(
+            &s,
+            rpc(
+                "planner",
+                "DeleteTaskPushNotificationConfig",
+                &addressed,
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(
+            (status, doc),
+            (
+                StatusCode::OK,
+                serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": {} })
+            ),
+            "once the durable clear succeeds the delete is acknowledged"
+        );
+        let (status, doc) = document(
+            &s,
+            rpc(
+                "planner",
+                "GetTaskPushNotificationConfig",
+                &addressed,
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{doc}");
+        assert_eq!(doc["error"]["code"], -32001, "removed everywhere: {doc}");
+    }
+
+    /// A REGISTRATION THE STORE REFUSES is not acknowledged: predev's internal error, `500` with
+    /// `-32603` "the push notification config could not be recorded", echoing the request id
+    /// (busbar-a2a `local.rs:592-607`, `rpcerror.rs:296`), and nothing is registered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_registration_the_store_refuses_answers_the_engines_internal_error() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-create-refused";
+        let _published = Published(instance);
+        let agent =
+            Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+                .await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let task = open_task(&s).await;
+
+        *s.refuse.lock().expect("unpoisoned") = Some(task.as_bytes().to_vec());
+        let (status, doc) = document(
+            &s,
+            rpc(
+                "planner",
+                "CreateTaskPushNotificationConfig",
+                &create_config(&task),
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(
+            (status, doc),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
+                    "code": -32603,
+                    "message": "the push notification config could not be recorded",
+                } })
+            ),
+        );
+        *s.refuse.lock().expect("unpoisoned") = None;
+        let addressed = serde_json::json!({ "taskId": task, "id": "caller-config" }).to_string();
+        let (status, doc) = document(
+            &s,
+            rpc(
+                "planner",
+                "GetTaskPushNotificationConfig",
+                &addressed,
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(
+            (status, &doc["error"]["code"]),
+            (StatusCode::NOT_FOUND, &serde_json::json!(-32001)),
+            "nothing was registered: {doc}"
+        );
+    }
+
+    /// A SUBMISSION WHOSE TASK THE STORE REFUSES is answered as predev answered a task it could not
+    /// record, before any hop: `503` with `-32603` "the task could not be recorded", echoing the
+    /// request id (busbar-a2a `receive.rs:2032-2049`), on `message/send` and on `message/stream`
+    /// alike (predev opened both on the one path, `receive.rs:2340-2360`), and the agent is never
+    /// dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_submission_whose_task_the_store_refuses_answers_the_engines_503() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-submit-refused";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        agent.streams();
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let _ = heard(&mut agent);
+
+        *s.refuse.lock().expect("unpoisoned") = Some(instance.as_bytes().to_vec());
+        for (method, params) in [("message/send", SEND), ("message/stream", STREAM)] {
+            let (status, doc) = document(&s, rpc("planner", method, params, Some(&s.token))).await;
+            assert_eq!(
+                (status, doc),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
+                        "code": -32603,
+                        "message": "the task could not be recorded",
+                    } })
+                ),
+                "{method}"
+            );
+            let sent = heard(&mut agent);
+            assert!(sent.is_empty(), "{method}: the agent was dialled: {sent:?}");
+        }
+    }
+
+    /// AN INTERRUPTED TASK WHOSE RESUMPTION THE STORE REFUSES is answered as predev answered a task
+    /// it could not move back to `working`: `409` with `-32002` "this task cannot be resumed" and
+    /// its `TASK_NOT_CANCELABLE` `ErrorInfo`, echoing the request id (busbar-a2a
+    /// `receive.rs:1985-2001`, `rpcerror.rs:305-318`), and the agent is never dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resumption_the_store_refuses_answers_the_engines_409() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-resume-refused";
+        let _published = Published(instance);
+        let mut agent = Agent::start_answering(
+            200,
+            Arc::new(|r: &str| far_answer(r, "input-required", "input-required")),
+        )
+        .await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let turn = r#"{"message":{"kind":"message","messageId":"m-r","role":"user","contextId":"ctx-resume","parts":[{"kind":"text","text":"plan"}]}}"#;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", turn, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the first turn is served: {body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an answer");
+        let task = doc["result"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the first turn answered no task id: {body}"))
+            .to_string();
+        let _ = heard(&mut agent);
+
+        *s.refuse.lock().expect("unpoisoned") = Some(task.as_bytes().to_vec());
+        let (status, doc) =
+            document(&s, rpc("planner", "message/send", turn, Some(&s.token))).await;
+        assert_eq!(
+            (status, doc),
+            (
+                StatusCode::CONFLICT,
+                serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
+                    "code": -32002,
+                    "message": "this task cannot be resumed",
+                    "data": [{
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "domain": surface("error_info_domain"),
+                        "reason": "TASK_NOT_CANCELABLE",
+                    }],
+                } })
+            ),
+        );
+        let sent = heard(&mut agent);
+        assert!(sent.is_empty(), "the agent was dialled: {sent:?}");
     }
 
     // ── PORTED FROM THE ENGINE'S `serve_tests`, `sign_tests` AND `relay_leg_metrics_tests` ─────────
