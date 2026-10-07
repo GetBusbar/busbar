@@ -421,6 +421,10 @@ slot!(
 /// The most units the instance keeps state for at once; past it, the oldest is dropped first.
 pub const MAX_UNITS: usize = 4096;
 
+/// The open breaker's reason as the kernel spells it (`RefusalCode::BreakerOpen`'s word): the words
+/// this door says a walk's exhaustion in where it repeats them, as predev's door said it.
+const BREAKER_OPEN_WORD: &str = "breaker_open";
+
 /// One unit's state, from its arrival to its end.
 struct CallUnit {
     /// The unit's own key, as the kernel minted it.
@@ -2872,9 +2876,7 @@ slot!(
         let text: &[u8] = if given.cause != REFUSAL_ARRIVE
             && given.reason == busbar_contract::abi::plane::RefusalCode::BreakerOpen.code()
         {
-            busbar_contract::caps::ReasonCode::BreakerOpen
-                .as_str()
-                .as_bytes()
+            BREAKER_OPEN_WORD.as_bytes()
         } else {
             input.field(|i| &i.text).bytes()
         };
