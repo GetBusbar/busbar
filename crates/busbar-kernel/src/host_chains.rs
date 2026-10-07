@@ -149,6 +149,9 @@ fn digest_text(bytes: &[u8]) -> Option<(String, &[u8])> {
 /// One chain's position: the instance's label, the kind, the scope.
 type Position = (Arc<str>, String, String);
 
+/// One stored row, `(key, bytes)`.
+type Row = (Vec<u8>, Vec<u8>);
+
 /// Every chain's position, the least recently written first.
 type Positions = IndexMap<Position, Chain<PlaneJournalRecord>>;
 
@@ -293,7 +296,7 @@ fn resume(
     f: ChainFraming,
 ) -> Result<Chain<PlaneJournalRecord>, &'static str> {
     let unscoped = record_key(instance, &[]).len();
-    let mut stored: Vec<(Vec<u8>, Vec<u8>)> = held(rows, instance, schema, scope)?
+    let mut stored: Vec<Row> = held(rows, instance, schema, scope)?
         .into_iter()
         .filter_map(|(k, v)| Some((k.get(unscoped..)?.to_vec(), v.as_slice().to_vec())))
         .filter(|(k, _)| chain_key_parts(k).is_some_and(|(s, _)| s == scope.as_bytes()))
@@ -326,7 +329,7 @@ fn decoded<'k>(
     instance: &str,
     schema: RecordSchemaId,
     scope: &str,
-    stored: &'k [(Vec<u8>, Vec<u8>)],
+    stored: &'k [Row],
     f: ChainFraming,
 ) -> Vec<(&'k [u8], PlaneJournalRecord)> {
     stored
@@ -360,10 +363,10 @@ fn decoded<'k>(
 pub fn verified(
     instance: &str,
     schema: RecordSchemaId,
-    stored: Vec<(Vec<u8>, Vec<u8>)>,
+    stored: Vec<Row>,
     f: ChainFraming,
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut chains: BTreeMap<String, Vec<(Vec<u8>, Vec<u8>)>> = BTreeMap::new();
+) -> Vec<Row> {
+    let mut chains: BTreeMap<String, Vec<Row>> = BTreeMap::new();
     for (key, body) in stored {
         if body.is_empty() {
             continue;

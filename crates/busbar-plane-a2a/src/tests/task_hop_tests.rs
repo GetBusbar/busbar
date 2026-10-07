@@ -546,6 +546,9 @@ fn every_spelling_of_the_callback_is_found_so_every_spelling_is_guarded() {
     // The floor judges what was found: a plaintext callback is refused through each spelling.
     for (label, envelope) in spellings("http://hook.example/a") {
         let mut desk = desk();
+        // The host judge's verdict on a plaintext URL (the `DEST_PLAINTEXT` row above): the
+        // desk's default verdict admits everything, so it must say what the host says here.
+        desk.verdict = DEST_PLAINTEXT;
         let (status, code, message) = refusal_of(opened(&mut desk, &envelope, ALICE));
         assert_eq!((status, code), (400, -32602), "{label}");
         assert!(message.contains("must be https"), "{label}: {message}");
