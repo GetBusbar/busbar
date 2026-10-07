@@ -905,6 +905,57 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
     }
 }
 
+/// A LINKED DECLARES THAT STATES `needs` BOOTS (ARCHITECT ruling (b), 2026-10-07): a networked
+/// plugin's `declares.json` states `needs` for the conformance suite and the fleet render, and the
+/// root reads a linked export row's `DECLARES` through the one reader of a declares document, which
+/// checks and drops it. Over the real linked export doors, each row restated with `needs` reads to
+/// the same manifest section as without and links into the registry. RED ARM: a malformed `needs`
+/// refuses the rows, naming the plugin.
+#[test]
+fn a_linked_export_declares_stating_needs_boots() {
+    let doors = crate::LINKED.export_doors;
+    assert!(!doors.is_empty(), "the build links export doors");
+    let restated = |needs: &str| -> Vec<crate::root::linked::LinkedDoorExport> {
+        doors
+            .iter()
+            .map(|d| {
+                let mut doc: serde_json::Value =
+                    serde_json::from_str(d.declares).expect("the linked row's declares is JSON");
+                doc["needs"] = serde_json::from_str(needs).expect("a needs value");
+                crate::root::linked::LinkedDoorExport {
+                    declares: Box::leak(doc.to_string().into_boxed_str()),
+                    ..*d
+                }
+            })
+            .collect()
+    };
+    let plain = linked_exports(doors).expect("the linked export rows");
+    let networked = linked_exports(&restated(r#"["http", "tcp"]"#))
+        .expect("a linked declares stating `needs` reads");
+    assert_eq!(
+        networked
+            .iter()
+            .map(|p| &p.manifest.declares)
+            .collect::<Vec<_>>(),
+        plain
+            .iter()
+            .map(|p| &p.manifest.declares)
+            .collect::<Vec<_>>(),
+        "the manifest section carries no needs"
+    );
+    PluginRegistry::empty()
+        .link(networked)
+        .expect("the rows link: the boot proceeds");
+    // RED ARM: a malformed `needs` refuses the rows, by name.
+    let Err(refused) = linked_exports(&restated(r#"["gopher"]"#)) else {
+        panic!("a `needs` no framer serves must refuse the rows");
+    };
+    assert!(
+        refused.contains(doors[0].name) && refused.contains("gopher"),
+        "{refused}"
+    );
+}
+
 /// THE HOST'S METRIC CATALOG CANNOT DRIFT (K9a S1). Every `busbar_*` series constant the host's
 /// metric modules define is in [`HOST_SERIES`], so a first-party plugin's claim on one is refused;
 /// and a derived histogram series is the host's too. RED: drop an entry from the list and the

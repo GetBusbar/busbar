@@ -665,6 +665,29 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
     assert_eq!(status, StatusCode::OK, "and is served");
 }
 
+/// A linked plane door's `declares` row that states `needs` (the conformance suite's and the fleet
+/// render's) still reads its breaker fact: the root reads the row through the one reader of a
+/// declares document, which checks and drops `needs` (ARCHITECT ruling (b)). RED ARM: a malformed
+/// `needs` is refused, naming the row.
+#[test]
+fn a_plane_declares_stating_needs_still_reads_its_breaker_fact() {
+    let stated = declaring(r#"{"needs":["tcp"],"breaker":{"bench_below_trip_threshold":false}}"#);
+    assert_eq!(
+        crate::root::linked::door_breaker(&stated, None, &decisions_name())
+            .expect("the fact reads beside `needs`"),
+        Some(crate::root::loader::sign::BreakerDecl {
+            bench_below_trip_threshold: false
+        })
+    );
+    let refused = crate::root::linked::door_breaker(
+        &declaring(r#"{"needs":"tcp"}"#),
+        None,
+        &decisions_name(),
+    )
+    .expect_err("a `needs` that is not a list");
+    assert!(refused.contains("busbar-plane-decisions"), "{refused}");
+}
+
 /// ABSENT, THE DEFAULT HOLDS: a door plane whose `declares` states no breaker fact (or that has no
 /// `declares` row at all, as no door in the shipped table has) keeps the host's default cell: one
 /// transient failure benches the sole member for its cooldown, so the next call is refused without

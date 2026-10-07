@@ -115,7 +115,8 @@ const FILE_CARRIES: [u8; 1] = [ExportStream::Logs as u8];
 /// The FILE sink's own manifest declaration (its `declares.json`): its series, its codes and its
 /// one destination, `path`.
 fn file_declaration() -> Declares {
-    serde_json::from_str(busbar_export_file::DECLARES).expect("the file sink's declaration parses")
+    Declares::from_declares_json(busbar_export_file::DECLARES.as_bytes())
+        .expect("the file sink's declaration parses")
 }
 
 /// [`file_declaration`] without its series. A first-party series is granted to ONE plugin per
@@ -130,7 +131,7 @@ fn file_declares() -> Declares {
 
 /// The WEBHOOK sink's own manifest declaration, without its series (as [`file_declares`]).
 fn webhook_declares() -> Declares {
-    let declared: Declares = serde_json::from_str(busbar_export_webhook::DECLARES)
+    let declared = Declares::from_declares_json(busbar_export_webhook::DECLARES.as_bytes())
         .expect("the webhook sink's declaration parses");
     Declares {
         metrics: Vec::new(),

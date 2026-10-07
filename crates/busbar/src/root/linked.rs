@@ -231,7 +231,7 @@ pub fn linked_exports(
     doors: &[LinkedDoorExport],
 ) -> Result<Vec<crate::root::loader::LinkedPlugin>, String> {
     let manifest = |name: &str, alias: &str, declares: &str| {
-        let declares = serde_json::from_str(declares)
+        let declares = crate::root::loader::sign::Declares::from_declares_json(declares.as_bytes())
             .map_err(|e| format!("linked export '{name}': its declares section: {e}"))?;
         Ok::<_, String>(crate::root::loader::sign::Manifest {
             name: name.into(),
@@ -1217,8 +1217,8 @@ pub fn door_breaker(
         if name != plane {
             continue;
         }
-        let declares: crate::root::loader::sign::Declares =
-            serde_json::from_str(json).map_err(|e| {
+        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
+            .map_err(|e| {
                 format!("plugin '{row}' states a `declares` section that does not read: {e}")
             })?;
         return Ok(declares.breaker);
