@@ -325,6 +325,26 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
     assert_eq!(g.requests(), 3, "only the parent");
 }
 
+/// THE IN-SESSION SERVICES THROUGH THE ONE TABLE (U22): a dropped-in plane's unit calls
+/// `content.scan`, `hook.call` (a gate, then a rewrite) and `verify.lookup` on its own ticket. The
+/// unit's route leg stated its hook stage, so each is served (none refused as unbound): with no hook
+/// bound the content passes, the gate passes and the chain is unchanged; the verify cache, empty,
+/// makes the caller its leader.
+#[tokio::test]
+async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-money-services", true) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=0 gate=0 rewrite=0 verify=2")
+    );
+    assert_eq!(g.money.open_units(), 0);
+}
+
 /// BUDGET EXHAUSTION MID-NEST: the parent is admitted while its key's budget holds one more fee;
 /// that fee spends it, so the child the parent then nests is refused over budget at its own
 /// admission (one admission chain), charged nothing, and the parent is handed the refusal.

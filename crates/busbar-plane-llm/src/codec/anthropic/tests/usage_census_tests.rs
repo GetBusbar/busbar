@@ -12,24 +12,32 @@
 
 use super::super::proto_codec::ProtocolReader;
 use super::AnthropicReader;
-use crate::codec::usage_census::{bump, class_of, ledgered, lock_counts, moved, Ledgered};
+use crate::codec::usage_census::{
+    at, bump, class_of, ledgered, lock_counts, moved, slot, Ledgered, CR, CW, IN, NONE, OUT,
+};
 
 /// What each Anthropic `usage` count IS, as the move one more of it makes on the ledgered units.
 /// The four totals are the reserved token classes. A web search is one billed search, the open
 /// class `search_units`. The 5m/1h tiers are slices of `cache_creation_input_tokens` and the
 /// thinking count a slice of `output_tokens`, so neither moves a unit of its own (the per-TTL rate
-/// split is escalated, A-F1). Anthropic charges no per-fetch fee (fetched content bills as the input
-/// tokens it already is), so `web_fetch_requests` is no unit.
+/// split is escalated, A-F1). A web fetch is the open class `web_fetch_requests` (owner LEDGER-100:
+/// every reported unit is a ledger line; the operator's card prices it).
 const ANTHROPIC_COUNT_CLASSES: &[(&str, Ledgered)] = &[
-    ("input_tokens", [1, 0, 0, 0, 0]),
-    ("output_tokens", [0, 1, 0, 0, 0]),
-    ("cache_read_input_tokens", [0, 0, 1, 0, 0]),
-    ("cache_creation_input_tokens", [0, 0, 0, 1, 0]),
-    ("cache_creation.ephemeral_5m_input_tokens", [0, 0, 0, 0, 0]),
-    ("cache_creation.ephemeral_1h_input_tokens", [0, 0, 0, 0, 0]),
-    ("output_tokens_details.thinking_tokens", [0, 0, 0, 0, 0]),
-    ("server_tool_use.web_fetch_requests", [0, 0, 0, 0, 0]),
-    ("server_tool_use.web_search_requests", [0, 0, 0, 0, 1]),
+    ("input_tokens", at(IN, 1)),
+    ("output_tokens", at(OUT, 1)),
+    ("cache_read_input_tokens", at(CR, 1)),
+    ("cache_creation_input_tokens", at(CW, 1)),
+    ("cache_creation.ephemeral_5m_input_tokens", NONE),
+    ("cache_creation.ephemeral_1h_input_tokens", NONE),
+    ("output_tokens_details.thinking_tokens", NONE),
+    (
+        "server_tool_use.web_fetch_requests",
+        at(slot("web_fetch_requests"), 1),
+    ),
+    (
+        "server_tool_use.web_search_requests",
+        at(slot("search_units"), 1),
+    ),
 ];
 
 /// A turn that reports every count, so each is measured against a realistic neighbourhood.
@@ -110,7 +118,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
                 moved(*a, *b),
                 class.map(|c| 7 * c),
                 "{path}: 7 more `usage.{field}` must move (input, output, cache read, cache write, \
-                 search_units) by its class"
+                 every open class) by its class"
             );
         }
     }
@@ -131,7 +139,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
             moved(streamed(&usage), before),
             class.map(|c| 7 * c),
             "stream: 7 more `message_delta.usage.{field}` must move (input, output, cache read, \
-             cache write, search_units) by its class"
+             cache write, every open class) by its class"
         );
     }
 }
@@ -167,4 +175,27 @@ fn web_searches_ledger_as_search_units_and_none_is_no_row() {
             .contains_key(crate::codec::ir::rerank::SEARCH_UNITS_CLASS),
         "a zero search count is no search_units row"
     );
+}
+
+/// A turn's web fetches reach the ledger as exactly one `web_fetch_requests` line on every read
+/// path (buffered, truncated, stream), beside its searches and its tokens, and move no other class
+/// (owner LEDGER-100). RED before this lane: the reader did not read the count at all.
+#[test]
+fn web_fetches_ledger_as_web_fetch_requests_on_every_path() {
+    let usage = base_usage();
+    let fetch = slot("web_fetch_requests");
+    let [buffered, truncated] = buffered_and_truncated(&usage);
+    let streamed = streamed(&usage);
+    for (path, l) in [
+        ("buffered", buffered),
+        ("truncated", truncated),
+        ("stream", streamed),
+    ] {
+        assert_eq!(l[fetch], 1, "{path}: 1 web fetch ledgered");
+        let lines = l[4..].iter().filter(|n| **n != 0).count();
+        assert_eq!(
+            lines, 2,
+            "{path}: searches and fetches, one line each: {l:?}"
+        );
+    }
 }
