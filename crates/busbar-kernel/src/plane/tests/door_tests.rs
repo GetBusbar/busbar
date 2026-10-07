@@ -238,6 +238,7 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
             serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
         ),
         facing: (reg.facing)(b"{}", b"", Some("https://gw.example")).expect("faces"),
+        opened: true,
     };
     assert_eq!(
         (decl.claims)(&slot),
@@ -333,4 +334,94 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     let plain = fold(registration("door-fold-owns-none", NAMED)).expect("folds");
     assert!(plain.owned_config_sections.is_empty());
     assert!(plain.parse_endpoint.is_none() && plain.lower_endpoint.is_none());
+}
+
+// ── /healthz WITH NO MODEL LANE (ARCHITECT 2026-10-07 K5-H1 ruling; PB-43, pending OWNER signature) ──
+//
+// A deployment with no model lane is ready iff a configured plane OPENED this generation. The open
+// is the one the kernel records when a door row builds its generation's slot (`DoorSlot::opened`),
+// driven here through the row's own `build` over a door whose open answers or refuses.
+
+/// The `/healthz` handler's status and body on a LANE-LESS fixture that configures exactly
+/// `sections`, with `door`'s slot for the generation built through its row's own `build` over a
+/// present section (none when `door` is `None`).
+fn lane_less_healthz(
+    door: Option<&'static PlaneDecl>,
+    sections: &[&'static str],
+) -> (u16, Vec<u8>) {
+    let seeded: Vec<&'static PlaneDecl> = door.into_iter().collect();
+    let _isolated = crate::plane::registry::TestRegistryIsolation::seeded(&seeded);
+    let mut fixture = crate::test_support::TestApp::new().plane_sections(sections);
+    if let Some(decl) = door {
+        let section = DoorSection::new(
+            decl.config_section,
+            serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+        );
+        let slot = (decl.build)(&BuildCtx {
+            endpoint_slot: None,
+            agent_defs: &(),
+            tool_defs: &section,
+            public_url: None,
+            prior: None,
+        })
+        .expect("a configured door builds its generation's slot");
+        fixture.install_plane_runtime(decl.key, slot);
+    }
+    let app = fixture.build();
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let resp = crate::endpoints::healthz(crate::state::CurrentApp(app)).await;
+            let status = resp.status().as_u16();
+            let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+            (status, body.to_vec())
+        })
+}
+
+/// A door whose open answers for the generation.
+fn opening_door(key: &'static str, section: &'static str) -> &'static PlaneDecl {
+    fold(registration(key, section)).expect("folds")
+}
+
+/// A door whose open REFUSES for the generation (its section passed its `validate`).
+fn refusing_door(key: &'static str, section: &'static str) -> &'static PlaneDecl {
+    let mut reg = registration(key, section);
+    reg.facing = Arc::new(|_: &[u8], _: &[u8], _: Option<&str>| {
+        Err("the door refused to open this generation".to_string())
+    });
+    fold(reg).expect("folds")
+}
+
+/// RED on the 1.5.5 rule (503 whenever there is no lane): a tools-only deployment whose plane
+/// opened is ready.
+#[test]
+fn healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened() {
+    let door = opening_door("door-healthz-opened", "door_healthz_opened");
+    assert_eq!(
+        lane_less_healthz(Some(door), &[door.config_section]),
+        (200, b"ok".to_vec()),
+        "a lane-less deployment whose configured plane opened this generation is ready"
+    );
+}
+
+/// The same deployment, its plane's generation refused to open: not ready, in 1.5.5's words.
+#[test]
+fn healthz_with_no_model_lane_is_unready_when_the_planes_open_refused() {
+    let door = refusing_door("door-healthz-refused", "door_healthz_refused");
+    assert_eq!(
+        lane_less_healthz(Some(door), &[door.config_section]),
+        (503, b"no usable lanes".to_vec()),
+        "a plane that is configured but did not open makes nothing ready"
+    );
+}
+
+/// An empty deployment (no plane configured, no lane) stays unready, as in 1.5.5.
+#[test]
+fn healthz_with_no_plane_configured_stays_unready() {
+    assert_eq!(
+        lane_less_healthz(None, &[]),
+        (503, b"no usable lanes".to_vec()),
+        "with nothing configured /healthz answers 1.5.5's 503"
+    );
 }

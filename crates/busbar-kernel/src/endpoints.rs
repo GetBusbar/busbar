@@ -281,11 +281,31 @@ pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) ->
     // default cell AND every per-pool cell: production routes through NAMED pools whose per-pool cells
     // trip independently, so reading only the default `""` cell would report 200 while every pool lane
     // is circuit-broken (the default cell never moves for pool-routed traffic).
-    if (0..app.engine_tables_view().lane_count()).any(|i| app.store.is_ready_any_cell(i, t)) {
+    //
+    // A deployment with NO model lane (ARCHITECT 2026-10-07 K5-H1 ruling, PB-43, pending OWNER
+    // signature) is ready iff a configured plane OPENED this generation; with no plane configured it
+    // stays unready, as 1.5.5. A deployment with lanes is judged by its lanes alone.
+    let lanes = app.engine_tables_view().lane_count();
+    let ready = if lanes == 0 {
+        a_plane_opened(&app)
+    } else {
+        (0..lanes).any(|i| app.store.is_ready_any_cell(i, t))
+    };
+    if ready {
         (StatusCode::OK, "ok").into_response()
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "no usable lanes").into_response()
     }
+}
+
+/// Whether any configured non-model plane's generation opened: its runtime slot was built for this
+/// generation and, for a door plane, its open answered ([`crate::plane::door::opened`]).
+fn a_plane_opened(app: &crate::state::App) -> bool {
+    crate::plane::registry::plane_decls()
+        .iter()
+        .filter(|d| !d.fallback && app.plane_configured(d))
+        .filter_map(|d| app.plane_slot(d.key))
+        .any(|slot| crate::plane::door::opened(slot.as_ref()))
 }
 
 // `tests` (the `/stats`/`/v1/models` topology suite) MOVED to `tests/endpoints_cross_plane.rs` (the
