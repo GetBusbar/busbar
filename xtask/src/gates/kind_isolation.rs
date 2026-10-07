@@ -7194,26 +7194,27 @@ impl Gate for KindIsolationGate {
                         "fn planted_witness() {\n    let _ = super::both_ways::hook_fixture::open;\n}\n",
                     ),
                 );
-                ov.set(
-                    REGISTRY_FILE,
-                    format!(
-                        "{}\n\n[[dep]]\nfrom    = \"busbar-plugin-loader\"\nto      = \
-                         \"busbar-hook-ranking\"\nhalf    = \"{}\"\ncount   = \"1\"\nverdict = \
-                         \"not-allowed\"\ncite    = \"planted by the self-test\"\nwhy     = \"the \
-                         hook kind's both-ways witness\"\ndrain   = \"none\"\n",
-                        cx.read(REGISTRY_FILE).unwrap_or_default().trim_end(),
-                        if dev { "test" } else { "shipped" }
-                    ),
-                );
-                if extra_user {
-                    let t = "crates/plugin-loader/src/tests/hook_door_tests.rs";
+                // A granted test edge carries no row (it is not measured); the shipped half's row
+                // is the one a `[[dep]]` may RECORD and never INTRODUCE.
+                if !dev || extra_user {
                     ov.set(
-                        t,
-                        manifest_plus(
-                            cx,
-                            t,
-                            "fn planted_user() {\n    let _ = super::both_ways::hook_fixture::open;\n}\n",
+                        REGISTRY_FILE,
+                        format!(
+                            "{}\n\n[[dep]]\nfrom    = \"busbar-plugin-loader\"\nto      = \
+                             \"busbar-hook-ranking\"\nhalf    = \"{}\"\ncount   = \"1\"\nverdict = \
+                             \"not-allowed\"\ncite    = \"planted by the self-test\"\nwhy     = \
+                             \"the hook kind's both-ways witness\"\ndrain   = \"none\"\n",
+                            cx.read(REGISTRY_FILE).unwrap_or_default().trim_end(),
+                            if dev { "test" } else { "shipped" }
                         ),
+                    );
+                }
+                // The fixture named from the loader's SHIPPED source: the loader linking the
+                // plugin, which the FIXTURES grant (:3870 (3)) does not cover.
+                if extra_user {
+                    ov.set(
+                        "crates/plugin-loader/src/planted_hook_user.rs",
+                        "pub fn planted_user() {\n    let _ = busbar_hook_ranking::door;\n}\n",
                     );
                 }
                 ov
@@ -7221,8 +7222,8 @@ impl Gate for KindIsolationGate {
             report.push(prove_rows_green(
                 cx,
                 subject,
-                "the loader's dev-edge to its declared cold-kind both-ways fixture, used only by \
-                 its conformance test, is #2's witness and not a new forbidden edge",
+                "the loader's dev-edge to a real plugin its tests alone use is the FIXTURES grant \
+                 (:3870 (3)): no edge, no row, not a new forbidden edge",
                 &[ROW_TEST_DEPS],
                 witness(true, false),
             ));
@@ -7239,12 +7240,12 @@ impl Gate for KindIsolationGate {
                     "busbar-plugin-loader -> busbar-hook-ranking",
                 ],
             ));
-            // …and a fixture any test other than a conformance test uses is a plugin the tooling
-            // tests against, not a witness.
+            // …and a fixture the loader's SHIPPED source names is the loader linking a plugin, which
+            // no ruling grants: measured, and new.
             report.push(prove_rows_red(
                 cx,
                 subject,
-                "a cold-kind fixture used outside `*_conformance_tests` is not a witness",
+                "a fixture plugin named from the loader's shipped source is not granted",
                 &[ROW_TEST_DEPS],
                 witness(true, true),
                 &[
