@@ -6,7 +6,6 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
     "crates/busbar-llm",
-    "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-contract",
@@ -24,14 +23,8 @@ members = [
     "crates/busbar-plane-streaming",
     "crates/busbar-plane-decisions",
     "crates/plugin-loader",
-    "crates/plane-example",
-    "crates/hooks-ranking",
     "crates/store-memory",
     "crates/busbar-transport-stdio",
-    "crates/busbar-auth-header",
-    "crates/busbar-auth-sigv4",
-    "crates/busbar-auth-oauth",
-    "crates/busbar-auth-webhook-signature",
     "testing/ws-conformance/subject",
     "xtask",
 ]
@@ -100,8 +93,19 @@ busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws"
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "89d08ebcb91e5b2d4001b667fba151d9bc09d22d" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "89d08ebcb91e5b2d4001b667fba151d9bc09d22d" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "86987e4030e6ed3ccae51f547964e4e94ff902c2" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "86987e4030e6ed3ccae51f547964e4e94ff902c2" }
+# THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
+# (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "6ede2a5b1a27e6a265e3a76db7e5749cb5abce8a" }
+# THE OAUTH MINTING STYLES (kind: auth): a dev edge only — the root's door_steps tests mint a member's
+# credential through the real plugin's door. One pin.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "b7d15c7137e890072a4968abc544b0bbfc107f67" }
+# THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
+# axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
+# build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
+busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
+fixture-hook = { package = "busbar-hook-ranking", git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all
@@ -254,31 +258,8 @@ proptest = "1"
 # DER minting on ring only. `pem` (and its base64 0.23) is a test-only need: the members whose tests
 # write PEM add the feature on their dev/test-support declaration.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
-# ── MCP, from the specification authors' own crate ─────────────────────────────────────────────
-# `rmcp` implements the stable `2026-07-28` revision — precisely the one busbar targets — while
-# staying compatible with `2025-11-25` and earlier.
-#
-# `default-features = false` is LOAD-BEARING here, unlike `oauth-as` above where the crate's default
-# set is already empty. rmcp's defaults pull `server`, `macros`, `schemars`, `base64`, `uuid` and
-# `transport-async-rw`; what busbar wants is the protocol VOCABULARY and nothing else. Features are
-# turned on per member, one at a time, each with a reason.
-#
-# THE TWO FAMILIES THAT MUST NEVER BE ENABLED — stated here because a feature list is exactly where
-# this slips in unnoticed:
-#   auth, auth-client-credentials-jwt
-#       a SECOND OAuth implementation, beside `oauth_as/` and the `PlaneAdmission` verifier. Two
-#       implementations of one security concern that can disagree is the class behind three of this
-#       release's security defects. rmcp's auth is client-side helper code written for an agent
-#       author; busbar is a resource server AND an authorization server. Different problems.
-#   reqwest*, transport-streamable-http-*, transport-child-process, transport-io
-#       a second HTTP client and a second transport, both of which bypass the dispatch-time
-#       resolve-then-pin in busbar's own — one DNS resolution per hop, every returned address
-#       judged, the connection made to the address that was judged. Same objection recorded against
-#       `a2a-client-lf`, same answer.
-#
-# Cost, measured with `cargo tree -e normal`: +18 crate names in the lock, **+3 in the binary**
-# (`rmcp`, `chrono`, `pastey`).
-rmcp = { version = "3.1.2", default-features = false }
+# `rmcp` (MCP's protocol-vocabulary crate) is STRUCK: its one member, `busbar-mcp`, is deleted (P3
+# DEL-MCP, ARCHITECT 2026-10-05), and `workspace-deps:no-orphans` refuses a pin nothing inherits.
 # THE LINE COUNTER'S PARSER, and the only reason either of these is a direct dependency of anything
 # in this workspace. `cargo xtask loc` is the ONE instrument that answers "how many lines of
 # production Rust is this tree", and the three wrong answers it replaces were each a regex or a
@@ -422,3 +403,15 @@ strip = true         # strip symbols from the shipped binary (much smaller; set 
 # panic is left at the default `unwind` ON PURPOSE: a panic in one request task must unwind that
 # task, not abort the whole gateway. `panic = "abort"` would trade per-request isolation for a
 # little size — the wrong trade for a service in the request path.
+
+# xtask, OPTIMIZED IN EVERY DEV BUILD (ARCHITECT 2026-10-07, p6-selftest-memo). `cargo xtask` is
+# `cargo run --package xtask` under the dev profile, so CI's gates and self-tests ran xtask at
+# opt-level 0. Measured on busbar 214678af59, Latchkey large (8 cores), the same four batteries at
+# opt-level 0 -> 2: kind-isolation 925 s -> 170 s, kind-isolation-ship 631 s -> 123 s, ship-ready
+# 127 s -> 23 s, construction 101 s -> 19 s, every per-case verdict line byte-identical; building
+# xtask 67 s -> 71 s. Only xtask itself: its dependencies keep the dev profile. debug-assertions and
+# overflow-checks stay on (they follow the profile, not the opt-level), so the checks a dev build
+# makes are the checks it still makes. The self-test budgets (xtask/src/gates/mod.rs, TAKEN and
+# BUDGET) are measured at this opt-level.
+[profile.dev.package.xtask]
+opt-level = 2

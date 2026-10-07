@@ -125,6 +125,11 @@ pub trait ServicesDouble: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
+    /// `trust.state`. Unserved: REFUSED.
+    fn trust_state(&self, _caller: &Caller, _counterparty: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+
     /// `trust.serves`. Unserved: REFUSED.
     fn trust_serves(
         &self,
@@ -154,6 +159,11 @@ pub trait ServicesDouble: Send + Sync {
 
     /// `entitlement.check`. Unserved: REFUSED.
     fn entitlement_check(&self, _caller: &Caller, _unit: Option<u64>, _target: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+
+    /// `session.emit`. Unserved (a host that holds no carrier session): REFUSED.
+    fn session_emit(&self, _caller: &Caller, _session: u64, _bytes: &[u8]) -> Stored {
         Stored::refused(UNSERVED)
     }
 
@@ -314,6 +324,10 @@ impl<T: ServicesDouble> HostServices for T {
         ServicesDouble::trust_decide(self, caller, key, expected, approve)
     }
 
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        ServicesDouble::trust_state(self, caller, counterparty)
+    }
+
     fn trust_serves(
         &self,
         caller: &Caller,
@@ -322,6 +336,10 @@ impl<T: ServicesDouble> HostServices for T {
         digest: Option<&str>,
     ) -> Stored {
         ServicesDouble::trust_serves(self, caller, counterparty, item, digest)
+    }
+
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        ServicesDouble::session_emit(self, caller, session, bytes)
     }
 
     fn trust_due(&self, caller: &Caller) -> Stored {

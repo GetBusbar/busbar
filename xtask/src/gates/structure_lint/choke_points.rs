@@ -283,7 +283,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             id: "D-openapi-taxonomy".into(),
             tag: "TAXONOMY-BYPASS".into(),
             owner: "crates/busbar-core-admin/src/v1/contract/taxonomy.rs (declared_errors)".into(),
-            class_test: "crates/busbar-core-admin/src/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit".into(),
+            class_test: "crates/busbar/tests/admin_cross_plane/keys.rs::declared_error_set_is_exactly_what_the_handlers_emit".into(),
             remedy: "declare the ErrKind in contract::taxonomy::declared_errors".into(),
             rules: Vec::new(),
             why: "openapi.json must be a PROJECTION of one declaration, never a hand-maintained parallel list".into(),
@@ -321,13 +321,16 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "H-operator-authored-ask".into(),
             tag: "ASK-NOT-OPERATOR-AUTHORED".into(),
-            owner: format!("{mcp}/config.rs (AskEntryCfg, deserialised from operator YAML) + {mcp}/callerask.rs (the private `authored` module, sole constructor)"),
-            class_test: format!("{mcp}/tests/callerask_tests.rs::the_asks_params_are_the_operators_bytes_and_nothing_else"),
+            owner: format!("crates/busbar-plane-mcp/src/tools_config.rs (AskEntryCfg, deserialised from operator YAML; the tools: grammar moved into the plane, MCP-1 M1a) + {mcp}/ask.rs (the private `authored` module, sole constructor)"),
+            // P3 DEL-MCP (ARCHITECT 2026-10-05): the engine's `callerask.rs` and its class test are
+            // deleted; the door carries the same `authored` module (`ask.rs`) and the same test by
+            // name in `tests/ask.rs`.
+            class_test: format!("{mcp}/tests/ask.rs::the_asks_params_are_the_operators_bytes_and_nothing_else"),
             remedy: "let the operator write the ask: an AskEntryCfg is deserialised, never assembled".into(),
             rules: vec![BanRule::new(
                 r"AskEntryCfg[[:space:]]*\{",
                 "an AskEntryCfg built in code rather than deserialised from operator configuration",
-                &[format!("{mcp}/config.rs")],
+                &["crates/busbar-plane-mcp/src/tools_config.rs".to_string()],
             )],
             why: "the text and schema a caller is shown when busbar asks it to confirm something must be bytes the operator wrote; the moment a value can flow from an upstream response into that ask, busbar is laundering an upstream demand for authority under its own name".into(),
         },
@@ -338,9 +341,13 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "I-trust-serve-derivation".into(),
             tag: "TRUST-COMPARISON-BYPASS".into(),
-            owner: format!("{substrate}/trust/mod.rs (Approval::serves)"),
-            class_test: format!("{mcp}/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered"),
-            remedy: "ask crate::trust::Approval::serves; never re-derive the answer from the raw registration fields".into(),
+            // ARCHITECT Q3: the trust decision is the kernel's Approve. A plane states its facts
+            // (item approvals as a declared trust key, sightings) and asks `trust.serves`, which is
+            // `TrustBook::judge`; the engine's routed gate and its class test are deleted, and the
+            // class test is ported to the kernel against a neutral double of the declared facts.
+            owner: format!("{substrate}/trust/book.rs (TrustBook::judge, the kernel's Approve; Approval::serves for a whole-catalogue pin)"),
+            class_test: format!("{substrate}/trust/tests/serve_gate_tests.rs::the_kernels_approve_answers_exactly_what_the_deleted_inline_decision_answered"),
+            remedy: "state the facts and ask the kernel (trust.serves / TrustBook::judge, or Approval::serves); never re-derive the answer from the raw registration fields".into(),
             rules: vec![
                 BanRule::new(
                     r"schema_hash[[:space:]]*\.is_some",
@@ -386,7 +393,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             id: "E-core-route-auth".into(),
             tag: "ROUTE-AUTH-BYPASS".into(),
             owner: format!("{core}/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)"),
-            class_test: "crates/busbar-kernel/tests/plane_integration.rs::an_audience_bound_token_is_confined_to_its_door_plane".into(),
+            class_test: "crates/busbar/tests/plane_integration.rs::an_audience_bound_token_is_confined_to_its_door_plane".into(),
             remedy: "mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler".into(),
             rules: Vec::new(),
             why: "a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route".into(),

@@ -102,6 +102,7 @@ const ROWS: &[Row] = &[
         };
         s.trust_decide(&caller(), key, Some("digest"), true)
     }),
+    ("trust_state", |s, _| s.trust_state(&caller(), "peer")),
     ("trust_serves", |s, _| {
         s.trust_serves(&caller(), "peer", Some("item"), None)
     }),
@@ -111,6 +112,9 @@ const ROWS: &[Row] = &[
     }),
     ("entitlement_check", |s, _| {
         s.entitlement_check(&caller(), Some(1), "model:m")
+    }),
+    ("session_emit", |s, _| {
+        s.session_emit(&caller(), 1, b"bytes")
     }),
     ("random_fill", |s, _| s.random_fill(16)),
     ("records_secret", |s, l| {
