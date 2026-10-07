@@ -50,9 +50,7 @@ use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::services::{HostServices, Served, ServiceStore};
-use super::ticket::{
-    decode, encode, recycled_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
-};
+use super::ticket::{decode, encode, recycled_generation, WakeRoute, MAX_INDEX, MAX_WORKERS};
 use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
@@ -146,7 +144,6 @@ pub(crate) struct Stats {
 pub(crate) struct Env {
     pub(crate) budgets: Budgets,
     pub(crate) stats: Arc<Stats>,
-    pub(crate) completions: Arc<Completions<Vec<u8>>>,
     /// The host services' stored results.
     pub(crate) services: Arc<ServiceStore>,
     /// What the host services are served from; `None` = the host bound none, and every service
@@ -806,7 +803,6 @@ impl Worker {
 
     fn recycle_now(&self, st: &mut WorkerState, idx: u32, env: &Env) {
         let e = &mut st.entries[idx as usize];
-        env.completions.forget(self.ticket(idx, e.generation));
         env.services.forget(self.ticket(idx, e.generation));
         let ticket = self.ticket(idx, e.generation);
         for id in e.conns.drain(..) {
@@ -1331,7 +1327,6 @@ impl Dispatcher {
         let env = Arc::new(Env {
             budgets: config.budgets,
             stats: Arc::default(),
-            completions: Arc::default(),
             services: Arc::default(),
             provider,
             runtime: std::sync::OnceLock::new(),
@@ -1380,11 +1375,6 @@ impl Dispatcher {
             live_reapers: super::load::live_reapers(),
             driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
         }
-    }
-
-    /// The completion handles of this dispatcher's tickets.
-    pub fn completions(&self) -> &Completions<Vec<u8>> {
-        &self.pool.env.completions
     }
 
     /// The host services' stored results.

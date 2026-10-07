@@ -10,8 +10,9 @@
 //! * [`plugin`] — [`plugin::Plugin`]`<K>`: the instance handle, the one crossing and its outcome
 //!   authority (the return value decides; a mirror that disagrees, or an unknown byte, is FAULT),
 //!   the #85 envelope ingest, and `max_inflight`.
-//! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, the host's
-//!   `wake`, and completion handles `(ticket, seq)`.
+//! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, and the
+//!   host's `wake`. A service's result under its completion handle `(ticket, seq)` is held by
+//!   [`services::ServiceStore`].
 //! * [`answer`] — one answer as a kind's validator reads it ([`Kind::check`]).
 //! * [`validate`] — the mechanism's own checks of every `out` head before it is read (its size,
 //!   the error text, the #85 arrays); a violation is FAULT. A kind's reply fields are checked by
@@ -69,7 +70,6 @@ pub use plugin::{
     MemberSecretFn, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
-pub use ticket::{Completions, Redeem};
 pub use validate::Violation;
 pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply};
 

@@ -60,8 +60,6 @@ pub use busbar_contract::services::{
 
 use super::ticket::{decode, InstanceWake, WakeRoute};
 
-/// The error text of a slot this host does not serve yet.
-pub const UNIMPLEMENTED: &str = busbar_contract::services::UNSERVED;
 /// The error text of a caller-scoped service called from an instance the host states no caller for.
 pub const NO_CALLER: &str = "no caller is bound to this instance";
 /// The error text of a claim with no time to live.
@@ -148,8 +146,8 @@ impl ServiceStore {
     }
 
     /// How many results the store holds.
-    #[must_use]
-    pub fn held(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
         self.lock().values().map(|held| held.entries.len()).sum()
     }
 }

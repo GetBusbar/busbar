@@ -133,7 +133,7 @@ impl HostServices for Provider {
 
     /// Not served by the double: refused, as the loader refuses a slot with no service.
     fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
-        Ran::Now(Stored::refused(UNIMPLEMENTED))
+        Ran::Now(Stored::refused(busbar_contract::services::UNSERVED))
     }
 
     fn trust_due(&self, c: &Caller) -> Stored {
@@ -647,7 +647,11 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         }
         // No slot of the table is left unserved.
         if !o.error.ptr.is_null() {
-            assert_ne!(error(&o), UNIMPLEMENTED, "service {service}");
+            assert_ne!(
+                error(&o),
+                busbar_contract::services::UNSERVED,
+                "service {service}"
+            );
         }
     }
 }

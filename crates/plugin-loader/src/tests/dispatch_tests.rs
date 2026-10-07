@@ -35,7 +35,7 @@ use crate::dispatch::load::validate_door;
 use crate::dispatch::{
     in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Budgets, Diagnostic,
     DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, Kind, LinkedRow, LoadError,
-    ManifestFacts, Metric, Plugin, Redeem, NO_BLOB,
+    ManifestFacts, Metric, Plugin, NO_BLOB,
 };
 
 /// The test kind's context: the Statement's `max_inflight`, as bound.
@@ -1255,31 +1255,6 @@ fn red_a_reload_drain_does_not_wait_on_a_pending_write_behind() {
         "the write-behind was never cancelled"
     );
     assert_eq!(count(&p, &sink).1, 1, "one cancel: the Call op's");
-}
-
-#[test]
-fn completion_handles_store_the_result_and_never_run_twice() {
-    let d = Dispatcher::new(config());
-    let t = d.mint(0).unwrap();
-    let c = d.completions();
-    assert!(
-        c.issue(Ticket::NONE).is_none(),
-        "a ticket-less call has no service to wait for"
-    );
-    let h = c.issue(t).unwrap();
-    let runs = std::sync::atomic::AtomicU32::new(0);
-    runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(c.redeem(h), Redeem::Waiting);
-    assert!(c.complete(h, b"row".to_vec()));
-    assert!(!c.complete(h, b"again".to_vec()), "a handle completes once");
-    assert_eq!(c.redeem(h), Redeem::Ready(b"row".to_vec()));
-    assert_eq!(c.redeem(h), Redeem::Ready(b"row".to_vec()));
-    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert_eq!(c.issue(t).unwrap().seq, 1);
-    d.recycle(t);
-    until("the recycle forgets the handles", || {
-        c.redeem(h) == Redeem::Unknown
-    });
 }
 
 /// Every door refusal, on copies of the real door with one field wrong.
