@@ -73,6 +73,14 @@ pub(crate) async fn exchange(
             Ok(v) => v,
             Err(e) => return refusal(e),
         };
+    // The identity provider that asserted the subject (the identifying module): the binding records
+    // it, and another provider asserting the same subject is refused.
+    let super::ChainVerdict::Identified {
+        module: provider, ..
+    } = &verdict
+    else {
+        return refusal(ExchangeError::Unauthorized);
+    };
 
     let Some(gov) = app.governance.clone() else {
         return refusal(ExchangeError::MintFailed(
@@ -83,7 +91,7 @@ pub(crate) async fn exchange(
     // The provisioner auto-creates the `user:<sub>` leaf under `team` on first exchange (limits from
     // the team's `child_default`) so the minted key is immediately usable, not a 429 MissingGroup.
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
+    let keys = DeterministicEd25519Keys::new(gov, provider.clone(), team, pools, provisioner);
     match issue_key(&keys, principal, ttl, false).await {
         Ok(issued) => {
             // SELF-CONTAINED response: include `base_url` (= the configured `public_url`, verbatim, no
