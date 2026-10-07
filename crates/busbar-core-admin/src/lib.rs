@@ -129,19 +129,16 @@ fn seam_mount(
 /// A `#[cfg(test)]` MODULE, not a bare `#[cfg(test)] fn`: this body is test-binary-only code, and the
 /// module is the form `plane-purity` reads as test scope.
 ///
-/// A `door:` row of the list is a plane served through its memory-ABI door only: its registry row
-/// is folded from its Statement (`fold_door`), as the composition root folds every door, and
-/// registered in the list's order (the planes' layering order).
+/// The roster also carries the DOOR row a shipped build folds beside its linked rows (DECL-FOLD):
+/// [`door_double`], the kernel's door fold over a double of the plane door that owns the fourth
+/// frozen named-definition section, registered after the linked rows as the composition root
+/// orders them. This crate links no loader (P2 D4: a cleanliness crate depends one way on the
+/// kernel), so it reads no door; the double states the door's facts as data, and the composition
+/// root's tests pin them to the linked door's Statement.
 #[cfg(test)]
 mod test_seams {
     include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
     include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
-
-    /// Every test-linked door plane's door, by its crate's label.
-    pub(crate) fn linked_doors(
-    ) -> &'static [(&'static str, busbar_contract::abi::mechanism::door::DoorFn)] {
-        TEST_LINKED_DOORS
-    }
 
     pub(crate) fn ensure_seam() {
         use busbar_kernel::test_support::seam::{register_test_plane_seam, test_plane_seams};
@@ -164,43 +161,26 @@ mod test_seams {
             for entry in TEST_LINKED {
                 register_test_plane_seam(entry);
             }
-            // In the list's order (the planes' layering order): each linked crate's own install,
-            // each door plane's registry row folded from its Statement, as the root folds a door.
-            let (mut seam, mut door) = (0, 0);
-            for &is_door in TEST_LINKED_ORDER {
-                if is_door {
-                    let (label, door_fn) = TEST_LINKED_DOORS[door];
-                    busbar_kernel::plane::registry::register_test_plane(fold_door(label, door_fn));
-                    door += 1;
-                } else {
-                    (TEST_LINKED[seam].install)();
-                    seam += 1;
-                }
+            // In the planes' layering order: each linked crate's own install, then the door row,
+            // folded as the root folds a door.
+            for entry in TEST_LINKED {
+                (entry.install)();
             }
+            busbar_kernel::plane::registry::register_test_plane(super::door_double::row());
             for seam in test_plane_seams() {
                 (seam.install)();
             }
             super::install();
         });
     }
-
-    /// A door plane's registry row: a probe of the door bound through the loader's one load
-    /// (`linked_probe`), its facts read as a registration and folded by the kernel
-    /// (`plane::door::fold`) — the path the composition root folds every door candidate by
-    /// (`root::linked::door_rows`).
-    fn fold_door(
-        label: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-    ) -> &'static busbar_kernel::plane::registry::PlaneDecl {
-        use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
-        let reg = registration(linked_probe(door, label))
-            .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"));
-        busbar_kernel::plane::door::fold(reg)
-            .unwrap_or_else(|e| panic!("the test-linked door `{label}` folds: {e}"))
-    }
 }
 #[cfg(test)]
 use test_seams::ensure_seam;
+
+/// The door row of the test roster and the instance serving its admin routes (see [`test_seams`]).
+#[cfg(test)]
+#[path = "tests/door_double.rs"]
+mod door_double;
 
 /// Build a `TestApp` after ensuring the process-wide test seams (planes, protocols, runtimes, mount
 /// seam) are installed — moved admin tests use this in place of `TestApp::new()` so the seams are in

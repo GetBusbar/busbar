@@ -26,10 +26,11 @@ path = "src/lib.rs"
 
 # THE LINKED TEST-SEAM LIST: the dev-dependency crates whose `testkit::TEST_SEAM` entry this crate's
 # unit tests register and loop (build.rs emits the table; the sources name none of these crates).
-# A `door:` row is a plane crate served through its memory-ABI door only: its registry row is folded
-# from its Statement, as the composition root folds it. The list is the install order.
+# The list is the install order. A plane served through its memory-ABI door only is no row here:
+# this crate links no loader (P2 D4), so its tests fold a door double's registration instead
+# (src/tests/door_double.rs), whose facts the composition root's tests pin to the linked door.
 [package.metadata.busbar]
-test-linked = ["busbar-llm", "busbar-mcp", "door:busbar-plane-a2a"]
+test-linked = ["busbar-llm", "busbar-mcp"]
 # THE TEST REGISTRY ROW for the operator credential: the auth plugin dev-dependency whose SDK boundary
 # this crate's unit tests link onto the auth axis (build.rs emits it; the sources name no auth plugin),
 # as the composition root links it into the shipped binary.
@@ -79,13 +80,6 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # testkits register the plane decls. NOTE: do NOT enable busbar-admin/test-support on these edges.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
-# THE A2A PLANE, through its memory-ABI door only (a `door:` row of `test-linked` above): a pure
-# plane crate (it names the contract alone), so no engine rides in.
-busbar-plane-a2a = { path = "../busbar-plane-a2a" }
-# The loader's ONE load, test-only: a `door:` row of `test-linked` is probed and its registration
-# read through it before the kernel folds it, as the composition root folds a door candidate. The
-# library itself takes no loader edge (P2 D4).
-busbar-plugin-loader = { path = "../plugin-loader" }
 # THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW (`test-operator-auth` above): the admin e2e tests
 # authenticate through the auth plugin the composition root links for it, from its own repo, at the
 # SAME pinned rev plugin-loader's both-ways proof drives. Dev-only: the library names no auth plugin.

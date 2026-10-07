@@ -15007,75 +15007,6 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on the kernel's serve
-/// table as the composition root publishes it (K-SERVE): the instance serving its stated admin
-/// routes for as long as the guard lives. The door is the one whose folded row owns `section`.
-struct PublishedDoor(String);
-
-impl Drop for PublishedDoor {
-    fn drop(&mut self) {
-        busbar_kernel::plane_driver::serve::withdraw(&self.0);
-    }
-}
-
-fn publish_door(section: &str, settings: &str) -> PublishedDoor {
-    use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
-    use busbar_plugin_loader::dispatch::{
-        load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
-    };
-    crate::ensure_seam();
-    let owner = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
-        .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let (instance, plane) = crate::test_seams::linked_doors()
-        .iter()
-        .find_map(|(label, door)| {
-            let row = LinkedRow::of(*door).ok()?;
-            let instance = format!("{label}-published");
-            let plane = load_linked::<Plane>(
-                &row,
-                Bind {
-                    instance: Arc::from(instance.as_str()),
-                    max_inflight_cap: 64,
-                    sink: Arc::new(NoSink),
-                    dispatcher: dispatcher.adopter(),
-                    conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
-                },
-            )
-            .ok()?;
-            (plane.served().section == owner.config_section).then_some((instance, plane))
-        })
-        .expect("the owning plane's door is test-linked");
-    let snapshot = open_door(&plane, settings.as_bytes(), b"", None).expect("the door opens");
-    let routes = snapshot
-        .admin_routes
-        .iter()
-        .map(|r| busbar_kernel::plane_driver::serve::ServeRoute {
-            verb: r.verb.clone(),
-            target: r.target.clone(),
-            flags: r.flags,
-            audit_verb: r.audit_verb.clone(),
-        })
-        .collect();
-    let audit_kind = plane.served().audit_kind.to_string();
-    let calls = Arc::new(
-        busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher, 0),
-    );
-    busbar_kernel::plane_driver::serve::publish(
-        busbar_kernel::plane_driver::serve::ServeTable {
-            instance: instance.clone(),
-            audit_kind,
-            calls,
-            caps: busbar_kernel::plane_driver::BufferCaps::default(),
-            routes,
-            records: None,
-        },
-        &[],
-    )
-    .expect("its admin routes publish");
-    PublishedDoor(instance)
-}
-
 /// A door verb's refusal, read: `status`, its taxonomy `code`, and the body.
 async fn door_refusal(
     r: reqwest::Response,
@@ -15089,22 +15020,24 @@ async fn door_refusal(
     body
 }
 
-/// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
-/// own `serve` op (ARCHITECT Q-L3B-VERBS): the `agents:` owner's instance, opened over the same
-/// `base-agent` registration the named-map fixture boots with and published as the root publishes
-/// it. The deleted engine's error-surface driver witnessed these; now the door does:
+/// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by a `serve`
+/// op (ARCHITECT Q-L3B-VERBS): the door row's instance, this binary's door double
+/// (`door_double::publish`), published over the same `base-agent` registration the named-map
+/// fixture boots with, as the root publishes a door's, and answering in the taxonomy the door's
+/// answers carry. This crate links no loader (P2 D4), so the linked door's own answers to the same
+/// requests (its words, its card look) are driven where the loader links: the composition root's
+/// `agent_door` cell `the_agent_doors_trust_verbs_refuse_in_their_declared_taxonomy`.
 /// * an unregistered name is `404 not_found` on `connect` and `approve` (before anything is read);
 /// * `approve` whose body is not the one-field `{"fingerprint": …}` document (an unknown field
 ///   beside it) is `400 invalid_request` under the MALFORMED-BODY condition, audited nowhere;
-/// * `approve` naming a fingerprint the endpoint does not serve is `400 invalid_request` under the
-///   INVALID-CONFIG condition: the instance is published with no host (no connector), so its card
-///   fetch cannot complete and the look reports the card unauthenticated, which no approval can
-///   agree with.
+/// * `approve` the instance cannot agree with is `400 invalid_request` under the INVALID-CONFIG
+///   condition: the double fetches no card, so it reports the card unauthenticated, which no
+///   approval can agree with.
 async fn drive_door_verb_errors() {
-    let _published = publish_door(
-        "agents",
-        r#"{"base-agent": {"url": "https://agents.example/planner", "pin": {"mechanism": "unpinned"}}}"#,
-    );
+    crate::ensure_seam();
+    let _published = crate::door_double::publish(&serde_json::json!({
+        "base-agent": {"url": "https://agents.example/planner", "pin": {"mechanism": "unpinned"}}
+    }));
     let (_dir, _overlay, addr, handle) = named_map_app("door-verbs", false).await;
     let client = reqwest::Client::new();
     let send = |path: &str, body: &str| {

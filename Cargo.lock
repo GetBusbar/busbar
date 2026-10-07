@@ -482,8 +482,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-llm",
  "busbar-mcp",
- "busbar-plane-a2a",
- "busbar-plugin-loader",
  "flate2",
  "hex",
  "http-body-util",
