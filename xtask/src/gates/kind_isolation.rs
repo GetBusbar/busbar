@@ -1692,6 +1692,15 @@ fn precedence(matcher: &str) -> u8 {
     }
 }
 
+/// The PLUGIN kind a package name resolves to — one of the seven ([`truths::PLUGIN_KINDS`]) — or
+/// `None` for an infra crate, an unknown name, or a name two kinds claim at once. The audit ledger
+/// asks this of every `git+` package in `Cargo.lock` to decide which pinned checkouts are a kind's
+/// crates (`crate::audit_pinned`), so it resolves names through this table and never a second one.
+pub fn plugin_kind(name: &str) -> Option<&'static str> {
+    let (kind, _, ambiguous) = resolve_kind(name);
+    kind.filter(|k| ambiguous.is_empty() && truths::PLUGIN_KINDS.contains(k))
+}
+
 /// Resolve a crate name to its kind. THE MOST SPECIFIC BAND WINS, and two kinds in that band is the
 /// fusion refusal rather than a coin toss.
 fn resolve_kind(name: &str) -> (Option<&'static str>, Vec<String>, Vec<&'static str>) {
