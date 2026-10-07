@@ -732,7 +732,7 @@ enum Conn {
     /// Its open was refused or failed: the reply's failed ack.
     Failed(ConnError),
     /// The request is whole and its member's auth call is in flight: it opens when the fields
-    /// answer (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the open calls the member binding's fields).
+    /// answer (the open calls the member binding's fields).
     Authing(Box<Authing>),
 }
 
@@ -942,12 +942,13 @@ extern "C" fn write_request(
                             true
                         }
                     });
-                    // THE MEMBER'S BINDING (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE): a request to a
-                    // member the connector holds a binding for carries that binding's auth fields,
-                    // as the member's relayed calls do. It is the binding of the member the stream
-                    // NAMES (`EstablishIn::member`), never of another registration at the same
-                    // origin. The request is handed over whole; what became of it is the reply's
-                    // to say.
+                    // THE MEMBER'S BINDING: a request to a member the connector holds a binding
+                    // for carries that binding's auth fields, as the member's relayed calls do. The
+                    // connector keys a binding by (instance, need, member, target origin); a
+                    // request naming no member gets no binding. It is the binding of the member the
+                    // stream NAMES (`EstablishIn::member`), never of another registration at the
+                    // same origin. The request is handed over whole; what became of it is the
+                    // reply's to say.
                     let bound = if waived {
                         None
                     } else {

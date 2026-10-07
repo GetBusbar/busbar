@@ -368,11 +368,11 @@ pub trait DeclaredConns: Conns {
     /// Hold `binding` as the auth binding of `owner`'s requests on `need` that name the
     /// registration `member` ([`OpenDesc::member`]) and reach `origin` (`scheme://authority`,
     /// [`origin_of`]): that MEMBER's binding, which the plugin's own requests to that member are
-    /// authenticated with (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the connector holds it per
-    /// instance, need and target origin, and the open calls its fields). It is held per member as
-    /// well: several registrations at one origin each hold their own, and one that holds none
-    /// lends none to its neighbour. Binding the same member, need and origin again replaces it. A
-    /// table that carries no binding drops it.
+    /// authenticated with (the open calls its fields). The connector keys a binding by (instance,
+    /// need, member, target origin); a request naming no member gets no binding. So several
+    /// registrations at one origin each hold their own, and one that holds none lends none to its
+    /// neighbour. Binding the same member, need and origin again replaces it. A table that carries
+    /// no binding drops it.
     fn bind_auth(
         &self,
         owner: InstanceId,

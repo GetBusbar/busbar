@@ -1652,14 +1652,14 @@ impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
     }
 }
 
-/// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding (ARCHITECT
-/// round 5 Q-L3B-DOOR-EXCHANGE; round 4 (d): "admin connect + verify-on-call fetches use the same
-/// binding"): every registration member's route with an auth binding (`routes`, on the plane's
-/// member-target need `served` states) is held on the plane's connection table `table` per
-/// (`instance`, need, member, target origin), its passthrough credential lent from the unit records
-/// `units` by the unit the request is made inside. Held per MEMBER: the door's own request names
-/// the registration it is for, so two registrations at one origin each present their own, and one
-/// with no binding presents none (predev `creds.rs` `Lease::header_for`, `LeaseError::WrongAgent`).
+/// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding (round 4 (d):
+/// "admin connect + verify-on-call fetches use the same binding"): every registration member's
+/// route with an auth binding (`routes`, on the plane's member-target need `served` states) is held
+/// on the plane's connection table `table`, its passthrough credential lent from the unit records
+/// `units` by the unit the request is made inside. The connector keys a binding by (`instance`,
+/// need, member, target origin); a request naming no member gets no binding. So two registrations
+/// at one origin each present their own, and one with no binding presents none (predev `creds.rs`
+/// `Lease::header_for`, `LeaseError::WrongAgent`).
 pub fn bind_member_fetches(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,

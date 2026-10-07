@@ -399,9 +399,10 @@ pub struct Connector {
     /// owner, the need and the registration's name, each with the authority (lower-case,
     /// `host:port`) of its own target ([`PollConns::seal_reach`]).
     reaching: Mutex<HashMap<(InstanceId, NeedId, String), String>>,
-    /// Each member's auth binding, by (instance, need, member, target origin): what a plugin's own
-    /// request naming that member is authenticated with ([`DeclaredConns::bind_auth`]). Two
-    /// members at one origin each hold their own.
+    /// Each member's auth binding: what a plugin's own request naming that member is authenticated
+    /// with ([`DeclaredConns::bind_auth`]). The connector keys a binding by (instance, need,
+    /// member, target origin); a request naming no member gets no binding. Two members at one
+    /// origin each hold their own.
     auths: Mutex<HashMap<AuthKey, busbar_contract::conn::ConnAuth>>,
 }
 
