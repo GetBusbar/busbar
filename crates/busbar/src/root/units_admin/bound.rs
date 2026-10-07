@@ -26,6 +26,8 @@ use std::sync::Arc;
 use busbar_contract::plane::PlaneDeclaration;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord};
 use busbar_core_admin::GovernanceError;
+use busbar_kernel::host_services::{KernelServices, TrustRefused};
+use busbar_kernel::trust::book::{KeyRow, Ruling};
 
 use super::{AdminAnswer, AmendmentJournal, LedgerView};
 
@@ -44,6 +46,17 @@ pub fn no_planes() -> PlaneLookup {
 /// (`busbar_kernel::plane::store::PlaneStore::upsert_plane_record`). `Err` carries the store's own
 /// words, for the node's log only.
 pub type PlaneRecordSink = Arc<dyn Fn(&PlaneRecord) -> Result<(), String> + Send + Sync>;
+
+/// The kernel's host services, whose trust book the three trust verbs read and decide over
+/// (ARCHITECT 2026-10-06): `None` until the root composed them, and on a node that composed none —
+/// which then has no trust keys, lists none and answers every key `404`.
+pub type TrustDesk = Arc<dyn Fn() -> Option<Arc<KernelServices>> + Send + Sync>;
+
+/// The desk of a node no root bound the kernel's services to: no trust keys.
+#[must_use]
+pub fn no_trust() -> TrustDesk {
+    Arc::new(|| None)
+}
 
 /// The domain tag a `commit_upgrade` journal record's body opens with, so a `Policy`-class record
 /// is recognisable as a committed release without guessing.
@@ -344,6 +357,83 @@ pub(crate) fn commit_upgrade_effect(
         "seq": node_seq,
         "hash": hex::encode(hash),
     }))
+}
+
+/// One trust key's row as the trust verbs write it.
+fn trust_row(row: &KeyRow) -> serde_json::Value {
+    serde_json::json!({
+        "key": row.key(),
+        "instance": row.instance,
+        "counterparty": row.counterparty,
+        "item": row.item,
+        "state": row.state.word(),
+        "approved": row.approved,
+        "seen": row.seen,
+    })
+}
+
+/// `GET /api/v1/admin/trust` — every trust key of the kernel's trust book and its state. A read.
+pub(crate) fn trust_list_effect(desk: &TrustDesk) -> Result<AdminAnswer, GovernanceError> {
+    let rows = desk().map(|k| k.trust_rows()).unwrap_or_default();
+    answer(&serde_json::json!({
+        "keys": rows.iter().map(trust_row).collect::<Vec<_>>(),
+    }))
+}
+
+/// `POST /api/v1/admin/trust/approve` and `/revoke` — the operator's decision about one trust key,
+/// `{ "key": "<instance>/<counterparty>[/<item>]" }`, made on the kernel's trust book and kept
+/// durably. Idempotent: the same key twice answers the same row. An unknown key is `404`; an
+/// approval with nothing ever sighted to approve at is `409`; a decision the store could not keep is
+/// `Store` (`503`).
+pub(crate) fn trust_decide_effect(
+    body: &[u8],
+    decision: Ruling,
+    desk: &TrustDesk,
+) -> Result<AdminAnswer, GovernanceError> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
+    let Some(key) = obj
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .filter(|k| !k.trim().is_empty())
+    else {
+        return Ok(refused(400, "invalid_request", "key is required"));
+    };
+    let not_found = || {
+        Ok(refused(
+            404,
+            "not_found",
+            &format!("trust key `{key}` not found"),
+        ))
+    };
+    let Some(kernel) = desk() else {
+        return not_found();
+    };
+    match kernel.trust_rule(key, decision) {
+        Ok(row) => answer(&trust_row(&row)),
+        Err(TrustRefused::NoSuchKey) => not_found(),
+        Err(TrustRefused::NothingSighted) => Ok(refused(
+            409,
+            "conflict",
+            &format!("trust key `{key}` was never sighted"),
+        )),
+        // The core-admin verbs state no expected fingerprint, so a stale one is never theirs.
+        Err(TrustRefused::Stale) => Ok(refused(
+            409,
+            "conflict",
+            &format!("trust key `{key}` moved since it was seen"),
+        )),
+        Err(TrustRefused::Rootless) => Ok(refused(
+            409,
+            "conflict",
+            &format!("trust key `{key}` has no authenticity root"),
+        )),
+        Err(TrustRefused::Store(why)) => {
+            tracing::error!(key = %key, error = %why, "a trust decision could not be kept");
+            Err(GovernanceError::Store)
+        }
+    }
 }
 
 /// THE PRODUCTION PLANE LOOKUP: the registry's planes, filtered by Law 7 against the LIVE
