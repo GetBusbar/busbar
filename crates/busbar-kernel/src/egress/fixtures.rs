@@ -426,6 +426,15 @@ impl crate::host_services::DestJudge for PrivateRefusing {
     fn judge_name(&self, _dest: &str, _class: u32, _refuse_private: bool) -> Result<(), u64> {
         Ok(())
     }
+    /// A literal is its own answer: judged as [`Self::judge_answer`] judges one; a name passes to
+    /// the resolution and its answer's judgement.
+    fn judge_host(&self, host: &str, class: u32) -> Result<(), crate::host_services::DestRefusal> {
+        let bare = host.trim_start_matches('[').trim_end_matches(']');
+        match busbar_contract::net::host_ip(bare) {
+            Some(ip) => self.judge_answer(host, &[ip], class),
+            None => Ok(()),
+        }
+    }
     fn judge(
         &self,
         _dest: &str,

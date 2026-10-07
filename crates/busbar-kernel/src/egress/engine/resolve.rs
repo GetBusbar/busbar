@@ -59,6 +59,29 @@ fn judged(
     Ok(ResolvedAddrs::Listed(addrs.into_iter()))
 }
 
+/// The guard's NAME arm over `host`, before any resolution, by `judge` or the installed guard, fail
+/// closed as [`judged`] is. Every unpinned dial asks it: an IP-literal host never reaches a resolver
+/// (`HttpConnector` short-circuits it), so this is the judgement a literal gets, as its own answer;
+/// a cloud-metadata, operator-blocked or `localhost` name is refused here whatever it resolves to.
+pub(crate) fn judged_name(judge: Option<&Arc<dyn DestJudge>>, host: &str) -> Result<(), BoxError> {
+    let verdict = match (judge, egress_trust_host()) {
+        (Some(j), _) => j.judge_host(host, EGRESS_PROVIDER),
+        (None, Some(seam)) => seam.judge_name(host, EGRESS_PROVIDER),
+        (None, None) => PassThroughEgressTrust.judge_name(host, EGRESS_PROVIDER),
+    };
+    verdict.map_err(|refusal| Box::new(refusal) as BoxError)
+}
+
+/// An answer the target's own resolution produced, judged whole as [`judged`] judges one. The
+/// tunnelled arm's judgement of a target the proxy will connect to.
+pub(crate) fn judged_answer(
+    judge: Option<&Arc<dyn DestJudge>>,
+    host: &str,
+    addrs: Vec<SocketAddr>,
+) -> Result<(), BoxError> {
+    judged(judge, host, addrs).map(|_| ())
+}
+
 /// The judge and the name lookup a pooled client dials by; `None` = the process's own.
 type PooledDial = (Option<Arc<dyn DestJudge>>, Option<Arc<dyn ResolveNames>>);
 
@@ -92,17 +115,17 @@ pub enum EgressResolver {
     /// it only inside [`EgressResolver::Judged`].
     System(GaiResolver),
     /// THE PIN. Answers exactly one name with exactly one address; refuses every other name with
-    /// the doctrine message, verbatim. Note there is deliberately NO IP-literal special case:
-    /// `HttpConnector` short-circuits IP-literal hosts before consulting any resolver, same as
-    /// reqwest.
+    /// the doctrine message, verbatim. `HttpConnector` short-circuits IP-literal hosts before
+    /// consulting any resolver, so the connector above refuses a literal that is not the pin itself
+    /// before it dials.
     Pinned { host: Arc<str>, addr: IpAddr },
     /// Caller-supplied (tests).
     Custom(Arc<dyn ResolveNames>),
     /// THE POOLED POSTURE: `names` answers, the destination guard (`judge`, or the process's
     /// installed one when `None`) judges every answered address, and only an admitted answer
     /// reaches the connector. An IP-literal host never reaches a resolver
-    /// (`HttpConnector` short-circuits it); a literal cannot resolve elsewhere, and it was judged as
-    /// a literal when the configuration was applied.
+    /// (`HttpConnector` short-circuits it), so the connector above judges every host by the guard's
+    /// name arm ([`judged_name`]) before it dials: a literal is judged there, as its own answer.
     Judged {
         names: Box<EgressResolver>,
         judge: Option<Arc<dyn DestJudge>>,
