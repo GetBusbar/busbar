@@ -607,7 +607,9 @@ fn row_discovery_floor(found: Option<usize>, why: Option<&str>) -> Row {
                     "{n} shipped source file(s) discovered, at or above the floor of \
                      {DISCOVERY_FLOOR}"
                 ),
-                None => format!("at or above the floor of {DISCOVERY_FLOOR} shipped source file(s)"),
+                None => {
+                    format!("at or above the floor of {DISCOVERY_FLOOR} shipped source file(s)")
+                }
             },
         ),
         Some(why) => Row::fail(
@@ -1086,6 +1088,31 @@ impl Gate for NoDeferralGate {
             )),
             None => report.note_infra_failure(
                 "the floor case could not be planted: discovery does not read the real tree",
+            ),
+        }
+
+        // ── THE FLOOR SITS AT THE MEASURED COUNT. One shipped file fewer than discovery finds today
+        //    is refused; a floor set a margin below the count passes it, so this is red exactly when
+        //    the floor has slipped under the number the tree measures.
+        let one_short = match discover(base) {
+            Ok(files) => files.last().map(|(rel, _)| {
+                let mut ov = Overlay::new();
+                ov.remove(rel);
+                ov
+            }),
+            Err(_) => None,
+        };
+        match one_short {
+            Some(ov) => report.push(prove_red(
+                base,
+                self,
+                "a scan set one file short of the measured floor is UNPROVEN, never a clean one",
+                &[ROW_DISCOVERY_FLOOR],
+                ov,
+                &["UNPROVEN, not PASS"],
+            )),
+            None => report.note_infra_failure(
+                "the one-file-short floor case could not be planted: discovery does not read the real tree",
             ),
         }
 
