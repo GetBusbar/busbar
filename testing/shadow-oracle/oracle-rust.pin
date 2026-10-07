@@ -308,8 +308,14 @@
 # golden/1.5.5/retired.tsv, with no replacement id: the plugin it lists is out of the product. PB-11's list-plugins
 # proof on a fleet hook is plugins.load|webrequest-hook. RELEASE_REF does not move.
 #
+# 2026-10-07 (CONFORMANCE Q1-A, main's ruling): moved c09bffd8fcad -> 636e82e0d44b (busbar-release dev; it descends
+# c09bffd8fcad and carries #181, the recorder keeps an llm cell's wire bytes in the recording at
+# <out>/raw/<safe>/{request.body,headers,body} instead of the shared <work>/raw-cell, and #182, turnstile merge's
+# INFRA:platform / INFRA:ours split for a shard with no report). No corpus change: cells.json and every golden are
+# untouched. promote.yml RELEASE_REF moves to the same commit, so the CI engine and the local one agree again.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=c09bffd8fcad87cb9be0c3caa6e5603acc2e5d51
+release_ref=636e82e0d44b5f10ff5dba0976e95b6991ce4b12
 crate=busbar-release-oracle
 bin=busbar-oracle
