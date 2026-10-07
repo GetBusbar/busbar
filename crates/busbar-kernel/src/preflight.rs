@@ -226,7 +226,16 @@ fn linked_rows() -> Vec<LinkedPlugin> {
     let rows = stores.iter().map(store);
     let auths = busbar_kernel_identity::operator::linked().iter();
     rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
+        .map(answering_former_names)
         .collect()
+}
+
+/// `row`, answering also to the former names the root legacy table declares for its alias
+/// (`former.<alias>`, from plugins.yaml `former_names:`): a linked plugin answers the names its
+/// earlier releases carried exactly as its dropped-in copy's signed manifest does.
+pub fn answering_former_names(row: LinkedPlugin) -> LinkedPlugin {
+    let former = config::legacy::former_names(&row.manifest.alias);
+    row.with_former_names(former)
 }
 
 /// The hook axis over this build's LINKED rows alone (no plugins directory): where a pool strategy
@@ -239,7 +248,14 @@ fn linked_hook_axis() -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::
 /// Whether this build links a ranking hook that claims the strategy word `name` (a hook word mark
 /// of a linked `kind: hook` row).
 pub(crate) fn builtin_ranking_known(name: &str) -> bool {
-    linked_hook_axis().is_some_and(|axis| axis.linked(name))
+    linked_hook_answers(name)
+}
+
+/// Whether a `kind: hook` row this build LINKS answers `module` on the hook axis (its Statement
+/// name, an alias, a former name the root legacy table gives it, or a hook word it claims): the
+/// linked half of the claim table boot opens hooks through (ARCHITECT Q-P4-13).
+pub(crate) fn linked_hook_answers(module: &str) -> bool {
+    linked_hook_axis().is_some_and(|axis| axis.linked(module))
 }
 
 /// The built-in ranking strategy `name` names on the hook axis — the linked row that claims the
@@ -426,8 +442,16 @@ pub fn plugins_preflight(
 
     // Every hook references a `kind: hook` plugin — the same manifest-only pre-flight the store/auth
     // refs get. Deduped for the messages, but validated as the set of names each hook declares.
+    // THE CLAIM TABLE BOOT USES (ARCHITECT Q-P4-13): a hook a LINKED row answers (its Statement
+    // name, an alias, a former name, a hook word) opens through the hook axis with no plugins
+    // directory, exactly as boot opens it, so it is no plugin reference here; every other hook names
+    // a `kind: hook` plugin the directory must supply.
     let hook_plugin_refs: Vec<String> = {
-        let mut v: Vec<String> = hooks_cfg.values().map(|h| h.plugin.clone()).collect();
+        let mut v: Vec<String> = hooks_cfg
+            .values()
+            .map(|h| h.plugin.clone())
+            .filter(|m| !linked_hook_answers(m))
+            .collect();
         v.sort();
         v.dedup();
         v
@@ -555,6 +579,11 @@ pub fn plugins_preflight(
     // resolution as store/auth (no `dlopen` here; the real load happens in `resolve_gate_transport` at
     // App construction). A missing/wrong-kind/untrusted hook plugin fails `--validate` and boot alike.
     for hook_ref in &hook_plugin_refs {
+        // A dropped-in hook answers by every word the hook axis finds it by (its Statement's names
+        // and hook words beside the manifest's), not only by the words the registry indexes.
+        if busbar_plugin_loader::hook_door::dropped_answers(&registry, hook_ref) {
+            continue;
+        }
         require_plugin(
             &registry,
             &plugins_cfg.dir,

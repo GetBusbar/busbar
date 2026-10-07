@@ -234,8 +234,9 @@ impl SecretCalls for LoadedSecret {
 
 /// THE PROCESS'S SECRET PLUGINS, by Statement name and alias: the linked rows (fixed at build) and
 /// the dropped-in ones (replaced at each registry build), each loaded on first use through the one
-/// loader and called through the one dispatcher. A linked row answers ahead of a dropped-in plugin
-/// spelling the same word (the boot stages' selection rule). The composition root builds it and
+/// loader and called through the one dispatcher. Two different plugins answering one word are
+/// refused when the dropped-in set is admitted ([`SecretRows::admit_dropped`], ARCHITECT Q-P4-12);
+/// neither door outranks the other. The composition root builds it and
 /// installs it as the kernel's [`SecretAxis`].
 pub struct SecretRows {
     /// The process dispatcher, asked for at first use: a plugin is opened on it, never before.
@@ -298,6 +299,51 @@ impl SecretRows {
         }
         self.linked.push(c);
         Ok(self)
+    }
+
+    /// Each LINKED row answering also to the former names `former_of` gives for any of its words
+    /// (its name or an alias), as a dropped-in copy states them in its signed manifest (compiled in
+    /// = dropped in).
+    ///
+    /// # Errors
+    /// A linked row that would then claim a word another linked plugin answers to, naming both.
+    pub fn with_former_names(
+        &mut self,
+        former_of: impl Fn(&str) -> Vec<String>,
+    ) -> Result<&mut Self, String> {
+        for c in &mut self.linked {
+            let words: Vec<String> = std::iter::once(c.name.clone())
+                .chain(c.aliases.iter().cloned())
+                .flat_map(|w| former_of(&w))
+                .collect();
+            *c = c.clone().answering(words);
+        }
+        crate::boot::one_owner(&self.linked)?;
+        Ok(self)
+    }
+
+    /// [`Self::set_dropped`], refused when a dropped-in secret plugin and another plugin (linked or
+    /// dropped in) answer one word but are different plugins ([`crate::boot::one_owner`]).
+    ///
+    /// # Errors
+    /// The contested word and the two plugins that claim it; the last set stays.
+    pub fn admit_dropped(
+        &self,
+        candidates: impl IntoIterator<Item = Candidate>,
+    ) -> Result<(), String> {
+        let secrets: Vec<Candidate> = candidates
+            .into_iter()
+            .filter(|c| c.kind == KindCode::Secret)
+            .collect();
+        let all: Vec<Candidate> = self
+            .linked
+            .iter()
+            .cloned()
+            .chain(secrets.iter().cloned())
+            .collect();
+        crate::boot::one_owner(&all)?;
+        self.set_dropped(secrets);
+        Ok(())
     }
 
     /// The DROPPED-IN secret plugins: every secret-kind candidate among `candidates` (the registry's
@@ -400,9 +446,10 @@ impl SecretAxis for SecretRows {
             let material = match settings.get(&key) {
                 None => Vec::new(),
                 Some(v) => {
-                    let r = serde_json::from_value::<SecretRef>(v.clone()).map_err(|e| {
-                        format!("secrets.{module}.settings.{key}: not a secret reference: {e}")
-                    })?;
+                    // The decoder's own text is withheld: the value may be the secret itself.
+                    let r = serde_json::from_value::<SecretRef>(v.clone()).map_err(
+                        crate::boot::not_a_reference(format!("secrets.{module}.settings.{key}")),
+                    )?;
                     resolve(&r).map_err(|e| format!("secrets.{module}.settings.{key}: {e}"))?
                 }
             };
