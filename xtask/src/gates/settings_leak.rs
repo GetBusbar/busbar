@@ -544,7 +544,7 @@ impl Gate for SettingsLeakGate {
              \x20   crate::admin::v1::service::redact_settings_bags(&mut settings);\n\
              \x20   ok_json(StatusCode::OK, &json!({\n\
              \x20       \"desired\": {\"settings_keys\": settings_keys(&h.settings)},\n\
-             \x20       // settings-leak-lint: allow — envelope; nested bags redacted above.\n\
+             \x20       // settings-leak-lint: allow — the envelope; every nested bag is redacted above.\n\
              \x20       \"settings\": settings,\n\
              \x20   }))\n}\n\n\
              // A doc comment naming a \"settings\": member, or a settings: Map<…> field, is prose.\n",
@@ -561,11 +561,12 @@ impl Gate for SettingsLeakGate {
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-core/src/planted_scope.rs",
-            "// settings-leak-lint: allow — this marker (and its continuation line, since a reason\n\
-             // rarely fits on one line) covers the NEXT declaration only.\n\
-             pub(crate) settings: serde_json::Value,\n\
-             pub(crate) other: u8,\n\
-             pub(crate) settings: serde_json::Map<String, serde_json::Value>,\n",
+            "pub(crate) struct Scoped {\n\
+             \x20   // settings-leak-lint: allow — this marker (and its continuation line, since a reason\n\
+             \x20   // rarely fits on one line) covers the NEXT declaration only.\n\
+             \x20   pub(crate) settings: serde_json::Value,\n\
+             \x20   pub(crate) other: u8,\n\
+             \x20   pub(crate) hook_settings: serde_json::Map<String, serde_json::Value>,\n}\n",
         );
         report.push(prove_red(
             cx,
@@ -573,7 +574,107 @@ impl Gate for SettingsLeakGate {
             "an allow marker covers exactly one declaration, so a later unmarked leak is flagged",
             &[ROW_NO_RAW_BAG],
             ov,
-            &["1 finding(s)", "planted_scope.rs:5"],
+            &["1 finding(s)", "planted_scope.rs:6"],
+        ));
+
+        // A BAG IS A TYPE, NOT A SPELLING. R1 used to know two spellings (`Map<` and `Value`, with
+        // an optional `Option<` and `serde_json::`), so the defect class this gate exists for came
+        // back GREEN as any other map, any other JSON/YAML/TOML value, a wrapper, an alias, or a
+        // struct a macro declares. One field per shape, each named by LINE: a rule that stopped
+        // seeing one of them cannot hide behind the count.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_types.rs",
+            "use std::collections::{BTreeMap, HashMap};\n\
+             use serde_json::Value;\n\n\
+             type Bag = serde_json::Map<String, Value>;\n\n\
+             #[derive(Serialize)]\npub(crate) struct HookView {\n\
+             \x20   pub(crate) settings: HashMap<String, Value>,\n\
+             \x20   pub(crate) hook_settings: BTreeMap<String, serde_json::Value>,\n\
+             \x20   pub(crate) yaml_settings: Option<serde_yaml::Value>,\n\
+             \x20   pub(crate) alias_settings: Bag,\n\
+             \x20   pub(crate) raw_settings: Box<RawValue>,\n\
+             \x20   pub(crate) table_settings: Arc<indexmap::IndexMap<String, toml::Value>>,\n}\n\n\
+             macro_rules! planted_view {\n\
+             \x20   () => {\n\
+             \x20       pub struct MacroView {\n\
+             \x20           pub settings: HashMap<String, String>,\n\
+             \x20       }\n\
+             \x20   };\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a settings bag is judged by TYPE: HashMap, BTreeMap, serde_yaml::Value, an alias, \
+             Box<RawValue>, a wrapped IndexMap and a macro-declared field are each flagged",
+            &[ROW_NO_RAW_BAG],
+            ov,
+            &[
+                "7 finding(s)",
+                "planted_types.rs:8:",
+                "planted_types.rs:9:",
+                "planted_types.rs:10:",
+                "planted_types.rs:11:",
+                "planted_types.rs:12:",
+                "planted_types.rs:13:",
+                "planted_types.rs:19:",
+            ],
+        ));
+
+        // A MARKER WITHOUT A REASON IS NOT AN ALLOWANCE. `carries_allow_marker` took the bare words
+        // `settings-leak-lint: allow` as a pass, so a marker said nothing a reviewer could weigh.
+        // A bare marker and one whose reason is a shrug are each named, and neither covers the
+        // raw bag beneath it.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_marker.rs",
+            "#[derive(Serialize)]\npub(crate) struct ConfigView {\n\
+             \x20   // settings-leak-lint: allow\n\
+             \x20   pub(crate) settings: serde_json::Value,\n\
+             \x20   // settings-leak-lint: allow — ok\n\
+             \x20   pub(crate) hook_settings: serde_json::Map<String, serde_json::Value>,\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "an allow marker with no reason, or a reason under the floor, is flagged and covers nothing",
+            &[ROW_NO_RAW_BAG],
+            ov,
+            &[
+                "4 finding(s)",
+                "planted_marker.rs:3:",
+                "planted_marker.rs:4:",
+                "planted_marker.rs:5:",
+                "planted_marker.rs:6:",
+            ],
+        ));
+
+        // A TYPED SETTINGS FIELD IS NOT A BAG. A field whose type the tree declares field by field
+        // (through a wrapper, a reference, a `Vec`), the keys projection, a struct LITERAL that fills
+        // a settings field, and a function parameter that reads a bag all stay silent.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_typed.rs",
+            "pub(crate) struct PlantedShape {\n\
+             \x20   pub(crate) url: String,\n}\n\n\
+             pub(crate) struct Door<'a> {\n\
+             \x20   pub(crate) settings: PlantedShape,\n\
+             \x20   pub(crate) client_settings: Option<std::sync::Arc<crate::planted_typed::PlantedShape>>,\n\
+             \x20   pub(crate) borrowed_settings: &'a [PlantedShape],\n\
+             \x20   pub(crate) settings_keys: Vec<String>,\n}\n\n\
+             fn build(settings: &serde_json::Value) -> Door<'static> {\n\
+             \x20   Door {\n\
+             \x20       settings: shape(settings),\n\
+             \x20       client_settings: None,\n\
+             \x20       borrowed_settings: &[],\n\
+             \x20       settings_keys: keys(settings),\n\
+             \x20   }\n}\n",
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "a typed settings field, the keys projection, a struct literal and a parameter stay silent",
+            &[ROW_NO_RAW_BAG],
         ));
 
         // A SCHEMA FRAGMENT IS NOT A BAG, AND THE EXEMPTION IS NOT A MUTE FOR THE LINE BELOW IT.
