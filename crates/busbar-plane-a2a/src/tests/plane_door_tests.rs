@@ -588,8 +588,6 @@ fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_params() {
     );
 }
 
-// ── VERIFY-ON-CALL'S PASS (predev `verify_tests`, ported to the door) ────────────────────────────
-
 /// A NOTIFICATION is the plane's own to acknowledge wherever it arrives, never relayed: `202` and
 /// no body at all, as the engine answered it (`jsonrpc::accepted`). Busbar's extended card is the
 /// plane's own on its own endpoint only; every other request goes on to an agent. RED before the
