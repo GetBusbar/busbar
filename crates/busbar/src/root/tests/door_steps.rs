@@ -1212,6 +1212,8 @@ pub(crate) mod tool_door {
         pub(crate) plane: crate::root::boot::DoorPlane,
         /// How far the kernel's monotonic clock (`clock.now`) reads ahead of the runtime's.
         pub(crate) clock: Arc<std::sync::atomic::AtomicU64>,
+        /// How far the kernel's wall clock reads ahead of the system's, in milliseconds.
+        pub(crate) wall: Arc<std::sync::atomic::AtomicU64>,
     }
 
     impl Rig {
@@ -1287,10 +1289,14 @@ pub(crate) mod tool_door {
                 }
             };
             let clock = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let (late, store) = records_composed(footing.ledger, Arc::clone(&gov), &clock);
+            let wall = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let (late, store) = records_composed(footing.ledger, Arc::clone(&gov), (&clock, &wall));
             let dispatcher = Arc::new(Dispatcher::with_services(
                 DispatchConfig::default(),
-                Arc::clone(&late) as Arc<dyn busbar_contract::services::HostServices>,
+                Arc::new(Clocked {
+                    inner: Arc::clone(&late) as Arc<dyn busbar_contract::services::HostServices>,
+                    wall: Arc::clone(&wall),
+                }),
             ));
             crate::root::connector::install_io(&dispatcher);
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
@@ -1466,6 +1472,7 @@ pub(crate) mod tool_door {
                 door_table,
                 plane,
                 clock,
+                wall,
             }
         }
 
@@ -1541,18 +1548,28 @@ pub(crate) mod tool_door {
     fn records_composed(
         ledger: Ledger,
         signer: Arc<GovState>,
-        clock: &Arc<std::sync::atomic::AtomicU64>,
+        (clock, wall): (
+            &Arc<std::sync::atomic::AtomicU64>,
+            &Arc<std::sync::atomic::AtomicU64>,
+        ),
     ) -> (
         Arc<crate::root::serve::LateServices>,
         Arc<busbar_kernel::governance::MemoryStore>,
     ) {
         let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
         let (origin, ahead) = (std::time::Instant::now(), Arc::clone(clock));
+        let wall_ahead = Arc::clone(wall);
         let kernel = busbar_kernel::host_services::KernelServices::new()
             .with_mono_clock(Arc::new(move || {
                 u64::try_from(origin.elapsed().as_nanos())
                     .unwrap_or(u64::MAX)
                     .saturating_add(ahead.load(std::sync::atomic::Ordering::SeqCst))
+            }))
+            .with_wall_clock(Arc::new(move || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                    .saturating_add(wall_ahead.load(std::sync::atomic::Ordering::SeqCst))
             }))
             .with_signer(signer)
             .with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
@@ -1564,12 +1581,269 @@ pub(crate) mod tool_door {
                 kernel.with_records(Arc::new(Rows::default()), Arc::clone(&store) as _)
             }
             Ledger::Store(claims) => kernel.with_records(Arc::new(Rows::default()), claims),
+            Ledger::Rows(rows, max_live) => kernel
+                .with_work_bounds(busbar_kernel::host_work::WorkBounds {
+                    max_live,
+                    ..Default::default()
+                })
+                .with_records(rows, Arc::clone(&store) as _),
             Ledger::Unbound => kernel,
         });
         let late = crate::root::serve::LateServices::new();
         late.install_kernel(Arc::clone(&kernel), kernel)
             .expect("installed once");
         (late, store)
+    }
+
+    /// The host services as the door reads them, the wall clock `clock.now` answers read `wall`
+    /// milliseconds ahead, as the kernel's work book reads it: every other service is `inner`'s.
+    struct Clocked {
+        inner: Arc<dyn busbar_contract::services::HostServices>,
+        wall: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl busbar_contract::services::HostServices for Clocked {
+        fn now(&self) -> busbar_contract::services::Reading {
+            let mut reading = self.inner.now();
+            let ahead = self.wall.load(std::sync::atomic::Ordering::SeqCst);
+            reading.wall_ns = reading
+                .wall_ns
+                .saturating_add(ahead.saturating_mul(1_000_000));
+            reading
+        }
+        fn dest_judge(
+            &self,
+            dest: &str,
+            class: u32,
+            flags: u32,
+            later: Option<busbar_contract::services::Later>,
+        ) -> busbar_contract::services::Ran {
+            self.inner.dest_judge(dest, class, flags, later)
+        }
+        fn records_get(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            kind: &str,
+            key: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.records_get(caller, kind, key, later)
+        }
+        fn records_list(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            list: busbar_contract::services::RecordsList,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.records_list(caller, list, later)
+        }
+        fn records_claim(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            kind: &str,
+            key: &[u8],
+            ttl_ms: u64,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.records_claim(caller, kind, key, ttl_ms, later)
+        }
+        fn sign(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            data: &[u8],
+        ) -> busbar_contract::services::Stored {
+            self.inner.sign(caller, data)
+        }
+        fn trust_sight(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+            hash: &str,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.trust_sight(caller, counterparty, hash, later)
+        }
+        fn trust_unreached(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_unreached(caller, counterparty)
+        }
+        fn trust_sight_item(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+            item: &str,
+            digest: &str,
+        ) -> busbar_contract::services::Stored {
+            self.inner
+                .trust_sight_item(caller, counterparty, item, digest)
+        }
+        fn trust_decide(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            key: busbar_contract::services::TrustKeyRef<'_>,
+            expected: Option<&str>,
+            approve: bool,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_decide(caller, key, expected, approve)
+        }
+        fn trust_state(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_state(caller, counterparty)
+        }
+        fn trust_serves(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+            item: Option<&str>,
+            digest: Option<&str>,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_serves(caller, counterparty, item, digest)
+        }
+        fn trust_due(
+            &self,
+            caller: &busbar_contract::services::Caller,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_due(caller)
+        }
+        fn trust_verify(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+            payload: &[u8],
+            signatures: &[u8],
+        ) -> busbar_contract::services::Stored {
+            self.inner
+                .trust_verify(caller, counterparty, payload, signatures)
+        }
+        fn entitlement_check(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            target: &str,
+        ) -> busbar_contract::services::Stored {
+            self.inner.entitlement_check(caller, unit, target)
+        }
+        fn session_emit(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            session: u64,
+            bytes: &[u8],
+        ) -> busbar_contract::services::Stored {
+            self.inner.session_emit(caller, session, bytes)
+        }
+        fn random_fill(&self, len: u64) -> busbar_contract::services::Stored {
+            self.inner.random_fill(len)
+        }
+        fn records_secret(
+            &self,
+            kind: &str,
+            id: &str,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.records_secret(kind, id, later)
+        }
+        fn unit_nest(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            ask: busbar_contract::services::NestAsk,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.unit_nest(caller, unit, ask, later)
+        }
+        fn work_open(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            kind: &str,
+            record: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.work_open(caller, unit, kind, record, later)
+        }
+        fn work_find(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            reference: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.work_find(caller, unit, reference, later)
+        }
+        fn work_settle(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            handle: u64,
+            record: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.work_settle(caller, handle, record, later)
+        }
+        fn work_resume(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            handle: u64,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.work_resume(caller, unit, handle, later)
+        }
+        fn disk_append(
+            &self,
+            dest: &busbar_contract::services::DiskDest,
+            bytes: Vec<u8>,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.disk_append(dest, bytes, later)
+        }
+        fn verify_lookup(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            key: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.verify_lookup(caller, key, later)
+        }
+        fn verify_store(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            key: &[u8],
+            entry: &[u8],
+            ttl_ms: u64,
+        ) -> busbar_contract::services::Stored {
+            self.inner.verify_store(caller, key, entry, ttl_ms)
+        }
+        fn content_scan(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            content: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.content_scan(caller, unit, content, later)
+        }
+        fn hook_call(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            ask: busbar_contract::services::HookAsk,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.hook_call(caller, unit, ask, later)
+        }
+        fn snapshot_read(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            scope: u32,
+        ) -> busbar_contract::services::Snapshot {
+            self.inner.snapshot_read(caller, scope)
+        }
     }
 
     /// What a rig stands on: the record store its host services bind, and whose governance book it
@@ -1600,19 +1874,25 @@ pub(crate) mod tool_door {
         Memory,
         /// The given store: a handle on a durable journal (a restart or a fleet node).
         Store(Arc<dyn busbar_contract::records::RecordStore>),
+        /// The given typed rows, which the nodes of one deployment and the successive processes of
+        /// one node share (their work handles and their plugins' records), the host keeping at most
+        /// the given number of live work handles.
+        Rows(Arc<Rows>, usize),
         /// None: the host binds no store.
         Unbound,
     }
 
-    /// Typed record rows in memory: the store kind's record slots, for the records services.
+    /// Typed record rows in memory: the store kind's record slots, for the records services; and
+    /// how many writes of a settled work handle the store refuses next.
     #[derive(Default)]
-    struct Rows(
-        std::sync::Mutex<
+    pub(crate) struct Rows(
+        pub(crate)  std::sync::Mutex<
             BTreeMap<
                 (busbar_contract::ids::RecordSchemaId, Vec<u8>),
                 busbar_contract::kinds::RecordBytes,
             >,
         >,
+        pub(crate) std::sync::atomic::AtomicU32,
     );
 
     impl busbar_kernel::host_records::RecordRows for Rows {
@@ -1622,6 +1902,21 @@ pub(crate) mod tool_door {
             key: &[u8],
             value: &busbar_contract::kinds::RecordBytes,
         ) -> Result<(), busbar_contract::kinds::StoreError> {
+            let settles = schema == busbar_kernel::host_work::WORK_SCHEMA
+                && value.as_slice().get(1)
+                    == Some(&busbar_contract::abi::host::service::WORK_SETTLED);
+            let refused = settles
+                && self
+                    .1
+                    .fetch_update(
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                        |n| n.checked_sub(1),
+                    )
+                    .is_ok();
+            if refused {
+                return Err(busbar_contract::kinds::StoreError::Unavailable);
+            }
             self.0
                 .lock()
                 .expect("unpoisoned")
@@ -3676,7 +3971,8 @@ mod task_continuation {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::tool_door::{
-        protocol_version, rig_tools, send_as, tool_digest, tool_listing, Rig, CALL,
+        protocol_version, rig_on, rig_tools, send_as, tool_digest, tool_listing, Footing, Ledger,
+        Rig, Rows, CALL,
     };
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
@@ -4247,6 +4543,178 @@ mod task_continuation {
             "{failed}"
         );
         assert!(failed["result"].get("inputRequests").is_none(), "{failed}");
+    }
+
+    // ── THE TASK STORE IS HOST RECORDS (BUSBAR-1.6.0.md §2, the mcp bullet; §1 "Admission bounds
+    // live work; nothing evicts it") ────────────────────────────────────────────────────────────
+
+    /// One node of a deployment of `instance` on `port`, standing on the typed rows `rows` its
+    /// other nodes and processes share, its host keeping `max_live` live work handles, reading
+    /// `book`'s governance.
+    fn node(
+        instance: &'static str,
+        port: u16,
+        rows: &std::sync::Arc<Rows>,
+        max_live: usize,
+        book: Option<&Rig>,
+    ) -> Rig {
+        rig_on(
+            instance,
+            port,
+            tools(port, "optional"),
+            Footing {
+                ledger: Ledger::Rows(std::sync::Arc::clone(rows), max_live),
+                book,
+                guarded: false,
+            },
+        )
+    }
+
+    /// Every unit `rig` admitted has ended.
+    async fn ended(rig: &Rig) {
+        let ended = async {
+            while !rig.all_ended() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), ended)
+            .await
+            .expect("every unit ended");
+    }
+
+    /// A LIVE TASK IS ANSWERED FROM THE HOST'S ROWS: created through one node (its call held at
+    /// the server, so the task stays live), `tasks/get` through another node of the deployment
+    /// answers it exactly as the creating node does, and never as an unknown task.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_live_task_created_on_one_node_is_answered_by_another() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-task-fleet";
+        let _published = Published(instance);
+        let (_release, gate) = tokio::sync::watch::channel(false);
+        let (port, mut heard) = gated_server(gate).await;
+        let rows = std::sync::Arc::new(Rows::default());
+        let a = node(instance, port, &rows, 4096, None);
+        let b = node(instance, port, &rows, 4096, Some(&a));
+        let (_, task_id) = create(&a).await;
+        let _call = next_call(&mut heard).await;
+        let (status, here) = ask(&a, &a.token, "tasks/get", &task_id).await;
+        assert_eq!(status, 200, "{here}");
+        assert_eq!(here["result"]["status"], "working", "{here}");
+        // The other node reads the host's rows once the first node's writes reach them.
+        let mut there = serde_json::Value::Null;
+        for _ in 0..250 {
+            there = ask(&b, &b.token, "tasks/get", &task_id).await.1;
+            if there == here {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            there, here,
+            "the other node answers the live task from the host's rows"
+        );
+    }
+
+    /// THE HANDLES A GONE PROCESS LEFT ARE SETTLED: a process opens live work up to its host's
+    /// bound and ends with it live; past the lease of their runs, the next process's task-creating
+    /// call settles them `cancelled` and is admitted, where it would be refused at the bound.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_live_handles_a_gone_process_left_are_settled_and_a_new_task_is_admitted() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-task-restart";
+        let _published = Published(instance);
+        let (_release, gate) = tokio::sync::watch::channel(false);
+        let (port, _heard) = gated_server(gate).await;
+        let rows = std::sync::Arc::new(Rows::default());
+        let gone = node(instance, port, &rows, 2, None);
+        let (_, first) = create(&gone).await;
+        let (_, second) = create(&gone).await;
+        let (status, refused) = send_as(
+            &gone.router,
+            Some(&gone.token),
+            &task_call(),
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(
+            status.as_u16(),
+            503,
+            "at the bound of live work: {}",
+            String::from_utf8_lossy(&refused)
+        );
+        // Its writes reach the shared rows; then its process ends, and the clock moves on.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let next = node(instance, port, &rows, 2, Some(&gone));
+        drop(gone);
+        next.wall
+            .fetch_add(3_600_000, std::sync::atomic::Ordering::SeqCst);
+        let (status, body) = send_as(
+            &next.router,
+            Some(&next.token),
+            &task_call(),
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(
+            status.as_u16(),
+            200,
+            "admitted: {}",
+            String::from_utf8_lossy(&body)
+        );
+        for id in [&first, &second] {
+            let (_, got) = ask(&next, &next.token, "tasks/get", id).await;
+            assert_eq!(got["result"]["status"], "cancelled", "{got}");
+        }
+    }
+
+    /// A SETTLE THE STORE REFUSES IS MADE AGAIN UNTIL IT LANDS: the store refuses the first two
+    /// writes of a settled handle (the continuation's own settle, and the next create's); the
+    /// handle is settled by a following create rather than left live for ever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_settle_the_store_refuses_is_made_again_until_it_lands() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-task-settle-retry";
+        let _published = Published(instance);
+        let (_release, gate) = tokio::sync::watch::channel(true);
+        let (port, _heard) = gated_server(gate).await;
+        let rows = std::sync::Arc::new(Rows::default());
+        rows.1.store(2, std::sync::atomic::Ordering::SeqCst);
+        let rig = node(instance, port, &rows, 4096, None);
+        let (_, task_id) = create(&rig).await;
+        ended(&rig).await;
+        let reference =
+            busbar_kernel::host_work::parse_reference(task_id.as_bytes()).expect("a reference");
+        let key = (
+            busbar_kernel::host_work::WORK_SCHEMA,
+            busbar_kernel::host_work::work_key(instance, &reference),
+        );
+        let state = || {
+            rows.0
+                .lock()
+                .expect("unpoisoned")
+                .get(&key)
+                .and_then(|row| row.as_slice().get(1).copied())
+        };
+        assert_eq!(
+            state(),
+            Some(busbar_contract::abi::host::service::WORK_LIVE),
+            "the store refused the continuation's settle"
+        );
+        for _ in 0..2 {
+            create(&rig).await;
+            ended(&rig).await;
+        }
+        let mut settled = false;
+        for _ in 0..250 {
+            if state() == Some(busbar_contract::abi::host::service::WORK_SETTLED) {
+                settled = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(settled, "the owed settle landed");
     }
 }
 
