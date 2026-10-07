@@ -20,6 +20,11 @@
 //! * `FACTS` writes the stream's facts: whether it is secure, the protocol agreed and the hash of
 //!   the far end's certificate (the channel-binding input), the strings held until it closes.
 //! * `RANDOM` fills the buffer from the OS; `IDENTITY` names the process.
+//! * `FACTS` answers what the stream's connection security established, as the connector observed
+//!   it: the agreed protocol, the far end's key pin and whether busbar presented its client identity
+//!   (the transport pin, ARCHITECT 2026-10-03) — a stream whose connection the connector refused for its
+//!   trust anchors included, so a plugin reads the key the far end served. Its strings are held with
+//!   the stream until it closes.
 //! * `WRITE_REQUEST` sends a request on a FRAMED stream piece by piece (head, body, end): a framed
 //!   need's `ESTABLISH` answers a stream the host holds unopened, the head and body are held here,
 //!   and the end opens it with the whole request as its opening message, the head words included
@@ -39,7 +44,7 @@
 //! ticket's when its next tick starts, and any other ticket's when a new op (not a short answer's
 //! re-call) starts on it ([`forget`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::net::IpAddr;
 use std::os::raw::c_void;
@@ -57,9 +62,11 @@ use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 use busbar_contract::abi::transport::{fields, FrameSpan};
+use busbar_contract::auth_calls::{Fields, FieldsRequest};
 use busbar_contract::conn::{
     ConnError, ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind,
 };
+use std::future::Future as _;
 
 use super::ticket::InstanceWake;
 
@@ -139,6 +146,52 @@ impl Answer {
         };
         Self::with(outcome, e.text())
     }
+
+    /// A connection table's refusal of `conn`, naming why the connection failed where the table
+    /// names a cause: its `CAUSE_*` stage in `value`, the underlying error's own text in `error`.
+    fn of_conn(e: ConnError, id: InstanceId, table: &Arc<dyn DeclaredConns>, conn: ConnId) -> Self {
+        let plain = Self::of(e);
+        if matches!(e, ConnError::Pending) {
+            return plain;
+        }
+        match table.cause(id, conn) {
+            Some(c) => Self {
+                value: c.stage,
+                error: match interned(&c.text) {
+                    "" => plain.error,
+                    text => text,
+                },
+                ..plain
+            },
+            None => plain,
+        }
+    }
+}
+
+/// The most distinct cause texts the slots keep (each lives for the process, as `ServiceOut::error`
+/// must); past it a failure names its table's refusal text instead.
+const CAUSE_TEXTS_MAX: usize = 1024;
+
+/// `text`, kept for the process's life (one copy per distinct text, at most [`CAUSE_TEXTS_MAX`]);
+/// `""` once that many are kept.
+fn interned(text: &str) -> &'static str {
+    static KEPT: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    if text.is_empty() {
+        return "";
+    }
+    let mut kept = KEPT
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(t) = kept.get(text) {
+        return t;
+    }
+    if kept.len() >= CAUSE_TEXTS_MAX {
+        return "";
+    }
+    let t: &'static str = Box::leak(text.to_owned().into_boxed_str());
+    kept.insert(t);
+    t
 }
 
 /// The instance a context names, and its connection table.
@@ -215,16 +268,45 @@ unsafe fn bytes<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
     }
 }
 
+/// How much of an [`EstablishIn`] a caller must state: everything before the appended
+/// [`EstablishIn::member`], which a shorter one states as none.
+const ESTABLISH_IN_MEMBERLESS: usize = std::mem::offset_of!(EstablishIn, member);
+
+/// The caller's `EstablishIn`, as much of it as its head's `size` states: one that ends before the
+/// appended `member` names none.
+///
+/// # Safety
+/// `input` names an `EstablishIn` whose head was checked to state at least
+/// [`ESTABLISH_IN_MEMBERLESS`] bytes, live for the call.
+unsafe fn read_establish(input: *const c_void) -> EstablishIn {
+    // SAFETY: the head is the struct's first field, covered by the checked size.
+    let size = unsafe { input.cast::<ServiceHead>().read_unaligned() }.size as usize;
+    // SAFETY: a plain repr(C) value of integers and pointer/length pairs: all-zero is every field
+    // absent (a NULL string of length 0).
+    let mut i: EstablishIn = unsafe { std::mem::zeroed() };
+    let n = size.min(size_of::<EstablishIn>());
+    // SAFETY: `n` bytes of the caller's, into a plain repr(C) value of at least `n` bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            input.cast::<u8>(),
+            std::ptr::from_mut(&mut i).cast::<u8>(),
+            n,
+        );
+    }
+    i
+}
+
 extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
         input,
         out,
         service::ESTABLISH,
-        size_of::<EstablishIn>(),
+        ESTABLISH_IN_MEMBERLESS,
         |id, table, _| {
-            // SAFETY: the head covered an `EstablishIn`.
-            let i = unsafe { input.cast::<EstablishIn>().read_unaligned() };
+            // SAFETY: the head covered an `EstablishIn` up to its appended `member`; one whose
+            // `size` stops there names no registration.
+            let i = unsafe { read_establish(input) };
             // SAFETY: a checked range of the caller's, live for the call.
             let Some(target) = (unsafe { bytes(i.target.ptr.cast_mut(), i.target.len) }) else {
                 return Answer::with(Outcome::Fault, "");
@@ -240,6 +322,11 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                     "an address the dial must land on is not an IP literal",
                 );
             };
+            // SAFETY: a checked range of the caller's, live for the call.
+            let Some(member) = (unsafe { bytes(i.member.ptr.cast_mut(), i.member.len) }) else {
+                return Answer::with(Outcome::Fault, "");
+            };
+            let member = String::from_utf8_lossy(member).into_owned();
             if table.framed(id, NeedId(i.need)) {
                 // A FRAMED need opens when its request is whole (`WRITE_REQUEST`'s end): its
                 // request is the connection's opening message.
@@ -251,6 +338,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                             need: NeedId(i.need),
                             target: target.into_owned(),
                             within,
+                            member,
                             head: None,
                             body: Vec::new(),
                         },
@@ -264,6 +352,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 target: &target,
                 within: &within,
                 timeout_ms: u64::from(i.timeout_ms),
+                member: &member,
                 ..OpenDesc::default()
             };
             match table.open(id, NeedId(i.need), &desc) {
@@ -312,7 +401,7 @@ extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
                     Outcome::Refused,
                     "a read that would pend is callable only inside a ticketed op",
                 ),
-                Err(e) => Answer::of(e),
+                Err(e) => Answer::of_conn(e, id, table, conn),
             }
         },
     )
@@ -338,7 +427,7 @@ extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
             };
             match table.write(id, conn, buf, false, false) {
                 Ok(n) => Answer::ready(0, n as u64),
-                Err(e) => Answer::of(e),
+                Err(e) => Answer::of_conn(e, id, table, conn),
             }
         },
     )
@@ -358,7 +447,10 @@ extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
             let held = held_conns().remove(&(id, i.stream));
             let conn = match held.map(|s| s.conn) {
                 // Never opened, or refused: nothing on the table to close.
-                Some(Conn::Held { .. } | Conn::Failed(_)) => return Answer::ready(0, 0),
+                // (A request waiting on its auth call drops the call: a client drop.)
+                Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_)) => {
+                    return Answer::ready(0, 0)
+                }
                 Some(Conn::Open(c)) => c,
                 None if i.stream & HELD != 0 => return Answer::of(ConnError::Closed),
                 None => ConnId(i.stream),
@@ -528,6 +620,9 @@ extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
                 endpoint: held_text(&mut all, key, None),
                 agreed_protocol: held_text(&mut all, key, f.alpn.as_deref()),
                 peer_cert_hash: held_text(&mut all, key, hash),
+                peer_key_pin: held_text(&mut all, key, f.peer_key_pin.as_deref()),
+                client_identity: u32::from(f.client_identity),
+                _reserved: 0,
             };
             // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
             unsafe { i.facts.write_unaligned(written) };
@@ -616,6 +711,8 @@ enum Conn {
         need: NeedId,
         target: String,
         within: Vec<IpAddr>,
+        /// The registration the stream names (`EstablishIn::member`); empty = none.
+        member: String,
         head: Option<Head>,
         body: Vec<u8>,
     },
@@ -623,6 +720,29 @@ enum Conn {
     Open(ConnId),
     /// Its open was refused or failed: the reply's failed ack.
     Failed(ConnError),
+    /// The request is whole and its member's auth call is in flight: it opens when the fields
+    /// answer (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the open calls the member binding's fields).
+    Authing(Box<Authing>),
+}
+
+/// A whole request waiting on its member binding's auth fields.
+struct Authing {
+    fielding: Box<dyn busbar_contract::auth_calls::Fielding>,
+    need: NeedId,
+    target: String,
+    within: Vec<IpAddr>,
+    member: String,
+    head: Head,
+    body: Vec<u8>,
+}
+
+impl std::fmt::Debug for Authing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Authing")
+            .field("need", &self.need)
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the host keeps for one stream an instance holds.
@@ -667,16 +787,18 @@ fn resolve(
     match &s.conn {
         Conn::Open(c) => Ok(*c),
         Conn::Failed(e) => Err(*e),
-        Conn::Held { head: Some(_), .. } => Err(ConnError::Refused),
+        Conn::Held { head: Some(_), .. } | Conn::Authing(_) => Err(ConnError::Refused),
         Conn::Held {
             need,
             target,
             within,
+            member,
             ..
         } => {
             let desc = OpenDesc {
                 target,
                 within,
+                member,
                 ..OpenDesc::default()
             };
             let opened = table.open(id, *need, &desc);
@@ -743,6 +865,7 @@ extern "C" fn write_request(
                 need,
                 target,
                 within,
+                member,
                 head,
                 body,
             } = &mut s.conn
@@ -784,26 +907,58 @@ extern "C" fn write_request(
                     Answer::ready(0, bytes.len() as u64)
                 }
                 (REQUEST_END, true) => {
-                    let Some(h) = head.take() else {
+                    let Some(mut h) = head.take() else {
                         return Answer::with(Outcome::Fault, "");
                     };
-                    let fields: Vec<(&str, &[u8])> = h
-                        .fields
-                        .iter()
-                        .map(|(n, v)| (n.as_str(), v.as_slice()))
-                        .collect();
-                    let desc = OpenDesc {
-                        target: target.as_str(),
-                        fields: &fields,
-                        body: body.as_slice(),
-                        timeout_ms: h.timeout_ms,
-                        method: &h.method,
-                        head_target: &h.target,
-                        within,
+                    // THE PLUGIN'S STATED SCOPE is the host's own field
+                    // (`abi::auth::SCOPE_REQUEST_FIELD`): out of the request before anything is
+                    // encoded, lent to the member's auth call. No wire carries it.
+                    let mut scope = None;
+                    h.fields.retain(|(name, value)| {
+                        if busbar_contract::abi::auth::is_scope_field(name.as_bytes()) {
+                            scope.get_or_insert_with(|| value.clone());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    // THE MEMBER'S BINDING (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE): a request to a
+                    // member the connector holds a binding for carries that binding's auth fields,
+                    // as the member's relayed calls do. The request is handed over whole; what
+                    // became of it is the reply's to say.
+                    s.conn = match table.auth_of(id, *need, target) {
+                        None => {
+                            open_with(table, id, *need, (target, within, member), &h, body, &[])
+                        }
+                        Some(binding) => match auth_request(&binding, &h, target, body, scope) {
+                            None => Conn::Failed(ConnError::Refused),
+                            Some(request) => {
+                                match binding.auth.fields_now(binding.handle, &request) {
+                                    Some(Fields::Ready(auth)) => open_with(
+                                        table,
+                                        id,
+                                        *need,
+                                        (target, within, member),
+                                        &h,
+                                        body,
+                                        &auth,
+                                    ),
+                                    Some(Fields::Refused | Fields::Failed) => {
+                                        Conn::Failed(ConnError::Refused)
+                                    }
+                                    None => Conn::Authing(Box::new(Authing {
+                                        fielding: binding.auth.fields(binding.handle, request, 0),
+                                        need: *need,
+                                        target: std::mem::take(target),
+                                        within: std::mem::take(within),
+                                        member: std::mem::take(member),
+                                        head: h,
+                                        body: std::mem::take(body),
+                                    })),
+                                }
+                            }
+                        },
                     };
-                    // The request is handed over whole; what became of it is the reply's to say.
-                    let opened = table.open(id, *need, &desc);
-                    s.conn = opened.map_or_else(Conn::Failed, Conn::Open);
                     Answer::ready(0, 0)
                 }
                 (REQUEST_HEAD, true) => {
@@ -817,6 +972,142 @@ extern "C" fn write_request(
             }
         },
     )
+}
+
+/// Open a whole request on the table: the member's `auth` fields first, then the plugin's (a
+/// plugin field named like an auth field never doubles it: the binding's stands), 1.5.5's egress
+/// order, as the relayed calls are opened.
+#[allow(clippy::too_many_arguments)]
+fn open_with(
+    table: &Arc<dyn DeclaredConns>,
+    id: InstanceId,
+    need: NeedId,
+    (target, within, member): (&str, &[IpAddr], &str),
+    h: &Head,
+    body: &[u8],
+    auth: &[busbar_contract::auth_calls::AuthField],
+) -> Conn {
+    let mut fields: Vec<(&str, &[u8])> = Vec::with_capacity(auth.len() + h.fields.len());
+    let names: Vec<String> = auth
+        .iter()
+        .map(|f| String::from_utf8_lossy(&f.name).into_owned())
+        .collect();
+    for (name, f) in names.iter().zip(auth) {
+        fields.push((name.as_str(), f.value.expose_secret().as_slice()));
+    }
+    fields.extend(
+        h.fields
+            .iter()
+            .filter(|(n, _)| !names.iter().any(|a| a.eq_ignore_ascii_case(n)))
+            .map(|(n, v)| (n.as_str(), v.as_slice())),
+    );
+    let desc = OpenDesc {
+        target,
+        fields: &fields,
+        body,
+        timeout_ms: h.timeout_ms,
+        method: &h.method,
+        head_target: &h.target,
+        within,
+        member,
+    };
+    table
+        .open(id, need, &desc)
+        .map_or_else(Conn::Failed, Conn::Open)
+}
+
+/// The member binding's ONE auth call for a whole request to `target` (THE DESIGN, outbound auth: the facts at
+/// the style's point; the request's head when the style reads it; its stated `scope` in the
+/// extensions blob). A passthrough binding is lent the caller credential of the unit the crossing
+/// serves (none presented: an empty one, so nothing is presented, never the operator's); a request
+/// made inside no unit has no caller, and opens nothing (`None`): an operator's own fetch never
+/// spends a caller's credential.
+fn auth_request(
+    binding: &busbar_contract::conn::ConnAuth,
+    h: &Head,
+    target: &str,
+    body: &[u8],
+    scope: Option<Vec<u8>>,
+) -> Option<FieldsRequest> {
+    use busbar_contract::abi::auth::{AuthPoint, STYLE_NEEDS_HEADERS};
+    let caller_credential = if binding.passthrough {
+        let unit = super::services::serving_unit()?;
+        Some(
+            binding
+                .lender
+                .as_ref()
+                .and_then(|l| l.lent(unit))
+                .unwrap_or_else(|| busbar_contract::redacted::Redacted::new(Vec::new())),
+        )
+    } else {
+        None
+    };
+    let rest = target.split_once("://").map_or(target, |(_, r)| r);
+    let (authority, path_query) = match rest.find(['/', '?']) {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, "/"),
+    };
+    let (path, query) = match path_query.split_once('?') {
+        Some((p, q)) => (
+            if p.is_empty() { "/" } else { p },
+            Some(q.as_bytes().to_vec()),
+        ),
+        None => (path_query, None),
+    };
+    let point = if binding.points.has(AuthPoint::HeadBody) {
+        AuthPoint::HeadBody
+    } else {
+        AuthPoint::Head
+    };
+    Some(FieldsRequest {
+        point,
+        unit: super::services::serving_unit().unwrap_or(0),
+        body: (point == AuthPoint::HeadBody).then(|| body.to_vec()),
+        method: h.method.clone(),
+        authority: authority.to_string(),
+        path: path.as_bytes().to_vec(),
+        query,
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        headers: if binding.style_flags & STYLE_NEEDS_HEADERS != 0 {
+            h.fields
+                .iter()
+                .map(|(n, v)| (n.as_bytes().to_vec(), v.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        },
+        caller_credential,
+        extensions: busbar_contract::abi::auth::scope_extensions(scope.as_deref()),
+        ..FieldsRequest::default()
+    })
+}
+
+/// A waker that wakes `ticket` on the instance `ctx` names: a request waiting on its auth call is
+/// read again when the call answers.
+fn ticket_waker(ctx: HostCtx, ticket: Ticket) -> Option<std::task::Waker> {
+    struct TicketWaker {
+        route: std::sync::Weak<dyn super::ticket::WakeRoute>,
+        ticket: Ticket,
+    }
+    impl std::task::Wake for TicketWaker {
+        fn wake(self: Arc<Self>) {
+            if let Some(route) = self.route.upgrade() {
+                route.wake(self.ticket);
+            }
+        }
+    }
+    if ctx.ptr.is_null() || ticket.is_none() {
+        return None;
+    }
+    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
+    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    let route = wake.route.get()?.clone();
+    Some(std::task::Waker::from(Arc::new(TicketWaker {
+        route,
+        ticket,
+    })))
 }
 
 extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
@@ -836,7 +1127,7 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
-            let (piece, answer) = reply(id, table, head, i.stream, buf);
+            let (piece, answer) = reply(ctx, id, table, head, i.stream, buf);
             if let Some(p) = piece {
                 // SAFETY: the caller's descriptor slot, checked non-NULL.
                 unsafe { i.piece.write_unaligned(p) };
@@ -849,6 +1140,7 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 /// The next piece of the reply on `stream`, read into `buf`: its descriptor (none for an answer
 /// without one) and the answer.
 fn reply(
+    ctx: HostCtx,
     id: InstanceId,
     table: &Arc<dyn DeclaredConns>,
     head: ServiceHead,
@@ -857,6 +1149,44 @@ fn reply(
 ) -> (Option<ReplyPiece>, Answer) {
     {
         let mut all = held_conns();
+        // A REQUEST WAITING ON ITS AUTH CALL opens when the call answers (its fields lead the
+        // head), fails its ack when the call refuses or fails, and reads as nothing ready (on the
+        // caller's ticket, woken when the call answers) until then.
+        if let Some(Stream {
+            conn: Conn::Authing(a),
+            ..
+        }) = all.get_mut(&(id, stream))
+        {
+            let Some(waker) = ticket_waker(ctx, head.handle.ticket) else {
+                return (
+                    None,
+                    Answer::with(
+                        Outcome::Refused,
+                        "a read that would pend is callable only inside a ticketed op",
+                    ),
+                );
+            };
+            let mut cx = std::task::Context::from_waker(&waker);
+            let answered = match std::pin::Pin::new(&mut a.fielding).poll(&mut cx) {
+                std::task::Poll::Pending => return (None, Answer::of(ConnError::Pending)),
+                std::task::Poll::Ready(f) => f,
+            };
+            let opened = match answered {
+                Fields::Ready(auth) => open_with(
+                    table,
+                    id,
+                    a.need,
+                    (&a.target, &a.within, &a.member),
+                    &a.head,
+                    &a.body,
+                    &auth,
+                ),
+                Fields::Refused | Fields::Failed => Conn::Failed(ConnError::Refused),
+            };
+            if let Some(s) = all.get_mut(&(id, stream)) {
+                s.conn = opened;
+            }
+        }
         let s = all.entry((id, stream)).or_insert(Stream {
             conn: Conn::Open(ConnId(stream)),
             headed: false,
@@ -879,6 +1209,7 @@ fn reply(
                 return (None, Answer::of(e));
             }
             Conn::Open(_) => {}
+            Conn::Authing(_) => return (None, Answer::of(ConnError::Pending)),
         }
     }
     let conn = match resolve(id, table, stream) {
@@ -948,9 +1279,10 @@ fn reply(
             ),
             Err(ConnError::Pending) => (None, Answer::of(ConnError::Pending)),
             Err(e) => {
-                // A refusal or failure mid-reply is its failed ack.
+                // A refusal or failure mid-reply is its failed ack, naming why where it can.
                 s.ended = true;
-                (None, Answer::of(e))
+                drop(all);
+                (None, Answer::of_conn(e, id, table, conn))
             }
         };
     }

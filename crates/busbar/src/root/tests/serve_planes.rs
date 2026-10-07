@@ -81,7 +81,9 @@ pub(super) fn bound(
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: None,
+            // These rows never dial (the plane's far end is not reached): its need is not
+            // declared, bound as a probe.
+            conns: crate::root::loader::dispatch::ConnTable::Probe,
         },
     )
     .expect("the dropped-in door binds");
@@ -128,8 +130,17 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", serde_yaml::Value::Mapping(Default::default()));
     let late = composed_services();
-    let served = compose_planes(&doors, &dispatcher, &late, &sections, &money, None)
-        .expect("the door plane composes");
+    let served = compose_planes(
+        &doors,
+        &dispatcher,
+        &late,
+        &sections,
+        None,
+        &money,
+        None,
+        None,
+    )
+    .expect("the door plane composes");
     assert_eq!(served.planes.len(), 1, "one plane composed");
     let p = &served.planes[0];
     assert_eq!(p.instance, instance);
@@ -166,8 +177,17 @@ fn a_door_plane_whose_section_is_absent_stays_unopened() {
     };
     let doors = vec![(instance.to_string(), plane)];
     let late = composed_services();
-    let served = compose_planes(&doors, &dispatcher, &late, &BTreeMap::new(), &money, None)
-        .expect("nothing to compose is not a refusal");
+    let served = compose_planes(
+        &doors,
+        &dispatcher,
+        &late,
+        &BTreeMap::new(),
+        None,
+        &money,
+        None,
+        None,
+    )
+    .expect("nothing to compose is not a refusal");
     assert!(served.planes.is_empty(), "LAW 7: no section, no plane");
 }
 
@@ -179,7 +199,9 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
         &dispatcher,
         &LateServices::new(),
         &BTreeMap::new(),
+        None,
         &money,
+        None,
         None,
     )
     .expect("an empty composition");

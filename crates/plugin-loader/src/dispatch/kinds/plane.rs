@@ -37,28 +37,29 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
-use busbar_contract::abi::mechanism::door::{Statement, SECTION_DECLARING};
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, CancelOut, DriveIn, OpenIn, RefreshIn,
-};
+use busbar_contract::abi::mechanism::door::{Statement, SECTION_CONSUMED, SECTION_DECLARING};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, DriveIn, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
-    check_arrive, check_cancel, check_drive, check_on_piece, check_pin_mechanisms, check_project,
-    check_refusal, check_refusal_statuses, check_sections, check_serve, check_snapshot, check_tail,
-    check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
+    check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
+    check_fee_units, check_on_piece, check_pin_mechanisms, check_project, check_refusal,
+    check_refusal_records, check_refusal_statuses, check_sections, check_serve,
+    check_serve_records, check_snapshot, check_tail, check_trust_keys, Bounds, Caps, ProjectHost,
+    MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
-    self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PinMechanism, PlaneDriveIn,
-    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, TrustKey,
+    self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
+    PlaneTail, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, RefusalStatus, ServeIn,
+    ServeOut, TrustKey,
 };
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::InstanceDecl;
 
 use crate::dispatch::{
-    in_head, lifecycle_name, out_head, stamp_drive, Answer, Context, DriveFrame, Frame, InFrame,
-    Kind, OutFrame,
+    in_head, lifecycle_name, out_head, stamp_drive, Answer, CancelFrame, Context, DriveFrame,
+    Frame, InFrame, Kind, OutFrame,
 };
 
 /// The plane tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
@@ -75,6 +76,7 @@ pub struct Plane;
 // `retire` of its generation.
 unsafe impl InFrame for PlaneOpenIn {}
 unsafe impl InFrame for PlaneDriveIn {}
+unsafe impl InFrame for plane::PlaneCancelIn {}
 unsafe impl InFrame for ArriveIn {}
 unsafe impl InFrame for OnPieceIn {}
 unsafe impl InFrame for RefusalIn {}
@@ -83,6 +85,7 @@ unsafe impl InFrame for ProjectIn {}
 unsafe impl OutFrame for PlaneOpenOut {}
 unsafe impl OutFrame for PlaneRefreshOut {}
 unsafe impl OutFrame for PlaneDriveOut {}
+unsafe impl OutFrame for plane::PlaneCancelOut {}
 unsafe impl OutFrame for ArriveOut {}
 unsafe impl OutFrame for OnPieceOut {}
 unsafe impl OutFrame for RefusalOut {}
@@ -110,6 +113,15 @@ pub struct PlaneFacts {
 pub struct ServedFacts {
     /// The key of the one section the Statement declares.
     pub section: &'static str,
+    /// The keys of the other sections it owns (neither declaring nor consumed): what it opens
+    /// with beside its settings (`PlaneOpenIn::owned`).
+    pub owns: Vec<&'static str>,
+    /// The Statement's secret-reference paths (`Statement::secret_refs`), in order.
+    pub secret_refs: Vec<&'static str>,
+    /// The admin routes the tail states, in order.
+    pub admin_routes: Vec<busbar_contract::plane_calls::StatedAdminRoute>,
+    /// Their OpenAPI fragment, as the tail states it (kept for the process).
+    pub admin_openapi: Option<&'static [u8]>,
     /// The tail's operation classes, in order.
     pub op_classes: Vec<&'static str>,
     /// The tail's `audit_kind`.
@@ -127,11 +139,34 @@ pub struct ServedFacts {
     /// Each need's direction and auth element, in Statement need order (`Need::direction`,
     /// `Need::auth`): what a member's resolved style is matched against at config load.
     pub need_auths: Vec<(u32, &'static str)>,
+    /// Each need's `target_from`, in Statement need order: a member-target path
+    /// (`busbar_contract::section::member_target`) names where each registration's member is
+    /// reached.
+    pub need_targets: Vec<&'static str>,
+    /// Each need's `trust_from`, in Statement need order: on a member-target need, a member path
+    /// (`settings.*.<key>`) names, per registration, the object holding busbar's client identity
+    /// for it, `{cert, key}` as secret references (the transport pin, ARCHITECT 2026-10-03).
+    pub need_trust: Vec<&'static str>,
+    /// The tail's kernel-owned trust keys: a registration whose pin names a mechanism that pins the
+    /// far end's key (`PinMechanismDecl::peer_key`) has that key sealed into its member route.
+    pub trust_keys: Vec<TrustKeyDecl>,
+    /// Each need's transport, in the same order (`Need::transport`): a member binds at most one
+    /// need per (transport, auth) (ARCHITECT Q-L5B-NEEDS).
+    pub need_transports: Vec<&'static str>,
     /// The tail's dialects, in order.
     pub dialects: Vec<&'static str>,
     /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index
     /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this).
     pub dialect_auth: Vec<(u32, &'static str)>,
+    /// The tail's `label`, `subject_noun` and `admin_noun` (what the kernel's registry entry names
+    /// the plane and one registration by).
+    pub nouns: (&'static str, &'static str, &'static str),
+    /// The tail's billable classes' unit families, parallel to [`Self::billable_classes`].
+    pub billable_families: Vec<&'static str>,
+    /// The tail's `caller_credential_refusal`; `""` = it states none.
+    pub caller_credential_refusal: &'static str,
+    /// The tail's `TAIL_*` flags (the fallback catch-all, probes, the gate-first hook order).
+    pub tail_flags: u32,
 }
 
 /// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
@@ -153,9 +188,10 @@ fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
         .ok_or(fault(Rule::Missing, "plane.tail"))
 }
 
-/// The plane's tail, read from the Statement: a whole `PlaneTail` that passes `check_tail`, the
-/// Statement's sections, exactly one of them declaring (`check_sections`), and refusal statuses
-/// that pass `check_refusal_statuses`.
+/// The plane's tail, read from the Statement: a whole `PlaneTail` that passes `check_tail`, its
+/// billable classes and fee units (`check_billable_classes`, `check_fee_units`: every fee unit is a
+/// billable class, so the plane can report it), the Statement's sections, exactly one of them
+/// declaring (`check_sections`), and refusal statuses that pass `check_refusal_statuses`.
 fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
     // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
     // non-NULL kind tail is `'static` plugin data of its stated size.
@@ -163,6 +199,8 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
         unsafe { crate::dispatch::plugin::kind_tail(st, "a plane", PLANE_TAIL_FROZEN) }?;
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_trust_keys(&tail)
+        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    check_tail_fee_units(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // A plane declares exactly one section: its verb. The loader's Statement check already
     // refused a NULL list with a count.
@@ -192,6 +230,31 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .iter()
                 .find(|s| s.flags & SECTION_DECLARING != 0)
                 .map_or("", |s| kept(s.name)),
+            owns: sections
+                .iter()
+                .filter(|s| s.flags & (SECTION_DECLARING | SECTION_CONSUMED) == 0)
+                .map(|s| kept(s.name))
+                .collect(),
+            secret_refs: listed(st.secret_refs, st.secret_refs_len)
+                .into_iter()
+                .map(kept)
+                .collect(),
+            admin_routes: listed(tail.admin_routes, tail.admin_routes_len)
+                .into_iter()
+                .map(|r| busbar_contract::plane_calls::StatedAdminRoute {
+                    verb: kept(r.verb),
+                    target: kept(r.target),
+                    flags: r.flags,
+                    audit_verb: kept(r.audit_verb),
+                })
+                .collect(),
+            admin_openapi: (!tail.admin_openapi.ptr.is_null()).then(|| {
+                // SAFETY: the tail check accepted the blob: `len` bytes of `'static` plugin data.
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(tail.admin_openapi.ptr, tail.admin_openapi.len)
+                };
+                &*bytes.to_vec().leak()
+            }),
             op_classes: listed(tail.op_classes, tail.op_classes_len)
                 .into_iter()
                 .map(|c| kept(c.op))
@@ -223,6 +286,19 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(|n| (n.direction, kept(n.auth)))
                 .collect(),
+            need_targets: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| kept(n.target_from))
+                .collect(),
+            need_trust: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| kept(n.trust_from))
+                .collect(),
+            trust_keys: declared(&tail).trust_keys,
+            need_transports: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| kept(n.transport))
+                .collect(),
             dialects: listed(tail.dialects, tail.dialects_len)
                 .into_iter()
                 .map(kept)
@@ -231,6 +307,17 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(|d| (d.dialect, kept(d.style)))
                 .collect(),
+            nouns: (
+                kept(tail.label),
+                kept(tail.subject_noun),
+                kept(tail.admin_noun),
+            ),
+            billable_families: listed(tail.billable_classes, tail.billable_classes_len)
+                .into_iter()
+                .map(|c| kept(c.family))
+                .collect(),
+            caller_credential_refusal: kept(tail.caller_credential_refusal),
+            tail_flags: tail.flags,
         },
     })
 }
@@ -270,6 +357,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
             role: match k.role {
                 plane::TRUST_PIN => TrustRole::Pin,
                 plane::TRUST_REVERIFY_TTL => TrustRole::ReverifyTtl,
+                plane::TRUST_PRIVATE_REACH => TrustRole::PrivateReach,
                 _ => TrustRole::RecoveryBackoff,
             },
             fingerprint: k.flags & plane::PIN_FINGERPRINT != 0,
@@ -279,6 +367,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
                 .map(|m| PinMechanismDecl {
                     token: kept(m.token),
                     root: m.flags & plane::MECHANISM_ROOT != 0,
+                    peer_key: m.flags & plane::MECHANISM_PEER_KEY != 0,
                 })
                 .collect::<Vec<_>>()
                 .leak(),
@@ -329,6 +418,463 @@ impl crate::dispatch::Plugin<Plane> {
             .context::<PlaneFacts>()
             .map_or(0, |f| f.bounds.dialects)
     }
+}
+
+/// A probe instance of a door, bound afresh: the door's one load, on a dispatcher of the caller's.
+pub type ProbeBind = Arc<dyn Fn() -> Result<crate::dispatch::Plugin<Plane>, String> + Send + Sync>;
+
+/// A [`ProbeBind`] over a LINKED door: each bind loads `door` through the one load
+/// ([`crate::dispatch::load_linked`]) as `instance`, on a probe dispatcher the process keeps for its
+/// life (a probe it adopted is refreshed through it at every generation).
+pub fn linked_probe(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    instance: &str,
+) -> ProbeBind {
+    static PROBE: std::sync::OnceLock<crate::dispatch::Dispatcher> = std::sync::OnceLock::new();
+    let instance: Arc<str> = Arc::from(instance);
+    Arc::new(move || {
+        let dispatcher = PROBE.get_or_init(|| {
+            crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default())
+        });
+        let row = crate::dispatch::LinkedRow::of(door).map_err(|e| format!("{e:?}"))?;
+        crate::dispatch::load_linked::<Plane>(
+            &row,
+            crate::dispatch::Bind {
+                instance: Arc::clone(&instance),
+                max_inflight_cap: 64,
+                sink: Arc::new(crate::dispatch::NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: crate::dispatch::ConnTable::Probe,
+            },
+        )
+        .map_err(|e| format!("{e:?}"))
+    })
+}
+
+/// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): its Statement
+/// name, its declaring section and its tail's words, read off the facts kept at its bind, and its
+/// own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe instance
+/// of the door through the one load (a linked and a dropped door alike); one is bound here for the
+/// facts and the section judge, and one more per public base URL its facing is asked for (a plane
+/// states its audience and claims against the URL it was opened with).
+///
+/// # Errors
+///
+/// The door will not bind.
+pub fn registration(
+    bind: ProbeBind,
+) -> Result<busbar_contract::plane_calls::PlaneRegistration, String> {
+    let plugin = Arc::new(bind()?);
+    let served = plugin.served();
+    let declared = plugin.declared();
+    let (label, subject_noun, admin_noun) = served.nouns;
+    let key: &'static str = plugin.name().to_string().leak();
+    let refusal = served.caller_credential_refusal;
+    let judge = Arc::clone(&plugin);
+    let dialects = served.dialects.clone();
+    let probes: std::sync::Mutex<Vec<Probe>> = std::sync::Mutex::new(Vec::new());
+    Ok(busbar_contract::plane_calls::PlaneRegistration {
+        key,
+        section: served.section,
+        owns: served.owns.clone(),
+        secret_refs: served.secret_refs.clone(),
+        admin_routes: served.admin_routes.clone(),
+        admin_openapi: served.admin_openapi,
+        label,
+        subject_noun,
+        admin_noun,
+        audit_kind: served.audit_kind,
+        signing: declared.signing,
+        dialects: served.dialects.clone(),
+        scope_kinds: declared.scope_kinds.clone(),
+        billable_classes: served
+            .billable_classes
+            .iter()
+            .copied()
+            .zip(served.billable_families.iter().copied())
+            .collect(),
+        fee_units: served.fee_units.clone(),
+        record_kinds: declared.record_kinds.clone(),
+        trust_keys: declared.trust_keys.clone(),
+        caller_credential_refusal: (!refusal.is_empty()).then_some(refusal),
+        validate: Arc::new(move |settings: &[u8]| validate(&judge, settings)),
+        facing: Arc::new(
+            move |settings: &[u8], owned: &[u8], public_url: Option<&str>| {
+                let url = public_url.unwrap_or_default().to_string();
+                let mut probes = probes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let at = match probes.iter().position(|p| p.url == url && p.owned == owned) {
+                    Some(at) => at,
+                    None => {
+                        probes.push(Probe {
+                            url: url.clone(),
+                            owned: owned.to_vec(),
+                            plugin: bind()?,
+                            generation: 0,
+                        });
+                        probes.len() - 1
+                    }
+                };
+                let probe = &mut probes[at];
+                facing(
+                    &probe.plugin,
+                    &dialects,
+                    &mut probe.generation,
+                    settings,
+                    owned,
+                    public_url,
+                )
+            },
+        ),
+    })
+}
+
+/// One probe instance of a door, opened against one public base URL and one set of owned sections
+/// (both are read at its open; a change of either is a restart).
+struct Probe {
+    url: String,
+    owned: Vec<u8>,
+    plugin: crate::dispatch::Plugin<Plane>,
+    /// Its current generation; `0` = not opened yet.
+    generation: u64,
+}
+
+/// OPEN `plugin` at generation 1 over `settings` (JSON; empty = absent), its `owned` sections (one
+/// JSON object keyed by section name; empty = none) and `public_url`, as the composition root opens
+/// a door plane: the first generation's snapshot, or why it did not open.
+///
+/// # Errors
+///
+/// The plane did not answer READY, or its snapshot did not pass the host's checks.
+pub fn open_door(
+    plugin: &crate::dispatch::Plugin<Plane>,
+    settings: &[u8],
+    owned: &[u8],
+    public_url: Option<&str>,
+) -> Result<OwnedSnapshot, String> {
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+    use busbar_contract::abi::mechanism::lifecycle::OpenOut;
+    let blob = |bytes: &[u8]| {
+        if bytes.is_empty() {
+            Blob {
+                ptr: std::ptr::null(),
+                len: 0,
+                fmt: BLOB_ABSENT,
+                flags: 0,
+            }
+        } else {
+            Blob {
+                ptr: bytes.as_ptr(),
+                len: bytes.len(),
+                fmt: BLOB_JSON,
+                flags: 0,
+            }
+        }
+    };
+    let url = public_url.unwrap_or_default();
+    let mut frame = Frame::new(
+        PlaneOpenIn {
+            open: OpenIn {
+                head: in_head(),
+                host: std::ptr::null(),
+                settings: blob(settings),
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+                generation: 1,
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            public_url: AbiStr {
+                ptr: if url.is_empty() {
+                    std::ptr::null()
+                } else {
+                    url.as_ptr()
+                },
+                len: url.len(),
+            },
+            owned: blob(owned),
+        },
+        PlaneOpenOut {
+            open: OpenOut {
+                head: out_head(),
+                instance: std::ptr::null_mut(),
+                err_len: 0,
+            },
+            snapshot: std::ptr::null(),
+        },
+    );
+    let (called, snapshot) = plugin.open(&mut frame);
+    if called.outcome != Outcome::Ready {
+        return Err(called.open_failure(plugin.name()));
+    }
+    snapshot.ok_or_else(|| {
+        format!(
+            "plane `{}`'s snapshot did not pass the host's checks",
+            plugin.name()
+        )
+    })
+}
+
+/// REFRESH `plugin` onto `next` over `settings` (JSON; empty = absent), as a config apply refreshes
+/// a served door plane: the new generation's snapshot, or why it did not refresh. The previous
+/// generation stays live for units still running on it; retire it with [`retire_door`].
+///
+/// # Errors
+///
+/// The plane did not answer READY, or its snapshot did not pass the host's checks.
+pub fn refresh_door(
+    plugin: &crate::dispatch::Plugin<Plane>,
+    settings: &[u8],
+    next: u64,
+) -> Result<OwnedSnapshot, String> {
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+    let blob = if settings.is_empty() {
+        Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: BLOB_ABSENT,
+            flags: 0,
+        }
+    } else {
+        Blob {
+            ptr: settings.as_ptr(),
+            len: settings.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        }
+    };
+    let mut frame = Frame::new(
+        RefreshIn {
+            head: in_head(),
+            generation: next,
+            settings: blob,
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+        },
+        PlaneRefreshOut {
+            head: out_head(),
+            snapshot: std::ptr::null(),
+        },
+    );
+    let (called, snapshot) = plugin.refresh(&mut frame);
+    if called.outcome != Outcome::Ready {
+        return Err(format!(
+            "plane `{}` did not refresh: {:?}",
+            plugin.name(),
+            called.outcome
+        ));
+    }
+    snapshot.ok_or_else(|| {
+        format!(
+            "plane `{}`'s snapshot did not pass the host's checks",
+            plugin.name()
+        )
+    })
+}
+
+/// RETIRE `generation` of `plugin`: no unit runs on it any more.
+pub fn retire_door(plugin: &crate::dispatch::Plugin<Plane>, generation: u64) {
+    use busbar_contract::abi::mechanism::lifecycle::GenIn;
+    let mut retire = Frame::new(
+        GenIn {
+            head: in_head(),
+            generation,
+        },
+        out_head(),
+    );
+    let _ = plugin.call(life::RETIRE, &mut retire);
+}
+
+/// What `plugin` faces the world with over `settings`, its `owned` sections and `public_url`, as a
+/// snapshot it published: the probe instance is `open`ed on the first call (with `public_url` and
+/// `owned`, which a plane states its audience against) and `refresh`ed onto a new generation on
+/// each later one, the previous generation retired. The probe instance lives for the process beside
+/// the one the composition root serves through; a public base URL and the owned sections are read
+/// at its open (a change of either is a restart).
+fn facing(
+    plugin: &crate::dispatch::Plugin<Plane>,
+    dialects: &[&'static str],
+    current: &mut u64,
+    settings: &[u8],
+    owned: &[u8],
+    public_url: Option<&str>,
+) -> Result<busbar_contract::plane_calls::DoorFacing, String> {
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+    use busbar_contract::abi::mechanism::lifecycle::{GenIn, OpenOut, RefreshIn};
+    let blob = if settings.is_empty() {
+        Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: BLOB_ABSENT,
+            flags: 0,
+        }
+    } else {
+        Blob {
+            ptr: settings.as_ptr(),
+            len: settings.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        }
+    };
+    let snapshot = if *current == 0 {
+        let url = public_url.unwrap_or_default();
+        let mut frame = Frame::new(
+            PlaneOpenIn {
+                open: OpenIn {
+                    head: in_head(),
+                    host: std::ptr::null(),
+                    settings: blob,
+                    secrets: std::ptr::null(),
+                    secrets_len: 0,
+                    generation: 1,
+                    err_buf: std::ptr::null_mut(),
+                    err_cap: 0,
+                },
+                public_url: AbiStr {
+                    ptr: if url.is_empty() {
+                        std::ptr::null()
+                    } else {
+                        url.as_ptr()
+                    },
+                    len: url.len(),
+                },
+                owned: if owned.is_empty() {
+                    Blob {
+                        ptr: std::ptr::null(),
+                        len: 0,
+                        fmt: BLOB_ABSENT,
+                        flags: 0,
+                    }
+                } else {
+                    Blob {
+                        ptr: owned.as_ptr(),
+                        len: owned.len(),
+                        fmt: BLOB_JSON,
+                        flags: 0,
+                    }
+                },
+            },
+            PlaneOpenOut {
+                open: OpenOut {
+                    head: out_head(),
+                    instance: std::ptr::null_mut(),
+                    err_len: 0,
+                },
+                snapshot: std::ptr::null(),
+            },
+        );
+        let (called, snapshot) = plugin.open(&mut frame);
+        if called.outcome != Outcome::Ready {
+            return Err(called.open_failure(plugin.name()));
+        }
+        *current = 1;
+        snapshot
+    } else {
+        let next = *current + 1;
+        let mut frame = Frame::new(
+            RefreshIn {
+                head: in_head(),
+                generation: next,
+                settings: blob,
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            PlaneRefreshOut {
+                head: out_head(),
+                snapshot: std::ptr::null(),
+            },
+        );
+        let (called, snapshot) = plugin.refresh(&mut frame);
+        if called.outcome != Outcome::Ready {
+            return Err(format!(
+                "plane `{}` did not refresh: {:?}",
+                plugin.name(),
+                called.outcome
+            ));
+        }
+        let mut retire = Frame::new(
+            GenIn {
+                head: in_head(),
+                generation: *current,
+            },
+            out_head(),
+        );
+        let _ = plugin.call(life::RETIRE, &mut retire);
+        *current = next;
+        snapshot
+    };
+    let snapshot = snapshot.ok_or_else(|| {
+        format!(
+            "plane `{}`'s snapshot did not pass the host's checks",
+            plugin.name()
+        )
+    })?;
+    Ok(busbar_contract::plane_calls::DoorFacing {
+        claims: snapshot
+            .claims
+            .iter()
+            .map(|c| {
+                let dialect = dialects
+                    .get(usize::from(c.refusal_dialect))
+                    .copied()
+                    .unwrap_or_default();
+                (c.target.clone(), dialect)
+            })
+            .collect(),
+        admission: snapshot.audience.zip(snapshot.resource_metadata),
+    })
+}
+
+/// `validate` `settings` on `plugin` (ticket-less; it never pends): `Ok` when READY, else the
+/// plugin's words.
+fn validate(plugin: &crate::dispatch::Plugin<Plane>, settings: &[u8]) -> Result<(), String> {
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+    use busbar_contract::abi::mechanism::lifecycle::ValidateIn;
+    let blob = if settings.is_empty() {
+        Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: BLOB_ABSENT,
+            flags: 0,
+        }
+    } else {
+        Blob {
+            ptr: settings.as_ptr(),
+            len: settings.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        }
+    };
+    let mut f = Frame::new(
+        ValidateIn {
+            head: in_head(),
+            settings: blob,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
+        },
+        out_head(),
+    );
+    let c = plugin.call(life::VALIDATE, &mut f);
+    match c.outcome {
+        Outcome::Ready => Ok(()),
+        o => Err(c
+            .error
+            .map(|e| String::from_utf8_lossy(&e).into_owned())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| format!("{o:?}"))),
+    }
+}
+
+/// The tail's billable classes and fee units, judged PER ELEMENT (ARCHITECT Q-L5-FEE (C)): each
+/// class by `check_billable_classes`, then each fee unit by `check_fee_units`, which holds every fee
+/// unit to one of the classes (the plane reports "a fee unit was incurred" as a count on it; a fee
+/// unit no class lists could never be reported, and its fee would be refunded on every unit).
+fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
+    let classes: Vec<BillableClass> = listed(tail.billable_classes, tail.billable_classes_len);
+    check_billable_classes(&classes)?;
+    let fee_units: Vec<AbiStr> = listed(tail.fee_units, tail.fee_units_len);
+    check_fee_units(&fee_units, &classes)
 }
 
 /// The tail's kernel-owned trust keys, judged PER ELEMENT: each key by `check_trust_keys`, each
@@ -401,7 +947,24 @@ impl Kind for Plane {
                     arena: i.arena_cap as u64,
                     ..Caps::default()
                 };
-                check_refusal(a.outcome, o, fields, &caps)
+                check_refusal(a.outcome, o, fields, &caps)?;
+                // SAFETY: `records_buf` is the host's own buffer of `records_cap` `RecordWrite`s,
+                // named by this op's `in` (NULL with `0` from a host that lends none).
+                let records = unsafe {
+                    reported(
+                        i.records_buf.cast_const(),
+                        u64::from(o.records_written),
+                        i.records_cap as u64,
+                        "refusal.records",
+                    )
+                }?;
+                // A refusal that writes no record needs no tail to be judged against.
+                let b = if o.records_written == 0 {
+                    Bounds::default()
+                } else {
+                    *bounds(a)?
+                };
+                check_refusal_records(a.outcome, o, records, i.records_cap as u64, &b)
             }
             slot::SERVE => {
                 let i = a.input::<ServeIn>()?;
@@ -421,7 +984,22 @@ impl Kind for Plane {
                     arena: i.arena_cap as u64,
                     ..Caps::default()
                 };
-                check_serve(a.outcome, o, fields, &caps)
+                check_serve(a.outcome, o, fields, &caps)?;
+                // SAFETY: as `refusal`: the host's `records_buf` of `records_cap` elements.
+                let records = unsafe {
+                    reported(
+                        i.records_buf.cast_const(),
+                        u64::from(o.records_written),
+                        i.records_cap as u64,
+                        "serve.records",
+                    )
+                }?;
+                let b = if o.records_written == 0 {
+                    Bounds::default()
+                } else {
+                    *bounds(a)?
+                };
+                check_serve_records(a.outcome, o, records, i.records_cap as u64, &b)
             }
             slot::PROJECT => project(a),
             life::OPEN if a.outcome == Outcome::Ready => {
@@ -440,7 +1018,28 @@ impl Kind for Plane {
                     "refresh.snapshot",
                 )
             }
-            life::CANCEL => check_cancel(a.outcome, a.out::<CancelOut>()?.disposition),
+            life::CANCEL => {
+                let i = a.input::<plane::PlaneCancelIn>()?;
+                let o = a.out::<plane::PlaneCancelOut>()?;
+                check_cancel(a.outcome, o.cancel.disposition)?;
+                // SAFETY: `records_buf` is the host's own buffer of `records_cap` `RecordWrite`s,
+                // named by this op's `in` (NULL with `0` from a host that lends none).
+                let records = unsafe {
+                    reported(
+                        i.records_buf.cast_const(),
+                        u64::from(o.records_written),
+                        i.records_cap as u64,
+                        "cancel.records",
+                    )
+                }?;
+                let b = if o.records_written == 0 {
+                    Bounds::default()
+                } else {
+                    *bounds(a)?
+                };
+                let caps = (i.records_cap as u64, i.arena_cap as u64);
+                check_cancel_records(a.outcome, o, records, caps, &b)
+            }
             life::DRIVE => {
                 let cap = a.input::<PlaneDriveIn>()?.sessions_cap as u64;
                 check_drive(a.outcome, a.out::<PlaneDriveOut>()?, cap)
@@ -455,6 +1054,12 @@ impl Kind for Plane {
     /// sessions at the kind's maximum, so a `drive` never answers short.
     fn drive_frame() -> Box<dyn DriveFrame> {
         Box::new(PlaneDrive::new())
+    }
+
+    /// The plane's `cancel` frame: `PlaneCancelIn`/`PlaneCancelOut`, lending record buffers so the
+    /// cancelled unit writes its row (SEAM-L(r)).
+    fn cancel_frame() -> Box<dyn CancelFrame> {
+        Box::new(PlaneCancel::new())
     }
 
     /// THE REQUEST LOOKUP: the unit an `arrive`, an `on_piece` or a `refusal` serves, the kernel-
@@ -513,6 +1118,97 @@ impl Kind for Plane {
                 .is_ok_and(|o| o.sessions_needed != 0),
             _ => false,
         }
+    }
+}
+
+/// The record writes a plane's `cancel` may carry, and the arena their bytes go in: `cancel` is
+/// never re-called, so a plane writes within these.
+pub const CANCEL_RECORDS: usize = 16;
+/// The arena bytes a plane's `cancel` is lent.
+pub const CANCEL_ARENA: usize = 4096;
+
+/// A plane's `cancel` frame and the host buffers its `in` names (SEAM-L(r)).
+pub struct PlaneCancel {
+    frame: Frame<plane::PlaneCancelIn, plane::PlaneCancelOut>,
+    records: Vec<RecordWrite>,
+    arena: Vec<u8>,
+}
+
+impl Default for PlaneCancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlaneCancel {
+    /// A frame with [`CANCEL_RECORDS`] record slots and a [`CANCEL_ARENA`]-byte arena.
+    #[must_use]
+    pub fn new() -> Self {
+        let none = RecordWrite {
+            kind: 0,
+            op: 0,
+            key: busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 },
+            value: busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 },
+        };
+        let base = crate::dispatch::cancel_frame(Ticket::NONE);
+        PlaneCancel {
+            frame: Frame::new(
+                plane::PlaneCancelIn {
+                    cancel: base.input,
+                    records_buf: std::ptr::null_mut(),
+                    records_cap: 0,
+                    arena_buf: std::ptr::null_mut(),
+                    arena_cap: 0,
+                },
+                plane::PlaneCancelOut {
+                    cancel: base.out,
+                    records_written: 0,
+                    _reserved: 0,
+                    arena_written: 0,
+                },
+            ),
+            records: vec![none; CANCEL_RECORDS],
+            arena: vec![0; CANCEL_ARENA],
+        }
+    }
+
+    /// The frame, for a ticketless `cancel` crossing through [`Plugin::call`].
+    pub fn frame(&mut self) -> &mut Frame<plane::PlaneCancelIn, plane::PlaneCancelOut> {
+        &mut self.frame
+    }
+}
+
+impl CancelFrame for PlaneCancel {
+    fn prepare(&mut self, ticket: Ticket, class: u8) -> (*mut InHead, *mut OutHead, u32) {
+        let base = crate::dispatch::cancel_frame(ticket);
+        let input = &mut self.frame.input;
+        input.cancel = base.input;
+        input.cancel.head.size = std::mem::size_of::<plane::PlaneCancelIn>() as u32;
+        input.cancel.head.deadline_class = class;
+        input.records_buf = self.records.as_mut_ptr();
+        input.records_cap = self.records.len();
+        input.arena_buf = self.arena.as_mut_ptr();
+        input.arena_cap = self.arena.len();
+        self.frame.out = plane::PlaneCancelOut {
+            cancel: base.out,
+            records_written: 0,
+            _reserved: 0,
+            arena_written: 0,
+        };
+        self.frame.heads()
+    }
+
+    fn disposition(&self) -> u32 {
+        self.frame.out.cancel.disposition
+    }
+
+    fn writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {
+        let arena = (self.frame.out.arena_written as usize).min(self.arena.len());
+        busbar_contract::plane_calls::CancelWrite::owned(
+            &self.records,
+            (self.frame.out.records_written as usize).min(self.records.len()),
+            &self.arena[..arena],
+        )
     }
 }
 
@@ -728,6 +1424,8 @@ pub struct OwnedSnapshot {
     pub audience: Option<String>,
     /// Its resource metadata document; `None` = none.
     pub resource_metadata: Option<String>,
+    /// Its protected-resource facts (JSON); `None` = none.
+    pub resource_facts: Option<Vec<u8>>,
 }
 
 impl crate::dispatch::Plugin<Plane> {
@@ -828,5 +1526,10 @@ fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot
         }),
         audience: owned_str(s.audience)?,
         resource_metadata: owned_str(s.resource_metadata)?,
+        resource_facts: (!s.resource_facts.ptr.is_null()).then(|| {
+            // SAFETY: the check accepted the blob; it names `len` bytes of generation data.
+            unsafe { std::slice::from_raw_parts(s.resource_facts.ptr, s.resource_facts.len) }
+                .to_vec()
+        }),
     })
 }

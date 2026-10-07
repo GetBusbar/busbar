@@ -68,7 +68,9 @@ mod stage;
 pub mod store_adapter;
 pub mod store_v3;
 pub mod tarball;
-#[cfg(any(test, feature = "test-support"))]
+/// TEST ONLY: the test connection table. Also the published conformance suite's (`conformance`):
+/// a plugin repo names this crate only as a dev-dependency, so it reaches no shipped closure.
+#[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod tcp_conns;
 /// TEST ONLY: a local token issuer (an ES256 key, its JWKS, signed tokens) for the tests of a host
 /// that loads a token-verifying auth plugin (`test-support`).

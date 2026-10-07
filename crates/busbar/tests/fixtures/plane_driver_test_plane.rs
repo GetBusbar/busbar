@@ -10,7 +10,10 @@
 //! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`, `/clock`). A unit
 //! on `/call/local` answers its caller itself (an echo of the body); a unit on `/call/nest:<target>`
 //! runs `POST <target>` as a NESTED unit through the host's `unit.nest` and answers its caller
-//! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it). Its far-end
+//! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it); a unit on
+//! `/call/services` passes its body through the host's `content.scan`, `hook.call` (a gate, then a
+//! rewrite) and `verify.lookup` (keyed by the body), and answers `<op>=<value>` (or
+//! `<op>!<reason>`) for each, space-separated. Its far-end
 //! answer echoes the far end's bytes, in pieces of at most `reply_cap` (`more = 1` for the rest),
 //! with cumulative far-end-reported units = the bytes emitted so far.
 //!
@@ -39,12 +42,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use busbar_contract::abi::hook::{MessageView, PromptView};
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, IoIn, Need, DIRECTION_OUTBOUND,
 };
 use busbar_contract::abi::host::service::{
-    op as service_op, ClockNowIn, ClockReading, HostSlots, ItemSpan, ServiceBufs, ServiceHead,
-    ServiceOut, UnitNestIn,
+    op as service_op, ClockNowIn, ClockReading, ContentScanIn, HookCallIn, HostSlots, ItemSpan,
+    ServiceBufs, ServiceFn, ServiceHead, ServiceOut, UnitNestIn, VerifyLookupIn, HOOK_GATE,
+    HOOK_REWRITE,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT, FLAG_RESUME,
@@ -279,6 +284,10 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: &STATUSES.0 as *const RefusalStatus,
     refusal_statuses_len: 3,
+    caller_credential_refusal: NO_STR,
+    admin_routes: std::ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: NO_BLOB,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
@@ -553,6 +562,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             openapi: NO_BLOB,
             audience: NO_STR,
             resource_metadata: NO_STR,
+            resource_facts: NO_BLOB,
         });
         let me = Box::new(Inst {
             wake,
@@ -746,7 +756,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 me.tick_every_ms.store(ms, Ordering::SeqCst);
                 vec![estimate(0, ms)]
             }
-            t if t == b"/call/local" || t.starts_with(b"/call/nest:") => {
+            t if t == b"/call/local" || t == b"/call/services" || t.starts_with(b"/call/nest:") => {
                 // A local answer, or a nesting unit: each routes directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
                 o.pool = AbiStr {
@@ -867,6 +877,20 @@ extern "C" fn on_piece(
                     let reply = match nest(me, t, child, &u.body) {
                         None => return say(out, Outcome::Pending),
                         Some(reply) => reply,
+                    };
+                    o.reply_status = 200;
+                    let n = reply.len().min(i.reply_cap);
+                    std::ptr::copy_nonoverlapping(reply.as_ptr(), i.reply_buf, n);
+                    o.emitted = n as u64;
+                    o.flags = EMIT_DONE;
+                    return say(out, Outcome::Ready);
+                }
+                if head.as_slice() == b"/call/services" {
+                    // The in-session services, each on the unit's own ticket under its own handle;
+                    // one that pends pends this crossing, and the resumed crossing re-issues every
+                    // handle and reads what each stored.
+                    let Some(reply) = in_session(me, t, &u.body) else {
+                        return say(out, Outcome::Pending);
                     };
                     o.reply_status = 200;
                     let n = reply.len().min(i.reply_cap);
@@ -1055,6 +1079,138 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
     }
 }
 
+/// `content.scan`, `hook.call` (gate, rewrite) and `verify.lookup` over `body`, on ticket `t`
+/// (handles `0..4`): `None` while one pends; then each one's `<op>=<value>` or `<op>!<reason>`.
+unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8>> {
+    let Some(table) = me.services.as_ref() else {
+        return Some(b"unserved".to_vec());
+    };
+    let head = |op: u32, size: usize, seq: u32| ServiceHead {
+        size: size as u32,
+        op,
+        handle: CompletionHandle {
+            ticket: t,
+            seq,
+            _reserved: 0,
+        },
+    };
+    let mut buf = vec![0u8; 1 << 12];
+    let blank = ItemSpan {
+        key: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+    };
+    let mut spans = [blank; 4];
+    let mut into = || ServiceBufs {
+        buf: buf.as_mut_ptr(),
+        cap: buf.len(),
+        spans: spans.as_mut_ptr(),
+        spans_cap: spans.len(),
+    };
+    let blob = Blob {
+        ptr: body.as_ptr(),
+        len: body.len(),
+        fmt: 0,
+        flags: 0,
+    };
+    let message = MessageView {
+        role: s(b"user"),
+        text: AbiStr {
+            ptr: body.as_ptr(),
+            len: body.len(),
+        },
+    };
+    let prompt = PromptView {
+        system: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        message_count: 1,
+        body: Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: 0,
+            flags: 0,
+        },
+        messages: &message,
+        messages_len: 1,
+    };
+    let scan = ContentScanIn {
+        head: head(
+            service_op::CONTENT_SCAN,
+            std::mem::size_of::<ContentScanIn>(),
+            0,
+        ),
+        content: blob,
+        into: into(),
+    };
+    let hook = |stage: u32, seq: u32, into: ServiceBufs| HookCallIn {
+        head: head(
+            service_op::HOOK_CALL,
+            std::mem::size_of::<HookCallIn>(),
+            seq,
+        ),
+        stage,
+        from: 0,
+        prompt: &prompt,
+        into,
+    };
+    let gate = hook(HOOK_GATE, 1, into());
+    let rewrite = hook(HOOK_REWRITE, 2, into());
+    let verify = VerifyLookupIn {
+        head: head(
+            service_op::VERIFY_LOOKUP,
+            std::mem::size_of::<VerifyLookupIn>(),
+            3,
+        ),
+        key: AbiStr {
+            ptr: body.as_ptr(),
+            len: body.len(),
+        },
+        into: into(),
+    };
+    let calls: [(&str, Option<ServiceFn>, *const c_void); 4] = [
+        (
+            "scan",
+            table.content_scan,
+            (&scan as *const ContentScanIn).cast(),
+        ),
+        ("gate", table.hook_call, (&gate as *const HookCallIn).cast()),
+        (
+            "rewrite",
+            table.hook_call,
+            (&rewrite as *const HookCallIn).cast(),
+        ),
+        (
+            "verify",
+            table.verify_lookup,
+            (&verify as *const VerifyLookupIn).cast(),
+        ),
+    ];
+    let mut said = Vec::new();
+    let mut pending = false;
+    for (name, slot, input) in calls {
+        me.count(Stat::HostCalls);
+        let Some(slot) = slot else {
+            said.push(format!("{name}!unserved"));
+            continue;
+        };
+        let mut answer = std::mem::zeroed::<ServiceOut>();
+        match slot(me.ctx, input, &mut answer).outcome() {
+            Outcome::Pending => pending = true,
+            Outcome::Ready => said.push(format!("{name}={}", answer.value)),
+            _ => {
+                let why = if answer.error.ptr.is_null() {
+                    &[][..]
+                } else {
+                    std::slice::from_raw_parts(answer.error.ptr, answer.error.len)
+                };
+                said.push(format!("{name}!{}", String::from_utf8_lossy(why)));
+            }
+        }
+    }
+    (!pending).then(|| said.join(" ").into_bytes())
+}
+
 /// Emit `b` toward the caller (or, with [`EMIT_TO_FAR_END`], toward the far end), cut to the reply
 /// buffer.
 unsafe fn emit(i: &OnPieceIn, o: &mut OnPieceOut, b: &[u8]) {
@@ -1197,7 +1353,8 @@ extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> R
     unsafe {
         let i = &*input.cast::<ServeIn>();
         let o = &mut *out.cast::<ServeOut>();
-        if i.route != 0 {
+        // Route 0, the admin route; route 1, the public one (answered under its own word).
+        if i.route > 1 {
             return say(out, Outcome::Refused);
         }
         let body = bytes(i.body);
@@ -1213,8 +1370,9 @@ extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> R
             std::slice::from_raw_parts(i.fields, i.fields_len)
         };
         let names: Vec<&[u8]> = fields.iter().map(|f| text(f.name)).collect();
+        let word: &[u8] = if i.route == 1 { b"public " } else { b"served " };
         let mut reply = [
-            b"served ".as_slice(),
+            word,
             text(i.target),
             b" fields=",
             names.join(&b","[..]).as_slice(),
@@ -1364,6 +1522,7 @@ unsafe fn establish_and_read(me: &Inst, ticket: Ticket) -> bool {
         timeout_ms: 0,
         target: s(b"far"),
         within: NO_STR,
+        member: NO_STR,
     };
     let Some(o) = conn_call(me, slots.establish, &mut est, ticket, 1, service::ESTABLISH) else {
         return false;

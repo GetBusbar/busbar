@@ -284,18 +284,25 @@ async fn a_door_judging_another_audience_is_told_apart() {
 }
 
 /// **THE RED ARM OF THE CONNECTION TABLE.** The same dropped-in door handed NO table cannot fetch
-/// its JWKS (the plugin holds no socket), so it identifies no one and refuses the valid token
-/// (fail-closed: a token it cannot check is refused): the identity the comparison sees is the
-/// table's fetch, not something the plugin did on its own.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_door_handed_no_connection_table_identifies_no_one() {
+/// its JWKS (the plugin holds no socket), so the loader refuses to open it to serve (a door that
+/// declares needs and is bound with none never serves: `LoadError::NoConnectionTable`): the
+/// identity the comparison sees is the table's fetch, not something the plugin did on its own.
+#[test]
+fn a_door_handed_no_connection_table_identifies_no_one() {
     let Some([_, dropped]) = doors(false) else {
         eprintln!("skip: the auth fixture's cdylib is not built");
         return;
     };
-    let t = transcript(dropped, AUDIENCE, None).await;
-    assert!(!t.contains("Identity("), "{t}");
-    assert!(t.contains("valid -> Reject"), "{t}");
+    let refused = AuthRows::new(Arc::new(dropped), dispatcher())
+        .open(ALIAS, ALIAS, &settings(AUDIENCE))
+        .map(|_| ())
+        .expect_err("a networked auth door handed no connection table must not open to serve");
+    assert!(
+        refused
+            .to_string()
+            .contains("bound with no connection table"),
+        "{refused}"
+    );
 }
 
 /// **THE RED ARM OF THE ROW COMPARISON.** The same `cdylib` signed by a third party is a different

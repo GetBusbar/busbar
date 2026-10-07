@@ -44,7 +44,7 @@ fn bind(d: &Dispatcher) -> Bind {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     }
 }
 
@@ -122,6 +122,7 @@ fn request() -> RoutingRequest<'static> {
         prompt: None,
         identity: None,
         signals: SignalBag::new(),
+        session: None,
     }
 }
 

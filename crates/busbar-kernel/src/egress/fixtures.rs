@@ -423,16 +423,17 @@ pub fn with_scoped_dial<R>(
 pub struct PrivateRefusing(pub Vec<String>);
 
 impl crate::host_services::DestJudge for PrivateRefusing {
-    fn judge_name(&self, _dest: &str, _class: u32) -> Result<(), u64> {
+    fn judge_name(&self, _dest: &str, _class: u32, _refuse_private: bool) -> Result<(), u64> {
         Ok(())
     }
     fn judge(
         &self,
         _dest: &str,
         _class: u32,
+        _refuse_private: bool,
         _done: Box<dyn FnOnce(crate::host_services::Admitted) + Send>,
     ) -> Option<crate::host_services::Admitted> {
-        Some(Err(busbar_contract::abi::host::service::DEST_NO_HOST))
+        Some(Err(busbar_contract::abi::host::service::DEST_NO_HOST.into()))
     }
     fn judge_answer(
         &self,

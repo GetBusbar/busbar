@@ -53,6 +53,7 @@ pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -210,7 +211,8 @@ fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        // A transport door is a framer the connector drives: it declares no need.
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_dropped::<Transport>(path, &stated, bind).ok()?;
     let key = *plugin.context::<TransportFacts>()?.claims.first()?;
@@ -276,7 +278,8 @@ pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: None,
+            // A probe: the library is only read for what it states, never opened to serve.
+            conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
         };
         let plugin = load_dropped::<Export>(&p, &stated, bind).ok()?;
         let metrics = [ExportStream::Metrics as u8];
@@ -308,7 +311,7 @@ pub fn render_snapshot(lib: &[u8], name: &str, settings: &str, exposition: &str)
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
     };
     let plugin = load_dropped::<Export>(&path, &stated, bind).expect("the sink loads");
     let _ = std::fs::remove_file(&path);

@@ -265,6 +265,15 @@ pub enum LoadError {
         /// The need's unserved scheme.
         scheme: String,
     },
+    /// A door whose Statement declares a need was bound to SERVE with no connection table
+    /// ([`ConnTable::NoNeeds`](super::ConnTable::NoNeeds)): it could never dial or listen, so it is
+    /// refused at bind (Q-P4-3), never at its first open.
+    NoConnectionTable {
+        /// The plugin the Statement names.
+        plugin: String,
+        /// How many needs it declares.
+        needs: usize,
+    },
 }
 
 /// What every refusal of a plugin built against an older contract tells the operator to do.
@@ -335,6 +344,10 @@ impl fmt::Display for LoadError {
                 f,
                 "plugin `{plugin}` declares an {} need over `{scheme}`, and no loaded transport serves `{scheme}`",
                 if *inbound { "inbound" } else { "outbound" }
+            ),
+            Self::NoConnectionTable { plugin, needs } => write!(
+                f,
+                "plugin '{plugin}' declares {needs} connection need(s) and was bound with no connection table"
             ),
         }
     }

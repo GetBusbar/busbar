@@ -289,7 +289,7 @@ impl HostServices for DiskHost {
             mono_ns: 0,
         }
     }
-    fn dest_judge(&self, _: &str, _: u32, _: bool, _: Option<Later>) -> Ran {
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
         Ran::Now(Stored::refused(NO_SERVICE))
     }
     fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
@@ -345,6 +345,28 @@ impl HostServices for DiskHost {
 
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
         Ran::Now(Stored::refused("no work book here"))
+    }
+
+    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::refused("no verify cache here"))
+    }
+
+    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+        Stored::refused("no verify cache here")
+    }
+
+    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::refused("no hook stage here"))
+    }
+
+    fn hook_call(
+        &self,
+        _: &Caller,
+        _: Option<u64>,
+        _: busbar_contract::services::HookAsk,
+        _: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused("no hook stage here"))
     }
 }
 
@@ -728,7 +750,7 @@ fn bind(label: &str, sink: Arc<Tape>, d: &Dispatcher) -> Bind {
         max_inflight_cap: 64,
         sink,
         dispatcher: d.adopter(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::Probe,
     }
 }
 

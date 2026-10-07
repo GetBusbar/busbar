@@ -17,6 +17,19 @@
 //! }
 //! ```
 //!
+//! A NETWORKED plugin over a framed scheme, or one that secures a stream through the host's TLS,
+//! names busbar's HOST connector too ([`Host`]: busbar's connector composed as production composes
+//! it, carrier -> [TLS] -> framer, Q-P4-4), and, for TLS, the test CA its local endpoint's
+//! certificate chains to; both go to the HOST, never to the plugin:
+//!
+//! ```ignore
+//! busbar_plugin_loader::conformance_suite! {
+//!     door: …, cdylib: …, inputs: …,
+//!     host: <busbar's host connector, a `conformance::Host`>,
+//!     tls: include_str!("test-ca.pem"),
+//! }
+//! ```
+//!
 //! with `busbar-plugin-loader = { git = …, rev = <the pin>, features = ["conformance"] }` as a
 //! dev-dependency. The macro emits the suite's tests; `plugin-ci.yml` runs them under `--release`.
 //!
@@ -38,10 +51,22 @@
 //! * the mechanism's optional `ready` (discovery at boot) is a step of every kind's script: a door
 //!   that states none is not called (0 crossings); one that states it is awaited on a real ticket.
 //!
+//! THE CONNECTION TABLE (ARCHITECT, "SUITE CONNECTIONS"): a plugin whose Statement declares a
+//! need the table serves (`tcp`: `host:port`, `unix:/path`) is bound, on each leg, to a connection
+//! table of its own built the same way ([`Subject::conns`], the loader's test table
+//! [`TcpConns`](crate::tcp_conns::TcpConns) over the leg dispatcher's conn waker), so a networked
+//! plugin dials the REAL local endpoint its `conformance.json` settings name, through the host
+//! connector's slots, reads PENDING and is woken. A plugin that declares no need is bound with no
+//! table, as before (the loader hands a table only to a Statement with a need). With busbar's HOST
+//! connector named (Q-P4-4: carrier -> [TLS] -> framer, as production composes it), every need over
+//! any scheme it serves binds over that connector instead, and its TLS trusts the suite's test
+//! anchors.
+//!
 //! THE RED ARMS, run in the plugin's own run: a perturbed pinned count is refused by the same
 //! comparator; the door restated at its kind ABI ± 1 is refused, linked (`KindAbi`) and dropped in
 //! (`ManifestKindAbi`, before `dlopen`); the door with a `ready` that fails refuses the boot with the
-//! plugin's text. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
+//! plugin's text; a networked door (the real one, or restated with a `tcp` need) bound to serve with
+//! no connection table is refused at bind, naming the plugin. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
 //! step can require that the suite FAILS when a count moves.
 //!
 //! THE SEAM (QUESTIONS, slot CONF-SUITE): the suite lives here, behind the `conformance` feature,
@@ -58,13 +83,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON,
+    AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON,
 };
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
-use busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC;
+use busbar_contract::abi::mechanism::rendering::{self as rendering, RENDERING_MAGIC};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
 
@@ -72,11 +97,14 @@ use crate::dispatch::kinds::{
     auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
     transport::Transport,
 };
+use busbar_contract::conn::DeclaredConns;
+
 use crate::dispatch::{
     in_head, load_dropped, load_linked, out_head, rendering_of, rendering_of_library, Bind, Called,
-    DispatchConfig, Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink, OutFrame,
-    Plugin,
+    ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink,
+    OutFrame, Plugin,
 };
+use crate::tcp_conns::TcpConns;
 
 mod auth;
 mod export;
@@ -105,7 +133,77 @@ pub struct Subject {
     pub cdylib_crate: &'static str,
     /// The plugin's `conformance.json`.
     pub inputs: serde_json::Value,
+    /// THE HOST CONNECTOR the suite binds a networked plugin over (`conformance_suite! { …, host: …
+    /// }`): busbar's own connector, composed as the root composes it ([`Host`]). `None`: the
+    /// loader's test table ([`TcpConns`], plain `tcp` only).
+    pub host: Option<Host>,
+    /// TEST TRUST ANCHORS (CA certificates, PEM) for the HOST connector's TLS
+    /// (`conformance_suite! { …, tls: … }`): never handed to the plugin.
+    pub anchors: Option<String>,
+    /// THE PER-FOLD NAMESPACE HOOKS (`conformance_suite! { …, namespace: (create, drop) }`):
+    /// `create` makes a fold's namespace before its open, `drop` removes it after the fold.
+    pub namespace: Option<(NamespaceHook, NamespaceHook)>,
 }
+
+/// A per-fold namespace hook: called with the fold's namespace (what [`FOLD`] was filled with) and
+/// the fold's filled settings. The PLUGIN implements it with its own test client (a store that never
+/// creates a schema on demand: `CREATE SCHEMA` / `DROP SCHEMA … CASCADE`); nothing in the store's
+/// behaviour changes.
+pub type NamespaceHook = fn(&str, &[u8]);
+
+/// One fold's settings, its [`FOLD`] filled with a namespace of its own, created by the subject's
+/// `create` hook when it was made and dropped by its `drop` hook when this goes (the fold's end,
+/// its failure included). Reads as the settings bytes.
+pub struct FoldSettings<'s> {
+    subject: &'s Subject,
+    namespace: String,
+    settings: Vec<u8>,
+}
+
+impl FoldSettings<'_> {
+    /// The fold's namespace.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+}
+
+impl std::fmt::Debug for FoldSettings<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FoldSettings")
+            .field("namespace", &self.namespace)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Deref for FoldSettings<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.settings
+    }
+}
+
+impl Drop for FoldSettings<'_> {
+    fn drop(&mut self) {
+        let Some((_, drop)) = self.subject.namespace else {
+            return;
+        };
+        if std::thread::panicking() {
+            // The fold failed: drop its namespace still, never turning the failure into an abort.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                drop(&self.namespace, &self.settings);
+            }));
+        } else {
+            drop(&self.namespace, &self.settings);
+        }
+    }
+}
+
+/// The suite's HOST CONNECTOR, as the busbar side builds it for one leg: its parked reads woken
+/// through the leg dispatcher's conn waker, its TLS trusting the test anchors (PEM) when named.
+/// INJECTED, never named here: this crate cannot depend on the connector (the connector depends on
+/// the kernel, which depends on this crate), so the busbar side that composes it hands it in.
+pub type Host = fn(Arc<dyn Fn(u64) + Send + Sync>, Option<&str>) -> Arc<dyn DeclaredConns>;
 
 impl Subject {
     /// `inputs` is the plugin's `conformance.json` text.
@@ -121,7 +219,49 @@ impl Subject {
             door,
             cdylib_crate,
             inputs,
+            host: None,
+            anchors: None,
+            namespace: None,
         }
+    }
+
+    /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
+    /// (Q-P4-8).
+    #[must_use]
+    pub fn with_namespace(mut self, create: NamespaceHook, drop: NamespaceHook) -> Self {
+        self.namespace = Some((create, drop));
+        self
+    }
+
+    /// One fold's settings, tagged `tag` (its leg, or the RED arm that opens): [`FOLD`] filled with
+    /// a namespace no other fold uses ([`fold_namespace`]), made by the `create` hook now and
+    /// removed by the `drop` hook when the returned settings go.
+    #[must_use]
+    pub fn fold_settings(&self, tag: &str) -> FoldSettings<'_> {
+        let namespace = fold_namespace(tag);
+        let settings = self.settings_in(&namespace);
+        if let Some((create, _)) = self.namespace {
+            create(&namespace, &settings);
+        }
+        FoldSettings {
+            subject: self,
+            namespace,
+            settings,
+        }
+    }
+
+    /// This subject's networked needs bind over `host` (the busbar side's host connector).
+    #[must_use]
+    pub fn with_host(mut self, host: Host) -> Self {
+        self.host = Some(host);
+        self
+    }
+
+    /// The host connector's TLS trusts `pem` (test CA certificates) too.
+    #[must_use]
+    pub fn with_anchors(mut self, pem: &str) -> Self {
+        self.anchors = Some(pem.to_owned());
+        self
     }
 
     /// The kind the linked door states.
@@ -159,13 +299,28 @@ impl Subject {
             .expect("the cdylib exports busbar_plugin_door")
     }
 
-    /// The settings the plugin opens over (`inputs.settings`, a JSON value, serialized).
+    /// The settings the plugin opens over (`inputs.settings`, a JSON value, serialized), its
+    /// [`FOLD`] placeholder filled with a namespace of its own ([`fold_namespace`]`("suite")`).
     #[must_use]
     pub fn settings(&self) -> Vec<u8> {
-        match self.inputs.get("settings") {
+        self.settings_in(&fold_namespace("suite"))
+    }
+
+    /// The settings the plugin opens over, every [`FOLD`] placeholder in them replaced by
+    /// `namespace` (Q-P4-8: each fold writes into its own schema or key prefix). Settings that name
+    /// no placeholder are exactly `inputs.settings`.
+    #[must_use]
+    pub fn settings_in(&self, namespace: &str) -> Vec<u8> {
+        let raw = match self.inputs.get("settings") {
             None | Some(serde_json::Value::Null) => b"{}".to_vec(),
             Some(serde_json::Value::String(s)) => s.as_bytes().to_vec(),
             Some(v) => v.to_string().into_bytes(),
+        };
+        let text = String::from_utf8_lossy(&raw);
+        if text.contains(FOLD) {
+            text.replace(FOLD, namespace).into_bytes()
+        } else {
+            raw
         }
     }
 
@@ -200,6 +355,70 @@ impl Subject {
     #[must_use]
     pub fn kind_inputs(&self, kind: &str) -> &serde_json::Value {
         self.inputs.get(kind).unwrap_or(&serde_json::Value::Null)
+    }
+
+    /// The needs the linked door's Statement declares (the dropped-in library states the same
+    /// Statement: [`both_ways`] proves it), in Statement order.
+    ///
+    /// # Panics
+    /// When the door's Statement does not render or read back.
+    #[must_use]
+    pub fn needs(&self) -> Vec<rendering::ReadNeed> {
+        let row =
+            LinkedRow::of(self.door).unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
+        rendering::read(&row.statement)
+            .unwrap_or_else(|e| panic!("the door's Statement does not read back: {e:?}"))
+            .needs
+    }
+
+    /// THE LEG'S CONNECTION TABLE, built the same way for the linked and the dropped-in leg: the
+    /// loader's test table ([`TcpConns`]) waking a parked read's ticket through `d`'s conn waker,
+    /// when the Statement declares a need and the table serves every one it declares (`tcp`; a need
+    /// naming no transport asks for none). `None` when it declares no need (bound as before), or a
+    /// need over a scheme the table does not serve (`http`, `https`, ...: the host connector's
+    /// framing, which the test table has not; bound with no table, as before). `upgrade_secure` is
+    /// refused: the table secures no stream (it names no TLS library).
+    ///
+    /// With a HOST connector ([`Subject::host`]) every need, over any scheme it serves (`tcp`,
+    /// `http`, `https`, …), binds over it, built the same way for each leg; its TLS trusts the
+    /// subject's [`Subject::anchors`].
+    ///
+    /// # Panics
+    /// Test anchors are named with no host connector to trust them.
+    #[must_use]
+    pub fn conns(&self, d: &Dispatcher) -> Option<Arc<dyn DeclaredConns>> {
+        let needs = self.needs();
+        if needs.is_empty() {
+            return None;
+        }
+        if let Some(host) = self.host {
+            return Some(host(d.conn_waker(), self.anchors.as_deref()));
+        }
+        assert!(
+            self.anchors.is_none(),
+            "conformance_suite!'s `tls:` anchors are the HOST connector's: name its `host:` too"
+        );
+        let table = TcpConns::new(d.conn_waker());
+        let served = needs
+            .iter()
+            .all(|n| n.transport.is_empty() || table.serves_scheme(&n.transport));
+        (!needs.is_empty() && served).then(|| Arc::new(table) as Arc<dyn DeclaredConns>)
+    }
+
+    /// The bind the kernel makes for this plugin on `d` ([`bind`]), SERVING over the leg's
+    /// connection table ([`Subject::conns`]); a door that declares no need serves with none. (A
+    /// need over a scheme the test table does not serve binds as a probe: no table, not refused.)
+    #[must_use]
+    pub fn bind(&self, d: &Dispatcher, instance: &str) -> Bind {
+        let conns = match self.conns(d) {
+            Some(table) => ConnTable::Host(table),
+            None if self.needs().is_empty() => ConnTable::NoNeeds,
+            None => ConnTable::Probe,
+        };
+        Bind {
+            conns,
+            ..bind(d, instance)
+        }
     }
 
     /// Set the environment the plugin's inputs name (`inputs.env`: name → value; `null` unsets).
@@ -261,6 +480,42 @@ pub fn cdylib_of(crate_snake: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("the plugin's cdylib ({name}) is not built under {profile:?}"))
 }
 
+/// THE PER-FOLD NAMESPACE PLACEHOLDER (Q-P4-8): `{fold}` anywhere in `conformance.json`'s
+/// `settings` (a schema name, a key prefix, a database name) is filled per fold with a namespace
+/// no other fold uses ([`fold_namespace`]), so two folds of one store, in one run or in two (CI's
+/// debug, release and RED runs), never see each other's rows or tombstones.
+///
+/// The store ABI offers no op that makes or drops a namespace, so a plugin whose backend never
+/// creates one on demand (a schema) names HOOKS that do, with its own test client
+/// (`conformance_suite! { …, namespace: (create, drop) }`, [`Subject::with_namespace`]): the suite
+/// creates each fold's namespace before its open and drops it after the fold, its failure
+/// included. Without hooks the suite leaves the namespace: a plugin's settings name a THROWAWAY
+/// backend (a test database or a key space it may litter), never one that holds data.
+pub const FOLD: &str = "{fold}";
+
+/// A namespace no other fold uses: `bbconf_<pid>_<tag>_<n>`, the process, the fold's tag (its leg)
+/// and a counter of this process's; lower-case letters, digits and `_` only, so it is a valid
+/// schema name and key prefix as it stands.
+#[must_use]
+pub fn fold_namespace(tag: &str) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tag: String = tag
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(
+        "bbconf_{}_{tag}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
 /// How a leg reaches the plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Leg {
@@ -270,6 +525,18 @@ pub enum Leg {
     Dropped,
 }
 
+impl Leg {
+    /// The settings this leg's fold opens over: `s`'s, its [`FOLD`] filled with a namespace of
+    /// the fold's own, made and removed by the subject's namespace hooks ([`Subject::fold_settings`]).
+    #[must_use]
+    pub fn settings(self, s: &Subject) -> FoldSettings<'_> {
+        s.fold_settings(match self {
+            Self::Linked => "linked",
+            Self::Dropped => "dropped",
+        })
+    }
+}
+
 /// A dispatcher of the leg's own.
 #[must_use]
 pub fn dispatcher() -> Arc<Dispatcher> {
@@ -277,7 +544,8 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 }
 
 /// The bind the kernel makes: a label, the inflight clamp, no envelope sink, the adopting
-/// dispatcher, no connection table.
+/// dispatcher, SERVING with no connection table (a door that declares a need is refused;
+/// [`Subject::bind`] adds the plugin's table).
 #[must_use]
 pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
     Bind {
@@ -285,17 +553,20 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        conns: ConnTable::NoNeeds,
     }
 }
 
-/// [`bind`], the instance bound to a connection table serving the subject's far ends
-/// ([`Subject::far_ends`]) when it names any: the plugin's declared needs reach them there, as the
-/// host's connector would carry them.
+/// [`Subject::bind`], the instance bound to a connection table serving the subject's far ends
+/// ([`Subject::far_ends`]) when its inputs name any: the plugin's declared needs reach them there,
+/// as the host's connector would carry them. Naming none, the leg's own table ([`Subject::conns`]).
 pub fn bind_far(d: &Dispatcher, instance: &str, s: &Subject) -> Bind {
-    Bind {
-        conns: s.far_ends(),
-        ..bind(d, instance)
+    match s.far_ends() {
+        Some(table) => Bind {
+            conns: ConnTable::Host(table),
+            ..bind(d, instance)
+        },
+        None => s.bind(d, instance),
     }
 }
 
@@ -310,40 +581,66 @@ pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadEr
     }
 }
 
-/// The crossings `p` has made, by the dispatcher's own crossing gate.
-pub(crate) fn crossings<K: Kind>(p: &Plugin<K>) -> &AtomicU64 {
-    &p.inner.crossings
+/// The crossings `p` has made, by the dispatcher's own crossing gate: every crossing, and of them
+/// the RESUME re-invocations, counted apart (Q-P4-5).
+pub(crate) fn crossings<K: Kind>(p: &Plugin<K>) -> Counts<'_> {
+    Counts {
+        total: &p.inner.crossings,
+        resumes: &p.inner.resumes,
+    }
+}
+
+/// One instance's crossing counters, as the dispatcher keeps them.
+#[derive(Clone, Copy)]
+pub struct Counts<'a> {
+    total: &'a AtomicU64,
+    resumes: &'a AtomicU64,
+}
+
+impl Counts<'_> {
+    /// (first invocations, resumes) so far: "one op = one crossing", however often it pended.
+    #[must_use]
+    pub fn read(&self) -> (u64, u64) {
+        let resumes = self.resumes.load(Ordering::SeqCst);
+        (self.total.load(Ordering::SeqCst) - resumes, resumes)
+    }
 }
 
 // ---- the fold ----
 
 /// One step of a kind's script: what it is, what it answered (as the host reads it), the crossings
-/// it made and the crossings the script pins for it.
+/// it made and the crossings the script pins for it. THE PIN IS FIRST INVOCATIONS (Q-P4-5; THE
+/// DESIGN §11.2 Ready | Pending(wake), A.3 "Resume"): one op is one crossing however often it
+/// pends; the RESUME re-invocations an op made on its ticket after it answered PENDING are counted
+/// apart and reported (`resumes`), never pinned: how often a real backend makes an op wait is the
+/// network's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     /// The step's label.
     pub label: String,
     /// Its answer, one transcript line.
     pub answer: String,
-    /// The crossings the instance made while it ran.
+    /// The FIRST-INVOCATION crossings the instance made while it ran.
     pub crossed: u64,
-    /// The crossings the kind's script pins for it.
+    /// The crossings the kind's script pins for it (first invocations).
     pub pinned: u64,
+    /// The RESUME re-invocations it made while it ran (reported, not pinned).
+    pub resumes: u64,
 }
 
 /// A leg's fold: its steps, in script order.
 pub type Fold = Vec<Step>;
 
-/// Records a script's steps against one instance's crossing counter.
+/// Records a script's steps against one instance's crossing counters.
 pub struct Recorder<'a> {
-    counter: &'a AtomicU64,
+    counter: Counts<'a>,
     steps: Fold,
 }
 
 impl<'a> Recorder<'a> {
     /// A recorder over `counter` (the instance's crossing gate).
     #[must_use]
-    pub fn new(counter: &'a AtomicU64) -> Self {
+    pub fn new(counter: Counts<'a>) -> Self {
         Self {
             counter,
             steps: Vec::new(),
@@ -352,14 +649,15 @@ impl<'a> Recorder<'a> {
 
     /// Run `f` as step `label`, pinned at `pinned` crossings; its answer is what `f` returns.
     pub fn step<T>(&mut self, label: &str, pinned: u64, f: impl FnOnce() -> (String, T)) -> T {
-        let before = self.counter.load(Ordering::SeqCst);
+        let (first, resumed) = self.counter.read();
         let (answer, value) = f();
-        let crossed = self.counter.load(Ordering::SeqCst) - before;
+        let (first_after, resumed_after) = self.counter.read();
         self.steps.push(Step {
             label: label.to_string(),
             answer,
-            crossed,
+            crossed: first_after - first,
             pinned,
+            resumes: resumed_after - resumed,
         });
         value
     }
@@ -390,8 +688,8 @@ pub fn exact(fold: &[Step]) -> Result<(), String> {
     for s in fold {
         if s.crossed != s.pinned {
             return Err(format!(
-                "step '{}': {} crossing(s), pinned {} (answer: {})",
-                s.label, s.crossed, s.pinned, s.answer
+                "step '{}': {} crossing(s), pinned {} ({} resume(s); answer: {})",
+                s.label, s.crossed, s.pinned, s.resumes, s.answer
             ));
         }
     }
@@ -406,8 +704,8 @@ pub fn same(linked: &[Step], dropped: &[Step]) -> Result<(), String> {
     for (l, d) in linked.iter().zip(dropped) {
         if (&l.label, &l.answer, l.crossed) != (&d.label, &d.answer, d.crossed) {
             return Err(format!(
-                "the two doors part at '{}':\n  linked:  {} [{} crossing(s)]\n  dropped: {} [{} crossing(s)]",
-                l.label, l.answer, l.crossed, d.answer, d.crossed
+                "the two doors part at '{}':\n  linked:  {} [{} crossing(s), {} resume(s)]\n  dropped: {} [{} crossing(s), {} resume(s)]",
+                l.label, l.answer, l.crossed, l.resumes, d.answer, d.crossed, d.resumes
             ));
         }
     }
@@ -417,6 +715,39 @@ pub fn same(linked: &[Step], dropped: &[Step]) -> Result<(), String> {
             linked.len(),
             dropped.len()
         ));
+    }
+    Ok(())
+}
+
+/// THE NETWORKED DOOR'S RESUMES (Q-P4-5): a door whose Statement declares a need the suite's table
+/// serves reaches a REAL endpoint through it, so the ops that dial answer PENDING and are
+/// RESUMED on their ticket (THE DESIGN §11.2 Ready | Pending(wake)): each step `dialing` names
+/// (`conformance.json`'s `dialing_steps`) resumed at least once, or, when it names none, at least
+/// one step of the fold did. A door that declares no need is not held to it.
+///
+/// # Errors
+/// The first dialing step that never resumed, or a networked fold with no resume at all.
+pub fn resumed(fold: &[Step], networked: bool, dialing: &[String]) -> Result<(), String> {
+    if !networked {
+        return Ok(());
+    }
+    for label in dialing {
+        match fold.iter().find(|st| &st.label == label) {
+            None => return Err(format!("dialing step '{label}' is not in the fold")),
+            Some(st) if st.resumes == 0 => {
+                return Err(format!(
+                    "dialing step '{label}' never resumed: a networked op answered READY on its \
+                     first invocation (answer: {})",
+                    st.answer
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+    if dialing.is_empty() && fold.iter().all(|st| st.resumes == 0) {
+        return Err(
+            "a networked door's fold resumed no op: nothing answered PENDING on the network".into(),
+        );
     }
     Ok(())
 }
@@ -506,6 +837,70 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     p.call(life::OPEN, &mut f)
 }
 
+/// `open` over `settings` THE WAY THE KERNEL OPENS IT (Q-P4-6): submitted on a ticket of `d`'s, so
+/// an `open` that answers PENDING (a store connecting to its backend) is RESUMED on its wake until
+/// it answers; the frame [`open`]'s.
+pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
+    let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
+    if K::CODE == KindCode::Plane {
+        let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
+        f.input.open.settings = json(settings);
+        f.input.open.generation = 1;
+        return on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline);
+    }
+    let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
+    f.input.settings = json(settings);
+    f.input.generation = 1;
+    on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline)
+}
+
+/// Op `s` over `f`, submitted AS THE KERNEL SUBMITS IT: on a ticket of `d`'s, in deadline class
+/// `class` (`deadline_ns` 0 = none), so an op that answers PENDING (it waits on the network) is
+/// RESUMED on its wake until it answers; its answer as the host reads it.
+pub fn on_ticket<K: Kind, I: InFrame, O: OutFrame>(
+    p: &Plugin<K>,
+    d: &Dispatcher,
+    s: u32,
+    f: Frame<I, O>,
+    class: DeadlineClass,
+    deadline_ns: u64,
+) -> Called {
+    on_ticket_frame(p, d, s, f, class, deadline_ns).0
+}
+
+/// [`on_ticket`], and the frame back as the op left it (`None` when the op was faulted mid-crossing
+/// or the ticket could not be minted): an op whose answer is in its `out` (a `resolve`'s material).
+pub fn on_ticket_frame<K: Kind, I: InFrame, O: OutFrame>(
+    p: &Plugin<K>,
+    d: &Dispatcher,
+    s: u32,
+    f: Frame<I, O>,
+    class: DeadlineClass,
+    deadline_ns: u64,
+) -> (Called, Option<Box<Frame<I, O>>>) {
+    let Some(ticket) = d.mint(0) else {
+        let refused = Called {
+            outcome: Outcome::Refused,
+            error: None,
+            lease: 0,
+            recall: None,
+        };
+        return (refused, None);
+    };
+    let done = d.submit(p, ticket, s, f, class, deadline_ns).wait_done();
+    d.recycle(ticket);
+    let called = Called {
+        outcome: done.outcome,
+        error: done.error,
+        lease: done.lease,
+        recall: None,
+    };
+    (called, done.frame)
+}
+
+/// How long the suite waits for one resumed `open`: the store bridge's call deadline.
+const OPEN_DEADLINE: Duration = Duration::from_secs(30);
+
 /// `refresh` over `settings`, generation 2.
 pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     let mut f: Frame<RefreshIn, OutHead> = Frame::new(input(), output());
@@ -537,19 +932,10 @@ pub fn close<K: Kind>(p: &Plugin<K>) -> Called {
 
 /// THE `ready` STEP every kind's script runs right after its `open` answered READY (the
 /// mechanism's discovery at boot, awaited before any listener binds). A door that states no
-/// `ready` is not called: pinned at 0 crossings. One that states it is pinned at the plugin's own
-/// `inputs.ready_crossings` (1 when it answers at once; 2 when it pends once and is resumed).
-///
-/// # Panics
-/// When the door states `ready` and the inputs pin no count for it.
-pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, s: &Subject, p: &Plugin<K>, d: &Dispatcher) {
-    let pinned = if p.has_ready() {
-        s.inputs["ready_crossings"].as_u64().unwrap_or_else(|| {
-            panic!("the door states `ready`: conformance.json must pin `ready_crossings`")
-        })
-    } else {
-        0
-    };
+/// `ready` is not called: pinned at 0 crossings. One that states it is pinned at ONE first
+/// invocation, its resumes reported (Q-P4-5; `inputs.ready_crossings` is no longer read).
+pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, _s: &Subject, p: &Plugin<K>, d: &Dispatcher) {
+    let pinned = u64::from(p.has_ready());
     rec.line("ready", pinned, || {
         format!(
             "has_ready={} {:?}",
@@ -589,6 +975,17 @@ pub fn both_ways(s: &Subject) {
         "the dropped-in library must state exactly the linked door's Statement"
     );
     let red = std::env::var(RED_ENV).is_ok_and(|v| v == "count");
+    // Networked: its needs are SERVED by the suite's table (it dials a real endpoint); a door whose
+    // needs the suite cannot serve binds as a probe and dials nothing.
+    let networked = s.conns(&dispatcher()).is_some();
+    let dialing: Vec<String> = s.inputs["dialing_steps"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut folds = Vec::new();
     for leg in [Leg::Linked, Leg::Dropped] {
         let mut f = fold(s, leg);
@@ -602,6 +999,9 @@ pub fn both_ways(s: &Subject) {
             f = perturbed(f, 0);
         }
         if let Err(e) = exact(&f) {
+            panic!("{leg:?}: {e}");
+        }
+        if let Err(e) = resumed(&f, networked, &dialing) {
             panic!("{leg:?}: {e}");
         }
         folds.push(f);
@@ -671,12 +1071,16 @@ impl Restated {
 static ABI_UP: Restated = Restated::new();
 static ABI_DOWN: Restated = Restated::new();
 static READY_FAILS: Restated = Restated::new();
+static NETWORKED: Restated = Restated::new();
 
 extern "C" fn abi_up_door() -> *const Door {
     ABI_UP.get()
 }
 extern "C" fn abi_down_door() -> *const Door {
     ABI_DOWN.get()
+}
+extern "C" fn networked_door() -> *const Door {
+    NETWORKED.get()
 }
 extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
@@ -799,18 +1203,18 @@ pub fn red_kind_abi(s: &Subject) {
     let stated = s.stated();
     by_kind!(kind, K => {
         let d = dispatcher();
-        load::<K>(s, Leg::Linked, bind(&d, "honest-linked")).expect("the honest door loads linked");
-        load::<K>(s, Leg::Dropped, bind(&d, "honest-dropped"))
+        load::<K>(s, Leg::Linked, s.bind(&d, "honest-linked")).expect("the honest door loads linked");
+        load::<K>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
             .expect("the honest library loads dropped in");
         for (door, abi) in [(abi_up_door as DoorFn, host + 1), (abi_down_door, host.wrapping_sub(1))] {
             let want = LoadError::KindAbi { kind, door: abi, host };
             assert_eq!(rendering_of(door).err(), Some(want.clone()), "the pack tool signs no ABI {abi} door");
             let refused = LinkedRow::of(door)
-                .and_then(|row| load_linked::<K>(&row, bind(&d, "red-linked")).map(|_| ()))
+                .and_then(|row| load_linked::<K>(&row, s.bind(&d, "red-linked")).map(|_| ()))
                 .expect_err("a linked door at another kind ABI is refused");
             assert_eq!(refused, want);
             assert!(refused.to_string().contains("rebuild"), "{refused}");
-            let refused = load_dropped::<K>(&s.cdylib(), &stating_abi(&stated, abi), bind(&d, "red-dropped"))
+            let refused = load_dropped::<K>(&s.cdylib(), &stating_abi(&stated, abi), s.bind(&d, "red-dropped"))
                 .map(|_| ())
                 .expect_err("a manifest stating another kind ABI is refused");
             assert_eq!(refused, LoadError::ManifestKindAbi { stated: abi, host });
@@ -819,9 +1223,12 @@ pub fn red_kind_abi(s: &Subject) {
 }
 
 /// **RED: a `ready` that fails refuses the boot with the plugin's text** (#391's arm, on the real
-/// plugin). The real door restated with a `ready` that answers FAILED is loaded and opened as the
-/// kernel opens it; its `ready` is awaited and refused, naming the plugin and the reason, in one
-/// crossing. The honest door's `ready` (its own, or none) serves.
+/// plugin). The real door restated with a `ready` that answers FAILED is loaded and opened AS THE
+/// KERNEL OPENS IT (Q-P4-6: a store through [`LoadedStore::open`](crate::store_v3::LoadedStore::open),
+/// which awaits `ready` inside it; every other kind's `open` resumed on its ticket
+/// ([`open_resumed`]), never one raw crossing, so a door that connects in its `open` answers
+/// PENDING there and is resumed); its `ready` is awaited and refused, naming the plugin and the
+/// reason, in one first invocation. The honest door's `ready` (its own, or none) serves.
 ///
 /// # Panics
 /// When the failing `ready` serves.
@@ -833,22 +1240,235 @@ pub fn red_ready(s: &Subject) {
         ready: Some(ready_fails),
         ..real
     });
-    let settings = s.settings();
+    let settings = s.fold_settings("red");
+    if s.kind() == KindCode::Store {
+        let d = dispatcher();
+        let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
+        let p =
+            load_linked::<Store>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
+        assert!(p.has_ready());
+        let name = p.name().to_owned();
+        let held = p.clone();
+        let (before, _) = crossings(&held).read();
+        let refused =
+            crate::store_v3::LoadedStore::open(p, Arc::clone(&d), &settings, store::leg_mint)
+                .map(|_| ())
+                .expect_err("a failing ready refuses the store's open");
+        assert_eq!(
+            refused,
+            format!("plugin '{name}' ready failed: {READY_FAILURE}")
+        );
+        assert_eq!(
+            crossings(&held).read().0 - before,
+            2,
+            "one open and one ready, first invocations, the ready not retried"
+        );
+        return;
+    }
     by_kind!(s.kind(), K => {
         let d = dispatcher();
         let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
-        let p = load_linked::<K>(&row, bind(&d, "red-ready")).expect("the restated door loads");
+        let p = load_linked::<K>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
-        let o = open(&p, &settings);
+        let o = open_resumed(&p, &d, &settings);
         assert_eq!(o.outcome, Outcome::Ready, "open: {}", called(&o));
-        let before = crossings(&p).load(Ordering::SeqCst);
+        let (before, _) = crossings(&p).read();
         let refused = p.ready(&d, READY_DEADLINE).expect_err("a failing ready refuses the boot");
         assert_eq!(
             refused,
             format!("plugin '{}' ready failed: {READY_FAILURE}", p.name())
         );
-        assert_eq!(crossings(&p).load(Ordering::SeqCst) - before, 1, "one crossing, not retried");
+        assert_eq!(crossings(&p).read().0 - before, 1, "one crossing, not retried");
     });
+}
+
+/// The real door restated with one outbound `tcp` need, its target its own (the RED arm's subject
+/// for a door that declares none).
+fn with_a_tcp_need(real: Door) -> Door {
+    use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
+    use busbar_contract::abi::mechanism::door::Statement;
+    const NONE: AbiStr = AbiStr {
+        ptr: std::ptr::null(),
+        len: 0,
+    };
+    const TCP: &str = "tcp";
+    let needs: &'static [Need] = Box::leak(Box::new([Need {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: 0,
+        transport: AbiStr {
+            ptr: TCP.as_ptr(),
+            len: TCP.len(),
+        },
+        auth: NONE,
+        target_from: NONE,
+        trust_from: NONE,
+        details: crate::dispatch::NO_BLOB,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    }]));
+    // SAFETY: a door's Statement is `'static`; only its needs are restated.
+    let st: Statement = unsafe { real.statement.read_unaligned() };
+    let st: &'static Statement = Box::leak(Box::new(Statement {
+        needs: needs.as_ptr(),
+        needs_len: needs.len(),
+        ..st
+    }));
+    Door {
+        statement: st,
+        ..real
+    }
+}
+
+/// **RED: a networked door bound to serve with NO connection table is refused, naming the plugin**
+/// (Q-P4-3). A door that declares a need is bound as the kernel serves it but with no table
+/// ([`bind`]: [`ConnTable::NoNeeds`]), linked and dropped in, and refused at bind with
+/// [`LoadError::NoConnectionTable`]; a door that declares none is restated with one `tcp` need (as
+/// [`red_ready`] restates its `ready`) and bound linked. The GREEN twins: the same door bound as a
+/// PROBE binds, and the honest door binds over the suite's own table ([`Subject::bind`]).
+///
+/// # Panics
+/// When a networked door binds to serve with no table, or a twin does not bind.
+pub fn red_no_table(s: &Subject) {
+    let real = real_door(s);
+    let needs = s.needs().len();
+    by_kind!(s.kind(), K => {
+        let d = dispatcher();
+        load::<K>(s, Leg::Linked, s.bind(&d, "honest")).expect("the honest door binds over the suite's table");
+        let restated = needs == 0;
+        let (door, needs): (DoorFn, usize) = if restated {
+            NETWORKED.set(with_a_tcp_need(real));
+            (networked_door, 1)
+        } else {
+            (s.door, needs)
+        };
+        let row = LinkedRow::of(door).expect("the door states its Statement");
+        let plugin = rendering::read(&row.statement).expect("its Statement reads back").name;
+        let want = LoadError::NoConnectionTable { plugin: plugin.clone(), needs };
+        let refused = load_linked::<K>(&row, bind(&d, "red-no-table"))
+            .map(|_| ())
+            .expect_err("a networked door serving with no connection table is refused");
+        assert_eq!(refused, want);
+        assert!(refused.to_string().contains(&format!("plugin '{plugin}'")), "{refused}");
+        if !restated {
+            let refused = load::<K>(s, Leg::Dropped, bind(&d, "red-no-table-dropped"))
+                .map(|_| ())
+                .expect_err("dropped in, the same door serving with no table is refused");
+            assert_eq!(refused, want);
+        }
+        load_linked::<K>(&row, Bind { conns: ConnTable::Probe, ..bind(&d, "probe") })
+            .expect("bound as a probe, with no table, it binds");
+    });
+}
+
+/// The transport schemes a Statement's needs name (each need's `transport`, the empty ones left
+/// out), sorted and deduplicated.
+#[must_use]
+pub fn need_schemes(needs: &[rendering::ReadNeed]) -> Vec<String> {
+    let mut out: Vec<String> = needs
+        .iter()
+        .filter(|n| !n.transport.is_empty())
+        .map(|n| n.transport.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// THE DECLARED NEEDS ARE THE STATEMENT'S (ARCHITECT, one truth): a declares file's `needs` (the
+/// transport schemes the fleet render reads to give a networked plugin its conformance host;
+/// absent = none) must name exactly the schemes `statement` (the Statement's needs) names.
+///
+/// # Errors
+/// The declares file is not a JSON object, its `needs` is not a list of strings, or it names a
+/// scheme the Statement does not or misses one it does.
+pub fn declared_needs_are(declares: &str, statement: &[String]) -> Result<(), String> {
+    let v: serde_json::Value =
+        serde_json::from_str(declares).map_err(|e| format!("declares.json is not JSON: {e}"))?;
+    let declared: Vec<String> = match v.get("needs") {
+        None => Vec::new(),
+        Some(serde_json::Value::Array(a)) => a
+            .iter()
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("declares.json `needs`: {x} is not a transport scheme"))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(other) => return Err(format!("declares.json `needs` is not a list: {other}")),
+    };
+    let mut declared = declared;
+    declared.sort();
+    declared.dedup();
+    let extra: Vec<&String> = declared.iter().filter(|d| !statement.contains(d)).collect();
+    let missing: Vec<&String> = statement.iter().filter(|d| !declared.contains(d)).collect();
+    if extra.is_empty() && missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "declares.json `needs` {declared:?} is not the Statement's {statement:?}: it names {extra:?} \
+         the Statement does not, and misses {missing:?} it does (the Statement is the one truth)"
+    ))
+}
+
+/// The repo's declares file, found from the plugin crate's manifest dir: `declares.json` at the
+/// workspace root (the crate dir's parent) or one directory below it; `None` when there is none
+/// (plugin-ci's declares step refuses a plugin repo without one; a crate inside busbar's own tree
+/// has none).
+///
+/// # Panics
+/// More than one is found.
+#[must_use]
+pub fn declares_file(manifest_dir: &str) -> Option<PathBuf> {
+    let root = Path::new(manifest_dir)
+        .parent()
+        .unwrap_or_else(|| Path::new(manifest_dir));
+    let mut found: Vec<PathBuf> = std::iter::once(root.to_path_buf())
+        .chain(
+            std::fs::read_dir(root)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_dir()
+                        && !p
+                            .file_name()
+                            .is_some_and(|n| n == "target" || n.to_string_lossy().starts_with('.'))
+                }),
+        )
+        .map(|d| d.join("declares.json"))
+        .filter(|f| f.is_file())
+        .collect();
+    found.sort();
+    assert!(
+        found.len() <= 1,
+        "the repo holds one declares.json at its root or one directory below it: {found:?}"
+    );
+    found.pop()
+}
+
+/// **THE DECLARED NEEDS ARE THE STATEMENT'S**, on the subject: its declares file's `needs` names
+/// exactly the transport schemes its door's Statement does ([`declared_needs_are`]).
+///
+/// # Panics
+/// Its `needs` is not the Statement's.
+pub fn needs_declared(s: &Subject, manifest_dir: &str) {
+    let Some(file) = declares_file(manifest_dir) else {
+        eprintln!(
+            "no declares.json beside {manifest_dir}: plugin-ci's declares step owns its presence"
+        );
+        return;
+    };
+    let text = std::fs::read_to_string(&file)
+        .unwrap_or_else(|e| panic!("{} does not read: {e}", file.display()));
+    if let Err(e) = declared_needs_are(&text, &need_schemes(&s.needs())) {
+        panic!("{}: {e}", file.display());
+    }
 }
 
 /// THE PROFILE GUARD: asked for the release binary (M6/contract), the suite refuses a debug build.
@@ -868,9 +1488,22 @@ pub fn profile(debug: bool) {
 /// and requires every one to RUN. The names are the contract the CI step reads.
 #[macro_export]
 macro_rules! conformance_suite {
-    (door: $door:path, cdylib: $cdylib:expr, inputs: $inputs:expr $(,)?) => {
+    (
+        door: $door:path,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+        $(,)?
+    ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
-            $crate::conformance::Subject::new($door, $cdylib, $inputs)
+            #[allow(unused_mut)]
+            let mut s = $crate::conformance::Subject::new($door, $cdylib, $inputs);
+            $(s = s.with_host($host);)?
+            $(s = s.with_anchors($tls);)?
+            $(s = s.with_namespace($create, $drop);)?
+            s
         }
 
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.
@@ -895,6 +1528,21 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_failing_ready_refuses_the_boot() {
             $crate::conformance::red_ready(&__busbar_conformance_subject());
+        }
+
+        /// RED: a networked door bound to serve with no connection table is refused by name.
+        #[test]
+        fn red_a_networked_door_with_no_connection_table_is_refused() {
+            $crate::conformance::red_no_table(&__busbar_conformance_subject());
+        }
+
+        /// The declares file's `needs` is the Statement's (the one truth).
+        #[test]
+        fn the_declared_needs_are_the_statements() {
+            $crate::conformance::needs_declared(
+                &__busbar_conformance_subject(),
+                env!("CARGO_MANIFEST_DIR"),
+            );
         }
 
         /// The release binary, when asked for.

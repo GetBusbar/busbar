@@ -318,7 +318,7 @@ impl std::fmt::Display for LeaseError {
 pub(crate) struct Lease {
     agent_id: String,
     placement: CredentialPlacement,
-    secret: String,
+    secret: busbar_contract::Redacted<String>,
     expires_at_ms: u64,
 }
 
@@ -369,8 +369,10 @@ impl Lease {
             });
         }
         let value = match &self.placement {
-            CredentialPlacement::AuthorizationHeader => format!("Bearer {}", self.secret),
-            CredentialPlacement::Header(_) => self.secret.clone(),
+            CredentialPlacement::AuthorizationHeader => {
+                format!("Bearer {}", self.secret.expose_secret())
+            }
+            CredentialPlacement::Header(_) => self.secret.expose_secret().clone(),
         };
         Ok((self.placement.header_name().to_string(), value))
     }
@@ -433,7 +435,7 @@ pub(crate) fn mint_from(
     Ok(Lease {
         agent_id: agent_id.to_string(),
         placement: cred.placement.clone(),
-        secret,
+        secret: secret.into(),
         expires_at_ms: now_ms.saturating_add(cred.lease_ttl_ms),
     })
 }

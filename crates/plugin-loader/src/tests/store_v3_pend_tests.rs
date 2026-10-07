@@ -296,7 +296,7 @@ fn open(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedStore {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: None,
+            conns: crate::dispatch::ConnTable::NoNeeds,
         },
     )
     .expect("the door loads");
@@ -760,7 +760,7 @@ fn a_store_declaring_a_tcp_need_receives_a_connector() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: Some(conns),
+            conns: crate::dispatch::ConnTable::Host(conns),
         },
     )
     .expect("the door loads");
@@ -883,7 +883,7 @@ fn open_over(
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: Some(conns),
+            conns: crate::dispatch::ConnTable::Host(conns),
         },
     )
     .expect("the door loads");
@@ -1026,7 +1026,7 @@ fn a_wire_body_pends_on_its_reads_and_answers_the_backends_reply() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: Some(conns),
+            conns: crate::dispatch::ConnTable::Host(conns),
         },
     )
     .expect("the door loads");
