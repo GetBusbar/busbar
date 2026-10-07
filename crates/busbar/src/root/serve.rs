@@ -298,6 +298,52 @@ impl HostServices for LateServices {
         }
     }
 
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_unreached(caller, counterparty),
+            Err(r) => r,
+        }
+    }
+
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_decide(caller, key, expected, approve),
+            Err(r) => r,
+        }
+    }
+
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_sight_item(caller, counterparty, item, digest),
+            Err(r) => r,
+        }
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_serves(caller, counterparty, item, digest),
+            Err(r) => r,
+        }
+    }
+
     fn trust_due(&self, caller: &Caller) -> Stored {
         match self.served() {
             Ok(s) => s.trust_due(caller),

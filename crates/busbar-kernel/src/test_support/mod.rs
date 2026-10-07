@@ -1391,12 +1391,41 @@ impl TestApp {
         lm.methods.insert(
             name.to_string(),
             crate::auth::token::LoginMethod {
-                module,
+                module: crate::auth::token::LoginPlugin::Cold(module),
                 client_secret: client_secret.map(busbar_contract::redacted::Redacted::new),
                 has_button,
                 issuer,
                 login_kind,
                 allowed_hosts,
+            },
+        );
+        self
+    }
+
+    /// Register a hosted-login method `name` whose plugin is ON THE AUTH KIND'S DOOR: `calls` (a
+    /// test stand-in for an opened door instance) answers its `begin_login`/`complete_login`, the
+    /// core holds no client secret for it and runs no hop. `login_kind` is the tail's login kind.
+    pub fn login_method_door(
+        mut self,
+        name: &str,
+        calls: std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>,
+        login_kind: busbar_contract::auth::LoginKind,
+        has_button: bool,
+    ) -> Self {
+        let lm = self
+            .login_methods
+            .get_or_insert_with(|| crate::auth::token::LoginMethods {
+                methods: indexmap::IndexMap::new(),
+            });
+        lm.methods.insert(
+            name.to_string(),
+            crate::auth::token::LoginMethod {
+                module: crate::auth::token::LoginPlugin::Door(calls),
+                client_secret: None,
+                has_button,
+                issuer: None,
+                login_kind,
+                allowed_hosts: std::collections::HashSet::new(),
             },
         );
         self
