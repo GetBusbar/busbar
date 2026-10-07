@@ -52,16 +52,16 @@
 
 // THE USAGE-TAP FAULT HOST SERVICES the protocol install arms for every codec cell (#83a HOST):
 // the warn-once latch and the decode reporter, both counting on
-// `busbar_kernel::metrics::BILLING_TAP_DECODE_FAIL_TOTAL`.
+// `busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL`.
 
 /// Process-lifetime warn-once latch for the usage-tap decode fault class, keyed `protocol:reason`. A
 /// live protocol/dialect the tap reader cannot decode fails on EVERY 2xx body of that shape, so an
-/// unlatched `warn!` spams per request; [`BILLING_TAP_DECODE_FAIL_TOTAL`](crate::metrics::BILLING_TAP_DECODE_FAIL_TOTAL) carries the per-request
+/// unlatched `warn!` spams per request; [`BILLING_TAP_DECODE_FAIL_TOTAL`](crate::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL) carries the per-request
 /// volume. This records the fault (increments the counter) and returns `true` only the FIRST time a
 /// given `(protocol, reason)` is seen, so the caller warns once and logs `debug!` thereafter.
 pub fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -> bool {
     metrics::counter!(
-        crate::metrics::BILLING_TAP_DECODE_FAIL_TOTAL,
+        crate::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL,
         "protocol" => protocol.to_string(),
         "reason" => reason,
     )
@@ -74,7 +74,7 @@ pub fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -
 
 /// THE HOST'S USAGE-TAP FAULT REPORTER — what [`OperationHandler::extract_usage`](busbar_contract::codec::OperationHandler::extract_usage)'s default reports
 /// through when a cell's own reader refuses a same-protocol 2xx body (the request bills 0 tokens).
-/// Counted on [`BILLING_TAP_DECODE_FAIL_TOTAL`](crate::metrics::BILLING_TAP_DECODE_FAIL_TOTAL) and warned once per `(protocol, reason)`, exactly as
+/// Counted on [`BILLING_TAP_DECODE_FAIL_TOTAL`](crate::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL) and warned once per `(protocol, reason)`, exactly as
 /// the default did inline before the trait moved into the contract, which takes no logging or metrics
 /// dependency. Installed by [`crate::proto::install_protocols`] and the test registration seams, so
 /// it is armed before any cell is reachable.

@@ -93,7 +93,7 @@ async fn drain(res: axum::response::Response) -> (u16, Vec<u8>) {
 #[test]
 fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     register_planes();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let cap = WarnCapture::capturing_debug();
     let subscriber = {
         use tracing_subscriber::layer::SubscriberExt as _;
@@ -194,7 +194,7 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     );
 
     // No metric name carries either word.
-    let exposition = busbar_kernel::metrics::render();
+    let exposition = busbar_kernel::snapshot::render();
     let leaked: Vec<&str> = exposition
         .lines()
         .filter_map(metric_name)

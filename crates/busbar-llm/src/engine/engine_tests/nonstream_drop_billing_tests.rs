@@ -42,7 +42,7 @@ where
     S: futures::Stream<Item = Result<Bytes, hyper::Error>> + Send + 'static,
 {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
