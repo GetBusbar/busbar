@@ -2252,6 +2252,11 @@ pub fn scratch_dir(name: &str) -> std::path::PathBuf {
 
 pub mod warn_capture;
 
+/// The allocation counter a dependent crate's test binary installs as its `#[global_allocator]`:
+/// a wrapper over the binary's own allocator that counts each allocation on the calling thread.
+#[allow(unsafe_code)]
+pub mod counting_alloc;
+
 /// The kernel's own test-only mint (ARCHITECT ruling B): the seal is acquired here and minted tokens
 /// are handed to a dependent crate's tests, which never name the seal or a constructor.
 pub mod tokens;
