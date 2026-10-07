@@ -544,6 +544,10 @@ fn every_spelling_of_the_callback_is_found_so_every_spelling_is_guarded() {
     // The floor judges what was found: a plaintext callback is refused through each spelling.
     for (label, envelope) in spellings("http://hook.example/a") {
         let mut desk = desk();
+        // The host's judge answers a plaintext destination under the open-web class this need
+        // declares `DEST_PLAINTEXT` (busbar-core-connector process.rs, `GuardJudge::named`); the
+        // plane asks it rather than reading the scheme itself, so the double answers as it does.
+        desk.verdict = DEST_PLAINTEXT;
         let (status, code, message) = refusal_of(opened(&mut desk, &envelope, ALICE));
         assert_eq!((status, code), (400, -32602), "{label}");
         assert!(message.contains("must be https"), "{label}: {message}");
