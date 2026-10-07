@@ -180,7 +180,7 @@
       "capability": "breaker-trip",
       "plane": "a2a-server",
       "state": "not-applicable",
-      "reason": "inbound role; no upstream availability to record.",
+      "reason": "the front door is inbound; there is no upstream target whose availability could be recorded on this role. The agent a hop dials is the a2a-client cell's evidence.",
       "root": {
         "state": "not-applicable",
         "leg": "root-a2a"
