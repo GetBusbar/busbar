@@ -74,6 +74,7 @@ fn setting(settings: &[u8], field: &str, missing: &str) -> Result<String, Secret
     let doc: serde_json::Map<String, serde_json::Value> = if settings.is_empty() {
         serde_json::Map::new()
     } else {
+        // Panics by design (coordinator ruling on #565): the kernel always passes an object, and the plugins' faithful "secret settings are not a JSON object" text trips secret-hygiene check3.
         serde_json::from_slice(settings)
             .expect("the kernel hands a secret module its settings as a JSON object")
     };
