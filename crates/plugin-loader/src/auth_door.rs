@@ -726,7 +726,19 @@ impl AuthCalls for AuthInstance {
     }
 
     fn refresh(&self) -> Result<u64, String> {
-        let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        // ONE REFRESH AT A TIME, never waited for: the refresh crossing is plugin code, so a caller
+        // that finds one in flight is answered at once rather than parked behind a lock a wedged
+        // plugin may never let go (THE DESIGN §11.13 M1).
+        let _one = match self.lifecycle.try_lock() {
+            Ok(one) => one,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(format!(
+                    "auth instance `{}`: a refresh is already in flight",
+                    self.label
+                ))
+            }
+        };
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.sink.0.flushed.store(0, Ordering::Release);
         let blobs = secret_blobs(&self.secrets);

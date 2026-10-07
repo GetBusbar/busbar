@@ -15,9 +15,10 @@
 //! `resolve` returns, so no plugin memory outlives the call. An instance is closed when its last
 //! handle drops.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
+
+use crate::open_once::OpenOnce;
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{
@@ -246,7 +247,8 @@ pub struct SecretRows {
     conns: fn() -> Option<Arc<dyn DeclaredConns>>,
     linked: Vec<Candidate>,
     dropped: RwLock<Vec<Candidate>>,
-    shared: Mutex<BTreeMap<String, Arc<LoadedSecret>>>,
+    /// Each linked module's shared instance, opened outside the map's lock ([`OpenOnce`]).
+    shared: OpenOnce<String, LoadedSecret>,
 }
 
 impl std::fmt::Debug for SecretRows {
@@ -280,7 +282,7 @@ impl SecretRows {
             conns,
             linked: Vec::new(),
             dropped: RwLock::new(Vec::new()),
-            shared: Mutex::new(BTreeMap::new()),
+            shared: OpenOnce::new(),
         }
     }
 
@@ -419,17 +421,10 @@ impl SecretAxis for SecretRows {
             .iter()
             .find(|c| answers(c, module))
             .ok_or_else(|| format!("no linked secret module answers to '{module}'"))?;
-        let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(s) = shared.get(&c.name) {
-            return Ok(s.clone());
-        }
-        let s = Arc::new(LoadedSecret::open(
-            self.load(c)?,
-            (self.dispatcher)(),
-            &[],
-            &[],
-        )?);
-        shared.insert(c.name.clone(), s.clone());
+        // Bound and opened with the map's lock let go (THE DESIGN §11.13 M1).
+        let (s, _) = self.shared.get_or_open(&c.name, || {
+            LoadedSecret::open(self.load(c)?, (self.dispatcher)(), &[], &[])
+        })?;
         Ok(s)
     }
 

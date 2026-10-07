@@ -30,8 +30,17 @@ use crate::{LinkedPlugin, PluginRegistry};
 /// the rest; `wide` identifies with more groups than the host's default buffer holds; `slow` passes
 /// after holding its crossing for 200 ms; `body` identifies only at `HeadBody` on connection 3,
 /// unit 4, over the body `signed`. Every answer names the `x-alt` line to strip. Settings must be
-/// `"ok"`.
-pub(super) struct Judge;
+/// `"ok"`, or `"wedge"`: the same judge whose `refresh` holds its crossing until [`REFRESH_GATE`]
+/// is released.
+pub(super) struct Judge {
+    wedge: bool,
+}
+
+/// A wedged judge's refresh gate: (entered, released).
+static REFRESH_GATE: (std::sync::Mutex<(bool, bool)>, std::sync::Condvar) = (
+    std::sync::Mutex::new((false, false)),
+    std::sync::Condvar::new(),
+);
 
 static FLUSHES: AtomicU64 = AtomicU64::new(0);
 
@@ -39,9 +48,11 @@ impl VerifyPlugin for Judge {
     const CACHE_FAMILY: Option<u32> = Some(0);
 
     fn open(settings: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
-        (settings == b"\"ok\"")
-            .then_some(Judge)
-            .ok_or("settings: not this plugin's")
+        match settings {
+            b"\"ok\"" => Ok(Judge { wedge: false }),
+            b"\"wedge\"" => Ok(Judge { wedge: true }),
+            _ => Err("settings: not this plugin's"),
+        }
     }
 
     fn verify(&self, r: &VerifyView<'_>) -> Answer {
@@ -87,6 +98,15 @@ impl VerifyPlugin for Judge {
     }
 
     fn refresh(&self, _: &[u8], _: &[&[u8]]) -> u64 {
+        if self.wedge {
+            let (lock, cv) = &REFRESH_GATE;
+            let mut g = lock.lock().unwrap();
+            g.0 = true;
+            cv.notify_all();
+            while !g.1 {
+                g = cv.wait(g).unwrap();
+            }
+        }
         FLUSHES.fetch_add(1, Ordering::Relaxed);
         3
     }
@@ -620,4 +640,44 @@ fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() 
         1,
         "its one tcp need is declared on the host's table"
     );
+}
+
+/// RED (THE DESIGN §11.13 M1): one refresh at a time, never waited for. A refresh wedged in its
+/// plugin holds no other caller behind the instance's lifecycle lock: a second refresh is
+/// answered at once, naming the one in flight.
+#[test]
+fn a_wedged_refresh_holds_no_other_caller() {
+    let a = rows()
+        .open("judge", "judge-wedge", &serde_json::json!("wedge"))
+        .expect("the linked door opens");
+    let wedged = {
+        let a = Arc::clone(&a);
+        std::thread::spawn(move || a.refresh())
+    };
+    {
+        let (lock, cv) = &REFRESH_GATE;
+        let mut g = lock.lock().unwrap();
+        while !g.0 {
+            g = cv.wait(g).unwrap();
+        }
+    }
+    let (done_tx, done) = std::sync::mpsc::channel();
+    {
+        let a = Arc::clone(&a);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(a.refresh());
+        });
+    }
+    let second = done.recv_timeout(Duration::from_secs(5));
+    {
+        let (lock, cv) = &REFRESH_GATE;
+        lock.lock().unwrap().1 = true;
+        cv.notify_all();
+    }
+    let second = second.expect("a wedged refresh held another caller behind the lifecycle lock");
+    assert_eq!(
+        second,
+        Err("auth instance `judge-wedge`: a refresh is already in flight".to_string())
+    );
+    let _ = wedged.join().unwrap();
 }

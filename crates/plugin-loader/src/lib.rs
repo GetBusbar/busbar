@@ -52,6 +52,7 @@ mod hostlog;
 #[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod https_conns;
 pub mod observe;
+pub mod open_once;
 pub mod plane;
 pub mod registry;
 /// THE SECRET AXIS over the one dispatcher: every admitted secret plugin, linked or dropped in.
