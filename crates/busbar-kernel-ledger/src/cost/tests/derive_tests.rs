@@ -25,14 +25,14 @@ fn an_absent_card_prices_quantities_at_zero() {
 /// one thousand two hundred and fifty cents, twelve and a half million micro-units.
 #[test]
 fn a_present_card_derives_integer_spend() {
-    let c = card("gpt-5", 2.5, 10.0, 0);
+    let c = card("lane-5", 2.5, 10.0, 0);
     let l = lines(&[(INPUT, 1_000_000), (OUTPUT, 1_000_000)]);
     assert_eq!(
-        derive_spend_cents(&c, [("gpt-5", l.as_slice())].into_iter(), 0, false),
+        derive_spend_cents(&c, [("lane-5", l.as_slice())].into_iter(), 0, false),
         Ok(1250)
     );
     assert_eq!(
-        derive_spend_micros(&c, [("gpt-5", l.as_slice())].into_iter(), 0, false),
+        derive_spend_micros(&c, [("lane-5", l.as_slice())].into_iter(), 0, false),
         Ok(12_500_000)
     );
 }
@@ -54,9 +54,9 @@ fn the_nano_scale_keeps_sub_micro_precision() {
 /// #42 confines to a card that is ABSENT. It is the one function now, and the one function refuses.
 #[test]
 fn an_unknown_lane_with_a_card_is_unpriced_and_refuses() {
-    let c = card("gpt-5", 1.0, 1.0, 0);
+    let c = card("lane-5", 1.0, 1.0, 0);
     assert!(c.lane_unpriced("mystery-lane"));
-    assert!(!c.lane_unpriced("gpt-5"));
+    assert!(!c.lane_unpriced("lane-5"));
     let l = lines(&[(INPUT, 1_000_000)]);
     assert_eq!(
         derive_spend_cents(&c, [("mystery-lane", l.as_slice())].into_iter(), 0, false),

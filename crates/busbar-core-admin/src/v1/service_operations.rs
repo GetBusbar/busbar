@@ -927,10 +927,10 @@ impl AdminService {
             if existing.file == file {
                 continue; // overwriting the same tarball file is a legitimate upgrade
             }
-            let clash = existing.manifest.name == manifest.name
-                || existing.manifest.alias == manifest.alias
-                || existing.manifest.name == manifest.alias
-                || existing.manifest.alias == manifest.name;
+            // Every identifier either claims (name, alias, former names) against the other's.
+            let clash = manifest
+                .identities()
+                .any(|word| existing.manifest.answers_to(word));
             // BRICKS THE NEXT BOOT: the old gate exempted a SAME-NAME upload under a DIFFERENT
             // filename (`&& existing.manifest.name != manifest.name`). But boot's phase-3
             // conflicts() hard-rejects two loadable plugins with the same name (different files) -

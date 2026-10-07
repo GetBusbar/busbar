@@ -361,6 +361,26 @@ impl FileSegment {
         Ok(FileSegment { file })
     }
 
+    /// Open the file at `path`, creating it if absent, and say whether it was CREATED.
+    ///
+    /// Created exclusively first, so "created" is the filesystem's answer rather than a check made
+    /// before an open that a second opener could race: a file that already existed is opened as it
+    /// is, never truncated.
+    fn open_reporting(path: &Path) -> io::Result<(Self, bool)> {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(file) => Ok((FileSegment { file }, true)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                Ok((FileSegment::open(path)?, false))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Open the file at `path` for reading only, or `None` when there is no such file.
     pub fn open_existing(path: &Path) -> io::Result<Option<Self>> {
         match std::fs::File::open(path) {
@@ -430,10 +450,20 @@ fn sync_holding_dir(path: &Path) {
         } else {
             parent
         };
+        #[cfg(test)]
+        DIR_SYNCS.with(|c| c.borrow_mut().push(parent.to_path_buf()));
         if let Ok(dir) = std::fs::File::open(parent) {
             let _ = dir.sync_all();
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every directory this thread fsynced to make an entry in it durable, in order — the
+    /// observation the segment-creation battery reads. Test builds only.
+    pub(crate) static DIR_SYNCS: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Hands out file segments named `<index>.wal` inside one directory.
@@ -483,8 +513,20 @@ impl DirectoryFactory {
 }
 
 impl SegmentFactory for DirectoryFactory {
+    /// A NEW segment's directory entry is made durable before the segment is handed out.
+    ///
+    /// A segment's own `sync` makes its BYTES durable and says nothing about the entry that names
+    /// the file: after a power loss a rolled-into segment whose writes had all synced could be
+    /// missing from the directory, taking acknowledged records with it. So a segment this call
+    /// created has its holding directory fsynced here, once, before anything can be written to it;
+    /// one that already existed was made durable by whoever created it.
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>> {
-        Ok(Box::new(FileSegment::open(&self.segment_path(index))?))
+        let path = self.segment_path(index);
+        let (segment, created) = FileSegment::open_reporting(&path)?;
+        if created {
+            sync_holding_dir(&path);
+        }
+        Ok(Box::new(segment))
     }
 
     /// The highest-numbered `<index>.wal` in the directory. A listing, not a side file: the

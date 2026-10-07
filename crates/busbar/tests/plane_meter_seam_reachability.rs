@@ -205,15 +205,16 @@ fn billing_plane_root_legs() -> &'static [(&'static str, String)] {
     })
 }
 
-/// The ONE usage seam every Teller Meter step folds through, in the three spellings the tree
-/// actually uses: the usage unit's own entry point, the report constructor it returns, and the
-/// per-leg fold helper that wraps it. A leg reaching NONE of these reports no lines, and a Meter
-/// step that reports no lines charges nobody.
-const TELLER_USAGE_SEAM_TOKENS: &[&str] = &[
-    "busbar_kernel_ledger::usage::meter(",
-    "Usage::report(",
-    "fold_usage(",
-];
+/// The ONE usage seam every Teller Meter step folds through, in the two spellings the tree
+/// actually uses: the report constructor, and the per-leg fold helper that wraps it. A leg reaching
+/// NEITHER reports no lines, and a Meter step that reports no lines charges nobody.
+///
+/// The kernel-side metering fold (`busbar_kernel_ledger::usage::meter`) was a third spelling here
+/// and no plane ever reached it: it was never constructed in production, and the spec has the plane
+/// report and the kernel write what it is told (`BUSBAR-1.6.0.md` §7, lines 989-993). It is deleted,
+/// and every billing plane still reaches the seam through these two — which is what the tests
+/// below prove.
+const TELLER_USAGE_SEAM_TOKENS: &[&str] = &["Usage::report(", "fold_usage("];
 
 /// THE ONE HOP a Meter step is allowed. The node's (`plane_node.rs`) step is
 /// `self.walk.meter(token, usage)`, which lands in the plane's own Meter module — the same one usage seam, reached through the

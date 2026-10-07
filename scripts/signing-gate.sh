@@ -130,10 +130,14 @@ EOF
 #     hit that refuses to boot.
 # store/secret are unchanged. Each kind gets ONLY its own reference: a store or hook invocation must
 # not grow a spurious `identity-providers:` entry, which would itself be a dangling-module error.
+# The module is named by the plugin's manifest NAME ($PLUGIN_CRATE), never its alias: a build that
+# links a plugin answering to the same alias (busbar links busbar-store-memory, alias `memory`)
+# keeps the linked row for that alias, so an alias reference would resolve the linked plugin and
+# never judge the tarball under test (crates/busbar/tests/cli_validate.rs pins this).
 case "$PLUGIN_KIND" in
-  store)  REF=$'store:\n  module: '"$PLUGIN_ALIAS" ;;
-  auth)   REF=$'identity-providers:\n  '"$PLUGIN_ALIAS"$':\n    module: '"$PLUGIN_ALIAS"$'\nauth:\n  chain: ['"$PLUGIN_ALIAS"$']' ;;
-  hook)   REF=$'hooks:\n  signing-gate-ref:\n    module: '"$PLUGIN_ALIAS"$'\n    kind: tap' ;;
+  store)  REF=$'store:\n  module: '"$PLUGIN_CRATE" ;;
+  auth)   REF=$'identity-providers:\n  '"$PLUGIN_ALIAS"$':\n    module: '"$PLUGIN_CRATE"$'\nauth:\n  chain: ['"$PLUGIN_ALIAS"$']' ;;
+  hook)   REF=$'hooks:\n  signing-gate-ref:\n    module: '"$PLUGIN_CRATE"$'\n    kind: tap' ;;
   # kind:secret has no config-reference preflight — the trust verdict is asserted from the
   # --validate summary instead (see the SKIP-mode assertions below).
   secret) REF="" ;;

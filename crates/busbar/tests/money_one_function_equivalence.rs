@@ -1164,7 +1164,6 @@ fn census_flags_a_planted_seventh_copy() {
 const TEN_THOUSANDS: &[(&str, &str)] = &[
     ("STANDARD_TIER_BP", "the standard tier, in basis points"),
     ("MICROS_PER_CENT", "micro-units in one minor unit"),
-    ("WHOLE_BP", "a metering tolerance ratio's whole, not money"),
     (
         "CHECKPOINT_ENTRIES",
         "a checkpoint cadence in journal entries, not money",

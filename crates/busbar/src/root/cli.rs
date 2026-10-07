@@ -463,7 +463,9 @@ fn list_plugins_command() -> i32 {
             .unwrap_or_else(|| ("-".into(), "-".into(), "-".into(), "-".into()));
         // Which row the configured governance store selects (only meaningful when it would load).
         let selected = store_ref.as_deref().filter(|s| {
-            plugins_cfg.enabled && row.status == "ready" && (name == *s || alias == *s)
+            plugins_cfg.enabled
+                && row.status == "ready"
+                && row.manifest.as_ref().is_some_and(|m| m.answers_to(s))
         });
         let status = if let Some(store_ref) = selected {
             format!("LOADS (store.module: {store_ref})")

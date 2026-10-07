@@ -172,6 +172,7 @@ fn dropped_in() -> &'static DynTransport {
             host: None,
             declares: Default::default(),
             statement: None,
+            former_names: Vec::new(),
         };
         let signed = sign(&release(), manifest, &lib);
         let tarball =

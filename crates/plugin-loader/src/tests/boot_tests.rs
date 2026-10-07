@@ -398,6 +398,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
         host: None,
         declares: Default::default(),
         statement: Some(hex::encode(&rendering)),
+        former_names: Vec::new(),
     };
     let tarball = crate::tarball::package(&manifest, "lib.so", &lib).unwrap();
     std::fs::write(dir.join("plane-door.tar.gz"), tarball).unwrap();

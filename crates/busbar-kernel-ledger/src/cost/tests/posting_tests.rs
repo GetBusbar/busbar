@@ -121,11 +121,11 @@ fn the_tier_does_not_use_the_card_builds_rounding_rule() {
 
 /// **BYTE-NEUTRALITY AT THE ONLY TIER THIS TREE EVER ASKS FOR.**
 ///
-/// `tier_bp` is [`STANDARD_TIER_BP`] on every production path: the live LLM posting pins it
+/// `tier_bp` is [`STANDARD_TIER_BP`] on every production path: the live posting pins it
 /// (`crates/busbar/src/root/plane_node.rs`, `Posting::from_usage(.., STANDARD_TIER_BP, ..)`), the
 /// group runtime pins it (`crates/busbar/src/root/policy.rs`), a `LedgerEntry` defaults to it, and
 /// the recompute archive's `tier_bp` defaults to it. No operator configuration key sets a
-/// basis-point multiplier at all — `config/pools.rs`'s `tier` is a routing LABEL (`"large"`), not a
+/// basis-point multiplier at all — a lane's configured `tier` is a routing LABEL (`"large"`), not a
 /// price.
 ///
 /// So this is the sweep that says the rounding correction moved no byte anybody can observe: over

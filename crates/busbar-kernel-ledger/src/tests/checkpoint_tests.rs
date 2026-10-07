@@ -112,3 +112,57 @@ fn the_seal_and_the_verify_share_one_preimage_and_one_digest() {
     assert_eq!(calls("encode_body("), 1, "one encoder call: signed_body");
     assert_eq!(calls("digest::sha256("), 1, "one digest call: body_digest");
 }
+
+fn sealed_with_fees(fee_count: u64) -> Checkpoint {
+    let mut totals = BTreeMap::new();
+    totals.insert(
+        (key("b"), 1 as WindowStart),
+        Totals {
+            settled: 500,
+            fee_count,
+            ..Totals::zero()
+        },
+    );
+    Checkpoint::seal(1, 1, 10, Vec::new(), totals, 0, 0, None).unwrap()
+}
+
+/// **EVERY SEALED FIGURE IS UNDER THE DIGEST, THE FEE COUNT INCLUDED** (RED arm).
+///
+/// The fee count was sealed beside the figures and left out of the body, so editing it after the
+/// seal still verified: a checkpoint could be made to say a window billed any number of requests
+/// and the digest would vouch for it. Now an edited count is an edited checkpoint.
+#[test]
+fn an_edited_fee_count_is_an_edited_checkpoint() {
+    let mut checkpoint = sealed_with_fees(3);
+    assert!(checkpoint.body_hash_verifies());
+    let cell = checkpoint
+        .totals
+        .get_mut(&(key("b"), 1 as WindowStart))
+        .expect("the sealed row");
+    cell.fee_count = 4;
+    assert!(
+        !checkpoint.body_hash_verifies(),
+        "a fee count edited after sealing must fail the digest"
+    );
+    // And a count edited down to nothing: the field's absence is not a way round it.
+    let mut zeroed = sealed_with_fees(3);
+    zeroed
+        .totals
+        .get_mut(&(key("b"), 1 as WindowStart))
+        .expect("the sealed row")
+        .fee_count = 0;
+    assert!(!zeroed.body_hash_verifies());
+}
+
+/// A checkpoint that seals no fee count keeps the exact bytes it always had, so every body sealed
+/// before the count joined the digest still hashes to its own stored digest.
+#[test]
+fn a_checkpoint_with_no_fee_count_keeps_its_bytes() {
+    let none = sealed_with_fees(0);
+    let some = sealed_with_fees(2);
+    let tail = |body: &[u8]| body.windows(b"fee_count".len()).any(|w| w == b"fee_count");
+    assert!(!tail(&none.signed_body()), "no fee count, no framed field");
+    assert!(tail(&some.signed_body()), "a fee count is framed by name");
+    assert!(none.signed_body().len() < some.signed_body().len());
+    assert_ne!(none.body_hash, some.body_hash);
+}

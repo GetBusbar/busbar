@@ -29,7 +29,7 @@ use crate::cost::{
 /// and a sum past the range pinned at `i64::MAX`. Each of those is now the one function's answer,
 /// because this is [`crate::cost::Tally`] at the card:
 ///
-/// - card ABSENT: tokens price at nothing, the fee posts (#42's only silent zero);
+/// - card ABSENT: every class prices at nothing, the fee posts (#42's only silent zero);
 /// - card PRESENT and the lane or a hit class unpriced: `Err` — a refusal, never a free line (#42);
 /// - overflow: `Err(Overflow)` — a refusal, never a pinned bill (item 28).
 ///
@@ -86,7 +86,7 @@ fn tally<'a, 'c>(
 
 /// ONE METERING ROW, AS ITS READER HOLDS IT: the lane it was metered on, its counts by class, its
 /// request count and its ledgered classes. The reader names its own columns and does nothing else.
-/// Which lane a count prices on, whether the requests are the pools plane's flat fee or a plane's
+/// Which lane a count prices on, whether the requests are the flat card's fee or a plane's
 /// own fee units, and where a plane's session count goes is decided HERE, in the cost unit, next
 /// to the price (ARCHITECT ruling 2026-09-30, one-pricing-site): a reader that projected the row
 /// itself and handed the slice in would be choosing the price's inputs beside the one function.
@@ -101,7 +101,7 @@ pub struct MeteredRow<'r> {
 }
 
 impl<'r> MeteredRow<'r> {
-    /// `lane` is the row's configured model name after alias resolution, or a plane's
+    /// `lane` is the row's configured lane name after alias resolution, or a plane's
     /// `"<plane>\u{1f}<subject>"` lane. `counts` is the row's token split under the reserved class
     /// spellings, a zero left off. `classes` are its other ledgered counts.
     pub fn new(
@@ -119,12 +119,12 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// The row as the lanes the one function prices, with no arithmetic: each lane with its counts
-    /// per class, and the flat fee count when the requests are the pools plane's (`None` for a
+    /// per class, and the flat fee count when the requests are the flat card's (`None` for a
     /// plane's row, whose requests are its own fee units).
     ///
     /// A PLANE'S ROW prices its requests the way the budget book does (#47): one PER_REQUEST each
     /// on that plane's FEE LANE, at the plane's own `fees.per_request` (0 when it configured none),
-    /// never at the pools plane's flat fee. Its other counts price on its plane-qualified lane, and
+    /// never at the flat card's fee. Its other counts price on its plane-qualified lane, and
     /// the plane's FEE LANE row (`("", <plane>)`) carries its session count on the fee lane itself.
     #[allow(clippy::type_complexity)]
     fn lanes(&self) -> (Vec<(String, BTreeMap<String, u64>)>, Option<u64>) {
@@ -177,7 +177,7 @@ impl<'r> MeteredRow<'r> {
 
     /// What the row cost, in micro-units, at one `card`: the reading when no dated history is
     /// installed. [`Tally`] at that card, one row per lane at the standard tier (a metering row
-    /// carries no tier), then the pools fee row.
+    /// carries no tier), then the flat card's fee row.
     pub fn spend_micros_at_card(&self, card: &RateCard) -> Result<i64, MoneyError> {
         let (lanes, fee_count) = self.lanes();
         let mut t = Tally::at_card(card);

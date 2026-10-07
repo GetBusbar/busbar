@@ -403,7 +403,11 @@ impl Shaping {
             };
             lanes.insert(name, lane);
         }
-        for (name, members) in &pools {
+        // A pool member is judged against the models the settings STATE: a blob dealt the plane's
+        // own section alone (the boot's stage 3g deal, `{pools: ...}`) states none, and the
+        // kernel's config validation refuses an undefined member there in 1.5.5's words.
+        let models_stated = settings.get(sections::MODELS).is_some();
+        for (name, members) in pools.iter().filter(|_| models_stated) {
             if let Some(m) = members.iter().find(|m| !lanes.contains_key(&m.model)) {
                 return Err(format!(
                     "pool '{name}' references unknown model '{}'",

@@ -81,6 +81,7 @@ pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 

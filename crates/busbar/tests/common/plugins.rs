@@ -53,6 +53,7 @@ pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 

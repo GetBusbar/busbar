@@ -119,6 +119,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -862,4 +863,296 @@ fn read_file_capped_bounds_the_stream_not_the_stale_metadata() {
     assert_eq!(read_file_capped(&small, 8).unwrap(), b"hello");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load UNCHANGED) ─────────────────────────────
+
+/// A door a registry row carries but these tests never open.
+extern "C" fn unopened_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    std::ptr::null()
+}
+
+/// The 1.6.0 manifest of a renamed plugin: `name` aliased `alias`, of `kind`, answering `former`.
+fn renamed(kind: &str, name: &str, alias: &str, former: &[&str]) -> Manifest {
+    let mut m = manifest(name, alias, "busbar");
+    m.kind = kind.into();
+    m.abi_version = supported_abi(kind)[0];
+    m.former_names = former.iter().map(|s| s.to_string()).collect();
+    m
+}
+
+/// The registry over `m` DROPPED IN (signed first-party into a fresh plugins dir and scanned).
+fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
+    let release = key(1);
+    let dir = tmpdir(tag);
+    let lib = format!("{tag} lib");
+    write_tarball(
+        &dir,
+        "plugin.tar.gz",
+        &sign(&release, m, lib.as_bytes()),
+        lib.as_bytes(),
+    );
+    let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+    let _ = std::fs::remove_dir_all(&dir);
+    reg
+}
+
+/// The registry over `m` LINKED (the build's own row, no artifact).
+fn linked_in(m: Manifest) -> PluginRegistry {
+    PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(m, unopened_door)])
+        .expect("the linked door admits the row")
+}
+
+/// THE RULING'S CASE: a 1.5.5-shaped config names a hook and a store by the manifest names their
+/// 1.5.5-era releases carried (`busbar-webrequest`; a store's `busbar-store-<name>-plugin`, here a
+/// neutral one — the fleet's real names are swept from plugins.yaml by
+/// [`every_former_name_plugins_yaml_declares_resolves_both_ways`]); each resolves to the 1.6.0 plugin
+/// of the kind the reference needs, DROPPED IN and LINKED alike — the resolution preflight's `require_plugin`, the
+/// store door and the auth and export axes all read. RED ARM, in the same test: the same plugins
+/// without their former names leave both references unresolved, which is the boot refusal 52 oracle
+/// cells hit ("no plugin matching the hook reference 'busbar-webrequest'").
+#[test]
+fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
+    let cases = [
+        (
+            "hook",
+            "busbar-hook-webrequest",
+            "webrequest",
+            "busbar-webrequest",
+        ),
+        (
+            "store",
+            "busbar-store-alpha",
+            "alpha",
+            "busbar-store-alpha-plugin",
+        ),
+    ];
+    for (kind, name, alias, old) in cases {
+        let with = || renamed(kind, name, alias, &[old]);
+        for (way, reg) in [
+            ("dropped in", dropped_in(&format!("former-{alias}"), with())),
+            ("linked", linked_in(with())),
+        ] {
+            let p = reg
+                .resolve(old)
+                .unwrap_or_else(|| panic!("{way}: '{old}' resolves"));
+            assert_eq!(p.manifest.name, name, "{way}");
+            assert!(reg.answers(old, kind), "{way}: '{old}' answers as a {kind}");
+            assert!(reg.resolve(alias).is_some() && reg.resolve(name).is_some());
+        }
+        // RED ARM: no former name, no resolution.
+        let without = || renamed(kind, name, alias, &[]);
+        for (way, reg) in [
+            (
+                "dropped in",
+                dropped_in(&format!("bare-{alias}"), without()),
+            ),
+            ("linked", linked_in(without())),
+        ] {
+            assert!(
+                reg.resolve(old).is_none(),
+                "{way}: '{old}' must not resolve"
+            );
+        }
+    }
+    // The store door opens through the same resolution (the store axis's lookup by config name).
+    let reg = linked_in(renamed(
+        "store",
+        "busbar-store-alpha",
+        "alpha",
+        &["busbar-store-alpha-plugin"],
+    ));
+    let refusal = reg
+        .store_door("busbar-store-alpha-plugin")
+        .expect_err("a door row of a store is not the store kind's linked row");
+    assert!(
+        refusal.contains("busbar-store-alpha") && !refusal.contains("no plugin named"),
+        "the former name resolved to the plugin: {refusal}"
+    );
+}
+
+/// PHASE 3: two dropped-in plugins claiming ONE former name, or a former name that is another
+/// plugin's name or alias, are a hard error naming both plugins and the contested name.
+#[test]
+fn two_plugins_claiming_one_former_name_are_refused() {
+    let release = key(1);
+    let mut pol = policy(&release);
+    pol.allow_third_party = true;
+    let acme = key(2);
+    for (second, contested) in [
+        (
+            renamed("hook", "acme-hook-x", "x", &["busbar-webrequest"]),
+            "busbar-webrequest",
+        ),
+        (
+            renamed("hook", "busbar-webrequest", "y", &[]),
+            "busbar-webrequest",
+        ),
+        (
+            renamed("hook", "acme-hook-z", "busbar-webrequest", &[]),
+            "busbar-webrequest",
+        ),
+        (
+            renamed("hook", "acme-hook-w", "w", &["webrequest"]),
+            "webrequest",
+        ),
+    ] {
+        let dir = tmpdir("former-conflict");
+        let first = sign(
+            &release,
+            renamed(
+                "hook",
+                "busbar-hook-webrequest",
+                "webrequest",
+                &["busbar-webrequest"],
+            ),
+            b"lib1",
+        );
+        let mut second = second;
+        second.publisher = "acme".into();
+        let other = second.name.clone();
+        write_tarball(&dir, "first.tar.gz", &first, b"lib1");
+        write_tarball(
+            &dir,
+            "second.tar.gz",
+            &sign(&acme, second, b"lib2"),
+            b"lib2",
+        );
+        let errs = scan_and_validate(&dir, &pol).unwrap_err();
+        let all = errs.join("\n");
+        assert!(
+            all.contains(&format!("'{contested}'"))
+                && all.contains("busbar-hook-webrequest")
+                && all.contains(&other),
+            "{all}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// THE ONE-OWNER RULE ACROSS THE DOORS (ARCHITECT Q-P4-12, BUSBAR-1.6.0.md:106): a linked row and
+/// any DIFFERENT plugin claiming one name, alias or former name refuse the boot, naming both and the
+/// word; neither door outranks the other. The SAME plugin linked and dropped in is not a claim
+/// conflict (the one-version-per-kind rule governs it).
+#[test]
+fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
+    let webrequest = || {
+        renamed(
+            "hook",
+            "busbar-hook-webrequest",
+            "webrequest",
+            &["busbar-webrequest"],
+        )
+    };
+    // RED: the 1.5.5 tarball (manifest name `busbar-webrequest`) dropped in beside a linked 1.6.0
+    // webrequest that answers that name.
+    let old = renamed("hook", "busbar-webrequest", "webrequest-1-5-5", &[]);
+    let refused = dropped_in("cross-old", old)
+        .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+        .expect_err("a linked row and a dropped-in plugin claiming one name are refused");
+    assert!(
+        refused.contains("'busbar-webrequest'")
+            && refused.contains("busbar-hook-webrequest")
+            && refused.contains("claim conflict"),
+        "{refused}"
+    );
+    // RED: two linked rows claiming one alias.
+    let refused = PluginRegistry::empty()
+        .link(vec![
+            LinkedPlugin::door(webrequest(), unopened_door),
+            LinkedPlugin::door(
+                renamed("hook", "acme-hook-x", "busbar-webrequest", &[]),
+                unopened_door,
+            ),
+        ])
+        .expect_err("two linked rows claiming one word are refused");
+    assert!(
+        refused.contains("'busbar-webrequest'") && refused.contains("acme-hook-x"),
+        "{refused}"
+    );
+    // GREEN: the linked row and its own dropped-in copy; the linked row answers.
+    let reg = dropped_in("cross-same", webrequest())
+        .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+        .expect("the same plugin linked and dropped in is not a conflict");
+    assert!(reg.resolve("busbar-webrequest").expect("resolves").linked());
+    // RED (Q-P4-12): a different dropped-in plugin spelling the linked row's ALIAS, or its NAME.
+    for (tag, other) in [
+        (
+            "cross-alias",
+            renamed("hook", "acme-hook-y", "webrequest", &[]),
+        ),
+        (
+            "cross-name",
+            renamed("hook", "acme-hook-z", "busbar-hook-webrequest", &[]),
+        ),
+    ] {
+        let refused = dropped_in(tag, other)
+            .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+            .expect_err("no door outranks the other");
+        assert!(
+            refused.contains("claim conflict") && refused.contains("busbar-hook-webrequest"),
+            "{tag}: {refused}"
+        );
+    }
+}
+
+/// The fleet's plugins.yaml entries, as `(repo, kind, alias, former_names)`: the four fields this
+/// sweep reads, off the registry's own flat shape (`  - repo:` opens an entry).
+fn fleet_entries(yaml: &str) -> Vec<(String, String, String, Vec<String>)> {
+    let mut out: Vec<(String, String, String, Vec<String>)> = Vec::new();
+    for line in yaml.lines() {
+        if let Some(repo) = line.strip_prefix("  - repo: ") {
+            out.push((repo.trim().into(), String::new(), String::new(), Vec::new()));
+            continue;
+        }
+        let Some(e) = out.last_mut() else { continue };
+        let Some(field) = line.strip_prefix("    ") else {
+            continue;
+        };
+        if let Some(v) = field.strip_prefix("kind: ") {
+            e.1 = v.trim().into();
+        } else if let Some(v) = field.strip_prefix("alias: ") {
+            e.2 = v.trim().into();
+        } else if let Some(v) = field.strip_prefix("former_names: ") {
+            e.3 = v
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(|w| w.trim().to_string())
+                .filter(|w| !w.is_empty())
+                .collect();
+        }
+    }
+    out
+}
+
+/// EVERY former name the committed plugins.yaml declares (the measured 1.5.5 manifest names of the
+/// renamed fleet plugins) resolves to its 1.6.0 plugin, of its kind, dropped in and linked: the
+/// ruling's case over the real data a 1.5.5 config names (`busbar-webrequest` under hooks, a store's
+/// `busbar-store-<name>-plugin` under `store.module`). A kind the linked door does not serve is
+/// checked dropped in only.
+#[test]
+fn every_former_name_plugins_yaml_declares_resolves_both_ways() {
+    let entries = fleet_entries(include_str!("../../../../plugins.yaml"));
+    let renamed_entries: Vec<_> = entries.iter().filter(|e| !e.3.is_empty()).collect();
+    assert!(renamed_entries.len() >= 9, "{renamed_entries:?}");
+    for (repo, kind, alias, former) in renamed_entries {
+        let former: Vec<&str> = former.iter().map(String::as_str).collect();
+        let m = || renamed(kind, repo, alias, &former);
+        let mut ways = vec![("dropped in", dropped_in(&format!("sweep-{alias}"), m()))];
+        if LINKED_KINDS.contains(&kind.as_str()) {
+            ways.push(("linked", linked_in(m())));
+        }
+        for (way, reg) in ways {
+            for old in &former {
+                let p = reg
+                    .resolve(old)
+                    .unwrap_or_else(|| panic!("{way}: {repo}'s former name '{old}' resolves"));
+                assert_eq!(&p.manifest.name, repo, "{way}");
+                assert!(reg.answers(old, kind), "{way}: '{old}' answers as a {kind}");
+            }
+        }
+    }
 }

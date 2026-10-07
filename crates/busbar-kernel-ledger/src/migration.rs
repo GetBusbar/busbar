@@ -48,7 +48,7 @@
 //!
 //! The prefix settles the families and nothing else. Inside the metering family the pool joins two
 //! caller-controlled components, and a prefix says nothing about where one of them ends: joined on a
-//! bare slash, `("gpt/4", "openai")` and `("gpt", "4/openai")` both spell `meter:gpt/4/openai`, so two
+//! bare slash, `("lane/4", "vendor")` and `("lane", "4/vendor")` both spell `meter:lane/4/vendor`, so two
 //! providers' opening figures land in one balance and add. That is the same error one level down —
 //! two customers' money in one bucket — and it is closed the same way it is closed everywhere else
 //! in this tree: each component is LENGTH-FRAMED, so the boundary is fixed by a count the rows
@@ -160,7 +160,7 @@ impl LegacyFigure {
     /// The prefix settles the two FAMILIES, and nothing more. Inside the metering family the key
     /// joins two caller-controlled components — the lane and the provider, both free text read off
     /// the previous release's rows — and a bare delimiter between them is not a key: joined on a
-    /// slash, `("gpt/4", "openai")` and `("gpt", "4/openai")` both spell `meter:gpt/4/openai` and land
+    /// slash, `("lane/4", "vendor")` and `("lane", "4/vendor")` both spell `meter:lane/4/vendor` and land
     /// on ONE balance, silently adding two providers' opening figures together. That is two
     /// customers' money in one bucket, and it is the one arithmetic error a migration cannot be
     /// allowed to make. So each component is LENGTH-FRAMED (see [`length_framed`]), which no

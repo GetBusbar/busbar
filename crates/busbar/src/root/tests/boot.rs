@@ -102,6 +102,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             host: None,
             declares: Default::default(),
             statement: None,
+            former_names: Vec::new(),
         },
         artifact,
     );
@@ -167,6 +168,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             host: None,
             declares: Default::default(),
             statement: None,
+            former_names: Vec::new(),
         },
         artifact,
     );

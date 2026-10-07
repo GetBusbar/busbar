@@ -1873,7 +1873,7 @@ impl ProductionUnits {
         // the node; the read half stays here so the ledger views have somewhere to read the
         // previous release's rows from. They are the same rows because they are the same value —
         // a second recorder would be a second answer to what the dual write wrote.
-        let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+        let rows = busbar_kernel_ledger::legacy::SummedRows::new();
         ProductionUnits::admin_only_over(dispatch, door, Box::new(rows.clone()), Arc::new(rows))
     }
 
