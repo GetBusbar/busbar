@@ -950,6 +950,23 @@ mod agent_door {
         book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
         /// The node's end post: the units whose facts are still open.
         post: Arc<NodeEndPost>,
+        /// The paths the door's routes were mounted at on the data router, as its construction
+        /// was handed them.
+        routes: Vec<String>,
+    }
+
+    /// How the cell's App faces the world beside the door's routes.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Facing {
+        /// The `agents:` section written; the App's plane table binds nothing for the door.
+        Routes,
+        /// The section written, and the App's plane table mounting the door's claims and binding
+        /// the audience and metadata document its snapshot states, as boot's `build_dispatch`
+        /// binds a door's facing: a token presented on the door must be bound to its audience,
+        /// and a refusal there is the RFC 6750 challenge naming its metadata document.
+        Admitted,
+        /// No `agents:` section at all: the plane loads iff its section is present (LAW 7).
+        Unconfigured,
     }
 
     /// The a2a door linked and bound through the loader's one load (its host services and the
@@ -1013,6 +1030,7 @@ mod agent_door {
             root,
             None,
             None,
+            Facing::Routes,
         )
     }
 
@@ -1029,6 +1047,24 @@ mod agent_door {
             None,
             None,
             Some(requests),
+            Facing::Routes,
+        )
+    }
+
+    /// [`served`] facing the world as `facing` says, loopback admitted.
+    fn served_facing(instance: &'static str, section: &str, facing: Facing) -> Served {
+        served_full(
+            instance,
+            section,
+            busbar_kernel::config::Destinations {
+                block_private_addresses: true,
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+            None,
+            facing,
         )
     }
 
@@ -1042,7 +1078,9 @@ mod agent_door {
 
     /// [`served_under`], the deployment's `hooks:` attached to one agent when `hooks` is given, the
     /// door's hook stage bound as production binds it (gate-first, the door's tail states it), and
-    /// the keyed caller bound to a group admitting `requests` requests in all when given.
+    /// the keyed caller bound to a group admitting `requests` requests in all when given; the App
+    /// facing the world as `facing` says.
+    #[allow(clippy::too_many_arguments)]
     fn served_full(
         instance: &'static str,
         section: &str,
@@ -1051,6 +1089,7 @@ mod agent_door {
         root: Option<Vec<u8>>,
         hooks: Option<AgentHooks>,
         requests: Option<u64>,
+        facing: Facing,
     ) -> Served {
         // The caller's group, when it is limited: `requests` requests in all.
         let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = requests
@@ -1225,10 +1264,12 @@ mod agent_door {
             ))
         };
         let mut sections = BTreeMap::new();
-        sections.insert(
-            section_key,
-            serde_yaml::from_str(section).expect("a section"),
-        );
+        if facing != Facing::Unconfigured {
+            sections.insert(
+                section_key,
+                serde_yaml::from_str(section).expect("a section"),
+            );
+        }
         // THE EGRESS, AS PRODUCTION SEALS IT: no provider (an agent is reached at its own `url`),
         // the process's connector, the node's journal.
         let providers = std::collections::BTreeMap::new();
@@ -1278,6 +1319,34 @@ mod agent_door {
         )
         .expect("the agent door composes");
         composed.post = Some(post);
+        // THE DOOR'S FACING, as boot's `build_dispatch` reads it off the door: each claim mounted
+        // at its literal prefix, and the audience and metadata document its snapshot states.
+        let facing_of: Vec<(Vec<String>, busbar_kernel::plane::PlaneAdmission)> =
+            if facing == Facing::Admitted {
+                composed
+                    .planes
+                    .iter()
+                    .filter_map(|p| {
+                        let admission = busbar_kernel::plane::PlaneAdmission {
+                            audience: p.snapshot.audience.clone()?,
+                            resource_metadata: p.snapshot.resource_metadata.clone()?,
+                        };
+                        let paths = p
+                            .snapshot
+                            .claims
+                            .iter()
+                            .map(|c| {
+                                let literal = c.target.split("/{").next().unwrap_or(&c.target);
+                                literal.trim_end_matches('/').to_string()
+                            })
+                            .filter(|path| !path.is_empty())
+                            .collect();
+                        Some((paths, admission))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
         // THE ADMIN SURFACE, as boot mounts it: the admin mount, and the operator credential's row
         // on the auth axis the admin chain authenticates `x-admin-token` with.
         busbar_core_admin::install();
@@ -1319,10 +1388,21 @@ mod agent_door {
                 Vec::new(),
             );
         }
+        for (paths, admission) in facing_of {
+            for path in &paths {
+                builder.mount_plane(
+                    surface("plane_key"),
+                    path,
+                    busbar_kernel::plane::WIRE_JSONRPC,
+                );
+            }
+            builder.admit_plane(surface("plane_key"), admission);
+        }
         let app = builder.build();
         let _ = live.set(Arc::clone(&app));
         let appliers = composed.appliers();
         let doors = door_routes(composed, || CARD.pin(), &[], &[]).expect("its claims mount");
+        let routes = doors.iter().map(|r| r.path.clone()).collect();
         let (router, admin, handle) =
             busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
         // Every config apply refreshes the door, as production binds it.
@@ -1337,6 +1417,7 @@ mod agent_door {
             handle,
             book: Arc::clone(&book.durability),
             post: end,
+            routes,
         }
     }
 
@@ -1552,8 +1633,17 @@ mod agent_door {
                         .iter()
                         .map(|(name, value)| format!("{name}: {value}\r\n"))
                         .collect();
+                    // JSON, unless the reply's own fields name its media type.
+                    let typed = fields
+                        .iter()
+                        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
+                    let json = if typed {
+                        ""
+                    } else {
+                        "content-type: application/json\r\n"
+                    };
                     let reply = format!(
-                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\n{extra}content-length: {}\r\n\
+                        "HTTP/1.1 {status} X\r\n{json}{extra}content-length: {}\r\n\
                          connection: close\r\n\r\n{answer}",
                         answer.len()
                     );
@@ -2169,6 +2259,17 @@ mod agent_door {
             answer: &'static str,
             tls: Option<tokio_rustls::TlsAcceptor>,
         ) -> Self {
+            Self::start_with(status, answer, Vec::new(), tls).await
+        }
+
+        /// [`Agent::start_over`], each relayed request answered with the head fields `fields`
+        /// beside its status and body.
+        async fn start_with(
+            status: u16,
+            answer: &'static str,
+            fields: Vec<(&'static str, String)>,
+            tls: Option<tokio_rustls::TlsAcceptor>,
+        ) -> Self {
             use std::sync::atomic::Ordering;
             let issuer = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
             let card = Arc::new(std::sync::Mutex::new(serde_json::Value::Null));
@@ -2222,7 +2323,10 @@ mod agent_door {
                             ..FarReply::of(200, signed(&card, &signer).to_string())
                         });
                     }
-                    Some(FarReply::of(status, answer.to_string()))
+                    Some(FarReply {
+                        fields: fields.clone(),
+                        ..FarReply::of(status, answer.to_string())
+                    })
                 }),
                 tls,
             )
@@ -2273,12 +2377,28 @@ mod agent_door {
         /// The `agents:` entry registering `name` at this agent's path `/<name>`, pinned by its
         /// signing key, re-verified within `reverify_ttl`.
         fn entry(&self, name: &str, reverify_ttl: &str) -> String {
+            self.entry_with(name, reverify_ttl, "")
+        }
+
+        /// [`Agent::entry`] with `more` (`key: value` pairs, comma-separated) added to it.
+        fn entry_with(&self, name: &str, reverify_ttl: &str, more: &str) -> String {
+            let more = if more.is_empty() {
+                String::new()
+            } else {
+                format!(", {more}")
+            };
             format!(
                 "{name}: {{url: 'http://127.0.0.1:{}/{name}', allow_private: true, reverify_ttl: \
-                 '{reverify_ttl}', pin: {{mechanism: jws_issuer_key, key: '{}'}}}}",
+                 '{reverify_ttl}', pin: {{mechanism: jws_issuer_key, key: '{}'}}{more}}}",
                 self.port,
                 key_info(&self.issuer)
             )
+        }
+
+        /// Its card from now on declares that it answers in events (`capabilities.streaming`).
+        fn streams(&self) {
+            let mut card = self.card.lock().expect("the card");
+            card["capabilities"] = serde_json::json!({ "streaming": true });
         }
     }
 
@@ -2734,10 +2854,6 @@ mod agent_door {
     /// and a2a/tests/fetch_tests.rs::a_redirect_to_a_metadata_dns_name_is_refused_before_it_is_resolved.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_card_fetch_redirected_at_cloud_metadata_is_refused_at_the_hop_that_names_it() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         use std::sync::atomic::Ordering;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-card-redirect-metadata";
@@ -2774,10 +2890,6 @@ mod agent_door {
     /// Ported from busbar-a2a a2a/tests/fetch_tests.rs::every_hop_of_a_legal_chain_is_resolved_and_pinned_separately.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_hop_of_a_legal_chain_is_followed_to_the_card() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         use std::sync::atomic::Ordering;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-card-redirect-chain";
@@ -3165,6 +3277,7 @@ mod agent_door {
                 agent: "planner",
             }),
             None,
+            Facing::Routes,
         )
     }
 
@@ -3470,10 +3583,6 @@ mod agent_door {
     /// Ported from busbar-a2a a2a/tests/inbound_tests.rs::an_unknown_agent_is_a_404_and_an_out_of_scope_one_says_so.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_unit_to_an_unregistered_agent_is_a_404() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-unregistered";
         let _published = Published(instance);
@@ -3501,10 +3610,6 @@ mod agent_door {
     /// and ::a_tripped_agent_rejects_fresh_submissions_on_the_httpjson_binding.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_agent_refuses_a_fresh_submission_with_503_and_retry_after() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         use tower::ServiceExt as _;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-breaker-503";
@@ -3571,10 +3676,6 @@ mod agent_door {
     /// Ported from busbar-a2a a2a/tests/metered_verbs_tests.rs::the_catalogue_card_verb_is_metered_against_the_plane_pool.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_extended_card_is_metered_as_one_request_and_no_tokens() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-extended-card-metered";
         let _published = Published(instance);
@@ -3604,5 +3705,648 @@ mod agent_door {
             !agent.relayed(),
             "the extended card is busbar's, never relayed"
         );
+    }
+
+    // ── PORTED FROM busbar-a2a (A2A-FLIP): what a caller of the deleted plane saw, on the door ────
+
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+
+    /// The `message/stream` params the streamed cells send.
+    const STREAM: &str = r#"{"message":{"kind":"message","messageId":"m-s","role":"user","contextId":"ctx-scan","parts":[{"kind":"text","text":"STREAM THE PLAN"}]}}"#;
+
+    /// A far agent's answer in events: one frame carrying its finished task.
+    const STREAMED: &str = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"task\",\"id\":\"B1\",\"contextId\":\"BC\",\"status\":{\"state\":\"completed\"}}}\n\n";
+
+    /// The media type an answer in events is served as.
+    const EVENTS: &str = "text/event-stream";
+
+    /// The credential busbar itself presents to an agent (its `upstream_credential:`), as its
+    /// secret file holds it.
+    const LEASED: &str = "leased-outbound-cred-BUSBAR-PRESENTS-THIS-7f3a";
+
+    /// The `upstream_credential:` pair presenting [`LEASED`] as a bearer: its secret a file under
+    /// the system temp directory, written here, one per instance.
+    fn leased(instance: &str) -> String {
+        let path = std::env::temp_dir().join(format!("{instance}-{}.lease", std::process::id()));
+        std::fs::write(&path, LEASED).expect("the lease's secret file");
+        format!(
+            "upstream_credential: {{secret: {{file: '{}'}}, lease_ttl_ms: 60000}}",
+            path.display()
+        )
+    }
+
+    /// Encodings a secret could plausibly be smuggled in. A scan that only looked for the
+    /// plaintext would be defeated by `base64` and would say so with a green tick.
+    fn encodings(secret: &str) -> Vec<(&'static str, Vec<u8>)> {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        vec![
+            ("plain", secret.as_bytes().to_vec()),
+            (
+                "base64",
+                base64::engine::general_purpose::STANDARD
+                    .encode(secret)
+                    .into_bytes(),
+            ),
+            (
+                "base64url-nopad",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(secret)
+                    .into_bytes(),
+            ),
+            ("hex", hex::encode(secret).into_bytes()),
+            // "we only sent a hash of it" is still sending a value derived from a credential to a
+            // party that has no business holding one.
+            (
+                "sha256-hex",
+                hex::encode(sha2::Sha256::digest(secret.as_bytes())).into_bytes(),
+            ),
+        ]
+    }
+
+    /// Whether `needle` occurs in `haystack`.
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Everything the far agent was sent since it was last asked, end to end.
+    fn wire(agent: &mut Agent) -> Vec<u8> {
+        let mut all = Vec::new();
+        while let Ok(request) = agent.heard.try_recv() {
+            all.extend_from_slice(request.as_bytes());
+        }
+        all
+    }
+
+    /// [`rpc`] presenting `value` in the head field `field` as its credential, and no bearer.
+    fn rpc_presenting(
+        agent: &str,
+        method: &str,
+        params: &str,
+        field: &'static str,
+        value: &str,
+    ) -> axum::http::Request<axum::body::Body> {
+        let mut req = rpc(agent, method, params, None);
+        req.headers_mut().insert(
+            field,
+            axum::http::HeaderValue::from_str(value).expect("a head value"),
+        );
+        req
+    }
+
+    /// The cell's own token's binding generation, as the book minted it.
+    fn generation_of(s: &Served) -> Option<String> {
+        let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+        busbar_kernel::governance::signing::TokenVerifier::single(
+            signer.kid(),
+            signer.verifying_key(),
+        )
+        .verify(&s.token, 1_700_000_000, None)
+        .expect("the cell's own token verifies")
+        .generation
+    }
+
+    /// The cell's own key's token bound to the resource `audience` (RFC 8707), as the book's
+    /// signing key mints one.
+    fn bound_to(s: &Served, audience: &str) -> String {
+        TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID).mint_for_audience(
+            &s.key.id,
+            4_000_000_000,
+            generation_of(s).as_deref(),
+            audience,
+            None,
+        )
+    }
+
+    /// The grant naming agent `agent`.
+    fn agent_scope(agent: &str) -> ScopeRef {
+        ScopeRef {
+            kind: surface("scope_kind").to_string(),
+            value: agent.to_string(),
+        }
+    }
+
+    /// Another caller on `s`'s book: a key minted beside the cell's own, its grant then written as
+    /// exactly `scopes` (`None` = every scope); its row and its token.
+    fn another_caller(
+        s: &Served,
+        name: &str,
+        scopes: Option<Vec<ScopeRef>>,
+    ) -> (VirtualKey, String) {
+        let (key, token) = s
+            .gov
+            .mint_signed(
+                NewKeySpec {
+                    name: name.to_string(),
+                    allowed_pools: None,
+                    ..Default::default()
+                },
+                4_000_000_000,
+                1_700_000_000,
+            )
+            .expect("mint");
+        let mut row = s
+            .gov
+            .store()
+            .get_key(&key.id)
+            .expect("a read")
+            .expect("the key's row");
+        row.allowed_scopes = scopes;
+        s.gov.store().put_key(&row).expect("the grant is written");
+        s.gov.refresh().expect("the book reloads");
+        (row, token.expose_secret().to_string())
+    }
+
+    /// The agents busbar's extended card names for the caller presenting `token`: its status, and
+    /// each skill's id, sorted.
+    async fn agents_seen(s: &Served, token: &str) -> (StatusCode, Vec<String>) {
+        let (status, body) = answered(
+            &s.router,
+            rpc("", "GetExtendedAgentCard", "{}", Some(token)),
+        )
+        .await;
+        let doc: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let mut ids: Vec<String> = doc["result"]["skills"]
+            .as_array()
+            .map(|skills| {
+                skills
+                    .iter()
+                    .filter_map(|s| s["id"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        (status, ids)
+    }
+
+    /// The `agents:` section registering `planner` and `scout` on `agent`, both pinned by its key.
+    fn two_agents(agent: &Agent) -> String {
+        format!(
+            "{}\n{}",
+            agent.entry("planner", "1h"),
+            agent.entry("scout", "1h")
+        )
+    }
+
+    /// Ported from busbar-a2a ingress_tests.rs::no_agents_configured_means_no_route_in_the_table_at_all.
+    ///
+    /// THE GATE, asserted on the mounted surface: a deployment that writes no `agents:` section
+    /// mounts not one route of the agent door — not under its mount, not its RFC 9728 document,
+    /// not busbar's own card at the well-known path — and a keyed caller asking there reaches no
+    /// agent. The control: the same door, its section written, mounts every one of them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_deployment_writing_no_agents_section_mounts_no_agent_route_at_all() {
+        let _one = PUBLISHING.lock().await;
+        let mut agent = Agent::start(200, ANSWER).await;
+        let section = agent.entry("planner", "1h");
+        let metadata = format!("/.well-known/oauth-protected-resource{}", mount());
+        let card = "/.well-known/agent-card.json";
+        let agent_routes = |routes: &[String]| -> Vec<String> {
+            routes
+                .iter()
+                .filter(|p| p.starts_with(mount()) || **p == metadata || p.as_str() == card)
+                .cloned()
+                .collect()
+        };
+
+        let configured = "serve-agent-door-configured";
+        let published = Published(configured);
+        let s = served_facing(configured, &section, Facing::Routes);
+        let mounted = agent_routes(&s.routes);
+        assert!(
+            mounted.contains(&metadata)
+                && mounted.iter().any(|p| p == card)
+                && mounted
+                    .iter()
+                    .any(|p| p.starts_with(&format!("{}/agents", mount()))),
+            "the control: a written section mounts the door's routes: {:?}",
+            s.routes
+        );
+        drop(published);
+
+        let absent = "serve-agent-door-unconfigured";
+        let _published = Published(absent);
+        let s = served_facing(absent, &section, Facing::Unconfigured);
+        assert!(
+            agent_routes(&s.routes).is_empty(),
+            "a deployment with no `agents:` mounted an agent route: {:?}",
+            s.routes
+        );
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "nothing serves it: {body}");
+        let (status, body) = answered(&s.router, get(card, None)).await;
+        assert_ne!(status, StatusCode::OK, "no card is served: {body}");
+        assert!(!agent.relayed(), "no agent was dialled");
+    }
+
+    /// Ported from busbar-a2a ingress_tests.rs::an_anonymous_caller_is_refused_and_told_where_to_get_a_token.
+    ///
+    /// The refusal owes a machine-readable challenge naming the door's metadata document. Without
+    /// it a conforming client has no entrance: it knows it was refused and not where to go.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_anonymous_caller_is_refused_and_told_where_to_get_a_token() {
+        use tower::ServiceExt as _;
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-anonymous";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served_facing(instance, &agent.entry("planner", "1h"), Facing::Admitted);
+        let response = s
+            .router
+            .clone()
+            .oneshot(rpc("planner", "message/send", SEND, None))
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let challenge = response
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let document = format!(
+            "https://gw.example/.well-known/oauth-protected-resource{}",
+            mount()
+        );
+        assert!(
+            challenge.contains(&document),
+            "the challenge does not name the door's metadata document: {challenge:?}"
+        );
+        assert!(!agent.relayed(), "a refused caller dials nothing");
+    }
+
+    /// Ported from busbar-a2a ingress_tests.rs::the_metadata_document_advertises_the_audience_the_verifier_demands.
+    ///
+    /// The RFC 9728 document is readable with no credential and advertises the very audience the
+    /// door's admission demands, so a client that does what the document says obtains a token
+    /// this server accepts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_metadata_document_advertises_the_audience_the_verifier_demands() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-metadata";
+        let _published = Published(instance);
+        let agent = Agent::start(200, ANSWER).await;
+        let s = served_facing(instance, &agent.entry("planner", "1h"), Facing::Admitted);
+        approve(&s, "planner").await;
+        let expected = s
+            .app
+            .planes
+            .admission_for(&format!("{}/agents/planner", mount()))
+            .expect("the door's claim is audience-bound")
+            .audience
+            .clone();
+        // No credential presented, and that is the point: this route is open.
+        let (status, body) = answered(
+            &s.router,
+            get(
+                &format!("/.well-known/oauth-protected-resource{}", mount()),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("the document");
+        assert_eq!(
+            doc["resource"],
+            expected.as_str(),
+            "the document advertises an audience the verifier does not demand"
+        );
+        let token = bound_to(&s, doc["resource"].as_str().expect("its resource"));
+        let (status, body) =
+            answered(&s.router, rpc("planner", "tasks/list", "{}", Some(&token))).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a token bound to the advertised resource is admitted: {body}"
+        );
+    }
+
+    /// Ported from busbar-a2a inbound_tests.rs::a_credential_of_another_kind_is_refused_with_401_and_never_names_a_backend.
+    ///
+    /// Only a busbar key for this resource admits a caller to an agent: the operator's credential
+    /// (as a bearer or on its own carrier), a bearer busbar never minted, a basic credential and a
+    /// key bound to another resource are each refused `401` before any agent is named or dialled,
+    /// and the refusal names no backend.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_credential_of_another_kind_is_refused_with_401_and_never_names_a_backend() {
+        use base64::Engine as _;
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-other-kind";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let elsewhere = bound_to(&s, "https://other.example/resource");
+        let basic = base64::engine::general_purpose::STANDARD.encode("delegator:secret");
+        for (what, field, value) in [
+            (
+                "the operator credential as a bearer",
+                "authorization",
+                format!("Bearer {ADMIN_TOKEN}"),
+            ),
+            (
+                "the operator credential on its own carrier",
+                "x-admin-token",
+                ADMIN_TOKEN.to_string(),
+            ),
+            (
+                "a bearer busbar never minted",
+                "authorization",
+                "Bearer sk-not-a-busbar-key".to_string(),
+            ),
+            (
+                "a basic credential",
+                "authorization",
+                format!("Basic {basic}"),
+            ),
+            (
+                "a key bound to another resource",
+                "authorization",
+                format!("Bearer {elsewhere}"),
+            ),
+        ] {
+            let (status, body) = answered(
+                &s.router,
+                rpc_presenting("planner", "message/send", SEND, field, &value),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{what}: {body}");
+            assert!(
+                !body.contains("127.0.0.1"),
+                "{what}: the refusal named the backend: {body}"
+            );
+            assert!(!agent.relayed(), "{what}: no agent was dialled");
+        }
+        assert_eq!(admitted(&s), 0, "nothing was charged");
+    }
+
+    /// Ported from busbar-a2a relay_stream_tests.rs::the_callers_busbar_key_is_absent_from_the_stream_wire_too.
+    ///
+    /// The root cell `egress-auth × a2a-client` on the STREAMED hop: everything the agent is sent
+    /// for a `message/stream` unit is scanned for the caller's busbar key in every encoding it
+    /// could be smuggled in, and none is there; the control, that the scanner sees what IS
+    /// forwarded: busbar's own leased credential for the agent is on the same wire.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_callers_busbar_key_is_absent_from_the_stream_wire_too() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-stream-scan";
+        let _published = Published(instance);
+        let mut agent = Agent::start_with(
+            200,
+            STREAMED,
+            vec![("content-type", EVENTS.to_string())],
+            None,
+        )
+        .await;
+        agent.streams();
+        let section = agent.entry_with("planner", "1h", &leased(instance));
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/stream", STREAM, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "streamed through the door: {body}");
+        assert!(
+            body.contains("completed"),
+            "the agent's event, relayed: {body}"
+        );
+
+        let wire = wire(&mut agent);
+        assert!(wire.len() > 100, "the scan has nothing to scan");
+        assert!(
+            contains(&wire, b"STREAM THE PLAN"),
+            "the streamed hop carried the caller's message"
+        );
+        for (encoding, bytes) in &encodings(&s.token) {
+            assert!(
+                !contains(&wire, bytes),
+                "the caller's busbar key reached the agent on the STREAM path, as {encoding}"
+            );
+        }
+        assert!(
+            contains(&wire, LEASED.as_bytes()),
+            "the control: the scanner must find the credential that IS legitimately forwarded"
+        );
+    }
+
+    /// Ported from busbar-a2a relay_stream_tests.rs::a_stream_hop_that_fails_before_its_first_event_is_a_busbar_attributed_error.
+    ///
+    /// An approved agent that has gone down before its first event (the connection closed
+    /// unanswered) is busbar's `502` to the caller, and the refusal names no backend endpoint.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stream_hop_that_fails_before_its_first_event_is_a_busbar_attributed_error() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-stream-down";
+        let _published = Published(instance);
+        let agent = Agent::start_with(
+            200,
+            STREAMED,
+            vec![("content-type", EVENTS.to_string())],
+            None,
+        )
+        .await;
+        agent.streams();
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        agent.go_down();
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/stream", STREAM, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert!(
+            !body.contains("127.0.0.1"),
+            "the refusal named the backend endpoint: {body}"
+        );
+    }
+
+    /// Ported from busbar-a2a catalogue_tests.rs::scope_decides_visibility_and_a_pool_only_key_sees_nothing.
+    ///
+    /// A key granted one agent sees that agent and no other; a key granted only a pool sees no
+    /// agent at all (an explicit grant is exhaustive across every kind: cross-kind admission is
+    /// fail-closed), and addressing one is refused before it dials.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scope_decides_visibility_and_a_pool_only_key_sees_nothing() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-visibility";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &two_agents(&agent), false, None);
+        approve(&s, "planner").await;
+        approve(&s, "scout").await;
+
+        let (_, narrowed) = another_caller(&s, "narrowed", Some(vec![agent_scope("planner")]));
+        assert_eq!(
+            agents_seen(&s, &narrowed).await,
+            (StatusCode::OK, vec!["planner".to_string()])
+        );
+        let (_, pool_only) = another_caller(&s, "pool-only", Some(vec![ScopeRef::pool("fast")]));
+        assert_eq!(
+            agents_seen(&s, &pool_only).await,
+            (StatusCode::OK, Vec::new()),
+            "cross-kind admission is fail-closed"
+        );
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&pool_only)),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("scope_denied"), "{body}");
+        assert!(!agent.relayed(), "nothing was dialled");
+    }
+
+    /// Ported from busbar-a2a catalogue_tests.rs::no_principal_sees_another_principals_agents.
+    ///
+    /// Two callers granted one agent each see disjoint, non-empty catalogues, and the addressed
+    /// read agrees with the listing: naming the other's agent is refused with the scope reason,
+    /// before it dials.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_principal_sees_another_principals_agents() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-principals";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &two_agents(&agent), false, None);
+        approve(&s, "planner").await;
+        approve(&s, "scout").await;
+
+        let (_, alice) = another_caller(&s, "alice", Some(vec![agent_scope("planner")]));
+        let (_, bob) = another_caller(&s, "bob", Some(vec![agent_scope("scout")]));
+        let (status, alice_sees) = agents_seen(&s, &alice).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, bob_sees) = agents_seen(&s, &bob).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(alice_sees, vec!["planner".to_string()]);
+        assert_eq!(bob_sees, vec!["scout".to_string()]);
+        assert!(
+            alice_sees.iter().all(|a| !bob_sees.contains(a)),
+            "one principal's catalogue appeared in the other's: {alice_sees:?} / {bob_sees:?}"
+        );
+
+        for (who, token, theirs) in [("alice", &alice, "scout"), ("bob", &bob, "planner")] {
+            let (status, body) =
+                answered(&s.router, rpc(theirs, "message/send", SEND, Some(token))).await;
+            assert_ne!(status, StatusCode::OK, "{who} reached `{theirs}`: {body}");
+            assert!(
+                body.contains("scope_denied"),
+                "{who}: refused for scope: {body}"
+            );
+            assert!(!agent.relayed(), "{who}: nothing was dialled");
+        }
+    }
+
+    /// Ported from busbar-a2a catalogue_tests.rs::a_key_that_is_no_longer_live_sees_no_agent_at_all.
+    ///
+    /// A key deleted, disabled or expired sees no agent at all: its catalogue read and an
+    /// addressed unit are each refused `401`, and nothing is dialled. The control: a live key of
+    /// the same grant sees both agents.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_that_is_no_longer_live_sees_no_agent_at_all() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-not-live";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &two_agents(&agent), false, None);
+        approve(&s, "planner").await;
+        approve(&s, "scout").await;
+        assert_eq!(
+            agents_seen(&s, &s.token).await,
+            (
+                StatusCode::OK,
+                vec!["planner".to_string(), "scout".to_string()]
+            ),
+            "the control must pass, or the rows below prove nothing"
+        );
+
+        for what in ["deleted", "disabled", "expired"] {
+            let (key, token) = another_caller(&s, what, None);
+            match what {
+                "deleted" => s.gov.delete_key(&key.id).expect("deleted"),
+                "disabled" => {
+                    s.gov
+                        .update_key(&key.id, Some(false), None)
+                        .expect("a write")
+                        .expect("the key");
+                }
+                _ => {
+                    let mut row = key.clone();
+                    row.expires_at = Some(1);
+                    s.gov.store().put_key(&row).expect("expired");
+                    s.gov.refresh().expect("the book reloads");
+                }
+            }
+            let (status, seen) = agents_seen(&s, &token).await;
+            assert_eq!(
+                (status, seen),
+                (StatusCode::UNAUTHORIZED, Vec::new()),
+                "a {what} key must see no agent"
+            );
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{what}: {body}");
+            assert!(!agent.relayed(), "{what}: nothing was dialled");
+        }
+    }
+
+    /// Ported from busbar-a2a inbound_jws_tests.rs::the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
+    /// (its wrong-key half, on the door's one verify path; the malformed key is the kernel's
+    /// `trust_verify_tests::a_root_key_that_is_not_a_key_is_malformed_before_anything_else`).
+    ///
+    /// One signed card, fetched for two registrations: pinned to the key that signed it, it
+    /// verifies (`pending`, its fingerprint, no failure); pinned to another key, `connect` reports
+    /// 1.5.5's refusal, and the impostor registration is never served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_card_signed_by_another_key_than_the_pinned_one_is_refused_and_never_served() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-wrong-key";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let other = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let section = format!(
+            "{}\nimpostor: {{url: 'http://127.0.0.1:{}/impostor', allow_private: true, \
+             reverify_ttl: '1h', pin: {{mechanism: jws_issuer_key, key: '{}'}}}}",
+            agent.entry("planner", "1h"),
+            agent.port,
+            key_info(&other)
+        );
+        let s = served(instance, &section, false, None);
+
+        let (status, preview) = admin(&s, "/agents/planner/connect", "").await;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(preview["state"], "pending", "{preview}");
+        assert_eq!(preview["failure"], serde_json::Value::Null, "{preview}");
+        assert_eq!(
+            preview["fingerprint"],
+            agent.fingerprint().as_str(),
+            "{preview}"
+        );
+
+        let (status, preview) = admin(&s, "/agents/impostor/connect", "").await;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(preview["state"], "error", "{preview}");
+        assert!(
+            preview["failure"].as_str().is_some_and(
+                |f| f.contains("the agent card is signed, but not by the pinned issuer key")
+            ),
+            "{preview}"
+        );
+        let (status, body) = answered(
+            &s.router,
+            rpc("impostor", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(!agent.relayed(), "the impostor was never dialled");
     }
 }
