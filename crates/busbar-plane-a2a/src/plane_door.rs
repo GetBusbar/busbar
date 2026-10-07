@@ -773,7 +773,10 @@ slot!(
             return Outcome::Ready;
         };
         let outcome = crate::push_door::tick(plane, &instance, input.get().now_ns);
-        out.set(|o| &o.next_tick_ns, plane.deliveries.next_tick_ns());
+        out.set(
+            |o| &o.next_tick_ns,
+            crate::push_door::next_tick_ns(&plane.deliveries, &plane.attempting),
+        );
         outcome
     }
 );
