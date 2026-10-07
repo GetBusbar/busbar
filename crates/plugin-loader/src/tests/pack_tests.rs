@@ -184,6 +184,85 @@ fn pack_cli_embeds_the_declares_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A declares file's `needs` (the transport schemes the conformance suite and the fleet render read)
+/// is checked and left out of the SIGNED manifest: the needs belong to the Statement. RED ARMS, in
+/// the same test: a malformed `needs` (not a list, a non-string, a scheme no framer serves) is
+/// refused, and any other unknown key is still refused beside a well-formed `needs`; each writes no
+/// tarball.
+#[test]
+fn pack_cli_leaves_the_declares_needs_out_of_the_manifest() {
+    let dir = std::env::temp_dir().join(format!("plugin-pack-needs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib_path = dir.join("lib.so");
+    std::fs::write(&lib_path, b"pretend cdylib").unwrap();
+    let pack_with = |file: &str| {
+        let path = dir.join("declares.json");
+        std::fs::write(&path, file).unwrap();
+        let out = dir.join("out.tar.gz");
+        let _ = std::fs::remove_file(&out);
+        let args: Vec<String> = [
+            "--lib",
+            &lib_path.to_string_lossy(),
+            "--name",
+            "n",
+            "--alias",
+            "n",
+            "--kind",
+            "export",
+            "--version",
+            "1.0.0",
+            "--publisher",
+            "p",
+            "--out",
+            &out.to_string_lossy(),
+            "--declares-file",
+            &path.to_string_lossy(),
+            "--allow-unsigned",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let code = pack(&args);
+        let manifest = std::fs::read(&out)
+            .ok()
+            .map(|t| busbar_plugin_loader::tarball::unpack(&t).unwrap().manifest);
+        (code, manifest)
+    };
+    let declared = serde_json::json!({"destinations": ["url"]});
+    let mut with_needs = declared.clone();
+    with_needs["needs"] = serde_json::json!(["https", "http", "tcp"]);
+    let (code, manifest) = pack_with(&with_needs.to_string());
+    assert_eq!(code, ExitCode::SUCCESS);
+    let manifest = manifest.expect("the tarball was written");
+    assert_eq!(serde_json::to_value(&manifest.declares).unwrap(), declared);
+    let signed = serde_json::to_value(&manifest).unwrap();
+    assert!(
+        signed["declares"].get("needs").is_none(),
+        "the signed manifest carries no needs: {signed}"
+    );
+    // RED ARMS: a malformed `needs` is refused, nothing written.
+    for bad in [
+        r#"{"needs": "http"}"#,
+        r#"{"needs": [7]}"#,
+        r#"{"needs": ["gopher"]}"#,
+    ] {
+        let (code, manifest) = pack_with(bad);
+        assert_eq!(code, ExitCode::FAILURE, "{bad} must be refused");
+        assert!(
+            manifest.is_none(),
+            "{bad}: a refused pack must not leave a tarball"
+        );
+    }
+    // RED ARM: any other unknown key is still refused beside a well-formed `needs`.
+    let (code, manifest) = pack_with(r#"{"needs": ["tcp"], "series": []}"#);
+    assert_eq!(code, ExitCode::FAILURE);
+    assert!(
+        manifest.is_none(),
+        "a refused pack must not leave a tarball"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--former-name` (repeatable) signs the plugin's former manifest names into the manifest, in
 /// order, so a tarball released under a new name still answers the name its 1.5.5 release carried.
 /// RED ARMS, in the same test: a former name outside the alias charset, or one that repeats the

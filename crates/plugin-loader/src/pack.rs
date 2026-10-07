@@ -240,14 +240,53 @@ fn read_and_validate_settings_schema(path: &str) -> Result<String, String> {
     Ok(text)
 }
 
+/// The transport schemes a declares file's `needs` may name: the schemes a transport framer serves
+/// for a Statement's need (`busbar-transport-tcp` frames `tcp`, `busbar-transport-http` frames
+/// `http` and `https`), the same list the fleet render gives a conformance host for.
+const NEED_SCHEMES: [&str; 3] = ["tcp", "http", "https"];
+
 /// Read `--declares-file`: the manifest's `declares` section as a JSON object, parsed into the very
 /// type the loader verifies — so a file busbar would refuse to read (an unknown key, a malformed
 /// declaration) is refused here, at PACK time, rather than shipped.
+///
+/// THE FILE'S `needs` IS NOT THE MANIFEST'S (ARCHITECT ruling (b), 2026-10-07): a networked
+/// plugin's declares file states `needs` (the transport schemes its Statement's needs name) for the
+/// conformance suite (`the_declared_needs_are_the_statements`) and the fleet render (its
+/// conformance host). The needs themselves belong to the Statement, so the signed manifest never
+/// carries them: `needs` is checked to be a list of known schemes, then removed, and the rest is
+/// parsed with every other unknown key still refused.
 fn read_declares(path: &str) -> Result<Declares, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read --declares-file '{path}': {e}"))?;
-    serde_json::from_str(&text)
+    let mut value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("--declares-file '{path}' is not a `declares` section: {e}"))?;
+    if let Some(map) = value.as_object_mut() {
+        if let Some(needs) = map.remove("needs") {
+            conformance_needs(&needs).map_err(|e| format!("--declares-file '{path}': {e}"))?;
+        }
+    }
+    serde_json::from_value(value)
         .map_err(|e| format!("--declares-file '{path}' is not a `declares` section: {e}"))
+}
+
+/// A declares file's `needs`: a list of the transport schemes in [`NEED_SCHEMES`].
+fn conformance_needs(needs: &serde_json::Value) -> Result<(), String> {
+    let list = needs
+        .as_array()
+        .ok_or_else(|| format!("`needs` is not a list of transport schemes: {needs}"))?;
+    for n in list {
+        match n.as_str() {
+            Some(s) if NEED_SCHEMES.contains(&s) => {}
+            Some(s) => {
+                return Err(format!(
+                    "`needs` names `{s}`, which no transport framer serves ({})",
+                    NEED_SCHEMES.join(", ")
+                ))
+            }
+            None => return Err(format!("`needs`: {n} is not a transport scheme")),
+        }
+    }
+    Ok(())
 }
 
 /// Resolve `$ref`/`allOf` into an effective (locally merged) schema object, so field-depth and
