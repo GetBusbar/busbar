@@ -385,16 +385,18 @@
    "paths": [
     "crates/busbar-core-oauth2/src"
    ],
-   "tree_hash": "c407fe6773553182a28f5ccfceddc12bc4baccbe35e1466251cb5ec96cda8304",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "tree_hash": "7140d2e692de6bd1506606c8bec1a7ba1e09c3e26c9199b0892bcafb05ee8ba9",
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
     "HIGH": 3,
-    "LOW": 6
+    "MEDIUM": 4,
+    "LOW": 5,
+    "NIT": 0
    },
-   "report": "The authorization server checks destinations itself with scattered net_guard calls and dials client metadata documents through the kernel egress engine rather than the connector, bypassing the operator allowlist; its comments name a plane in a neutral crate. A per-reload sweeper leaks old servers, the consent return check accepts a tab-prefixed path that redirects off-site, and state is in-memory per node. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "The authorization server now fetches client metadata documents through the root connector, and its consent return check refuses control characters. Three serious defects remain. The consent screen stakes an approval under the raw scope text, but the library spends it under a sorted, defaulted scope set, so unsorted or omitted scopes loop forever. All server state is in-memory per node. Every config reload rebuilds the server, wiping tokens, clients and replay ledgers. Metadata fetches are uncached and unbounded, and refresh tokens never expire. Read fully.",
+   "auditor": "opus-ledger-core-oauth2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-oauth2/src/tests"
@@ -411,6 +413,20 @@
       "LOW": 6
      },
      "report": "The authorization server checks destinations itself with scattered net_guard calls and dials client metadata documents through the kernel egress engine rather than the connector, bypassing the operator allowlist; its comments name a plane in a neutral crate. A per-reload sweeper leaks old servers, the consent return check accepts a tab-prefixed path that redirects off-site, and state is in-memory per node. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-core-oauth2",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "7140d2e692de6bd1506606c8bec1a7ba1e09c3e26c9199b0892bcafb05ee8ba9",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 4,
+      "LOW": 5,
+      "NIT": 0
+     },
+     "report": "The authorization server now fetches client metadata documents through the root connector, and its consent return check refuses control characters. Three serious defects remain. The consent screen stakes an approval under the raw scope text, but the library spends it under a sorted, defaulted scope set, so unsorted or omitted scopes loop forever. All server state is in-memory per node. Every config reload rebuilds the server, wiping tokens, clients and replay ledgers. Metadata fetches are uncached and unbounded, and refresh tokens never expire. Read fully."
     }
    ]
   },
@@ -606,16 +622,18 @@
    "paths": [
     "crates/busbar-kernel-ledger/src"
    ],
-   "tree_hash": "51b9216e06ab492dabd72cd38d5ea02612daa74bb146e6bf2694d1e91e9858be",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "tree_hash": "7d908a7bc4a8414ad536ceed420d1820fa6f60a43c8bd91c53e70eec4aae66f9",
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 4,
-    "LOW": 5
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 8,
+    "NIT": 0
    },
-   "report": "The statement read prices a line whose lane or class the card does not price at fee-only or zero instead of listing it as unpriceable, and the served totals view trusts that list; the metering fold is never constructed in production; the production legacy-row recorder keeps every settlement posting in memory forever; doc comments name plane and vendor instances in a neutral crate. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "Money arithmetic is checked and refuses on overflow; a statement now lists every line whose lane or class a present card leaves unpriced, and the served totals view falls back on that list. The dual-write keeps one running sum per principal, bucket and day, and neither those sums nor the in-memory book is ever retired, so memory grows with uptime. About fifteen shipped items have no production construction site. Several doc comments cite absent spec rules or describe tier rounding and a stored cache the code lacks. Read fully.",
+   "auditor": "opus-ledger-kernel-ledger",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-ledger/src/tests"
@@ -632,6 +650,20 @@
       "LOW": 5
      },
      "report": "The statement read prices a line whose lane or class the card does not price at fee-only or zero instead of listing it as unpriceable, and the served totals view trusts that list; the metering fold is never constructed in production; the production legacy-row recorder keeps every settlement posting in memory forever; doc comments name plane and vendor instances in a neutral crate. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-kernel-ledger",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "7d908a7bc4a8414ad536ceed420d1820fa6f60a43c8bd91c53e70eec4aae66f9",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 8,
+      "NIT": 0
+     },
+     "report": "Money arithmetic is checked and refuses on overflow; a statement now lists every line whose lane or class a present card leaves unpriced, and the served totals view falls back on that list. The dual-write keeps one running sum per principal, bucket and day, and neither those sums nor the in-memory book is ever retired, so memory grows with uptime. About fifteen shipped items have no production construction site. Several doc comments cite absent spec rules or describe tier rounding and a stored cache the code lacks. Read fully."
     }
    ]
   },
@@ -642,14 +674,17 @@
     "crates/busbar-kernel-scope/src"
    ],
    "tree_hash": "b87c09ea7f941d7e4ab39afcc4c44ca88c3c3709035f48735ea0f44940d385d5",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "LOW": 5
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 6,
+    "NIT": 0
    },
-   "report": "Keeps a second copy of the scope lattice and a second enforced admin scope matrix beside the kernel's; the claim and op-class policy lookup is never consulted in production; egress refusal audit helpers have no caller; one plane skips the key-liveness check its sibling enforces. No socket, TLS, static seam or unsafe code. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "The crate's egress grant gate lets each plane switch off the caller-key liveness check, and one plane ships with it off while its sibling enforces it; on that plane a key past its own expiry still has busbar's outbound credential spent for it. The crate also keeps a second copy of the scope lattice and a second enforced admin scope matrix, a policy lookup production never consults, refusal audit helpers with no caller, and stale prose. No socket, TLS, static seam or unsafe code. Read fully.",
+   "auditor": "opus-ledger-kernel-scope",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-scope/src/tests"
@@ -665,6 +700,20 @@
       "LOW": 5
      },
      "report": "Keeps a second copy of the scope lattice and a second enforced admin scope matrix beside the kernel's; the claim and op-class policy lookup is never consulted in production; egress refusal audit helpers have no caller; one plane skips the key-liveness check its sibling enforces. No socket, TLS, static seam or unsafe code. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-kernel-scope",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "b87c09ea7f941d7e4ab39afcc4c44ca88c3c3709035f48735ea0f44940d385d5",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The crate's egress grant gate lets each plane switch off the caller-key liveness check, and one plane ships with it off while its sibling enforces it; on that plane a key past its own expiry still has busbar's outbound credential spent for it. The crate also keeps a second copy of the scope lattice and a second enforced admin scope matrix, a policy lookup production never consults, refusal audit helpers with no caller, and stale prose. No socket, TLS, static seam or unsafe code. Read fully."
     }
    ]
   },
@@ -674,15 +723,18 @@
    "paths": [
     "crates/busbar-kernel-wal/src"
    ],
-   "tree_hash": "0e8320fb87318e57e420d5f609dab71cacadea983570b9cac3e76abfe1dd662c",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "tree_hash": "126d0651fc58f6e283b8edac52de7112891ec463db08a56a576e73e71ace33ab",
+   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "LOW": 3
+    "HIGH": 1,
+    "MEDIUM": 4,
+    "LOW": 4,
+    "NIT": 1
    },
-   "report": "Fixed-size frames with header and body checks, one-write one-sync group commit, segment poisoning on failed sync, quarantine before cut, no static seam or unsafe code. Gaps: still reads a never-released frame version whose digest failures are cut as torn tails, new segment files are not directory-fsynced, and the memory-mode store-durability claim is not what ships. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "Frames are fixed-size with header and body checks; a group commit is one write and one sync; a failed sync poisons the segment; corrupt remainders are quarantined before the cut; new segments now fsync their directory. Gaps: a tail record whose version byte is rewritten to the never-released layout is cut silently as torn; directory fsyncs swallow errors; poison is forgotten on restart; a failed roll drops already-chained records; ordinary crash tears can read as corruption; the memory-mode store-durability claim is not what ships. No unsafe code. Read fully.",
+   "auditor": "opus-ledger-kernel-wal",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-wal/src/tests"
@@ -698,6 +750,20 @@
       "LOW": 3
      },
      "report": "Fixed-size frames with header and body checks, one-write one-sync group commit, segment poisoning on failed sync, quarantine before cut, no static seam or unsafe code. Gaps: still reads a never-released frame version whose digest failures are cut as torn tails, new segment files are not directory-fsynced, and the memory-mode store-durability claim is not what ships. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-kernel-wal",
+     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
+     "tree_hash": "126d0651fc58f6e283b8edac52de7112891ec463db08a56a576e73e71ace33ab",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 4,
+      "LOW": 4,
+      "NIT": 1
+     },
+     "report": "Frames are fixed-size with header and body checks; a group commit is one write and one sync; a failed sync poisons the segment; corrupt remainders are quarantined before the cut; new segments now fsync their directory. Gaps: a tail record whose version byte is rewritten to the never-released layout is cut silently as torn; directory fsyncs swallow errors; poison is forgotten on restart; a failed roll drops already-chained records; ordinary crash tears can read as corruption; the memory-mode store-durability claim is not what ships. No unsafe code. Read fully."
     }
    ]
   },
