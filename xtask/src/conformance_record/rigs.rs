@@ -550,23 +550,44 @@ pub(super) fn on_path(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `Some(version)` when `node --version` reports a major below `major` (or cannot be read).
-pub(super) fn node_older_than(major: u32) -> Option<String> {
-    let out = Command::new("node").arg("--version").output().ok()?;
-    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let found = v
-        .trim_start_matches('v')
-        .split('.')
-        .next()
-        .and_then(|m| m.parse::<u32>().ok());
-    match found {
-        Some(m) if m >= major => None,
-        _ => Some(if v.is_empty() {
-            "(unreadable)".to_string()
-        } else {
-            v
-        }),
-    }
+/// THE NODE THE MCP RIG RUNS ON, pinned, with the SHA-256 of each platform's release tarball
+/// (nodejs.org/dist/<version>/SHASUMS256.txt). The rig never runs on whatever node the runner has.
+/// The official suite imports `fs.globSync` (node 22), and the control peer's bundler
+/// (rolldown, under the pinned typescript-sdk's `tsdown`) ships its native binding as an optional
+/// dependency whose `engines` is `^20.19.0 || >=22.12.0`. On a node outside that range, pnpm SKIPS the
+/// binding without an error, and the build then dies on `MODULE_NOT_FOUND`. That made the control leg
+/// red on a 22.11 runner and the whole rig not-run on a 20.x one. The pin satisfies both. pnpm comes
+/// from this node's own corepack, at the version the SDK's `packageManager` names.
+pub const MCP_NODE_VERSION: &str = "v22.23.3";
+const MCP_NODE_SHA256: &[(&str, &str)] = &[
+    (
+        "linux-x64",
+        "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af",
+    ),
+    (
+        "linux-arm64",
+        "5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2",
+    ),
+    (
+        "darwin-x64",
+        "8a677b0219178efd6eb0e475457c4afb452b521a92f6e67845a73bd85727f2a8",
+    ),
+    (
+        "darwin-arm64",
+        "23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53",
+    ),
+];
+
+/// nodejs.org's platform name for this host, and the pinned tarball's digest for it.
+pub fn mcp_node_platform(os: &str, arch: &str) -> Option<(&'static str, &'static str)> {
+    let plat = match (os, arch) {
+        ("linux", "x86_64") => "linux-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        ("macos", "x86_64") => "darwin-x64",
+        ("macos", "aarch64") => "darwin-arm64",
+        _ => return None,
+    };
+    MCP_NODE_SHA256.iter().find(|(p, _)| *p == plat).copied()
 }
 
 pub(super) fn read_opt(p: &Path) -> Option<String> {
@@ -695,6 +716,77 @@ impl Runner {
                 gone.join(", ")
             ))
         })
+    }
+
+    /// The pinned node for `rig`: fetched once into `<work>/toolchain`, its tarball checked against
+    /// the pinned SHA-256 before anything in it runs, unpacked, and `pnpm` put beside it through its
+    /// own corepack. The `PATH` the rig's legs run with (that node's `bin` first), or why not.
+    fn pinned_node(&self, rig: Rig) -> Result<String, String> {
+        let (plat, want) = mcp_node_platform(std::env::consts::OS, std::env::consts::ARCH)
+            .ok_or_else(|| {
+                format!(
+                    "no pinned node for {}/{}",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                )
+            })?;
+        let dir = self.work.join("toolchain");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let name = format!("node-{MCP_NODE_VERSION}-{plat}");
+        let bin = dir.join(&name).join("bin");
+        if !bin.join("node").is_file() {
+            let tgz = dir.join(format!("{name}.tar.gz"));
+            let url = format!("https://nodejs.org/dist/{MCP_NODE_VERSION}/{name}.tar.gz");
+            let tgz_s = tgz.to_string_lossy().into_owned();
+            if self.leg(
+                rig,
+                "node-fetch",
+                &["curl", "-fsSL", "-o", &tgz_s, &url],
+                None,
+                &[],
+            ) != Some(0)
+            {
+                return Err(format!("could not fetch {url}"));
+            }
+            let bytes = std::fs::read(&tgz).map_err(|e| format!("{tgz_s}: {e}"))?;
+            let mut h = crate::sha256::Sha256::new();
+            h.update(&bytes);
+            let got = h.hexdigest();
+            if got != want {
+                let _ = std::fs::remove_file(&tgz);
+                return Err(format!(
+                    "{url} has sha256 {got}, the pin is {want}: refusing to run it"
+                ));
+            }
+            let dir_s = dir.to_string_lossy().into_owned();
+            if self.leg(
+                rig,
+                "node-unpack",
+                &["tar", "-xzf", &tgz_s, "-C", &dir_s],
+                None,
+                &[],
+            ) != Some(0)
+            {
+                return Err(format!("could not unpack {tgz_s}"));
+            }
+        }
+        let bin_s = bin.to_string_lossy().into_owned();
+        let path = match std::env::var_os("PATH") {
+            Some(p) => format!("{bin_s}:{}", p.to_string_lossy()),
+            None => bin_s.clone(),
+        };
+        let corepack = bin.join("corepack").to_string_lossy().into_owned();
+        if self.leg(
+            rig,
+            "pnpm-via-corepack",
+            &[&corepack, "enable", "--install-directory", &bin_s, "pnpm"],
+            None,
+            &[("PATH", path.clone())],
+        ) != Some(0)
+        {
+            return Err("corepack could not install the pnpm shim".into());
+        }
+        Ok(path)
     }
 
     /// Run one leg with its output in `<work>/<rig>/<leg>.log`; its exit code, or `None` when it
@@ -901,21 +993,18 @@ impl Runner {
 
     fn run_mcp(&self) -> Outcome {
         let rig = Rig::Mcp;
-        if let Some(o) = self.missing(
-            rig,
-            &["bash", "node", "npx", "pnpm", "python3", "cargo", "curl"],
-        ) {
+        if let Some(o) = self.missing(rig, &["bash", "python3", "cargo", "curl", "tar"]) {
             return o;
         }
-        // The official suite (@modelcontextprotocol/conformance) imports `fs.globSync`, which node
-        // gained in 22: on an older node the CONTROL leg dies in the import and the run reads as an
-        // instrument fault. Say what is missing instead.
-        if let Some(found) = node_older_than(22) {
-            return Outcome::not_run(format!(
-                "the mcp rig needs node 22 or newer (the official suite imports fs.globSync); \
-                 this runner has node {found}"
-            ));
-        }
+        // Every leg runs on the PINNED node (see [`MCP_NODE_VERSION`]), never the runner's.
+        let path = match self.pinned_node(rig) {
+            Ok(p) => p,
+            Err(e) => return Outcome::not_run(format!("the mcp rig's pinned node: {e}")),
+        };
+        let node_env = [
+            ("PATH", path.clone()),
+            ("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0".to_string()),
+        ];
         let bin = match self.busbar() {
             Ok(b) => b,
             Err(e) => {
@@ -932,7 +1021,13 @@ impl Runner {
         let controls = [
             (
                 "selftest",
-                self.leg(rig, "selftest", &["bash", gate, "--selftest"], None, &[]),
+                self.leg(
+                    rig,
+                    "selftest",
+                    &["bash", gate, "--selftest"],
+                    None,
+                    &node_env,
+                ),
             ),
             (
                 "official-control",
@@ -941,7 +1036,7 @@ impl Runner {
                     "official-control",
                     &["bash", gate, "--official-control"],
                     None,
-                    &[],
+                    &node_env,
                 ),
             ),
             (
@@ -951,7 +1046,7 @@ impl Runner {
                     "battery-control",
                     &["bash", gate, "--battery-control"],
                     None,
-                    &[],
+                    &node_env,
                 ),
             ),
             (
@@ -961,12 +1056,16 @@ impl Runner {
                     "battery-negative-control",
                     &["bash", "scripts/negative-control.sh"],
                     Some(&battery),
-                    &[],
+                    &node_env,
                 ),
             ),
         ];
         let armed = controls.iter().all(|(_, c)| *c == Some(0));
-        let arm = [("MCP_SUBJECT_BUSBAR_BIN", bin.to_string_lossy().into_owned())];
+        let arm = [
+            ("MCP_SUBJECT_BUSBAR_BIN", bin.to_string_lossy().into_owned()),
+            node_env[0].clone(),
+            node_env[1].clone(),
+        ];
         let subject = |leg: &'static str, cmd: &[&str]| {
             let code = if armed {
                 self.leg(rig, leg, cmd, None, &arm)
