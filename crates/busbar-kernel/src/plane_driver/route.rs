@@ -186,6 +186,12 @@ pub trait FarEnd: Sync {
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         let _ = (token, fault);
     }
+    /// THE PLANE'S COUNTER LABELS for the attempt its answer to the ATTEMPT piece just made
+    /// (`OnPieceOut::metric_pool` / `metric_lane`): the walk's counters take them for this attempt
+    /// within their bound. The default takes nothing.
+    fn stated(&self, token: &Pass<Route>, labels: busbar_kernel_egress::ports::StatedLabels) {
+        let _ = (token, labels);
+    }
     /// A HELD FAR END's next frame (a duplex session's: dialled once, by the [`FarEnd::send`] of its
     /// first turn, and held for the session): write `request`'s body, as one message, into the
     /// attempt that send opened and its far end answered. The verb, target and fields were the
@@ -487,6 +493,8 @@ struct Answer {
     final_status: u32,
     final_message: Span,
     final_details: Span,
+    metric_pool: Span,
+    metric_lane: Span,
 }
 
 impl Answer {
@@ -512,6 +520,8 @@ impl Answer {
             final_status: o.final_status,
             final_message: o.final_message,
             final_details: o.final_details,
+            metric_pool: o.metric_pool,
+            metric_lane: o.metric_lane,
         }
     }
 }
@@ -1044,6 +1054,24 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             // records the reading of the answer it leaves.
             if piece.from == FROM_FAR_END {
                 self.far.judged(run.token, out.fault);
+            }
+            // THE ATTEMPT'S COUNTER LABELS, where the plane's answer to its ATTEMPT piece states
+            // them: words for the walk's counters to bound, never to trust (a word that is not
+            // UTF-8 is no word, and is stated as none).
+            if piece.from == FROM_KERNEL {
+                let word = |s: Span| {
+                    std::str::from_utf8(run.bufs.arena(s))
+                        .ok()
+                        .filter(|w| !w.is_empty())
+                        .map(str::to_string)
+                };
+                let labels = busbar_kernel_egress::ports::StatedLabels {
+                    pool: word(out.metric_pool),
+                    lane: word(out.metric_lane),
+                };
+                if labels.pool.is_some() || labels.lane.is_some() {
+                    self.far.stated(run.token, labels);
+                }
             }
             let bufs = &run.bufs;
             let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];

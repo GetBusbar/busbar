@@ -172,9 +172,10 @@ pub struct Hop {
     /// The task as its opening left it, kept for a refusal that must end it `failed`
     /// ([`credential_refusal`]): `refusal` is ticketless and reads no host.
     opened: Option<OpenedTask>,
-    /// The caller's answer and the record writes of a hop refused for busbar's own credential,
-    /// made once: a short `refusal` re-called renders the same again.
-    credential: Option<(relay::Reply, Vec<Write>)>,
+    /// The caller's answer and the record writes of a hop `refusal` ended (refused for busbar's
+    /// own credential, or left with no answer back), made once: a short `refusal` re-called renders
+    /// the same again.
+    refused: Option<(relay::Reply, Vec<Write>)>,
 }
 
 /// A TASK AS A HOP'S OPENING LEFT IT: the caller it is held under, the second it was opened at,
@@ -211,7 +212,7 @@ impl Hop {
             mint_message_id: false,
             member: String::new(),
             opened: None,
-            credential: None,
+            refused: None,
         }
     }
 
@@ -882,6 +883,12 @@ slot!(
         // is selected ([`answered_here`]).
         if answered_here(&disposition, agent.is_some()) {
             out.local();
+            // Busbar's extended card is an ADMITTED CALL on the plane's pool (the engine's
+            // `receive`: governance, admission, the request meter, then the card): it counts its
+            // request; a notification moves nothing.
+            if matches!(disposition, Disposition::Request { .. }) {
+                out.counted();
+            }
             keep(
                 &plane.units,
                 MAX_UNITS,
@@ -1337,23 +1344,52 @@ fn settle_task(
 /// queued as the engine's `end_task` sent one. Made once per unit: a short `refusal` re-called
 /// renders the same answer and writes. `None` for a unit with no hop.
 fn credential_refusal(plane: &A2aDoor, unit: &mut Unit) -> Option<(relay::Reply, Vec<Write>)> {
-    let target_line = unit.envelope.is_some() && unit.framed.is_none();
     let addressed = unit.agent.clone();
+    let hop = unit.hop.as_ref()?;
+    if hop.refused.is_none() {
+        let agent = if hop.member.is_empty() {
+            addressed.unwrap_or_default()
+        } else {
+            hop.member.clone()
+        };
+        busbar_contract::diag_warn!(
+            crate::diagnostics::A2A_OUTBOUND_CRED_UNLEASED,
+            agent = %agent,
+            "a2a: the outbound credential could not be leased"
+        );
+    }
+    hop_refusal(plane, unit, Relay::refuse_credential)
+}
+
+/// A HOP THAT LEFT AND HEARD NOTHING BACK (the kernel's walk ended with no member left after the
+/// unit's attempt went out: the connection to the agent could not be made, or closed unanswered):
+/// the engine's `RelayRefusal::Transport` as `receive::refuse_hop` answered it, never the open
+/// breaker's words — the attempt WAS dispatched ([`Relay::refuse_transport`]), a task the hop
+/// opened ended `failed` as [`credential_refusal`] ends one. `None` for a unit whose hop never
+/// left (refused before the socket: the breaker's own words stand).
+fn transport_refusal(plane: &A2aDoor, unit: &mut Unit) -> Option<(relay::Reply, Vec<Write>)> {
+    if !unit.hop.as_ref()?.left {
+        return None;
+    }
+    hop_refusal(plane, unit, Relay::refuse_transport)
+}
+
+/// THE REFUSAL `refusal` MAKES FOR A UNIT'S HOP, once: `refuse`'s answer, re-framed on the
+/// HTTP+JSON line, and a task it fails ended `failed` over the records its opening left
+/// ([`task_hop::fail_unhosted`]: `refusal` is ticketless and reads no host), its push notification
+/// queued as the engine's `end_task` sent one. A short `refusal` re-called renders the same answer
+/// and writes. `None` for a unit with no hop.
+fn hop_refusal(
+    plane: &A2aDoor,
+    unit: &mut Unit,
+    refuse: fn(&mut Relay) -> (relay::Reply, bool),
+) -> Option<(relay::Reply, Vec<Write>)> {
+    let target_line = unit.envelope.is_some() && unit.framed.is_none();
     let hop = unit.hop.as_mut()?;
-    if let Some(made) = &hop.credential {
+    if let Some(made) = &hop.refused {
         return Some(made.clone());
     }
-    let agent = if hop.member.is_empty() {
-        addressed.unwrap_or_default()
-    } else {
-        hop.member.clone()
-    };
-    busbar_contract::diag_warn!(
-        crate::diagnostics::A2A_OUTBOUND_CRED_UNLEASED,
-        agent = %agent,
-        "a2a: the outbound credential could not be leased"
-    );
-    let (mut reply, failed) = hop.relay.refuse_credential();
+    let (mut reply, failed) = refuse(&mut hop.relay);
     let mut writes = Vec::new();
     if let (true, Some(task), Some(opened)) = (failed, hop.relay.task().cloned(), hop.opened.take())
     {
@@ -1367,7 +1403,7 @@ fn credential_refusal(plane: &A2aDoor, unit: &mut Unit) -> Option<(relay::Reply,
     if target_line {
         reply.body = crate::rest::reframe(reply.status, &reply.body);
     }
-    hop.credential = Some((reply.clone(), writes.clone()));
+    hop.refused = Some((reply.clone(), writes.clone()));
     Some((reply, writes))
 }
 
@@ -1728,6 +1764,13 @@ fn piece(
     let left = hop.left;
     let admitted = hop.admitted;
     let need = attempt_need(hop.relay.binding());
+    // The transport axis's word for the binding (predev `framed_leg`: `framing.leg().name()`, the
+    // lower-case wire word, never the card's upper-case one), as the tail declares it.
+    let binding_word = match hop.relay.binding() {
+        crate::binding::Binding::JsonRpc => crate::surface::BINDING_DOCUMENT,
+        crate::binding::Binding::HttpJson => crate::surface::BINDING_TARGET,
+        crate::binding::Binding::Grpc => crate::surface::BINDING_FRAMED,
+    };
     let ob = &mut hop.outbox;
     let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
@@ -1814,6 +1857,16 @@ fn piece(
     // THE UNIT'S LEDGER LANE (SEAM-L(j)): the agent it reached, as the engine's meter named it
     // (`agent:<id>`), so the agent's rate card prices it and the metering rows read as 1.5.5's.
     let lane = (!member.is_empty()).then(|| arena.span(door::agent_resource(member).as_bytes()));
+    // THE ATTEMPT'S COUNTER LABELS, as the served engine counted each hop it sent (predev
+    // relay.rs:1705 `upstream_attempt_on(call.agent_id, framed_leg(call.framing))`, and its
+    // failures at :1737-1741): the agent the attempt went to as its `pool`, the binding the hop goes
+    // out on as its `lane` (one of the words the tail declares, `metric_lanes`).
+    let metric = (matches!(ob.head, Some(Head::Attempt(_))) && !member.is_empty()).then(|| {
+        (
+            arena.span(member.as_bytes()),
+            arena.span(binding_word.as_bytes()),
+        )
+    });
     // A stream that already sent messages states the status it ends with on its closing answer:
     // its message and details are in the arena by then.
     let closing_final = ob
@@ -1885,6 +1938,10 @@ fn piece(
     }
     if let Some(lane) = lane {
         out.set(|o| &o.lane, lane);
+    }
+    if let Some((pool, lane)) = metric {
+        out.set(|o| &o.metric_pool, pool);
+        out.set(|o| &o.metric_lane, lane);
     }
     out.set(|o| &o.emitted, n as u64);
     out.set(|o| &o.more, u32::from(more));
@@ -1991,6 +2048,30 @@ fn serving_of(plane: &A2aDoor, unit: u64, reachable: &str) -> String {
     serving.join(ROUTE_SCOPE_SEPARATOR)
 }
 
+/// THE ONE AGENT AN UNADDRESSED UNIT WOULD BE SERVED BY: the agents of the unit's section that
+/// would serve its request ([`admit_unit`], the candidates its arrival named), when exactly one does;
+/// `None` when none or several do.
+fn sole_serving(plane: &A2aDoor, unit: u64) -> Option<String> {
+    let (generation, envelope) = plane.units.with(&unit, |u| {
+        u.map_or((plane.newest(), None), |u| {
+            (u.generation, u.hop.as_ref().and_then(|h| h.request.clone()))
+        })
+    });
+    let section = plane.generations.current()?;
+    let mut serving = section.agents.iter().filter(|(id, def)| {
+        admit_unit(
+            plane,
+            (id.as_str(), def),
+            None,
+            generation,
+            envelope.as_ref(),
+        )
+        .is_ok()
+    });
+    let (one, _) = serving.next()?;
+    serving.next().is_none().then(|| one.clone())
+}
+
 slot!(
     /// `refusal`: a refused arrival rendered in its own words and status, and a kernel or gate
     /// refusal in the engine's admission words at the kernel's status, each in the line's dialect;
@@ -2017,24 +2098,40 @@ slot!(
         // A unit its agent's open breaker refused before it dialled: 1.5.5's words for it, naming
         // the agent and the seconds until it may be dialled again, which `Retry-After` repeats.
         let retry_after = given.retry_after_s.max(1);
-        let tripped = (given.reason
-            == busbar_contract::abi::plane::RefusalCode::BreakerOpen.code())
-        .then(|| {
-            instance.get().and_then(|plane| {
-                plane.units.with(&given.unit, |u| {
-                    let u = u?;
-                    let id = match &u.disposition {
-                        Disposition::Request { id, .. } | Disposition::Unlisted { id, .. } => {
-                            (!id.is_null()).then(|| id.clone())
-                        }
-                        _ => None,
-                    };
-                    let agent = u.agent.clone()?;
+        let breaker =
+            given.reason == busbar_contract::abi::plane::RefusalCode::BreakerOpen.code();
+        // The walk ended with no member left AFTER the unit's attempt went out (the connection to
+        // the agent failed, or closed unanswered): the engine's transport failure, not the
+        // breaker's words ([`transport_refusal`]).
+        let transport = breaker
+            .then(|| {
+                instance.get().and_then(|plane| {
+                    plane
+                        .units
+                        .with(&given.unit, |u| u.and_then(|u| transport_refusal(plane, u)))
+                })
+            })
+            .flatten();
+        let tripped = (breaker && transport.is_none())
+            .then(|| {
+                instance.get().and_then(|plane| {
+                    let (id, agent) = plane.units.with(&given.unit, |u| {
+                        let u = u?;
+                        let id = match &u.disposition {
+                            Disposition::Request { id, .. } | Disposition::Unlisted { id, .. } => {
+                                (!id.is_null()).then(|| id.clone())
+                            }
+                            _ => None,
+                        };
+                        Some((id, u.agent.clone()))
+                    })?;
+                    // An unaddressed unit names the agent the engine would have selected for it:
+                    // the one serving agent of its catalogue (1.5.5's `select`, before the breaker).
+                    let agent = agent.or_else(|| sole_serving(plane, given.unit))?;
                     Some(arrival::breaker_refusal(&agent, id, retry_after))
                 })
             })
-        })
-        .flatten();
+            .flatten();
         // A unit whose agent the KERNEL'S TRUST BOOK does not serve (its Approve refused the trust
         // facts the arrival stated: never approved, or quarantined): the admission's words for an
         // agent that is not serving, at the kernel's status, its state the book's verdict.
@@ -2084,7 +2181,7 @@ slot!(
         .flatten();
         let rendered = if let Some(refusal) = &unreadable {
             arrival::render(dialect, refusal, true)
-        } else if let Some((reply, _)) = &credential {
+        } else if let Some((reply, _)) = credential.as_ref().or(transport.as_ref()) {
             arrival::Rendered {
                 status: reply.status,
                 body: reply.body.clone(),
@@ -2154,7 +2251,9 @@ slot!(
             (reply.body, head, reply.code)
         } else {
             let mut head = vec![("content-type", rendered.content_type.to_string())];
-            if tripped.is_some() {
+            // AN OPEN BREAKER'S WAIT rides every line's refusal, whatever words it carries (the
+            // engine's `refuse_hop`: `503` + `Retry-After` from the cell's own deadline).
+            if breaker && transport.is_none() {
                 head.push(("retry-after", retry_after.to_string()));
             }
             (rendered.body, head, rendered.status)
@@ -2206,8 +2305,13 @@ slot!(
                 value: arena.span(value.as_bytes()),
             });
         }
-        // The writes ending the task a credential refusal failed, before the unit's audit row.
-        for w in credential.iter().flat_map(|(_, writes)| writes) {
+        // The writes ending the task a credential or transport refusal failed, before the unit's
+        // audit row.
+        for w in credential
+            .iter()
+            .chain(transport.iter())
+            .flat_map(|(_, writes)| writes)
+        {
             records.push(RecordWrite {
                 kind: kind_index(w.kind),
                 op: RECORD_PUT,

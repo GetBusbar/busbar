@@ -176,6 +176,9 @@ pub enum HopRefusal {
     NotServing,
     /// The egress guard refused the agent's registered endpoint.
     EndpointRefused,
+    /// The hop left for the agent and no answer came back: the connection could not be made, or
+    /// it closed before the agent answered (the engine's `RelayRefusal::Transport`).
+    Transport,
 }
 
 impl HopRefusal {
@@ -190,6 +193,7 @@ impl HopRefusal {
             HopRefusal::Uncorrelated => "a2a.hop.reply_uncorrelated",
             HopRefusal::NotServing => "a2a.hop.agent_not_serving",
             HopRefusal::EndpointRefused => "a2a.hop.endpoint_refused",
+            HopRefusal::Transport => "a2a.hop.transport_failed",
         }
     }
 
@@ -214,6 +218,7 @@ impl HopRefusal {
             HopRefusal::EndpointRefused => {
                 "busbar's egress guard refused the registered endpoint for this agent"
             }
+            HopRefusal::Transport => "busbar could not reach this agent's backend",
         };
         format!("{}: {sentence}", self.client_code())
     }
@@ -582,6 +587,22 @@ impl Relay {
             self.settled.push(Settled::Failed);
         }
         Answer::ToCaller(reply)
+    }
+
+    /// THE HOP LEFT AND NOTHING CAME BACK: the attempt went to the agent and the connection could
+    /// not be made, or closed before any answer (the engine's `RelayRefusal::Transport`, answered by
+    /// `receive::refuse_hop`). A task-less hop is refused early in the hop's fixed words (`502`,
+    /// `a2a.hop.transport_failed`, never the endpoint); a task the caller addressed is a failed read
+    /// (`502`, the task left as it is); a task the hop opened ends `failed` (`fail_task`: `502`
+    /// "the backend agent did not complete this task", naming it). The caller's whole answer, and
+    /// whether the task ends `failed`.
+    #[must_use]
+    pub fn refuse_transport(&mut self) -> (Reply, bool) {
+        self.answered = true;
+        match &self.task {
+            None => (HopRefusal::Transport.reply(&self.id), false),
+            Some(task) => task_refusal(None, task, &self.id),
+        }
     }
 
     /// REFUSED FOR BUSBAR'S OWN CREDENTIAL: the agent's `upstream_credential`, re-resolved for this

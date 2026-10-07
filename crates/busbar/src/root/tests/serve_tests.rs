@@ -2204,11 +2204,9 @@ mod agent_door {
             (sent + ANSWER.len()) as u64,
             "the request body sent and the response body read: {lines:?}"
         );
-        assert_eq!(
-            counted(&lines[0], busbar_contract::plane::PER_REQUEST),
-            1,
-            "the fee unit, once: {lines:?}"
-        );
+        // The fee unit rides the line as its billable count (`UnitCounts::fee_count`, priced as
+        // the card's fee line): a fee unit is no usage class (`report_of`).
+        assert_eq!(lines[0].fee_count, 1, "the fee unit, once: {lines:?}");
     }
 
     /// The root cells `billed-bytes` and the agent fee unit, refused before the socket: every hop
@@ -2252,11 +2250,7 @@ mod agent_door {
                 counted(c, surface("bytes_class")) > failing.len() as u64,
                 "its request and the agent's refusal: {c:?}"
             );
-            assert_eq!(
-                counted(c, busbar_contract::plane::PER_REQUEST),
-                1,
-                "a hop that left keeps its fee: {c:?}"
-            );
+            assert_eq!(c.fee_count, 1, "a hop that left keeps its fee: {c:?}");
         }
         let before = left.len();
         while agent.heard.try_recv().is_ok() {}
@@ -2273,11 +2267,7 @@ mod agent_door {
                 0,
                 "a unit refused before the socket counts no bytes: {c:?}"
             );
-            assert_eq!(
-                counted(c, busbar_contract::plane::PER_REQUEST),
-                0,
-                "and keeps no fee: {c:?}"
-            );
+            assert_eq!(c.fee_count, 0, "and keeps no fee: {c:?}");
         }
         assert!(!agent.relayed(), "the fast-failed unit never dialled");
     }
@@ -4540,9 +4530,11 @@ mod agent_door {
             let body = axum::body::to_bytes(response.into_body(), 1 << 16)
                 .await
                 .expect("body");
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains("breaker_open"), "{line}: {body}");
             assert!(
-                String::from_utf8_lossy(&body).contains("breaker_open"),
-                "{line}"
+                body.contains("agent `planner`"),
+                "{line}: the refusal names the agent the unit was routed to: {body}"
             );
         }
         assert!(!agent.relayed(), "a tripped agent is never dialled");
@@ -5032,6 +5024,16 @@ mod agent_door {
         agent.streams();
         let s = served(instance, &agent.entry("planner", "1h"), false, None);
         approve(&s, "planner").await;
+        // THE AGENT'S CARD IS FRESHLY VERIFIED, as the engine's cell held it (predev
+        // tests/relay_harness.rs `approve_card`: approved over a cached card, no look due; predev
+        // verbs.rs `approve` stamps no look, so the first call looks): one stream is served while
+        // the agent is up, so the call below meets no look and its HOP is what fails.
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/stream", STREAM, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "served while it is up: {body}");
         agent.go_down();
         let (status, body) = answered(
             &s.router,
@@ -5039,6 +5041,10 @@ mod agent_door {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert!(
+            body.contains(surface("task_resource_type")),
+            "the hop's task is named, failed as the engine's `fail_task` failed it: {body}"
+        );
         assert!(
             !body.contains("127.0.0.1"),
             "the refusal named the backend endpoint: {body}"
@@ -6307,11 +6313,12 @@ mod agent_door {
         );
     }
 
-    /// The exposition lines of `family` whose `lane` label is `lane`.
-    fn series_on_lane(family: &str, lane: &str) -> Vec<String> {
+    /// The exposition lines of `family` whose `pool` label is `pool` and `lane` label is `lane`.
+    fn series_of(family: &str, pool: &str, lane: &str) -> Vec<String> {
         busbar_kernel::snapshot::render()
             .lines()
             .filter(|l| l.starts_with(&format!("{family}{{")))
+            .filter(|l| l.contains(&format!("pool=\"{pool}\"")))
             .filter(|l| l.contains(&format!("lane=\"{lane}\"")))
             .map(str::to_string)
             .collect()
@@ -6326,8 +6333,10 @@ mod agent_door {
     }
 
     /// Ported from busbar-a2a a2a/tests/relay_leg_metrics_tests.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to.
-    /// A relayed agent unit counts `busbar_upstream_attempts_total{pool,lane}` for the agent it was
-    /// issued to (the lane is the registration's member name), in the model plane's series shape.
+    /// A relayed agent unit counts `busbar_upstream_attempts_total{pool,lane}` with the agent it was
+    /// issued to as its `pool` and the binding the hop went out on as its `lane`, as predev's cell
+    /// held it (predev relay_leg_metrics_tests.rs:107 `pool="planner"`, :122
+    /// `lane=WIRE_JSONRPC`), in the model plane's series shape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to() {
         busbar_kernel::snapshot::init();
@@ -6338,7 +6347,8 @@ mod agent_door {
         let s = served(instance, &agent.entry("metered", "1h"), false, None);
         approve(&s, "metered").await;
         let family = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
-        let before = total(&series_on_lane(family, "metered"));
+        let jsonrpc = surface("binding_document");
+        let before = total(&series_of(family, "metered", jsonrpc));
         let (status, body) = answered(
             &s.router,
             rpc("metered", "message/send", SEND, Some(&s.token)),
@@ -6346,10 +6356,12 @@ mod agent_door {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(agent.relayed(), "the unit reached the agent");
-        let lines = series_on_lane(family, "metered");
+        let lines = series_of(family, "metered", jsonrpc);
         assert!(
             !lines.is_empty(),
-            "a relayed unit left no `{family}` series naming the agent it was issued to"
+            "a relayed unit left no `{family}` series naming the agent it was issued to and its \
+             binding: {}",
+            busbar_kernel::snapshot::render()
         );
         assert!(
             total(&lines) > before,
@@ -6365,19 +6377,34 @@ mod agent_door {
 
     /// Ported from busbar-a2a a2a/tests/relay_leg_metrics_tests.rs::a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure.
     /// An agent that stops answering lands on `busbar_upstream_failures_total` under the model
-    /// plane's own `transient` disposition, so a dead agent is not 100% healthy on a rate panel.
+    /// plane's own `transient` disposition, so a dead agent is not 100% healthy on a rate panel;
+    /// its series names the agent as `pool` and the hop's binding as `lane` (predev
+    /// relay_leg_metrics_tests.rs:157 `pool="planner"`; relay.rs:1737-1741).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure() {
         busbar_kernel::snapshot::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-unreachable";
         let _published = Published(instance);
-        let agent = Agent::start(200, ANSWER).await;
+        let mut agent = Agent::start(200, ANSWER).await;
         let s = served(instance, &agent.entry("unreached", "1h"), false, None);
         approve(&s, "unreached").await;
+        // THE AGENT'S CARD IS FRESHLY VERIFIED before it goes down: an approval does not stamp the
+        // look (predev verbs.rs `approve`: the sighting and the cached card, no ledger stamp), so the
+        // first call looks (predev receive.rs:1947 `verify_agent_on_call`, before the hop). One call
+        // is served while the agent is up; the call below meets no look and its HOP is what fails,
+        // as predev's cell (whose harness held no card fetcher) drove it.
+        let (status, body) = answered(
+            &s.router,
+            rpc("unreached", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "served while it is up: {body}");
+        assert!(agent.relayed(), "the warm call reached the agent");
         agent.go_down();
         let family = busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL;
-        let before = total(&series_on_lane(family, "unreached"));
+        let jsonrpc = surface("binding_document");
+        let before = total(&series_of(family, "unreached", jsonrpc));
         let (status, body) = answered(
             &s.router,
             rpc("unreached", "message/send", SEND, Some(&s.token)),
@@ -6388,7 +6415,7 @@ mod agent_door {
             StatusCode::OK,
             "a hop that never reached the agent: {body}"
         );
-        let lines = series_on_lane(family, "unreached");
+        let lines = series_of(family, "unreached", jsonrpc);
         assert!(
             total(&lines) > before,
             "the backend was unreachable and left no `{family}` count for its lane: {lines:?}"

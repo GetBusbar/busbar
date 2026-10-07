@@ -10,14 +10,14 @@
 //! A destination here is a member as the generation's seal numbered it: one number per member
 //! across every pool of the plane, so a permit and a label key on it alone.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use busbar_kernel_egress::ports::{
-    BoxFut, Capacity, Clock, DestinationId, Permit, PermitHandle, Telemetry,
+    BoxFut, Capacity, Clock, DestinationId, Permit, PermitHandle, StatedLabels, Telemetry,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -172,6 +172,85 @@ impl Capacity for MemberPermits {
 pub struct WalkTelemetry {
     names: HashMap<DestinationId, String>,
     depths: Mutex<HashMap<String, i64>>,
+    bound: LabelBound,
+}
+
+/// THE WORDS A PLANE MAY STATE AS ITS ATTEMPTS' COUNTER LABELS (`OnPieceOut::metric_pool` /
+/// `metric_lane`), bounded so no plane can mint a series per distinct string: per walk pool, the
+/// `pool` words (the configured pool labels and the entry names the walk over it can reach) and
+/// the `lane` words (those entry names), and the plane's declared lane vocabulary beside them
+/// (`PlaneTail::metric_lanes`). Empty: nothing stated is taken.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LabelBound {
+    reach: HashMap<String, (BTreeSet<String>, BTreeSet<String>)>,
+    vocabulary: BTreeSet<String>,
+}
+
+impl LabelBound {
+    /// A bound over `vocabulary`, the plane's declared lane words, and no walk pool yet.
+    #[must_use]
+    pub fn new(vocabulary: impl IntoIterator<Item = String>) -> Self {
+        LabelBound {
+            reach: HashMap::new(),
+            vocabulary: vocabulary.into_iter().collect(),
+        }
+    }
+
+    /// What the walk over the pool named `walked` can reach: `pool_words` its `pool` label may
+    /// state, `entries` its `lane` label may state (and its `pool` label too).
+    #[must_use]
+    pub fn reaching(
+        mut self,
+        walked: &str,
+        pool_words: impl IntoIterator<Item = String>,
+        entries: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let entries: BTreeSet<String> = entries.into_iter().collect();
+        let pools = pool_words
+            .into_iter()
+            .chain(entries.iter().cloned())
+            .collect();
+        self.reach.insert(walked.to_string(), (pools, entries));
+        self
+    }
+
+    /// The `(pool, lane)` labels of one emission over the walk pool `walked` whose own labels are
+    /// `own`: each label the plane `stated` within the bound, its own otherwise; `true` when the
+    /// plane stated a word outside it.
+    #[must_use]
+    pub fn labels(
+        &self,
+        walked: &str,
+        own: (&str, &str),
+        stated: Option<&StatedLabels>,
+    ) -> (String, String, bool) {
+        let Some(stated) = stated else {
+            return (own.0.to_string(), own.1.to_string(), false);
+        };
+        let reach = self.reach.get(walked);
+        let mut refused = false;
+        let mut take = |word: &Option<String>, ok: &dyn Fn(&str) -> bool, own: &str| match word {
+            Some(w) if ok(w) => w.clone(),
+            Some(_) => {
+                refused = true;
+                own.to_string()
+            }
+            None => own.to_string(),
+        };
+        let pool = take(
+            &stated.pool,
+            &|w| reach.is_some_and(|(pools, _)| pools.contains(w)),
+            own.0,
+        );
+        let lane = take(
+            &stated.lane,
+            &|w| {
+                reach.is_some_and(|(_, entries)| entries.contains(w)) || self.vocabulary.contains(w)
+            },
+            own.1,
+        );
+        (pool, lane, refused)
+    }
 }
 
 impl WalkTelemetry {
@@ -181,7 +260,34 @@ impl WalkTelemetry {
         WalkTelemetry {
             names: names.into_iter().collect(),
             depths: Mutex::new(HashMap::new()),
+            bound: LabelBound::default(),
         }
+    }
+
+    /// The same counters, taking the labels a plane states within `bound`.
+    #[must_use]
+    pub fn bounded(mut self, bound: LabelBound) -> Self {
+        self.bound = bound;
+        self
+    }
+
+    /// The `(pool, lane)` labels one emission over the walk pool `pool` for `destination` carries:
+    /// the plane's `stated` labels within the bound, the walk's own otherwise; a stated word outside
+    /// it is counted refused (`busbar_plugin_label_refused_total`).
+    #[must_use]
+    pub fn labels(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        stated: Option<&StatedLabels>,
+    ) -> (String, String) {
+        let (pool, lane, refused) = self
+            .bound
+            .labels(pool, (pool, self.lane(destination)), stated);
+        if refused {
+            busbar_kernel::telemetry::plugin_label_refused();
+        }
+        (pool, lane)
     }
 
     /// A member's lane label: its configured name; empty for a member the seal did not name.
@@ -209,6 +315,27 @@ impl Telemetry for WalkTelemetry {
 
     fn upstream_failure(&self, pool: &str, destination: DestinationId, disposition: &'static str) {
         busbar_kernel::telemetry::upstream_failure_on(pool, self.lane(destination), disposition);
+    }
+
+    fn upstream_attempt_stated(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        stated: Option<&StatedLabels>,
+    ) {
+        let (pool, lane) = self.labels(pool, destination, stated);
+        busbar_kernel::telemetry::upstream_attempt_on(&pool, &lane);
+    }
+
+    fn upstream_failure_stated(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        disposition: &'static str,
+        stated: Option<&StatedLabels>,
+    ) {
+        let (pool, lane) = self.labels(pool, destination, stated);
+        busbar_kernel::telemetry::upstream_failure_on(&pool, &lane, disposition);
     }
 
     fn failover(&self, pool: &str, reason: &'static str) {

@@ -12,7 +12,7 @@
 //! | authenticate | the auth gate's verdict (the unit's principal); a unit with no key on a claim that takes a credential is refused (ARCHITECT P3 (a)) |
 //! | verify | the route the plane's `arrive` named, resolved against its section ([`DoorPools`], ARCHITECT Q-SW6/Q-FL3), a `ROUTE_SCOPE` unit to the one entry the principal's grant reaches among the plane's candidates (Q-DEL-A2A-SELECT, -SCOPE-TRUST); each member sealed under its (plane key, entry) |
 //! | approve | the caller's grant of the plane's scope kind over the route as named, then its fallback pool |
-//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
+//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged, unless the plane counts it as an admitted call (`ROUTE_COUNTED`): then a keyed one is charged on the plane's pool as below; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
 //! | meter | the plane's last far-end-reported counts, as the unit's usage lines (an estimate never bills) |
 //! | audit | the record's facts: the decoded operation class and how the unit finished |
 //!
@@ -363,6 +363,9 @@ pub struct DoorFacts {
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
     pub bench_below_trip_threshold: Option<bool>,
+    /// Its declared counter lane words (`PlaneTail::metric_lanes`): beside its entry names, the
+    /// words its attempts may state as their `lane` label ([`label_bound`]).
+    pub metric_lanes: Vec<String>,
 }
 
 /// What one unit carries between its steps.
@@ -375,6 +378,8 @@ struct DoorUnit {
     expected: Vec<UnitCount>,
     /// Its operation is performed at most once (`ROUTE_ONCE`).
     once: bool,
+    /// The plane answers it itself as an admitted call (`ROUTE_COUNTED`): a keyed one is charged.
+    counted: bool,
     routed: Option<Routed>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<AdmitGrant>,
@@ -624,7 +629,9 @@ impl DriverSteps for DoorSteps<'_> {
     }
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
-        self.lock().once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        let mut u = self.lock();
+        u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        u.counted = flags & busbar_contract::abi::plane::ROUTE_COUNTED != 0;
     }
 }
 
@@ -770,12 +777,17 @@ impl Units for DoorSteps<'_> {
     ) -> SeatVerdict<Admit> {
         // A UNIT THE PLANE ANSWERS ITSELF (ROUTE_LOCAL, ARCHITECT Q-L3B-LOCAL): admitted with no
         // route walk; only far-end-reported units bill (§7), so it holds and charges nothing, and
-        // is audited as every unit is.
-        let local = self
-            .lock()
-            .named
-            .as_ref()
-            .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+        // is audited as every unit is — unless the plane answers it AS AN ADMITTED CALL
+        // (ROUTE_COUNTED): then a keyed one passes the one check-then-charge on the plane's pool,
+        // counting its request (R2, 1.5.5's rule), and keeps only the fee units the plane reports.
+        let (local, counted) = {
+            let u = self.lock();
+            let local = u
+                .named
+                .as_ref()
+                .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+            (local, local && u.counted)
+        };
         // A UNIT ROUTED BY SCOPE that no one entry reached (Q-DEL-A2A-SELECT): refused before
         // anything is charged, as 1.5.5 chose the agent before its admission.
         let unrouted_scope = self
@@ -791,7 +803,7 @@ impl Units for DoorSteps<'_> {
             Admission::Refused => {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-            Admission::Keyed if !local => {
+            Admission::Keyed if !local || counted => {
                 if let Some(key) = self.key.clone() {
                     if let Err(refusal) = self.charge(ctx, &key) {
                         return SeatVerdict::refuse(token, refusal);
@@ -938,7 +950,37 @@ pub fn door_facts(
         audit_kind: OpClassId::new(audit_kind),
         keeps,
         bench_below_trip_threshold: None,
+        metric_lanes: Vec::new(),
     }
+}
+
+/// THE BOUND ON A PLANE'S STATED COUNTER LABELS over its section's `pools`
+/// ([`crate::root::egress_ports::LabelBound`]): for each pool the walk keys by name — a named
+/// pool's label, and each entry's own pool (`plane_lane(plane, entry)`, a direct route's) — the
+/// configured pool labels and entry names that walk can reach (a named pool's members, then its
+/// fallback pool's, and so on), and the plane's declared lane words `vocabulary`.
+#[must_use]
+pub fn label_bound(
+    plane: &str,
+    pools: &DoorPools,
+    vocabulary: &[String],
+) -> crate::root::egress_ports::LabelBound {
+    let mut bound = crate::root::egress_ports::LabelBound::new(vocabulary.iter().cloned());
+    for label in pools.pools().keys() {
+        let mut labels = Vec::new();
+        let mut entries = Vec::new();
+        let mut at = Some(label.as_str());
+        while let Some(pool) = at.filter(|p| !labels.iter().any(|l: &String| l == p)) {
+            labels.push(pool.to_string());
+            entries.extend(pools.pools().get(pool).into_iter().flatten().cloned());
+            at = pools.fallback(pool);
+        }
+        bound = bound.reaching(label, labels, entries);
+    }
+    for entry in pools.entries() {
+        bound = bound.reaching(&plane_lane(plane, entry), [], [entry.clone()]);
+    }
+    bound
 }
 
 // ── the egress ───────────────────────────────────────────────────────────────────────────────────
@@ -1058,7 +1100,13 @@ pub fn compose_egress(
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
         clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
         journal,
-        telemetry: Arc::new(crate::root::egress_ports::WalkTelemetry::new(names)),
+        telemetry: Arc::new(
+            crate::root::egress_ports::WalkTelemetry::new(names).bounded(label_bound(
+                &facts.plane,
+                pools,
+                &facts.metric_lanes,
+            )),
+        ),
         floor: busbar_kernel_egress::WeightedFloor::new(),
         pools: built,
         routes: sealed,
