@@ -1111,7 +1111,7 @@ fn an_opening_states_the_engines_answer_should_the_store_refuse_its_writes() {
             "error": { "code": -32603, "message": "the task could not be recorded" } })
     );
 
-    let mut desk = desk();
+    let mut desk = self::desk();
     let mut out = Vec::new();
     let at = Step {
         caller: ALICE,
@@ -1145,7 +1145,7 @@ fn an_opening_states_the_engines_answer_should_the_store_refuse_its_writes() {
         } })
     );
 
-    let mut desk = desk();
+    let mut desk = self::desk();
     let addressed = unrecorded(opened(
         &mut desk,
         &send(json!({
