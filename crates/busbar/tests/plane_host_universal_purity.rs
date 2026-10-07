@@ -600,3 +600,49 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         "calls_method missed a whitespace-before-paren call"
     );
 }
+
+/// LAW 11 (BUSBAR-1.6.0 lines 2127-2132; the relay-only ruling at 418-422): busbar runs no
+/// completion on the LLM plane to answer an upstream's sampling ask, and routes no call to another
+/// plane on the content's say-so. The kernel's resolved-completion seam (the arrival, its fn-pointer
+/// type, the set-once install, the test hook and the resolver) and the LLM plane's synthesizer that
+/// filled it were that route; 1.5.5 carried none of it. This pins that no crate's non-test source
+/// declares or names any of it again.
+#[test]
+fn no_crate_carries_a_resolved_completion_seam() {
+    const SEAM: &[&str] = &[
+        "completion_ingress",
+        "COMPLETION_INGRESS",
+        "CompletionArrival",
+        "CompletionIngress",
+        "synthesize_completion",
+    ];
+    let crates = repo_root().join("crates");
+    let mut scanned = 0usize;
+    let mut hits = Vec::new();
+    for entry in std::fs::read_dir(&crates)
+        .expect("the crates directory is readable")
+        .flatten()
+    {
+        let mut files = Vec::new();
+        plane_rs_files(&entry.path().join("src"), &mut files);
+        for f in files {
+            scanned += 1;
+            let code = strip_source(&std::fs::read_to_string(&f).expect("source is readable"));
+            for token in SEAM {
+                if code.contains(token) {
+                    hits.push(format!("  {}: {token}", f.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned > 100,
+        "the scan read {scanned} files; a scan that reads nothing passes vacuously"
+    );
+    assert!(
+        hits.is_empty(),
+        "a resolved-completion seam is back (busbar would answer an upstream's ask on another \
+         plane):\n{}",
+        hits.join("\n")
+    );
+}
