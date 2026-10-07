@@ -994,13 +994,9 @@ cite = "BUSBAR-1.6.0.md THE DESIGN, §2 — the loader is part of the trusted ba
 why = "the loader implements the transport face (transport_adapter.rs `WireTransport`) to hand a dynamically loaded transport plugin to the kernel. One implementation, in shipped source. Re-described against the tree: the store bridge no longer implements a `Store` face (its adapters implement the record/slice/verb store traits), and the transport bridge is the one entry face the loader implements today."
 drain = "none while the loader is outside the kind system. The drain is the ruling that gives the trusted base a kind of its own; until then this row holds the number, so a SECOND face appearing in the loader is a landing that has to say why."
 
-[[face]]
-crate = "busbar"
-face = "Store"
-count = "2"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 gives the composition root a REGISTRY to assemble from; assembling a store is not implementing one."
-why = "the root implements the store face twice in its own assembly rather than composing a store plugin that does. Two implementations, in shipped source."
-drain = "move both implementations into a store-kind crate and have the root REGISTER it. The root names every kind by design and implements none of them."
+# STRUCK (row 113, ruling (B)): `busbar` × Store. The root's two implementations — the refusing
+# stand-in and the forwarding newtype — are deleted; the root binds the loader's adapter over the
+# configured store (`StoreAdapter::verb_store`) and implements no store face.
 
 # ── THE DIALECT COLUMN ───────────────────────────────────────────────────────────────────────────
 #
