@@ -573,6 +573,14 @@ pub const RECORD_AUDIT: u32 = 3;
 /// the arrival gate and the audit still run, it meters nothing, and a signature it carries is
 /// verified by an auth plugin under the style the plane's inbound need declares.
 pub const ROUTE_PUBLIC: u32 = 1;
+/// [`AdminRoute::flags`], on a [`ROUTE_PUBLIC`] route only: the route is addressed by the plane's
+/// OWN correlation token, carried in the request's `authorization` field, so that one field crosses
+/// to [`slot::SERVE`] (every other credential field stays struck). The token is busbar's own value,
+/// minted and re-verified only through the host's signing service: it is not a caller principal
+/// and the plane holds no key (`BUSBAR-1.6.0.md` l.4882: a callback route "is auth `none`; the
+/// plane checks its own callback correlation token (never logged/audited)"). Without
+/// [`ROUTE_PUBLIC`] the snapshot is refused.
+pub const ROUTE_CARRIES_OWN_TOKEN: u32 = 1 << 1;
 
 /// [`ServeOut::audit`]: no audit row.
 pub const AUDIT_NONE: u32 = 0;
@@ -1165,7 +1173,7 @@ pub struct AdminRoute {
     pub verb: AbiStr,
     /// The target path.
     pub target: AbiStr,
-    /// [`ROUTE_PUBLIC`] or `0`.
+    /// [`ROUTE_PUBLIC`], with [`ROUTE_CARRIES_OWN_TOKEN`] beside it where it is set, or `0`.
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,

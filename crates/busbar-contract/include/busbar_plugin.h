@@ -412,6 +412,7 @@ extern "C" {
 #define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one write to a record kind of the plane's own. A put of an EMPTY */
 #define BB_PLANE_RECORD_AUDIT UINT32_C(3) /* [`RecordWrite::op`]: THE UNIT'S AUDIT RECORD, a row on the kernel's own audit chain (the one */
 #define BB_PLANE_ROUTE_PUBLIC UINT32_C(1) /* [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller; */
+#define BB_PLANE_ROUTE_CARRIES_OWN_TOKEN UINT32_C(2) /* [`AdminRoute::flags`], on a [`ROUTE_PUBLIC`] route only: the route is addressed by the plane's */
 #define BB_PLANE_AUDIT_NONE UINT32_C(0) /* [`ServeOut::audit`]: no audit row. */
 #define BB_PLANE_AUDIT_APPLIED UINT32_C(1) /* [`ServeOut::audit`]: the request applied; the row's outcome is `applied`. */
 #define BB_PLANE_AUDIT_REJECTED UINT32_C(2) /* [`ServeOut::audit`]: the request was rejected after it was judged; the row's outcome is */

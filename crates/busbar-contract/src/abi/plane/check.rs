@@ -31,10 +31,10 @@ use super::{
     EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
     INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT,
     MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
-    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE,
-    ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_ITEM_APPROVALS, TRUST_PIN,
-    TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_CARRIES_OWN_TOKEN, ROUTE_DIRECT,
+    ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM,
+    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES,
+    TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -1037,7 +1037,9 @@ pub fn claim_selector(
     }
 }
 
-/// Every snapshot admin route: a verb, a target and known flags.
+/// Every snapshot admin route: a verb, a target and known flags; [`ROUTE_CARRIES_OWN_TOKEN`] only
+/// beside [`ROUTE_PUBLIC`] (an admin route's `authorization` is the operator's credential, which
+/// never crosses).
 ///
 /// # Errors
 ///
@@ -1049,9 +1051,12 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
         text(r.audit_verb, "admin_route.audit_verb")?;
         bits(
             u64::from(r.flags),
-            u64::from(ROUTE_PUBLIC),
+            u64::from(ROUTE_PUBLIC | ROUTE_CARRIES_OWN_TOKEN),
             "admin_route.flags",
         )?;
+        if r.flags & ROUTE_CARRIES_OWN_TOKEN != 0 && r.flags & ROUTE_PUBLIC == 0 {
+            return Err(fault(Rule::Contradiction, "admin_route.flags"));
+        }
     }
     Ok(())
 }
