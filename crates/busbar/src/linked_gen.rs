@@ -17,7 +17,8 @@
 //                                            half lives in the root, or one crate carries several
 //                                            rows)
 //   [package.metadata.busbar.root-units]    <cargo feature> = "<root module>"    (`ROOT_UNIT` of
-//                                            `crate::root::<module>`, in order)
+//                                            `crate::root::<module>`, in order; the row keyed
+//                                            `node` is the node's own unit, in every build)
 //   [package.metadata.busbar.linked-name]   <row key> = "<registry key>"         (the key an `auths`
 //                                            row answers on the auth axis: what its signed tarball's
 //                                            manifest would state as its name)
@@ -28,6 +29,12 @@
 // as the test-seam table `busbar-core-admin`'s build script emits (`metadata_list` + `linked_table`
 // there); a build script may not read another crate's source (kind-isolation `build-script-reach`),
 // so the two are written in each crate rather than shared by a path that climbs out of one of them.
+
+/// THE NODE'S OWN ROOT-UNIT ROW (ARCHITECT Q1): keyed to the node itself rather than to a plane
+/// feature, because the node compiles in every build and every door plane — compiled in or dropped
+/// in — is driven and posted on it. Its configuration and book steps (the card repricer, the book
+/// binding) therefore run in every build.
+pub(crate) const NODE_UNIT: &str = "node";
 
 /// A registration axis: its manifest name, the `LINKED` field it fills, and the entry item a crate
 /// that registers on it exports. The plane axis is the one exception, built below (two items, joined),
@@ -41,7 +48,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("ws-arrivals", "ws_arrivals", "install_ws_arrivals"),
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
-    ("stdio-serve", "stdio_serve", "stdio_serve"),
     ("cli-help", "cli_help", "CLI_HELP"),
     ("stores", "stores", "STORE"),
     // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
@@ -237,7 +243,7 @@ pub(crate) fn linked_source(
     }
     for (feature, _) in &units {
         assert!(
-            features.contains(feature),
+            features.contains(feature) || feature == NODE_UNIT,
             "Cargo.toml: linked feature `{feature}` is not declared under [features]"
         );
     }
@@ -514,7 +520,7 @@ pub(crate) fn linked_source(
         "/// Every enabled root unit, in manifest order.\n\
          static ROOT_UNITS: &[&crate::root::linked::RootUnit] = &[\n",
     );
-    for (_, module) in units.iter().filter(|(f, _)| enabled(f)) {
+    for (_, module) in units.iter().filter(|(f, _)| f == NODE_UNIT || enabled(f)) {
         out.push_str(&format!("    &crate::root::{module}::ROOT_UNIT,\n"));
     }
     out.push_str("];\n");

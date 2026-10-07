@@ -196,3 +196,44 @@ fn a_claim_stating_no_stream_is_not_stream_framed_though_its_carrier_has_a_frame
         "a carrier no framer answers is framed by none"
     );
 }
+
+/// THE LINE CARRIER IS NEVER FRAMED (SEAM-4l regression): a claim over the root's own line carrier
+/// is served as the line arrived, even where a framer claims that carrier's name (the stdio
+/// transport's framer does), while any other carrier such a framer answers is still framed by it.
+/// RED without the line-carrier rule: the stdio line went to the framer and never completed.
+#[test]
+fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
+    use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
+    use std::sync::Arc;
+    struct Claims(DoorFacts);
+    impl FramerDoor for Claims {
+        fn facts(&self) -> &DoorFacts {
+            &self.0
+        }
+        fn cross(&self, _: Call<'_>) -> Crossed {
+            unreachable!("never crossed: only the choice is judged")
+        }
+    }
+    let line = super::lines::LINE_CARRIER;
+    let door: Arc<dyn FramerDoor> = Arc::new(Claims(DoorFacts {
+        name: "claims-the-line".into(),
+        claims: vec![line, "framed"],
+        role: busbar_contract::abi::transport::ROLE_FRAMER,
+        composes_over: Vec::new(),
+        status_rows: Vec::new(),
+        duplex: vec![line, "framed"],
+    }));
+    let any = |_: &str| Some(Arc::clone(&door));
+    assert!(
+        super::serve_framed::stream_framer(line, any).is_some(),
+        "the hazard exists: a framer claims the line carrier's name"
+    );
+    assert!(
+        super::framed_by(line, any).is_none(),
+        "a line is served as it arrived, never framed"
+    );
+    assert!(
+        super::framed_by("framed", any).is_some(),
+        "another carrier such a framer answers is still framed by it"
+    );
+}

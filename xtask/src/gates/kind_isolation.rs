@@ -360,10 +360,12 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["busbar-export-"],
     },
+    // `=busbar-mcp` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the mcp plane
+    // is `busbar-plane-mcp`, a `plane` crate (`legacy-retired` asked for exactly this strike).
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-a2a", "=busbar-voice"],
+        matchers: &["=busbar-llm", "=busbar-a2a", "=busbar-voice"],
     },
 ];
 
@@ -424,8 +426,9 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     // class the design grants ahead of the tree lands here.
 ];
 
-/// The retiring 1.5.x crates, named so the ratchet can check they still exist.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+/// The retiring 1.5.x crates, named so the ratchet can check they still exist. `busbar-mcp` retired
+/// at P3 DEL-MCP (ARCHITECT 2026-10-05) and is struck, as `legacy-retired` requires.
+const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-a2a", "busbar-voice"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -733,7 +736,18 @@ const ARCHITECTURE_TCB: &[(&str, &str)] = &[
 ];
 
 /// The verdict a `[[dep]]` row must carry, and the whole vocabulary of them.
-const DEP_VERDICTS: &[&str] = &["allowed", "tcb", "not-allowed", "owner-ruling-pending"];
+const DEP_VERDICTS: &[&str] = &[
+    "allowed",
+    "tcb",
+    "not-allowed",
+    "owner-ruling-pending",
+    TEST_LINKED_DOOR_VERDICT,
+];
+
+/// A TEST-LINKED DOOR's verdict ([`test_linked_door_edges`]; ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1); ported from lane-dg-mcp dd0d4438ba at P3 DEL-MCP): a row claims it only for such
+/// an edge, and such an edge's row claims nothing else.
+const TEST_LINKED_DOOR_VERDICT: &str = "test-linked-door";
 
 /// The two halves of the build graph a `[[dep]]` or `[[question]]` row can be about.
 const DEP_HALVES: &[&str] = &["shipped", "test"];
@@ -861,6 +875,18 @@ const BATTERY_MARKER: &str = "testkit";
 
 /// A per-crate battery file matches this, under the crate's own `tests/`.
 const CONFORMANCE_MARKER: &str = "conformance";
+
+/// THE PUBLISHED CONFORMANCE SUITE'S INVOCATION. A plugin runs busbar's published suite (OWNER
+/// 2026-10-03: plugins test themselves against busbar's published suite) by invoking
+/// `busbar_plugin_loader::conformance_suite!` in its `tests/conformance.rs`, and the macro expands
+/// to the suite's `#[test]` entries (`crates/plugin-loader/src/conformance/mod.rs`). The file
+/// itself spells no `#[test]`, so a counter that reads only attributes scored a running battery as
+/// one with no entry.
+const PUBLISHED_SUITE_MACRO: &str = "conformance_suite!";
+
+/// The key an invocation of [`PUBLISHED_SUITE_MACRO`] names its subject with. An invocation that
+/// names no `door:` expands to no entry against any subject, so it is not counted.
+const PUBLISHED_SUITE_SUBJECT: &str = "door:";
 
 // ------------------------------------------------------------------------------------------------
 // the vocabulary bans
@@ -2481,6 +2507,13 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         Half::Shipped => BTreeSet::new(),
     };
     let measured = measure_edges_granting(crates, half, &granted);
+    // A TEST-LINKED DOOR (`test_linked_door_edges`) is a test edge with its own verdict; the shipped
+    // half excuses nothing.
+    let doors = match half {
+        Half::Test => test_linked_door_edges(cx, crates, reg),
+        Half::Shipped => BTreeSet::new(),
+    };
+    let is_door = |from: &str, to: &str| doors.contains(&(from.to_owned(), to.to_owned()));
     // A ROW REFUSED AT LOAD IS REPORTED, NOT DROPPED. A table that quietly skips what it cannot
     // understand is a table that says yes to it, and the row it skipped is the one somebody wrote
     // to get an edge past this rule. Only the shipped row carries them, so one bad row is one
@@ -2690,6 +2723,10 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 if witness.contains(&(e.from.clone(), e.to.clone())) {
                     continue;
                 }
+                // A TEST-LINKED DOOR is excused on the test half only (`doors` is empty shipped).
+                if is_door(&e.from, &e.to) {
+                    continue;
+                }
                 // THE DRAIN IS THE ONE EDGE THAT IS SUPPOSED TO BE NEW.
                 //
                 // A `[[transitional]]` row is not a `[[dep]]` row wearing a different hat, and the
@@ -2830,8 +2867,27 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         // A ROW MAY NOT GRANT ITSELF AN EDGE THE ARCHITECTURE DOES NOT. `allowed` and `tcb` are
         // readings of the architecture, not opinions a row is entitled to hold: the class tables
         // are in this file precisely so the ledger cannot edit them.
-        let implied = verdict_for(&e.class);
+        let implied = if is_door(&e.from, &e.to) {
+            TEST_LINKED_DOOR_VERDICT
+        } else {
+            verdict_for(&e.class)
+        };
         match row.verdict.as_str() {
+            v if v == TEST_LINKED_DOOR_VERDICT && implied != TEST_LINKED_DOOR_VERDICT => offenders
+                .push(format!(
+                    "unsupported-verdict\t{} -> {}\tthe row claims `{TEST_LINKED_DOOR_VERDICT}`, \
+                     and the edge is not a test-linked door: a [dev-dependencies] edge on a plane \
+                     crate the crate's `test-linked` list names as `door:<crate>`, never shipped, \
+                     whose row states the drain `{TEST_LINKED_DOOR_DRAIN}` (the architecture \
+                     implies `{implied}`).",
+                    e.from, e.to
+                )),
+            v if v != TEST_LINKED_DOOR_VERDICT && implied == TEST_LINKED_DOOR_VERDICT => offenders
+                .push(format!(
+                    "unsupported-verdict\t{} -> {}\tthe edge is a test-linked door and the row \
+                     calls it `{v}`: its verdict is `{TEST_LINKED_DOOR_VERDICT}`.",
+                    e.from, e.to
+                )),
             "allowed" if implied != "allowed" => offenders.push(format!(
                 "unsupported-verdict\t{} -> {}\tthe row claims `allowed`, and the architecture \
                  grants no {} -> {} edge (it implies `{implied}`). A ledger row cannot grant an \
@@ -4024,7 +4080,66 @@ fn live_battery_entries(text: &str) -> (usize, usize) {
             live += 1;
         }
     }
+    live += published_suite_invocations(&lines);
     (live, ignored)
+}
+
+/// How many invocations of the published suite ([`PUBLISHED_SUITE_MACRO`]) a battery file makes
+/// that name a subject — each one is the suite's entries run against that subject.
+///
+/// Read off the BLANKED lines, so the macro's name in prose or in a string is not an invocation.
+/// The invocation runs from the macro's name to the delimiter that closes the one it opened, and it
+/// counts only if that span names [`PUBLISHED_SUITE_SUBJECT`]: `conformance_suite! {}` expands to
+/// nothing and stays a file with no entry. A file that DEFINES its own `macro_rules!
+/// conformance_suite` is not invoking the published suite, whatever its invocation looks like, so
+/// none of its invocations count.
+fn published_suite_invocations(lines: &[String]) -> usize {
+    let shadowed = lines.iter().any(|l| {
+        l.contains("macro_rules!") && l.contains(PUBLISHED_SUITE_MACRO.trim_end_matches('!'))
+    });
+    if shadowed {
+        return 0;
+    }
+    let mut count = 0usize;
+    for (i, l) in lines.iter().enumerate() {
+        let Some(at) = l.find(PUBLISHED_SUITE_MACRO) else {
+            continue;
+        };
+        // The macro's name must be a path's last segment, not the tail of a longer identifier.
+        let before = l[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let mut span = String::new();
+        let mut depth = 0i32;
+        let mut opened = false;
+        'walk: for (j, line) in lines[i..].iter().enumerate() {
+            let text = if j == 0 {
+                &line[at + PUBLISHED_SUITE_MACRO.len()..]
+            } else {
+                line.as_str()
+            };
+            for ch in text.chars() {
+                match ch {
+                    '{' | '(' | '[' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' | ')' | ']' => depth -= 1,
+                    _ => {}
+                }
+                span.push(ch);
+                if opened && depth <= 0 {
+                    break 'walk;
+                }
+            }
+            span.push('\n');
+        }
+        if span.contains(PUBLISHED_SUITE_SUBJECT) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// The `<…>` immediately after `impl`, skipped as a BALANCED group: `impl<S: CellStore>` and
@@ -5101,28 +5216,15 @@ fn plane_owned_steps(cx: &Ctx) -> Result<Vec<String>, String> {
 /// nothing, which is what "unmetered" means when it is a fact rather than a policy.
 const DATA_PATH_STEPS: &[&str] = &["route", "meter"];
 
-/// The UPSTREAM vocabulary a control surface may not name at all — the words that only make sense
-/// when there is something on the other side of the request.
-const UPSTREAM_WORDS: &[&str] = &[
-    "egress", "pool", "routing", "failover", "breaker", "provider",
-];
-
-/// THE ONE CONTROL-TIER CRATE THAT OPENS THE REAL UPSTREAM CONNECTIONS: busbar-core-connector
-/// (CONNECTOR-19 — it dials; W3b — rustls lives only here, by design; Q-L16-4 — the operator
-/// verify-off opt-in). It is cleanliness-tier like admin and oauth2, but unlike them it DOES reach
-/// an upstream, so [`CONNECTOR_INROLE_WORDS`] — the vocabulary of OPENING a connection — is its job,
-/// not control-path debt.
-const EGRESS_HOME: &str = "busbar-core-connector";
-
-/// The connection/TLS vocabulary IN-ROLE for [`EGRESS_HOME`]: how a connection is opened — its
-/// egress class, the pool it is kept in, the TLS/crypto provider it is secured with. Excluded from
-/// the upstream-word finding for THAT crate ALONE; admin and oauth2 are checked on every word.
-///
-/// The DECISION words are deliberately NOT here: `routing`, `failover` and `breaker` are the
-/// kernel's route decision (spec:637 "KERNEL: route (pool walk, member, breaker)"), so the
-/// connector naming one is still a finding — kernel logic in the connector is real debt, not its
-/// in-role vocabulary.
-const CONNECTOR_INROLE_WORDS: &[&str] = &["egress", "pool", "provider"];
+// WHY THERE IS NO WORD LIST HERE. This rule once also refused six "upstream" words (`egress`,
+// `pool`, `routing`, `failover`, `breaker`, `provider`) on every cleanliness line. That list was
+// written for the `control` plugin kind (65542ca51b), which is cancelled (Part 2 #5: "There is no
+// "control" plugin kind"). The cleanliness crates' rule is THE DESIGN §8: each depends one way on
+// the kernel, names no plugin, and gets its listeners through the connector. Those six words name
+// no plugin — they are the kernel's route vocabulary (Part 3: "KERNEL | route (pool walk, member,
+// breaker)"), which the 1.5.5 admin API serves to the operator — so they were struck (ARCHITECT
+// 2026-10-07). "Names no plugin" is `:matrix`'s armed `law0-neutral-instance` class, which holds
+// every `Family::Neutral` crate, these three included, at zero on the ship twin.
 
 /// Every `fn <name>` in a crate's shipped source, with the file, line, its signature's blanked
 /// text (the `fn` line up to the body's opening brace) and the body's.
@@ -5431,36 +5533,6 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
                 }
             }
         }
-        let Ok(files) = cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) else {
-            continue;
-        };
-        for f in &files {
-            let rel = f.rel_str();
-            if !is_shipped_source(&rel) {
-                continue;
-            }
-            for line in production_code(&f.text).iter() {
-                let lineno = line.lineno;
-                let lower = line.blanked.to_lowercase();
-                for w in UPSTREAM_WORDS {
-                    // busbar-core-connector OPENS the real connections, so its connection/TLS
-                    // vocabulary is in-role, not control-path debt ([`CONNECTOR_INROLE_WORDS`]);
-                    // its DECISION words (routing/failover/breaker) stay a finding. No other
-                    // control surface gets this exclusion.
-                    if c.name == EGRESS_HOME && CONNECTOR_INROLE_WORDS.contains(w) {
-                        continue;
-                    }
-                    if word_ci(&lower, w) {
-                        offenders.push(format!(
-                            "upstream\t{rel}:{lineno}\t{} names `{w}` — a control surface has no \
-                             upstream to reach, so the vocabulary of reaching one has no meaning \
-                             on this path",
-                            c.name
-                        ));
-                    }
-                }
-            }
-        }
     }
     offenders.sort();
     offenders.dedup();
@@ -5473,7 +5545,7 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     Row::fail(
         ROW_CONTROL,
-        "a control surface runs the data path or names an upstream",
+        "a control surface runs a data-path step",
         format!(
             "{} finding(s) over {} control surface(s): {}",
             offenders.len(),
@@ -5532,6 +5604,60 @@ const COLD_WITNESS_KINDS: &[(&str, &str)] = &[
     ("hook", "hooks"),
     ("secret", "secret"),
 ];
+
+/// The drain a test-linked door's test edge must state (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)).
+pub const TEST_LINKED_DOOR_DRAIN: &str =
+    "moves to the plugin repo in W4 (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC)";
+
+/// The `(from, to)` TEST edges that are a TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)): a crate's harness folds a plane door's Statement into its registry, which links
+/// the door's crate into the test binary and nothing else. Exempt from `new-forbidden-edge` only
+/// when ALL hold: the crate's `[package.metadata.busbar] test-linked` list names `door:<to>`; `to`
+/// is a `[dev-dependencies]` entry and NOT a shipped one; `to` is of kind `plane`; and a `[[dep]]`
+/// row for exactly that edge, half `test`, states the drain [`TEST_LINKED_DOOR_DRAIN`]. The shipped
+/// half excuses nothing: there is no production edge.
+fn test_linked_door_edges(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &KindRegistry,
+) -> BTreeSet<(String, String)> {
+    let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut out = BTreeSet::new();
+    for c in crates {
+        let Ok(manifest) = cx.read(&c.manifest) else {
+            continue;
+        };
+        let doors: Vec<String> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("test-linked") && l.contains('='))
+            .flat_map(|l| {
+                l.split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .filter_map(|e| e.strip_prefix("door:"))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for door in doors {
+            let dev = c.dev_deps.iter().any(|d| d.pkg == door);
+            let shipped = c.deps.iter().any(|d| d.pkg == door);
+            let plane = by_name.get(door.as_str()).and_then(|t| t.kind) == Some("plane");
+            let row = reg.dep_edges.iter().any(|r| {
+                r.from == c.name
+                    && r.to == door
+                    && r.half == "test"
+                    && r.drain.contains(TEST_LINKED_DOOR_DRAIN)
+            });
+            if dev && !shipped && plane && row {
+                out.insert((c.name.clone(), door));
+            }
+        }
+    }
+    out
+}
 
 /// The `(from, to)` TEST edges that are a cold kind's both-ways witness, and so are not a
 /// `new-forbidden-edge`: a `plugin-tooling` crate's `[dev-dependencies]` edge to EXACTLY the crate
@@ -7142,6 +7268,62 @@ impl Gate for KindIsolationGate {
                     "busbar-transport-stdio -> busbar-plane-llm",
                     "never introduce one",
                 ],
+            ));
+
+            // A TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4 Q-L3B-GATES (1)) is exempt
+            // only while its row states the drain and its crate's `test-linked` list names the
+            // door: the kernel's row with its drain struck, or the kernel no longer naming the door,
+            // is the edge's own verdict again, and red. The tree has no test-linked door since the
+            // kernel's plane tests moved to the composition root (ARCHITECT: core names zero plane
+            // types, its tests included), so each case plants the whole shape — the kernel's
+            // `door:` row, its `[dev-dependencies]` edge and its `[[dep]]` row — and then breaks
+            // one part of it.
+            let kernel = "crates/busbar-kernel/Cargo.toml";
+            let door_drain = "test-only: the test-linked door moves to the plugin repo in W4 \
+                              (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge";
+            let planted_door = |linked_row: &str, drain: &str| {
+                let manifest = cx.read(kernel).unwrap_or_default();
+                let manifest = manifest
+                    .replacen(
+                        "test-linked = [\"busbar-llm\", \"busbar-a2a\"]",
+                        &format!("test-linked = [\"busbar-llm\", \"{linked_row}\", \"busbar-a2a\"]"),
+                        1,
+                    )
+                    .replacen(
+                        "[dev-dependencies]\n",
+                        "[dev-dependencies]\nbusbar-plane-mcp = { path = \"../busbar-plane-mcp\" }\n",
+                        1,
+                    );
+                let registry = format!(
+                    "{}\n\n[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-plane-mcp\"\n\
+                     half    = \"test\"\ncount   = \"1\"\nverdict = \"{TEST_LINKED_DOOR_VERDICT}\"\n\
+                     cite    = \"ARCHITECT 2026-10-03 L3B-MCP round 4 Q-L3B-GATES (1)\"\n\
+                     why     = \"busbar-kernel names busbar-plane-mcp: declared dev in the test \
+                     graph (dev-dependencies), 1 declaration(s) at this commit.\"\n\
+                     drain   = \"{drain}\"\n",
+                    cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+                );
+                let mut ov = Overlay::new();
+                ov.set(kernel, manifest);
+                ov.set(REGISTRY_FILE, registry);
+                ov
+            };
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a test-linked door's row that states no drain is not a test-linked door",
+                &[ROW_TEST_DEPS],
+                planted_door("door:busbar-plane-mcp", "none"),
+                &["unsupported-verdict", "busbar-kernel -> busbar-plane-mcp"],
+            ));
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plane crate the kernel's `test-linked` list does not name as a door is no \
+                 test-linked door",
+                &[ROW_TEST_DEPS],
+                planted_door("busbar-plane-mcp", door_drain),
+                &["unsupported-verdict", "busbar-kernel -> busbar-plane-mcp"],
             ));
 
             // THE COLD KINDS' BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-STORE queue). The
@@ -9156,16 +9338,18 @@ impl Gate for KindIsolationGate {
 
         // A PLANE THAT DOES NOT RUN A STEP. The plant removes one step's implementation from a data
         // plane by replacing the file that holds it; the step list is read off the kernel's own
-        // table, so the finding names the step the loop expected.
+        // table, so the finding names the step the loop expected. The subject is a plane with the
+        // legacy face only: a plane that also serves through its door (the flipped ones) is judged
+        // by its door's slots instead, so removing its legacy file leaves the door face standing.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-mcp/src/plane.rs");
+        ov.remove("crates/busbar-plane-streaming/src/plane.rs");
         report.push(prove_rows_red(
             cx,
             subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
             ov,
-            &["missing-step", "busbar-plane-mcp"],
+            &["missing-step", "busbar-plane-streaming"],
         ));
 
         // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
@@ -9550,18 +9734,39 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
+        // THE KERNEL'S ROUTE VOCABULARY IS NOT A FINDING ON A CLEANLINESS SURFACE (ARCHITECT
+        // 2026-10-07). `pool`, `failover`, `routing`, `provider`, `egress` and `breaker` name no
+        // plugin; they are the kernel's route words, and the 1.5.5 admin API serves them to the
+        // operator. A cleanliness crate naming them keeps `:control-path` green.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-core-oauth2/src/planted_pool.rs",
-            "pub fn pick(pool: u8) -> u8 { let failover = pool; failover }\n",
+            "pub fn pick(pool: u8, egress: u8) -> u8 { let failover = pool ^ egress; failover }\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a cleanliness surface naming the kernel's route vocabulary is not a control-path finding",
+            &[ROW_CONTROL],
+            ov,
+        ));
+
+        // A CLEANLINESS SURFACE NAMES NO PLUGIN (THE DESIGN §8). The rule that holds it is
+        // `:matrix`'s armed `law0-neutral-instance` class, at zero on the ship twin: a plane
+        // instance noun written in core-admin's shipped source is RED there, whatever
+        // `:control-path` says.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core-admin/src/planted_plane_noun.rs",
+            "pub fn mcp_tools_count() -> usize { 0 }\n",
         );
         report.push(prove_rows_red(
             cx,
             subject,
-            "a control surface naming the vocabulary of reaching an upstream",
-            &[ROW_CONTROL],
+            "a cleanliness surface naming a plane instance is refused at the ship ceiling of zero",
+            &[matrix::ROW_MATRIX],
             ov,
-            &["upstream", "busbar-core-oauth2", "pool"],
+            &["law0-neutral-instance", "busbar-core-admin \u{d7} plane"],
         ));
 
         // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED. The exemption's expiry
@@ -9930,6 +10135,81 @@ impl Gate for KindIsolationGate {
             &["battery-ignored", "busbar-store-ignored"],
         ));
 
+        // THE PUBLISHED SUITE IS A BATTERY. A plugin's `tests/conformance.rs` that invokes
+        // `busbar_plugin_loader::conformance_suite!` over its door runs the suite's entries — the
+        // macro expands to them — and spells no `#[test]` of its own. It is a live battery, and the
+        // row must not call it ignored.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-suite",
+            "busbar-store-suite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-suite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-suite/tests/conformance.rs",
+            "busbar_plugin_loader::conformance_suite! {\n    door: busbar_store_suite::door,\n    \
+             cdylib: \"store_suite_door\",\n    inputs: include_str!(\"conformance.json\"),\n}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a battery that invokes the published suite over its door is a live battery",
+            &[ROW_TESTKIT],
+            ov,
+        ));
+
+        // AN INVOCATION THAT EXPANDS TO NOTHING IS NOT A BATTERY. The same file with the subject
+        // taken out names the published macro and runs no entry against anything.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-emptysuite",
+            "busbar-store-emptysuite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-emptysuite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-emptysuite/tests/conformance.rs",
+            "busbar_plugin_loader::conformance_suite! {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a published-suite invocation that names no subject is a file with no entry",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-store-emptysuite"],
+        ));
+
+        // A LOCAL MACRO BY THE SAME NAME IS NOT THE PUBLISHED SUITE. A file that defines its own
+        // `conformance_suite` to expand to nothing, then invokes it with a subject, runs nothing.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-shadowsuite",
+            "busbar-store-shadowsuite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-shadowsuite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-shadowsuite/tests/conformance.rs",
+            "macro_rules! conformance_suite {\n    ($($t:tt)*) => {};\n}\n\
+             conformance_suite! {\n    door: busbar_store_shadowsuite::door,\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a file-local conformance_suite macro is not the published suite",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-store-shadowsuite"],
+        ));
+
         // A BATTERY WITH NO SUBJECT. The same crate, with a live battery and no implementor of its
         // kind's trait anywhere in shipped source: the file compiles, the battery passes, and it is
         // evidence about nothing this crate ships.
@@ -10063,8 +10343,7 @@ impl Gate for KindIsolationGate {
         // NO CONTROL SURFACE REACHED `:control-path`. The rule reads the `cleanliness` kind
         // (admin/oauth2, DECISIONS #5), so the honest fixture for "this rule looked at no surface
         // at all" is every crate of THAT kind out of the census. Zero surfaces run zero data-path
-        // steps and name zero upstreams, which reads exactly like a control kind that keeps to its
-        // own path.
+        // steps, which reads exactly like a control kind that keeps to its own path.
         //
         // It asked for `kinds_gone(["control"])`, a kind no crate resolves to: the overlay was
         // empty, the harness refused it, and the floor had no proof. And it cannot be proven from

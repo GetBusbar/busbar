@@ -855,7 +855,13 @@ pub fn book(app: &busbar_kernel::state::App) -> Result<super::durability::NodeBo
     let durability = Arc::new(std::sync::Mutex::new(durability));
     // Every amendment sealed from here on goes on the book it was rebuilt from.
     super::durability::bind_amendments(&durability);
-    Ok(super::durability::NodeBook { durability, rows })
+    Ok(super::durability::NodeBook {
+        durability,
+        rows,
+        // The disaster-recovery verbs reach the store this book is shipped to, through the same
+        // adapter: one store behind the node, not one per seam (row 113, ruling (B)).
+        verb_store: Some(adapter.verb_store()),
+    })
 }
 
 #[cfg(test)]

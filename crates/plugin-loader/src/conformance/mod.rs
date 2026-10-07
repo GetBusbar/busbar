@@ -1492,17 +1492,26 @@ pub fn declared_needs_are(declares: &str, statement: &[String]) -> Result<(), St
 }
 
 /// The repo's declares file, found from the plugin crate's manifest dir: `declares.json` at the
-/// workspace root (the crate dir's parent) or one directory below it; `None` when there is none
-/// (plugin-ci's declares step refuses a plugin repo without one; a crate inside busbar's own tree
-/// has none).
+/// workspace root (the crate dir's parent, holding the plugin repo's `Cargo.toml`) or one directory
+/// below it; `None` when there is none (plugin-ci's declares step refuses a plugin repo without
+/// one).
+///
+/// A crate whose parent is no workspace root (a crate inside busbar's own tree, under `crates/`)
+/// is in no plugin repo: its declares file is its own `declares.json` when it holds one, and a
+/// sibling crate's is that crate's, never this one's.
 ///
 /// # Panics
 /// More than one is found.
 #[must_use]
 pub fn declares_file(manifest_dir: &str) -> Option<PathBuf> {
-    let root = Path::new(manifest_dir)
+    let crate_dir = Path::new(manifest_dir);
+    let Some(root) = crate_dir
         .parent()
-        .unwrap_or_else(|| Path::new(manifest_dir));
+        .filter(|p| p.join("Cargo.toml").is_file())
+    else {
+        let own = crate_dir.join("declares.json");
+        return own.is_file().then_some(own);
+    };
     let mut found: Vec<PathBuf> = std::iter::once(root.to_path_buf())
         .chain(
             std::fs::read_dir(root)

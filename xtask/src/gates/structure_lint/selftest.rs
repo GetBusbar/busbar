@@ -276,8 +276,9 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     }
 
     // A plane whose grammar left its `mod.rs` is a plane nothing can locate — and every rule that
-    // names it would then scan zero files, which is the passing answer to a ban.
-    match plane_grammar_file(cx, "mcp") {
+    // names it would then scan zero files, which is the passing answer to a ban. Planted against
+    // a2a: mcp is a DOOR-ONLY plane since P3 DEL-MCP (ARCHITECT 2026-10-05) and declares no grammar.
+    match plane_grammar_file(cx, "a2a") {
         Some((rel, text)) => {
             let mut ov = Overlay::new();
             ov.set(
@@ -290,12 +291,38 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
                 "a plane whose declaration moved is refused, not silently unscanned",
                 &[roots::ROW_PLANE_ROOTS],
                 ov,
-                &["PLANE-ROOT-MISSING", "mcp"],
+                &["PLANE-ROOT-MISSING", "a2a"],
             ));
         }
         None => report.note_infra_failure(
-            "structure-lint selftest: no file declares the mcp plane's grammar, so the plane-root \
+            "structure-lint selftest: no file declares the a2a plane's grammar, so the plane-root \
              rule has nothing to plant against",
+        ),
+    }
+
+    // A DOOR-ONLY PLANE whose door row left the manifest is a plane nothing can locate either: the
+    // door row IS its declaration (P3 DEL-MCP), so taking the `plane-door` axis off mcp's row
+    // leaves a roster plane with no home.
+    let manifest_rel = format!("{}/{}", roots::CRATES, crate::planes::DOOR_MANIFEST);
+    match cx.read(&manifest_rel) {
+        Ok(text) if text.contains("plane-mcp-door = \"plane-door\"") => {
+            let mut ov = Overlay::new();
+            ov.set(
+                &manifest_rel,
+                text.replace("plane-mcp-door = \"plane-door\"", "plane-mcp-door = \"\""),
+            );
+            report.push(tree_case(
+                cx,
+                gate,
+                "a door-only plane whose door row left the manifest is refused, not silently unscanned",
+                &[roots::ROW_PLANE_ROOTS],
+                ov,
+                &["PLANE-ROOT-MISSING", "mcp"],
+            ));
+        }
+        _ => report.note_infra_failure(
+            "structure-lint selftest: the manifest carries no `plane-mcp-door = \"plane-door\"` row, \
+             so the door-only plane-root rule has nothing to plant against",
         ),
     }
 
@@ -650,6 +677,15 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         "PLANE-DUPLICATE (symbol): `planted_derived_plane_helper`".to_string(),
         "planted:crates/busbar-planted/src/lib.rs".to_string(),
     ];
+    // The ledger's one surviving row since P3 DEL-MCP (ARCHITECT 2026-10-05) signs a MODULE
+    // (`config.rs`); its symbol rows went with the deleted engine. A signed module is planted the
+    // same way: the debt-free base takes the standing copies out of view, and the plant puts the
+    // signed file back in a2a and grows it in voice, a plane the claim was never signed for.
+    let signed_module = t
+        .plane_ledger
+        .iter()
+        .find(|r| r.planes.iter().all(|p| p != "voice") && r.name.ends_with(".rs"))
+        .map(|r| r.name.clone());
     if let Some(name) = &signed {
         ov.set(
             format!("{voice}/planted_third_copy.rs"),
@@ -657,10 +693,18 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         );
         naming.push(format!("PLANE-DUPLICATE (symbol): `{name}`"));
         naming.push("signs for".to_string());
+    } else if let Some(name) = &signed_module {
+        ov.set(
+            format!("{}/{name}", addresses.a2a),
+            "pub fn a2a_grammar() {}\n",
+        );
+        ov.set(format!("{voice}/{name}"), "pub fn voice_grammar() {}\n");
+        naming.push(format!("PLANE-DUPLICATE (module): `{name}`"));
+        naming.push("signs for".to_string());
     } else {
         report.note_infra_failure(
-            "structure-lint selftest: no ledger row signs for a symbol outside voice, so the \
-             third-copy plant has nothing to copy",
+            "structure-lint selftest: no ledger row signs for a symbol or a module outside voice, \
+             so the third-copy plant has nothing to copy",
         );
     }
     let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
