@@ -348,6 +348,47 @@ fn validate_trust_gate_matches_boot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE SIGNING GATE'S READING, PINNED (scripts/signing-gate.sh, ARCHITECT ruling (A)): when a
+/// linked row answers the config's reference, `--validate` exits 0 whatever an unsigned tarball's
+/// fate, and the gate judges its refusing arms by these exact lines of the summary instead: the
+/// count `0 validated, 1 skipped` and the skip line `skipped: <manifest name> (<file>) — ... manifest
+/// carries no signature`. A rewording of either reds this test, not the gate silently. The store
+/// the config names is the linked one (`memory`); the unsigned tarball is not referenced at all.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_summary_names_an_unsigned_tarball_as_the_signing_gate_reads_it() {
+    let dir = fixture_dir("gate-lines");
+    write_tarball(
+        &dir,
+        "p.tar.gz",
+        "busbar-store-docstore",
+        "docstore",
+        b"lib",
+    );
+    write_configs(&dir, &plugins_block(&dir, true, false));
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "the linked store answers the config: stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("0 validated, 1 skipped"),
+        "the summary's count, as the gate matches it: {stdout}"
+    );
+    let line = stdout
+        .lines()
+        .find(|l| {
+            l.trim_start()
+                .starts_with("skipped: busbar-store-docstore (p.tar.gz) ")
+        })
+        .unwrap_or_else(|| panic!("the skip line names the manifest and the file: {stdout}"));
+    assert!(
+        line.contains("manifest carries no signature"),
+        "the skip line names the trust reason the gate matches: {line}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// FAIL-CLOSED (conflict): two plugins claiming the same alias fail --validate naming BOTH.
 #[cfg(linked_axis_body_ingress)]
 #[test]
