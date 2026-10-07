@@ -7,12 +7,14 @@
 use super::*;
 use serde_json::json;
 
-/// The door, as these tests stand in for it: what it answered, what it was told.
+/// The door, as these tests stand in for it: what it answered, what it was told, and the child's
+/// line of relayed calls (each by the id it waits on, in arrival order).
 #[derive(Default)]
 struct Door {
     claimed: Vec<(u64, String)>,
     noticed: u32,
     grants: ServerRequestGrants,
+    open: Vec<u64>,
 }
 
 impl Peer for Door {
@@ -285,5 +287,81 @@ fn the_childs_asks_go_out_verbatim_and_the_answers_come_back_under_its_ids() {
             json!({"jsonrpc": "2.0", "id": "srv-1", "result": answers["srv-1"]}),
             json!({"jsonrpc": "2.0", "id": 7, "result": {"roots": []}}),
         ]
+    );
+}
+
+/// RED (finding 5, SECURITY): two callers, A (call id 9) and B (call id 10), call one stdio child
+/// at once, and the child asks each of them for a sampling. A request over stdio names no call it
+/// serves, so the door puts calls whose asks are relayed to a child in a line: A is first, B waits
+/// its turn (`open`, in arrival order), and an ask is the call's first in line. First-reader-wins
+/// handed A's ask to whichever exchange read it first: B's (and wrote B's answer to the child for
+/// A's work). Asserted: A's ask reaches only A, B's only B, and neither is refused.
+#[test]
+fn each_callers_ask_reaches_only_that_caller() {
+    let mut door = Door {
+        grants: ServerRequestGrants {
+            sampling: true,
+            ..ServerRequestGrants::default()
+        },
+        open: vec![9, 10],
+        ..Door::default()
+    };
+    let ask = |id: &str, text: &str| {
+        bytes(
+            &json!({"jsonrpc": "2.0", "id": id, "method": "sampling/createMessage",
+                      "params": {"messages": [{"role": "user",
+                                               "content": {"type": "text", "text": text}}],
+                                 "maxTokens": 9}}),
+        )
+    };
+    let mut a = Correlator::relaying();
+    let mut b = Correlator::relaying();
+    // A's ask, read first by B's exchange.
+    assert_eq!(
+        b.take(&ask("a-1", "A's data"), 10, "srv", 1, &mut door),
+        Ok(None)
+    );
+    assert!(b.asks.is_empty(), "B was handed A's ask: {:?}", b.asks);
+    assert_eq!(
+        a.take(&ask("a-1", "A's data"), 9, "srv", 1, &mut door),
+        Ok(None)
+    );
+    assert_eq!(a.asks.len(), 1, "A's ask reaches A");
+    assert_eq!(a.asks[0].id, json!("a-1"));
+    // A's call is answered and leaves the line: B's call is first, and its ask, read first by A's
+    // exchange, is B's.
+    door.open = vec![10];
+    assert_eq!(
+        a.take(&ask("b-1", "B's data"), 9, "srv", 1, &mut door),
+        Ok(None)
+    );
+    assert_eq!(a.asks.len(), 1, "A was handed B's ask: {:?}", a.asks);
+    assert_eq!(
+        b.take(&ask("b-1", "B's data"), 10, "srv", 1, &mut door),
+        Ok(None)
+    );
+    assert_eq!(b.asks.len(), 1, "B's ask reaches B");
+    assert_eq!(b.asks[0].id, json!("b-1"));
+    assert!(
+        a.outbox.is_empty() && b.outbox.is_empty(),
+        "neither ask is refused: {:?} {:?}",
+        a.outbox,
+        b.outbox
+    );
+    // An ask raised while no call is in the line has no caller: refused once.
+    door.open.clear();
+    let mut own = Correlator::default();
+    assert_eq!(own.take(&ask("c-1", "?"), 1, "srv", 1, &mut door), Ok(None));
+    assert_eq!(b.take(&ask("c-1", "?"), 10, "srv", 1, &mut door), Ok(None));
+    let refusals: Vec<Value> = own
+        .outbox
+        .iter()
+        .chain(b.outbox.iter())
+        .map(|r| serde_json::from_slice(r).unwrap())
+        .collect();
+    assert_eq!(refusals.len(), 1, "refused once: {refusals:?}");
+    assert_eq!(
+        refusals[0]["error"]["data"]["reason"],
+        json!("ask_unattributed")
     );
 }
