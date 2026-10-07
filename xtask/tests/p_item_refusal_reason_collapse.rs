@@ -11,6 +11,9 @@
 //! renderer a class-to-wire table; `crates/busbar-contract/tests/p_item_refusal_reason_collapse.rs`
 //! pins the classification itself.
 //!
+//! The decisions plane is not scanned: it leaves this tree for its own repository
+//! (GetBusbar/busbar-plane-decisions), which carries its class-to-wire table there.
+//!
 //! This file reads the renderers' source and proves none of them holds a reason match of its own,
 //! so no renderer can drift from the others again. It lives here, beside the gates, because it
 //! names every plane's renderer and the tree's crates may not name one another's planes.
@@ -33,10 +36,9 @@ const RENDERERS: &[(&str, &[&str])] = &[
         &["refusal_shape", "refusal_message"],
     ),
     ("crates/busbar-plane-a2a/src/plane.rs", &["refusal_render"]),
-    ("crates/busbar-plane-mcp/src/plane.rs", &["refusal_render"]),
     (
-        "crates/busbar-plane-decisions/src/plane.rs",
-        &["refusal_render"],
+        "crates/busbar-plane-mcp/src/tool_plane.rs",
+        &["refusal_words"],
     ),
     (
         "crates/busbar-plane-streaming/src/plane.rs",
