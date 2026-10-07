@@ -84,6 +84,9 @@ pub struct TestUnits {
     pub calls: Mutex<Vec<StepName>>,
     /// Refuse at this step, with this reason.
     pub refuse_at: Option<(StepName, ReasonCode)>,
+    /// The Retry-After, in whole seconds, the refusal at `refuse_at` carries (an admission's
+    /// window reset, as the root's door hands it). `None` = the refusal carries none.
+    pub refuse_wait: Option<u32>,
     /// What the door answers.
     pub door: Door,
     /// What the settlement table reads at the exit.
@@ -123,6 +126,7 @@ impl Default for TestUnits {
         TestUnits {
             calls: Mutex::new(Vec::new()),
             refuse_at: None,
+            refuse_wait: None,
             door: Door::Own(1_000),
             evidence: Evidence::default(),
             spend: 0,
@@ -199,7 +203,10 @@ impl TestUnits {
 
     fn refusal(&self, step: StepName) -> Option<Refusal> {
         match self.refuse_at {
-            Some((at, reason)) if at == step => Some(Refusal::new(reason)),
+            Some((at, reason)) if at == step => Some(match self.refuse_wait {
+                Some(secs) => Refusal::new(reason).retry_after(secs),
+                None => Refusal::new(reason),
+            }),
             _ => None,
         }
     }

@@ -37,7 +37,7 @@ source "${H2_REPO}/testing/fleet-fixtures/lib.sh"
 # (`crates/busbar-kernel/src/config_validate/mod.rs:1465-1472`), and an entry's only members are the
 # four LLM token tiers (`RateEntryCfg`, `crates/busbar-kernel/src/config/sections.rs:324`,
 # `deny_unknown_fields`). This plane declares `tool_calls` and `bytes`
-# (`crates/busbar-plane-mcp/src/meta.rs:33-52`); neither is a `models:` key and neither is one of the
+# (`crates/busbar-plane-mcp/src/tool_meta.rs:33-52`); neither is a `models:` key and neither is one of the
 # four tiers, so THERE IS NO CONFIGURATION THAT PRICES EITHER DECLARED CLASS. An empty map is
 # therefore the most a billing-ON mcp deployment can say today, and `h2-class-price.sh` is the leg
 # that says what that costs.
@@ -253,6 +253,10 @@ print(rows[0].get('$field') if rows else '-')"
 # is not a quantity; #44's flat fee is the dimension that prices it). Used by the class-price leg to
 # ask the one question that needs no rate card to be answerable: did the plane report a number for
 # what it moved, at all?
+#
+# A PLANE'S OWN CLASSES ARE COLUMNS TOO: the row's `classes` object (new in 1.6.0, FLIP-A2A ruling --
+# 1.5.5's rows carried the token split alone and 1.5.5 served no plane with a class of its own) holds
+# each plane-declared class's `{count, cost}`, and its counts are summed with the token columns.
 h2_meter_row_quantity() {
   local model="$1" provider="$2"
   curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" \
@@ -264,7 +268,22 @@ if not rows:
     print('-')
 else:
     r=rows[0]
-    print(sum(int(r.get(k) or 0) for k in ('tokens_input','tokens_output','tokens_cache_read','tokens_cache_creation')))"
+    print(sum(int(r.get(k) or 0) for k in ('tokens_input','tokens_output','tokens_cache_read','tokens_cache_creation'))
+          + sum(int((c or {}).get('count') or 0) for c in (r.get('classes') or {}).values()))"
+}
+
+# One plane-declared class's `count` or `cost` (micro-units) off the `classes` object of the
+# `GET /api/v1/admin/usage` `by_model` row for (model, provider): `-` when no such row exists, and 0
+# for a class the row does not carry (an absent class is a count and a cost of 0, the field's own
+# rule -- a token-only row carries no `classes` key at all, as 1.5.5's did).
+h2_meter_row_class() {
+  local model="$1" provider="$2" class="$3" field="$4"
+  curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" \
+    "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/usage" \
+    | python3 -c "import json,sys
+d=json.load(sys.stdin)
+rows=[r for r in (d.get('by_model') or []) if r.get('model')=='$model' and r.get('provider')=='$provider']
+print(((rows[0].get('classes') or {}).get('$class') or {}).get('$field', 0) if rows else '-')"
 }
 
 # One scalar off `GET /api/v1/admin/usage`'s `total` block — the OTHER admin money read, and since
@@ -283,19 +302,141 @@ d=json.load(sys.stdin)
 print((d.get('total') or {}).get('$field', '-'))"
 }
 
-# APPEND A DATED RATE CARD (#79) by applying live config. `RootHistory::apply`
-# (crates/busbar/src/root/kernel.rs:249-278) dates the entry at the instant the apply lands: the
-# FIRST card a node resolves is effective from 0 (`HistorySeq::OPENING`) and every later one from
-# `now_ms`, and neither closes the one before it. `rate_card: {}` rides along on purpose — the PUT
-# merges whole sections and dropping the key would leave billing on but the intent unreadable.
-# `per_request_fee` is the ONE pricing dimension of this card that both planes can actually move
-# (#44: a flat fee is a plane-agnostic rate-card dimension), which is what makes a dated-card
-# question askable on a plane whose declared classes no card can name.
-h2_put_fee() {
-  local cents="$1"
-  curl -sS -m 15 -X PUT "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/config/settings" \
+# THIS BOOT'S OWN CONFIG DOCUMENT AS JSON -- the body shape `POST /api/v1/admin/config/apply`
+# takes (it reads JSON only). No YAML library is assumed on the runner, so this reads exactly the
+# YAML `h2_boot` writes: block mappings, `- ` sequences of scalars or flow collections, flow
+# mappings/sequences, plain and quoted scalars. Anything else EXITS NON-ZERO rather than guessing --
+# a mis-read document applied live would answer a different question than the one the rig asks.
+h2_config_json() {
+  python3 - "$1" <<'H2_YAML_READER'
+import json, re, sys
+
+def fail(msg):
+    sys.stderr.write("h2_config_json: " + msg + "\n")
+    sys.exit(3)
+
+def scalar(tok):
+    tok = tok.strip()
+    if tok.startswith('"'):
+        return json.loads(tok)
+    if tok.startswith("'"):
+        return tok[1:-1].replace("''", "'")
+    if tok in ("", "~", "null"):
+        return None
+    if tok in ("true", "false"):
+        return tok == "true"
+    if re.fullmatch(r"-?[0-9]+", tok):
+        return int(tok)
+    return tok
+
+def flow(text, i):
+    # One flow value at text[i:]; returns (value, next index).
+    while i < len(text) and text[i] == " ":
+        i += 1
+    if i >= len(text):
+        fail("a flow value ended early: " + text)
+    if text[i] in "{[":
+        close, out, i = ("}" if text[i] == "{" else "]"), ({} if text[i] == "{" else []), i + 1
+        while True:
+            while i < len(text) and text[i] in " ,":
+                i += 1
+            if i >= len(text):
+                fail("an unclosed flow collection: " + text)
+            if text[i] == close:
+                return out, i + 1
+            if close == "]":
+                v, i = flow(text, i)
+                out.append(v)
+                continue
+            m = re.match(r'("(?:[^"\\]|\\.)*"|[^:,{}\[\]]+):\s', text[i:])
+            if not m:
+                fail("unreadable flow key at: " + text[i:])
+            out[scalar(m.group(1))], i = flow(text, i + m.end())
+    m = re.match(r'"(?:[^"\\]|\\.)*"|\'[^\']*\'|[^,{}\[\]]+', text[i:])
+    if not m:
+        fail("unreadable flow scalar at: " + text[i:])
+    return scalar(m.group(0)), i + m.end()
+
+def value(rest):
+    rest = rest.strip()
+    if rest[:1] in ("{", "["):
+        v, end = flow(rest, 0)
+        if rest[end:].strip():
+            fail("trailing text after a flow value: " + rest)
+        return v
+    return scalar(rest)
+
+lines = []
+for raw in open(sys.argv[1]).read().split("\n"):
+    if not raw.strip() or raw.lstrip().startswith("#"):
+        continue
+    lines.append((len(raw) - len(raw.lstrip(" ")), raw.strip()))
+
+def block(i, indent):
+    if lines[i][1].startswith("- "):
+        out = []
+        while i < len(lines) and lines[i][0] == indent and lines[i][1].startswith("- "):
+            out.append(value(lines[i][1][2:]))
+            i += 1
+        return out, i
+    out = {}
+    while i < len(lines) and lines[i][0] == indent:
+        m = re.match(r'("(?:[^"\\]|\\.)*"|[^:]+):(?:\s+(.*))?$', lines[i][1])
+        if not m:
+            fail("unreadable mapping line: " + lines[i][1])
+        key, rest = scalar(m.group(1)), m.group(2)
+        if key in out:
+            fail("a key written twice: " + str(key))
+        i += 1
+        if rest:
+            out[key] = value(rest)
+        elif i < len(lines) and lines[i][0] > indent:
+            out[key], i = block(i, lines[i][0])
+        else:
+            out[key] = None
+    if i < len(lines) and lines[i][0] > indent:
+        fail("indentation the reader does not know: " + lines[i][1])
+    return out, i
+
+doc, end = block(0, 0)
+if end != len(lines):
+    fail("unread line: " + lines[end][1])
+json.dump(doc, sys.stdout)
+H2_YAML_READER
+}
+
+# APPEND A DATED CARD (#79) THAT MOVES THIS PLANE'S OWN FEE, by applying live config.
+#
+# WHOSE FEE. Under #47 `rate_card` + `fees` are per-plane RESERVED keys, and the OWNER's Q129 ruling
+# says it in as many words: "a plane's fees live in its own section (`fees:`; the root
+# `per_request_fee:` is the `pools` plane's key)". This plane's fee is `tools.fees.per_request`, so
+# that is the key moved -- moving the root fee moves the llm plane's price and leaves this one's
+# where it was.
+#
+# HOW. `POST /api/v1/admin/config/apply` with THIS BOOT'S OWN DOCUMENT, unchanged but for that one
+# key. ARCHITECT ruling (card-epoch): "A live change goes through /config/apply, which accepts
+# EXACTLY the shape boot config accepts, plane sections included (no 'unknown field')." So the body
+# is the boot document itself, plane sections and all, not a projection of it.
+#
+# `RootHistory::apply` (crates/busbar/src/root/kernel.rs) dates the new entry at the instant the
+# apply lands; the FIRST card a node resolves is effective from 0 (`HistorySeq::OPENING`) and every
+# later one from `now_ms`, and neither closes the one before it. Prints the apply's response body.
+h2_apply_plane_fee() {
+  local cents="$1" body
+  body="${H2_WORKDIR}/apply-body.$$.json"
+  if ! h2_config_json "${H2_WORKDIR}/config.yaml" \
+      | H2_FEE="$cents" python3 -c "import json,os,sys
+doc=json.load(sys.stdin)
+doc.setdefault('tools', {}).setdefault('fees', {})['per_request']=int(os.environ['H2_FEE'])
+json.dump({'config': doc, 'providers': {}}, sys.stdout)" >"$body"; then
+    rm -f "$body"
+    printf 'harness: could not render this boot'"'"'s config as an apply body\n'
+    return
+  fi
+  curl -sS -m 30 -X POST "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/config/apply" \
     -H "Authorization: Bearer $H2_ADMIN_TOKEN" -H 'content-type: application/json' \
-    -d "{\"per_request_fee\":${cents}}"
+    --data-binary "@${body}"
+  rm -f "$body"
 }
 
 # `--validate` THIS boot's own config with its `rate_card:` line replaced by <card-yaml>, and print
@@ -409,17 +550,21 @@ _h2_st_stub() {
     declare -f h2_verdict h2_int_is 2>/dev/null
     cat <<'STUB'
 _st_next() { local f="$H2_ST_DIR/n.$1" n v; n="$(cat "$f" 2>/dev/null || echo 0)"; echo $((n+1)) >"$f"; IFS='|' read -r -a v <<<"$2"; printf '%s\n' "${v[$n]:-}"; }
-h2_boot() { return 0; }
+# ARM 2 of unpriced-refuses is the one boot that writes a NON-BLANK card; with `H2_ST_BOOT_LOG` set
+# that boot refuses, leaving that text as its log, as the binary's refusal does.
+_st_carded() { [ -n "${H2_RATE_CARD_YAML:-}" ] && [ -n "${H2_RATE_CARD_YAML//[[:space:]]/}" ]; }
+h2_boot() { if _st_carded && [ -n "${H2_ST_BOOT_LOG:-}" ]; then mkdir -p "$1"; printf '%s\n' "$H2_ST_BOOT_LOG" >"$1/busbar.log"; return 1; fi; return 0; }
 h2_stop() { :; }
 h2_approve_server() { return 0; }
 h2_mint() { echo "kid-selftest tok-selftest"; }
 h2_bind() { echo "bound-selftest"; }
-h2_call() { if [ -n "${H2_RATE_CARD_YAML+x}" ]; then echo "200 {}"; else echo "${H2_ST_CALL:-200} {}"; fi; }
+h2_call() { if [ -n "${H2_RATE_CARD_YAML+x}" ] && ! _st_carded; then echo "200 {}"; else echo "${H2_ST_CALL:-200} {}"; fi; }
 h2_usage_field() { _st_next usage "${H2_ST_USAGE:-1}"; }
-h2_put_fee() { echo '{"applied":true}'; }
+h2_apply_plane_fee() { echo '{"applied":true}'; }
 h2_admin_usage_total() { echo 80000; }
-h2_meter_row_field() { case "$3" in requests) echo 1 ;; *) echo 10000 ;; esac; }
+h2_meter_row_field() { case "$3" in requests) echo 1 ;; spend_micros) printf '%s\n' "${H2_ST_SPEND-10362}" ;; *) echo 10000 ;; esac; }
 h2_meter_row_quantity() { printf '%s\n' "${H2_ST_QTY-3}"; }
+h2_meter_row_class() { case "$3:$4" in tool_calls:count) printf '%s\n' "${H2_ST_TC-1}" ;; tool_calls:cost) printf '%s\n' "${H2_ST_TCC-2}" ;; bytes:count) printf '%s\n' "${H2_ST_BY-120}" ;; bytes:cost) printf '%s\n' "${H2_ST_BYC-360}" ;; esac; }
 h2_validate_card() { echo ok; }
 sleep() { :; }
 STUB
@@ -473,16 +618,25 @@ _h2_st_case_card_epoch() {
 }
 
 _h2_st_case_class_price() {
-  _h2_st_want "class-price: control quantity 3 passes" 0 "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=3)"
-  _h2_st_want "class-price: no metering row (-) is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=-)"
-  _h2_st_want "class-price: quantity 0 is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=0)"
-  _h2_st_want "class-price: an EMPTY quantity read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=)"
-  _h2_st_want "class-price: a non-numeric quantity read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=None)"
+  _h2_st_want "class-price: control 1 call, 120 bytes, costs 2 + 360, spend 10362 passes" 0 "$(_h2_st_rig h2-class-price.sh)"
+  _h2_st_want "class-price: no metering row (-) is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_TC=- H2_ST_BY=-)"
+  _h2_st_want "class-price: tool_calls count 0 (class absent) is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_TC=0 H2_ST_TCC=0 H2_ST_SPEND=10360)"
+  _h2_st_want "class-price: bytes count 0 (class absent) is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_BY=0 H2_ST_BYC=0 H2_ST_SPEND=10002)"
+  _h2_st_want "class-price: an EMPTY count read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_BY=)"
+  _h2_st_want "class-price: a non-numeric count read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_BY=None)"
+  _h2_st_want "class-price: a class cost that is not count x rate is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_BYC=120 H2_ST_SPEND=10122)"
+  _h2_st_want "class-price: costs right but the row spend is the fee alone is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_SPEND=10000)"
+  _h2_st_want "class-price: an EMPTY cost read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_TCC=)"
 }
 
 _h2_st_case_unpriced_refuses() {
-  _h2_st_want "unpriced-refuses: control arm 2 refused 400 passes" 0 "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=400 H2_ST_USAGE='1|0')"
+  local named='busbar: config errors: tools.rate_card does not configure billable unit(s) bytes declared by this plane; add them (0 to make them free)'
+  _h2_st_want "unpriced-refuses: control arm 2 boot refused, named (#77(5)) passes" 0 "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_BOOT_LOG="$named" H2_ST_USAGE='1')"
+  _h2_st_want "unpriced-refuses: arm 2 boot refused for another reason is red" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_BOOT_LOG='busbar: listen: address in use' H2_ST_USAGE='1')"
+  _h2_st_want "unpriced-refuses: arm 2 refusal naming another class is red" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_BOOT_LOG="${named/bytes/tool_calls}" H2_ST_USAGE='1')"
+  _h2_st_want "unpriced-refuses: arm 2 booted and refused the call (400) is red: #77(5) refuses at boot" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=400 H2_ST_USAGE='1|0')"
   _h2_st_want "unpriced-refuses: arm 2 served 200 is red" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=200 H2_ST_USAGE='1|1')"
+  _h2_st_want "unpriced-refuses: control arm 2 refused, but arm 1 billing 0 is red" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_BOOT_LOG="$named" H2_ST_USAGE='0')"
   _h2_st_want "unpriced-refuses: arm 2 no connection (000) is red, not a refusal" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=000 H2_ST_USAGE='1|0')"
   _h2_st_want "unpriced-refuses: arm 2 node failure (502) is red, not a refusal" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=502 H2_ST_USAGE='1|0')"
   _h2_st_want "unpriced-refuses: arm 2 other success (202) is red, not a refusal" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=202 H2_ST_USAGE='1|0')"

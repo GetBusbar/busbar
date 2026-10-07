@@ -6,7 +6,6 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
     "crates/busbar-llm",
-    "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-contract",
@@ -84,13 +83,13 @@ fixture-secret-file = { package = "busbar-secret-file", git = "https://github.co
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "0ff0e022e8d93ac300f9d6184ea4b54456550934" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "2d1dbfdabf57842875b52f25a7fda73e7e32a73f" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
 busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "1303273a732bdd208305c4b96c8f4a5d0c05400f" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "2fd38617db6b139a14adc7a32affeed239f60ab3" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "2ec0786eba86eeb0c51def66a5f9cb8ddd9e5a0d" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
@@ -259,31 +258,8 @@ proptest = "1"
 # DER minting on ring only. `pem` (and its base64 0.23) is a test-only need: the members whose tests
 # write PEM add the feature on their dev/test-support declaration.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
-# ── MCP, from the specification authors' own crate ─────────────────────────────────────────────
-# `rmcp` implements the stable `2026-07-28` revision — precisely the one busbar targets — while
-# staying compatible with `2025-11-25` and earlier.
-#
-# `default-features = false` is LOAD-BEARING here, unlike `oauth-as` above where the crate's default
-# set is already empty. rmcp's defaults pull `server`, `macros`, `schemars`, `base64`, `uuid` and
-# `transport-async-rw`; what busbar wants is the protocol VOCABULARY and nothing else. Features are
-# turned on per member, one at a time, each with a reason.
-#
-# THE TWO FAMILIES THAT MUST NEVER BE ENABLED — stated here because a feature list is exactly where
-# this slips in unnoticed:
-#   auth, auth-client-credentials-jwt
-#       a SECOND OAuth implementation, beside `oauth_as/` and the `PlaneAdmission` verifier. Two
-#       implementations of one security concern that can disagree is the class behind three of this
-#       release's security defects. rmcp's auth is client-side helper code written for an agent
-#       author; busbar is a resource server AND an authorization server. Different problems.
-#   reqwest*, transport-streamable-http-*, transport-child-process, transport-io
-#       a second HTTP client and a second transport, both of which bypass the dispatch-time
-#       resolve-then-pin in busbar's own — one DNS resolution per hop, every returned address
-#       judged, the connection made to the address that was judged. Same objection recorded against
-#       `a2a-client-lf`, same answer.
-#
-# Cost, measured with `cargo tree -e normal`: +18 crate names in the lock, **+3 in the binary**
-# (`rmcp`, `chrono`, `pastey`).
-rmcp = { version = "3.1.2", default-features = false }
+# `rmcp` (MCP's protocol-vocabulary crate) is STRUCK: its one member, `busbar-mcp`, is deleted (P3
+# DEL-MCP, ARCHITECT 2026-10-05), and `workspace-deps:no-orphans` refuses a pin nothing inherits.
 # THE LINE COUNTER'S PARSER, and the only reason either of these is a direct dependency of anything
 # in this workspace. `cargo xtask loc` is the ONE instrument that answers "how many lines of
 # production Rust is this tree", and the three wrong answers it replaces were each a regex or a

@@ -264,7 +264,7 @@ pub(crate) fn mirrored_verb(verb: super::local::LocalVerb) -> Option<&'static st
 // that is already spent.
 
 /// Fixed push-rate window length, in seconds.
-const PUSH_RATE_WINDOW_SECS: u64 = 60;
+pub(crate) const PUSH_RATE_WINDOW_SECS: u64 = 60;
 
 /// The budget one task's push token may spend inside one [`PUSH_RATE_WINDOW_SECS`] window.
 const PUSH_RATE_LIMIT: u32 = 60;

@@ -52,30 +52,19 @@ from = "busbar-a2a"
 to = "busbar-plane-a2a"
 reason = "legacy drain: the A2A wire dialect folded into the plane crate and the retiring engine reads it"
 
-# `busbar-plane-mcp-host` is GONE (folded back into `busbar-mcp`, f6561224b). The drain it named
-# continued past it: `busbar-mcp-codec` dissolved (#39 — no `busbar-*-codec` crate) and its WIRE
-# DIALECT went where definition 16-20 puts a protocol's dialect, into the plane crate. The engine
-# reads that dialect rather than restating it, which is this edge. It is the same retirement, one
-# crate further along, so the row moves rather than being added beside a dead one.
-[[transitional]]
-from = "busbar-mcp"
-to = "busbar-plane-mcp"
-reason = "legacy drain: the MCP wire dialect folded into the plane crate and the retiring engine reads it"
+# The MCP rows (`busbar-mcp -> busbar-plane-mcp`, `busbar-mcp -> busbar-core-admin`) are STRUCK: the
+# drain completed (P3 DEL-MCP, ARCHITECT 2026-10-05) — busbar-mcp is deleted and the mcp plane is its
+# door crate alone, so neither edge can be taken.
 
 # The admin surface the A2A and MCP engines' tests drive drained out of busbar-core into the
 # compiled-in cleanliness tier: first as `busbar-admin`, which then folded into `busbar-core-admin`
 # (#37). BUSBAR-1.6.0.md:3780 (R2/#37) seats that crate as a cleanliness crate, and `cleanliness` is
-# a kind the drain targets, so each retiring engine's test edge onto it is named here. Both are
-# dev-dependencies (the engines' admin-verb tests) and die with the engines.
+# a kind the drain targets, so each retiring engine's test edge onto it is named here. Both were
+# dev-dependencies (the engines' admin-verb tests) and die with the engines; MCP's died at P3 DEL-MCP.
 [[transitional]]
 from = "busbar-a2a"
 to = "busbar-core-admin"
 reason = "legacy drain: the retiring A2A engine's tests drive the admin surface that drained into the cleanliness tier"
-
-[[transitional]]
-from = "busbar-mcp"
-to = "busbar-core-admin"
-reason = "legacy drain: the retiring MCP engine's tests drive the admin surface that drained into the cleanliness tier"
 
 # ------------------------------------------------------------------------------------------------
 # [[announced]] — CRATES THAT ARE LANDING
@@ -450,33 +439,6 @@ kind = "plane"
 crate = "busbar-llm"
 kind = "transport"
 
-
-
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "cleanliness"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "hooks"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "legacy"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "plane"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "plugin-tooling"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "transport"
-
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "legacy"
@@ -532,9 +494,6 @@ kind = "store"
 [[cell]]
 crate = "busbar-store-memory"
 kind = "plane"
-
-
-
 
 [[cell]]
 crate = "busbar-transport-stdio"
@@ -671,16 +630,6 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-mcp"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-mcp: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
 to      = "busbar-plugin-loader"
 half    = "shipped"
 count   = "1"
@@ -753,18 +702,6 @@ why     = "busbar-a2a names busbar-plane-a2a: declared normal in the shipped gra
 drain   = "delete the busbar-plane-a2a dependency from busbar-a2a's Cargo.toml — which happens when busbar-a2a itself is deleted into busbar-kernel (#19), because the dialect is already where it belongs and it is the ENGINE that is still in the wrong crate."
 
 [[dep]]
-from    = "busbar-mcp"
-to      = "busbar-plane-mcp"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-mcp names busbar-plane-mcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The codec fold (#39, 5fbd891e0) moved the MCP wire dialect into the plane crate, which is where definition 16-20 puts a protocol's dialect, and the retiring engine now READS it rather than restating it. That fold landed the `[[transitional]]` half and not this one, so the edge shipped for a week with no row holding its number. The edge is permitted by the `[[transitional]]` drain row above and by nothing else; this row holds the NUMBER."
-drain   = "delete the busbar-plane-mcp dependency from busbar-mcp's Cargo.toml — which happens when busbar-mcp itself folds into busbar-plane-mcp and is deleted (#19; BUSBAR-1.6.0.md THE DESIGN, §11.11), because the dialect is already where it belongs and it is the ENGINE that is still in the wrong crate."
-
-
-
-[[dep]]
 from    = "busbar"
 to      = "busbar-llm"
 half    = "test"
@@ -775,17 +712,6 @@ why     = "busbar names busbar-llm: declared dev in the test graph, 1 declaratio
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 
-
-
-[[dep]]
-from    = "busbar-mcp"
-to      = "busbar-llm"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-mcp names busbar-llm: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-llm dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 
 [[dep]]
@@ -890,16 +816,6 @@ why     = "busbar-a2a names busbar-contract: declared normal in the shipped grap
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-mcp"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 — legacy -> contract is a granted class (the retiring 1.5.x crate names the neutral ABI contract directly)."
-why     = "busbar-mcp names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
 from    = "busbar-a2a"
 to      = "busbar-kernel"
 half    = "shipped"
@@ -918,16 +834,6 @@ verdict = "not-allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
 why     = "busbar-llm names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-kernel dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-mcp"
-to      = "busbar-kernel"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-mcp names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-kernel dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-voice"
@@ -1010,17 +916,6 @@ why     = "busbar-kernel names busbar-llm: declared dev in the test graph (dev-d
 drain   = "delete the busbar-llm dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-kernel"
-to      = "busbar-mcp"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-kernel names busbar-mcp: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-mcp dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-
-[[dep]]
 from    = "busbar-llm"
 to      = "busbar-kernel"
 half    = "test"
@@ -1095,13 +990,9 @@ cite = "BUSBAR-1.6.0.md THE DESIGN, §2 — the loader is part of the trusted ba
 why = "the loader implements the transport face (transport_adapter.rs `WireTransport`) to hand a dynamically loaded transport plugin to the kernel. One implementation, in shipped source. Re-described against the tree: the store bridge no longer implements a `Store` face (its adapters implement the record/slice/verb store traits), and the transport bridge is the one entry face the loader implements today."
 drain = "none while the loader is outside the kind system. The drain is the ruling that gives the trusted base a kind of its own; until then this row holds the number, so a SECOND face appearing in the loader is a landing that has to say why."
 
-[[face]]
-crate = "busbar"
-face = "Store"
-count = "2"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 gives the composition root a REGISTRY to assemble from; assembling a store is not implementing one."
-why = "the root implements the store face twice in its own assembly rather than composing a store plugin that does. Two implementations, in shipped source."
-drain = "move both implementations into a store-kind crate and have the root REGISTER it. The root names every kind by design and implements none of them."
+# STRUCK (row 113, ruling (B)): `busbar` × Store. The root's two implementations — the refusing
+# stand-in and the forwarding newtype — are deleted; the root binds the loader's adapter over the
+# configured store (`StoreAdapter::verb_store`) and implements no store face.
 
 # ── THE DIALECT COLUMN ───────────────────────────────────────────────────────────────────────────
 #
@@ -1286,16 +1177,6 @@ drain   = "none while busbar-plugin-loader is the loader TCB; the row records th
 
 [[dep]]
 from    = "busbar-plugin-loader"
-to      = "busbar-kernel-ledger"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 — the loader/plugin tooling is the TRUSTED COMPUTING BASE; it names kernel directly and the kind rules do not rule on its edges (ARCHITECTURE_TCB plugin-tooling -> kernel)."
-why     = "busbar-plugin-loader names busbar-kernel-ledger: declared shipped, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while busbar-plugin-loader is the loader TCB; the row records the edge so a NEW plugin-tooling -> kernel coupling is visible on the landing that adds it."
-
-[[dep]]
-from    = "busbar-plugin-loader"
 to      = "busbar-kernel-wal"
 half    = "shipped"
 count   = "1"
@@ -1453,16 +1334,6 @@ verdict = "allowed"
 cite    = "ARCHITECTURE_ALLOWED root -> legacy (xtask/src/gates/kind_isolation.rs:617); BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140): busbar is \"the binary and composition root\", which names every crate it links."
 why     = "busbar names busbar-a2a: declared dev in the test graph (features test-support), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "struck when P3 deletes the legacy crate busbar-a2a: the edge goes with the crate, and a row naming a crate the tree no longer has is a dead allowance."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-mcp"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE_ALLOWED root -> legacy (xtask/src/gates/kind_isolation.rs:617); BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140): busbar is \"the binary and composition root\", which names every crate it links."
-why     = "busbar names busbar-mcp: declared dev in the test graph (features test-support), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "struck when P3 deletes the legacy crate busbar-mcp: the edge goes with the crate, and a row naming a crate the tree no longer has is a dead allowance."
 
 [[dep]]
 from    = "busbar"

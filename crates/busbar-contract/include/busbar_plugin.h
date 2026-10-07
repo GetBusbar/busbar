@@ -608,7 +608,9 @@ extern "C" {
 #define BB_HSVC_OP_TRUST_SIGHT_ITEM UINT32_C(24) /* `trust.sight_item`. */
 #define BB_HSVC_OP_TRUST_SERVES UINT32_C(25) /* `trust.serves`. */
 #define BB_HSVC_OP_TRUST_DECIDE UINT32_C(26) /* `trust.decide`. */
-#define BB_HSVC_SERVICES UINT32_C(27) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_TRUST_STATE UINT32_C(27) /* `trust.state`. */
+#define BB_HSVC_OP_SESSION_EMIT UINT32_C(28) /* `session.emit`. */
+#define BB_HSVC_SERVICES UINT32_C(29) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -653,6 +655,11 @@ extern "C" {
 #define BB_HSVC_UNDECIDED_STALE UINT64_C(5) /* `trust.decide` refused: the fingerprint the caller expects is not the key's current sighting. */
 #define BB_HSVC_UNDECIDED_UNKNOWN UINT64_C(6) /* `trust.decide` refused: the calling instance has no such key. */
 #define BB_HSVC_UNDECIDED_ROOTLESS UINT64_C(7) /* `trust.decide` refused: the counterparty declares no authenticity root; nothing at it is */
+#define BB_HSVC_KEY_NEW UINT64_C(1) /* `trust.state`'s value: sighted (or declared) and never approved, or revoked: refused. */
+#define BB_HSVC_KEY_SAME UINT64_C(2) /* `trust.state`'s value: approved, and its last sighting is what was approved. */
+#define BB_HSVC_KEY_DRIFTED UINT64_C(3) /* `trust.state`'s value: approved, and its last sighting moved from it: refused until re-approved. */
+#define BB_HSVC_KEY_QUARANTINED UINT64_C(4) /* `trust.state`'s value: quarantined: refused until re-approved (or its pin is seen again). */
+#define BB_HSVC_KEY_APPROVED UINT64_C(5) /* `trust.state`'s value: approved, and not sighted since. */
 #define BB_HSVC_SIGNED_VERIFIED UINT64_C(0) /* `trust.verify` verdict: a signature verified against the root key. */
 #define BB_HSVC_SIGNED_NONE UINT64_C(1) /* `trust.verify` verdict: the document carries no signature. */
 #define BB_HSVC_SIGNED_TOO_MANY UINT64_C(2) /* `trust.verify` verdict: more signatures than one document needs. */
@@ -687,6 +694,7 @@ extern "C" {
 #define BB_HSVC_DISK_FAULTS UINT8_C(7) /* Every [`DiskWritten::faults`] bit. */
 #define BB_HSVC_DISK_OPEN_FAILED UINT64_C(1) /* A FAILED `disk.append`'s `ServiceOut::value`: the file could not be opened for the append. */
 #define BB_HSVC_DISK_APPEND_FAILED UINT64_C(2) /* A FAILED `disk.append`'s `ServiceOut::value`: the file opened, and writing the bytes failed. */
+#define BB_HSVC_CARRIER_SESSION_FIELD "busbar-carrier-session" /* The head field a CARRIER SESSION's arrivals carry, naming the session they arrived over: the */
 
 /* hio */
 #define BB_HIO_OP_OPEN UINT32_C(0) /* `io.open`. */
@@ -1052,6 +1060,7 @@ typedef struct bb_hsvc_TrustDueIn bb_hsvc_TrustDueIn;
 typedef struct bb_hsvc_TrustSightItemIn bb_hsvc_TrustSightItemIn;
 typedef struct bb_hsvc_TrustServesIn bb_hsvc_TrustServesIn;
 typedef struct bb_hsvc_TrustDecideIn bb_hsvc_TrustDecideIn;
+typedef struct bb_hsvc_TrustStateIn bb_hsvc_TrustStateIn;
 typedef struct bb_hsvc_TrustVerifyIn bb_hsvc_TrustVerifyIn;
 typedef struct bb_hsvc_VerifyLookupIn bb_hsvc_VerifyLookupIn;
 typedef struct bb_hsvc_VerifyStoreIn bb_hsvc_VerifyStoreIn;
@@ -1063,6 +1072,7 @@ typedef struct bb_hsvc_SnapshotReadIn bb_hsvc_SnapshotReadIn;
 typedef struct bb_hsvc_NeedAdmitIn bb_hsvc_NeedAdmitIn;
 typedef struct bb_hsvc_DiskAppendIn bb_hsvc_DiskAppendIn;
 typedef struct bb_hsvc_DiskWritten bb_hsvc_DiskWritten;
+typedef struct bb_hsvc_SessionEmitIn bb_hsvc_SessionEmitIn;
 typedef struct bb_hsvc_HostSlots bb_hsvc_HostSlots;
 typedef struct bb_hio_IoSlots bb_hio_IoSlots;
 typedef struct bb_hio_OpenIn bb_hio_OpenIn;
@@ -3644,6 +3654,13 @@ struct bb_hsvc_TrustDecideIn {
     uint32_t _reserved;
 };
 
+/* [`op::TRUST_STATE`]'s `in`: the KERNEL'S TRUST STATE of one counterparty and its items, as the */
+struct bb_hsvc_TrustStateIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr counterparty;
+    bb_hsvc_ServiceBufs into;
+};
+
 /* [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the */
 struct bb_hsvc_TrustVerifyIn {
     bb_hsvc_ServiceHead head;
@@ -3729,6 +3746,13 @@ struct bb_hsvc_DiskWritten {
     uint64_t written;
 };
 
+/* [`op::SESSION_EMIT`]'s `in`: write `bytes`, UNSOLICITED, on the open carrier session `session` */
+struct bb_hsvc_SessionEmitIn {
+    bb_hsvc_ServiceHead head;
+    uint64_t session;
+    bb_mech_Blob bytes;
+};
+
 /* THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service */
 struct bb_hsvc_HostSlots {
     uint32_t size;
@@ -3760,6 +3784,8 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn trust_sight_item;
     bb_hsvc_ServiceFn trust_serves;
     bb_hsvc_ServiceFn trust_decide;
+    bb_hsvc_ServiceFn trust_state;
+    bb_hsvc_ServiceFn session_emit;
 };
 
 /* THE HOST'S I/O TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is one this host */
@@ -3848,7 +3874,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 279 of 282 structures are pinned by the golden ---- */
+/* ---- layout proof: 281 of 284 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5865,6 +5891,11 @@ BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, item) == 40, "bb_hsvc_TrustDecideIn.it
 BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, expected) == 56, "bb_hsvc_TrustDecideIn.expected: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, decision) == 72, "bb_hsvc_TrustDecideIn.decision: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, _reserved) == 76, "bb_hsvc_TrustDecideIn._reserved: offset");
+BB_ASSERT(sizeof(bb_hsvc_TrustStateIn) == 72, "bb_hsvc_TrustStateIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustStateIn) == 8, "bb_hsvc_TrustStateIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TrustStateIn, head) == 0, "bb_hsvc_TrustStateIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustStateIn, counterparty) == 24, "bb_hsvc_TrustStateIn.counterparty: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustStateIn, into) == 40, "bb_hsvc_TrustStateIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_TrustVerifyIn) == 120, "bb_hsvc_TrustVerifyIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustVerifyIn) == 8, "bb_hsvc_TrustVerifyIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, head) == 0, "bb_hsvc_TrustVerifyIn.head: offset");
@@ -5928,7 +5959,12 @@ BB_ASSERT(offsetof(bb_hsvc_DiskWritten, rotated) == 4, "bb_hsvc_DiskWritten.rota
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, faults) == 5, "bb_hsvc_DiskWritten.faults: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, _reserved) == 6, "bb_hsvc_DiskWritten._reserved: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, written) == 8, "bb_hsvc_DiskWritten.written: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 224, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_SessionEmitIn) == 56, "bb_hsvc_SessionEmitIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_SessionEmitIn) == 8, "bb_hsvc_SessionEmitIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, head) == 0, "bb_hsvc_SessionEmitIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, session) == 24, "bb_hsvc_SessionEmitIn.session: offset");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, bytes) == 32, "bb_hsvc_SessionEmitIn.bytes: offset");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 240, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5959,6 +5995,8 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, snapshot_read) == 192, "bb_hsvc_HostSlots.
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_sight_item) == 200, "bb_hsvc_HostSlots.trust_sight_item: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_serves) == 208, "bb_hsvc_HostSlots.trust_serves: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_decide) == 216, "bb_hsvc_HostSlots.trust_decide: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_state) == 224, "bb_hsvc_HostSlots.trust_state: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, session_emit) == 232, "bb_hsvc_HostSlots.session_emit: offset");
 BB_ASSERT(sizeof(bb_hio_IoSlots) == 88, "bb_hio_IoSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hio_IoSlots) == 8, "bb_hio_IoSlots: alignment");
 BB_ASSERT(offsetof(bb_hio_IoSlots, size) == 0, "bb_hio_IoSlots.size: offset");
