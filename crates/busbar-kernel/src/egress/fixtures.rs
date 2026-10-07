@@ -930,17 +930,17 @@ impl crate::plane_host::egress_trust::EgressTrustHost for TlsEgressTrust {
     }
 }
 
-/// The name arm of a test binary with no deployment guard: the loopback literal every fixture binds
-/// is admitted, as an operator lists `127.0.0.1` / `::1` in `advanced.allow_destinations`; every
-/// other host is refused, as the pass-through refuses it (fail closed).
+/// The name arm of a test binary with no deployment guard, through the same allowlist an operator
+/// writes: the guard double ([`PrivateRefusing`]) with the loopback every fixture binds listed, as
+/// `advanced.allow_destinations: ["127.0.0.1", "::1"]` lists it. A listed loopback literal is
+/// admitted; any other private literal is refused; a name passes to its answer's judgement, which a
+/// process with no guard refuses (fail closed).
 pub fn loopback_literal_listed(host: &str) -> Result<(), crate::host_services::DestRefusal> {
-    use crate::plane_host::egress_trust::EgressTrustHost as _;
-    let bare = host.trim_start_matches('[').trim_end_matches(']');
-    match bare.parse::<IpAddr>() {
-        Ok(ip) if ip.is_loopback() => Ok(()),
-        _ => crate::plane_host::egress_trust::PassThroughEgressTrust
-            .judge_name(host, busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER),
-    }
+    use crate::host_services::DestJudge as _;
+    PrivateRefusing(vec!["127.0.0.1".to_owned(), "::1".to_owned()]).judge_host(
+        host,
+        busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+    )
 }
 
 /// TEST SEAM: carry `layer` as the wrap every client in this test binary is built over, in the
