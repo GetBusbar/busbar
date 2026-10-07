@@ -55,7 +55,8 @@
 //!                        "short": "units" | "fields" },   // met at capacity 0, then re-called
 //!             "drive": true,
 //!             "project": { "target": "/s", "body": <bytes>, "rewrite": <bytes> },
-//!             "tick": { "now_ns": <n> },     // on a driver ticket
+//!             "tick": { "now_ns": <n>,       // on a driver ticket
+//!                       "wakes": true },     // optional: it wakes the driver, so `drive` crosses
 //!             "cancel": true,                // of the op on the session's ticket
 //!             "want": { "outcome": "Ready", ... } } ] } ],
 //!     "refusal": { "status": 403, "text": "denied", "reply": "<the dialect's error body>" } } }
@@ -75,7 +76,8 @@
 //! (a short piece is re-submitted once on the same ticket), so the piece's head names it and a
 //! `cancel` step names it in `CancelIn::ticket`. A `tick` step crosses on a DRIVER ticket of the
 //! leg's dispatcher, as the kernel ticks an instance, so a session past its ceiling owes its end
-//! to `drive` and a collection.
+//! to `drive` and a collection; a tick that `wakes` its driver is pinned at two, the tick and the
+//! `drive` the dispatcher calls on the woken ticket.
 //!
 //! THE PINS. Every step is ONE ticket-less crossing (`Plugin::call`), but:
 //! * `ready` ([`super::ready_step`]): 0 when the door states none;
@@ -632,7 +634,11 @@ enum Act {
         body: Vec<u8>,
         rewrite: Option<Vec<u8>>,
     },
-    Tick(u64),
+    /// `tick` at `now_ns`; `wakes`: its driver ticket is woken, so `drive` crosses on it too.
+    Tick {
+        now_ns: u64,
+        wakes: bool,
+    },
     Cancel,
 }
 
@@ -775,7 +781,10 @@ impl Session {
                 }
             }
             ["drive"] => Act::Drive,
-            ["tick"] => Act::Tick(num(&st["tick"]["now_ns"], &format!("{what}.tick.now_ns"))),
+            ["tick"] => Act::Tick {
+                now_ns: num(&st["tick"]["now_ns"], &format!("{what}.tick.now_ns")),
+                wakes: st["tick"]["wakes"].as_bool() == Some(true),
+            },
             ["cancel"] => Act::Cancel,
             ["project"] => {
                 let p = &st["project"];
@@ -837,14 +846,26 @@ fn project(
     )
 }
 
+/// How long a `tick` that wakes its driver ticket waits for the `drive` the wake calls.
+const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// `tick` at `now_ns` on a DRIVER TICKET of the leg's dispatcher, as the kernel ticks an instance
-/// (its head names the driver, so a session that now owes its end names it), the ticket recycled
+/// (its head names the driver, so a session that now owes its end names it). When the inputs say it
+/// `wakes`, the dispatcher calls `drive` on the woken driver ticket, and the step waits (at most
+/// [`WAKE_WAIT`]) for that second crossing, so it is counted in this step. The ticket is recycled
 /// after.
-fn tick_on_driver(p: &Plugin<Plane>, d: &Dispatcher, now_ns: u64) -> String {
+fn tick_on_driver(p: &Plugin<Plane>, d: &Dispatcher, now_ns: u64, wakes: bool) -> String {
     let Some(driver) = d.driver(p, 0) else {
         return "no-driver-ticket".into();
     };
+    let (before, _) = crossings(p).read();
     let done = d.tick(p, driver, now_ns).wait_done();
+    if wakes {
+        let deadline = std::time::Instant::now() + WAKE_WAIT;
+        while crossings(p).read().0 < before + 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
     d.recycle(driver);
     let c = Called {
         outcome: done.outcome,
@@ -889,7 +910,11 @@ fn sessions(r: &mut Recorder<'_>, p: &Plugin<Plane>, d: &Dispatcher, all: &[Sess
             match act {
                 Act::Arrive(a, body) => r.line(&label, 1, || arrive(p, a, body)),
                 Act::Drive => r.line(&label, 1, || drive(p)),
-                Act::Tick(now_ns) => r.line(&label, 1, || tick_on_driver(p, d, *now_ns)),
+                Act::Tick { now_ns, wakes } => {
+                    r.line(&label, 1 + u64::from(*wakes), || {
+                        tick_on_driver(p, d, *now_ns, *wakes)
+                    });
+                }
                 Act::Cancel => r.line(&label, 1, || cancel(p, ticket.unwrap_or(Ticket::NONE))),
                 Act::Project {
                     target,

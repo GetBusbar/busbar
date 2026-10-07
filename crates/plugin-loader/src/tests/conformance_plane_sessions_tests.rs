@@ -299,3 +299,16 @@ fn red_a_cancel_in_a_session_with_no_ticket_is_refused() {
     })
     .contains("cancels on its ticket"));
 }
+
+/// RED: a tick the inputs say wakes its driver ticket, on a door whose tick wakes nothing, crosses
+/// once where two (the tick and the `drive` the wake calls) are pinned.
+#[test]
+fn red_a_tick_pinned_to_wake_that_wakes_nothing_is_refused() {
+    let s = subject();
+    let mut all: Value = serde_json::from_str(SESSIONS).expect("the inputs are JSON");
+    all[0]["steps"][9]["tick"]["wakes"] = Value::Bool(true);
+    assert_eq!(all[0]["steps"][9]["label"], "tick");
+    let f = fold_over(&s, Leg::Linked, Some(PUBLIC_URL), &all);
+    let e = exact(&f).expect_err("one crossing where two are pinned");
+    assert!(e.contains("live tick") && e.contains("pinned 2"), "{e}");
+}
