@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 // The replay window (600 s) is the store face's own constant now — pulled forward to the ONE ABI
-// crate (DECISIONS #38/#40) so `busbar-plugin-loader`'s sealed store cache and this in-process
+// crate (DECISIONS #38/#40) so the loader's sealed store cache and this in-process
 // cache age their slots against one number. Re-exported here so the doc links and the existing
 // `crate::idempotency::IDEMPOTENCY_TTL_SECS` call sites keep resolving.
 pub use busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS;
@@ -49,12 +49,12 @@ type Slot<V> = (u64, Option<V>);
 ///
 /// This crate has no dependency on `busbar` (the composition root that owns `Durability` — naming
 /// it here would be the cycle `busbar` -> `busbar-core-admin` -> `busbar` that Cargo already
-/// refuses) and no dependency on `busbar-kernel-audit`. So the record itself is never this crate's
-/// shape: the root binds an impl that closes over ITS OWN `Durability`/`Settling` plumbing and
-/// calls `Durability::journal_claim` from inside [`journal_claim`](ClaimJournal::journal_claim). A
-/// node with no data dir binds nothing (`IdempotencyCache::new`, no journal), so it behaves exactly
-/// as it did before this seam existed — the whole reason [`IdempotencyCache::with_journal`] is an
-/// opt-in constructor rather than a mandatory argument.
+/// refuses) and no dependency on the kernel's audit chain. So the record itself is never this
+/// crate's shape: the root binds an impl that closes over ITS OWN `Durability`/`Settling` plumbing
+/// and calls `Durability::journal_claim` from inside [`journal_claim`](ClaimJournal::journal_claim).
+/// A node with no data dir binds nothing (`IdempotencyCache::new`, no journal), so it behaves
+/// exactly as it did before this seam existed — the whole reason
+/// [`IdempotencyCache::with_journal`] is an opt-in constructor rather than a mandatory argument.
 pub trait ClaimJournal: Send + Sync {
     /// A reservation was just taken for `key` at `now` (unix seconds) — the same instant
     /// [`IdempotencyCache::probe`] used to insert the in-flight sentinel. Called exactly once per

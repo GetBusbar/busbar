@@ -31,7 +31,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use busbar_contract::conn::{ConnError, ConnId, PieceKind};
 use busbar_contract::redacted::Redacted;
 
-use crate::token_response::{default_expires_in, deserialize_expires_in};
+use crate::token_response::{
+    default_expires_in, deserialize_expires_in, deserialize_redacted, json_err,
+};
 use busbar_contract::header::{is_legal_header_value, token_value};
 
 /// Refresh this many seconds BEFORE the token's stated expiry, so a request never races an expired
@@ -146,12 +148,14 @@ impl std::fmt::Debug for CachedToken {
 
 impl CachedToken {
     /// Construct a `CachedToken`, building its header once here. The second value is whether the
-    /// token was omitted for bytes invalid in a header value (the caller reports it).
-    pub(crate) fn new(token: String, expires_at: u64) -> (Self, bool) {
-        let (header, invalid) = if token.is_empty() {
+    /// token was omitted for bytes invalid in a header value (the caller reports it). The token
+    /// arrives already [`Redacted`] (the minters decode it straight into one); the header build
+    /// below is its one exposure.
+    pub(crate) fn new(token: Redacted<String>, expires_at: u64) -> (Self, bool) {
+        let (header, invalid) = if token.expose_secret().is_empty() {
             (None, false)
         } else {
-            let v = token_value(&token);
+            let v = token_value(token.expose_secret());
             if is_legal_header_value(&v) {
                 (Some(Redacted::new(v)), false)
             } else {
@@ -160,7 +164,7 @@ impl CachedToken {
         };
         (
             Self {
-                token: Redacted::new(token),
+                token,
                 expires_at,
                 header,
             },
@@ -201,9 +205,12 @@ pub(crate) fn next_refresh_secs(expires_at: u64, now: u64) -> u64 {
     }
 }
 
+/// An OAuth token endpoint's success body (RFC 6749 section 5.1), as far as a minter reads it.
+/// Deserialize-only, and `access_token` is decoded straight into [`Redacted`] (secret-hygiene #53).
 #[derive(serde::Deserialize)]
 struct TokenResponse {
-    access_token: String,
+    #[serde(deserialize_with = "deserialize_redacted")]
+    access_token: Redacted<String>,
     #[serde(
         default = "default_expires_in",
         deserialize_with = "deserialize_expires_in"
@@ -230,8 +237,9 @@ pub(crate) fn parse_response(
             body.chars().take(200).collect::<String>()
         ));
     }
+    // A decode failure is described without the decoder's text, which can quote the token.
     let tok: TokenResponse =
-        serde_json::from_str(&body).map_err(|e| format!("token response JSON invalid: {e}"))?;
+        serde_json::from_str(&body).map_err(json_err("token response JSON invalid"))?;
     Ok(CachedToken::new(
         tok.access_token,
         // saturating_add: `expires_in` is attacker-influenced (comes off the token endpoint), so a
@@ -325,7 +333,7 @@ impl Minted {
             on_demand: matches!(minter, Minter::TokenExchange(_)),
             minter,
             max_response_bytes,
-            token: RwLock::new(Arc::new(CachedToken::new(String::new(), 0).0)),
+            token: RwLock::new(Arc::new(CachedToken::new(String::new().into(), 0).0)),
             exchange: Mutex::new(Exchange::Idle { due_ns: 0 }),
             refresh_failed: AtomicBool::new(false),
             usable_until: AtomicU64::new(0),

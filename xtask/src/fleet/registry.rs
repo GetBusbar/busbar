@@ -38,6 +38,9 @@ pub struct Plugin {
     pub gitignore: Vec<String>,
     /// Lines the rendered `NOTICE` carries after the fleet's own (a third-party credit).
     pub notice: Vec<String>,
+    /// The signed manifest names the plugin's earlier releases carried, which it still answers to
+    /// (`busbar-plugin-pack --former-name`, plugin-release.yml's `former_names`).
+    pub former_names: Vec<String>,
     /// Position in the registry (the consumer-verify cron is staggered by it).
     pub index: usize,
 }
@@ -49,6 +52,20 @@ pub struct Fleet {
     pub name_pattern: String,
     pub branches: Vec<String>,
     pub plugins: Vec<Plugin>,
+    /// The `legacy:` block's frozen rows (the root legacy table's 1.5.5 text), key -> value.
+    pub legacy: Vec<(String, String)>,
+}
+
+/// The `legacy:` key prefix of a plugin repo's frozen 1.5.5 manifest name: `name_1_5_5.<repo>`.
+pub const NAME_1_5_5: &str = "name_1_5_5.";
+
+impl Fleet {
+    /// The frozen 1.5.5 manifest names, `(repo, name)`, in table order.
+    pub fn names_1_5_5(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.legacy
+            .iter()
+            .filter_map(|(k, v)| k.strip_prefix(NAME_1_5_5).map(|repo| (repo, v.as_str())))
+    }
 }
 
 impl Plugin {
@@ -194,6 +211,7 @@ pub fn parse(text: &str) -> Result<Fleet, String> {
             pending_crate: b(e, "pending_crate", &who, false)?,
             gitignore: list(e, "gitignore", &who)?,
             notice: list(e, "notice", &who)?,
+            former_names: list(e, "former_names", &who)?,
             crate_name,
             repo,
             index,
@@ -220,11 +238,29 @@ pub fn parse(text: &str) -> Result<Fleet, String> {
             }
         }
     }
+    let legacy = match doc.get("legacy") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Object(m)) => m
+            .iter()
+            .map(|(k, v)| match v {
+                Value::String(x) => Ok((k.clone(), x.clone())),
+                other => Err(format!(
+                    "{REGISTRY} legacy: `{k}` must be a string, found {other}"
+                )),
+            })
+            .collect::<Result<_, String>>()?,
+        Some(other) => {
+            return Err(format!(
+                "{REGISTRY}: `legacy:` must be a mapping, found {other}"
+            ))
+        }
+    };
     Ok(Fleet {
         pin_sha: sha,
         pin_version: version,
         name_pattern,
         branches,
         plugins,
+        legacy,
     })
 }

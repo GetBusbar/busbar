@@ -410,6 +410,7 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
     let mut files: Vec<FileCount> = Vec::with_capacity(discovered.len());
     let mut errors: Vec<FileError> = Vec::new();
     let mut declared: Vec<(String, Vec<classify::OutOfLineMod>)> = Vec::new();
+    let mut kinds: BTreeMap<String, Vec<classify::Kind>> = BTreeMap::new();
     std::thread::scope(|scope| {
         let handles: Vec<_> = work
             .into_iter()
@@ -433,6 +434,7 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
                                             counts: v.counts,
                                         },
                                         v.mods,
+                                        v.kinds,
                                     )),
                                     Err(e) => bad.push(FileError {
                                         path: path.clone(),
@@ -449,8 +451,11 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
             .collect();
         for h in handles {
             let (ok, bad) = h.join().unwrap_or_default();
-            declared.extend(ok.iter().map(|(f, m)| (f.path.clone(), m.clone())));
-            files.extend(ok.into_iter().map(|(f, _)| f));
+            declared.extend(ok.iter().map(|(f, m, _)| (f.path.clone(), m.clone())));
+            for (f, _, k) in ok {
+                kinds.insert(f.path.clone(), k);
+                files.push(f);
+            }
             errors.extend(bad);
         }
     });
@@ -460,14 +465,17 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
     let text_of: BTreeMap<&str, &Result<String, String>> =
         paths.iter().map(String::as_str).zip(texts.iter()).collect();
     let test_modules = test_modules(&declared, &paths, &text_of);
+    //
+    // NOT BY PARSING THE FILE A SECOND TIME. Classifying a file as a test path changes exactly one
+    // thing about each line — a `Code` line becomes `Test`; blank, doc, comment and test lines are
+    // decided before the test question is asked — so the second classification is the first one's
+    // line kinds with that one substitution ([`classify::as_test_path`]).
     for f in files.iter_mut() {
         if classify::is_test_path(&f.path) || !test_modules.covers(&f.path) {
             continue;
         }
-        if let Some(Ok(text)) = text_of.get(f.path.as_str()) {
-            if let Ok(v) = classify::classify(text, true) {
-                f.counts = v.counts;
-            }
+        if let Some(k) = kinds.get(&f.path) {
+            f.counts = classify::as_test_path(k);
         }
     }
     let mut report = aggregate(source.label(), files, errors, cfg);

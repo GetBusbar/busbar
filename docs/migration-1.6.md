@@ -70,7 +70,9 @@ Two exceptions, and `--validate` already tells you whether either applies to you
   If you were relying on that — most often to run a keyless local ollama or vLLM — you need one
   edit. See [§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot).
 - a config with a `rate_card:` must price every billable unit the plane counts, and a 1.5.5 card
-  never priced `search_units` (a rerank's unit). If you have a `rate_card:`, you need one edit. See
+  never priced the units a provider reports beside its tokens (`search_units`, `classifications`,
+  `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, the Bedrock `guardrail_*`
+  units). If you have a `rate_card:`, you need one edit. See
   [§7](#a-card-must-configure-every-billable-unit-its-plane-counts).
 
 ## 2. Deprecated env vars keep working, with a warning
@@ -275,23 +277,47 @@ A plane's card that is present must give a rate — `0` is a rate — for every 
 counts, or boot and `--validate` refuse, naming the section and each missing unit:
 
 ```
-pools.rate_card does not configure billable unit(s) search_units declared by this plane; add them (0 to make them free)
+pools.rate_card does not configure billable unit(s) search_units, classifications, ... declared by this plane; add them (0 to make them free)
 ```
 
-**This is the one edit a 1.5.5 config with a `rate_card:` needs.** The LLM plane counts `input`,
-`output`, `cache_read`, `cache_write` and `search_units`; the first four are the `*_utok` tiers, and a
-tier the entry leaves out is `0`, as in 1.5.5. `search_units` has no tier, and 1.5.5 billed it at
-`0`, so the upgrade that keeps every figure 1.5.5 billed is to price it at `0` on every entry:
+**This is the one edit a 1.5.5 config with a `rate_card:` needs.** Every count a provider reports
+is a ledger line under its own unit (owner ruling LEDGER-100). The LLM plane counts `input`,
+`output`, `cache_read`, `cache_write` (the `*_utok` tiers; a tier the entry leaves out is `0`, as in
+1.5.5) and these open units, which have no tier:
+
+| unit | what the provider reported |
+|---|---|
+| `search_units` | a rerank's billed search units; an Anthropic turn's web searches |
+| `classifications` | Cohere `billed_units.classifications` |
+| `web_fetch_requests` | Anthropic `usage.server_tool_use.web_fetch_requests` |
+| `unitemized_tokens` | the tokens a provider's stated total (`total_tokens`, `totalTokenCount`, `totalTokens`) counts above the buckets it itemizes |
+| `images` | the images a per-image provider returned (dall-e, Imagen, Titan, SDXL) |
+| `audio_ms` | a transcription's reported duration, in whole milliseconds |
+| `guardrail_*` (nine) | the Bedrock guardrail policy units, one unit per policy type |
+
+1.5.5 billed every one of them at `0`, so the upgrade that keeps every figure 1.5.5 billed is to
+price each at `0`:
 
 ```yaml
 rate_card:
-  claude-sonnet: { input_utok: 3, output_utok: 15, units: { search_units: 0 } }
+  claude-sonnet: { input_utok: 3, output_utok: 15,
+                   units: { search_units: 0, classifications: 0, web_fetch_requests: 0,
+                            unitemized_tokens: 0, images: 0, audio_ms: 0,
+                            guardrail_automated_reasoning_policies: 0,
+                            guardrail_automated_reasoning_policy_units: 0,
+                            guardrail_content_policy_image_units: 0, guardrail_content_policy_units: 0,
+                            guardrail_contextual_grounding_policy_units: 0,
+                            guardrail_sensitive_information_policy_free_units: 0,
+                            guardrail_sensitive_information_policy_units: 0,
+                            guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }
 ```
 
+None of the open units counts toward a `tokens:` cap, so caps count what they counted in 1.5.5.
+
 The same holds for a card written at run time: `PUT /api/v1/admin/config/settings` with a
-`rate_card` that leaves `search_units` out is refused (400) with the same message, where 1.5.5
-applied it. A script or dashboard that writes cards through the admin API needs the same
-`"units": {"search_units": 0}` on each entry.
+`rate_card` that leaves an open unit out is refused (400) with the same message, where 1.5.5
+applied it. A script or dashboard that writes cards through the admin API needs the same `"units"`
+map on each entry.
 
 Put it on every entry, not just one: boot is satisfied by any entry, but a lane whose own entry is
 silent about a unit it serves refuses that traffic rather than pricing it at zero. Write a real rate
@@ -339,8 +365,8 @@ prices only what happens after the edit; it cannot repair a window that is alrea
 - [ ] Add a `store:` block: `busbar --migrate-config config.yaml` inserts `store: {module: memory}`. `busbar --validate` refuses a config without one ([the `store:` block is required](#the-store-block-is-required)).
 - [ ] Replace every plugin built for 1.5.5 (including the sqlite, postgres, mysql and valkey stores) with its 1.6.0 release; boot refuses the old ones ([a plugin built for 1.5.5 does not load](#a-plugin-built-for-155-does-not-load)).
 - [ ] Install 1.6.0, `busbar --validate`, start.
-- [ ] If you have a `rate_card:`: add `units: { search_units: 0 }` to every entry (or a real rate to
-      bill reranks). `--validate` names each unit a card leaves out
+- [ ] If you have a `rate_card:`: add the `units:` map (every open unit at `0`) to every entry (or
+      a real rate for the units you bill). `--validate` names each unit a card leaves out
       ([§7](#a-card-must-configure-every-billable-unit-its-plane-counts)).
 - [ ] If `--validate` names a provider `api_key` that does not resolve: fix the reference, or — for
       an upstream that takes no credential (local ollama / vLLM) — declare `api_key: none`. It is

@@ -436,6 +436,23 @@ jobs:
           [ -n "$f" ] || { echo "::error::no declares.json in the repo"; exit 1; }
           "$PLUGIN_GATES" plugin-gates declares busbar "$KIND" "plugin/$f"
 
+      - name: a renamed plugin answers its 1.5.5 manifest name (plugins.yaml former_names, and the release that signs them)
+        if: ${{ !cancelled() }}
+        env:
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          # The registry entry at the pin declares every 1.5.5-era manifest name `legacy:` freezes for
+          # this repo (RED by name on a missing one): 1.5.5 configs load unchanged.
+          "$PLUGIN_GATES" plugin-gates former-names busbar/plugins.yaml "$REPO"
+          # And the repo's release recipe signs them: the `former_names` its release.yml hands
+          # plugin-release.yml (rendered from plugins.yaml by busbar-release plugin sync).
+          rel=plugin/.github/workflows/release.yml
+          if [ -f "$rel" ]; then
+            declared="$(sed -nE 's/^[[:space:]]*former_names:[[:space:]]*"?([^"#]*)"?.*$/\1/p' "$rel" | head -n1)"
+            "$PLUGIN_GATES" plugin-gates former-names busbar/plugins.yaml "$REPO" --declared "$declared"
+          fi
+
       - name: "C: the kind's conformance through load_dropped at the pin, RED arm kept (both must RUN)"
         if: ${{ !cancelled() && inputs.plugin_lang == 'c' }}
         working-directory: busbar
