@@ -555,6 +555,38 @@ fn the_sweep_cancels_the_abandoned_and_tombstones_the_expired() {
     }
 }
 
+/// AN ACTIVE TASK IS NEVER EVICTED (Q128 K2-H5, coordinator 2026-10-07; spec docs/design/BUSBAR-1.6.0.md
+/// :198-203, "An active work handle is never evicted ... Retention bounds only settled handles"): an
+/// active task idle for far longer than the old 86_400 s abandon window is still live after a sweep,
+/// its state unchanged, readable through the get and the list, and its push token still validates.
+/// RED on the base: the sweep canceled it.
+#[test]
+fn an_idle_active_task_survives_the_sweep_with_its_push_token() {
+    let mut book = Book::default();
+    submitted(&mut book, ALICE, "idle", 100);
+    let tokens = crate::push::Tokens::new();
+    let token = tokens.mint(ALICE, "idle", b"sig").unwrap();
+    let now = 100 + 86_400 * 30;
+    let mut out = Vec::new();
+    sweep(&mut book, now, 64, &mut out).unwrap();
+    book.apply(&out);
+    let held = get(&mut book, ALICE, "idle", now).unwrap().unwrap();
+    assert_eq!(
+        held.row.state, "submitted",
+        "an idle active task is not canceled"
+    );
+    assert_eq!(held.row.updated_at, 100, "the sweep wrote nothing to it");
+    assert_eq!(
+        list(&mut book, ALICE, now).unwrap().len(),
+        1,
+        "ListTasks still has it"
+    );
+    assert!(
+        tokens.claim(&token).is_some(),
+        "its push token stays valid while the task is active"
+    );
+}
+
 /// THE CAP: while the store holds MAX_RETAINED or more, the oldest terminal tasks go, and an active
 /// one never does; the sweep touches no more than its budget.
 #[test]
