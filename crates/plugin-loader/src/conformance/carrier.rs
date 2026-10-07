@@ -516,7 +516,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         format!("{}", woken(&host, &rd))
     });
     want.push(("the host woke the read".into(), Want::Is("true".into())));
-    r.line("read resumed", 1, || read(&p, &rd, conn, true));
+    // The pending read's RESUME on its ticket: the op's one first invocation was "read pending", so
+    // this re-invocation is counted apart and reported, never pinned (Q-P4-5: one op, one crossing,
+    // however often it pends).
+    r.line("read resumed", 0, || read(&p, &rd, conn, true));
     want.push((
         "read resumed".into(),
         Want::Is(format!("Ready bytes={answer:?} end_of_frame=true")),
