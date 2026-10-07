@@ -113,12 +113,11 @@
       "note": "the admin plane is NOT one of the doctrine's eight protocol columns -- it carries no protocol and no upstream target -- so it owns no cell in this matrix. Its root leg is judged, step by step, by the admin row of qa/teller-steps.json. Zero columns here is that statement, not an omission."
     },
     "root-decisions": {
-      "file": "crates/busbar/src/root/tests/plane_decisions.rs",
+      "file": "crates/busbar/src/root/serve.rs",
       "columns": [
         "decisions"
       ],
-      "owed": "p3-flip-decisions: the decisions plane served through its door fills this leg's loop cells; until then every cell of its column is `missing` with root `none`",
-      "note": "the decisions plane's root leg: the plane served through its memory-ABI door on the data router (root/serve.rs door_routes), its unit driven by the kernel's plane driver and money steps; owed its loop cells by the decisions flip lane (U14)"
+      "note": "the decisions plane's door SERVED end to end (FLIP-DECISIONS): the linked door bound through the loader's one load, composed by the serve path's one composition (compose_planes) with its egress sealed by it, a keyed caller's request answered through the plane driver on the data router, and its money posted on both books; the cells live in serve.rs's sibling tests file"
     }
   },
   "cells": [
@@ -137,11 +136,11 @@
       "capability": "breaker-trip",
       "plane": "decisions",
       "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "note": "the decisions door routes ROUTE_DIRECT to its one model's provider; no test takes that provider down and watches the core breaker cell open for it",
       "root": {
         "state": "none",
         "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "reason": "the leg's far end answers every request it is sent, so no run over the driver takes the provider down and records a failure into its breaker cell"
       }
     },
     {
@@ -201,11 +200,11 @@
       "capability": "breaker-fastfail",
       "plane": "decisions",
       "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "note": "no test trips the decisions provider's breaker cell and watches the next unit refused before dispatch",
       "root": {
         "state": "none",
         "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "reason": "nothing on the leg opens a breaker cell, so no unit reaches the route step with a tripped target to be refused before its dial"
       }
     },
     {
@@ -264,12 +263,11 @@
     {
       "capability": "failover-reroute",
       "plane": "decisions",
-      "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "state": "not-applicable",
+      "reason": "the decisions plane has no candidate set to walk: a jev request names no model, so it is served only when decisions.models holds exactly one, and the door routes it ROUTE_DIRECT to that one model's provider; there is no second interchangeable candidate to try before the first byte",
       "root": {
-        "state": "none",
-        "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "state": "not-applicable",
+        "leg": "root-decisions"
       }
     },
     {
@@ -329,11 +327,11 @@
       "capability": "hooks-tap",
       "plane": "decisions",
       "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "note": "the door refuses `project` (it binds no hook view and never reads the decision content, the PII witness), so no observe or transform hook runs over this plane's payloads; whether a decisions.hooks attach is owed a view is open",
       "root": {
         "state": "none",
         "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "reason": "no leg cell attaches a hook to decisions.hooks, and the door binds no hook view, so nothing runs a tap over a decisions unit through the driver"
       }
     },
     {
@@ -399,11 +397,11 @@
       "capability": "hooks-gate",
       "plane": "decisions",
       "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "note": "no test attaches a gate hook to decisions.hooks and watches the kernel's gate refuse a decisions unit before dispatch; the door binds no hook view (`project` is refused)",
       "root": {
         "state": "none",
         "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "reason": "no leg cell attaches a gate hook, so the driver's hook stage is never asked to refuse a decisions unit before its dial"
       }
     },
     {
@@ -465,11 +463,11 @@
       "capability": "audit-chain",
       "plane": "decisions",
       "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "note": "the decisions plane declares no record kinds and writes no audit row; no test shows a decisions dispatch or refusal landing in the tamper-evident chain",
       "root": {
         "state": "none",
         "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "reason": "the leg reads the money books (the governance ledger and the node's book) and no audit chain, so a decisions unit's audit row is unwitnessed over the driver"
       }
     },
     {
@@ -534,11 +532,11 @@
       "capability": "governance-budget",
       "plane": "decisions",
       "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "note": "the plane's own battery proves the metering surface (units reported on success, none on error: tests/jev.rs::billable_success_metering_surface_reports_usage_on_success_and_nothing_on_error), not the budget; the spend is the kernel's, proven on the door path (root)",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_claimed_request_is_served_through_the_door_and_its_money_posted"
       }
     },
     {
@@ -602,11 +600,11 @@
       "capability": "disposition",
       "plane": "decisions",
       "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "note": "no test hands the decisions door a far-end failure and watches it normalized and classified into a Disposition; the door relays the far end's status and bytes unchanged",
       "root": {
         "state": "none",
         "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "reason": "the leg's far end answers 200, so no far-end failure reaches the driver's classification on a decisions unit"
       }
     },
     {
@@ -667,11 +665,11 @@
       "capability": "metrics",
       "plane": "decisions",
       "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "note": "no test scrapes /metrics after decisions traffic and finds its series under the plane's own label",
       "root": {
         "state": "none",
         "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "reason": "the leg reads the response bytes and the money books; neither scrapes /metrics, so the plane label on a real scrape is unwitnessed over the driver"
       }
     },
     {
@@ -733,12 +731,11 @@
     {
       "capability": "trust-pinning",
       "plane": "decisions",
-      "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "state": "not-applicable",
+      "reason": "decision providers are operator-declared config endpoints (a providers: entry named by decisions.models), not peer-published artifacts; there is no upstream-authored schema or card to pin, so the trust lifecycle has nothing of this plane's to govern",
       "root": {
-        "state": "none",
-        "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "state": "not-applicable",
+        "leg": "root-decisions"
       }
     },
     {
@@ -798,12 +795,11 @@
     {
       "capability": "net-guard",
       "plane": "decisions",
-      "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "state": "not-applicable",
+      "reason": "the decisions plane's only outbound destination is its model's operator-configured provider base_url; no request-authored URL reaches its egress (the jev body is relayed, never read for a destination), so there is no SSRF surface the plane derives",
       "root": {
-        "state": "none",
-        "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "state": "not-applicable",
+        "leg": "root-decisions"
       }
     },
     {
@@ -865,11 +861,11 @@
       "capability": "egress-auth",
       "plane": "decisions",
       "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "note": "the plane names its need's style (the dialect's default) and never holds the credential, so its own battery has nothing to inject; the injection is the egress mechanism's, proven on the door path (root)",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_claimed_request_is_served_through_the_door_and_its_money_posted"
       }
     },
     {
@@ -929,12 +925,11 @@
     {
       "capability": "catalogue",
       "plane": "decisions",
-      "state": "missing",
-      "note": "U14 (2026-10-05): the decisions plane's column, owed to the p3-flip-decisions lane, which fills it from the plane served through its door",
+      "state": "not-applicable",
+      "reason": "the decisions plane publishes no listing a caller could SEE: it claims one operation (POST /v1/systemone) and nothing else, and GET /v1/models keeps the bytes the llm plane's catalogue serves, so there is no per-item visibility of its own to answer",
       "root": {
-        "state": "none",
-        "leg": "root-decisions",
-        "reason": "owed: the decisions plane's loop cells are the p3-flip-decisions lane's to prove through the door; nothing over the loop is claimed for this column yet"
+        "state": "not-applicable",
+        "leg": "root-decisions"
       }
     },
     {

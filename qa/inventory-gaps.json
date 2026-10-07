@@ -6,7 +6,7 @@
     "cells, i.e. nothing was executed against it). --check fails if any uncovered id is",
     "missing from this file, and --write refuses to ADD one without --accept-gap ID."
   ],
-  "generated_at": "2026-09-10",
+  "generated_at": "2026-10-05",
   "gaps": [
     {
       "id": "CONF-001",
@@ -1685,7 +1685,7 @@
       "family": "BOOT",
       "status": "partial",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 713,
+      "line": 715,
       "reason": "every citing cell is SKIP on the golden (or needs_fixture): nothing was executed against this row"
     },
     {
@@ -1693,7 +1693,7 @@
       "family": "BOOT",
       "status": "partial",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 714,
+      "line": 716,
       "reason": "every citing cell is SKIP on the golden (or needs_fixture): nothing was executed against this row"
     },
     {
@@ -1701,7 +1701,7 @@
       "family": "BOOT",
       "status": "partial",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 719,
+      "line": 721,
       "reason": "every citing cell is SKIP on the golden (or needs_fixture): nothing was executed against this row"
     },
     {
@@ -1709,7 +1709,7 @@
       "family": "BOOT",
       "status": "partial",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 724,
+      "line": 726,
       "reason": "every citing cell is SKIP on the golden (or needs_fixture): nothing was executed against this row"
     },
     {
@@ -1717,7 +1717,7 @@
       "family": "BOOT",
       "status": "partial",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 725,
+      "line": 727,
       "reason": "every citing cell is SKIP on the golden (or needs_fixture): nothing was executed against this row"
     },
     {
@@ -1725,27 +1725,11 @@
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1131,
-      "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1131)"
-    },
-    {
-      "id": "SEC-002",
-      "family": "SEC",
-      "status": "none",
-      "file": "qa/evidence/inventory/1.5.5-config.md",
-      "line": 1132,
-      "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1132)"
-    },
-    {
-      "id": "SEC-003",
-      "family": "SEC",
-      "status": "none",
-      "file": "qa/evidence/inventory/1.5.5-config.md",
       "line": 1133,
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1133)"
     },
     {
-      "id": "SEC-004",
+      "id": "SEC-002",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1753,7 +1737,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1134)"
     },
     {
-      "id": "SEC-010",
+      "id": "SEC-003",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1761,7 +1745,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1135)"
     },
     {
-      "id": "SEC-011",
+      "id": "SEC-004",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1769,7 +1753,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1136)"
     },
     {
-      "id": "SEC-012",
+      "id": "SEC-010",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1777,7 +1761,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1137)"
     },
     {
-      "id": "SEC-013",
+      "id": "SEC-011",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1785,7 +1769,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1138)"
     },
     {
-      "id": "SEC-014",
+      "id": "SEC-012",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1793,7 +1777,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1139)"
     },
     {
-      "id": "SEC-015",
+      "id": "SEC-013",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1801,7 +1785,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1140)"
     },
     {
-      "id": "SEC-016",
+      "id": "SEC-014",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1809,7 +1793,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1141)"
     },
     {
-      "id": "SEC-017",
+      "id": "SEC-015",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1817,7 +1801,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1142)"
     },
     {
-      "id": "SEC-018",
+      "id": "SEC-016",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1825,7 +1809,7 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1143)"
     },
     {
-      "id": "SEC-019",
+      "id": "SEC-017",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
@@ -1833,12 +1817,28 @@
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1144)"
     },
     {
-      "id": "SEC-020",
+      "id": "SEC-018",
       "family": "SEC",
       "status": "none",
       "file": "qa/evidence/inventory/1.5.5-config.md",
       "line": 1145,
       "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1145)"
+    },
+    {
+      "id": "SEC-019",
+      "family": "SEC",
+      "status": "none",
+      "file": "qa/evidence/inventory/1.5.5-config.md",
+      "line": 1146,
+      "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1146)"
+    },
+    {
+      "id": "SEC-020",
+      "family": "SEC",
+      "status": "none",
+      "file": "qa/evidence/inventory/1.5.5-config.md",
+      "line": 1147,
+      "reason": "no oracle cell in cells.json cites this row (qa/evidence/inventory/1.5.5-config.md:1147)"
     },
     {
       "id": "LST-001",

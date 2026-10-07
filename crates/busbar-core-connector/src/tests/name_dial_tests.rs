@@ -203,8 +203,10 @@ fn a_need_dials_localhost_through_the_system_resolver() {
 }
 
 /// RED: a refusal the name decides answers the open itself, before any resolution; a name whose
-/// answer is a cloud metadata address (a rebinding) or that does not resolve opens with its dial in
-/// flight and is refused on the read that finds the judgement — nothing is ever dialled.
+/// answer is a cloud metadata address (a rebinding) opens with its dial in flight and is refused on
+/// the read that finds the judgement — nothing is ever dialled. (A name that does not resolve is a
+/// failure, not a refusal:
+/// [`a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal`].)
 #[test]
 fn a_name_the_judge_refuses_is_never_dialled() {
     worker().block_on(async {
@@ -228,7 +230,7 @@ fn a_name_the_judge_refuses_is_never_dialled() {
             Err(ConnError::Refused),
             "decided by the name, at once"
         );
-        for target in ["rebind.test:80", "nowhere.test:80"] {
+        for target in ["rebind.test:80"] {
             let id = open(target).expect("a name opens, its judgement pending");
             assert_eq!(read(&t, id).await, Err(ConnError::Refused), "{target}");
             assert_eq!(
@@ -237,6 +239,104 @@ fn a_name_the_judge_refuses_is_never_dialled() {
                 "{target}: the refusal stays"
             );
         }
+    });
+}
+
+/// A resolver that fails every name until `up` is set, then answers [`Table`]'s way: a collector's
+/// DNS briefly down, then back.
+struct Flaky {
+    up: Arc<std::sync::atomic::AtomicBool>,
+    table: Table,
+}
+
+impl Resolve for Flaky {
+    fn resolve(&self, host: &str, done: Resolved) {
+        if self.up.load(Ordering::SeqCst) {
+            self.table.resolve(host, done);
+        } else {
+            std::thread::spawn(move || done(Err("temporary failure in name resolution".into())));
+        }
+    }
+}
+
+/// RED (ARCHITECT parity ruling A1; 1.5.5 `otlp_resolves_to_internal`, v1.5.5
+/// `crates/busbar/src/observability.rs:588-590`, test `:1482-1490`: "A resolution FAILURE is not a
+/// rejection. A collector whose DNS is briefly down is an availability event, not a security one
+/// ... disabling trace export over a transient blip would be the wrong trade"): a loopback-allowed
+/// need (the OTLP collector's class) whose collector name does not resolve opens with its dial in
+/// flight and its read answers a FAILED connection (`Fault`, a FAILED outcome to the plugin, which
+/// the OTLP sink drops as one batch), never `Refused` (a REFUSED outcome, which the sink reads as
+/// the run's answer and disables trace export on): nothing is dialled, and the failure stays that
+/// connection's answer. The next exchange resolves afresh and, the name back, reaches the collector
+/// — 1.5.5's next batch. RED ARM: a name the guard refuses on its answer (a rebinding to cloud
+/// metadata) is still `Refused`. RED on the connector that answered every pended verdict `Refused`.
+#[test]
+fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
+    worker().block_on(async {
+        let port = echo([127, 0, 0, 1].into()).await;
+        let up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .expect("the view");
+        let resolver = Flaky {
+            up: Arc::clone(&up),
+            table: Table(vec![
+                ("collector.test", [127, 0, 0, 1].into()),
+                ("rebind.test", [169, 254, 169, 254].into()),
+            ]),
+        };
+        let c = Arc::new(Connector::serving(
+            view,
+            judge(
+                Arc::new(GuardJudge::new(Guard::default(), Arc::new(resolver))),
+                &[],
+            ),
+            None,
+            Arc::new(|_| {}),
+        ));
+        c.declare_need(
+            OWNER,
+            NEED,
+            "bytes",
+            busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
+        )
+        .expect("a served scheme declares");
+        let host = host(&c);
+        let t = table(&host);
+        let target = format!("collector.test:{port}");
+        let open = |target: &str| {
+            t.open(
+                NEED,
+                &OpenDesc {
+                    target,
+                    ..OpenDesc::default()
+                },
+            )
+        };
+        let id = open(&target).expect("a name opens, its judgement pending");
+        assert_eq!(
+            read(&t, id).await,
+            Err(ConnError::Fault),
+            "a lookup failure fails the exchange"
+        );
+        assert_eq!(
+            read(&t, id).await,
+            Err(ConnError::Fault),
+            "and stays its answer"
+        );
+        t.close(id).unwrap();
+        // RED ARM: the guard's own refusal of an answer is a refusal still.
+        up.store(true, Ordering::SeqCst);
+        let id = open("rebind.test:80").expect("opens, its judgement pending");
+        assert_eq!(read(&t, id).await, Err(ConnError::Refused));
+        t.close(id).unwrap();
+        // The name back, the next exchange reaches the collector.
+        let id = open(&target).expect("opens");
+        assert_eq!(t.write(id, b"span", false, false), Ok(4));
+        assert_eq!(read(&t, id).await.expect("the echo"), b"span");
+        t.close(id).unwrap();
     });
 }
 

@@ -378,6 +378,10 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "the member's credential, presented by the auth plugin serving its style: {head}"
     );
     assert!(
+        !head.contains(token.expose_secret()),
+        "the caller's own credential never reaches the far end: {head}"
+    );
+    assert!(
         head.ends_with(r#"{"state":{"amount":7}}"#),
         "the caller's body: {head}"
     );

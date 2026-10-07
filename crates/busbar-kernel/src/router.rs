@@ -10,8 +10,8 @@ use axum::Router;
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, state, store, telemetry, tls, transport, trust,
+    hooks, ingress, ir, json, limits, net_guard, oauth_as, observability, operation, plane,
+    plugin_routes, profile, proto, proxy, state, store, telemetry, tls, transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -45,18 +45,18 @@ pub fn fallback_error_response(
     // leaked `{error:{type}}` bodies onto a surface that promises `{error:{code}}`.
     // Boundary-safe: exact root or root + '/'.
     {
-        use crate::admin::v1::contract::{AdminError, API_ROOT};
+        use crate::admin::gate::{ApiError, API_ROOT};
         if path == API_ROOT || path.starts_with(&format!("{API_ROOT}/")) {
             let e = if status == axum::http::StatusCode::METHOD_NOT_ALLOWED {
-                AdminError::MethodNotAllowed
+                ApiError::MethodNotAllowed
             } else if status == axum::http::StatusCode::INTERNAL_SERVER_ERROR {
                 // The request-panic boundary ([`CatchPanicLayer`]) is the one caller that asks for
                 // a 500 here; on the native-API root that is the frozen envelope's own `internal`.
-                AdminError::Internal
+                ApiError::Internal
             } else {
-                AdminError::not_found("resource")
+                ApiError::NotFound
             };
-            return crate::admin::v1::json::err_json(&e);
+            return crate::admin::gate::err_json(&e);
         }
     }
     // ONE resolver, ONE shaping seam. Each dialect's own vendor-pinned response headers (Bedrock
@@ -367,26 +367,10 @@ pub(crate) fn base_data_router(
             RouteAuth::None,
             endpoints::healthz,
         );
-    // METRICS ARE OPT-IN (the built-in `prometheus` EXPORTER, `export.prometheus`). 1.5.3: busbar's
-    // OWN `/metrics` exposition is no longer a core route here — it is served by the built-in
-    // prometheus exporter through the plugin HTTP endpoint registration (`mount_plugin_routes` below,
-    // the well-known `/metrics` exception), resolved at scrape time so a hot-swap never leaves it
-    // stale. The HOOK-metrics scrape (`/metrics/hooks`) stays a core route, mounted only
-    // when the recorder is installed (`metrics::enabled()`), reserved against plugin claims.
-    let router = if metrics::enabled() {
-        // A SEPARATE exposition from busbar's own `/metrics` so a hook can never type-conflict or
-        // shadow a first-party series. Verbatim hook metric names + an auto `hook="<name>"` label, so
-        // an external dashboard built against a hook repoints here and just works.
-        // Stale-while-revalidate; never blocks on a hook socket.
-        router.route(
-            "/metrics/hooks",
-            RouteMethod::Get,
-            RouteAuth::Key,
-            crate::hooks::scrape::handler,
-        )
-    } else {
-        router
-    };
+    // `/metrics` and `/metrics/hooks` are not core routes (owner law 2026-09-27: "the kernel owns
+    // no route that exists for one plugin"): they are the scrape sink's own listener needs, mounted
+    // through the plugin route registration (`mount_plugin_routes` below) and answered by its
+    // `serve` over the host snapshot service (`crate::export::scrape`).
     let router = router
         // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
         // health/metrics/stats above, and the named/adhoc conveniences below.
@@ -1095,6 +1079,30 @@ pub fn build_split_routers_serving_sessions(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+    build_split_routers_serving_doors(
+        app,
+        doors,
+        sessions,
+        Vec::new(),
+        request_body_max_bytes,
+        max_inbound_concurrent,
+        server_timing_enabled,
+    )
+}
+
+/// [`build_split_routers_serving_sessions`], with each door route's unit-less refusal (`refusals`,
+/// spec Part 3 section 12, "Refusals") recorded beside its admission bar: a `401` the auth
+/// middleware decides on a door route is rendered by that route's plane, in the route's refusal
+/// dialect, and every other route keeps the residual data plane's envelope.
+pub fn build_split_routers_serving_doors(
+    app: std::sync::Arc<state::App>,
+    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
@@ -1111,7 +1119,7 @@ pub fn build_split_routers_serving_sessions(
     );
     let data = apply_common_layers(
         data,
-        data_core_routes,
+        data_core_routes.with_door_refusals(refusals),
         &handle,
         request_body_max_bytes,
         server_timing_enabled,

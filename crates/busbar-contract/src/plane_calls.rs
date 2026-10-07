@@ -180,6 +180,11 @@ pub struct PlaneRegistration {
     /// The other sections the Statement owns (neither declaring nor consumed): the plane's
     /// endpoint block beside its verb, handed to its `open` as `PlaneOpenIn::owned`.
     pub owns: Vec<&'static str>,
+    /// The sections the Statement CONSUMES (`SECTION_CONSUMED`): sections another owner declares
+    /// that the plane reads (a kind's root, such as the connections its members are reached over).
+    /// A plane that consumes the transport kind's root restricts the members its section names
+    /// there to the dialects it states.
+    pub consumes: Vec<&'static str>,
     /// The Statement's secret-reference paths (`Statement::secret_refs`): the settings paths whose
     /// values are secret references, each `settings.<key>...`, where `*` stands for every key of
     /// the map at that point (each registration, each entry). The kernel enumerates the references

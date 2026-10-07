@@ -1349,8 +1349,8 @@ sys.exit(1 if m else 0)
 # actually RUNS and passes (the summary's own runner, which refuses a run that executed a different
 # set). The remaining "none" cells are the switch-over queue and are PRINTED, not fatal — the same
 # honest-ledger posture the missing set has.
-step "capability_equality gate, five legs on" \
-  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm --quiet --test capability_equality
+step "capability_equality gate, six legs on" \
+  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,proto-llm --quiet --test capability_equality
 step "every root-leg proof cell RUNS and passes" python3 scripts/capability-equality-summary.py --root-legs
 printf '  \033[36m[info]\033[0m '
 python3 scripts/capability-equality-summary.py 2>/dev/null | grep -E "^ROOT-EQUALITY:" || echo "root-equality count unavailable"
