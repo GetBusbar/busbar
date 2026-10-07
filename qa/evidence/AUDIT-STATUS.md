@@ -17,16 +17,20 @@ HEAD at generation: `1786b1c34f3a1448edb91b6968b3a47985d9328e`
 | fixed | 0 | 0.0% |
 | in_progress | 0 | 0.0% |
 | stale | 0 | 0.0% |
-| open | 24744 | 2.6% |
-| unaudited | 938820 | 97.4% |
+| open | 25538 | 2.6% |
+| unaudited | 944533 | 97.4% |
 | invalid | 0 | 0.0% |
 
-## production scopes (35)
+## production scopes (41)
 
 | scope | status | round | age (commits) | LOC | result | auditor | report |
 | --- | --- | ---: | ---: | ---: | --- | --- | --- |
 | `crates/busbar-a2a/build.rs` | open | 1 | 59 | 88 | findings (LOW=1) | opus-q128-architecture | `Generates an extern-crate import of an auth plugin for the plane's admin tests: a test-only lateral plugin edge kept out of source scans by moving the name into manifest metadata. The generator is correct and emits nothing into the production library. Read fully.` |
 | `crates/busbar-a2a/src` | unaudited | - | - | 50554 | unaudited | - | - |
+| `crates/busbar-auth-header/src` | unaudited | - | - | 1108 | unaudited | - | - |
+| `crates/busbar-auth-oauth/src` | unaudited | - | - | 2319 | unaudited | - | - |
+| `crates/busbar-auth-sigv4/src` | unaudited | - | - | 1389 | unaudited | - | - |
+| `crates/busbar-auth-webhook-signature/src` | unaudited | - | - | 641 | unaudited | - | - |
 | `crates/busbar-contract/include` | unaudited | - | - | 5515 | unaudited | - | - |
 | `crates/busbar-contract/src` | unaudited | - | - | 84472 | unaudited | - | - |
 | `crates/busbar-core-admin/build.rs` | open | 1 | 59 | 115 | findings (HIGH=1) | opus-q128-architecture | `Generates a table that installs three plane crates and an auth plugin into a neutral cleanliness crate's unit tests, with the names held in manifest metadata so no source names them; neutral-crate tests are to use kind-neutral doubles. Read fully.` |
@@ -56,16 +60,27 @@ HEAD at generation: `1786b1c34f3a1448edb91b6968b3a47985d9328e`
 | `crates/busbar/build.rs` | unaudited | - | - | 420 | unaudited | - | - |
 | `crates/busbar/src` | unaudited | - | - | 2249 | unaudited | - | - |
 | `crates/busbar/src/root` | unaudited | - | - | 54525 | unaudited | - | - |
+| `crates/hooks-ranking/src` | unaudited | - | - | 256 | unaudited | - | - |
+| `crates/plane-example/src` | open | 1 | 59 | 794 | findings (HIGH=2, LOW=2) | opus-q128-architecture | `An in-repo fixture plane plugin linked only by tests, exercising the retiring HOT plane lane with C-unwind doors, where the repo is to hold no plugin source or fixture plugin and one memory ABI. It blocks the request worker with a caller-chosen sleep while declaring inline-safe dispatch, and as a copy-me template it branches on request headers. Read fully.` |
 | `crates/plugin-loader/build.rs` | open | 1 | 59 | 155 | findings (HIGH=1, LOW=1) | opus-q128-architecture | `Generates the loader's both-ways fixture tables on three ABI lanes (cold entry, HOT declaration, memory door), so the loader's conformance proofs still exercise lanes retired in favour of one memory ABI; it also exports fixture crate names into every compile for a test-support harness. Read fully.` |
 | `crates/plugin-loader/src` | unaudited | - | - | 37018 | unaudited | - | - |
 | `crates/store-memory/src` | unaudited | - | - | 1927 | unaudited | - | - |
 | `xtask/src` | unaudited | - | - | 145946 | unaudited | - | - |
 
-## test scopes (47)
+## test scopes (59)
 
 | scope | status | round | age (commits) | LOC | result | auditor | report |
 | --- | --- | ---: | ---: | ---: | --- | --- | --- |
 | `crates/busbar-a2a/src/tests` | open | 1 | 59 | 305 | findings (LOW=2) | opus-q128-architecture | `The SSE reader tests are sound, but exist because the legacy plane carries its own SSE framer duplicating the transport's; the diagnostics-page gate imports the plane plugin sideways and vanishes with the legacy crate. Read fully.` |
+| `crates/busbar-auth-header/src/tests` | unaudited | - | - | 461 | unaudited | - | - |
+| `crates/busbar-auth-header/tests` | unaudited | - | - | 590 | unaudited | - | - |
+| `crates/busbar-auth-oauth/src/tests` | unaudited | - | - | 1178 | unaudited | - | - |
+| `crates/busbar-auth-oauth/tests` | unaudited | - | - | 805 | unaudited | - | - |
+| `crates/busbar-auth-sigv4/src/tests` | unaudited | - | - | 607 | unaudited | - | - |
+| `crates/busbar-auth-sigv4/tests` | unaudited | - | - | 556 | unaudited | - | - |
+| `crates/busbar-auth-webhook-signature/examples` | unaudited | - | - | 8 | unaudited | - | - |
+| `crates/busbar-auth-webhook-signature/src/tests` | unaudited | - | - | 635 | unaudited | - | - |
+| `crates/busbar-auth-webhook-signature/tests` | unaudited | - | - | 465 | unaudited | - | - |
 | `crates/busbar-contract/src/tests` | unaudited | - | - | 4398 | unaudited | - | - |
 | `crates/busbar-contract/tests` | unaudited | - | - | 16765 | unaudited | - | - |
 | `crates/busbar-core-admin/src/tests` | unaudited | - | - | 22274 | unaudited | - | - |
@@ -107,6 +122,9 @@ HEAD at generation: `1786b1c34f3a1448edb91b6968b3a47985d9328e`
 | `crates/busbar/benches` | open | 1 | 59 | 406 | findings (LOW=2) | opus-q128-architecture | `Boots the real shipped binary and times a no-hook request against a loopback stub, so it measures the shipped path; but it names a dialect in composition-root source, no longer measures any hook despite its name, and its header quotes readings for removed cells. Read fully.` |
 | `crates/busbar/src/tests` | unaudited | - | - | 1594 | unaudited | - | - |
 | `crates/busbar/tests` | unaudited | - | - | 25736 | unaudited | - | - |
+| `crates/hooks-ranking/examples` | unaudited | - | - | 8 | unaudited | - | - |
+| `crates/hooks-ranking/src/tests` | unaudited | - | - | 271 | unaudited | - | - |
+| `crates/hooks-ranking/tests` | unaudited | - | - | 399 | unaudited | - | - |
 | `crates/plugin-loader/src/tests` | unaudited | - | - | 36650 | unaudited | - | - |
 | `crates/plugin-loader/tests` | unaudited | - | - | 5121 | unaudited | - | - |
 | `crates/store-memory/src/tests` | open | 1 | 59 | 1519 | findings (HIGH=1, LOW=2) | opus-q128-architecture | `Breaks the rule that an active work handle is never evicted: the memory store's tests assert that a task record written through the record leg is deleted after 31 days on write age alone with no settled check, contradicting the crate's own conformance suite. The tests also use a contract test kit, and their prose names sibling stores and a plane. Read fully.` |

@@ -224,6 +224,78 @@
    ]
   },
   {
+   "id": "crates/busbar-auth-header/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-header/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-header/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-oauth/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-oauth/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-oauth/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-sigv4/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-sigv4/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-webhook-signature/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-contract/src",
    "kind": "production",
    "paths": [
@@ -792,6 +864,59 @@
    ]
   },
   {
+   "id": "crates/hooks-ranking/src",
+   "kind": "production",
+   "paths": [
+    "crates/hooks-ranking/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/hooks-ranking/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plane-example/src",
+   "kind": "production",
+   "paths": [
+    "crates/plane-example/src"
+   ],
+   "tree_hash": "4c07ebc296f8347e2be5318db93c596af1b1f8c55d0718333195db290afbadc2",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "LOW": 2
+   },
+   "report": "An in-repo fixture plane plugin linked only by tests, exercising the retiring HOT plane lane with C-unwind doors, where the repo is to hold no plugin source or fixture plugin and one memory ABI. It blocks the request worker with a caller-chosen sleep while declaring inline-safe dispatch, and as a copy-me template it branches on request headers. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "exclude": [
+    "crates/plane-example/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "4c07ebc296f8347e2be5318db93c596af1b1f8c55d0718333195db290afbadc2",
+     "counts": {
+      "HIGH": 2,
+      "LOW": 2
+     },
+     "report": "An in-repo fixture plane plugin linked only by tests, exercising the retiring HOT plane lane with C-unwind doors, where the repo is to hold no plugin source or fixture plugin and one memory ABI. It blocks the request worker with a caller-chosen sleep while declaring inline-safe dispatch, and as a copy-me template it branches on request headers. Read fully."
+    }
+   ]
+  },
+  {
    "id": "crates/plugin-loader/src",
    "kind": "production",
    "paths": [
@@ -1011,6 +1136,141 @@
      "report": "The SSE reader tests are sound, but exist because the legacy plane carries its own SSE framer duplicating the transport's; the diagnostics-page gate imports the plane plugin sideways and vanishes with the legacy crate. Read fully."
     }
    ]
+  },
+  {
+   "id": "crates/busbar-auth-header/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-header/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-header/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-header/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-oauth/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-oauth/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-oauth/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-oauth/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-sigv4/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-sigv4/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/examples",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-contract/src/tests",
@@ -1811,6 +2071,51 @@
      "report": "Proves the plane composes a process-global open-call table onto the served door; the table waits on model tool-call ids and refuses client replies by id, branching on carried content that needs a ruling under Law 11, while the runtime on the same door still answers tool calls with an echo executor. Read fully."
     }
    ]
+  },
+  {
+   "id": "crates/hooks-ranking/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/hooks-ranking/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/hooks-ranking/tests",
+   "kind": "test",
+   "paths": [
+    "crates/hooks-ranking/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/hooks-ranking/examples",
+   "kind": "test",
+   "paths": [
+    "crates/hooks-ranking/examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/plugin-loader/src/tests",
