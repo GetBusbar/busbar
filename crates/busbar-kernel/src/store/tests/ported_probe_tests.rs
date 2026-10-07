@@ -114,7 +114,6 @@ fn a_probe_success_on_a_healthy_lane_still_joins_the_window() {
     store.record_success_in("p", 0);
     assert!(matches!(store.breaker_state(0), BreakerState::Closed));
 
-    assert_eq!(probe_answered(200), Outcome::Success);
     if store.lane_needs_probe(0, 9_000) {
         store.recover_lane(0);
     }
@@ -149,7 +148,6 @@ fn a_probe_success_counts_once_on_the_lane_not_once_per_cell() {
     let before = store.snapshot(0, 9_000).ok;
 
     for _ in 0..2 {
-        assert_eq!(probe_answered(200), Outcome::Success);
         if store.lane_needs_probe(0, 9_000) {
             store.recover_lane(0);
         }

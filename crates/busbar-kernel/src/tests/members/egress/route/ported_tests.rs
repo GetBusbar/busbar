@@ -306,8 +306,12 @@ fn a_session_pinned_to_a_member_at_capacity_falls_through_recording_why() {
 /// A primary pool of `busy` members every one at capacity, spilling into `overflow`'s free member.
 /// Lanes: the busy members first, then the overflow member.
 fn busy_primary(busy: usize) -> (Node, Vec<Permit>) {
-    let lanes = ["slowA", "slowB", "fast"];
-    let mut node = Node::with_lanes(&lanes[..=busy]);
+    // The busy members' lanes, then the fast overflow member's.
+    let lanes: &[&'static str] = match busy {
+        1 => &["slow", "fast"],
+        _ => &["slowA", "slowB", "fast"],
+    };
+    let mut node = Node::with_lanes(lanes);
     node.timeout_secs = 300;
     node.pool(
         "primary",
