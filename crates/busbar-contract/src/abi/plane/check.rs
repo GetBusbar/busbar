@@ -409,6 +409,14 @@ pub fn check_on_piece(
         out.arena_written,
         "on_piece.metric_lane",
     )?;
+    // The member whose wait a refusal answers, where the answer states one: inside the arena
+    // written (the kernel judges that it names a member of the unit's pool).
+    span(
+        out.wait_member.offset,
+        out.wait_member.len,
+        out.arena_written,
+        "on_piece.wait_member",
+    )?;
     units(bufs.0, u64::from(out.units_written), b)?;
     records(bufs.1, u64::from(out.records_written), out.arena_written, b)?;
     fields(bufs.2, u64::from(out.fields_written), out.arena_written)

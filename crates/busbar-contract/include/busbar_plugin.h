@@ -2735,6 +2735,7 @@ struct bb_plane_OnPieceOut {
     bb_mech_Span final_details;
     bb_mech_Span metric_pool;
     bb_mech_Span metric_lane;
+    bb_mech_Span wait_member;
 };
 
 /* `refusal`'s `in`. */
@@ -5036,7 +5037,7 @@ BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields) == 288, "bb_plane_OnPieceIn.
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields_len) == 296, "bb_plane_OnPieceIn.head_fields_len: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, passthrough) == 304, "bb_plane_OnPieceIn.passthrough: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, reason) == 308, "bb_plane_OnPieceIn.reason: offset");
-BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 232, "bb_plane_OnPieceOut: size");
+BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 240, "bb_plane_OnPieceOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceOut) == 8, "bb_plane_OnPieceOut: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, head) == 0, "bb_plane_OnPieceOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, emitted) == 96, "bb_plane_OnPieceOut.emitted: offset");
@@ -5064,6 +5065,7 @@ BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_message) == 200, "bb_plane_OnPiece
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_details) == 208, "bb_plane_OnPieceOut.final_details: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, metric_pool) == 216, "bb_plane_OnPieceOut.metric_pool: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, metric_lane) == 224, "bb_plane_OnPieceOut.metric_lane: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, wait_member) == 232, "bb_plane_OnPieceOut.wait_member: offset");
 BB_ASSERT(sizeof(bb_plane_RefusalIn) == 240, "bb_plane_RefusalIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RefusalIn) == 8, "bb_plane_RefusalIn: alignment");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, head) == 0, "bb_plane_RefusalIn.head: offset");

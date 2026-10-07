@@ -1220,11 +1220,11 @@ fn open_task(
     reach: &Reach<'_>,
     hop: &mut Hop,
     pass: &mut crate::task_door::Pass,
-    request: (&str, &str),
+    request: (&str, &str, Option<&str>),
     skill: Option<String>,
     writes: &mut Vec<Write>,
 ) -> Result<Option<relay::Reply>, Outcome> {
-    let (caller, member) = request;
+    let (caller, member, addressed) = request;
     let Some(envelope) = hop.opening.as_ref() else {
         return Ok(None);
     };
@@ -1286,6 +1286,7 @@ fn open_task(
         relayed: hop.rewritten.as_ref(),
         caller,
         member,
+        addressed,
         now,
     };
     let opened = match task_hop::open(&mut via, &req, hop.relay.id(), &backends, writes) {
@@ -1672,7 +1673,9 @@ fn pool_gate(
         Poll::Pending => return Gate::Pending,
         Poll::Ready(holder) => holder,
     };
-    let elsewhere = gate.addressed.is_some_and(|a| a != gate.member);
+    // A member other than the one addressed; for an unaddressed unit, every member: each is judged
+    // on the caller's own grant, as predev's walk judged every candidate's eligibility.
+    let elsewhere = gate.addressed != Some(gate.member);
     match holder {
         Some(holder) if holder != gate.member => Gate::Decline,
         Some(_) if elsewhere => match entitled(reach, pass, &door::agent_resource(gate.member)) {
@@ -1869,6 +1872,19 @@ fn piece(
         .as_ref()
         .and_then(|s| s.agents.get(member))
         .cloned();
+    // AN UNADDRESSED UNIT THE KERNEL ROUTED OVER A POOL (the one agent its caller's grant reaches is
+    // a pool member, predev `receive.rs:1262-1268` converging with the addressed path at `:1839`):
+    // its attempt names the pool, and it is the pool's from then on.
+    if unit.agent.is_none() && unit.pool.is_none() {
+        let given_pool = input.field(|i| &i.pool).as_str().unwrap_or_default();
+        if unit
+            .section
+            .as_ref()
+            .is_some_and(|s| s.pools.contains_key(given_pool))
+        {
+            unit.pool = Some(given_pool.to_string());
+        }
+    }
     let addressed = unit.agent.clone();
     let generation = unit.generation;
     let framed = unit.framed;
@@ -1900,13 +1916,20 @@ fn piece(
     // the walk's refusal): the member holding its task is read, so the open breaker's refusal
     // names the member it is pinned to (predev's pinned refusal), never the pool.
     if let (false, Some((_, members))) = (continues, pooled.as_ref()) {
-        if given.from == FROM_CALLER
-            && given_member.is_empty()
+        let memberless = given.from == FROM_CALLER && given_member.is_empty();
+        if (memberless || (refused && breaker_refused))
             && read_holder(reach, hop, pass, caller, members).is_pending()
         {
             return (Outcome::Pending, false);
         }
     }
+    // THE PINNED MEMBER'S OWN WAIT (predev `relay.rs:1659`: a pinned hop's breaker refusal reads the
+    // pinned member's cell, never the pool's soonest): on the walk's exhausted refused piece, a
+    // unit pinned to a member of its pool names it, and the refusal answers that member's cooldown.
+    let wait_member = (refused && breaker_refused)
+        .then(|| hop.holder.clone().flatten())
+        .flatten()
+        .filter(|h| pooled.as_ref().is_some_and(|(_, m)| m.contains(h)));
     if !continues {
         // THE POOL'S MEMBER, judged before anything else this ATTEMPT does: declined (the walk
         // moves on, nothing sent), refused, or let go ([`pool_gate`]).
@@ -1974,7 +1997,8 @@ fn piece(
         } else if attempt {
             // The skill the agent's held card matched at admission (ARCHITECT ruling B2).
             let skill = hop.skill.clone();
-            match open_task(reach, hop, pass, (caller, member), skill, &mut writes) {
+            let request = (caller, member, addressed.as_deref());
+            match open_task(reach, hop, pass, request, skill, &mut writes) {
                 Err(outcome) => return (outcome, false),
                 Ok(refused) => refused,
             }
@@ -1990,7 +2014,8 @@ fn piece(
                     .unwrap_or_default(),
                 member => member.to_string(),
             };
-            match open_task(reach, hop, pass, (caller, &agent), None, &mut writes) {
+            let request = (caller, agent.as_str(), addressed.as_deref());
+            match open_task(reach, hop, pass, request, None, &mut writes) {
                 Err(outcome) => return (outcome, false),
                 Ok(_) => None,
             }
@@ -2245,6 +2270,7 @@ fn piece(
     // THE UNIT'S LEDGER LANE (SEAM-L(j)): the agent it reached, as the engine's meter named it
     // (`agent:<id>`), so the agent's rate card prices it and the metering rows read as 1.5.5's.
     let lane = (!member.is_empty()).then(|| arena.span(door::agent_resource(member).as_bytes()));
+    let wait_member = wait_member.map(|h| arena.span(h.as_bytes()));
     // THE ATTEMPT'S COUNTER LABELS, as the served engine counted each hop it sent (predev
     // relay.rs:1705 `upstream_attempt_on(call.agent_id, framed_leg(call.framing))`, and its
     // failures at :1737-1741): the agent the attempt went to as its `pool`, the binding the hop goes
@@ -2326,6 +2352,9 @@ fn piece(
     }
     if let Some(lane) = lane {
         out.set(|o| &o.lane, lane);
+    }
+    if let Some(wait) = wait_member {
+        out.set(|o| &o.wait_member, wait);
     }
     if let Some((pool, lane)) = metric {
         out.set(|o| &o.metric_pool, pool);
@@ -2530,7 +2559,16 @@ slot!(
                     })?;
                     // An unaddressed unit names the agent the engine would have selected for it:
                     // the one serving agent of its catalogue (1.5.5's `select`, before the breaker).
-                    let agent = agent.or_else(|| sole_serving(plane, given.unit))?;
+                    // An unaddressed unit whose one agent is a pool member was walked over the pool
+                    // (the kernel routes it as an addressed one): the walk's refusal names the pool.
+                    let agent = agent.or_else(|| {
+                        let one = sole_serving(plane, given.unit)?;
+                        let pool = plane
+                            .generations
+                            .current()
+                            .and_then(|s| s.pool_of(&one).map(|(name, _)| name.to_string()));
+                        Some(pool.unwrap_or(one))
+                    })?;
                     Some(arrival::breaker_refusal(&agent, id, retry_after))
                 })
             })

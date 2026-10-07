@@ -5010,6 +5010,21 @@ Other rulings:
   (Part 3 l.2639-2641, outranking predev's bytes; l.423, l.4848). Every other byte of those
   refusals is predev's.
 
+### 2026-10-07 — COORDINATOR ruling (A2A-FLIP pools round 2, item 5): a pinned refusal answers the pinned member's own wait
+- 2026-10-07 COORDINATOR (A2A-FLIP, pools round 2): `OnPieceOut` gains `wait_member: Span`, a tail
+  addition under the SIZES rule (`abi::mechanism::call`: the host reads an absent tail field as zero,
+  so a plane whose answer stops short of it states none and the layout before it is unchanged). It
+  is stated only on the answer to the walk's exhausted refused piece (`TAIL_REFUSED_PIECE`, reason
+  `BreakerOpen`): the ONE member of the unit's pool the plane may send the unit to, and the refusal's
+  `Retry-After` is then that member's own cooldown in the pool. Stated anywhere else, not UTF-8, or
+  naming no member of the unit's pool, it is refused (the unit ends as the plane's fault), never
+  ignored. A zero length keeps the walk's figure, the soonest admissible cooldown across the pool,
+  which is 1.5.5's for an exhausted model pool (v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:49-63`)
+  and stays the figure for every plane that states none (llm states none). The a2a door states the
+  member a pinned task-scoped verb is pinned to (predev `crates/busbar-a2a/src/a2a/relay.rs:1659`:
+  the pinned hop's refusal read the pinned member's cell). The narrowing is plane-stated, not
+  kernel-wide.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 

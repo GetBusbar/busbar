@@ -3137,3 +3137,19 @@ fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
     t.metric_lanes_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.metric_lanes"));
 }
+
+/// THE MEMBER WHOSE WAIT A REFUSAL ANSWERS (`OnPieceOut::wait_member`, a tail addition) lies inside
+/// the arena written, as every span an answer states does; whether it names a member of the unit's
+/// pool is the kernel's to judge. RED with the field unchecked: a span past the arena passed.
+#[test]
+fn a_stated_wait_member_lies_inside_the_arena() {
+    let mut o: OnPieceOut = z();
+    o.arena_written = 9;
+    o.wait_member = sp(0, 9);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.wait_member = sp(4, 9);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.wait_member")
+    );
+}

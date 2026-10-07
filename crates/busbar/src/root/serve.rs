@@ -653,8 +653,12 @@ pub fn applied_section(
         return now.section.clone();
     };
     let mut section = slot.section.value.clone();
-    let pools = busbar_kernel::plane::registry::plane_decl_for_config_section(section_key)
-        .and_then(|decl| app.plane_pools(decl.key));
+    // The generic per-plane pool map is keyed by the plane's key, the key its slot is under: read
+    // there, never through the registry, so an apply carries the pools whatever the registry holds.
+    let pools = app.plane_pools(plane).or_else(|| {
+        busbar_kernel::plane::registry::plane_decl_for_config_section(section_key)
+            .and_then(|decl| app.plane_pools(decl.key))
+    });
     if let Some(pools) = pools {
         pools_into(&mut section, pools);
     }
@@ -2673,6 +2677,11 @@ impl FarEnd for DoorFar<'_, '_> {
         if let Some(far) = self.far() {
             far.stated(token, labels);
         }
+    }
+
+    /// The wait of the member the plane stated its exhausted refusal answers, read off the walk.
+    fn member_wait(&self, token: &Pass<Route>, member: &str) -> Option<u32> {
+        self.far().and_then(|far| far.member_wait(token, member))
     }
 }
 
