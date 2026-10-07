@@ -73,9 +73,12 @@ pub const ROW_UNWAIVED: &str = "no-deferral:unwaived";
 pub const ROW_STALE_WAIVER: &str = "no-deferral:stale-waiver";
 pub const ROW_STRICT_DONE: &str = "no-deferral:strict-done";
 
-/// The denominator floor, a `const` in the gate's own module with no environment override. The
-/// only way to lower one is a reviewable source edit.
-pub const DISCOVERY_FLOOR: usize = 50;
+/// The denominator floor, a `const` in the gate's own module with no environment override. It is
+/// pinned AT the measured count: discovery found 943 shipped source files on predev 5e672d125d (it
+/// was 50, about 5% of the tree), and a drop below 943 is refused as UNPROVEN until a reviewed diff
+/// re-measures. The selftest plant removes one file and fails if the floor sits under the count.
+/// The only way to lower one is a reviewable source edit.
+pub const DISCOVERY_FLOOR: usize = 943;
 
 const WAIVERS: &str = "scripts/no-deferral.waivers";
 /// The plan every waiver's expiry is looked up in. It was `docs/design/1.6.0-TRACKER.md` until
