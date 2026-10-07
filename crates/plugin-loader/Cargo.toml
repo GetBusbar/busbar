@@ -189,11 +189,6 @@ base64 = { workspace = true }
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
 # runtime + the `#[tokio::test]` macro (the crate's own dep is `rt`/`time` only — no macros).
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
-# The `kind: plane` drop-in conformance fixture. UNLIKE the cdylib-only cold fixtures, this one is a
-# `["cdylib", "rlib"]` crate, so the conformance test LINKS its `rlib` to get the COMPILED-IN
-# `PLANE_DECL` reference and separately `dlopen`s its `cdylib` (located on disk) — the two decls the
-# both-ways test compares. `cargo test -p busbar-plugin-loader` builds the member cdylib.
-busbar-plugin-example-plane = { path = "../plane-example" }
 # The `kind: export` BOTH-WAYS proofs are the REAL sinks (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real
 # plugins are the proofs"), each from its own repo at the SAME pinned rev the composition root
 # links. On the export kind's MEMORY ABI (`export_axis_tests`): the prometheus sink (the recorder
