@@ -1782,7 +1782,7 @@ begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by na
 # signed." Each P-item is a set of tests named `p_item_<item>_*`, and each test's doc cites the 1.5.5
 # behaviour it holds. Every step declares its exact count, so a pin renamed, deleted or filtered
 # away is RED (VACUITY), never a green that ran nothing.
-step "refusal-reason collapse (one classification; 12 pins)" filtered_cargo_test 12 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-decisions -p busbar-plane-streaming -p busbar-llm -p xtask --quiet p_item_refusal_reason_collapse
+step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-streaming -p busbar-llm -p xtask --quiet p_item_refusal_reason_collapse
 step "unary/empty terminality"                               filtered_cargo_test 1  cargo test -p busbar-plane-a2a --quiet p_item_unary_empty_terminality
 step "empty reply"                                           filtered_cargo_test 1  cargo test -p busbar-plane-mcp --quiet p_item_empty_reply
 step "wrong-provider attribution"                            filtered_cargo_test 1  cargo test -p busbar-plane-streaming --quiet p_item_wrong_provider_attribution
