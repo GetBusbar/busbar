@@ -96,7 +96,7 @@ pub use hooks::{
     UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
-pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, SessionCaller};

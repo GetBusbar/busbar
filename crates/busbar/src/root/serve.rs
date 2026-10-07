@@ -693,6 +693,9 @@ pub struct Served {
     /// another framer than the data listener's own answers (ARCHITECT 4l). `None` = the process's
     /// one connector's.
     pub framers: Option<StreamFramers>,
+    /// THE FLUSH EPOCH every served plane's money steps pace their checkpoints by: bumped once per
+    /// checkpoint flush tick ([`Served::spawn_ticks`]).
+    pub epoch: busbar_kernel::plane_driver::FlushEpoch,
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -728,6 +731,51 @@ impl Served {
             tokio::spawn(async move { driver.ticks().await });
             let driver = Arc::clone(&p.driver);
             tokio::spawn(async move { driver.drives().await });
+        }
+        // THE CHECKPOINT FLUSH TICK (THE DESIGN §7: "a checkpoint is a durability `unit.accrued`
+        // record"), on the kernel's flush interval: the piece path only marks a running unit, and
+        // this tick journals each marked unit's counts, once per epoch, off the runtime's workers.
+        if let Some(post) = &self.post {
+            let checkpoints = Checkpoints {
+                epoch: self.epoch.clone(),
+                money: self.planes.iter().map(|p| Arc::clone(&p.money)).collect(),
+                post: Arc::clone(post),
+            };
+            tokio::spawn(checkpoints.ticks());
+        }
+    }
+}
+
+/// What the checkpoint flush tick runs over: the flush epoch, every served plane's money steps,
+/// and the node's posting site their checkpoints are journaled through.
+struct Checkpoints {
+    epoch: busbar_kernel::plane_driver::FlushEpoch,
+    money: Vec<Arc<PlaneMoney>>,
+    post: Arc<crate::root::plane_node::NodeEndPost>,
+}
+
+impl Checkpoints {
+    /// One tick: bump the epoch, then hand each running unit's checkpoint to the node's book
+    /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
+    fn tick(&self) -> usize {
+        self.epoch.bump();
+        self.money
+            .iter()
+            .map(|m| m.flush_checkpoints(&*self.post))
+            .sum()
+    }
+
+    /// Every [`busbar_kernel::host_records::FLUSH_INTERVAL`], for the process's life; each tick's
+    /// journal writes run on the blocking pool, never on a runtime worker.
+    async fn ticks(self) {
+        let every = busbar_kernel::host_records::FLUSH_INTERVAL;
+        let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let this = Arc::new(self);
+        loop {
+            at.tick().await;
+            let tick = Arc::clone(&this);
+            let _journaled = tokio::task::spawn_blocking(move || tick.tick()).await;
         }
     }
 }
@@ -766,11 +814,18 @@ pub fn compose_served(
         gov: Arc::clone(&gov),
     });
     let site = Arc::clone(&post);
+    // THE ONE FLUSH EPOCH every plane's checkpoints are paced by, bumped by the served planes'
+    // checkpoint flush tick (`Served::spawn_ticks`).
+    let epoch = busbar_kernel::plane_driver::FlushEpoch::new();
+    let paced = epoch.clone();
     let money = move || {
-        Arc::new(PlaneMoney::new(
-            Arc::clone(&gov),
-            Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
-        ))
+        Arc::new(
+            PlaneMoney::new(
+                Arc::clone(&gov),
+                Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+            )
+            .with_epoch(paced.clone()),
+        )
     };
     let egress = DoorEgress {
         reach,
@@ -787,6 +842,7 @@ pub fn compose_served(
         stage.as_ref(),
     )?;
     served.post = Some(post);
+    served.epoch = epoch;
     Ok(served)
 }
 
