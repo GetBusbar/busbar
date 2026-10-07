@@ -982,7 +982,7 @@ fn the_root_leg_matrix_runs_once_per_leg() {
 /// when a module the root declares (`pub mod <owner>;`, `crates/busbar/src/root/<owner>.rs`) declares
 /// the file as one of its own test modules through `#[path = "tests/<m>.rs"]` (ARCHITECT 2026-10-05
 /// Q1: a door plane's leg lives in the serving module's test file, e.g. `serve.rs`'s
-/// `tests/serve_door.rs`). Anything else is refused, naming the file.
+/// `tests/serve_tests.rs`). Anything else is refused, naming the file.
 fn leg_module_declared(root: &Path, mod_rs: &str, file: &str) -> Result<(), String> {
     let path = Path::new(file);
     let module = path
@@ -1016,7 +1016,7 @@ fn leg_module_declared(root: &Path, mod_rs: &str, file: &str) -> Result<(), Stri
 }
 
 /// THE LEG-FILE RULE, BOTH WAYS: a test file a declared root module carries through `#[path]` is a
-/// leg file (the streaming door's `serve.rs` -> `tests/serve_door.rs`); a file no declared module
+/// leg file (the streaming door's `serve.rs` -> `tests/serve_tests.rs`); a file no declared module
 /// carries is refused. RED: the rule read `pub mod <stem>;` alone and refused the first.
 #[test]
 fn selftest_a_leg_file_is_a_module_or_a_declared_modules_path_test_file() {
@@ -1024,7 +1024,11 @@ fn selftest_a_leg_file_is_a_module_or_a_declared_modules_path_test_file() {
     let mod_rs = std::fs::read_to_string(root.join("crates/busbar/src/root/mod.rs"))
         .expect("the composition root's mod.rs");
     assert_eq!(
-        leg_module_declared(&root, &mod_rs, "crates/busbar/src/root/tests/serve_door.rs"),
+        leg_module_declared(
+            &root,
+            &mod_rs,
+            "crates/busbar/src/root/tests/serve_tests.rs"
+        ),
         Ok(())
     );
     assert_eq!(

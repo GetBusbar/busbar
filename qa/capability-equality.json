@@ -92,12 +92,12 @@
       "note": "the MCP plane's SERVED root leg: `tools/call` driven through the kernel-loop rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_mcp::testkit::SERVED`) and requiring its `drive` to have run inside the loop"
     },
     "root-a2a": {
-      "file": "crates/busbar/src/root/tests/serve_door.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "columns": [
         "a2a-client",
         "a2a-server"
       ],
-      "note": "the A2A plane's root leg on the DOOR path: its door linked and bound through the loader's one load, its claims mounted on the data router, a keyed caller's unit admitted and charged by the door steps, crossing the door and leaving through the kernel's connector to a real loopback agent; each root cell is a unit driven through that composition (serve_door.rs, the agent door module)"
+      "note": "the A2A plane's root leg on the DOOR path: its door linked and bound through the loader's one load, its claims mounted on the data router, a keyed caller's unit admitted and charged by the door steps, crossing the door and leaving through the kernel's connector to a real loopback agent; each root cell is a unit driven through that composition (serve_tests.rs, the agent door module)"
     },
     "root-voice": {
       "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
@@ -171,16 +171,16 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "breaker-trip",
       "plane": "a2a-server",
       "state": "not-applicable",
-      "reason": "inbound role; no upstream availability to record.",
+      "reason": "the front door is inbound; there is no upstream target whose availability could be recorded on this role. The agent a hop dials is the a2a-client cell's evidence.",
       "root": {
         "state": "not-applicable",
         "leg": "root-a2a"
@@ -236,9 +236,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -366,9 +366,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::an_agents_rewrite_replaces_the_params_the_agent_receives"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agents_rewrite_replaces_the_params_the_agent_receives"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::an_agents_rewrite_replaces_the_params_the_agent_receives",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agents_rewrite_replaces_the_params_the_agent_receives",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -378,9 +378,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::an_agents_rewrite_replaces_the_params_the_agent_receives"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agents_rewrite_replaces_the_params_the_agent_receives"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::an_agents_rewrite_replaces_the_params_the_agent_receives",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agents_rewrite_replaces_the_params_the_agent_receives",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -445,9 +445,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::an_agents_gate_refuses_a_submission_in_its_own_words_before_the_hop"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agents_gate_refuses_a_submission_in_its_own_words_before_the_hop"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::an_agents_gate_refuses_a_submission_in_its_own_words_before_the_hop",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agents_gate_refuses_a_submission_in_its_own_words_before_the_hop",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -502,9 +502,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -514,9 +514,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -571,9 +571,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_charges_the_presenting_key"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_charges_the_presenting_key"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_charges_the_presenting_key",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_charges_the_presenting_key",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -583,9 +583,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::an_agent_unit_served_through_its_door_charges_the_presenting_key"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agent_unit_served_through_its_door_charges_the_presenting_key"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::an_agent_unit_served_through_its_door_charges_the_presenting_key",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agent_unit_served_through_its_door_charges_the_presenting_key",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -638,9 +638,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -768,9 +768,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_cert_spki_agent_is_observed_approved_served_and_refused_once_its_key_changes"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_cert_spki_agent_is_observed_approved_served_and_refused_once_its_key_changes"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::a_cert_spki_agent_is_observed_approved_served_and_refused_once_its_key_changes",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_cert_spki_agent_is_observed_approved_served_and_refused_once_its_key_changes",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -780,9 +780,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::the_trust_verbs_pin_an_agent_card_and_the_relay_serves_only_the_approved_one"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_kernel_trust_book_pins_an_agent_card_and_the_relay_serves_only_the_approved_one"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::the_trust_verbs_pin_an_agent_card_and_the_relay_serves_only_the_approved_one",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::the_kernel_trust_book_pins_an_agent_card_and_the_relay_serves_only_the_approved_one",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -833,9 +833,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::an_agent_unit_dials_only_the_address_the_guard_admits"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agent_unit_dials_only_the_address_the_guard_admits"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::an_agent_unit_dials_only_the_address_the_guard_admits",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agent_unit_dials_only_the_address_the_guard_admits",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -898,9 +898,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_never_hands_the_agent_the_callers_token"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_never_hands_the_agent_the_callers_token"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_never_hands_the_agent_the_callers_token",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_never_hands_the_agent_the_callers_token",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -963,9 +963,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_unit_to_an_agent_that_is_not_serving_is_refused_after_its_grant_and_charges_nothing"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_unit_to_an_agent_that_is_not_serving_is_refused_after_its_grant_and_charges_nothing"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::a_unit_to_an_agent_that_is_not_serving_is_refused_after_its_grant_and_charges_nothing",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_unit_to_an_agent_that_is_not_serving_is_refused_after_its_grant_and_charges_nothing",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
@@ -975,9 +975,9 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::the_extended_card_on_the_planes_endpoint_names_the_callers_agents"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_extended_card_on_the_planes_endpoint_names_the_callers_agents"
       },
-      "test": "crates/busbar/src/root/tests/serve_door.rs::the_extended_card_on_the_planes_endpoint_names_the_callers_agents",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::the_extended_card_on_the_planes_endpoint_names_the_callers_agents",
       "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {

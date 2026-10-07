@@ -2710,6 +2710,10 @@ fn the_accept_loop_that_named_its_plane() -> String {
 /// where it lives.
 const HAND_WIRED_ROOT_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/units_hand_wired.txt";
 
+/// A synthetic `[[cell]]` row whose crate no census carries, appended to the ledger by the dead-cell
+/// case. Stored under `xtask/fixtures/`, which this gate treats as off-tree.
+const DEAD_CELL_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/dead_cell_row.txt";
+
 /// A synthetic `[[edge]]` row whose class no crate has, appended to the ledger by the dead-edge case.
 /// Stored under `xtask/fixtures/`, which this gate treats as off-tree.
 const DEAD_EDGE_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/dead_edge_row.txt";
@@ -4039,39 +4043,37 @@ pub fn selftest<'a>(
     // coupling is drained, so the row stays, and the next crate to grow that coupling back finds
     // the allowance already written for it.
     //
-    // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
-    // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
+    // The honest fixture for "this row covers nothing" is a row whose subject is GONE: a crate the
+    // census does not carry, or a class no crate of its kind has. Each is a synthetic row this
+    // battery owns, so no drain of the real tree can retire the proof.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-egress` carries a live cell; it
-    // measures nothing the moment the crate stops being one.
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. The case plants a synthetic row this battery owns
+    // ([`DEAD_CELL_FIXTURE`]): `kind-isolation-selftest-gone × store`, a crate no census carries, so
+    // its cell measures nothing on every tree — the state a crate's row is left in once the crate
+    // leaves the census.
     //
-    // RE-TARGETED. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
-    // on the real tree when the crate's last `busbar-api` name moved to the contract; then
-    // `busbar-auth-static-plugin × plugin-tooling`, which went dead when the SDK merged into the
-    // contract (#84) and the plugin stopped naming `busbar-plugin-sdk`. Each time its red became
-    // standing debt the debt-free base subtracts and the case came back green. A kernel workflow
-    // crate's cell is not a fixture's and not an edge a fold retires: removing the crate's manifest
-    // kills it exactly as it did the old ones. Re-targeted a third time: the subject was
-    // `busbar-kernel-scope × transport`, whose every hit was an `http` spelling that
-    // [`COLLIDING_INSTANCE_WORDS`] no longer counts, so that row went dead on the real tree.
-    // Re-targeted a fourth time: the subject was `busbar-kernel-ledger × kernel`, whose last hit was
-    // the dev-dependency on the deleted `busbar-kernel-budget` (DEL-BUDGET-R), so that row went dead
-    // on the real tree and was struck. Re-targeted a fifth time: the subject was
-    // `busbar-kernel-breaker × plane`, whose last hits were two comments the breaker lane drained
-    // (00259bd004, "busbar-kernel-breaker names no plane"), so that row went dead on the real tree
-    // and was struck. The subject is now `busbar-kernel-egress × kernel` (its dev edge to the
-    // breaker unit, granted kernel -> kernel with no drain): it measures nothing the moment the
-    // egress crate stops being one.
-    let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-kernel-egress/Cargo.toml");
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
-        &[ROW_MATRIX],
-        ov,
-        &["dead-cell", "busbar-kernel-egress \u{d7} kernel"],
-    ));
+    // WHY A FIXTURE AND NOT A LIVE ROW. The case used to delete a real crate's manifest and name
+    // that crate's live cell, and it was re-targeted five times (`busbar-auth-admin-tokens × api`,
+    // `busbar-auth-static-plugin × plugin-tooling`, `busbar-kernel-scope × transport`,
+    // `busbar-kernel-ledger × kernel`, `busbar-kernel-breaker × plane`): each subject was drained on
+    // the real tree, its red became standing debt the debt-free base subtracts, and the case went
+    // green without proving anything. A subject that is a drain target is a proof with an expiry
+    // date. This one never drains.
+    let dead_cell = match (cx.read(LEDGER), cx.read(DEAD_CELL_FIXTURE)) {
+        (Ok(ledger), Ok(row)) => {
+            let mut ov = crate::ctx::Overlay::new();
+            ov.set(LEDGER, format!("{}\n{row}", ledger.trim_end()));
+            Ok(ov)
+        }
+        (Err(e), _) => Err(format!("{LEDGER}: {e}")),
+        (_, Err(e)) => Err(format!("{DEAD_CELL_FIXTURE}: {e}")),
+    };
+    let name = "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one";
+    let naming = ["dead-cell", "kind-isolation-selftest-gone \u{d7} store"];
+    match dead_cell {
+        Ok(ov) => report.push(prove_rows_red(cx, gate, name, &[ROW_MATRIX], ov, &naming)),
+        Err(why) => report.push(super::unplantable(name, &[ROW_MATRIX], &naming, why)),
+    }
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
     // `api`, which the fold retired, so it now plants a synthetic row this battery owns
