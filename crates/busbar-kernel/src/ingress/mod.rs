@@ -136,11 +136,11 @@ pub fn admit_check(
     // A budget block that downgrades re-admits on its `downgrade_to` pool ([`admit_downgrading`]).
     let view = app.engine_tables_view();
     let pools = view.pools();
-    let names: Vec<&str> = pools.iter().map(|(n, _)| *n).collect();
     let walked = admit_downgrading(
         &key.id,
         pool,
-        &names,
+        pools.len(),
+        |to| pools.iter().any(|(n, _)| *n == to),
         |to| {
             pool_authorized(gov, to, proto).is_none()
                 && fallback_pools_authorized(app, gov, to, proto).is_none()
@@ -174,10 +174,11 @@ pub fn admit_check(
 /// THE BUDGET DOWNGRADE WALK every door admits through: `admit` the request on `pool`; a budget
 /// block whose limit declared `on_exhaust: downgrade` re-admits it on `downgrade_to` instead of
 /// refusing - the caller's expensive traffic gets CHEAPER, not blocked. The chain may cascade (the
-/// downgrade pool's own budget may downgrade further); each hop's target must be one of `pools`, the
-/// deployment's configured pools, that the key may `reach` (its pool grant, and the grant of every
-/// fallback pool beyond it: a downgrade must never route a key into a pool it may not use). A
-/// visited set ends a cycle at the revisit, bounded by the pool count besides. The charge lands on
+/// downgrade pool's own budget may downgrade further); each hop's target must be one of the
+/// deployment's `pool_count` configured pools (a name `configured` holds) that the key may `reach`
+/// (its pool grant, and the grant of every fallback pool beyond it: a downgrade must never route a
+/// key into a pool it may not use). A visited set ends a cycle at the revisit, bounded by the pool
+/// count besides. The charge lands on
 /// the EFFECTIVE pool's buckets, and the caller dispatches there - accounting follows the traffic.
 ///
 /// `Ok((grant, effective))`: admitted on `effective` (`None` = on `pool` itself).
@@ -188,7 +189,8 @@ pub fn admit_check(
 pub fn admit_downgrading<G>(
     key_id: &str,
     pool: &str,
-    pools: &[&str],
+    pool_count: usize,
+    configured: impl Fn(&str) -> bool,
     reach: impl Fn(&str) -> bool,
     mut admit: impl FnMut(&str) -> Result<G, crate::governance::LimitBlocked>,
 ) -> Result<(G, Option<String>), crate::governance::LimitBlocked> {
@@ -204,22 +206,22 @@ pub fn admit_downgrading<G>(
                 ..
             }) if !visited.iter().any(|v| v == &to)
                 // Defense-in-depth, likely unreachable in practice: `visited` is a DUPLICATE-FREE
-                // subset of `pools` (the revisit guard above forbids re-pushing an already seen
-                // pool; every push target is also checked against `pools` below before being
-                // pushed). NOTE this does NOT mean the start pool can never appear in `visited` — a
+                // subset of the configured pools (the revisit guard above forbids re-pushing an
+                // already seen pool; every push target is also checked by `configured` below
+                // before being pushed). NOTE this does NOT mean the start pool can never appear in `visited` — a
                 // downgrade target can legally cycle back to the start pool (e.g. a<->b: hop 1
                 // pushes b, hop 2's target a passes both checks and gets pushed too), so `visited`
-                // is not capped at `pools.len() - 1`. The real bound is `visited.len() <=
-                // pools.len()` (it can never exceed the pool count, being duplicate-free): at
+                // is not capped at `pool_count - 1`. The real bound is `visited.len() <=
+                // pool_count` (it can never exceed the pool count, being duplicate-free): at
                 // equality `visited` IS the full pool set, so either the earlier
                 // `!visited.iter().any(...)` clause already rejected `to` (if `to` is a pool), or
-                // the `contains` clause below rejects it (if it isn't) — making `<` vs `<=`
+                // the `configured` clause below rejects it (if it isn't) — making `<` vs `<=`
                 // behaviorally indistinguishable right here (see
                 // `test_downgrade_cycle_terminates_via_the_revisit_guard`'s doc comment for the
                 // one guard clause that IS distinguishable). Kept as an explicit bound rather than
                 // removed: it's the backstop if the duplicate-free invariant is ever loosened.
-                && visited.len() < pools.len()
-                && pools.contains(&to.as_str())
+                && visited.len() < pool_count
+                && configured(&to)
                 && reach(&to) =>
             {
                 tracing::info!(key_id, from = attempt_pool, to = %to, group = %group,

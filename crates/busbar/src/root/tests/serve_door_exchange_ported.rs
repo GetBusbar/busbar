@@ -757,17 +757,18 @@ async fn every_credential_carrier_is_admitted_and_a_bad_one_reads_the_native_401
 
 // ── the whole-path allocation gate ──────────────────────────────────────────────────────────────
 
-/// THE DOOR'S WHOLE-PATH ALLOCATION BOUND, A RATCHET: the 694 allocations measured on one warmed
+/// THE DOOR'S WHOLE-PATH ALLOCATION BOUND, A RATCHET: the 692 allocations measured on one warmed
 /// same-dialect request through the WHOLE door path (router, auth, money steps, plane driver, egress
 /// walk, connector, loopback far end, reply), minimum over four warmed requests on one thread. It
 /// may only go DOWN: when the measured number falls, lower this constant to it in the same commit;
 /// never raise it (a raise is the regression). The perf phase ("a zero-allocation hot path") owns
-/// cutting it (ARCHITECT RULING U11 Q5 2026-10-06).
+/// cutting it (ARCHITECT RULING U11 Q5 2026-10-06: set at 694; lowered to 692 when the far end's
+/// target cut borrowed its words and a clean success's unread record kept its attempt's own).
 ///
 /// NOT COMPARABLE WITH THE LEGACY GATE'S 87 (bound 107): that gate measured only the retired
 /// engine's forward (`forward_with_pool`: its walk, attempt and relay over an in-process mock), never
 /// the router, the auth or the money steps this bound spans.
-const DOOR_WHOLE_PATH_MAX_ALLOCS: u64 = 694;
+const DOOR_WHOLE_PATH_MAX_ALLOCS: u64 = 692;
 
 /// One warmed same-dialect request through the whole door path allocates no more than the ratchet
 /// [`DOOR_WHOLE_PATH_MAX_ALLOCS`]. Measured deterministically, as the legacy gate measured: this
@@ -780,7 +781,6 @@ const DOOR_WHOLE_PATH_MAX_ALLOCS: u64 = 694;
 /// at the door's own scope (its bound is the door's measure, not the legacy 107).
 #[cfg(not(target_env = "msvc"))]
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "QUESTION: the ratchet 694 (ARCHITECT RULING U11 Q5) was measured on the fix-plane branch (041a50d611); this tree measures 703, deterministic, the +9 from the parallel merges after it (fix-edge +6, fix-bill +2, fix-door +1); the ratchet is never raised here"]
 async fn one_warmed_same_dialect_request_stays_under_the_allocation_bound() {
     use busbar_kernel::test_support::counting_alloc;
     let _one = ONE_PUBLISHER.lock().await;

@@ -604,36 +604,41 @@ impl<'s> DoorSteps<'s> {
             let u = self.lock();
             (u.routed.clone(), u.expected.clone())
         };
-        let label = routed
-            .as_ref()
-            .map_or_else(String::new, |(label, _)| label.clone());
-        // The lanes a route's members are sealed on: the route as named, or a pool a downgrade
-        // reaches.
+        let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
+        // The lanes a pool's members are sealed on: the route as named (`label`) reads its own
+        // routed members, a pool a downgrade reaches its resolved ones.
         let lanes_of = |at: &str| -> Vec<String> {
-            let members = if at == label {
-                routed.as_ref().map(|(_, members)| members.clone())
+            let lanes = |members: &[String]| -> Vec<String> {
+                members
+                    .iter()
+                    .map(|m| plane_lane(&self.facts.plane, m))
+                    .collect()
+            };
+            if at == label {
+                routed
+                    .as_ref()
+                    .map_or_else(Vec::new, |(_, m)| lanes(m.as_slice()))
             } else {
                 self.pools
                     .resolve(ROUTE_POOL, Some(at.as_bytes()))
-                    .map(|(_, members)| members)
-            };
-            members
-                .unwrap_or_default()
-                .iter()
-                .map(|m| plane_lane(&self.facts.plane, m))
-                .collect()
+                    .map_or_else(Vec::new, |(_, m)| lanes(m.as_slice()))
+            }
         };
+        // The route as named, read once: the pool it is charged on and its lanes, which the first
+        // admission and (with no downgrade) the money facts share.
+        let named = (self.charged_pool(label), lanes_of(label));
         let units = self.expected_units(&expected);
         let view = DoorPoolView {
             pools: self.pools,
             key: Some(key.as_ref()),
             app: &self.app,
         };
-        let names: Vec<&str> = self.pools.pools().keys().map(String::as_str).collect();
+        let configured = self.pools.pools();
         let (grant, effective) = busbar_kernel::ingress::admit_downgrading(
             &key.id,
-            &label,
-            &names,
+            label,
+            configured.len(),
+            |to| configured.contains_key(to),
             // A downgrade pool is judged as the route as named was: the grant `approve` reads, and
             // for the plane serving the `pools` map the destination guard `verify` reads.
             |to| {
@@ -645,16 +650,22 @@ impl<'s> DoorSteps<'s> {
                 ) && (!self.facts.plane.is_empty() || busbar_kernel::door::may_reach(&view, to))
             },
             |at| {
-                let lanes = lanes_of(at);
-                let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
-                gov.try_admit_estimated(
-                    &self.app.cost,
-                    key,
-                    &self.charged_pool(at),
-                    self.arrived,
-                    &models,
-                    &units,
-                )
+                let admit = |pool: &str, lanes: &[String]| {
+                    let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
+                    gov.try_admit_estimated(
+                        &self.app.cost,
+                        key,
+                        pool,
+                        self.arrived,
+                        &models,
+                        &units,
+                    )
+                };
+                if at == label {
+                    admit(named.0.as_str(), named.1.as_slice())
+                } else {
+                    admit(self.charged_pool(at).as_str(), lanes_of(at).as_slice())
+                }
             },
         )
         .map_err(|blocked| {
@@ -668,9 +679,10 @@ impl<'s> DoorSteps<'s> {
         if let Some(to) = &effective {
             self.lock().routed = self.pools.resolve(ROUTE_POOL, Some(to.as_bytes()));
         }
-        let at = effective.as_deref().unwrap_or(&label);
-        let pool = self.charged_pool(at);
-        let lanes = lanes_of(at);
+        let (pool, lanes) = match effective.as_deref() {
+            Some(at) if at != label => (self.charged_pool(at), lanes_of(at)),
+            _ => named,
+        };
         money.open(
             ctx.key,
             UnitMoney {
@@ -679,7 +691,7 @@ impl<'s> DoorSteps<'s> {
                 pool,
                 // The first member until one answers; the money steps take the serving member's
                 // own key when its answer commits (`MoneySeam::served`).
-                model: lanes.first().cloned().unwrap_or_default(),
+                model: lanes.into_iter().next().unwrap_or_default(),
                 classes: Arc::clone(&self.facts.classes),
                 arrived: self.arrived,
                 mode: exhaustion_of(&self.app, key),

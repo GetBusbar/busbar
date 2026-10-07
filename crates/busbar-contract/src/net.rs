@@ -524,12 +524,26 @@ impl UrlFamily {
     /// The family a (lower-case) scheme is read by.
     #[must_use]
     pub fn of(scheme: &str) -> Self {
-        match scheme {
-            "http" | "https" | "ws" | "wss" => UrlFamily::Web,
-            _ => UrlFamily::Generic,
+        if WEB_SCHEMES.contains(&scheme) {
+            UrlFamily::Web
+        } else {
+            UrlFamily::Generic
+        }
+    }
+
+    /// The family a scheme of any case is read by: [`UrlFamily::of`] its lower-case spelling,
+    /// read without spelling it.
+    fn of_any_case(scheme: &str) -> Self {
+        if WEB_SCHEMES.iter().any(|w| w.eq_ignore_ascii_case(scheme)) {
+            UrlFamily::Web
+        } else {
+            UrlFamily::Generic
         }
     }
 }
+
+/// The schemes read by the web rules ([`UrlFamily::Web`]), lower-case.
+const WEB_SCHEMES: [&str; 4] = ["http", "https", "ws", "wss"];
 
 /// A URL read into the parts a destination check needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -597,18 +611,36 @@ fn forbidden_in_host(c: char) -> bool {
 /// A URL CUT AT ITS AUTHORITY, nothing in it judged: the cut [`parse_url`] reads every URL through
 /// before it reads the host and the port. A caller that needs the authority as written (a signer
 /// signing the host the dial reaches) reads it here, so its boundary is the host readers' own.
+///
+/// Its words borrow the string it was cut from wherever the cut spells them as written there; a
+/// cut that had to rewrite the string (the WHATWG trim, a `\` read as `/`, an upper-case scheme, a
+/// web path given its leading `/`) owns them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UrlCut {
+pub struct UrlCut<'a> {
     /// The scheme, lower-cased; empty for a bare target ([`cut_target`]).
-    pub scheme: String,
+    pub scheme: Cow<'a, str>,
     /// The rules it was read by.
     pub family: UrlFamily,
     /// The authority carried a userinfo (`…@`), which is never kept.
     pub userinfo: bool,
     /// The authority after any userinfo, as written: `host`, `host:port`, `[v6]` or `[v6]:port`.
-    pub host_port: String,
+    pub host_port: Cow<'a, str>,
     /// Everything after the authority, as [`UrlParts::path`] reads it.
-    pub path: String,
+    pub path: Cow<'a, str>,
+}
+
+impl UrlCut<'_> {
+    /// The same cut, owning its words.
+    #[must_use]
+    pub fn into_owned(self) -> UrlCut<'static> {
+        UrlCut {
+            scheme: Cow::Owned(self.scheme.into_owned()),
+            family: self.family,
+            userinfo: self.userinfo,
+            host_port: Cow::Owned(self.host_port.into_owned()),
+            path: Cow::Owned(self.path.into_owned()),
+        }
+    }
 }
 
 /// CUT A URL OF ANY SCHEME at its authority, by its family's rules (see [`UrlFamily`]): the
@@ -619,9 +651,15 @@ pub struct UrlCut {
 ///
 /// [`UrlRefusal::NoScheme`], [`UrlRefusal::NoAuthority`] or [`UrlRefusal::Backslash`], as
 /// [`parse_url`] answers them.
-pub fn cut_url(url: &str) -> Result<UrlCut, UrlRefusal> {
-    let cleaned = strip_whatwg_removed(url);
-    let s = cleaned.as_ref();
+pub fn cut_url(url: &str) -> Result<UrlCut<'_>, UrlRefusal> {
+    match strip_whatwg_removed(url) {
+        Cow::Borrowed(s) => cut_trimmed_url(s),
+        Cow::Owned(s) => cut_trimmed_url(&s).map(UrlCut::into_owned),
+    }
+}
+
+/// [`cut_url`] of a URL the WHATWG trim has already read.
+fn cut_trimmed_url(s: &str) -> Result<UrlCut<'_>, UrlRefusal> {
     let (scheme, after) = s.split_once(':').ok_or(UrlRefusal::NoScheme)?;
     let scheme_ok = scheme.starts_with(|c: char| c.is_ascii_alphabetic())
         && scheme
@@ -630,16 +668,24 @@ pub fn cut_url(url: &str) -> Result<UrlCut, UrlRefusal> {
     if !scheme_ok {
         return Err(UrlRefusal::NoScheme);
     }
-    let scheme = scheme.to_ascii_lowercase();
-    let family = UrlFamily::of(&scheme);
-    let rest: Cow<'_, str> = match family {
-        // WHATWG: any run of `/` and `\` after a special scheme is skipped, and `\` reads as `/`.
-        UrlFamily::Web => fold_backslashes(after.trim_start_matches(['/', '\\'])),
-        UrlFamily::Generic => {
-            Cow::Borrowed(after.strip_prefix("//").ok_or(UrlRefusal::NoAuthority)?)
-        }
+    let scheme: Cow<'_, str> = if scheme.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Owned(scheme.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(scheme)
     };
-    cut_rest(scheme, family, &rest)
+    let family = UrlFamily::of(&scheme);
+    match family {
+        // WHATWG: any run of `/` and `\` after a special scheme is skipped, and `\` reads as `/`.
+        UrlFamily::Web => match fold_backslashes(after.trim_start_matches(['/', '\\'])) {
+            Cow::Borrowed(rest) => cut_rest(scheme, family, rest),
+            Cow::Owned(rest) => cut_rest(scheme, family, &rest).map(UrlCut::into_owned),
+        },
+        UrlFamily::Generic => cut_rest(
+            scheme,
+            family,
+            after.strip_prefix("//").ok_or(UrlRefusal::NoAuthority)?,
+        ),
+    }
 }
 
 /// CUT A DIAL TARGET at its authority: a target [`target_host`] reads as a URL is cut by
@@ -648,12 +694,22 @@ pub fn cut_url(url: &str) -> Result<UrlCut, UrlRefusal> {
 /// # Errors
 ///
 /// As [`cut_url`], for a target read as a URL; a bare target always cuts.
-pub fn cut_target(target: &str) -> Result<UrlCut, UrlRefusal> {
-    let trimmed = strip_whatwg_removed(target);
-    if reads_as_url(&trimmed) {
-        cut_url(&trimmed)
-    } else {
-        cut_rest(String::new(), UrlFamily::Web, &fold_backslashes(&trimmed))
+pub fn cut_target(target: &str) -> Result<UrlCut<'_>, UrlRefusal> {
+    match strip_whatwg_removed(target) {
+        Cow::Borrowed(t) => cut_trimmed_target(t),
+        Cow::Owned(t) => cut_trimmed_target(&t).map(UrlCut::into_owned),
+    }
+}
+
+/// [`cut_target`] of a target the WHATWG trim has already read.
+fn cut_trimmed_target(trimmed: &str) -> Result<UrlCut<'_>, UrlRefusal> {
+    if reads_as_url(trimmed) {
+        return cut_url(trimmed);
+    }
+    let bare = Cow::Borrowed("");
+    match fold_backslashes(trimmed) {
+        Cow::Borrowed(rest) => cut_rest(bare, UrlFamily::Web, rest),
+        Cow::Owned(rest) => cut_rest(bare, UrlFamily::Web, &rest).map(UrlCut::into_owned),
     }
 }
 
@@ -667,7 +723,11 @@ fn fold_backslashes(s: &str) -> Cow<'_, str> {
 }
 
 /// The cut itself, once the scheme and the slashes after it are out of the way.
-fn cut_rest(scheme: String, family: UrlFamily, rest: &str) -> Result<UrlCut, UrlRefusal> {
+fn cut_rest<'a>(
+    scheme: Cow<'a, str>,
+    family: UrlFamily,
+    rest: &'a str,
+) -> Result<UrlCut<'a>, UrlRefusal> {
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(end);
     if authority.contains('\\') {
@@ -678,15 +738,15 @@ fn cut_rest(scheme: String, family: UrlFamily, rest: &str) -> Result<UrlCut, Url
         None => (false, authority),
     };
     let path = match family {
-        UrlFamily::Web if tail.starts_with('/') => tail.to_string(),
-        UrlFamily::Web => format!("/{tail}"),
-        UrlFamily::Generic => tail.to_string(),
+        UrlFamily::Web if tail.starts_with('/') => Cow::Borrowed(tail),
+        UrlFamily::Web => Cow::Owned(format!("/{tail}")),
+        UrlFamily::Generic => Cow::Borrowed(tail),
     };
     Ok(UrlCut {
         scheme,
         family,
         userinfo,
-        host_port: host_port.to_string(),
+        host_port: Cow::Borrowed(host_port),
         path,
     })
 }
@@ -710,7 +770,7 @@ pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
         host_port,
         path,
     } = cut_url(url)?;
-    let host_port = host_port.as_str();
+    let host_port: &str = &host_port;
     let (host, port) = if let Some(inner) = host_port.strip_prefix('[') {
         let (literal, after) = inner.split_once(']').ok_or(UrlRefusal::Bracket)?;
         if literal.parse::<Ipv6Addr>().is_err() {
@@ -741,12 +801,12 @@ pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
         Some(_) => return Err(UrlRefusal::Port),
     };
     Ok(UrlParts {
-        scheme,
+        scheme: scheme.into_owned(),
         family,
         userinfo,
         host,
         port,
-        path,
+        path: path.into_owned(),
     })
 }
 
@@ -775,7 +835,7 @@ pub fn target_host(target: &str) -> Option<String> {
 fn reads_as_url(trimmed: &str) -> bool {
     let web_scheme = trimmed
         .split_once(':')
-        .is_some_and(|(s, _)| UrlFamily::of(&s.to_ascii_lowercase()) == UrlFamily::Web);
+        .is_some_and(|(s, _)| UrlFamily::of_any_case(s) == UrlFamily::Web);
     web_scheme || trimmed.contains("://")
 }
 
