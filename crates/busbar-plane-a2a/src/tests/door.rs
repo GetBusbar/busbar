@@ -343,3 +343,51 @@ fn a_dealt_validate_blob_is_unwrapped_to_its_section() {
     assert_eq!(&*crate::door::dealt_section(bare), &bare[..]);
     assert!(crate::door::read_settings(&crate::door::dealt_section(dealt)).is_ok());
 }
+
+/// Ported from `busbar-a2a` `creds_tests::the_callers_credential_has_no_path_to_a_delegate`, its
+/// config half: the per-entry value that would mean "forward the caller's credential"
+/// (`upstream_credentials: passthrough`) is refused at validation in the plane's own sentence, and
+/// `own` is accepted, so the refusal is about the value and not the key. (Its source-scan half read
+/// a mint seam this plane no longer has: the composition binds `upstream_credential:` as busbar's
+/// own, never passthrough — `crates/busbar/src/root/tests/door_steps.rs`.) The block's grammar is
+/// the plane's: a zero `lease_ttl_ms` and a header placement naming no header are refused.
+#[test]
+fn the_callers_credential_has_no_path_to_a_delegate() {
+    let def = |extra: serde_json::Value| -> crate::a2a::config::AgentDefCfg {
+        let mut entry = serde_json::json!({
+            "url": "https://a2a.vendor/planner",
+            "pin": { "mechanism": "unpinned" },
+        });
+        if let (Some(entry), Some(extra)) = (entry.as_object_mut(), extra.as_object()) {
+            entry.extend(extra.clone());
+        }
+        serde_json::from_value(entry).expect("the shape is legal; the VALUE is what is judged")
+    };
+    let validate = |extra| crate::a2a::config::validate_agent("planner", &def(extra));
+    let err = validate(serde_json::json!({ "upstream_credentials": "passthrough" }))
+        .expect_err("passthrough is refused on the agents: plane");
+    assert!(
+        err.contains(crate::a2a::config::REFUSE_PASSTHROUGH_SECTION),
+        "the refusal explains itself: {err}"
+    );
+    validate(serde_json::json!({ "upstream_credentials": "own" }))
+        .expect("`own` is the supported mode");
+
+    let secret = serde_json::json!({ "env": "PLANNER_KEY" });
+    validate(serde_json::json!({
+        "upstream_credential": { "secret": secret, "lease_ttl_ms": 30000 }
+    }))
+    .expect("a lease over zero");
+    let err = validate(serde_json::json!({
+        "upstream_credential": { "secret": secret, "lease_ttl_ms": 0 }
+    }))
+    .expect_err("zero");
+    assert!(err.contains("lease_ttl_ms"), "{err}");
+    let err = validate(serde_json::json!({
+        "upstream_credential": {
+            "secret": secret, "placement": { "header": " " }, "lease_ttl_ms": 1
+        }
+    }))
+    .expect_err("blank");
+    assert!(err.contains("placement.header"), "{err}");
+}

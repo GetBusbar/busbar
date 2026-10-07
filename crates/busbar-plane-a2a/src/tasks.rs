@@ -234,6 +234,17 @@ fn seal(held: &Held, row: &TaskRow, kind: &str, request_id: &str, ts: u64) -> Ta
     ev
 }
 
+/// `held`, read for `caller`, AS THE RECORD WRITE THAT HOLDS IT: what a step that cannot read the
+/// host again changes it from ([`Staged`] over it answers the read). `None` when it does not encode.
+#[must_use]
+pub fn as_read(caller: &str, held: &Held) -> Option<Write> {
+    Some(Write {
+        kind: KIND_TASK,
+        key: task_key(caller, &held.row.task_id),
+        value: encode(held).ok()?,
+    })
+}
+
 /// `caller`'s task `task` as held, or `None`: absent, another caller's, unreadable, or past its
 /// window at `now`. One answer for all of them, so a read is no existence oracle.
 ///
