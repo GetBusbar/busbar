@@ -168,3 +168,58 @@ fn the_codes_a_far_end_may_answer_keep_section_5_4s_statuses() {
     assert_eq!(status_of_code(-32603), Some(500));
     assert_eq!(status_of_code(-32050), None);
 }
+
+/// Ported from busbar-a2a a2a/tests/rpcerror_tests.rs::the_codes_and_statuses_are_the_specifications_own.
+#[test]
+fn the_codes_a_far_end_may_answer_keep_section_5_4s_status_table_row_for_row() {
+    // Transcribed from A2A section 5.4. Written out rather than derived, so a future edit that
+    // changes a status has to change this table too.
+    for (code, status) in [
+        (-32001, 404),
+        (-32002, 409),
+        (-32003, 400),
+        (-32004, 400),
+        (-32005, 415),
+        (-32006, 502),
+        (-32007, 400),
+        (-32008, 400),
+        (-32009, 400),
+        (-32600, 400),
+        (-32601, 404),
+        (-32602, 400),
+        (-32603, 500),
+        (-32700, 400),
+    ] {
+        assert_eq!(status_of_code(code), Some(status), "{code}");
+    }
+    // The A2A-specific band is the table the plane publishes: every code in it has a status.
+    for (code, _) in crate::ERRORS {
+        assert!(status_of_code(*code).is_some(), "{code}");
+    }
+}
+
+/// Ported from busbar-a2a a2a/tests/rpcerror_tests.rs::push_notification_not_supported_and_extension_support_required_round_trip.
+/// `-32003` and `-32008` are defined codes (HTTP 400, each with its reason): a code table that
+/// skipped from `-32002` to `-32004` collapsed a relayed backend's refusal to a gateway fault.
+#[test]
+fn push_notification_not_supported_and_extension_support_required_round_trip() {
+    for (code, reason) in [
+        (-32003, "PUSH_NOTIFICATION_NOT_SUPPORTED"),
+        (-32008, "EXTENSION_SUPPORT_REQUIRED"),
+    ] {
+        assert_eq!(status_of_code(code), Some(400), "{code} is HTTP 400");
+        assert_eq!(
+            crate::ERRORS
+                .iter()
+                .find(|(c, _)| *c == code)
+                .map(|(_, r)| *r),
+            Some(reason),
+            "{code} reason"
+        );
+        let wire = crate::jsonrpc::error(&json!(1), code, "words").expect("encodes");
+        let wire: serde_json::Value = serde_json::from_slice(&wire).expect("json");
+        assert_eq!(wire["error"]["code"], code);
+        assert_eq!(wire["error"]["data"][0]["reason"], reason);
+        assert_ne!(code, -32006, "must not collapse to the gateway-fault code");
+    }
+}

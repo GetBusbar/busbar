@@ -343,3 +343,101 @@ fn a_dealt_validate_blob_is_unwrapped_to_its_section() {
     assert_eq!(&*crate::door::dealt_section(bare), &bare[..]);
     assert!(crate::door::read_settings(&crate::door::dealt_section(dealt)).is_ok());
 }
+
+/// Ported from busbar-a2a a2a/tests/plane_tests.rs::the_registry_follows_config_order_rather_than_hash_order.
+#[test]
+fn the_registry_follows_config_order_rather_than_hash_order() {
+    let blob = format!(
+        "{{{}}}",
+        ["zeta", "alpha", "mid"]
+            .iter()
+            .map(|n| format!(
+                r#""{n}": {{"url": "{}", "pin": {{"mechanism": "unpinned"}}}}"#,
+                endpoint(n, "/a2a")
+            ))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let cfg = read_settings(blob.as_bytes()).expect("a valid section");
+    let ids: Vec<&str> = cfg.agents.keys().map(String::as_str).collect();
+    assert_eq!(
+        ids,
+        ["zeta", "alpha", "mid"],
+        "the section keeps the order an operator wrote, not hash or sorted order"
+    );
+}
+
+/// Ported from busbar-a2a a2a/tests/serve_tests.rs::every_published_binding_is_one_the_a2a_plane_declares_a_wire_format_for.
+#[test]
+fn every_published_binding_is_one_the_a2a_plane_declares_a_wire_format_for() {
+    use crate::surface::{BINDING_DOCUMENT, BINDING_FRAMED, BINDING_TARGET};
+    let declared: Vec<&str> = [BINDING_DOCUMENT, BINDING_TARGET, BINDING_FRAMED].to_vec();
+    // The tail declares exactly those three, in this order.
+    assert_eq!(DIALECTS.len(), declared.len());
+    for (abi, name) in DIALECTS.iter().zip(&declared) {
+        assert_eq!((abi.ptr, abi.len), (name.as_ptr(), name.len()));
+    }
+    // Every binding the served card publishes is one of them, in the card's upper-case spelling,
+    // and the card publishes every one of them.
+    let upper: Vec<String> = declared.iter().map(|d| d.to_uppercase()).collect();
+    assert_eq!(
+        crate::served_card::SERVABLE_BINDINGS,
+        upper.iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    let own = crate::served_card::self_card_document("https://gw.example", Vec::new())
+        .expect("busbar's own card");
+    for iface in own["supportedInterfaces"].as_array().expect("interfaces") {
+        let binding = iface["protocolBinding"].as_str().expect("binding");
+        assert!(
+            upper.iter().any(|d| d.eq_ignore_ascii_case(binding)),
+            "busbar's own card publishes `{binding}`, which the plane does not declare"
+        );
+    }
+    // A fronted agent's card publishes a subset of them.
+    for b in crate::served_card::AGENT_ADDRESS_BINDINGS {
+        assert!(upper.iter().any(|d| d == b), "{b}");
+    }
+}
+
+/// Ported from busbar-a2a a2a/tests/serve_tests.rs::the_plane_declares_its_published_identity_and_its_claims_speak_its_wire_formats.
+#[test]
+fn the_plane_declares_its_published_identity_and_its_claims_speak_its_wire_formats() {
+    // The published literals, pinned as literals (the tail compares to the same constants, so a
+    // constant-to-constant check would pass a rename).
+    assert_eq!(crate::PLANE_KEY, "a2a");
+    assert_eq!(crate::CONFIG_SECTION, "agents");
+    assert_eq!(AUDIT_KIND, "a2a_agent");
+    assert_eq!(format!("{AUDIT_KIND}.connect"), "a2a_agent.connect");
+    assert_eq!(format!("{AUDIT_KIND}.approve"), "a2a_agent.approve");
+    assert_eq!(SUBJECT_NOUN, "fronted agent");
+    assert_eq!(SCOPE, "agent");
+    assert_eq!(s(TAIL.audit_kind), "a2a_agent");
+    assert_eq!(s(TAIL.subject_noun), "fronted agent");
+    assert_eq!(TAIL.scope_kinds_len, 1);
+    assert_eq!(s(TAIL.scope), "agent");
+    assert_eq!(crate::surface::BINDING_DOCUMENT, "jsonrpc");
+    assert_eq!(crate::surface::BINDING_TARGET, "http+json");
+    assert_eq!(crate::surface::BINDING_FRAMED, "grpc");
+    assert_eq!(TAIL.dialects_len, 3);
+
+    // Its claims: an admitted generation claims doors at exactly the plane's two mounts.
+    let spec = snapshot_spec(Some(&endpoint("gw", "")));
+    assert!(!spec.claims.is_empty());
+    for c in &spec.claims {
+        assert!(
+            c.carrier == crate::claims::DOCUMENT_TRANSPORT
+                || c.carrier == crate::claims::FRAMED_TRANSPORT,
+            "a claim over an undeclared carrier: {}",
+            c.carrier
+        );
+        assert!(
+            c.target.starts_with(crate::MOUNT_PATH)
+                || c.target.starts_with(crate::GRPC_MOUNT_PATH)
+                || c.target.starts_with("/.well-known/"),
+            "a claim outside the plane's mounts: {}",
+            c.target
+        );
+    }
+    // A generation with no public base (a delegation-only plane) claims nothing.
+    assert!(snapshot_spec(None).claims.is_empty());
+}

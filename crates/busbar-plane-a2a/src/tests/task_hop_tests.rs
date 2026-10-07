@@ -419,3 +419,184 @@ fn a_request_with_no_inline_callback_registers_none() {
         .unwrap();
     assert_eq!(held.row.push_callback, "");
 }
+
+// ── ported from the engine's `relay_stream_tests` ──────────────────────────────────────────────
+
+/// Put `caller`'s `task` on [`MEMBER`] and walk it through `states` at 150.
+fn walk(desk: &mut Desk, caller: &str, task: &str, states: &[TaskState]) {
+    let at = Step {
+        caller,
+        request_id: "r",
+        now: 150,
+    };
+    let mut out = Vec::new();
+    tasks::dispatch(&mut desk.book, &at, task, MEMBER, &mut out).unwrap();
+    desk.book.apply(&out);
+    for state in states {
+        let mut out = Vec::new();
+        tasks::transition(&mut desk.book, &at, task, *state, &mut out).unwrap();
+        desk.book.apply(&out);
+    }
+}
+
+/// Ported from busbar-a2a a2a/tests/relay_stream_tests.rs::an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_task.
+/// A far end's `input-required` answer is relayed as 200 with its question, under busbar's ids,
+/// and the task it settles is PAUSED: live, never terminal.
+#[test]
+fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_task() {
+    use crate::relay::{Answer, From as Side, Piece, Relay};
+    let mut desk = desk();
+    let (task, _) = hop(opened(
+        &mut desk,
+        &send(json!({ "message": { "contextId": "ctx-abc" } })),
+        ALICE,
+    ));
+    let mut r = Relay::new(json!(7), "1.0");
+    r.for_task(task.clone());
+    let piece = |from, bytes, status, last| Piece {
+        from,
+        bytes,
+        status,
+        last,
+    };
+    let url = "https://vendor.example/a2a";
+    assert!(matches!(
+        r.on_piece(piece(Side::Kernel(Some(url)), &[], None, false)),
+        Answer::Attempt(_)
+    ));
+    let ask = br#"{"jsonrpc":"2.0","id":7,"method":"SendMessage","params":{}}"#;
+    assert!(matches!(
+        r.on_piece(piece(Side::Caller, ask, None, true)),
+        Answer::ToFarEnd(_)
+    ));
+    let far = json!({
+        "jsonrpc": "2.0", "id": 7,
+        "result": {
+            "id": "B1", "contextId": "BC", "kind": "task",
+            "status": {
+                "state": "input-required",
+                "message": { "role": "agent", "parts": [{ "kind": "text", "text": "WHICH REGION?" }] }
+            }
+        }
+    })
+    .to_string();
+    let Answer::ToCaller(reply) = r.on_piece(piece(Side::FarEnd, far.as_bytes(), Some(200), true))
+    else {
+        panic!("no answer");
+    };
+    assert_eq!(reply.status, 200, "an interrupt is not a failure");
+    let body: Value = serde_json::from_slice(&reply.body).unwrap();
+    assert_eq!(body["result"]["status"]["state"], "input-required");
+    assert_eq!(
+        body["result"]["status"]["message"]["parts"][0]["text"], "WHICH REGION?",
+        "the backend's question must reach the caller"
+    );
+    assert_eq!(
+        body["result"]["id"], MINTED,
+        "busbar's id, not the backend's"
+    );
+    assert_eq!(
+        body["result"]["contextId"], "ctx-abc",
+        "the caller's context, unchanged"
+    );
+
+    for how in r.take_settled() {
+        settled(&mut desk, &task, &how);
+    }
+    let row = get(&mut desk.book, ALICE, MINTED, 400)
+        .unwrap()
+        .unwrap()
+        .row;
+    let state = TaskState::parse(&row.state).unwrap();
+    assert_eq!(state, TaskState::InputRequired);
+    assert!(
+        !state.is_terminal() && state.is_interrupted(),
+        "a paused task is live: the retention sweep must never treat it as collectable"
+    );
+}
+
+/// Ported from busbar-a2a a2a/tests/relay_stream_tests.rs::a_context_id_belonging_to_another_principal_does_not_resume_that_task.
+#[test]
+fn a_context_id_belonging_to_another_principal_does_not_resume_that_task() {
+    let mut desk = desk();
+    // Bob's task on the agent is interrupted under context `ctx-1`.
+    walk(
+        &mut desk,
+        BOB,
+        "t2",
+        &[TaskState::Working, TaskState::InputRequired],
+    );
+    let (task, _) = hop(opened(
+        &mut desk,
+        &send(json!({ "message": { "contextId": "ctx-1" } })),
+        ALICE,
+    ));
+    assert_eq!(
+        task.task_id, MINTED,
+        "Alice must NOT resume Bob's paused task by naming its contextId: a fresh one is minted"
+    );
+    assert_eq!(desk.draws, 1);
+    let bobs = get(&mut desk.book, BOB, "t2", 300).unwrap().unwrap().row;
+    assert_eq!(bobs.state, "input-required", "Bob's task was not touched");
+}
+
+/// Ported from busbar-a2a a2a/tests/relay_stream_tests.rs::a_completed_task_is_not_resumed_by_reusing_its_context_id.
+#[test]
+fn a_completed_task_is_not_resumed_by_reusing_its_context_id() {
+    let mut desk = desk();
+    walk(
+        &mut desk,
+        ALICE,
+        "t1",
+        &[TaskState::Working, TaskState::Completed],
+    );
+    let (task, _) = hop(opened(
+        &mut desk,
+        &send(json!({ "message": { "contextId": "ctx-1" } })),
+        ALICE,
+    ));
+    assert_ne!(
+        task.task_id, "t1",
+        "completed work must not be resurrected by re-using its contextId"
+    );
+    assert_eq!(task.task_id, MINTED);
+    let done = get(&mut desk.book, ALICE, "t1", 300).unwrap().unwrap().row;
+    assert_eq!(done.state, "completed");
+}
+
+/// Ported from busbar-a2a a2a/tests/relay_stream_tests.rs::a_streamed_artifact_advances_the_durable_resume_cursor.
+#[test]
+fn a_streamed_artifact_advances_the_durable_resume_cursor() {
+    let mut desk = desk();
+    let (task, _) = hop(opened(&mut desk, &send(json!({})), ALICE));
+    let artifact = Settled::Event {
+        state: None,
+        artifact: true,
+        backend_id: Some("B1".into()),
+    };
+    settled(&mut desk, &task, &artifact);
+    settled(&mut desk, &task, &artifact);
+    let mid = get(&mut desk.book, ALICE, MINTED, 400)
+        .unwrap()
+        .unwrap()
+        .row;
+    assert_eq!(
+        mid.artifact_cursor, 2,
+        "each artifact chunk advances the durable cursor"
+    );
+    let terminal = Settled::Event {
+        state: Some(TaskState::Completed),
+        artifact: false,
+        backend_id: Some("B1".into()),
+    };
+    settled(&mut desk, &task, &terminal);
+    let row = get(&mut desk.book, ALICE, MINTED, 400)
+        .unwrap()
+        .unwrap()
+        .row;
+    assert_eq!(row.artifact_cursor, 2);
+    assert_eq!(
+        row.state, "completed",
+        "the terminal event lands on the task"
+    );
+}

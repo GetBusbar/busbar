@@ -507,3 +507,32 @@ fn an_approved_item_never_sighted_is_pending_until_its_first_sighting_compares()
         "a mismatching first sighting is refused until re-approved"
     );
 }
+
+/// Ported from busbar-a2a a2a/tests/plane_tests.rs::a_declared_fingerprint_does_not_become_an_approval_at_boot.
+///
+/// An operator may write the fingerprint they intend to approve; that is intent, not an
+/// observation. An approval is a statement about a document that was actually SEEN, so a
+/// registration lowered from config is PENDING until an operator approves it: the kernel's Approve
+/// step refuses it (`NotApproved`), whatever the config declared.
+#[test]
+#[ignore = "A2A-FLIP regression: the trust book treats a declared fingerprint as the pin from the start, so judge() answers Ok before any operator approval (predev: pending, not delegable)"]
+fn a_declared_fingerprint_does_not_become_an_approval_at_boot() {
+    let (b, i) = book(entry(Some("fp"), 0, 0));
+    let whole = TrustFacts {
+        counterparty: "cp",
+        item: None,
+        digest: None,
+    };
+    assert_eq!(
+        b.judge(&i, &whole),
+        Err(Distrust::NotApproved),
+        "a registration lowered from config is pending, never approved"
+    );
+    b.decide(&i, "cp", None, Ruling::Approve, None)
+        .expect("a key");
+    assert_eq!(
+        b.judge(&i, &whole),
+        Ok(()),
+        "only the operator's approval admits it"
+    );
+}

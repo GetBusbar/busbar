@@ -715,3 +715,159 @@ fn the_far_ends_whole_answer_states_the_breakers_reading() {
         assert_eq!(r.take_reading(), None, "stated once");
     }
 }
+
+/// Ported from busbar-a2a a2a/tests/rpcerror_tests.rs::push_notification_not_supported_and_extension_support_required_round_trip.
+/// The relay path looks the backend's code up and re-emits it: a backend `-32003`/`-32008` reaches
+/// the caller as itself (HTTP 400), not as the gateway fault `-32006` (502).
+#[test]
+fn a_far_ends_push_and_extension_refusals_are_relayed_as_themselves() {
+    for (code, reason) in [
+        (-32003, "PUSH_NOTIFICATION_NOT_SUPPORTED"),
+        (-32008, "EXTENSION_SUPPORT_REQUIRED"),
+    ] {
+        for addressed in [false, true] {
+            let mut r = task_sent(addressed);
+            let far = format!(
+                r#"{{"jsonrpc":"2.0","id":7,"error":{{"code":{code},"message":"backend words"}}}}"#
+            );
+            let reply = answered(&mut r, 200, far.as_bytes());
+            assert_eq!(reply.status, 400, "{code} addressed={addressed}");
+            let got = body(&reply);
+            assert_eq!(got["error"]["code"], code, "relayed code carried through");
+            assert_eq!(got["error"]["data"][0]["reason"], reason);
+            assert!(
+                !reply_text(&reply).contains("backend words"),
+                "the far end's prose never travels"
+            );
+        }
+    }
+}
+
+fn reply_text(reply: &Reply) -> String {
+    String::from_utf8_lossy(&reply.body).into_owned()
+}
+
+/// Ported from busbar-a2a a2a/tests/transport_tests.rs::a_buffered_hop_that_dies_mid_answer_bills_its_request_and_the_bytes_received.
+/// The far end reads the whole request, answers a head promising a long body, sends part of it and
+/// is cut: nothing is relayed, but the request crossed the wire and so did the bytes received, so
+/// the hop moved both (the rule a cut stream already followed).
+#[test]
+fn a_buffered_hop_that_dies_mid_answer_bills_its_request_and_the_bytes_received() {
+    const DELIVERED: usize = 300;
+    let mut r = sent();
+    let partial = vec![b'x'; DELIVERED];
+    assert_eq!(
+        r.on_piece(far(Some(200), &partial, false)),
+        Answer::Nothing,
+        "the answer is incomplete, so nothing is relayed"
+    );
+    // The connection dies here: no last piece ever arrives.
+    assert!(!r.answered(), "an answer cut short is not an answer");
+    assert_eq!(
+        r.moved(),
+        (ASK.len() + DELIVERED) as u64,
+        "the hop bills the request it carried and the bytes that arrived before the reset"
+    );
+}
+
+/// Ported from busbar-a2a a2a/tests/refusal_leak_tests.rs::every_hop_refusal_carries_its_own_stable_code.
+#[test]
+fn every_hop_refusal_carries_its_own_stable_code() {
+    let arms = [
+        HopRefusal::Status,
+        HopRefusal::BodyTooLarge,
+        HopRefusal::NotJson,
+        HopRefusal::BackendError,
+        HopRefusal::Uncorrelated,
+        HopRefusal::NotServing,
+        HopRefusal::EndpointRefused,
+    ];
+    // Exhaustive by construction: a new arm fails to compile here until it is listed above.
+    for arm in arms {
+        match arm {
+            HopRefusal::Status
+            | HopRefusal::BodyTooLarge
+            | HopRefusal::NotJson
+            | HopRefusal::BackendError
+            | HopRefusal::Uncorrelated
+            | HopRefusal::NotServing
+            | HopRefusal::EndpointRefused => {}
+        }
+    }
+    let mut seen: Vec<&'static str> = Vec::new();
+    for refusal in arms {
+        let code = refusal.client_code();
+        assert!(
+            code.starts_with("a2a.hop."),
+            "{refusal:?} has code `{code}`, outside the plane's `a2a.hop.` family"
+        );
+        assert!(
+            !seen.contains(&code),
+            "{refusal:?} reuses the code `{code}`; a code that names two refusals tells an \
+             operator nothing"
+        );
+        assert!(
+            refusal.client_text().contains(code),
+            "{refusal:?}'s caller-facing text does not carry its own code `{code}`"
+        );
+        seen.push(code);
+    }
+    assert_eq!(seen.len(), 7);
+}
+
+/// A well-formed far-end answer of exactly `len` bytes.
+fn answer_of_len(len: usize) -> Vec<u8> {
+    let head = br#"{"jsonrpc":"2.0","id":7,"result":""#;
+    let tail = br#""}"#;
+    let mut body = head.to_vec();
+    body.resize(len - tail.len(), b'a');
+    body.extend_from_slice(tail);
+    assert_eq!(body.len(), len);
+    body
+}
+
+/// Ported from busbar-a2a a2a/tests/transport_tests.rs::an_oversized_body_is_cut_one_byte_past_the_ceiling_so_the_driver_can_refuse_it.
+/// An over-cap body is kept ONE BYTE past the ceiling, which is what lets the answer's own size
+/// check refuse it: a body that ends at the ceiling and one that overran it must not look alike.
+#[test]
+fn an_oversized_body_is_cut_one_byte_past_the_ceiling_so_the_driver_can_refuse_it() {
+    // At the ceiling: relayed whole.
+    let at_cap = answer_of_len(MAX_REPLY_BYTES);
+    let reply = answered(&mut sent(), 200, &at_cap);
+    assert_eq!(reply.status, 200, "a body AT the ceiling is not over it");
+
+    // One byte over: refused.
+    let over = answer_of_len(MAX_REPLY_BYTES + 1);
+    let reply = answered(&mut sent(), 200, &over);
+    assert_eq!(reply.status, 502);
+    assert_eq!(
+        reply.body,
+        refused(
+            "a2a.hop.reply_too_large",
+            "this agent's backend replied with more than the configured ceiling"
+        )
+    );
+
+    // Far over, in pieces: only one byte past the ceiling is ever held, and it is refused.
+    let huge = answer_of_len(MAX_REPLY_BYTES * 3);
+    let mut r = sent();
+    let (a, b) = huge.split_at(MAX_REPLY_BYTES * 2);
+    assert_eq!(r.on_piece(far(Some(200), a, false)), Answer::Nothing);
+    assert_eq!(
+        r.far.len(),
+        MAX_REPLY_BYTES + 1,
+        "cut one byte past the cap"
+    );
+    let reply = match r.on_piece(far(None, b, true)) {
+        Answer::ToCaller(reply) => reply,
+        other => panic!("no answer: {other:?}"),
+    };
+    assert_eq!(
+        reply.body,
+        refused(
+            "a2a.hop.reply_too_large",
+            "this agent's backend replied with more than the configured ceiling"
+        )
+    );
+    assert_eq!(r.far.len(), MAX_REPLY_BYTES + 1);
+}

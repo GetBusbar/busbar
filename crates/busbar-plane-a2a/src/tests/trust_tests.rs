@@ -637,3 +637,55 @@ fn a_refused_hop_of_a_transport_pinned_registration_reads_as_the_pin_s_refusal()
         None
     );
 }
+
+/// Ported from busbar-a2a a2a/tests/transport_pin_tests.rs::a_transport_pinned_registration_with_no_pin_material_is_refused_rather_than_degraded.
+#[test]
+fn a_transport_pinned_registration_with_no_pin_material_is_refused_rather_than_degraded() {
+    let c = card("plans");
+    for mechanism in [PinMechanism::CertKeyPin, PinMechanism::MutualTls] {
+        // Absent, and present-but-blank, are the same: nothing to compare against.
+        for key in [None, Some("   ")] {
+            let refusal = verify(
+                &pin(mechanism, key),
+                &c,
+                &hop(Some("c29tZSBrZXk="), true),
+                || unreachable!("a transport pin never asks for a signature verdict"),
+            )
+            .expect_err("a mechanism with nothing to compare against has no root");
+            assert_eq!(
+                refusal,
+                format!(
+                    "`pin.mechanism: {}` carries no `pin.key:`; it binds the card endpoint's \
+                     certificate and there is no SubjectPublicKeyInfo hash to bind it to",
+                    mechanism.token()
+                ),
+                "{mechanism:?} with key {key:?}"
+            );
+        }
+    }
+}
+
+/// Ported from busbar-a2a a2a/tests/pin_tests.rs::the_mechanism_is_part_of_the_identity_not_a_label_beside_it.
+#[test]
+fn the_mechanism_is_part_of_the_identity_not_a_label_beside_it() {
+    let rooted = |mechanism| CardPin::Rooted {
+        mechanism,
+        key: "KEY".to_string(),
+        fingerprint: "sha256/FP".to_string(),
+    };
+    let jws = rooted(PinMechanism::JwsIssuerKey);
+    let key_pin = rooted(PinMechanism::CertKeyPin);
+    let mutual = rooted(PinMechanism::MutualTls);
+    assert_ne!(jws, key_pin);
+    assert_ne!(key_pin, mutual);
+    assert_ne!(jws, mutual);
+    assert_ne!(jws.mechanism(), key_pin.mechanism());
+    assert_eq!(
+        jws.fingerprint(),
+        key_pin.fingerprint(),
+        "the same fingerprint under two mechanisms is two identities"
+    );
+    assert_ne!(jws, CardPin::Unpinned);
+    assert_ne!(CardPin::Unpinned, key_pin);
+    assert_eq!(rooted(PinMechanism::CertKeyPin), key_pin);
+}

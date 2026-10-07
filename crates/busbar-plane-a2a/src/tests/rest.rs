@@ -246,3 +246,20 @@ fn an_answer_is_reframed_by_what_it_is() {
     assert_eq!(reframe(503, other), other.to_vec());
     assert_eq!(reframe(502, b"not json"), b"not json".to_vec());
 }
+
+/// Ported from busbar-a2a a2a/tests/rest_tests.rs::a_string_coded_refusal_re_frames_from_its_http_status.
+/// A refusal whose `code` is not a JSON-RPC integer (a deployment with no governance answers a
+/// plain document with a string one) still re-frames: the status name falls back to the HTTP
+/// status's, the only other fact the answer carries.
+#[test]
+fn a_string_coded_refusal_re_frames_from_its_http_status() {
+    let doc = br#"{"error":{"code":"unavailable","message":"no card yet"}}"#;
+    let body: Value = serde_json::from_slice(&reframe(503, doc)).expect("JSON");
+    assert_eq!(
+        body["error"]["code"],
+        json!(503),
+        "a string-coded refusal still re-frames its code to the HTTP status"
+    );
+    assert_eq!(body["error"]["status"], "UNAVAILABLE");
+    assert_eq!(body["error"]["message"], "no card yet");
+}
