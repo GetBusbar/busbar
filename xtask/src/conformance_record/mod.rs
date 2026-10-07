@@ -61,7 +61,7 @@ pub use rigs::{
     LLM_DIALECTS,
 };
 pub use slsa::{decide_slsa, provenance_commit, SlsaRun};
-pub use subject::b64url;
+pub use subject::{b64url, base_config};
 pub use tls::{decide_tls, TlsRun};
 
 /// The schema id every verdict carries (`conformance/verdicts/verdict.schema.json`, `title`).

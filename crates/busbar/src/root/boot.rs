@@ -557,7 +557,7 @@ pub fn dropped_planes_of(
 }
 
 /// The door planes [`dropped_planes_of`] discovered, waiting for the dispatcher.
-static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
+pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
     std::sync::OnceLock::new();
 
 /// The door planes [`load_door_planes`] bound, held for the process.
@@ -728,19 +728,21 @@ pub fn compose_book(
 ) -> Result<
     (
         super::durability::Durability,
-        Arc<busbar_kernel_ledger::legacy::RecordingRows>,
+        Arc<busbar_kernel_ledger::legacy::SummedRows>,
         super::migration::Migration,
     ),
     String,
 > {
-    let rows = Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
+    // The dual write's rows as running sums, one per cell: memory bounded by the cells the node
+    // settles into, never by how many settlements it makes (the journal is the durable record).
+    let rows = Arc::new(busbar_kernel_ledger::legacy::SummedRows::new());
     let mut durability = super::durability::build_for_node(
         &super::durability::DurabilityConfig {
             data_dir: data_dir.clone(),
         },
         mig.node,
         adapter.shipper(),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
+        Box::new(busbar_kernel_ledger::legacy::SummedRows::clone(&rows)),
     )
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
     // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a

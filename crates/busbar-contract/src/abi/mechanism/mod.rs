@@ -15,6 +15,7 @@
 //! * [`lifecycle`] — the slot set every kind's table leads with: validate, open, refresh, retire,
 //!   tick, drive, cancel, release, close. There is no poll slot: after a wake the host re-invokes the
 //!   same op with [`call::FLAG_RESUME`] and the same ticket.
+//! * [`extensions`] — the keyed entries the extensions blob every `in` and `out` carries holds.
 //! * [`ticket`] — tickets `(slot, generation)` with latched, spurious-tolerant wakes, completion
 //!   handles `(ticket, seq)`, and the host's `wake`.
 //!
@@ -44,6 +45,7 @@ pub mod call;
 pub mod check;
 pub mod door;
 pub mod endpoint;
+pub mod extensions;
 pub mod lifecycle;
 pub mod observe;
 pub mod rendering;
