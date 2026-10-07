@@ -12,12 +12,6 @@ use std::sync::Arc;
 const OAS_OPERATION_STATUSES: &str =
     include_str!("../../tests/fixtures/openapi_operation_statuses_key.txt").trim_ascii();
 
-/// The store a deployment that configures none runs on, as the linked store rows declare it: the
-/// compiled-in head of the store catalog. Admin names no store, and neither do its tests.
-fn default_store() -> &'static str {
-    busbar_kernel::config::MIGRATED_STORE_MODULE
-}
-
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
 /// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
 /// of a 409 "signed-token minting is unavailable". Every admin test that mints (directly or over
@@ -7289,7 +7283,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         .await
         .unwrap();
     let items = list["items"].as_array().unwrap();
-    assert_eq!(items[0]["name"], default_store());
+    assert_eq!(items[0]["name"], "memory");
     let dyn_row = items
         .iter()
         .find(|p| p["loader"] == "dynamic-library")
@@ -7476,7 +7470,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
         .map(|p| p["name"].as_str().unwrap())
         .collect();
     assert!(
-        store_names.contains(&default_store()) && store_names.contains(&"acme-store-junk"),
+        store_names.contains(&"memory") && store_names.contains(&"acme-store-junk"),
         "type=store still lists the compiled-in default + the store plugin: {store_list}"
     );
     assert!(
@@ -7592,7 +7586,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|p| p["name"] == default_store())
+        .find(|p| p["name"] == "memory")
         .expect("compiled-in memory row present");
     assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
 
@@ -7765,7 +7759,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 
     let memory_row = items
         .iter()
-        .find(|p| p["name"] == default_store())
+        .find(|p| p["name"] == "memory")
         .expect("compiled-in memory row present");
     assert_eq!(
         memory_row["file"],
@@ -10628,7 +10622,8 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         .body(
             serde_json::json!({
                 "listen": "127.0.0.1:0",
-                "store": { "module": default_store() },
+                "store": {"module": "memory"},
+                "store": { "module": "memory" },
                 "per_request_fee": 3
             })
             .to_string(),
@@ -10833,7 +10828,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": default_store(), "settings": { "licenseKey": { "env": var } } }
+                "store": { "module": "memory", "settings": { "licenseKey": { "env": var } } }
             })
             .to_string(),
         )
@@ -15680,7 +15675,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         .body(
             serde_json::json!({
                 "store": {
-                    "module": default_store(),
+                    "module": "memory",
                     "settings": { "url": "rediss://:hunter2-store@ledger.internal:6379" }
                 }
             })
@@ -15705,8 +15700,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let store = &json["settings"]["store"];
     assert_eq!(
-        store["module"],
-        default_store(),
+        store["module"], "memory",
         "the non-secret shape still introspects: {json}"
     );
     assert_eq!(

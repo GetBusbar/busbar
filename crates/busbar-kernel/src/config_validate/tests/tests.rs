@@ -4930,8 +4930,6 @@ fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
 #[test]
 fn test_validate_runs_on_resolved_root_cfg_clean_config() {
     crate::test_support::register_neutral_test_plane();
-    // The store the linked rows declare the default (the kernel names none).
-    let store = crate::config::MIGRATED_STORE_MODULE;
     let yaml = r#"
 listen: "0.0.0.0:8080"
 auth:
@@ -4962,12 +4960,11 @@ rate_card:
   claude: { input_utok: 3.0, output_utok: 15.0 }
 per_request_fee: 1
 store:
-  module: STORE
+  module: memory
 advanced:
   rate_sweep_interval: 256
-"#
-    .replace("STORE", store);
-    let cfg = resolve_yaml(&yaml).expect("the clean config must resolve");
+"#;
+    let cfg = resolve_yaml(yaml).expect("the clean config must resolve");
     assert!(
         validate(&cfg).is_ok(),
         "the resolved clean config must validate; got: {:?}",
@@ -4977,7 +4974,7 @@ advanced:
     assert_eq!(cfg.per_request_fee, 1);
     assert!(cfg.rate_card.as_ref().unwrap().contains_key("claude"));
     assert!(cfg.groups.contains_key("eng"));
-    assert_eq!(cfg.store.as_ref().unwrap().module, store);
+    assert_eq!(cfg.store.as_ref().unwrap().module, "memory");
     assert_eq!(cfg.limits.rate_sweep_interval, 256);
 }
 
