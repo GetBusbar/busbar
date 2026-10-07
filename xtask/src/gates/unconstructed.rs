@@ -1150,6 +1150,51 @@ impl Gate for UnconstructedGate {
             &["SELF-DECLARED UNSHIPPED", PLANTED_UNSHIPPED],
         ));
 
+        // ── CONTROL 13 — A DELETED DECLARATION IS RED, NOT A SMALLER GREEN. ─────────────────
+        // The declarations ARE the gate's denominator: a row struck from the file is a guard that
+        // stopped running, and the file read exactly as clean with one row as with two. Strike the
+        // last declared row and the floor must go RED, naming the count it found.
+        let ids: Vec<String> = declarations(cx)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        let one_struck = ids
+            .last()
+            .map(|id| without_declaration(&decls, id))
+            .unwrap_or_default();
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a [[capability]] declaration struck from the file reds the declaration floor",
+            &[ROW_SCAN_FLOOR],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DECLARATIONS, one_struck);
+                ov
+            },
+            &["below the declaration floor"],
+        ));
+
+        // ── CONTROL 13b — A FILE WITH NO DECLARATIONS AT ALL IS RED. ────────────────────────
+        // Every row struck, every comment kept: the file parses, every scope is walked (there are
+        // none), and the gate used to read that as `0 capability declaration(s)` and pass.
+        let none_left = ids
+            .iter()
+            .fold(decls.clone(), |text, id| without_declaration(&text, id));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a declaration file with zero [[capability]] rows reds the declaration floor",
+            &[ROW_SCAN_FLOOR],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DECLARATIONS, none_left);
+                ov
+            },
+            &["below the declaration floor", "0 capability declaration(s)"],
+        ));
+
         // ── CONTROL 11 — RESTORING THE SITE RETURNS THE ROW TO GREEN. ───────────────────────
         // Control 2's overlay with the call put back. This is what proves control 2's RED is about
         // THE MISSING CALL and not about the edit, the overlay, or the file having been touched.
@@ -1181,6 +1226,33 @@ impl Gate for UnconstructedGate {
 
         report
     }
+}
+
+/// `decls` with the live `[[capability]]` table whose `id` is `id` cut out: its header line and
+/// every key line up to the next blank line, comment or table header. Comments stay, so the plant
+/// is a declaration struck from a file that still parses.
+fn without_declaration(decls: &str, id: &str) -> String {
+    let lines: Vec<&str> = decls.lines().collect();
+    let id_line = format!("id        = \"{id}\"");
+    let Some(at) = lines.iter().position(|l| l.trim_end() == id_line) else {
+        return decls.to_string();
+    };
+    let Some(head) = lines[..at]
+        .iter()
+        .rposition(|l| l.trim() == "[[capability]]")
+    else {
+        return decls.to_string();
+    };
+    let end = lines[at..]
+        .iter()
+        .position(|l| {
+            let t = l.trim_start();
+            t.is_empty() || t.starts_with('#') || t.starts_with('[')
+        })
+        .map_or(lines.len(), |n| at + n);
+    let mut out: Vec<&str> = lines[..head].to_vec();
+    out.extend_from_slice(&lines[end..]);
+    format!("{}\n", out.join("\n"))
 }
 
 /// The production file carrying the construction site that makes `money-one-function-view` stale,
