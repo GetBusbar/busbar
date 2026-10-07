@@ -19,11 +19,11 @@
     {
       "id": "D-1 diagnostic codes",
       "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller|boot\\.deprecated-env|egress\\.image-detail)\\|",
-      "expected_cells": 490,
+      "expected_cells": 492,
       "kind": "improvement",
       "changelog": "Every error and warning line carries a diagnostic code.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell — the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) — is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged. WIDENED 2026-10-02 (owner R2, ORACLE batch, escalate.q 04:20Z): the five boot.deprecated-env cells (582) and the four egress.image-detail cells (585) recorded from the published 1.5.5 join the scope; each differs from 1.5.5 only by the `diag=BUSBAR-NNNN` suffix on a boot log line (the DEPRECATED text and every override's behaviour are 1.5.5's). Scope count 481 -> 490.",
+      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell — the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) — is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged. WIDENED 2026-10-02 (owner R2, ORACLE batch, escalate.q 04:20Z): the five boot.deprecated-env cells (582) and the four egress.image-detail cells (585) recorded from the published 1.5.5 join the scope; each differs from 1.5.5 only by the `diag=BUSBAR-NNNN` suffix on a boot log line (the DEPRECATED text and every override's behaviour are 1.5.5's). Scope count 481 -> 490. SCOPE COUNT 490 -> 492 (2026-10-05, busbar Q128 U2, ARCHITECT Q-U2-1 \"prove it with oracle cells for both refusals\"): boot.refusal|BOOT-102|validate and boot.refusal|BOOT-103|validate (a second prometheus / a second otlp instance) joined the corpus with their 1.5.5 golden recorded from the published binary; they are exec-driven cells of a family this scope already names, and each differs from 1.5.5 only by the `BUSBAR-NNNN:` code on its `[error]` line (the refusal text is 1.5.5's byte for byte). The regex, the transform and its REACH are unchanged; two more cells exist for it to reach.",
       "transform": {
         "candidate": [
           [
@@ -1916,7 +1916,7 @@
       "classes": [
         "body"
       ],
-      "rationale": "OWNER 2026-10-02: \"ledger what the plane reports; fix Gemini ledging\" and \"1.6.0 has to be bank auditor grade money\": correctness, not 1.5.5 parity. Every usageMetadata count in the pinned wire lock is ledgered in the existing meter class Google's semantics give it (prompt and toolUsePromptTokenCount -> input, cachedContentTokenCount -> cache read, candidates and thoughtsTokenCount -> output); totalTokenCount is Google's sum and is never a unit; a total above the itemized sum is WARN-logged with the gap and not ledgered. 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the ledger. On usage.gemini|tool-use|total-billed (prompt 18, toolUsePrompt 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and ledgers tokens_input 50, tokens_output 7 where 1.5.5 answered 18 / 25 and ledgered 18 / 7. usage.gemini|tool-use|total-not-a-sum (Google total 64 against the itemized 57) ledgers the same 50 / 7: the 7-token gap is reported, never ledgered (b8605a388's 'bill Google's total as output' is reverted by this ruling). usage.gemini|stream-grounded|no-tool-use-count and cached-content|subtractive ledger exactly what 1.5.5 ledgered and are not in scope.",
+      "rationale": "OWNER 2026-10-02: \"ledger what the plane reports; fix Gemini ledging\" and \"1.6.0 has to be bank auditor grade money\": correctness, not 1.5.5 parity. Every usageMetadata count in the pinned wire lock is ledgered in the existing meter class Google's semantics give it (prompt and toolUsePromptTokenCount -> input, cachedContentTokenCount -> cache read, candidates and thoughtsTokenCount -> output); totalTokenCount is Google's sum and changes no itemized count; a total above the itemized sum is ledgered by the plane as the open class unitemized_tokens and WARN-logged with the gap (OWNER LEDGER-SIMPLE 2026-10-03, settling REV-L19: \"We bill 100% of what the plane ledgers. Plane says it did x, rate card says x costs y, we bill.\" money = the sum of the plane's ledger lines x the rate card, with no other logic; LEDGER-100). 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the ledger. On usage.gemini|tool-use|total-billed (prompt 18, toolUsePrompt 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and ledgers tokens_input 50, tokens_output 7 where 1.5.5 answered 18 / 25 and ledgered 18 / 7. usage.gemini|tool-use|total-not-a-sum (Google total 64 against the itemized 57) ledgers the same 50 / 7 and its 7-token gap as 7 unitemized_tokens, priced at the card's rate for that class (LEDGER-SIMPLE), never as output (b8605a388's 'bill Google's total as output' stays reverted). usage.gemini|stream-grounded|no-tool-use-count ledgers 1.5.5's token lines plus its 32-token gap as unitemized_tokens, and cached-content|subtractive ledgers exactly what 1.5.5 ledgered; neither is a cell of this entry.",
       "premise": {
         "all": [
           {
@@ -1945,6 +1945,75 @@
           "when": "2026-10-02",
           "ruling": "owner 2026-10-02: ledger what the plane reports; fix Gemini ledging. OWNER LAW 2026-10-02: 1.6.0 has to be bank auditor grade money"
         }
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LEDGER-SIMPLE a streamed grounded Gemini turn ledgers its stated-total gap as unitemized_tokens",
+      "kind": "improvement",
+      "changelog": "**Every count a provider reports is ledgered under its own class** (owner ruling LEDGER-100).",
+      "by": "owner (Matthew Jackson), 2026-10-03: LEDGER-SIMPLE \"We bill 100% of what the plane ledgers. Plane says it did x, rate card says x costs y, we bill\" (settling REV-L19; LEDGER-100)",
+      "cells": "^usage\\.gemini\\|stream-grounded\\|no-tool-use-count$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "rationale": "OWNER LEDGER-SIMPLE 2026-10-03 (settling REV-L19): \"We bill 100% of what the plane ledgers. Plane says it did x, rate card says x costs y, we bill.\" On usage.gemini|stream-grounded|no-tool-use-count the final frame states totalTokenCount 57 over promptTokenCount 18 + candidatesTokenCount 7 and names no toolUsePromptTokenCount; the plane ledgers 1.5.5's token lines (tokens_input 18, tokens_output 7) and the 32-token gap as one unitemized_tokens line (LEDGER-100), the same gap line entry 576 forgives on usage.gemini|tool-use|total-not-a-sum. The cell's card prices no open class, so the line moves no money: spend_micros stays 32000000, the token totals and the caller's stream (usage 18 / 7 / 25) are byte-identical to 1.5.5. The ONE byte difference is in step 2 (GET /api/v1/admin/usage): by_model gains the gap line's row, recorded at by_model[0] ahead of 1.5.5's p row: {\"model\":\"m-cap\",\"provider\":\"\",\"requests\":0,\"spend_micros\":0,\"tokens_cache_creation\":0,\"tokens_cache_read\":0,\"tokens_input\":0,\"tokens_output\":0}. Diff against golden/1.5.5 (candidate lane-w1-all, bin/oracle record, 2026-10-03): by_model 1 row -> 2 rows, + {\"model\":\"m-cap\",\"provider\":\"\",\"requests\":0,\"spend_micros\":0,\"tokens_cache_creation\":0,\"tokens_cache_read\":0,\"tokens_input\":0,\"tokens_output\":0}; by_key, total, window, currency and the provider p row unchanged. The premise pins every one of those bytes, so any other change to this cell (a priced gap, a moved token, a second extra row) withholds the entry.",
+      "premise": {
+        "all": [
+          {
+            "cell": "usage.gemini|stream-grounded|no-tool-use-count",
+            "pointer": "/steps/1/body/json/total/tokens_input",
+            "equals": 18
+          },
+          {
+            "cell": "usage.gemini|stream-grounded|no-tool-use-count",
+            "pointer": "/steps/1/body/json/total/tokens_output",
+            "equals": 7
+          },
+          {
+            "cell": "usage.gemini|stream-grounded|no-tool-use-count",
+            "pointer": "/steps/1/body/json/total/spend_micros",
+            "equals": 32000000
+          },
+          {
+            "cell": "usage.gemini|stream-grounded|no-tool-use-count",
+            "pointer": "/steps/1/body/json/by_model/0",
+            "equals": {
+              "model": "m-cap",
+              "provider": "",
+              "requests": 0,
+              "spend_micros": 0,
+              "tokens_cache_creation": 0,
+              "tokens_cache_read": 0,
+              "tokens_input": 0,
+              "tokens_output": 0
+            }
+          },
+          {
+            "cell": "usage.gemini|stream-grounded|no-tool-use-count",
+            "pointer": "/steps/1/body/json/by_model/1/provider",
+            "equals": "p"
+          },
+          {
+            "cell": "usage.gemini|stream-grounded|no-tool-use-count",
+            "pointer": "/steps/1/body/json/by_model/1/spend_micros",
+            "equals": 32000000
+          },
+          {
+            "cell": "usage.gemini|stream-grounded|no-tool-use-count",
+            "pointer": "/steps/1/body/json/by_model/2",
+            "exists": false
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-03",
+        "ruling": "LEDGER-SIMPLE (owner 2026-10-03, settling REV-L19): \"We bill 100% of what the plane ledgers. Plane says it did x, rate card says x costs y, we bill\"; LEDGER-100 (owner 2026-10-03 16:15Z)"
       },
       "expires": {
         "baseline": "1.5.5",

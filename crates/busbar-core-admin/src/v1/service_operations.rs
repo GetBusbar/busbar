@@ -16,7 +16,7 @@
 //! where the block now lives.
 
 use super::*;
-use busbar_plugin_loader::sign::{TrustInput, TrustPolicy};
+use busbar_kernel::plugin_admission::sign::{TrustInput, TrustPolicy};
 
 /// `plugins.trust` resolved as boot resolves it (the loader's `TrustPolicy::from_config`), after
 /// warning about any malformed anti-downgrade floor — every admin moment the policy resolves
@@ -193,7 +193,7 @@ impl AdminService {
             .filter_map(|i| {
                 view.lane_view(i).map(|l| ModelView {
                     model: l.model.to_string(),
-                    provider: l.provider.to_string(),
+                    upstream: l.provider.to_string(),
                 })
             })
             .collect();
@@ -215,7 +215,7 @@ impl AdminService {
         let providers = counts
             .into_iter()
             .map(|(provider, model_count)| ProviderView {
-                provider: provider.to_string(),
+                upstream: provider.to_string(),
                 model_count,
             })
             .collect();
@@ -267,7 +267,7 @@ impl AdminService {
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
             // A plane section reads its registrations through the plane's `named_def_list` seam,
-            // so this arm names no `busbar_mcp::mcp`/`busbar_a2a::a2a` view or registry type; the empty vec for
+            // so this arm names no plane crate's view or registry type; the empty vec for
             // a plane compiled out is the seam's own `None`.
             NamedMapSection::Plane(_) => plane_named_def_list(section, &self.app),
         };
@@ -347,8 +347,7 @@ impl AdminService {
         let total = all.len();
         let items: Vec<GroupView> = all.into_iter().skip(start).take(limit).collect();
         let end = start.saturating_add(items.len());
-        let next_cursor =
-            (end < total).then(|| busbar_kernel::admin::v1::contract::encode_offset_cursor(end));
+        let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
         Ok(Page { items, next_cursor })
     }
 
@@ -368,8 +367,8 @@ impl AdminService {
     pub(crate) async fn get_group_usage(
         &self,
         name: &str,
-    ) -> Result<busbar_kernel::admin::v1::contract::GroupUsageView, AdminError> {
-        use busbar_kernel::admin::v1::contract::{GroupBucketUsageView, GroupUsageView};
+    ) -> Result<crate::v1::contract::GroupUsageView, AdminError> {
+        use crate::v1::contract::{GroupBucketUsageView, GroupUsageView};
         let Some(rt) = self.app.cost.group_named(name) else {
             return Err(AdminError::not_found(format!("group `{name}`")));
         };
@@ -397,7 +396,7 @@ impl AdminService {
             };
             buckets.push(GroupBucketUsageView {
                 window: b.window,
-                pool: b.scope.as_ref().map(|s| s.value.clone()),
+                scope: b.scope.as_ref().map(|s| s.value.clone()),
                 requests: usage.requests,
                 tokens: usage.tokens,
                 spend_cents: usage.spend_cents,
@@ -730,7 +729,7 @@ impl AdminService {
         // `catalog_scan_test_hooks` above for what it does and why.
         catalog_scan_test_hook!(dir);
         let mut rows = Vec::new();
-        for row in busbar_plugin_loader::inventory_tarballs(dir, policy) {
+        for row in busbar_kernel::plugin_admission::inventory_tarballs(dir, policy) {
             let trust = if row.status == "ready" {
                 if row.signature == "first-party" || row.signature.starts_with("publisher:") {
                     Some("trusted")
@@ -874,8 +873,10 @@ impl AdminService {
         &self,
         file: &str,
         tarball: &[u8],
-    ) -> Result<busbar_kernel::admin::v1::contract::PluginInstallView, AdminError> {
-        use busbar_plugin_loader::sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
+    ) -> Result<crate::v1::contract::PluginInstallView, AdminError> {
+        use busbar_kernel::plugin_admission::sign::{
+            evaluate, validate_structure, Verdict, HOST_IDENTITY,
+        };
 
         // ── 1. filename sanity: a bare tarball filename ──
         let file = validate_plugin_filename(file)?;
@@ -884,12 +885,12 @@ impl AdminService {
             .map_err(AdminError::Validation)?;
 
         // ── 2. STRUCTURAL: in-memory unpack + manifest completeness + integrity + abi ──
-        let unpacked = busbar_plugin_loader::tarball::unpack(tarball)
+        let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
             .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
         validate_structure(
             &unpacked.manifest,
             &unpacked.lib_bytes,
-            &busbar_plugin_loader::supported_abi,
+            &busbar_kernel::plugin_admission::supported_abi,
             HOST_IDENTITY,
         )
         .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
@@ -914,15 +915,15 @@ impl AdminService {
         // FAIL-OPEN GAP: a corrupt tarball already in the plugins dir makes scan_and_validate Err.
         // The old `if let Ok(reg)` SILENTLY SKIPPED the conflict check and published anyway. Propagate
         // it as a Conflict so we never admit a plugin whose conflict status we could not determine.
-        let reg = busbar_plugin_loader::scan_and_validate(&self.app.plugins_dir, &policy).map_err(
-            |errors| {
-                AdminError::Conflict(format!(
+        let reg =
+            busbar_kernel::plugin_admission::scan_and_validate(&self.app.plugins_dir, &policy)
+                .map_err(|errors| {
+                    AdminError::Conflict(format!(
                     "cannot validate the installed plugin set before publishing (fix or remove the \
                      offending tarball first): {}",
                     errors.join("; ")
                 ))
-            },
-        )?;
+                })?;
         for existing in reg.loadable() {
             if existing.file == file {
                 continue; // overwriting the same tarball file is a legitimate upgrade
@@ -972,7 +973,7 @@ impl AdminService {
             AdminError::Validation(format!("cannot publish plugin into plugins dir: {e}"))
         })?;
 
-        Ok(busbar_kernel::admin::v1::contract::PluginInstallView {
+        Ok(crate::v1::contract::PluginInstallView {
             file,
             name: manifest.name.clone(),
             interface_version: manifest.abi_version,
@@ -1002,10 +1003,10 @@ impl AdminService {
     /// base64-encoded, COMPRESSED ARCHIVE, reachable by the WEAKEST admin credential in the system,
     /// and the archive must be decompressed and its manifest parsed BEFORE the signature can even be
     /// checked, so the trust check happens strictly after the dangerous part):
-    ///   1. a hard cap on the DECODED tarball size, `busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES`
+    ///   1. a hard cap on the DECODED tarball size, `busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES`
     ///      — the same ceiling `POST /plugins` (install) and the on-disk catalog scan both already
     ///      enforce, checked here BEFORE `unpack` ever runs;
-    ///   2. `busbar_plugin_loader::tarball::unpack` itself streams each archive member through a
+    ///   2. `busbar_kernel::plugin_admission::tarball::unpack` itself streams each archive member through a
     ///      cap enforced DURING decompression (`read_entry_bounded`'s `.take(cap + 1)`) — a
     ///      decompression bomb fails fast, never after allocating the bomb — and rejects any
     ///      non-regular-file or path-traversal entry name outright, and errors immediately on a
@@ -1022,25 +1023,27 @@ impl AdminService {
     ///      `ratelimit::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
     pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
-        use busbar_plugin_loader::sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
+        use busbar_kernel::plugin_admission::sign::{
+            evaluate, validate_structure, Verdict, HOST_IDENTITY,
+        };
 
-        if tarball.len() as u64 > busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES {
+        if tarball.len() as u64 > busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES {
             return Err(AdminError::Validation(format!(
                 "decoded tarball is {} bytes, exceeding the {}-byte cap",
                 tarball.len(),
-                busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES
+                busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES
             )));
         }
 
         let policy = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION"))
             .map_err(AdminError::Validation)?;
 
-        let unpacked = busbar_plugin_loader::tarball::unpack(tarball)
+        let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
             .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
         validate_structure(
             &unpacked.manifest,
             &unpacked.lib_bytes,
-            &busbar_plugin_loader::supported_abi,
+            &busbar_kernel::plugin_admission::supported_abi,
             HOST_IDENTITY,
         )
         .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
@@ -1076,7 +1079,7 @@ impl AdminService {
             "schema_error": schema_error,
             "trust": trust,
             "source": "manifest",
-            "restart_required_default": busbar_plugin_loader::sign::kind_restart_default(&manifest.kind),
+            "restart_required_default": busbar_kernel::plugin_admission::sign::kind_restart_default(&manifest.kind),
         }))
     }
 
@@ -1087,7 +1090,7 @@ impl AdminService {
     pub(crate) fn remove_store_plugin(
         &self,
         file: &str,
-    ) -> Result<busbar_kernel::admin::v1::contract::PluginRemoveView, AdminError> {
+    ) -> Result<crate::v1::contract::PluginRemoveView, AdminError> {
         let file = validate_plugin_filename(file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
@@ -1099,7 +1102,7 @@ impl AdminService {
         // it on the next boot.
         busbar_kernel::durable::remove(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot remove plugin: {e}")))?;
-        Ok(busbar_kernel::admin::v1::contract::PluginRemoveView {
+        Ok(crate::v1::contract::PluginRemoveView {
             file,
             removed: true,
         })
@@ -1112,7 +1115,7 @@ impl AdminService {
     /// next store (re)load, not as a hot swap.
     pub(crate) fn reload_store_plugins(
         &self,
-    ) -> Result<busbar_kernel::admin::v1::contract::PluginReloadView, AdminError> {
+    ) -> Result<crate::v1::contract::PluginReloadView, AdminError> {
         // Reuse the store catalog projection, dropping the compiled-in `memory` head (reload reports
         // only the on-disk dynamic set it reconciled).
         let plugins: Vec<PluginView> = self
@@ -1120,7 +1123,7 @@ impl AdminService {
             .into_iter()
             .filter(|p| p.loader == "dynamic-library")
             .collect();
-        Ok(busbar_kernel::admin::v1::contract::PluginReloadView {
+        Ok(crate::v1::contract::PluginReloadView {
             plugins,
             note:
                 "hot-reloaded the plugin layer LIVE: a new plugin registry and new kind:hook \
@@ -1148,12 +1151,14 @@ impl AdminService {
         prior_pins: &std::collections::BTreeMap<String, String>,
     ) -> Result<
         (
-            busbar_plugin_loader::sign::Manifest,
+            busbar_kernel::plugin_admission::sign::Manifest,
             std::collections::BTreeMap<String, String>,
         ),
         AdminError,
     > {
-        use busbar_plugin_loader::sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
+        use busbar_kernel::plugin_admission::sign::{
+            evaluate, validate_structure, Verdict, HOST_IDENTITY,
+        };
         let file = validate_plugin_filename(file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
@@ -1161,12 +1166,12 @@ impl AdminService {
         }
         let bytes = std::fs::read(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot read plugin `{file}`: {e}")))?;
-        let unpacked = busbar_plugin_loader::tarball::unpack(&bytes)
+        let unpacked = busbar_kernel::plugin_admission::tarball::unpack(&bytes)
             .map_err(|e| AdminError::Validation(format!("invalid plugin tarball `{file}`: {e}")))?;
         validate_structure(
             &unpacked.manifest,
             &unpacked.lib_bytes,
-            &busbar_plugin_loader::supported_abi,
+            &busbar_kernel::plugin_admission::supported_abi,
             HOST_IDENTITY,
         )
         .map_err(|e| AdminError::Validation(format!("invalid plugin manifest `{file}`: {e}")))?;
@@ -1292,11 +1297,11 @@ impl AdminService {
     /// confident wrong answer. A refusal rather than an empty body, because an empty body is a
     /// silent zero wearing a different hat (#42).
     fn validated_snapshot(
-        history: Option<&busbar_kernel_ledger::cost::History>,
+        history: Option<&busbar_kernel::cost::History>,
         seq: u64,
-    ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AdminError> {
+    ) -> Result<busbar_kernel::cost::HistorySeq, AdminError> {
         let head = history
-            .and_then(busbar_kernel_ledger::cost::History::head)
+            .and_then(busbar_kernel::cost::History::head)
             .ok_or_else(|| {
                 AdminError::Validation(
                     "as_of names a rate-card history snapshot; this node has resolved no \
@@ -1310,7 +1315,7 @@ impl AdminService {
                  not exist is refused, never answered at the head"
             )));
         }
-        Ok(busbar_kernel_ledger::cost::HistorySeq(seq))
+        Ok(busbar_kernel::cost::HistorySeq(seq))
     }
 
     /// `GET /api/v1/admin/usage` — the fleet METERING read (FinOps surface): the current UTC-day
@@ -1434,7 +1439,7 @@ impl AdminService {
         // THE COUNT CORRECTIONS (item 404, OWNER RULING Q9): every `adjust` the node amendment
         // journal sealed, read ONCE for the whole response. Each row prices its counts AS CORRECTED
         // (`row_count_corrections`), never a money figure a correction carried — it carries none.
-        let corrections = busbar_kernel::audit::amend::node_corrections();
+        let corrections = amend::node_corrections();
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
@@ -1505,7 +1510,7 @@ impl AdminService {
             // card nobody put in force for it; the record has a gap and the read says so.
             //
             // THE PRICING ITSELF IS NOT HERE AND IS NOT THIS CRATE'S: the row is handed to
-            // `busbar_kernel_ledger::cost::price_in_view`, THE ONE FUNCTION, which resolves the
+            // the ledger's `cost::price_in_view`, THE ONE FUNCTION, which resolves the
             // card at the instant below and prices against it. See
             // `derive_spend_micros_row_at_card`.
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
@@ -1521,7 +1526,7 @@ impl AdminService {
                     Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
                         v, at, card, &cost, &lane, &row_view, classes,
                     ),
-                    None => Err(busbar_kernel_ledger::cost::MoneyError::NoCardInForce { at }),
+                    None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
                 },
                 None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
             };
@@ -1545,7 +1550,7 @@ impl AdminService {
                         Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
                             v, at, card, &cost, &lane, &none, &one,
                         ),
-                        None => Err(busbar_kernel_ledger::cost::MoneyError::NoCardInForce { at }),
+                        None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
                     },
                     None => derive_spend_micros_row_classes(&cost, &lane, &none, &one),
                 }
@@ -1603,7 +1608,7 @@ impl AdminService {
             .into_iter()
             .map(|((model, provider), usage)| ModelUsageView {
                 model,
-                provider,
+                upstream: provider,
                 usage,
             })
             .collect();

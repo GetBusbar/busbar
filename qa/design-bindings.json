@@ -1249,7 +1249,7 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_still_reports_what_streamed",
+     "ref": "crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_bills_nothing",
      "proves": "a translate abort bills no tokens",
      "source": "curated",
      "status": "mapped"
@@ -1284,7 +1284,7 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte",
+     "ref": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte",
      "proves": "a client disconnect refunds the lane unit",
      "source": "curated",
      "status": "mapped"
@@ -1298,7 +1298,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, oracle-cell:route.failover|fo|primary-cut-stream, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_stream_cut_after_its_first_byte_refunds_nothing, test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_still_reports_what_streamed, test:crates/busbar-plane-llm/tests/exchange_reply.rs::an_untranslatable_answer_is_the_callers_500, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_cut_before_the_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_buffered_answer_cut_after_its_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_cancelled_stream_meters_only_a_reported_bill, test:crates/busbar/src/root/tests/serve_door.rs::the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, oracle-cell:route.failover|fo|primary-cut-stream, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_stream_cut_after_its_first_byte_refunds_nothing, test:crates/busbar-plane-llm/tests/exchange_reply_ported.rs::a_reframed_stream_whose_translator_gives_up_faults_and_bills_nothing, test:crates/busbar-plane-llm/tests/exchange_reply.rs::an_untranslatable_answer_is_the_callers_500, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_cut_before_the_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/tests/members/egress/route/walk_tests.rs::a_buffered_answer_cut_after_its_first_byte_refunds_the_budget_unit, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::a_cancelled_stream_meters_only_a_reported_bill, test:crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte, test:crates/busbar-kernel/src/plane_driver/tests/money_tests.rs::an_undelivered_end_refunds_the_flat_fee"
   },
   {
    "id": "PB-28",
@@ -2672,7 +2672,7 @@
    "surface": "admitted units and money",
    "binding": "on every 1.5.5-shaped deployment an ADMITTED `http`/`sse` unit is never ended for money: no `Aborted(Kernel { OverBudget })`, no `Aborted(Kernel { OverdraftCeiling })`; the overdraft ceiling is unbounded (flag-only) on every Migration-sealed bucket; `OverdraftCeiling` and `StaleSlice` are never refusal reasons on a 1.5.5 config; token overshoot is bounded only by the in-flight admitted requests, exactly as at the tag",
    "inventory": "governance; proxy-hooks",
-   "note": "Resolved 2026-09-06: all three reason codes DO exist -- crates/busbar-caps/src/decision.rs declares OverBudget, OverdraftCeiling and StaleSlice, and OverBudget is constructed six times in production, once at crates/busbar-llm/src/unit/admit.rs:203 as a Decision::refuse at StepName::Admit. The row was carried unproven on a note that was wrong on the fact. Every clause of this binding is a claim that a SHAPE DOES NOT OCCUR, which no behavioural test can settle, so it is settled on the shipped VOCABULARY by crates/busbar/tests/money_never_ends_an_admitted_unit.rs: the set of reasons the tree constructs inside `Abort::Kernel` is exactly {ClientGone, Drain} and contains no money reason; the set it constructs inside `Refusal::new` contains OverBudget (the non-vacuity, and the binding's positive half -- money refuses at a door) and neither OverdraftCeiling nor StaleSlice; and `Overdraft::Ceiling` is named in one production file, the module defining the rule, so no shipped path branches on the ceiling and KernelVerb::SetOverdraftCeiling carries no payload -- flag-only. The behavioural half is where the behaviour is: crates/busbar/src/root/tests/serve_door.rs's the_pools_door_attributes_spend_and_a_spent_budget_refuses (the door's U11 cover of the engine's over-budget admit test, FLIP-LLM) and crates/busbar/src/root/tests/durability.rs's a_spend_past_the_reservation_is_carried_out_as_an_overdraft (the unit settles; the chain holds its counts and no figure; the rebuilt book derives the carry at read).",
+   "note": "Resolved 2026-09-06: all three reason codes DO exist -- crates/busbar-caps/src/decision.rs declares OverBudget, OverdraftCeiling and StaleSlice, and OverBudget is constructed six times in production, once at crates/busbar-llm/src/unit/admit.rs:203 as a Decision::refuse at StepName::Admit. The row was carried unproven on a note that was wrong on the fact. Every clause of this binding is a claim that a SHAPE DOES NOT OCCUR, which no behavioural test can settle, so it is settled on the shipped VOCABULARY by crates/busbar/tests/money_never_ends_an_admitted_unit.rs: the set of reasons the tree constructs inside `Abort::Kernel` is exactly {ClientGone, Drain} and contains no money reason; the set it constructs inside `Refusal::new` contains OverBudget (the non-vacuity, and the binding's positive half -- money refuses at a door) and neither OverdraftCeiling nor StaleSlice; and `Overdraft::Ceiling` is named in one production file, the module defining the rule, so no shipped path branches on the ceiling and KernelVerb::SetOverdraftCeiling carries no payload -- flag-only. The behavioural half is where the behaviour is: crates/busbar/src/root/tests/serve_tests.rs's the_pools_door_attributes_spend_and_a_spent_budget_refuses (the door's U11 cover of the engine's over-budget admit test, FLIP-LLM) and crates/busbar/src/root/tests/durability.rs's a_spend_past_the_reservation_is_carried_out_as_an_overdraft (the unit settles; the chain holds its counts and no figure; the rebuilt book derives the carry at read).",
    "status": "mapped",
    "checks": [
     {
@@ -2726,14 +2726,14 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar/src/root/tests/serve_door.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses",
+     "ref": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses",
      "proves": "the behavioural half on the http/sse plane's own admission path: an over-budget request is a Decision::refuse at StepName::Admit carrying ReasonCode::OverBudget, charging nothing and leaving the ledger untouched -- a door, not an end",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw, test:crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on, test:crates/busbar/src/root/tests/serve_door.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses"
+   "verdict_detail": "test:crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw, test:crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on, test:crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_attributes_spend_and_a_spent_budget_refuses"
   },
   {
    "id": "PB-59",
@@ -2898,7 +2898,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix",
+     "ref": "crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix",
      "proves": "reads are read-only, mutations full, config/validate and plugins/inspect read-only",
      "source": "curated",
      "status": "mapped"
@@ -2919,7 +2919,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
+   "verdict_detail": "test:crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
   },
   {
    "id": "PB-63",
@@ -3292,7 +3292,7 @@
   {
    "id": "PB-69",
    "surface": "ingress server posture",
-   "binding": "ALPN `http/1.1` only (no h2 served); hyper `header_read_timeout` 30 s; `limits.request_body_read_timeout_secs` 30; `tls_handshake_timeout_secs` 10; header size and count limits as hyper's defaults; the 64 KiB cursor / credential budgets never refuse a request 1.5.5 accepted (PB-18)",
+   "binding": "ALPN `h2, http/1.1` (OWNER RULING Q137, 2026-10-04: a signed change from 1.5.5's `http/1.1` only; an `h2` connection is served HTTP/2, a client offering only `http/1.1` or no ALPN is served as in 1.5.5); hyper `header_read_timeout` 30 s; `limits.request_body_read_timeout_secs` 30; `tls_handshake_timeout_secs` 10; header size and count limits as hyper's defaults; the 64 KiB cursor / credential budgets never refuse a request 1.5.5 accepted (PB-18)",
    "inventory": "auth-secrets :2171; routes-admin :511; config :272-273",
    "status": "mapped",
    "checks": [

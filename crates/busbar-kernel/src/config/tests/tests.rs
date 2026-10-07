@@ -358,7 +358,7 @@ fn test_otlp_folds_into_an_export_instance() {
         otlp,
         vec![(
             "traces",
-            crate::config::EXPORT_MODULE_OTLP,
+            "otlp",
             Some(&serde_json::json!("http://localhost:4318/v1/traces"))
         )]
     );
@@ -3410,8 +3410,8 @@ fn secrets_block_stays_module_keyed_by_design() {
 
 /// `export:` is a NAMED map, so the SAME module can back MULTIPLE instances — the exact
 /// thing the retired TYPE-KEYED block could not express (two `request-log-webhook`s to two URLs).
-/// The two SINGLETON modules (`prometheus` owns the one `/metrics` route; `otlp`, in 1.5.5's frozen
-/// words) reject a second instance LOUDLY rather than silently ignoring it.
+/// A module whose row states the `one_instance` mark refuses a second instance LOUDLY, in its own
+/// words, rather than silently ignoring it.
 ///
 /// The type-keyed `ExportCfg` had one `Option` per module, so a second webhook was
 /// unrepresentable and this test could not be written at all.
@@ -3440,27 +3440,32 @@ fn export_named_map_allows_two_instances_of_one_module() {
         serde_json::json!(9)
     );
 
-    // A second singleton instance is a loud error, never a silent loss.
-    for module in ["prometheus", "otlp"] {
-        let settings = if module == "prometheus" {
-            "{ buffer_seconds: 60 }"
-        } else {
-            "{ url: \"http://otel:4318/v1/traces\" }"
-        };
-        let defs: crate::config::ExportDefs = serde_yaml::from_str(&format!(
-            "one: {{ module: {module}, settings: {settings} }}\n\
-             two: {{ module: {module}, settings: {settings} }}\n"
-        ))
-        .expect("parses");
-        let mut errors = Vec::new();
-        let _ = crate::config::resolve_export(&defs, &mut errors);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("second") && e.contains(module)),
-            "a second `{module}` instance must be rejected; got {errors:?}"
-        );
-    }
+    // A second instance of a module whose row states the `one_instance` mark is that module's own
+    // refusal, asked of its limits check while the configuration is resolved and rendered verbatim:
+    // the scrape sink linked into this binary words it as 1.5.5 did. The extra instance is not
+    // resolved. (The trace sink's line is pinned against the 1.5.5 golden by the shipped binary,
+    // `crates/busbar/tests/validate_matches_the_1_5_5_golden.rs`.)
+    let defs: crate::config::ExportDefs = serde_yaml::from_str(
+        "one: { module: prometheus, settings: { buffer_seconds: 60 } }\n\
+         two: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
+    )
+    .expect("parses");
+    let mut errors = Vec::new();
+    let export = crate::config::resolve_export(&defs, &mut errors);
+    assert_eq!(
+        errors,
+        vec![
+            "export.two: a second `module: prometheus` instance (already defined as 'one'). \
+             Prometheus serves the ONE well-known /metrics route, so a second instance could only \
+             be silently ignored — keep a single instance."
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        export.plugins.len(),
+        1,
+        "the extra instance is not resolved"
+    );
 
     // An unknown module is refused naming the modules this build serves, never silently dropped.
     // Which sinks are linked depends on whether this test binary's axis is installed yet (a
@@ -3786,8 +3791,8 @@ static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
 /// literal, so the neutral section lands exactly where `decisions:` does — and the seam takes its
 /// raw arm. The typed half — that the
 /// hooks are wired, that `deny_unknown_fields` runs inside the block, and that `decisions: "hello"`
-/// is REFUSED — is proven where the owning decl is written and registrable,
-/// `crates/busbar/src/root/tests/plane_decisions.rs`.
+/// is REFUSED — is proven on the served build, where the plane's door folds its row and judges its
+/// section with its own `validate` (`crates/busbar/tests/cli_validate.rs`, the decisions block).
 #[test]
 fn test_decisions_section_parses() {
     let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[

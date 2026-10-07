@@ -340,7 +340,12 @@ fn resolve_upgrading(
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
-    let auths = super::OutboundAuths::new(dispatcher, crate::LINKED.auths, None, None);
+    let auths = super::OutboundAuths::new(
+        dispatcher,
+        crate::LINKED.auths,
+        None,
+        crate::root::loader::dispatch::ConnTable::NoNeeds,
+    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let conns: std::sync::Arc<dyn busbar_contract::conn::PollConns> =
         std::sync::Arc::new(busbar_core_connector::Connector::new());
@@ -785,7 +790,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         dispatcher,
         &linked,
         None,
-        Some(std::sync::Arc::clone(&table)
+        crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(&table)
             as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
     );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();

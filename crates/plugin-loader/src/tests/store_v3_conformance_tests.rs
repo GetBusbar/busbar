@@ -41,7 +41,7 @@ fn bind(d: &Dispatcher) -> Bind {
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
     }
 }
 

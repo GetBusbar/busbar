@@ -432,7 +432,7 @@ fn served_dialects() -> Vec<String> {
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: probe.adopter(),
-                    conns: None,
+                    conns: crate::root::loader::dispatch::ConnTable::Probe,
                 },
             )
             .expect("a linked door binds");
