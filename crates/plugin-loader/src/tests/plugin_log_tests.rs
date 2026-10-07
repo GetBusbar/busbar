@@ -68,6 +68,8 @@ fn config(dir: &Path, level: LogLevel) -> PluginLogConfig {
         rotate_bytes: None,
         keep: 5,
         named_dir: true,
+        ..PluginLogConfig::from_words(None, None, &Default::default(), None, None)
+            .expect("the defaults resolve")
     }
 }
 
@@ -570,5 +572,178 @@ fn a_full_log_queue_counts_its_lines_and_never_waits() {
     assert!(
         lost + LOG_QUEUE_LINES + 1 >= sent,
         "the queue held at most {LOG_QUEUE_LINES} lines and the writer one: {lost} lost"
+    );
+}
+
+/// One `info` record of `text`, handed to `s`.
+fn info(s: &PluginLogSink, text: &[u8]) {
+    s.diag(crate::dispatch::Diagnostic {
+        id: busbar_contract::abi::mechanism::call::DIAG_LOG,
+        name: &[],
+        severity: busbar_contract::abi::mechanism::call::SEVERITY_INFO,
+        text,
+    });
+}
+
+/// **RED ARM: ONE FILE, ONE STATE.** Two live sinks of one instance (an auth row is bound anew
+/// under one label) write one file: it rotates by the size of everything in it, once, and no line
+/// lands in an archive through a descriptor a rotation left behind. Oldest archive first, the files
+/// hold one unbroken run of lines; none passes the size by more than a line; `keep` archives stay.
+#[test]
+fn two_sinks_of_one_file_rotate_it_once_and_never_write_an_archive() {
+    let dir = scratch("one-file");
+    let mut cfg = config(&dir, LogLevel::Info);
+    cfg.rotate_bytes = Some(300);
+    cfg.keep = 3;
+    let open = || {
+        cfg.sink("shared", witness::KIND, Arc::new(NoSink))
+            .expect("the sink opens")
+            .with_clock(fixed_clock)
+    };
+    let (a, b) = (open(), open());
+    for i in 0..40 {
+        let s = if i % 2 == 0 { &a } else { &b };
+        info(s, format!("seq {i:04}").as_bytes());
+        s.flush();
+    }
+    let live = dir.join("shared.log");
+    let archive = |i: u32| PathBuf::from(format!("{}.{i}", live.display()));
+    let files: Vec<String> = [archive(3), archive(2), archive(1), live.clone()]
+        .iter()
+        .map(|p| std::fs::read_to_string(p).unwrap_or_default())
+        .collect();
+    let beyond = archive(4).exists();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!beyond, "more than keep archives");
+    let seqs: Vec<u32> = files
+        .iter()
+        .flat_map(|f| f.lines())
+        .filter_map(|l| l.split("seq ").nth(1)?.parse().ok())
+        .collect();
+    assert!(
+        seqs.windows(2).all(|w| w[1] == w[0] + 1) && seqs.last() == Some(&39),
+        "the files hold one run of lines, oldest archive first: {seqs:?}\n{files:#?}"
+    );
+    let line = files[3].lines().next().map_or(0, |l| l.len() as u64 + 1);
+    for f in &files {
+        assert!(
+            f.len() as u64 <= 300 + line,
+            "a file passed the size by more than a line:\n{f}"
+        );
+    }
+}
+
+/// **RED ARM: A FAILED ROTATION IS REPORTED ONCE AND BACKS OFF.** Where the archive goes stands a
+/// directory that is not empty, so every rotation of the file fails: the file says so once, keeps
+/// every line, and the directory is left as it was.
+#[test]
+fn a_failed_rotation_is_reported_once_and_keeps_every_line() {
+    let dir = scratch("rotate-fails");
+    let mut cfg = config(&dir, LogLevel::Info);
+    cfg.rotate_bytes = Some(200);
+    cfg.keep = 1;
+    let s = cfg
+        .sink("stuck", witness::KIND, Arc::new(NoSink))
+        .expect("the sink opens")
+        .with_clock(fixed_clock);
+    let blocker = dir.join("stuck.log.1").join("held");
+    std::fs::create_dir_all(&blocker).expect("a directory where the archive goes");
+    for i in 0..30 {
+        info(&s, format!("line {i:02}").as_bytes());
+    }
+    s.flush();
+    let text = std::fs::read_to_string(dir.join("stuck.log")).unwrap_or_default();
+    let kept = blocker.is_dir();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(kept, "the directory in the archive's place was touched");
+    assert_eq!(
+        text.matches("could not be rotated").count(),
+        1,
+        "a failed rotation is one line, once:\n{text}"
+    );
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.contains(" INFO  stuck export line "))
+            .count(),
+        30,
+        "{text}"
+    );
+}
+
+/// **RED ARM: A PATH IS ROTATED AS ITSELF.** A directory whose name is not UTF-8 rotates its own
+/// file: no lossy copy of its name is renamed in its place.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_under_a_name_that_is_not_utf8_rotates() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let root = scratch("not-utf8");
+    let dir = root.join(std::ffi::OsStr::from_bytes(b"logs-\xff"));
+    let mut cfg = config(&dir, LogLevel::Info);
+    cfg.rotate_bytes = Some(120);
+    let s = cfg
+        .sink("raw", witness::KIND, Arc::new(NoSink))
+        .expect("the sink opens")
+        .with_clock(fixed_clock);
+    for i in 0..8 {
+        info(&s, format!("line {i}").as_bytes());
+    }
+    s.flush();
+    let mut archive = dir.join("raw.log").into_os_string();
+    archive.push(".1");
+    let rotated = Path::new(&archive).is_file();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        rotated,
+        "the file under a non-UTF-8 directory was never rotated"
+    );
+}
+
+/// **RED ARM: EVERY CONTROL CHARACTER IS ESCAPED.** ESC, NUL, DEL and a tab reach the file as
+/// `\u{..}`, and a line break and a carriage return as `\n` and `\r`, as before: nothing raw.
+#[test]
+fn every_control_character_in_a_record_is_written_escaped() {
+    let dir = scratch("escape");
+    let s = sink(&dir, LogLevel::Trace);
+    info(&s, b"red \x1b[31m nul \0 del \x7f tab \t line\nbreak\r");
+    let text = read(&dir, &s);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        text.ends_with(
+            " INFO  log-witness export red \\u{1b}[31m nul \\u{0} del \\u{7f} tab \\u{9} line\\nbreak\\r\n"
+        ),
+        "{text:?}"
+    );
+    assert_eq!(
+        text.bytes().filter(|b| b.is_ascii_control()).count(),
+        1,
+        "only the line's own end is a control byte: {text:?}"
+    );
+}
+
+/// **RED ARM: A CONFIG APPLY REACHES A LIVE SINK** (THE DESIGN §11.2). A sink opened under `warn`
+/// in one directory drops an `info` line; reconfigured to `info` in another, it writes the next one
+/// there (the directory created as at bind) and nothing to the first.
+#[test]
+fn a_reconfigured_level_and_directory_reach_a_live_sink() {
+    let (first, second) = (scratch("reconf-a"), scratch("reconf-b").join("made"));
+    let cfg = config(&first, LogLevel::Warn);
+    let s = cfg
+        .clone()
+        .sink(INSTANCE, witness::KIND, Arc::new(NoSink))
+        .expect("the sink opens")
+        .with_clock(fixed_clock);
+    info(&s, b"before");
+    cfg.reconfigure(&config(&second, LogLevel::Info));
+    info(&s, b"after");
+    s.flush();
+    let read = |d: &Path| std::fs::read_to_string(d.join("log-witness.log")).unwrap_or_default();
+    let (a, b) = (read(&first), read(&second));
+    assert_eq!(cfg.level_for(INSTANCE), LogLevel::Info);
+    let _ = std::fs::remove_dir_all(&first);
+    let _ = std::fs::remove_dir_all(second.parent().unwrap_or(&second));
+    assert!(a.is_empty(), "the first directory got a line: {a}");
+    assert!(
+        b.ends_with(" INFO  log-witness export after\n") && !b.contains("before"),
+        "{b}"
     );
 }

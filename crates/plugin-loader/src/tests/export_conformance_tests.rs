@@ -251,7 +251,7 @@ impl DiskHost {
             .rotate_at
             .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
         let (rotated, failed) = if due {
-            crate::host::rotate(&dest.path, dest.keep)
+            crate::host::rotate(std::path::Path::new(&dest.path), dest.keep)
         } else {
             (false, Vec::new())
         };

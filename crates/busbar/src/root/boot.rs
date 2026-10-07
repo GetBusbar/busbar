@@ -625,6 +625,27 @@ pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLog
     })
 }
 
+/// FOLLOW A CONFIG APPLY'S `plugins.logs` (THE DESIGN §11.2: a plugin's level and its file's
+/// rotation change through an apply): `logs`, and every sink opened from it or a clone of it, take
+/// the applied words, live sinks at their next line. Words that do not resolve keep the ones in
+/// force (the apply's pre-flight refuses them first).
+pub(crate) fn follow_plugin_logs(
+    logs: &crate::root::loader::dispatch::PluginLogConfig,
+    plugins: &busbar_kernel::config::PluginsCfg,
+) {
+    let l = &plugins.logs;
+    match crate::root::loader::dispatch::PluginLogConfig::from_words(
+        l.dir.as_deref(),
+        l.level.as_deref(),
+        &l.levels,
+        l.rotate_mb,
+        l.keep,
+    ) {
+        Ok(next) => logs.reconfigure(&next),
+        Err(e) => tracing::warn!(error = %e, "plugins.logs kept its words across a config apply"),
+    }
+}
+
 /// Every plane bound through its door, by instance name (empty until [`load_door_planes`] runs).
 pub fn door_planes() -> &'static [(String, DoorPlane)] {
     DOOR_PLANES.get().map_or(&[], Vec::as_slice)
