@@ -652,9 +652,18 @@ impl<'s> DoorSteps<'s> {
         let (Some(gov), Some(money)) = (self.app.governance.as_ref(), self.money) else {
             return Ok(false);
         };
+        // A `ROUTE_SCOPE_LOCAL` unit walks no route, and is charged as a direct route to the one
+        // entry its scope resolved to: predev admitted and metered a locally-answered verb on the
+        // agent `select` chose (origin/predev receive.rs:1264 `select`, :1290 `resource` =
+        // `agent:<id>`, :1543 the admission on its lane, :1717 `meter_request` on it).
         let (routed, expected) = {
             let u = self.lock();
-            (u.routed.clone(), u.expected.clone())
+            let routed = u.routed.clone().or_else(|| {
+                u.resolved
+                    .as_deref()
+                    .and_then(|one| self.pools.resolve(ROUTE_DIRECT, Some(one.as_bytes())))
+            });
+            (routed, u.expected.clone())
         };
         let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
         let pool = self.charged_pool(label);

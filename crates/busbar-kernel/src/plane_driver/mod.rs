@@ -1099,16 +1099,21 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             run.lend_unit(self.arrival.claim, dialect, &caller_ref, 0);
         }
         // A UNIT ITS PLANE ANSWERS AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`): no route is
-        // walked (the steps sealed none), and the plane is told the entry its scope resolved to.
+        // walked, whatever far end the unit was handed, and the plane is told the entry its scope
+        // resolved to.
         let scope_local = self
             .lock()
             .decoded
             .as_ref()
             .is_some_and(|d| d.route == ROUTE_SCOPE_LOCAL);
-        if let Some(entry) = scope_local.then(|| self.steps.resolved(ctx)).flatten() {
-            run.lend_resolved(&entry);
-        }
-        let end = self.attempts(&mut run, None).await;
+        let end = if scope_local {
+            if let Some(entry) = self.steps.resolved(ctx) {
+                run.lend_resolved(&entry);
+            }
+            self.answered_here(&mut run).await
+        } else {
+            self.attempts(&mut run, None).await
+        };
         // THE `response` STAGE TAP of a unit whose answer never reached the caller's head (the
         // head itself fires it, in the pump): the status the caller is answered under.
         match &end {
