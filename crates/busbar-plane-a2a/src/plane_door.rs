@@ -1280,13 +1280,18 @@ fn open_task(
     hop.opening = None;
     hop.now = None;
     match opened {
-        Opened::Refused(reply) => Ok(Some(reply)),
+        Opened::Refused(reply) => {
+            pass.unrecorded = None;
+            Ok(Some(reply))
+        }
         Opened::Hop {
             mut task,
             instead,
             callback,
-            ..
+            unrecorded,
         } => {
+            // The engine's answer should the store refuse the opening's writes, for `refusal`.
+            pass.unrecorded = unrecorded;
             // The credential an inline callback names is held in plane memory, as the engine's
             // delivery holds it: none clears one held.
             if let Some(callback) = callback {
@@ -1909,6 +1914,11 @@ fn piece(
                 Gate::Go => hop.gated = given.attempt_no,
             }
         }
+        // A piece after the ATTEMPT carries no opening: the engine answered its caller whether or
+        // not a write made after the hop landed, so a refusal of one keeps the kernel's words.
+        if !attempt {
+            pass.unrecorded = None;
+        }
         let mut writes = std::mem::take(&mut hop.held_writes);
         // THE ADMISSION GATE (the engine's ordered gate, its artifact step), on the ATTEMPT's first
         // entry: an agent whose recorded state is not `approved` is refused before anything else
@@ -2520,7 +2530,21 @@ slot!(
             })
         })
         .flatten();
+        // A unit whose record writes the store refused: the engine's answer for the write its verb
+        // could not make durable, at its own status ([`crate::task_door::Pass`]'s `unrecorded`).
+        let unrecorded = (given.reason
+            == busbar_contract::abi::plane::RefusalCode::DurabilityUnavailable.code())
+        .then(|| {
+            instance.get().and_then(|plane| {
+                plane
+                    .units
+                    .with(&given.unit, |u| u.and_then(|u| u.pass.unrecorded.clone()))
+            })
+        })
+        .flatten();
         let rendered = if let Some(refusal) = &unreadable {
+            arrival::render(dialect, refusal, true)
+        } else if let Some(refusal) = &unrecorded {
             arrival::render(dialect, refusal, true)
         } else if let Some(reply) = credential.as_ref().or(transport.as_ref()) {
             arrival::Rendered {

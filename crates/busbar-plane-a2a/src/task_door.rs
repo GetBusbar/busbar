@@ -69,6 +69,14 @@ pub struct Pass {
     member: String,
     /// The instance's restore this unit ran was reported: a re-entry re-reads it, and says nothing.
     restore_reported: bool,
+    /// THE CALLER'S ANSWER IF THE STORE REFUSES THE RECORD WRITES THE UNIT'S PIECE IN HAND CARRIES
+    /// (the kernel ends the unit `durability_unavailable`): the engine's answer for the write its
+    /// verb could not make durable, which the door's `refusal` renders in place of the kernel's
+    /// words. Set by the piece that carries a verb's own write (a push config registered or
+    /// removed, [`local::unrecorded`]; a task opened or resumed,
+    /// [`crate::task_hop::Opened::Hop`]); `None` for a piece whose writes the engine never failed
+    /// a verb over.
+    pub(crate) unrecorded: Option<crate::arrival::Refusal>,
 }
 
 /// A finished listing: the handle the piece's calls count on from after it, and its answer's status
@@ -664,8 +672,14 @@ pub fn on_piece(
     };
     // A DELETED CONFIG TAKES ITS WEBHOOK CREDENTIAL WITH IT out of plane memory.
     crate::push_door::forget_deleted(&plane.deliveries, caller, &writes);
+    // THE ENGINE'S ANSWER IF THE STORE REFUSES THE VERB'S OWN WRITE (the writes past the sweep's;
+    // the engine's sweep failed no verb).
+    let unrecorded = (writes.len() > swept)
+        .then(|| local::unrecorded(verb, envelope.get("id").unwrap_or(&Value::Null)))
+        .flatten();
     plane.units.with(&unit, |u| {
         if let Some(u) = u {
+            u.pass.unrecorded = unrecorded;
             u.pass.served = served;
             // An admitted verb the plane answered is the caller's call, audited as served (the
             // engine's local arm, after its admission).
