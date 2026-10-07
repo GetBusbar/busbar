@@ -623,3 +623,41 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         "a store with no slots bound nothing"
     );
 }
+
+/// A CONFIG APPLY BUILDS A DOOR PLANE'S SECTION AS BOOT DOES (audit root-R1 leftover C1): the
+/// section as written gains the generation's unified pools at its reserved `pools` key, so the
+/// door's pools survive the apply, and the plane is handed it with the core-owned `work:` struck.
+#[test]
+fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
+    let key = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let written: serde_yaml::Value =
+        serde_yaml::from_str("fs: { url: \"http://fs\" }\nwork: { max_live: 4 }\n")
+            .expect("a section");
+    let pool = busbar_kernel::failover::CandidatePoolCfg {
+        members: vec!["fs".to_string()],
+        ..Default::default()
+    };
+    let pools = door_pools(
+        &BTreeMap::from([("files".to_string(), pool)]),
+        &BTreeMap::new(),
+    );
+
+    let applied = applied_section(key, &written, &pools);
+    assert_eq!(
+        crate::root::door_steps::DoorPools::of(&applied)
+            .pools()
+            .get("files")
+            .cloned(),
+        Some(vec!["fs".to_string()]),
+        "the apply dropped the door's pools"
+    );
+    // The kernel still reads its `work:` bounds off the section; the plane is never handed them.
+    assert!(applied.get("work").is_some());
+    let handed: serde_json::Value =
+        serde_json::from_slice(&plane_settings(&applied).expect("settings")).expect("json");
+    assert!(
+        handed.get("work").is_none(),
+        "the plane was handed the core-owned work: key: {handed}"
+    );
+    assert!(handed.get("fs").is_some(), "the plane's own entry is kept");
+}
