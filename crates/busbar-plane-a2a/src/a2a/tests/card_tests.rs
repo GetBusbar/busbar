@@ -222,7 +222,9 @@ fn a_document_that_is_not_an_object_has_no_hash() {
 #[test]
 fn the_reader_mirrors_the_wire_names_and_tolerates_absent_members() {
     use crate::a2a::agent_card::parse as read;
-    let card = read(&a_card()).expect("parse");
+    let mut wire = a_card();
+    wire["capabilities"]["streaming"] = json!(true);
+    let card = read(&wire).expect("parse");
     assert_eq!(card.protocol_version, "0.3.0");
     assert!(card.capabilities.is_stream);
     assert!(!card.capabilities.push_notifications);
