@@ -260,3 +260,47 @@ fn the_plane_names_no_money_and_no_decision() {
         "the plane names money or decisions: {offenders:?}"
     );
 }
+
+/// THE PUSH TOKEN IS NEVER LOGGED (`BUSBAR-1.6.0.md` l.4882: the plane checks its own callback
+/// correlation token, "never logged/audited"; the push route is audited nowhere, the door's own
+/// cell): no diagnostic line the plane writes, in any of its sources, names the token, the field
+/// it rides in, or a value read from either.
+#[test]
+fn no_diagnostic_line_of_the_plane_carries_the_push_token() {
+    let mut lines = 0;
+    each_source(&mut |path, text| {
+        for (start, _) in text.match_indices("diag_") {
+            let rest = &text[start..];
+            let Some(open) = rest.find("!(").filter(|o| {
+                rest[..*o]
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'_')
+            }) else {
+                continue;
+            };
+            // The call's arguments, to the parenthesis that closes them.
+            let mut depth = 0usize;
+            let close = rest[open + 1..]
+                .char_indices()
+                .find(|(_, c)| {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                })
+                .map_or(rest.len(), |(i, _)| open + 1 + i);
+            let call = rest[open..close].to_ascii_lowercase();
+            lines += 1;
+            for word in ["token", "authorization", "presented", "claim"] {
+                assert!(
+                    !call.contains(word),
+                    "{}: a diagnostic line names `{word}`: {call}",
+                    path.display()
+                );
+            }
+        }
+    });
+    assert!(lines > 0, "the scan read the plane's diagnostic lines");
+}

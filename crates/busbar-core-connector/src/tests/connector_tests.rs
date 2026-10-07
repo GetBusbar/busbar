@@ -1419,7 +1419,8 @@ mod transport_pin {
                 client_identity: None,
                 private_reach: false,
             };
-            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                .expect("sealed");
             let (id, got) = exchange(&c, &far).await;
             assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
             let facts = c.facts(OWNER, id).expect("facts");
@@ -1447,7 +1448,8 @@ mod transport_pin {
                 client_identity: None,
                 private_reach: false,
             };
-            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                .expect("sealed");
             let (id, got) = exchange(&c, &far).await;
             assert_eq!(got, Err(ConnError::Refused));
             let facts = c.facts(OWNER, id).expect("facts after the refusal");
@@ -1462,7 +1464,7 @@ mod transport_pin {
             );
             c.close(OWNER, id).expect("closed");
             // Unsealed, the same far end is reached again: the refusal was the anchors'.
-            c.anchor(OWNER, NeedId(0), &far, &Anchors::default())
+            c.anchor(OWNER, NeedId(0), "", &far, &Anchors::default())
                 .expect("unsealed");
             let (_, got) = exchange(&c, &far).await;
             assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
@@ -1489,7 +1491,8 @@ mod transport_pin {
                 }),
                 private_reach: false,
             };
-            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                .expect("sealed");
             let (id, got) = exchange(&c, &far).await;
             assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
             let facts = c.facts(OWNER, id).expect("facts");
@@ -1498,6 +1501,65 @@ mod transport_pin {
             assert_eq!(
                 seen.lock().unwrap().clone(),
                 Some((b"first".to_vec(), true))
+            );
+        });
+    }
+
+    /// Open need 0 at `far` naming registration `member` and read to its first answer.
+    async fn exchange_as(c: &Connector, far: &str, member: &str) -> Result<Vec<u8>, ConnError> {
+        let desc = OpenDesc {
+            target: far,
+            body: b"first",
+            member,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Ok(p) => return Ok(buf[..p.len].to_vec()),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// RED: two REGISTRATIONS at one authority hold their own anchors. The first seals a client
+    /// identity, the second (sealed after it, at the same `host:port`) seals none: an open naming
+    /// the first still presents ITS identity to the mutual far end, and an open naming the second
+    /// presents nothing, never the first's. Keyed by the authority alone, the second seal dropped
+    /// the first's and the first registration's own open was refused.
+    #[test]
+    fn two_registrations_at_one_authority_each_present_their_own_identity() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let server = pki.leaf("localhost");
+            let client = pki.leaf("busbar.client");
+            let (far, _seen) = tls_far_end(&pki, &server, true).await;
+            let c = trusting(&pki);
+            let own = Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![client.der.clone()],
+                    private_key: client.key.clone().into(),
+                }),
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), "planner", &far, &own)
+                .expect("sealed");
+            c.anchor(OWNER, NeedId(0), "bare", &far, &Anchors::default())
+                .expect("sealed");
+            assert_eq!(
+                exchange_as(&c, &far, "planner").await.as_deref(),
+                Ok(&b"answer"[..]),
+                "the registration presents its own identity"
+            );
+            assert!(
+                exchange_as(&c, &far, "bare").await.is_err(),
+                "a registration holding no identity presents none, never another's"
             );
         });
     }
@@ -1516,7 +1578,8 @@ mod transport_pin {
                 client_identity: None,
                 private_reach: false,
             };
-            c.anchor(OWNER, NeedId(1), &far, &anchors).expect("sealed");
+            c.anchor(OWNER, NeedId(1), "", &far, &anchors)
+                .expect("sealed");
             assert_eq!(open_in(&c, 1, &far), Err(ConnError::Refused));
             let bad = Anchors {
                 key_pin: None,
@@ -1527,12 +1590,12 @@ mod transport_pin {
                 private_reach: false,
             };
             assert_eq!(
-                c.anchor(OWNER, NeedId(0), &far, &bad),
+                c.anchor(OWNER, NeedId(0), "", &far, &bad),
                 Err(ConnError::Refused)
             );
             // A need the owner never declared seals nothing.
             assert_eq!(
-                c.anchor(OTHER, NeedId(0), &far, &anchors),
+                c.anchor(OTHER, NeedId(0), "", &far, &anchors),
                 Err(ConnError::Refused)
             );
         });

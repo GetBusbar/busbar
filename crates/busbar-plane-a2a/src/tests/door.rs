@@ -197,18 +197,24 @@ fn exactly_the_discovery_documents_are_open_claims() {
 }
 
 /// BUSBAR'S OWN PUSH CALLBACK is the plane's one PUBLIC route, served by `serve` (ARCHITECT ruling
-/// Q3c), never a claim: the plane is not a second claimant of its path.
+/// Q3c), never a claim: the plane is not a second claimant of its path. It is addressed by busbar's
+/// own push token (`BUSBAR-1.6.0.md` l.4882; the lane's ruling of 2026-10-07 states the route bit),
+/// so it alone states `ROUTE_CARRIES_OWN_TOKEN` and its `authorization` reaches `serve`.
 #[test]
 fn the_push_callback_is_a_public_route_and_no_claim() {
-    use busbar_contract::abi::plane::ROUTE_PUBLIC;
+    use busbar_contract::abi::plane::{ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
     assert_eq!(ADMIN_VERBS[PUSH_ROUTE], ("POST", "/a2a/push"));
-    assert_eq!(ADMIN_ROUTES[PUSH_ROUTE].flags, ROUTE_PUBLIC);
+    assert_eq!(
+        ADMIN_ROUTES[PUSH_ROUTE].flags,
+        ROUTE_PUBLIC | ROUTE_CARRIES_OWN_TOKEN
+    );
     assert_eq!(
         ADMIN_AUDIT_VERBS[PUSH_ROUTE], "",
         "the callback is never audited"
     );
     for (i, r) in ADMIN_ROUTES.iter().enumerate() {
-        assert_eq!(r.flags == ROUTE_PUBLIC, i == PUSH_ROUTE);
+        assert_eq!(r.flags & ROUTE_PUBLIC != 0, i == PUSH_ROUTE);
+        assert_eq!(r.flags & ROUTE_CARRIES_OWN_TOKEN != 0, i == PUSH_ROUTE);
     }
     assert!(ROUTES.iter().all(|r| r.target != "/a2a/push"));
 }
@@ -420,6 +426,41 @@ fn the_callers_credential_has_no_path_to_a_delegate() {
     .expect_err("blank");
     assert!(err.contains("placement.header"), "{err}");
 }
+/// RED: the grammar's object spelling of a named-header placement, `placement: {header: <name>}`
+/// (`busbar_contract::section`'s `placement:` key), reads through the section split as the header
+/// it names, as `bearer` reads as the authorization header; a derived enum read off the section's
+/// YAML value took only a tag and refused the object, so the door would not open over it.
+#[test]
+fn a_named_header_placement_reads_through_the_section() {
+    use crate::a2a::creds::CredentialPlacement;
+    let placed = |placement: serde_json::Value| {
+        let section = serde_json::json!({ "planner": {
+            "url": "https://a2a.vendor/planner",
+            "pin": { "mechanism": "unpinned" },
+            "upstream_credential": {
+                "secret": { "env": "PLANNER_KEY" }, "placement": placement, "lease_ttl_ms": 1000
+            },
+        } });
+        crate::door::read_settings(&serde_json::to_vec(&section).unwrap()).map(|cfg| {
+            cfg.agents["planner"]
+                .upstream_credential
+                .clone()
+                .unwrap()
+                .placement
+        })
+    };
+    assert_eq!(
+        placed(serde_json::json!({ "header": "X-API-Key" })),
+        Ok(CredentialPlacement::Header("X-API-Key".to_string()))
+    );
+    assert_eq!(
+        placed(serde_json::json!("bearer")),
+        Ok(CredentialPlacement::AuthorizationHeader)
+    );
+    assert!(placed(serde_json::json!("cookie")).is_err());
+    assert!(placed(serde_json::json!({ "header": "a", "bearer": null })).is_err());
+}
+
 /// Ported from busbar-a2a a2a/tests/plane_tests.rs::the_registry_follows_config_order_rather_than_hash_order.
 #[test]
 fn the_registry_follows_config_order_rather_than_hash_order() {

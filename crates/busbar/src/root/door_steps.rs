@@ -987,10 +987,12 @@ pub fn compose_egress(
         }
         // THE MEMBER'S TRUST ANCHORS, SEALED INTO THE CONNECTOR (the transport pin, ARCHITECT 2026-10-03): every connection
         // to the member, the walk's and the plane's own, is held to them by the connector itself,
-        // on EVERY need the member rides (its own and each beside it, at the base each dials).
+        // on EVERY need the member rides (its own and each beside it, at the base each dials),
+        // kept under the member's name, so a registration sharing its authority presents its own
+        // client identity and never this one's.
         for (need, base_url) in ridden(&route) {
             conns
-                .anchor(caller, need, &base_url, &route.anchors)
+                .anchor(caller, need, &route.provider, &base_url, &route.anchors)
                 .map_err(|e| {
                     format!("member '{entry}': its trust anchors could not be sealed: {e}")
                 })?;

@@ -2470,7 +2470,13 @@ fn fetch_card(
                                 exchange: None,
                             })
                         }
-                        Poll::Ready(Err(refusal)) => break 'hop Err(refusal),
+                        // A refused judgement spends its handle as an admitted one does: the
+                        // next hop (the legacy path's first) is judged on a fresh one, never
+                        // answered with this hop's verdict under its own host's name.
+                        Poll::Ready(Err(refusal)) => {
+                            hop.issued += 1;
+                            break 'hop Err(refusal);
+                        }
                         Poll::Ready(Ok(judged)) => judged,
                     };
                     let target = url::Url::parse(&url)

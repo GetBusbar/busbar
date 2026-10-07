@@ -24,7 +24,7 @@
     {
       "verb": "POST",
       "target": "/a2a/push",
-      "flags": 1,
+      "flags": 3,
       "audit_verb": ""
     }
   ],

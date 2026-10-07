@@ -263,13 +263,15 @@ pub(crate) fn serve(
             Ok(Some(row)) => row,
         }
     };
-    if reported.is_terminal() {
-        plane.tokens.forget(&task_id);
-    }
     // 7. THE CALLER'S OWN DELIVERY, from busbar's row.
     match crate::push_door::queue_moved(&plane.deliveries, &mut via, &caller, &moved) {
         Err(Halt::Pending) => return pend(),
         Err(Halt::Failed(_)) | Ok(_) => {}
+    }
+    // The ending spends the token, once the answer is final: forgotten before a PENDING entry,
+    // the re-entry would find no token and refuse the very report that ended the task.
+    if reported.is_terminal() {
+        plane.tokens.forget(&task_id);
     }
     accepted(&input, &mut out, &writes)
 }

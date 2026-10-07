@@ -1012,6 +1012,60 @@ fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
     }
 }
 
+/// GREEN beside SEAM-4o's red arm (`BUSBAR-1.6.0.md` l.4882: a callback route "is auth `none`;
+/// the plane checks its own callback correlation token"): a PUBLIC route whose snapshot states
+/// `ROUTE_CARRIES_OWN_TOKEN` is lent the request's `authorization` (the plane's own token, no
+/// caller's credential), and every other credential field is struck as on any public route.
+#[test]
+fn a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else() {
+    use busbar_contract::abi::plane::{ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
+    use busbar_kernel::plane_driver::serve::{answer_public, publish, withdraw};
+    let _one = PUBLISHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for way in ways() {
+        let item = format!("{way:?}").to_lowercase();
+        let (_plugin, mut table) = serve_table(way, "the-token-instance");
+        for route in &mut table.routes {
+            if route.flags & ROUTE_PUBLIC != 0 {
+                route.flags |= ROUTE_CARRIES_OWN_TOKEN;
+            }
+        }
+        publish(table, &[]).expect("the instance publishes");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer own-token".parse().unwrap());
+        headers.insert("cookie", "session=secret".parse().unwrap());
+        headers.insert("proxy-authorization", "Basic secret".parse().unwrap());
+        headers.insert("x-trace", "t-1".parse().unwrap());
+        let hook = format!("/items/{item}/hook");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let (status, body) = rt.block_on(async {
+            let resp = answer_public(
+                "POST",
+                &hook,
+                &hook,
+                &headers,
+                axum::body::Bytes::from("go"),
+            )
+            .await;
+            let status = resp.status().as_u16();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .expect("a body");
+            (status, String::from_utf8_lossy(&body).into_owned())
+        });
+        withdraw("the-token-instance");
+        assert_eq!(
+            (status, body),
+            (200, format!("public {hook} fields=authorization,x-trace")),
+            "{way:?}: the plane's own token crossed, and no other credential field"
+        );
+    }
+}
+
 // ── duplex sessions (K6) ─────────────────────────────────────────────────────────────────────────
 
 /// One line of a session caller's script.

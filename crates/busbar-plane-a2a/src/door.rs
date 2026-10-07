@@ -537,7 +537,13 @@ const fn admin_route(i: usize, flags: u32) -> AdminRoute {
 pub const ADMIN_ROUTES: &[AdminRoute] = &[
     admin_route(0, 0),
     admin_route(1, 0),
-    admin_route(PUSH_ROUTE, busbar_contract::abi::plane::ROUTE_PUBLIC),
+    // Addressed by busbar's own push token (`BUSBAR-1.6.0.md` l.4882): its `authorization`
+    // crosses to `serve`, which verifies it through the host's signing service.
+    admin_route(
+        PUSH_ROUTE,
+        busbar_contract::abi::plane::ROUTE_PUBLIC
+            | busbar_contract::abi::plane::ROUTE_CARRIES_OWN_TOKEN,
+    ),
 ];
 
 /// THE TRUST VERBS' OpenAPI FRAGMENT, each path relative to the admin mount (the kernel keys it

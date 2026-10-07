@@ -1777,10 +1777,31 @@ fn an_admin_route_flag_is_known() {
         audit_verb: z(),
     };
     assert_eq!(check_admin_routes(&[r]), Ok(()));
-    r.flags = ROUTE_PUBLIC << 1;
+    r.flags = ROUTE_CARRIES_OWN_TOKEN << 1;
     assert_eq!(
         check_admin_routes(&[r]),
         f(Rule::UnknownCode, "admin_route.flags")
+    );
+}
+
+/// RED (`BUSBAR-1.6.0.md` l.4882, a callback route the plane addresses by its own token): a
+/// public route may carry the plane's own token, and an admin route may not — its `authorization`
+/// is the operator's credential, which never crosses — so a snapshot stating the bit on a route that
+/// is not public is refused at its load.
+#[test]
+fn only_a_public_route_carries_its_own_token() {
+    let mut r = AdminRoute {
+        verb: s("POST"),
+        target: s("/t"),
+        flags: ROUTE_PUBLIC | ROUTE_CARRIES_OWN_TOKEN,
+        _reserved: 0,
+        audit_verb: z(),
+    };
+    assert_eq!(check_admin_routes(&[r]), Ok(()));
+    r.flags = ROUTE_CARRIES_OWN_TOKEN;
+    assert_eq!(
+        check_admin_routes(&[r]),
+        f(Rule::Contradiction, "admin_route.flags")
     );
 }
 
