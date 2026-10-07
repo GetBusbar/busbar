@@ -3296,12 +3296,22 @@ fn verify_on_call(
 /// as a cancelled unit's look does: the kernel sends a faulted unit no `cancel`, and a flight left
 /// held by it would wedge every later unit for the agent behind a look that never lands.
 fn looking<T>(held: (&Flights, Option<&Host>, Ticket), look: impl FnOnce() -> T) -> T {
-    /// Dropped only by an unwinding look: a look that returns forgets it.
-    struct Unwinding<'p>(&'p Flights, Option<&'p Host>, Ticket);
+    /// Armed while the look runs: dropped armed only by an unwinding look. A look that returns
+    /// disarms it, and its drop then releases nothing (the caller lands the flight). No forget: the
+    /// guard is dropped on both paths, so no hold is ever left unsettled.
+    struct Unwinding<'p> {
+        flights: &'p Flights,
+        host: Option<&'p Host>,
+        ticket: Ticket,
+        armed: bool,
+    }
     impl Drop for Unwinding<'_> {
         fn drop(&mut self) {
-            let woken = self.0.abandon(self.2);
-            if let Some(host) = self.1 {
+            if !self.armed {
+                return;
+            }
+            let woken = self.flights.abandon(self.ticket);
+            if let Some(host) = self.host {
                 for waiter in woken {
                     host.wake(waiter);
                 }
@@ -3309,9 +3319,14 @@ fn looking<T>(held: (&Flights, Option<&Host>, Ticket), look: impl FnOnce() -> T)
         }
     }
     let (flights, host, ticket) = held;
-    let unwinding = Unwinding(flights, host, ticket);
+    let mut unwinding = Unwinding {
+        flights,
+        host,
+        ticket,
+        armed: true,
+    };
     let looked = look();
-    std::mem::forget(unwinding);
+    unwinding.armed = false;
     looked
 }
 
