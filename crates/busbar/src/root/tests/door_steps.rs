@@ -2267,16 +2267,17 @@ pub(crate) mod tool_door {
             Footing::own(),
             &|app| app,
         );
-        let started = std::time::Instant::now();
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
-        let took = started.elapsed();
+        // Bounded here so the RED is a named failure, not the harness's slow-test kill: before the
+        // budget was honoured, the fetch to a server that never answers did not return at all.
+        let (status, body) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            send(&rig.router, Some(&rig.token), CALL),
+        )
+        .await
+        .expect("the re-check gave up inside 10s: the registration's `timeout: 1s` is its budget");
         assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&body));
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
         assert_eq!(body["error"]["data"]["reason"], "error", "{body}");
-        assert!(
-            took < std::time::Duration::from_secs(10),
-            "the re-check waited {took:?}: the registration's `timeout: 1s` was not its budget"
-        );
         assert!(rig.all_ended(), "the refused unit ended");
     }
 
