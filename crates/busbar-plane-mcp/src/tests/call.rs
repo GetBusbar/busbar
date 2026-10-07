@@ -444,14 +444,69 @@ fn a_result_is_normalised_stamped_and_dispatched() {
     assert_eq!(line.audit, Some(AuditRow::tool("fs_read_file", true)));
 }
 
+/// The far end's answer carrying `result` as the upstream wrote it.
+fn far_result(result: &str) -> String {
+    format!(r#"{{"jsonrpc":"2.0","id":0,"result":{result}}}"#)
+}
+
+/// LAW 11 (THE DESIGN 2126, 2131-2132; product hard rule 3369-3373): a tool's result is the
+/// upstream's data and reaches the caller as the upstream sent it. `Vec<String>` and `<b>x</b>` in
+/// the content text, in `structuredContent` and in `_meta` are the tool's answer, not markup busbar
+/// may strip, and the result's bytes are the upstream's own, member order included.
+/// RED arm: a built-in strip served `Vec` for `Vec<String>` and `x` for `<b>x</b>`.
 #[test]
-fn structured_output_breaking_the_published_schema_is_a_tool_failure() {
-    let (status, body, line) = answer_of(settle_far(
-        r#"{"jsonrpc":"2.0","id":0,"result":{"content":[],"structuredContent":{}}}"#,
-    ));
+fn a_result_reaches_its_caller_as_the_upstream_sent_it() {
+    let sent = r#"{"resultType":"complete","structuredContent":{"t":"Vec<String>","n":1,"h":"<b>x</b>"},"content":[{"type":"text","text":"fn f() -> Vec<String> { <b>x</b> }"}],"_meta":{"m":"<i>y</i>"}}"#;
+    let settled = settle_far(&far_result(sent));
+    let Settled::Answer { body: bytes, .. } = &settled else {
+        panic!("an answer: {settled:?}")
+    };
+    assert!(
+        bytes.windows(sent.len()).any(|w| w == sent.as_bytes()),
+        "the upstream's result bytes, verbatim: {}",
+        String::from_utf8_lossy(bytes)
+    );
+    let (status, body, line) = answer_of(settled);
     assert_eq!(status, 200);
-    assert_eq!(body["result"]["isError"], json!(true));
-    assert_eq!(line.reason, "upstream_failed");
+    assert_eq!(body["id"], json!(7));
+    assert_eq!(
+        body["result"],
+        serde_json::from_str::<Value>(sent).expect("json"),
+        "the upstream's result, unchanged"
+    );
+    assert_eq!((line.outcome, line.reason.as_str()), ("dispatched", ""));
+}
+
+/// LAW 11 (THE DESIGN 2131-2132): a `structuredContent` that does not match the tool's published
+/// `outputSchema` is still the upstream's answer. It is relayed unchanged; busbar never answers in
+/// the upstream's place.
+/// RED arm: busbar replaced it with its own `isError` result, "The structured result was NOT
+/// served".
+#[test]
+fn structured_output_breaking_the_published_schema_is_relayed_unchanged() {
+    let sent = r#"{"resultType":"complete","content":[],"structuredContent":{}}"#;
+    let (status, body, line) = answer_of(settle_far(&far_result(sent)));
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["result"],
+        serde_json::from_str::<Value>(sent).expect("json"),
+        "the upstream's result, as it came"
+    );
+    assert_eq!((line.outcome, line.reason.as_str()), ("dispatched", ""));
+    assert_eq!(line.audit, Some(AuditRow::tool("fs_read_file", true)));
+}
+
+/// THE TASK PATH SETTLES THE SAME RESULT (Law 11): a task's completed result is the upstream's,
+/// stored and served as it came. A source plant, because the task's continuation is reached only
+/// through a live door: no rewrite of the result is named on that path.
+/// RED arm: `door_tasks.rs` ran the markup strip over every completed task result.
+#[test]
+fn the_task_path_names_no_rewrite_of_the_result() {
+    let source = include_str!("../door_tasks.rs");
+    assert!(
+        !source.contains("sanitize::"),
+        "a task's completed result passes through no markup strip"
+    );
 }
 
 #[test]
