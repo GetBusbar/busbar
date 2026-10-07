@@ -501,12 +501,10 @@ fn text_facts(text: &str) -> TextFacts {
     for line in text.lines() {
         match declared_on(line) {
             Some(("mod", name)) => facts.modules.push(name.to_string()),
-            Some((_, name)) => {
-                if !facts.declared.iter().any(|d| d == name) {
-                    facts.declared.push(name.to_string());
-                }
+            Some((_, name)) if !facts.declared.iter().any(|d| d == name) => {
+                facts.declared.push(name.to_string());
             }
-            None => {}
+            Some(_) | None => {}
         }
     }
     facts

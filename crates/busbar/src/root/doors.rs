@@ -126,7 +126,8 @@ impl Dispatched {
             .context::<TransportFacts>()
             .cloned()
             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
-        let blob = (!stated.settings.is_empty()).then(|| settings_blob(&stated.settings, settings));
+        let blob = (!stated.settings_keys.is_empty())
+            .then(|| settings_blob(&stated.settings_keys, settings));
         let mut i: OpenIn = blank_in();
         i.settings = match &blob {
             Some(b) => Blob {
@@ -163,7 +164,7 @@ impl Dispatched {
         Ok(Self {
             plugin,
             facts,
-            declared: stated.settings,
+            declared: stated.settings_keys,
         })
     }
 }
