@@ -1341,7 +1341,11 @@ fn settle_task(
         None => *hop.now.insert(reach.now().ok_or(Outcome::Failed)?),
     };
     let mut via = reach.via(pass.issued).ok_or(Outcome::Failed)?;
-    let mut writes = Vec::new();
+    // The settle reads over the writes this piece has already made (a task opened by the same
+    // piece is held in them, not yet in the store): they seed its writes, and only what it adds
+    // joins the answer's.
+    let mut writes = hop.outbox.writes.clone();
+    let seeded = writes.len();
     let mut moved = Vec::new();
     let mut halted = false;
     for settled in &settles {
@@ -1411,7 +1415,7 @@ fn settle_task(
             );
         }
     }
-    hop.outbox.writes.extend(writes);
+    hop.outbox.writes.extend(writes.split_off(seeded));
     hop.now = None;
     Ok(())
 }
