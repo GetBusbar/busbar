@@ -282,7 +282,7 @@ fn the_extended_card_is_served_over_grpc_at_the_path_the_proto_defines() {
         "id": "planner", "name": "planner", "description": "plans", "tags": ["agent"],
         "inputModes": ["text/plain"], "outputModes": ["text/plain"],
     });
-    let card = crate::served_card::extended_card_document("https://gw.example", Vec::new())
+    let card = crate::served_card::extended_card_document("https://gw.example", &[])
         .map(|mut c| {
             c["skills"] = serde_json::json!([skill]);
             c

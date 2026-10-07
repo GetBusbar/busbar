@@ -15,3 +15,5 @@ task_resource_type = a2a.busbar/task
 # resource names the agent under (`<resource_kind>:<agent id>`).
 audit_action = agent.call
 resource_kind = agent
+# The domain busbar's card-signing key is derived under (door.rs CARD_SIGNING_DOMAIN).
+card_signing_domain = a2a/agent-card-signing/v1
