@@ -1659,7 +1659,7 @@ pub fn build_app_from_config(
     // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
     // THE KERNEL'S OWN TABLES over the same resolved sections, for the read seam when no plane
     // contributes a runtime of its own.
-    let config_tables = Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+    let config_tables = Arc::new(busbar_kernel::route_tables::ConfigTables::of(
         &lane_inputs,
         &pool_inputs,
         &by_model,

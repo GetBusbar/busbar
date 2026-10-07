@@ -290,6 +290,7 @@ pub mod plugin_routes;
 pub mod profile;
 pub mod proto;
 pub mod proxy;
+// THE KERNEL'S ROUTING TABLES and their one neutral read view (spec Part 3: route is the kernel's).
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
@@ -297,6 +298,7 @@ pub mod ratelimit;
 /// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
 /// carried usage counts no billing class records (MONEY LAW). See the module header.
 pub mod residual_log;
+pub mod route_tables;
 /// THE CONNECTOR'S TLS WRAP, as the kernel reaches it: this crate names no TLS library (THE DESIGN:
 /// TLS stays in the connector); the egress engine's https arm, the duplex `wss` dial and the
 /// client-identity PEM parse ask this seam, answered through the root-installed egress-trust

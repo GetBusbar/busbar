@@ -612,7 +612,7 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
     fn queued(&self, pool: &str, delta: i64) {
         busbar_kernel_egress::ports::Telemetry::queued(&self.queued, pool, delta);
         // The scrape's pool-queue gauge reads the depth the kernel's tables report.
-        busbar_kernel::plane_host::set_pool_queued_depth(
+        busbar_kernel::route_tables::set_pool_queued_depth(
             pool,
             u64::try_from(self.queued.depth(pool)).unwrap_or(0),
         );

@@ -876,7 +876,7 @@ async fn the_pool_queue_gauge_reads_the_live_park_depth() {
     // leaves, and the depth the scrape's own refresh reads off the kernel's configuration tables
     // (the one `refresh_scrape_gauges` renders where no engine runtime projects its own tables).
     let gauge = || {
-        use busbar_kernel::plane_host::EngineTablesView as _;
+        use busbar_kernel::route_tables::EngineTablesView as _;
         let out = scrape();
         let scraped = out
             .lines()

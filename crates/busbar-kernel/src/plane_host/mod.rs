@@ -1819,10 +1819,6 @@ mod residual_tests;
 // THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C): the single-compiled `PlaneBuildInput`
 // DTO `busbar-core`'s `appbuild` populates and hands to the LLM plane's `build_runtime` seam.
 pub mod build_input;
-// THE NEUTRAL READ-SIDE PROJECTION of a data-plane's routing tables (1.6.0 money-path Phase 3-4 B):
-// the `EngineTablesView` trait + `LaneView` + the zero-plane `EMPTY_VIEW` the core scrape/discovery
-// readers name so they need not move when the tables relocate into `busbar-llm`.
-pub mod engine_view;
 // The mTLS client-identity registry, the extra-root trust-anchor registry and the peer-certificate
 // SPKI DER walk — PURE host-side TLS helpers (process-atomic registries + an RFC 5280 length-skip; no
 // `App`, no engine, no FFI). They live here so the host egress chokepoint and the A2A plane both name
@@ -1847,10 +1843,6 @@ pub use crate::plane_host::build_input::{
     AffinityInput, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput, HealthInput,
     HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
     TripInput, TripModeInput,
-};
-pub use crate::plane_host::engine_view::{
-    set_pool_queued_depth, ConfigTables, EmptyEngineTablesView, EngineTablesView, LaneView,
-    EMPTY_VIEW,
 };
 use crate::store::Unavailable;
 use crate::trust::validate::{Lapsed, Standing};

@@ -827,7 +827,7 @@ pub(crate) fn validate_hook_settings_size(
 // import list from growing for a single-use helper.
 
 /// The lane at `idx`'s model name projected through the neutral view; empty if the handle is stale.
-fn lane_model(view: &dyn busbar_kernel::plane_host::EngineTablesView, idx: usize) -> String {
+fn lane_model(view: &dyn busbar_kernel::route_tables::EngineTablesView, idx: usize) -> String {
     view.lane_view(idx)
         .map(|l| l.model.to_string())
         .unwrap_or_default()

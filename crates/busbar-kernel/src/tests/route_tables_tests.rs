@@ -120,3 +120,86 @@ fn the_queue_depth_is_the_one_the_walk_reports() {
     super::set_pool_queued_depth("config-tables-q", 0);
     assert_eq!(t.queued_depth("config-tables-q"), 0);
 }
+
+// ── THE VIEW IS THE KERNEL'S ────────────────────────────────────────────────────────────────────
+
+/// Tables a plane's runtime would answer: one lane, `sentinel`, nothing like the configuration.
+struct PlaneOwnTables;
+
+impl EngineTablesView for PlaneOwnTables {
+    fn pools(&self) -> Vec<(&str, Vec<usize>)> {
+        vec![("sentinel-pool", vec![0])]
+    }
+    fn pool_exists(&self, pool: &str) -> bool {
+        pool == "sentinel-pool"
+    }
+    fn model_indices(&self) -> Vec<(&str, usize)> {
+        vec![("sentinel", 0)]
+    }
+    fn model_index(&self, model: &str) -> Option<usize> {
+        (model == "sentinel").then_some(0)
+    }
+    fn lane_view(&self, idx: usize) -> Option<super::LaneView<'_>> {
+        (idx == 0).then_some(super::LaneView {
+            model: "sentinel",
+            provider: "sentinel",
+            base_url: "http://sentinel.invalid",
+        })
+    }
+    fn lane_count(&self) -> usize {
+        1
+    }
+    fn pool_members(&self, _pool: &str) -> Vec<(usize, u32)> {
+        vec![(0, 1)]
+    }
+    fn queued_depth(&self, _pool: &str) -> u64 {
+        0
+    }
+    fn on_exhausted_fallback(&self, _pool: &str) -> Option<String> {
+        None
+    }
+    fn upstream_creds(&self) -> busbar_contract::config::UpstreamCreds {
+        busbar_contract::config::UpstreamCreds::Passthrough
+    }
+}
+
+static PLANE_OWN_TABLES: PlaneOwnTables = PlaneOwnTables;
+
+/// A fallback plane that contributes a runtime slot AND states a view of it.
+static PLANE_WITH_A_VIEW: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "route-tables-plane-with-a-view",
+        ..crate::test_support::NEUTRAL_FALLBACK.declaration
+    },
+    build_runtime: Some(|_, _| std::sync::Arc::new(())),
+    viewer: Some(|_| &PLANE_OWN_TABLES),
+    ..crate::test_support::NEUTRAL_FALLBACK
+};
+
+/// ROUTE IS THE KERNEL'S (spec Part 3, the outbound table, step 1: "KERNEL | route (pool walk, member,
+/// breaker)"): the routing tables every core reader and a door plane's member lanes read are the ones
+/// the kernel built from the sections it resolved, even when the fallback plane contributes a runtime
+/// and states its own view of it. RED: the view was the plane's, read through its runtime slot, so the
+/// configured model `m-real` was invisible and a plane's `sentinel` stood in its place.
+#[test]
+fn the_tables_are_the_kernels_whatever_a_plane_states() {
+    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[&PLANE_WITH_A_VIEW]);
+    let app = crate::test_support::TestApp::new()
+        .lane(crate::test_support::LaneSpec::new(
+            "m-real",
+            crate::proto::PROTO_OPENAI,
+            "http://m-real.invalid",
+        ))
+        .pool("pool-real", &[(0, 2)])
+        .build();
+    let view = app.engine_tables_view();
+    assert_eq!(view.lane_count(), 1);
+    assert_eq!(view.model_index("m-real"), Some(0), "the configured model");
+    assert_eq!(view.model_index("sentinel"), None, "never the plane's");
+    assert_eq!(
+        view.lane_view(0).map(|l| (l.model, l.base_url)),
+        Some(("m-real", "http://m-real.invalid"))
+    );
+    assert!(view.pool_exists("pool-real") && !view.pool_exists("sentinel-pool"));
+    assert_eq!(view.pool_members("pool-real"), vec![(0, 2)]);
+}

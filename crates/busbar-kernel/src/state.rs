@@ -75,18 +75,17 @@ pub struct App {
     /// THE FALLBACK PLANE'S RUNTIME SLOT KEY — the interned `runtime_slot_key(fallback_key())` under
     /// which THIS config generation's runtime object rides in [`App::plane_slots`], the same opaque
     /// slot every other registered plane carries its own runtime object in. Resolved ONCE at build
-    /// (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables_view`]) is a
-    /// single cheap `plane_slots` lookup + ONE downcast, never the interning `runtime_slot_key` call.
-    /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
-    /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
+    /// (`appbuild` / the test fixture), so a reader of that slot never calls the interning
+    /// `runtime_slot_key`. An ABSENT slot (no fallback plane contributed a runtime) is never a panic.
+    /// The routing tables are not read through it: they are the kernel's ([`App::config_tables`]).
+    /// Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
     /// The composition root's projection of the configuration this generation was built from
     /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
     pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
-    /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
-    /// read seam's answer when no plane contributed a runtime of its own (a door-served plane walks
-    /// these sections through its door).
-    pub config_tables: Arc<busbar_kernel::plane_host::ConfigTables>,
+    /// The kernel's own routing tables over the `pools:`/`models:` sections this generation resolved
+    /// ([`crate::route_tables::ConfigTables`]): the one answer of [`App::engine_tables_view`].
+    pub config_tables: Arc<busbar_kernel::route_tables::ConfigTables>,
     pub store: Arc<dyn LaneRuntime>,
     /// THE CONTAINER PLANES' BREAKER CELLS — the degenerate single-member cell per registered
     /// container-plane member (the breaker-all-planes audit's closing design). Live state, shared by
@@ -526,31 +525,16 @@ impl App {
                 .is_none_or(|s| s.contains(decl.config_section))
     }
 
-    /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
-    /// (`busbar_kernel::plane_host`) read seam — the projection the core-resident scrape/discovery
-    /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not know which plane
-    /// crate the routing tables actually live in. The view is sourced by projecting the fallback
-    /// plane's opaque runtime slot through that plane decl's `viewer` fn-pointer (the plane downcasts
-    /// its OWN runtime type inside, so core never names it); an ABSENT slot — the featureless
-    /// zero-plane boot, or a decl with no viewer — yields the substrate-resident
-    /// [`EMPTY_VIEW`](busbar_kernel::plane_host::EMPTY_VIEW) (an empty projection), so a scrape or
-    /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
-    /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
-    pub fn engine_tables_view(&self) -> &dyn busbar_kernel::plane_host::EngineTablesView {
-        // THE PIVOT (1.6.0 money-path Phase 3-4 C): the runtime type now lives in the fallback plane's
-        // own crate, so core no longer names it. Project the plane's opaque runtime slot into the
-        // neutral view through the fallback plane decl's `viewer` fn-pointer (the plane downcasts its
-        // OWN runtime inside). An absent slot — the featureless zero-plane boot, or a decl with no
-        // viewer — yields the substrate-resident EMPTY_VIEW (an empty projection).
-        let key = self.fallback_runtime_key;
-        match (
-            crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-                .and_then(|d| d.viewer),
-            self.plane_slot(key),
-        ) {
-            (Some(viewer), Some(slot)) => viewer(slot.as_ref()),
-            _ => &*self.config_tables,
-        }
+    /// Borrow this snapshot's routing tables through the NEUTRAL
+    /// [`EngineTablesView`](crate::route_tables::EngineTablesView) — the KERNEL'S own tables over the
+    /// `pools:`/`models:` sections this generation resolved ([`App::config_tables`]), because route is
+    /// the kernel's (spec Part 3, the outbound table, step 1: "KERNEL | route (pool walk, member,
+    /// breaker)"). The core-resident readers (`/metrics`, `/v1/models`, `/stats`, the telemetry label
+    /// bank, the admin pool listing) and a door plane's member lanes all read the same tables, whichever
+    /// plane serves the traffic: no plane's runtime slot is consulted. A generation that resolved no
+    /// lanes answers empty tables. Cold path: the neutral (allocating) projections.
+    pub fn engine_tables_view(&self) -> &dyn busbar_kernel::route_tables::EngineTablesView {
+        &*self.config_tables
     }
 
     /// THE AUTHORIZATION-SERVER PLANE OBJECT, type-erased — `pub` (not test-gated) because the

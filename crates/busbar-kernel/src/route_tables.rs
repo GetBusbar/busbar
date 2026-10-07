@@ -1,31 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NEUTRAL READ-SIDE PROJECTION of a data-plane's routing tables — the seam the core-resident
-//! scrape/discovery readers name instead of the plane's concrete `Lane`/`WeightedLane`/`PoolRuntime`
-//! types (1.6.0 money-path Phase 3-4 B, read-side decoupling).
+//! THE KERNEL'S ROUTING TABLES — the pools, members and lanes the kernel routes over, built by the
+//! kernel from the `pools:`/`models:` sections it resolves, every generation, and read through ONE
+//! neutral view.
 //!
-//! ## Why this lives in the substrate
+//! ## Why the kernel owns them
 //!
-//! The LLM money path (its `NativeRuntime` bundle + the `Lane`/`WeightedLane` routing tables) is being
-//! relocated into `busbar-llm`. A handful of core readers that STAY — the `/metrics` lane-state scrape,
-//! the `/v1/models` discovery listing, and the boot-time telemetry label bank — read those tables only
-//! for NEUTRAL facts: pool label spaces, per-pool member lane indices, the direct-model index, one
-//! lane's wire identity ([`LaneView`]), and a pool's live queue-park depth. Expressed through this
-//! trait, those readers name no plane type, so they need not move when the tables do.
+//! Route is the kernel's: spec Part 3, the outbound table, step 1 — "KERNEL | route (pool walk,
+//! member, breaker), allow-list + pin, budget" — and the `pools:`/`models:` sections are kernel-owned
+//! sections the host resolves and validates (Part 1). So the tables are built here ([`ConfigTables`])
+//! and [`App::engine_tables_view`](crate::state::App::engine_tables_view) answers from them, never from a
+//! plane's runtime: the `/metrics` lane families, `/v1/models`, `/stats`, the admin pool listing, the
+//! telemetry label bank and a door plane's member lanes read the same tables the kernel walks.
 //!
-//! It lives in `busbar-substrate` (not `busbar-llm`) so a zero-plane binary — one that `git-rm`'d
-//! `busbar-llm` (the `plane-delete-test --all` posture) — still boots: core reaches an
-//! [`EMPTY_VIEW`] (zero pools, zero models) when no plane contributed a runtime slot, and never names a
-//! `busbar-llm` type to do it.
+//! [`EngineTablesView`] and [`LaneView`] are neutral projections — pool label spaces, member lane
+//! indices with their weights, the direct-model index, one lane's wire identity, a pool's live
+//! queue-park depth — and name no plane type. [`EMPTY_VIEW`] is the zero-table answer.
 //!
 //! ## What this is NOT
 //!
 //! This is the COLD/scrape read seam, reached at most once per scrape or discovery call and free to
-//! allocate its neutral projections. It is not the hot engine path: the engine downcasts its own
-//! concrete runtime once and reads plain fields. The table-object-coupled readers (health probing over
-//! `client()`/`probe_schedule()`, admin `pool_detail` over `&[WeightedLane]`) are deliberately NOT
-//! expressed here — they move into the plane with the tables.
+//! allocate its neutral projections. It is not the hot engine path.
 
 /// A neutral, read-only projection of ONE lane's wire identity, borrowed from the plane's lane table
 /// for the duration of a scrape/discovery read. Carries only protocol-neutral scalars (no plane
@@ -268,5 +264,5 @@ impl EngineTablesView for ConfigTables {
 }
 
 #[cfg(test)]
-#[path = "tests/config_tables_tests.rs"]
-mod config_tables_tests;
+#[path = "tests/route_tables_tests.rs"]
+mod tests;

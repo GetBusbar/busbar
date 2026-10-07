@@ -1707,7 +1707,7 @@ impl TestApp {
         // the read seam answers from them when the fallback plane contributes no runtime of its own
         // (a door plane), and reads the empty default when no fallback plane is registered.
         let mut config_tables =
-            std::sync::Arc::<busbar_kernel::plane_host::ConfigTables>::default();
+            std::sync::Arc::<busbar_kernel::route_tables::ConfigTables>::default();
         if crate::plane::is_fallback(crate::plane::fallback_key()) {
             // Assemble the NEUTRAL `PlaneBuildInput` (money-path Phase 3-4 C) exactly as production
             // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
@@ -1772,7 +1772,7 @@ impl TestApp {
                     name,
                 })
                 .collect();
-            config_tables = std::sync::Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+            config_tables = std::sync::Arc::new(busbar_kernel::route_tables::ConfigTables::of(
                 &lane_inputs,
                 &pool_inputs,
                 &by_model,
