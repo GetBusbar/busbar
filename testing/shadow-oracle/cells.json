@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2506,
+    "total": 2508,
     "by_plane": {
       "a2a": 468,
-      "core": 977,
+      "core": 979,
       "llm": 149,
       "mcp": 912
     },
@@ -69,7 +69,7 @@
       "auth.lifecycle": 3,
       "billing": 15,
       "boot.deprecated-env": 5,
-      "boot.refusal": 207,
+      "boot.refusal": 209,
       "boot.warning": 31,
       "cli": 14,
       "concurrency": 3,
@@ -14669,6 +14669,40 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b the `module: prometheus` export instance sets settings.buffer_seconds: 0, which ",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|BOOT-102|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:BOOT-102",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b export.metrics2: a second `module: prometheus` instance (already defined as 'met",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|BOOT-103|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:BOOT-103",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b export.traces2: a second `module: otlp` instance (already defined as 'traces'). ",
       "needs_fixture": false
     },
     {

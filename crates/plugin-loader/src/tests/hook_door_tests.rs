@@ -56,6 +56,7 @@ fn request(messages: usize) -> RoutingRequest<'static> {
         prompt: None,
         identity: None,
         signals: SignalBag::new(),
+        session: None,
     }
 }
 
@@ -339,6 +340,56 @@ fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
     );
 }
 
+/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session
+/// half): the request view's opaque session crosses the hook kind's `decide` through the one
+/// dispatcher, linked and dropped in alike: the fixture refuses the session its settings name and
+/// abstains on any other, and on a request that names none.
+#[tokio::test]
+async fn a_hook_reads_the_request_session_through_both_doors() {
+    let run = |rows: HookRows| async move {
+        let calls = rows
+            .open(
+                NAME,
+                "hooks.gate",
+                &json!({"reject_over_messages": 3, "reject_session": "ctx-7"}),
+                BUDGET,
+            )
+            .expect("the hook opens");
+        let ctx = RoutingContext {
+            pool: "p",
+            budget_remaining: None,
+            budget: &[],
+        };
+        let mut lines = Vec::new();
+        for session in [Some(&b"ctx-7"[..]), Some(&b"ctx-8"[..]), None] {
+            let mut req = request(2);
+            req.session = session;
+            let frame = DecideFrame::first(DecideView::build(&req, &[], &ctx));
+            lines.push(decided(2, &calls.decide(frame, BUDGET).await));
+        }
+        lines
+    };
+    let door = hook_door_plugin::conforming::door;
+    let linked = run(rows(door, "hook_door", Way::Linked).expect("linked")).await;
+    assert!(
+        linked[0].contains("verbs=0x14 ")
+            && linked[0].contains(&format!("reject_status={REJECT_STATUS}")),
+        "the named session is refused: {}",
+        linked[0]
+    );
+    assert!(linked[1].contains("verbs=0x2 "), "{}", linked[1]);
+    assert!(linked[2].contains("verbs=0x2 "), "{}", linked[2]);
+    let Some(dropped_rows) = rows(door, "hook_door", Way::Dropped) else {
+        eprintln!("skip: the hook fixture's cdylib is not built in this scoped run");
+        return;
+    };
+    assert_eq!(
+        linked,
+        run(dropped_rows).await,
+        "the same answers, whichever door"
+    );
+}
+
 /// R1 (Q-LEAK; THE DESIGN: every hook call runs on an off-worker lane carrying 1.5.5's
 /// `timeout_ms` guarantee), the LANE'S half: a gate whose `decide` sleeps past the call's budget is
 /// cut off at that budget through the axis — `TimedOut`, promptly, never the sleep waited out, and
@@ -367,6 +418,59 @@ async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "the deadline must cut off promptly, not wait out the sleep"
+    );
+}
+
+/// PB-81, THE QUARANTINE RACE: a call refused at the saturated cap whose wedged instance the
+/// watchdog faults before the refusal is looked at (the order a loaded host gave
+/// [`the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis`] by chance: its
+/// freed-slot call answered `broken (hook ... answered Refused)` at 1.00 s). That call was never
+/// made — a refusal is no crossing — so it waits for the trial window within its own budget, as a
+/// call meeting the fault before it was submitted does, and is answered by the fresh instance.
+/// The refused call here is held until the watchdog has faulted the instance, so the order is met
+/// every time.
+#[tokio::test]
+async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for_its_trial() {
+    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).expect("linked");
+    // `sleep_ms` past the Call class budget: the watchdog faults the wedged crossings; the odd
+    // figure marks this instance's settings for the hold.
+    let wedged: Arc<dyn busbar_contract::hook_calls::HookCalls> = axis
+        .open(
+            NAME,
+            "hooks.wedged-race",
+            &json!({"reject_over_messages": 3, "sleep_ms": 1_501}),
+            BUDGET,
+        )
+        .expect("the wedged gate opens");
+    *crate::hook_door::HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(b"\"sleep_ms\":1501".to_vec());
+    let mut inflight = Vec::with_capacity(MAX_INFLIGHT as usize);
+    for _ in 0..MAX_INFLIGHT {
+        let wedged = Arc::clone(&wedged);
+        inflight.push(tokio::spawn(async move {
+            let _ = wedged.decide(frame(2), Duration::from_millis(50)).await;
+        }));
+    }
+    for h in inflight {
+        let _ = h.await;
+    }
+    // Every unit is held by a wedged crossing (the callers gave up; the crossings run on), so this
+    // call is refused at the cap, held until the watchdog faults the instance, then judged.
+    let answered = wedged.decide(frame(2), BUDGET).await;
+    *crate::hook_door::HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    assert!(
+        matches!(
+            answered,
+            Answered::Answer {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
+                ..
+            }
+        ),
+        "a call the cap refused as the instance was quarantined waits for its trial: {}",
+        decided(2, &answered)
     );
 }
 
@@ -433,5 +537,121 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
         ),
         "a freed slot must let the next call through: {}",
         decided(2, &resumed)
+    );
+}
+
+/// THE RULING'S HOOK CASE THROUGH THE AXIS (1.5.5 configs load unchanged): a hook config naming
+/// `module: busbar-webrequest` (the 1.5.5 release's manifest name) opens the 1.6.0 hook, DROPPED IN
+/// (its signed manifest's `former_names`, through the registry the root builds the axis over) and
+/// LINKED (the former names the root's legacy table gives a linked row). RED ARMS, in the same
+/// test: without the former names neither way answers the old name.
+#[test]
+fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
+    const OLD: &str = "busbar-webrequest";
+    let door = hook_door_plugin::conforming::door;
+    let settings = json!({"reject_over_messages": 3});
+    let opens = |rows: &HookRows| rows.open(OLD, "hooks.wr", &settings, BUDGET).is_ok();
+    let dispatcher = || Arc::new(Dispatcher::new(DispatchConfig::default()));
+    // LINKED.
+    let former_of = |w: &str| {
+        if w == NAME {
+            vec![OLD.to_string()]
+        } else {
+            Vec::new()
+        }
+    };
+    let linked = HookRows::new(&[door], None, dispatcher())
+        .expect("the linked row")
+        .with_former_names(former_of)
+        .expect("no other plugin claims the name");
+    assert!(opens(&linked), "linked: '{OLD}' opens the hook");
+    assert!(linked.linked(OLD) && linked.first_party(OLD));
+    let bare = HookRows::new(&[door], None, dispatcher()).expect("the linked row");
+    assert!(!opens(&bare), "RED: a linked row without its former name");
+    // DROPPED IN.
+    let Some(path) = crate::both_ways::example_cdylib("hook_door") else {
+        return;
+    };
+    let lib = std::fs::read(path).expect("the example cdylib reads");
+    let abi = crate::supported_abi("hook")[0];
+    let stated = hex::encode(rendering_of(door).expect("the door renders its Statement"));
+    let manifest = |former: &[&str]| {
+        let mut m =
+            crate::both_ways::statement("hook", "busbar-hook-webrequest", "webrequest", abi);
+        m.statement = Some(stated.clone());
+        m.former_names = former.iter().map(|s| s.to_string()).collect();
+        m
+    };
+    let registry = crate::both_ways::dropped("former-hook", manifest(&[OLD]), &lib);
+    assert!(registry.answers(OLD, "hook"), "preflight resolves '{OLD}'");
+    let dropped = HookRows::new(&[], Some(&registry), dispatcher()).expect("the dropped row");
+    assert!(opens(&dropped), "dropped in: '{OLD}' opens the hook");
+    let registry = crate::both_ways::dropped("bare-hook", manifest(&[]), &lib);
+    let bare = HookRows::new(&[], Some(&registry), dispatcher()).expect("the dropped row");
+    assert!(
+        !opens(&bare),
+        "RED: a dropped-in hook without its former name"
+    );
+    assert!(!registry.answers(OLD, "hook"));
+}
+
+/// THE ONE-OWNER RULE on the hook axis (ARCHITECT): a linked hook given a former name another hook
+/// row already answers to is refused, naming both, so the old name never resolves ambiguously.
+#[test]
+fn a_former_name_two_hooks_claim_is_refused_on_the_axis() {
+    let rows = HookRows::new(
+        &[
+            hook_door_plugin::conforming::door,
+            hook_door_plugin::broken::door,
+        ],
+        None,
+        Arc::new(Dispatcher::new(DispatchConfig::default())),
+    )
+    .expect("two distinct linked hooks");
+    let refused = rows
+        .with_former_names(|w| {
+            if w == NAME {
+                vec![BROKEN_NAME.to_string()]
+            } else {
+                Vec::new()
+            }
+        })
+        .expect_err("a former name that is another hook's name is refused");
+    assert!(
+        refused.contains(&format!("'{BROKEN_NAME}'")) && refused.contains(NAME),
+        "{refused}"
+    );
+}
+
+/// ARCHITECT Q-P4-12 ON THE HOOK AXIS: a linked hook and a DIFFERENT dropped-in hook answering one
+/// word (here the dropped-in plugin's manifest alias spells the linked hook's name) refuse the
+/// configuration, naming both; no door outranks the other. GREEN arm: the dropped-in hook under an
+/// alias of its own sits beside the linked one.
+#[test]
+fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused() {
+    let abi = crate::supported_abi("hook")[0];
+    let stated = hex::encode(
+        rendering_of(hook_door_plugin::broken::door).expect("the door renders its Statement"),
+    );
+    let dropped = |alias: &str| {
+        let mut m = crate::both_ways::statement("hook", "acme-hook-other", alias, abi);
+        m.statement = Some(stated.clone());
+        crate::both_ways::dropped(&format!("claim-{alias}"), m, b"a hook library")
+    };
+    let rows = |registry: &crate::PluginRegistry| {
+        HookRows::new(
+            &[hook_door_plugin::conforming::door],
+            Some(registry),
+            Arc::new(Dispatcher::new(DispatchConfig::default())),
+        )
+    };
+    let refused = rows(&dropped(NAME)).expect_err("a word two hooks claim is refused");
+    assert!(
+        refused.contains(&format!("'{NAME}'")) && refused.contains(BROKEN_NAME),
+        "{refused}"
+    );
+    assert!(
+        rows(&dropped("acme-other")).is_ok(),
+        "distinct words coexist"
     );
 }

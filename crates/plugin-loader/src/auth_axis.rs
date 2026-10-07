@@ -21,7 +21,9 @@ use busbar_contract::conn::DeclaredConns;
 
 use crate::auth_door::{AuthInstance, AuthSink};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
-use crate::dispatch::{load_dropped_bytes, load_linked, Bind, Dispatcher, LinkedRow, Plugin};
+use crate::dispatch::{
+    load_dropped_bytes, load_linked, Bind, ConnTable, Dispatcher, LinkedRow, Plugin,
+};
 use crate::registry::LoadablePlugin;
 use crate::PluginRegistry;
 
@@ -120,10 +122,12 @@ impl AuthRows {
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink: sink.bind(),
             dispatcher: self.dispatcher.adopter(),
+            // Serving: the host's table (else a table the axis holds), or (none) a door that
+            // declares no need. A fact read: a probe, bound with no table whatever it declares.
             conns: if serving {
-                self.conns.map(|c| c()).or_else(|| self.held.clone())
+                ConnTable::serving(self.conns.map(|c| c()).or_else(|| self.held.clone()))
             } else {
-                None
+                ConnTable::Probe
             },
         };
         let loaded = match row.door() {
@@ -161,7 +165,10 @@ impl AuthRows {
             .linked()
             .iter()
             .filter(|p| p.manifest.kind == AUTH)
-            .any(|p| p.manifest.alias == module || stated_aliases(p).iter().any(|a| a == module))
+            .any(|p| {
+                p.manifest.config_names().any(|n| n == module)
+                    || stated_aliases(p).iter().any(|a| a == module)
+            })
     }
 
     /// THE OPERATOR CREDENTIAL'S ROW: the auth row whose Statement states `FACT_OPERATOR`, as its

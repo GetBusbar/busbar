@@ -115,3 +115,14 @@ fn the_caller_reference_is_never_the_principal() {
         .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     assert!(!r.contains("alice"));
 }
+
+/// A door plane is lent the operator's name of the member (and pool) its attempt was picked from —
+/// the entry its own section writes — never the kernel's `(plane key, entry)` key; a name with no
+/// plane key is lent as it is.
+#[test]
+fn a_plane_is_lent_the_operators_name_of_its_member() {
+    let key = format!("door{}fs", crate::governance::PLANE_LANE_SEP);
+    assert_eq!(super::operator_name(key.as_bytes()), b"fs");
+    assert_eq!(super::operator_name(b"gpt-model"), b"gpt-model");
+    assert_eq!(super::operator_name(b""), b"");
+}

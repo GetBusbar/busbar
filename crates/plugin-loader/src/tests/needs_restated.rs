@@ -84,3 +84,83 @@ macro_rules! tcp_restated {
     };
 }
 pub(crate) use tcp_restated;
+
+/// A connection table that DECLARES every need over any scheme and OPENS none: what a test that
+/// serves a networked door it never lets dial binds over (the bind needs a table; nothing reaches it).
+#[derive(Debug, Default)]
+pub(crate) struct Inert;
+
+impl busbar_contract::conn::Conns for Inert {
+    fn open(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+        _: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Refused)
+    }
+    fn write(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn read(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: u64,
+        _: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn wait(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: &[busbar_contract::conn::ConnId],
+        _: u64,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn facts(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn close(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        Ok(())
+    }
+}
+
+impl busbar_contract::conn::DeclaredConns for Inert {
+    fn declare(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+        _: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        Ok(())
+    }
+    fn declared(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+    ) -> Option<Result<(), busbar_contract::conn::ConnError>> {
+        Some(Ok(()))
+    }
+    fn serves_scheme(&self, _: &str) -> bool {
+        true
+    }
+}

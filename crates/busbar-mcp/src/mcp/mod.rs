@@ -163,6 +163,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // The pin and `verify_ttl:` are the kernel's to parse and judge; declared here by key.
         trust_keys: config::TRUST_KEYS,
         served_op_classes: &[],
+        caller_credential_refusal: None,
     };
 
 /// [`stdio_serve::serve_stdio`], boxed to the stdio-serve axis's shape ([`crate::linked`]).
@@ -1275,6 +1276,12 @@ pub(crate) mod test_engine;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/config_tests.rs"]
 mod config_tests;
+
+// THE RUNTIME SLOT [`runtime_of`] downcasts holds this plane's own runtime on every App, including
+// one built while the fallback plane registers. See the module header.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/runtime_slot_tests.rs"]
+mod runtime_slot_tests;
 
 // WHAT SURVIVES THE MOMENT THE DEFENCE FIRES: a quarantine across a restart, the sweep that has to
 // be STARTED for one to be taken at all, and the demoted upstream that must stop being ADVERTISED

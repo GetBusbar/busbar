@@ -1597,7 +1597,7 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::BeginIn,
-        [head, side, _reserved, target, facts, sink]
+        [head, side, _reserved, target, facts, sink, fields, fields_len]
     );
     record!(
         s,
@@ -1629,7 +1629,23 @@ fn compute_layout() -> String {
         tkind::RefuseIn,
         [head, framing, stream, has_stream, _reserved, bytes, len, sink, status, _reserved2]
     );
-    record!(s, tkind::FinishIn, [head, framing, reason, _reserved, sink]);
+    record!(
+        s,
+        tkind::FinishIn,
+        [
+            head,
+            framing,
+            reason,
+            _reserved,
+            sink,
+            final_status,
+            _final_reserved,
+            final_message,
+            final_details,
+            final_bytes,
+            final_bytes_len
+        ]
+    );
     record!(s, tkind::FramingIn, [head, framing, sink]);
     record!(
         s,
@@ -1642,7 +1658,7 @@ fn compute_layout() -> String {
         pkind::Ops,
         [head, arrive, on_piece, refusal, serve, hydrate, start, project]
     );
-    record!(s, pkind::DialectAuth, [dialect, _reserved, style]);
+    record!(s, pkind::DialectAuth, [dialect, _reserved, style, params]);
     record!(s, pkind::OpClass, [op, name]);
     record!(s, pkind::BillableClass, [class, family]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
@@ -1698,7 +1714,11 @@ fn compute_layout() -> String {
             trust_keys,
             trust_keys_len,
             refusal_statuses,
-            refusal_statuses_len
+            refusal_statuses_len,
+            caller_credential_refusal,
+            admin_routes,
+            admin_routes_len,
+            admin_openapi
         ]
     );
     record!(
@@ -1724,10 +1744,11 @@ fn compute_layout() -> String {
             admin_routes_len,
             openapi,
             audience,
-            resource_metadata
+            resource_metadata,
+            resource_facts
         ]
     );
-    record!(s, pkind::PlaneOpenIn, [open, public_url]);
+    record!(s, pkind::PlaneOpenIn, [open, public_url, owned]);
     record!(s, pkind::PlaneOpenOut, [open, snapshot]);
     record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
     record!(s, pkind::UnitCount, [class, source, amount]);
@@ -1758,7 +1779,9 @@ fn compute_layout() -> String {
             cancels,
             pool,
             route,
-            _route_reserved
+            route_flags,
+            _route_reserved,
+            affinity
         ]
     );
     record!(
@@ -1815,7 +1838,15 @@ fn compute_layout() -> String {
             arena_written,
             arena_needed,
             verb,
-            target
+            target,
+            need,
+            fault,
+            _fault_reserved,
+            lane,
+            final_status,
+            _final_reserved,
+            final_message,
+            final_details
         ]
     );
     record!(
@@ -1837,7 +1868,10 @@ fn compute_layout() -> String {
             unit,
             plane_code,
             retry_after_s,
-            target
+            target,
+            records_buf,
+            records_cap,
+            hook
         ]
     );
     record!(
@@ -1852,15 +1886,30 @@ fn compute_layout() -> String {
             marker,
             fields_written,
             fields_needed,
-            status
+            status,
+            records_written,
+            records_needed
         ]
     );
     record!(
         s,
         pkind::ServeIn,
         [
-            head, route, _reserved, target, fields, fields_len, body, reply_buf, reply_cap,
-            fields_buf, fields_cap, arena_buf, arena_cap
+            head,
+            route,
+            _reserved,
+            target,
+            fields,
+            fields_len,
+            body,
+            reply_buf,
+            reply_cap,
+            fields_buf,
+            fields_cap,
+            arena_buf,
+            arena_cap,
+            records_buf,
+            records_cap
         ]
     );
     record!(
@@ -1875,10 +1924,22 @@ fn compute_layout() -> String {
             status,
             fields_written,
             fields_needed,
-            audit
+            audit,
+            records_written,
+            records_needed
         ]
     );
     record!(s, pkind::PlaneDriveIn, [drive, sessions_buf, sessions_cap]);
+    record!(
+        s,
+        pkind::PlaneCancelIn,
+        [cancel, records_buf, records_cap, arena_buf, arena_cap]
+    );
+    record!(
+        s,
+        pkind::PlaneCancelOut,
+        [cancel, records_written, _reserved, arena_written]
+    );
     record!(
         s,
         pkind::PlaneDriveOut,
@@ -1959,7 +2020,16 @@ fn compute_layout() -> String {
     record!(
         s,
         hconn::StreamFacts,
-        [size, secure, endpoint, agreed_protocol, peer_cert_hash]
+        [
+            size,
+            secure,
+            endpoint,
+            agreed_protocol,
+            peer_cert_hash,
+            peer_key_pin,
+            client_identity,
+            _reserved
+        ]
     );
     record!(s, hconn::CheckoutIn, [head, need, _reserved]);
     record!(s, hconn::CheckinIn, [head, stream, disposition, _reserved]);
@@ -2045,7 +2115,7 @@ fn compute_layout() -> String {
     record!(s, hsvc::VerifyStoreIn, [head, key, entry, ttl_ms]);
     record!(s, hsvc::EntitlementCheckIn, [head, target]);
     record!(s, hsvc::ContentScanIn, [head, content, into]);
-    record!(s, hsvc::HookCallIn, [head, stage, _reserved, view, into]);
+    record!(s, hsvc::HookCallIn, [head, stage, from, prompt, into]);
     record!(s, hsvc::RandomFillIn, [head, len, into]);
     record!(
         s,
@@ -2075,7 +2145,8 @@ fn compute_layout() -> String {
             need_admit,
             trust_verify,
             records_secret,
-            disk_append
+            disk_append,
+            snapshot_read
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
@@ -2091,6 +2162,7 @@ fn compute_layout() -> String {
         hsvc::DiskWritten,
         [size, rotated, faults, _reserved, written]
     );
+    record!(s, hsvc::SnapshotReadIn, [head, scope, _reserved, into]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);
@@ -2117,7 +2189,8 @@ fn compute_layout() -> String {
             max_tokens,
             flags,
             signals,
-            signals_len
+            signals_len,
+            session
         ]
     );
     record!(

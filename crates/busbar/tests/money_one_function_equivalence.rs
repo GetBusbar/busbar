@@ -137,10 +137,7 @@ fn ledger_card(rates: Option<&[(&str, Rates4)]>, fee: i64) -> RateCard {
 use busbar_core_admin::v1::service::read_path_money as admin;
 
 /// One metering row in the shape `GET /api/v1/admin/usage` aggregates before it prices.
-fn admin_row(
-    counts: &[(&'static str, u64)],
-    requests: u64,
-) -> busbar_kernel::admin::v1::contract::UsageBreakdown {
+fn admin_row(counts: &[(&'static str, u64)], requests: u64) -> admin::UsageBreakdown {
     let at = |unit: &str| {
         counts
             .iter()
@@ -148,7 +145,7 @@ fn admin_row(
             .map(|(_, v)| *v)
             .unwrap_or(0)
     };
-    busbar_kernel::admin::v1::contract::UsageBreakdown {
+    admin::UsageBreakdown {
         tokens_input: at(INPUT),
         tokens_output: at(OUTPUT),
         tokens_cache_read: at(CACHE_READ),
@@ -156,6 +153,7 @@ fn admin_row(
         tokens_cache_creation: at(CACHE_WRITE),
         requests,
         spend_micros: 0,
+        classes: Default::default(),
     }
 }
 
@@ -606,7 +604,7 @@ fn d1_a_rate_card_edit_is_one_function_over_two_different_inputs() {
 }
 
 /// D8 — THE METRICS GAUGE IS THE ONE FUNCTION'S INTEGER, UP TO THE ONE EGRESS BOUNDARY. Item 24
-/// moved the money gauges to `metrics/money.rs`, where the only float is `set_gauge` — the declared
+/// moved the money gauges to `snapshot/money.rs`, where the only float is `set_gauge` — the declared
 /// `MONEY_EGRESS` boundary the exporter forces. Everything before it is integer: the figure the
 /// gauge is handed is `CostModel::derive_spend_cents`, which is the one function, exact above 2^53
 /// where a float would have lost the ones digit.
@@ -1163,7 +1161,6 @@ fn census_flags_a_planted_seventh_copy() {
 const TEN_THOUSANDS: &[(&str, &str)] = &[
     ("STANDARD_TIER_BP", "the standard tier, in basis points"),
     ("MICROS_PER_CENT", "micro-units in one minor unit"),
-    ("WHOLE_BP", "a metering tolerance ratio's whole, not money"),
     (
         "CHECKPOINT_ENTRIES",
         "a checkpoint cadence in journal entries, not money",

@@ -270,3 +270,7 @@ pub(crate) fn attempt_cap(ms: u64, remaining_secs: u64) -> std::time::Duration {
 #[cfg(test)]
 #[path = "tests/rerank_search_units_tests.rs"]
 mod rerank_search_units_tests;
+
+#[cfg(test)]
+#[path = "tests/ledger_100_tests.rs"]
+mod ledger_100_tests;

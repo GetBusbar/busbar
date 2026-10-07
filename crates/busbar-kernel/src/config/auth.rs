@@ -451,6 +451,9 @@ impl AuthCfg {
 
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
 pub const KEYS_MODULE: &str = "keys";
+/// The operator credential's `module:` word, under the name the admin surface reads it by (the
+/// OpenAPI description of `admin_auth`): the same function as [`operator_provider`].
+pub use busbar_kernel_identity::operator::provider as operator_module;
 /// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it (the `auth.admin_auth:` default,
 /// referenced bare, the one `module:` whose definition may carry `token:`, and a reserved hook name),
 /// and the principal id it identifies the operator as. Frozen config text the composition root's

@@ -1502,6 +1502,16 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 // the old prose: a blank token does not merely lock the admin API, it computes the digest over the
 // blank string, so an empty presented credential would authenticate as the operator.
 
+/// The classes a plane's card prices: its declared billable classes less its fee units (a fee unit
+/// says whether the flat fee was incurred and is never ledgered as usage, so no card prices it).
+fn priced_classes(
+    d: &crate::plane::registry::PlaneDecl,
+) -> impl Iterator<Item = &'static str> + Clone + '_ {
+    (d.billable_classes.iter())
+        .map(|c| c.class)
+        .filter(|c| !d.fee_units.contains(c))
+}
+
 /// Validate the COST + GROUPS + STORE + SECRETS surface of the resolved config:
 /// rate_card completeness/wellformedness, the `groups:` limit tree (parents exist, chain acyclic —
 /// any depth, the cycle check is the bound; limit values sane), `per_request_fee` sanity, the store
@@ -1628,6 +1638,15 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // configure every billable class the plane declares, on any entry; an explicit 0 counts, and
         // a reserved tier omitted in YAML is 0 by the 1.5.5 grammar. The kernel asks the plane and
         // names each class missing. A per-lane gap stays the run-time #42 refusal.
+        //
+        // A FEE UNIT IS NO PRICED CLASS (SEAM-L(m)): a plane served through its door declares its
+        // fee units among its billable classes (the tail check holds `fee_units ⊆
+        // billable_classes`), but a fee unit's count only says whether the flat fee its
+        // `<section>.fees` sets was incurred; it is never ledgered as usage and no card prices it.
+        // The classes a card must configure, and may name, are the declared ones less the fee
+        // units: exactly the classes the plane's lane was priced by before it was served through
+        // its door, so a configuration that booted then boots now and an unpriced class still
+        // refuses (#42).
         for d in crate::plane::registry::plane_decls() {
             let own = if d.fallback { "" } else { d.key };
             let on: Vec<_> = card
@@ -1639,7 +1658,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 !(entry && busbar_contract::records::RESERVED_UNITS.contains(c)
                     || on.iter().any(|(_, r)| r.units.contains_key(*c)))
             };
-            let declared = d.billable_classes.iter().map(|c| c.class);
+            let declared = priced_classes(d);
             let missing: Vec<&str> = declared.clone().filter(unset).collect();
             let present = if d.fallback {
                 flat_card
@@ -1696,8 +1715,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             else {
                 continue;
             };
-            let zero = (d.billable_classes.iter())
-                .map(|c| format!("{}: 0", c.class))
+            let zero = priced_classes(d)
+                .map(|c| format!("{c}: 0"))
                 .collect::<Vec<_>>()
                 .join(", ");
             let stub: String = (missing.iter())

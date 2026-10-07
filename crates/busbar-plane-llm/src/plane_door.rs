@@ -51,7 +51,7 @@ use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
@@ -63,6 +63,7 @@ use busbar_contract::abi::plane::{
     PRINCIPAL_NONE, PRINCIPAL_REQUIRED, SHAPE_PIECEWISE, TAIL_FALLBACK, TAIL_PROBES,
     UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
+use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -73,7 +74,6 @@ use busbar_contract::ids::{MeterClassDecl, OpClassId};
 use busbar_contract::plane::PlaneMeta;
 use serde_json::Value;
 
-use crate::codec::ir::rerank::SEARCH_UNITS_CLASS;
 use crate::dialect::DIALECTS;
 use crate::exchange::arrive::{self, envelope_for, Arrived, Declined};
 use crate::exchange::attempt::{self, stream_intent, FarRequest};
@@ -147,11 +147,10 @@ const DIALECT_NAMES: &[AbiStr] = &[
 ];
 const OP_CLASSES: &[OpClass] = &[op(0), op(1), op(2), op(3), op(4), op(5), op(6)];
 /// THE OPEN CLASSES a far end counts beside its tokens, each `(class, family)`: every name the
-/// reply can report in its open counts, enumerated from the codec (a counted billing names its
-/// class there, and only a rerank's search units do: `codec/ir/rerank.rs`, priced under
-/// `rate_card.<model>.units`), so no reported count is dropped. They follow the token classes in
-/// the tail's billable classes.
-pub const OPEN_CLASSES: &[(&str, &str)] = &[(SEARCH_UNITS_CLASS, "units")];
+/// reply can report in its open counts, enumerated from the codec (`codec/ir/open_class.rs`, each
+/// priced under `rate_card.<model>.units`), so no reported count is dropped (owner LEDGER-100).
+/// They follow the token classes in the tail's billable classes.
+pub use crate::codec::ir::open_class::OPEN_CLASSES;
 
 const fn open_class(k: usize) -> BillableClass {
     BillableClass {
@@ -166,6 +165,20 @@ const BILLABLE_CLASSES: &[BillableClass] = &[
     billable(2),
     billable(3),
     open_class(0),
+    open_class(1),
+    open_class(2),
+    open_class(3),
+    open_class(4),
+    open_class(5),
+    open_class(6),
+    open_class(7),
+    open_class(8),
+    open_class(9),
+    open_class(10),
+    open_class(11),
+    open_class(12),
+    open_class(13),
+    open_class(14),
 ];
 const _: () = assert!(
     DIALECTS.len() == DIALECT_NAMES.len()
@@ -288,6 +301,10 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: crate::refusal::REFUSAL_STATUSES.as_ptr(),
     refusal_statuses_len: crate::refusal::REFUSAL_STATUSES.len(),
+    caller_credential_refusal: NONE,
+    admin_routes: ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: Blob::ABSENT,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its needs and its tail.
@@ -891,13 +908,13 @@ slot!(
 
 slot!(
     /// `cancel`: the unit on the cancelled ticket ends; nothing it owed is delivered.
-    Cancel, CancelIn, CancelOut, |instance, input, mut out| {
+    Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
         if let Some(door) = instance.get() {
-            if let Some(unit) = guard(&door.tickets).remove(&input.ticket) {
+            if let Some(unit) = guard(&door.tickets).remove(&input.cancel.ticket) {
                 guard(&door.units).remove(&unit);
             }
         }
-        out.set(|o| &o.disposition, CANCEL_ABORTED);
+        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
         Outcome::Ready
     }
 );

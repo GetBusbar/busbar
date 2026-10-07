@@ -138,7 +138,7 @@ pub use super::auth::{
     AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER,
 };
 
-use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead};
+use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead, Span};
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
@@ -304,6 +304,17 @@ pub const FACT_DECODES_PAYLOAD: u32 = 2;
 pub const SIDE_ACCEPT: u32 = 0;
 /// `side`: the dialing end.
 pub const SIDE_DIAL: u32 = 1;
+/// `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries
+/// (ARCHITECT 4l, 2026-10-05: one listener port carries every claim's streams, so a claim's framer
+/// frames the stream, not the connection). Its one stream is stream `1`. `begin` takes the stream's
+/// target and its head fields ([`BeginIn::fields`]); `ingest` takes the stream's body bytes and
+/// yields each message as a piece that ends its frame (no piece ends the stream: the host's framer
+/// knows where its body ended); `emit` takes one message's bytes (`end_of_frame` = it ends) and yields the
+/// stream's body bytes in `wire`; `refuse` and `finish` yield the stream's CLOSING FIELD BLOCK in
+/// `wire`, as field lines (`name: value` CRLF each), which the host sends verbatim: after a head as
+/// its trailers, before one as the fields of an answer that is nothing else. `finish` states the
+/// stream's final status ([`FinishIn::final_status`]).
+pub const SIDE_ACCEPT_STREAM: u32 = 2;
 
 /// Close reason: normal.
 pub const CLOSE_NORMAL: u32 = 0;
@@ -332,6 +343,19 @@ pub const STATUS_CALLER_FAULT: u8 = 2;
 pub const STATUS_FAR_END_FAULT: u8 = 3;
 /// Status class: other.
 pub const STATUS_OTHER: u8 = 4;
+
+/// Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's
+/// (it records nothing against the destination): a framer that states no fault table never trips
+/// anything.
+pub const FAULT_NONE: u8 = 0;
+/// Fault reading: the caller's own fault. The destination is healthy and nothing is recorded.
+pub const FAULT_CALLER: u8 = 1;
+/// Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the
+/// piece's `retry_after_secs`, where stated, floors the cooldown.
+pub const FAULT_TRANSIENT: u8 = 2;
+/// Fault reading: the destination itself is down for every caller (its credential or its account
+/// was refused), so every pool's cell for it trips at once.
+pub const FAULT_HARD: u8 = 3;
 
 /// [`Claim::status_at`]: no status.
 pub const STATUS_AT_NONE: u8 = 0;
@@ -908,16 +932,24 @@ pub struct FramerOut {
 pub struct BeginIn {
     /// The head.
     pub head: InHead,
-    /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`].
+    /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`] | [`SIDE_ACCEPT_STREAM`].
     pub side: u32,
     /// Alignment padding.
     pub _reserved: u32,
-    /// The target.
+    /// The target ([`SIDE_ACCEPT_STREAM`]: the stream's path and query).
     pub target: AbiStr,
     /// What connection security established.
     pub facts: *const ConnFacts,
     /// The sink.
     pub sink: FramerSink,
+    /// [`SIDE_DIAL`]: the dial's OPENING head fields (the bound auth's fields and the request's
+    /// own, in order), for a framer whose wire carries them on its connection's opening (an
+    /// upgrade request) rather than on a message; a framer that renders them per message takes them
+    /// in `encode` too and ignores these (ARCHITECT Q-L5B-WS-DIAL 2026-10-03). A tail addition.
+    /// [`SIDE_ACCEPT_STREAM`]: the stream's head fields, as the caller sent them.
+    pub fields: *const Field,
+    /// How many.
+    pub fields_len: usize,
 }
 
 /// `ingest`'s `in`.
@@ -1023,6 +1055,15 @@ pub struct RefuseIn {
 }
 
 /// `finish`'s `in` (the framer's `close`).
+///
+/// THE FINAL STATUS (ARCHITECT 4l, 2026-10-05): on a framing begun on [`SIDE_ACCEPT_STREAM`], the
+/// close is the stream's last answer, and the four `final_*` fields state how it ended, as the unit
+/// stated it: `final_status` in the numbering of the claim the stream arrived on (a number the
+/// claim's status rows cover; `0` where the unit stated none and the claim's numbering has one for
+/// success), its message and its details as byte ranges of `final_bytes`, each empty where the
+/// unit stated none. The framer renders them on its own wire, verbatim; the host renders nothing.
+/// The same names and shape as the plane's `OnPieceOut` final tail. Any other framing's close
+/// carries the four zeroed. A tail addition (pre-tag v1).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FinishIn {
@@ -1036,6 +1077,18 @@ pub struct FinishIn {
     pub _reserved: u32,
     /// The sink.
     pub sink: FramerSink,
+    /// The status the stream ended with, in its claim's numbering.
+    pub final_status: u32,
+    /// Alignment padding.
+    pub _final_reserved: u32,
+    /// The status's message, a range of `final_bytes`; empty = none.
+    pub final_message: Span,
+    /// The status's details, a range of `final_bytes`, passed through as stated; empty = none.
+    pub final_details: Span,
+    /// The bytes `final_message` and `final_details` index (host memory, valid for the call).
+    pub final_bytes: *const u8,
+    /// How many.
+    pub final_bytes_len: usize,
 }
 
 /// `detach`'s and `timer`'s `in`.

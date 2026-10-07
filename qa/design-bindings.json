@@ -2912,7 +2912,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix",
+     "ref": "crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix",
      "proves": "reads are read-only, mutations full, config/validate and plugins/inspect read-only",
      "source": "curated",
      "status": "mapped"
@@ -2933,7 +2933,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
+   "verdict_detail": "test:crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
   },
   {
    "id": "PB-63",
@@ -3334,7 +3334,7 @@
   {
    "id": "PB-69",
    "surface": "ingress server posture",
-   "binding": "ALPN `http/1.1` only (no h2 served); hyper `header_read_timeout` 30 s; `limits.request_body_read_timeout_secs` 30; `tls_handshake_timeout_secs` 10; header size and count limits as hyper's defaults; the 64 KiB cursor / credential budgets never refuse a request 1.5.5 accepted (PB-18)",
+   "binding": "ALPN `h2, http/1.1` (OWNER RULING Q137, 2026-10-04: a signed change from 1.5.5's `http/1.1` only; an `h2` connection is served HTTP/2, a client offering only `http/1.1` or no ALPN is served as in 1.5.5); hyper `header_read_timeout` 30 s; `limits.request_body_read_timeout_secs` 30; `tls_handshake_timeout_secs` 10; header size and count limits as hyper's defaults; the 64 KiB cursor / credential budgets never refuse a request 1.5.5 accepted (PB-18)",
    "inventory": "auth-secrets :2171; routes-admin :511; config :272-273",
    "status": "mapped",
    "checks": [

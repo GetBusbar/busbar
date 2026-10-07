@@ -27,8 +27,8 @@ use busbar_contract::export_calls::{ExportCalls, Probed, DEFAULT_INFLIGHT, INFLI
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::{
-    load_dropped_bytes, load_linked, Bind, Dispatcher, EnvelopeSink, LinkedRow, NoSink, Plugin,
-    PluginLogConfig,
+    load_dropped_bytes, load_linked, Bind, ConnTable, Dispatcher, EnvelopeSink, LinkedRow, NoSink,
+    Plugin, PluginLogConfig,
 };
 use crate::export_door::{self, ExportInstance};
 use crate::registry::LoadablePlugin;
@@ -153,7 +153,13 @@ impl<'r> ExportRows<'r> {
             max_inflight_cap,
             sink,
             dispatcher: self.dispatcher.adopter(),
-            conns: opening.and(self.conns.clone()),
+            // Opened to deliver: the host's table (an axis handed none serves only doors that
+            // declare no need). Probed or checked: a probe, bound with no table.
+            conns: if opening.is_some() {
+                ConnTable::serving(self.conns.clone())
+            } else {
+                ConnTable::Probe
+            },
         };
         let loaded = match &image {
             Image::Linked(r) => load_linked::<Export>(r, bind),
@@ -186,6 +192,42 @@ impl<'r> ExportRows<'r> {
             // It will not load here: its open refuses the boot naming the instance.
             Err(_) => Some((None, Vec::new())),
         }
+    }
+
+    /// The `module:` words (aliases) of the export rows this build LINKS, in registration order.
+    #[must_use]
+    pub fn linked_modules(&self) -> Vec<String> {
+        self.registry
+            .linked()
+            .iter()
+            .filter(|p| p.manifest.kind == SECTION)
+            .map(|p| p.manifest.alias.clone())
+            .collect()
+    }
+
+    /// Whether `module`'s row states the `one_instance` mark (at most one instance may be
+    /// configured): read off its Statement at bind. A row that will not load here states
+    /// none.
+    #[must_use]
+    pub fn one_instance(&self, module: &str) -> bool {
+        let Some(row) = self.row(module) else {
+            return false;
+        };
+        self.load(row, &label(module), None)
+            .is_ok_and(|p| p.context::<ExportFacts>().is_some_and(|f| f.one_instance))
+    }
+
+    /// The routes `module`'s row declares, read off its Statement at bind (no instance opens). A
+    /// row that will not load here declares none.
+    #[must_use]
+    pub fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
+        let Some(row) = self.row(module) else {
+            return Vec::new();
+        };
+        self.load(row, &label(module), None)
+            .ok()
+            .and_then(|p| p.context::<ExportFacts>().map(|f| f.routes.clone()))
+            .unwrap_or_default()
     }
 
     /// The sink's own checks across `instances` of `module` at `phase`; `None` when `module` is
@@ -261,7 +303,7 @@ impl<'r> ExportRows<'r> {
         self.registry
             .linked()
             .iter()
-            .any(|p| p.manifest.alias == module)
+            .any(|p| p.manifest.config_names().any(|n| n == module))
     }
 
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.

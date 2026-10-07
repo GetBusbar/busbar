@@ -111,6 +111,15 @@ name = "store_broken_door"
 path = "tests/fixtures/store_broken_door.rs"
 crate-type = ["cdylib"]
 
+# A 1.5.5-SHAPED PLUGIN (`lib_tests`' no-legacy-loading arm): an `auth` library exporting the JSON
+# contract's frozen symbols and no door, which the upload vet, the plugins inventory and the kind gate
+# refuse naming the rebuild. Self-contained (it names no busbar crate). An example, not a crate:
+# `cargo test` builds it and it never ships.
+[[example]]
+name = "json_contract_auth"
+path = "tests/fixtures/json_contract_auth.rs"
+crate-type = ["cdylib"]
+
 # THE NEUTRAL FRAME DOOR: a transport door that frames the host's socket (an identity framer under a
 # neutral claim, `frame`), for every test that needs a socket-framing door beside its binary: this
 # crate's `transport_door_tests`, the connector's `universal_needs` and the root's registry fold.

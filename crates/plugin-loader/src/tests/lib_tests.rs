@@ -237,6 +237,59 @@ fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
     assert_eq!(real.abi_version, Some(TRANSPORT_VERSION));
 }
 
+/// NO LEGACY LOADING at the loader-mechanism paths (THE DESIGN §11.8, ruling C21/ABI-o1): a library
+/// with no `busbar_plugin_door` that states a JSON-contract kind by its `busbar_plugin_kind` symbol
+/// alone is a 1.5.5-era plugin. The symbol only CLASSIFIES it: the upload vet refuses it and the
+/// plugins inventory lists it invalid, each naming the missing door and the rebuild. (No JSON-lane
+/// kind gate is left to admit it: a library loads only through its door.)
+///
+/// RED against a loader that takes a kind symbol on its word: every handshake and kind check
+/// passes, so the vet answers `Ok` and the inventory lists it valid.
+#[test]
+fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
+    let Some(path) = super::both_ways::example_cdylib("json_contract_auth") else {
+        eprintln!("skip: the json_contract_auth example cdylib is not built");
+        return;
+    };
+    let names_the_rebuild = |why: &str| {
+        assert!(
+            why.contains("busbar_plugin_door"),
+            "names the missing door: {why}"
+        );
+        assert!(why.contains("'auth'"), "names the kind it states: {why}");
+        assert!(
+            why.contains(crate::dispatch::load::REBUILD),
+            "names the rebuild: {why}"
+        );
+    };
+
+    // The upload vet.
+    let vet = validate_plugin(&path).expect_err("the upload vet refuses a door-less library");
+    names_the_rebuild(&vet);
+
+    // The plugins inventory.
+    let file = path.file_name().unwrap().to_owned();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-inventory-json-contract-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(&path, dir.join(&file)).unwrap();
+    let inv = inventory(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let listed = inv
+        .iter()
+        .find(|p| std::ffi::OsStr::new(&p.file) == file)
+        .expect("the door-less library is listed");
+    assert!(!listed.valid, "listed invalid: {listed:?}");
+    assert_eq!(listed.abi_version, None, "{listed:?}");
+    names_the_rebuild(listed.error.as_deref().expect("listed with its refusal"));
+}
+
 #[test]
 fn plugin_library_filename_matches_this_platforms_naming_convention() {
     let name = plugin_library_filename("busbar_foo_plugin");

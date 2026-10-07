@@ -42,8 +42,8 @@ use std::time::Instant;
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome,
-    DIAG_LOG, DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR,
-    SEVERITY_TRACE,
+    DIAG_LOG, DIAG_LOG_DROPPED, FLAG_RESUME, METRIC_ADD, METRIC_OBSERVE, METRIC_SET,
+    SEVERITY_ERROR, SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
 use busbar_contract::abi::mechanism::lifecycle::{
@@ -181,10 +181,55 @@ pub struct Bind {
     /// let _ = busbar_plugin_loader::dispatch::Bind { instance: "a".into(), max_inflight_cap: 1, sink };
     /// ```
     pub dispatcher: super::worker::Adopter,
-    /// The host's ONE connection table. An instance whose Statement declares a need is declared on
-    /// it at bind (each need under its Statement index) and handed the connector slots
+    /// The host's ONE connection table, or why the bind has none, stated at every call site
+    /// ([`ConnTable`]). An instance whose Statement declares a need is declared on the table at bind
+    /// (each need under its Statement index) and handed the connector slots
     /// ([`super::conn_services::CONN_SLOTS`]); any other instance is handed none.
-    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    pub conns: ConnTable,
+}
+
+/// THE BIND'S CONNECTION TABLE (Q-P4-3): the host's table, or, explicitly, why there is none. A
+/// door that declares a need and is bound to serve with no table is REFUSED at bind, naming the
+/// plugin ([`LoadError::NoConnectionTable`]); only a probe binds it with none.
+#[derive(Clone)]
+pub enum ConnTable {
+    /// The host's one connection table: a need the Statement declares is declared on it.
+    Host(Arc<dyn busbar_contract::conn::DeclaredConns>),
+    /// A PROBE or CHECK bind: the instance is only validated or read for its facts, never opened to
+    /// serve, so a need it declares is not declared and it is handed no table (nothing is opened to
+    /// the network while a configuration is judged). Not refused.
+    Probe,
+    /// A bind to SERVE with no connection table: the door must declare no need. One that declares
+    /// a need is refused ([`LoadError::NoConnectionTable`]).
+    NoNeeds,
+}
+
+impl ConnTable {
+    /// A SERVING bind over the table an axis holds: [`ConnTable::Host`] when it holds one, else
+    /// [`ConnTable::NoNeeds`] (an axis handed no table serves only doors that declare no need).
+    #[must_use]
+    pub fn serving(table: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>) -> Self {
+        table.map_or(Self::NoNeeds, Self::Host)
+    }
+
+    /// The table, when the bind has one.
+    #[must_use]
+    pub fn table(&self) -> Option<&Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        match self {
+            Self::Host(t) => Some(t),
+            Self::Probe | Self::NoNeeds => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ConnTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Host(_) => "Host",
+            Self::Probe => "Probe",
+            Self::NoNeeds => "NoNeeds",
+        })
+    }
 }
 
 impl std::fmt::Debug for Bind {
@@ -192,6 +237,7 @@ impl std::fmt::Debug for Bind {
         f.debug_struct("Bind")
             .field("instance", &self.instance)
             .field("max_inflight_cap", &self.max_inflight_cap)
+            .field("conns", &self.conns)
             .finish_non_exhaustive()
     }
 }
@@ -263,6 +309,8 @@ pub(crate) struct Crossed {
     pub(crate) short: bool,
     /// `cancel`'s `CancelOut.disposition`, when the op ended through `cancel`.
     pub(crate) disposition: Option<u32>,
+    /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
+    pub(crate) cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 
 impl Crossed {
@@ -274,6 +322,7 @@ impl Crossed {
             wake_at_ns: 0,
             short: false,
             disposition: None,
+            cancel_writes: Vec::new(),
         }
     }
 }
@@ -300,6 +349,9 @@ pub(crate) struct Instance {
     /// Each whose `target_from` or `trust_from` names a config path is declared at every `open` and
     /// `refresh`, with what those paths resolve to in the settings it is handed.
     needs: Box<[ReadNeed]>,
+    /// The settings keys its Statement names as secret references (`Statement::secret_refs`), in
+    /// order: the host resolves each and lends the material in `open`/`refresh`'s `secrets`.
+    secret_refs: Box<[String]>,
     pub(crate) kind: KindCode,
     name: String,
     slots: Box<[Op]>,
@@ -315,8 +367,13 @@ pub(crate) struct Instance {
     /// crosses (and kept once it closed). `close` enters only when nothing else is crossing, and
     /// nothing enters while it is set, so no crossing ever meets a freed instance.
     gate: AtomicU32,
-    /// Crossings actually made (the witness of "without a crossing").
+    /// Crossings actually made (the witness of "without a crossing"), RESUMES included.
     pub(crate) crossings: AtomicU64,
+    /// Of [`Instance::crossings`], the RESUME re-invocations ([`FLAG_RESUME`]: the same op
+    /// re-entered on its ticket after it answered PENDING; THE DESIGN §11.2, A.3 "Resume"). An
+    /// op's FIRST invocations are `crossings - resumes`: "one op = one crossing", however often
+    /// the op pends.
+    pub(crate) resumes: AtomicU64,
     /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
     pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
     next_call: AtomicU64,
@@ -334,6 +391,8 @@ pub(crate) struct Instance {
     op_name: fn(u32) -> &'static str,
     /// [`Kind::unit_of`] of the bound kind.
     unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
+    /// [`Kind::cancel_frame`] of the bound kind.
+    pub(crate) cancel_frame: fn() -> Box<dyn super::CancelFrame>,
     /// [`Kind::context`] of the bound kind, built from the Statement at bind.
     context: Option<Box<super::Context>>,
     sink: Arc<dyn EnvelopeSink>,
@@ -513,6 +572,15 @@ impl Instance {
                 continue;
             }
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
+            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): each
+            // registration that names a program is a member, its `command`/`args`/`env` its
+            // program (every other key its own), sealed per member: the table keeps one long-lived
+            // program per member, and a re-declaration retires a member that changed or is gone.
+            if busbar_contract::section::member_program(&need.target_from) {
+                let programs = doc.as_ref().map(member_programs).unwrap_or_default();
+                let _ = table.declare_member_programs(*instance, id, need, &programs);
+                continue;
+            }
             // A PROGRAM the settings spell at the path (`{command, args, env}`) is declared as one:
             // the table spawns it (ARCHITECT round 4 (e)). One the settings misspell is declared
             // with no target, which the table refuses.
@@ -669,11 +737,15 @@ impl Instance {
             return Crossed::host(Outcome::Fault);
         }
         // SAFETY: the caller's contract.
-        let (ticket, instance) = unsafe {
+        let (ticket, instance, resumed) = unsafe {
             let head = &mut *input;
             head.op = s;
             head.host = self.ctx();
-            (head.ticket, self.ptr.load(Ordering::Acquire))
+            (
+                head.ticket,
+                self.ptr.load(Ordering::Acquire),
+                head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0,
+            )
         };
         // A `validate`, of every kind, is lent a reason buffer for its crossing alone (it never
         // pends): it names what it wrote in `head.error`, read below while the buffer lives.
@@ -727,6 +799,9 @@ impl Instance {
             _ => self.slots[s as usize],
         };
         self.crossings.fetch_add(1, Ordering::Relaxed);
+        if resumed {
+            self.resumes.fetch_add(1, Ordering::Relaxed);
+        }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
         // The unit this crossing serves, for the host services it calls.
@@ -837,6 +912,7 @@ impl Instance {
             },
             short,
             disposition: None,
+            cancel_writes: Vec::new(),
         }
     }
 
@@ -1129,7 +1205,15 @@ impl<K: Kind> Plugin<K> {
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
-                (Some(table), n) if n > 0 => {
+                (ConnTable::NoNeeds, n) if n > 0 => {
+                    return Err(LoadError::NoConnectionTable {
+                        plugin: str_bytes(st.name)
+                            .map(|n| String::from_utf8_lossy(n).into_owned())
+                            .unwrap_or_default(),
+                        needs: n,
+                    });
+                }
+                (ConnTable::Host(table), n) if n > 0 => {
                     // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a
                     // count; the rendering reads the Statement's `'static` lists.
                     let needs = unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }
@@ -1180,6 +1264,16 @@ impl<K: Kind> Plugin<K> {
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
+        let secret_refs: Box<[String]> = (0..st.secret_refs_len)
+            .map(|i| {
+                // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a count;
+                // the list holds `secret_refs_len` `'static` strings.
+                let key = unsafe { st.secret_refs.add(i).read_unaligned() };
+                str_bytes(key)
+                    .map(|k| String::from_utf8_lossy(k).into_owned())
+                    .ok_or_else(|| LoadError::BadStatement("a secret ref is malformed".into()))
+            })
+            .collect::<Result<_, _>>()?;
         let _ = wake.caller.set(busbar_contract::services::Caller {
             instance: Arc::clone(&bind.instance),
             plugin: Arc::from(String::from_utf8_lossy(name).as_ref()),
@@ -1193,6 +1287,7 @@ impl<K: Kind> Plugin<K> {
             inner: Arc::new(Instance {
                 instance,
                 needs: declared_needs,
+                secret_refs,
                 kind: v.kind,
                 name: String::from_utf8_lossy(name).into_owned(),
                 slots: v.slots,
@@ -1207,6 +1302,7 @@ impl<K: Kind> Plugin<K> {
                 closed: AtomicBool::new(false),
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),
+                resumes: AtomicU64::new(0),
                 calls: Mutex::new(Vec::new()),
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
@@ -1218,6 +1314,7 @@ impl<K: Kind> Plugin<K> {
                 short: K::short,
                 op_name: K::op_name,
                 unit_of: K::unit_of,
+                cancel_frame: K::cancel_frame,
                 context,
                 sink: observed(&bind.sink, &st, v.kind, name),
                 wake,
@@ -1264,9 +1361,26 @@ impl<K: Kind> Plugin<K> {
         self.inner.name()
     }
 
+    /// The settings keys its Statement names as secret references, in the Statement's order.
+    #[must_use]
+    pub fn secret_refs(&self) -> &[String] {
+        &self.inner.secret_refs
+    }
+
     /// The instance's identity on the host's connection table (minted at bind, one per instance).
     pub fn instance(&self) -> InstanceId {
         self.inner.instance
+    }
+
+    /// The host's connection table the instance's needs were declared on at bind; `None` when its
+    /// Statement declares no need or the bind lent none (the composition root holds its members'
+    /// auth bindings on it).
+    pub fn conn_table(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        self.inner
+            .wake
+            .conn
+            .get()
+            .map(|(_, table)| Arc::clone(table))
     }
 
     /// `max_inflight`, as the host clamped it.
@@ -1350,7 +1464,9 @@ impl<K: Kind> Plugin<K> {
         let crossed = unsafe {
             let head = &mut *i;
             head.size = size_of::<I>() as u32;
-            head.flags = 0;
+            // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
+            // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
+            head.flags &= !FLAG_RESUME;
             head.deadline_class = DeadlineClass::Call as u8;
             head.ticket = Ticket::NONE;
             inst.cross(s, i, o, out_size)
@@ -1411,6 +1527,59 @@ pub(crate) fn resolve_setting(settings: &serde_json::Value, path: &str) -> Optio
         .and_then(serde_json::Value::as_str)
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
+}
+
+/// How a member program's `env` secret REFERENCE turns into its value: a string secret resolved
+/// through the secret plugins the build links (the root installs it once, at boot). `Err` names
+/// the reference's source, never a byte of the secret.
+pub type MemberSecretFn = fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>;
+
+/// The installed [`MemberSecretFn`]; until one is installed no reference resolves (fail-closed: a
+/// member whose program needs one is no member).
+static MEMBER_SECRETS: std::sync::OnceLock<MemberSecretFn> = std::sync::OnceLock::new();
+
+/// Install how a member program's `env` secret references resolve ([`member_programs`]); the first
+/// install holds. Answers whether this one was installed.
+pub fn install_member_secrets(resolve: MemberSecretFn) -> bool {
+    MEMBER_SECRETS.set(resolve).is_ok()
+}
+
+/// EVERY MEMBER'S PROGRAM a member-program need reaches (`busbar_contract::section::MEMBER_PROGRAM`):
+/// each registration of the settings that names a `command`, read by
+/// [`busbar_contract::conn::Program::of_member`] (its other keys ignored), in the settings' order.
+/// An `env` value written as a secret REFERENCE (`{ env: X }`, `{ file: P }`) is resolved here, by
+/// the installed [`MemberSecretFn`], as the previous release resolved it at the spawn: the program is handed
+/// the value, the settings keep the reference. A registration whose program does not read (a
+/// relative command, a reference that does not resolve) is no member: an open naming it is refused.
+pub(crate) fn member_programs(
+    settings: &serde_json::Value,
+) -> Vec<(String, busbar_contract::conn::Program)> {
+    let Some(map) = settings.as_object() else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter_map(|(name, registration)| {
+            let mut registration = registration.clone();
+            if let Some(env) = registration
+                .get_mut("env")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for value in env.values_mut() {
+                    if value.is_string() {
+                        continue;
+                    }
+                    let reference =
+                        serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(
+                            value.clone(),
+                        )
+                        .ok()?;
+                    *value = serde_json::Value::String(MEMBER_SECRETS.get()?(&reference).ok()?);
+                }
+            }
+            let program = busbar_contract::conn::Program::of_member(&registration)?.ok()?;
+            Some((name.clone(), program))
+        })
+        .collect()
 }
 
 /// The value a need's `target_from` path (`settings.<key>[.<key>...]`) names in an instance's

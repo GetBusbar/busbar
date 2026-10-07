@@ -65,7 +65,7 @@ fn add(row: &'static PlaneDecl, family: &str, values: &[&'static str]) -> Status
 
 /// Every exposition line of the golden series, values included.
 fn golden_lines() -> Vec<String> {
-    let scrape = busbar_kernel::metrics::render();
+    let scrape = busbar_kernel::snapshot::render();
     let lines = scrape.lines().filter(|l| l.starts_with(GOLDEN));
     lines.map(str::to_string).collect()
 }
@@ -78,7 +78,7 @@ fn a_linked_and_a_dropped_in_plane_add_to_the_hosts_own_series_byte_for_byte() {
         eprintln!("skip: example plane cdylib not built");
         return;
     };
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let _ = busbar_kernel::handlers::usage_tap_decode_fail_should_warn(PROTOCOL, "decode");
     assert_eq!(
         golden_lines(),
@@ -109,7 +109,7 @@ fn a_linked_and_a_dropped_in_plane_add_to_the_hosts_own_series_byte_for_byte() {
     );
 
     // One family, one TYPE line, still a counter.
-    let scrape = busbar_kernel::metrics::render();
+    let scrape = busbar_kernel::snapshot::render();
     let typed = format!("# TYPE {FAMILY} counter");
     assert_eq!(
         scrape
@@ -129,7 +129,7 @@ fn either_door_is_refused_a_family_its_plane_did_not_declare() {
         eprintln!("skip: example plane cdylib not built");
         return;
     };
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     for row in [row(true, Vec::new()), row(false, dropped_in)] {
         assert_eq!(
             add(row, "example_undeclared_total", &[]),
@@ -141,7 +141,7 @@ fn either_door_is_refused_a_family_its_plane_did_not_declare() {
             StatusClass::Ok
         );
     }
-    let scrape = busbar_kernel::metrics::render();
+    let scrape = busbar_kernel::snapshot::render();
     assert!(!scrape.contains("example_undeclared_total"), "{scrape}");
     assert!(
         scrape
@@ -189,6 +189,7 @@ fn a_plane_declaring_an_unlisted_first_party_family_is_refused_a_row() {
                 required_config_sections: &[],
                 trust_keys: &[],
                 served_op_classes: &[],
+                caller_credential_refusal: None,
             };
             let native: &'static [PlaneDecl] = Box::leak(Box::new([PlaneDecl::assemble(
                 declaration,

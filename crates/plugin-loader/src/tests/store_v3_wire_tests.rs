@@ -285,7 +285,7 @@ fn open_over(
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: Some(conns),
+            conns: crate::dispatch::ConnTable::Host(conns),
         },
     )
     .expect("the door loads");
@@ -510,7 +510,7 @@ impl busbar_contract::services::HostServices for ClockOnly {
         &self,
         _: &str,
         _: u32,
-        _: bool,
+        _: u32,
         _: Option<busbar_contract::services::Later>,
     ) -> busbar_contract::services::Ran {
         busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
@@ -638,6 +638,41 @@ impl busbar_contract::services::HostServices for ClockOnly {
     ) -> busbar_contract::services::Ran {
         busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
     }
+    fn verify_lookup(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: &[u8],
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn verify_store(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: &[u8],
+        _: &[u8],
+        _: u64,
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused("no")
+    }
+    fn content_scan(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: Option<u64>,
+        _: &[u8],
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn hook_call(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: Option<u64>,
+        _: busbar_contract::services::HookAsk,
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
 
     fn disk_append(
         &self,
@@ -646,6 +681,14 @@ impl busbar_contract::services::HostServices for ClockOnly {
         _: busbar_contract::services::Later,
     ) -> busbar_contract::services::Ran {
         busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+
+    fn snapshot_read(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: u32,
+    ) -> busbar_contract::services::Snapshot {
+        busbar_contract::services::Snapshot::Refused("no")
     }
 }
 
@@ -711,7 +754,7 @@ fn a_bound_covers_the_handshake_after_the_dial() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: Some(conns),
+            conns: crate::dispatch::ConnTable::Host(conns),
         },
     )
     .expect("the door loads");

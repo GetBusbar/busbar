@@ -72,11 +72,13 @@ pub struct App {
     /// slots, so counts accumulate monotonically across generations. Observation only — THE RULE:
     /// enforcement counts never go through the bank.
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
-    /// THE FALLBACK PLANE'S RUNTIME SLOT KEY — the interned `runtime_slot_key(fallback_key())` under
-    /// which THIS config generation's runtime object rides in [`App::plane_slots`], the same opaque
-    /// slot every other registered plane carries its own runtime object in. Resolved ONCE at build
-    /// (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables_view`]) is a
-    /// single cheap `plane_slots` lookup + ONE downcast, never the interning `runtime_slot_key` call.
+    /// THE FALLBACK PLANE'S RUNTIME SLOT KEY — the interned `runtime_slot_key` of the plane that
+    /// DECLARES itself fallback ([`crate::plane::fallback_decl`]; a key naming no plane when none
+    /// does), under which THIS config generation's runtime object rides in [`App::plane_slots`], the
+    /// same opaque slot every other registered plane carries its own runtime object in. Resolved ONCE
+    /// at build (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables_view`])
+    /// is a single cheap `plane_slots` lookup + ONE downcast, never the interning `runtime_slot_key`
+    /// call.
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
@@ -601,10 +603,11 @@ impl App {
         self.plane_slots.get_mut(key)
     }
 
-    /// The INTERNED runtime-slot key for the fallback plane, precomputed ONCE at build
-    /// (`runtime_slot_key(fallback_key())`). The relocated engine reads its runtime slot through this
-    /// cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` + mutex-guarded intern)
-    /// on every own-runtime accessor call — the hot-path allocation the alloc gate pins.
+    /// The INTERNED runtime-slot key for the fallback plane, precomputed ONCE at build from the
+    /// declared fallback plane (`crate::plane::fallback_decl`). The relocated engine reads its runtime
+    /// slot through this cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` +
+    /// mutex-guarded intern) on every own-runtime accessor call — the hot-path allocation the alloc
+    /// gate pins.
     pub fn fallback_runtime_key(&self) -> &'static str {
         self.fallback_runtime_key
     }
@@ -799,7 +802,14 @@ pub struct AppHandle {
     /// host. Bound once by the composition root ([`attach_on_swap`](Self::attach_on_swap)), which is
     /// the one place allowed to name the plane that owns them; unbound, a swap re-attaches nothing.
     attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
+    /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
+    /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
+    /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
+    appliers: std::sync::Mutex<Vec<Applier>>,
 }
+
+/// One thing told of every generation a [`AppHandle::swap`] installs.
+pub type Applier = Box<dyn Fn(&Arc<App>) + Send + Sync>;
 
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
@@ -809,7 +819,17 @@ impl AppHandle {
             swapping: std::sync::atomic::AtomicBool::new(false),
             snapshot_host: std::sync::Mutex::new(None),
             attach: std::sync::OnceLock::new(),
+            appliers: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Tell `applier` of every generation a later [`swap`](Self::swap) installs (a config apply,
+    /// reload or mutation), after it is installed.
+    pub fn on_apply(&self, applier: Applier) {
+        self.appliers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(applier);
     }
 
     /// Bind what every [`swap`](Self::swap) runs against the incoming generation's host before the
@@ -912,6 +932,16 @@ impl AppHandle {
             attach(&host);
         }
         self.set_snapshot_host(host);
+        // EVERY APPLY IS A NEW GENERATION for the composition root's served door planes: each is
+        // refreshed onto the installed generation's section (its plugin memory resets with it).
+        for applier in self
+            .appliers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            applier(&next);
+        }
     }
 
     /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to

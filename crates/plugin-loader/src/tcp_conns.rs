@@ -10,7 +10,7 @@
 //! stays in the connector and this crate names no TLS library, so a test hands it a double of the
 //! connector's (whose real `upgrade_secure` its own suite proves). A read with nothing ready answers
 //! PENDING and wakes the ticket shortly after, so a plugin's pending path is exercised. A test double: it never ships
-//! (`test-support`).
+//! (`test-support`; and `conformance`, the published suite's table, a plugin repo's dev-dependency).
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};

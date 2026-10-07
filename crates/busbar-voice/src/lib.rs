@@ -342,6 +342,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // `providers`. `models` belongs to the plane that owns it.
         required_config_sections: &[Kind::Transport.root()],
         trust_keys: &[],
+        caller_credential_refusal: None,
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

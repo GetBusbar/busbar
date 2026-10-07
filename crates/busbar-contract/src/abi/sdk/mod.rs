@@ -40,11 +40,13 @@ pub use out::{Out, Scalar};
 // A PLUGIN'S CONNECTIONS: the host connector for one op on one ticket, Ready|Pending, and exchange().
 pub mod conn;
 // ONE REQUEST, ONE REPLY over the connector: exchange() (framed) and send_and_ack() (any transport).
+/// A plane's reads of a body by declared pointer, one copy for every plane.
+pub mod body;
 pub mod exchange;
 pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
-pub use services::{Judged, Names, Pend, Records, ServiceError, Services, Signed};
+pub use services::{Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed, Wake};
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;
 // THE AUTH KIND'S VERIFY DOOR over the safe layer (`auth_verify_door!`). An auth plugin keeps its

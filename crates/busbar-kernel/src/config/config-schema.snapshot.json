@@ -2678,6 +2678,10 @@
       "kind": "alias",
       "target": "(ChainVerdict, Option<busbar_contract::authz::Scope>)"
     },
+    "type Anchored": {
+      "kind": "alias",
+      "target": "Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>"
+    },
     "type Answer": {
       "kind": "alias",
       "target": "Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>"
@@ -2713,6 +2717,10 @@
     "type Listeners": {
       "kind": "alias",
       "target": "Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>"
+    },
+    "type Members": {
+      "kind": "alias",
+      "target": "HashMap<String, Arc<Member>>"
     },
     "type Opening": {
       "kind": "alias",

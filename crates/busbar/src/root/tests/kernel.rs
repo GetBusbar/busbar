@@ -836,19 +836,21 @@ fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i6
         0,
         &std::collections::BTreeMap::new(),
     );
-    busbar_core_admin::v1::service::read_path_money::derive_spend_micros_row_at_card(
+    use busbar_core_admin::v1::service::read_path_money as invoice;
+    invoice::derive_spend_micros_row_at_card(
         &history.current(),
         priced_from_ms,
         &live,
         &cost,
         FLAT_LANE,
-        &busbar_kernel::admin::v1::contract::UsageBreakdown {
+        &invoice::UsageBreakdown {
             tokens_input: input,
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_creation: 0,
             requests: 0,
             spend_micros: 0,
+            classes: Default::default(),
         },
     )
     .expect("the row prices")

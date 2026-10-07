@@ -148,6 +148,7 @@ fn configured(mut app: TestApp, cfg: &RootCfg, runtime: &Arc<dyn Any + Send + Sy
         let ctx = BuildCtx {
             endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
             agent_defs: cfg.agent_defs.as_any(),
+            tool_defs: cfg.tool_defs.as_any(),
             public_url: None,
             prior: None,
         };
@@ -197,7 +198,7 @@ struct Fleet {
 
 impl Fleet {
     fn new() -> Self {
-        busbar_kernel::metrics::init();
+        busbar_kernel::snapshot::init();
         let registry = Arc::new(MemoryStore::new());
         let signer = TokenSigner::from_secret_bytes(&KEY, DEFAULT_KID);
         let gov = GovState::new_with_signer(registry.clone(), None, Some(signer))

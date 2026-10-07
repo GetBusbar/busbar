@@ -184,7 +184,7 @@ async fn rig_billed(fixture: Fixture) -> Rig {
 
 async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     plane::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..8 {
@@ -1355,6 +1355,45 @@ async fn drive_keeping_the_unit(
     gov: busbar_contract::records::PlaneRequestCtx,
     seats: &'static [&'static (dyn plane::VetoSeat + Sync)],
 ) -> (Arc<dyn Units + Send + Sync>, Ended) {
+    drive_screened_by(rig, node, fixture, gov, seats, None).await
+}
+
+/// A route whose plane SCREENS every unit before the door and stops it with `reason` (a gate-first
+/// plane's veto, SEAM-4j), its leg otherwise the plane's own.
+struct Screening<'r> {
+    inner: &'r (dyn RouteAwait + Send + Sync),
+    reason: busbar_contract::caps::ReasonCode,
+}
+
+impl RouteAwait for Screening<'_> {
+    fn route_leg<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        ctx: &'a UnitCtx,
+        destinations: &'a [VerifiedDestination],
+    ) -> RouteLeg<'a> {
+        self.inner.route_leg(token, ctx, destinations)
+    }
+
+    fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
+        self.inner.abandoned(ctx, ended);
+    }
+
+    fn screen<'a>(&'a self, _ctx: &'a UnitCtx) -> busbar_kernel::teller::Screen<'a> {
+        let reason = self.reason;
+        Box::pin(async move { Err(Refusal::new(reason)) })
+    }
+}
+
+/// [`drive_keeping_the_unit`], the plane's route screening every unit with `screen` where set.
+async fn drive_screened_by(
+    rig: &Rig,
+    node: &Node,
+    fixture: Fixture,
+    gov: busbar_contract::records::PlaneRequestCtx,
+    seats: &'static [&'static (dyn plane::VetoSeat + Sync)],
+    screen: Option<busbar_contract::caps::ReasonCode>,
+) -> (Arc<dyn Units + Send + Sync>, Ended) {
     let arrival = plane::WalkArrival {
         host: rig.host(),
         gov,
@@ -1370,6 +1409,14 @@ async fn drive_keeping_the_unit(
     let key = node.next_key.mint();
     let meter = Arc::new(AccrualMeter::new());
     let (units, route, _finish) = build((node.resolver(), EPOCH));
+    let screening = screen.map(|reason| Screening {
+        inner: &*route,
+        reason,
+    });
+    let route: &(dyn RouteAwait + Send + Sync) = match &screening {
+        Some(s) => s,
+        None => &*route,
+    };
     let history = crate::root::kernel::ROOT_CARD.pin();
     let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
     let slot = node
@@ -1395,7 +1442,7 @@ async fn drive_keeping_the_unit(
     let driven = Driven {
         node,
         units: &*units,
-        route: &*route,
+        route,
         op_class,
         principal: &principal,
         arrived: Arrived::at(EPOCH * 1_000, 0),
@@ -3191,13 +3238,14 @@ fn invoice_micros(
     let at = invoice::row_priced_at_ms(bucket_start_secs, era);
     let (_, card) = view.card_at(at).expect("a card covers every instant");
     let unit = |k: &str| report.usage.usage_units.get(k).copied().unwrap_or(0);
-    let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
+    let row = invoice::UsageBreakdown {
         tokens_input: unit(busbar_contract::records::UNIT_INPUT),
         tokens_output: unit(busbar_contract::records::UNIT_OUTPUT),
         tokens_cache_read: unit(busbar_contract::records::UNIT_CACHE_READ),
         tokens_cache_creation: unit(busbar_contract::records::UNIT_CACHE_WRITE),
         requests: u64::from(report.fee_count),
         spend_micros: 0,
+        classes: Default::default(),
     };
     let cost =
         busbar_kernel::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
@@ -3460,13 +3508,14 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     use busbar_core_admin::v1::service::read_path_money as invoice;
     let view = history.view();
     let (_, card) = view.card_at(at.ms()).expect("the card is in force");
-    let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
+    let row = invoice::UsageBreakdown {
         tokens_input: 1_000,
         tokens_output: 250,
         tokens_cache_read: 10_000_000,
         tokens_cache_creation: 0,
         requests: 1,
         spend_micros: 0,
+        classes: Default::default(),
     };
     let cost =
         busbar_kernel::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
@@ -4076,7 +4125,7 @@ const RERANK_UNITS: u64 = 50;
 async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     declare_test_classes();
     plane::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..4 {
@@ -4709,4 +4758,45 @@ fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
     );
     assert_eq!(written(), before + 1);
     site.close(UnitKey::new(51));
+}
+
+/// RED (SEAM-4j through the node): a plane whose route SCREENS the unit before the door (a
+/// gate-first plane's veto) is screened through the node's own wrapper: the unit is refused at
+/// Approve's seat with the screen's reason and the door never admits it, so the key's ledger counts
+/// no request. RED before: the node's wrapper answered the default screen, the unit was admitted
+/// (one request on the ledger) and served.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_screened_veto_through_the_node_admits_nothing() {
+    let rig = rig(Fixture::BufferedOk).await;
+    let node = Node::new();
+    let (_unit, ended) = drive_screened_by(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        &[],
+        Some(busbar_contract::caps::ReasonCode::HookVeto),
+    )
+    .await;
+    let Ended::Settled { end, .. } = ended else {
+        panic!("the unit ends here");
+    };
+    assert_eq!(
+        end.outcome(),
+        Outcome::Refused(
+            busbar_contract::caps::StepName::Approve,
+            busbar_contract::caps::ReasonCode::HookVeto
+        ),
+        "refused at the screen, before the door"
+    );
+    let gov = rig
+        .app
+        .governance
+        .clone()
+        .expect("governance is configured");
+    let derived = gov
+        .derived_bucket_usage(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at)
+        .expect("usage read");
+    assert_eq!(derived.requests, 0, "a veto admits nothing");
+    rig.server.shutdown().await;
 }

@@ -47,6 +47,95 @@ pub type PlaneRouteFuture = Pin<Box<dyn Future<Output = PlaneResponse> + Send>>;
 /// `axum` closure it mounts.
 pub type PlaneRouteFn = Arc<dyn Fn(PlaneReqCtx) -> PlaneRouteFuture + Send + Sync>;
 
+/// A DOOR ROUTE'S UNIT-LESS REFUSAL (spec Part 3 section 12, "Refusals"): the response its plane
+/// renders, through its `refusal` op in the route's refusal dialect, for a refusal the kernel decided
+/// before any unit exists — `reason`, for the request `target` (path and query). The kernel's auth
+/// chokepoint still decides; this only words its answer in the plane's dialect.
+pub type PlaneRefuseFn =
+    Arc<dyn Fn(busbar_contract::caps::ReasonCode, &str) -> PlaneResponse + Send + Sync>;
+
+/// THE ROUTE IDENTITY a door route and its unit-less refusal share: the route's axum path pattern,
+/// as mounted, and its method. One key for both, so the two cannot name different routes.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DoorRouteId {
+    /// The axum path pattern.
+    pub path: String,
+    /// The method.
+    pub method: RouteMethod,
+}
+
+/// One door route's unit-less refusal, keyed by the route's identity ([`DoorRouteId`]): the data
+/// router records it beside the route's admission bar, and the auth middleware renders a `401` it
+/// decides on that route through it, instead of the residual data plane's envelope.
+#[derive(Clone)]
+pub struct PlaneRefusalSpec {
+    /// The door route it words the `401` of.
+    pub route: DoorRouteId,
+    /// Its plane's rendering.
+    pub refuse: PlaneRefuseFn,
+}
+
+impl std::fmt::Debug for PlaneRefusalSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaneRefusalSpec")
+            .field("route", &self.route)
+            .finish_non_exhaustive()
+    }
+}
+
+/// THE DOOR ROUTES AND THEIR REFUSALS, PAIRED (ARCHITECT 2026-10-06): every door route that takes a
+/// credential (`RouteAuth::Key`; its request routes, and its session routes, which answer `GET`) has
+/// exactly one refusal spec under its identity, and every refusal spec names such a route. Checked
+/// at boot, before the data router is built, so the side table cannot drift from the routes it
+/// words.
+///
+/// # Errors
+///
+/// The first door route with no refusal, refusal with no door route, or identity refused twice.
+pub fn pair_door_refusals(
+    routes: &[PlaneRouteSpec],
+    sessions: &[PlaneSessionSpec],
+    refusals: &[PlaneRefusalSpec],
+) -> Result<(), String> {
+    let credentialed: Vec<DoorRouteId> = routes
+        .iter()
+        .filter(|r| matches!(r.auth, RouteAuth::Key))
+        .map(PlaneRouteSpec::route_id)
+        .chain(
+            sessions
+                .iter()
+                .filter(|s| matches!(s.auth, RouteAuth::Key))
+                .map(PlaneSessionSpec::route_id),
+        )
+        .collect();
+    let mut seen: std::collections::HashSet<&DoorRouteId> = std::collections::HashSet::new();
+    for r in refusals {
+        if !seen.insert(&r.route) {
+            return Err(format!(
+                "the door route {} {} has two refusal specs; one route words its 401 once",
+                r.route.method.as_str(),
+                r.route.path
+            ));
+        }
+        if !credentialed.contains(&r.route) {
+            return Err(format!(
+                "a refusal spec names {} {}, which is no door route that takes a credential",
+                r.route.method.as_str(),
+                r.route.path
+            ));
+        }
+    }
+    if let Some(bare) = credentialed.iter().find(|id| !seen.contains(id)) {
+        return Err(format!(
+            "the door route {} {} takes a credential and has no refusal spec: its 401 would be \
+             worded in another plane's dialect",
+            bare.method.as_str(),
+            bare.path
+        ));
+    }
+    Ok(())
+}
+
 /// One data route a plane DECLARES: the exact path, the method, the admission bar, and the neutral
 /// handler. The first three are handed VERBATIM to `CoreRouter::route` by the core adapter, so the
 /// `CoreRouteTable` row this route records is identical to the one the old `mount` fn recorded.
@@ -62,6 +151,17 @@ pub struct PlaneRouteSpec {
     pub auth: RouteAuth,
     /// The neutral handler the core adapter awaits, having built a [`PlaneReqCtx`] from the request.
     pub handler: PlaneRouteFn,
+}
+
+impl PlaneRouteSpec {
+    /// Its identity ([`DoorRouteId`]): the path pattern it is mounted at and its method.
+    #[must_use]
+    pub fn route_id(&self) -> DoorRouteId {
+        DoorRouteId {
+            path: self.path.clone(),
+            method: self.method,
+        }
+    }
 }
 
 /// The per-request context the core adapter builds and hands a plane handler — everything the handler
@@ -102,6 +202,10 @@ pub struct PlaneReqCtx {
     pub gov: Option<busbar_contract::records::PlaneRequestCtx>,
     /// The middleware-resolved auth principal, or `None` on a `RouteAuth::None` route.
     pub principal: Option<busbar_contract::auth::AuthPrincipal>,
+    /// The caller's verified credential as the auth gate extracted it, lent for the host's egress
+    /// alone (a passthrough member's outbound auth call); `None` when the caller presented none or
+    /// the route bypassed the gate. A plane handler never reads it.
+    pub caller_credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
     /// The live engine handle, type-erased. The core adapter erases the router's `Arc<AppHandle>`
     /// state here; a plane still coupled to the engine downcasts it (a transitional reach that the
     /// per-subsystem App-sever removes), but the SEAM names no core type.
@@ -116,3 +220,71 @@ pub struct PlaneReqCtx {
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,
 }
+
+// ── SESSION ROUTES (TRANSITIONAL: deleted when INBOUND-LISTEN's accepted::Caller serves) ─────────
+
+/// One frame toward a session route's caller: its bytes, and whether they are ONE text message
+/// (the plane answered `PIECE_OUT_TEXT`); otherwise one binary message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOut {
+    /// The bytes.
+    pub bytes: Vec<u8>,
+    /// One text message.
+    pub text: bool,
+}
+
+/// THE CALLER'S SIDE OF AN ADMITTED SESSION ROUTE, as the core adapter carries it over today's
+/// hyper upgrade (ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, the `IngressCaller` pattern): each
+/// message the caller sends goes into `from_caller` (dropped when the caller closes); every frame the
+/// session writes comes out of `to_caller` (the socket closes when its sender is dropped).
+#[derive(Debug)]
+pub struct SessionPipe {
+    /// The caller's messages, one per message, text or binary, as bytes.
+    pub from_caller: tokio::sync::mpsc::Sender<Vec<u8>>,
+    /// The frames toward the caller.
+    pub to_caller: tokio::sync::mpsc::Receiver<SessionOut>,
+}
+
+/// What a session route's handler answers, before any upgrade: refused with a finished response (no
+/// socket ever binds), or admitted with the pipe the upgraded socket is bridged onto.
+pub enum SessionAnswer {
+    /// Refused before the upgrade: this response goes out as it is.
+    Refused(PlaneResponse),
+    /// Admitted: the core answers the upgrade and bridges the socket onto this pipe.
+    Accepted(SessionPipe),
+}
+
+/// The boxed future a session route's handler returns.
+pub type PlaneSessionFuture = Pin<Box<dyn Future<Output = SessionAnswer> + Send>>;
+
+/// One session route's HANDLER: a neutral async fn over the route's [`PlaneReqCtx`] (its body empty:
+/// an upgrade carries none).
+pub type PlaneSessionFn = Arc<dyn Fn(PlaneReqCtx) -> PlaneSessionFuture + Send + Sync>;
+
+/// One SESSION route a door plane's claim declares: its path and admission bar (recorded in the
+/// `CoreRouteTable` exactly as a data route's), answered on GET by an upgrade the core adapter
+/// accepts only once the handler admitted the session.
+pub struct PlaneSessionSpec {
+    /// The exact axum path pattern.
+    pub path: String,
+    /// The admission bar the core auth middleware enforces before the handler runs.
+    pub auth: RouteAuth,
+    /// The handler.
+    pub handler: PlaneSessionFn,
+}
+
+impl PlaneSessionSpec {
+    /// Its identity ([`DoorRouteId`]): the path pattern it is mounted at, and `GET` (an upgrade is
+    /// an HTTP GET).
+    #[must_use]
+    pub fn route_id(&self) -> DoorRouteId {
+        DoorRouteId {
+            path: self.path.clone(),
+            method: RouteMethod::Get,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/plane_routes_pairing.rs"]
+mod pairing_tests;

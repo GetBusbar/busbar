@@ -21,18 +21,19 @@ use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
-    check_records_list, check_trust_due, check_trust_sight, check_trust_verify, check_unit_nest,
-    check_work_find, check_work_open, check_work_resume, check_work_settle, op, ClockNowIn,
-    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn,
-    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
-    TrustDueIn, TrustSightIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
-    WorkSettleIn, ABSENT, CLAIM_WON, DEST_RESOLVE, ENTITLED, FOUND,
+    check_records_list, check_sign, check_snapshot_read, check_trust_due, check_trust_sight,
+    check_trust_verify, check_unit_nest, check_work_find, check_work_open, check_work_resume,
+    check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots,
+    ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn,
+    ServiceHead, ServiceOut, SignIn, SnapshotReadIn, TrustDueIn, TrustSightIn, TrustVerifyIn,
+    UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON,
+    DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
 };
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
-use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables};
+use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
 
 /// Why a service call has no value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +96,17 @@ pub struct Judged<'b> {
     pub addresses: Names<'b>,
 }
 
-impl Judged<'_> {
+impl<'b> Judged<'b> {
+    /// What decided a refusal the caller asked explained (`DEST_EXPLAIN`): the refused address,
+    /// or the resolver's reason; `None` on admission or when the name alone decided it.
+    #[must_use]
+    pub fn detail(&self) -> Option<&'b str> {
+        if self.verdict == DEST_ALLOWED {
+            return None;
+        }
+        self.addresses.names().next()
+    }
+
     /// The addresses as the set an ESTABLISH's dial must land on (`EstablishIn::within`): so the
     /// judge, the caller's overlap check and the dial see one address set.
     #[must_use]
@@ -105,6 +116,15 @@ impl Judged<'_> {
             .collect::<Vec<_>>()
             .join(WITHIN_SEPARATOR)
     }
+}
+
+/// The value span `s` carries: present, inside `bytes`.
+fn value<'b>(bytes: &'b [u8], s: &ItemSpan) -> Option<&'b [u8]> {
+    if s.value.offset == SPAN_ABSENT {
+        return None;
+    }
+    let at = s.value.offset as usize;
+    bytes.get(at..at.checked_add(s.value.len as usize)?)
 }
 
 /// The counterparty span `s` names: its key, present and UTF-8.
@@ -142,6 +162,37 @@ impl<'b> Records<'b> {
     #[must_use]
     pub fn last_key(&self) -> Option<&'b [u8]> {
         present(self.bytes, self.spans.last()?.key)
+    }
+}
+
+/// THE HOST'S WAKE, as `open` handed it (`HostTables::wake`): an instance holding work of its own
+/// (a plane's session output, named on its driver ticket) wakes a ticket through it, from any
+/// thread. A wake never blocks and never fails; one for a stale ticket is dropped by the host.
+#[derive(Debug, Clone, Copy)]
+pub struct Wake {
+    ctx: HostCtx,
+    wake: WakeFn,
+}
+
+// SAFETY: the context is the host's per-instance state and the wake a plain code address; the
+// mechanism states the wake callable from any thread for the instance's life.
+unsafe impl Send for Wake {}
+// SAFETY: as above.
+unsafe impl Sync for Wake {}
+
+impl Wake {
+    /// The wake in the tables `open` handed the instance; `None` when the host handed none.
+    #[must_use]
+    pub fn of(tables: &HostTables) -> Option<Self> {
+        tables.wake.map(|wake| Self {
+            ctx: tables.ctx,
+            wake,
+        })
+    }
+
+    /// Wake `ticket`.
+    pub fn wake(&self, ticket: Ticket) {
+        (self.wake)(self.ctx, ticket);
     }
 }
 
@@ -273,7 +324,21 @@ impl Services {
         egress_class: u32,
         resolve: Option<(&'b mut [u8], &'b mut [ItemSpan])>,
     ) -> Pend<Judged<'b>> {
-        let flags = if resolve.is_some() { DEST_RESOLVE } else { 0 };
+        self.dest_judge_as(handle, dest, egress_class, 0, resolve)
+    }
+
+    /// [`Self::dest_judge`] with the caller's further `flags` (`DEST_REFUSE_PRIVATE`,
+    /// `DEST_EXPLAIN`; `DEST_RESOLVE` follows `resolve`): asked to explain, a refusal an address
+    /// or the resolution decided names it ([`Judged::detail`]).
+    pub fn dest_judge_as<'b>(
+        &self,
+        handle: CompletionHandle,
+        dest: &str,
+        egress_class: u32,
+        flags: u32,
+        resolve: Option<(&'b mut [u8], &'b mut [ItemSpan])>,
+    ) -> Pend<Judged<'b>> {
+        let flags = (flags & !DEST_RESOLVE) | if resolve.is_some() { DEST_RESOLVE } else { 0 };
         let (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]) = resolve.unwrap_or_default();
         let input = DestJudgeIn {
             head: head::<DestJudgeIn>(op::DEST_JUDGE, handle),
@@ -379,6 +444,37 @@ impl Services {
             verdict: out.value,
             named,
         })
+    }
+
+    /// `sign`: sign `data` with busbar's key under the plugin's declared signing domain and key-id
+    /// prefix (the host refuses a plugin that declares none). Ready: span `0`, the key id (UTF-8)
+    /// and the signature, written into the caller's preallocated `buf` and `spans`. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when the buffers are short (re-call once, same handle); otherwise
+    /// as every service: unserved, declined, or broken (no span, a key id absent or not UTF-8, or
+    /// a signature absent is broken).
+    pub fn sign<'b>(
+        &self,
+        handle: CompletionHandle,
+        data: &[u8],
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Result<Signature<'b>, ServiceError> {
+        let input = SignIn {
+            head: head::<SignIn>(op::SIGN, handle),
+            data: blob(data, BLOB_OCTETS),
+            into: bufs(buf, spans),
+        };
+        let out = ready(self.cross(op::SIGN, |t| t.sign, &input, check_sign)?)?;
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        // The service's check held `len` and `items` within the caps and every span inside `len`.
+        let (bytes, spans) = (&buf[..out.len as usize], &spans[..out.items as usize]);
+        let first = spans.first().ok_or(ServiceError::Broken)?;
+        let key_id = name(bytes, first).ok_or(ServiceError::Broken)?;
+        let signature = value(bytes, first).ok_or(ServiceError::Broken)?;
+        Ok(Signature { key_id, signature })
     }
 
     /// `records.get`: the record `key` of the caller's own record `kind`, written into the caller's
@@ -661,6 +757,55 @@ impl Services {
         }))
     }
 
+    /// `snapshot.read`: THE HOST SNAPSHOT SERVICE — the host's metric families of `scope`
+    /// (`SNAPSHOT_SCOPE_WHOLE` | `SNAPSHOT_SCOPE_HOOKS`), laid out by the host in the caller's
+    /// preallocated `buf` (words, so it holds the layout's alignment) and read back here, every
+    /// pointer checked inside the bytes the host wrote. Ready: `Some` the families, in the host's
+    /// order; `None` = NOT READY (the host's recorder is not installed yet: answer "not ready,
+    /// retry"). Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when `buf` is short (re-call once with at least the bytes it names;
+    /// a ticketless re-call reads the snapshot again); otherwise as every service: unserved,
+    /// declined (REFUSED: this crossing was not granted the snapshot), or broken (a pointer outside
+    /// the layout, or text that is not UTF-8).
+    pub fn snapshot_read(
+        &self,
+        handle: CompletionHandle,
+        scope: u32,
+        buf: &mut [u64],
+    ) -> Result<Option<Vec<crate::export_calls::Family>>, ServiceError> {
+        let bytes = std::mem::size_of_val(buf);
+        let at = buf.as_mut_ptr().cast::<u8>();
+        let input = SnapshotReadIn {
+            head: head::<SnapshotReadIn>(op::SNAPSHOT_READ, handle),
+            scope,
+            _reserved: 0,
+            into: ServiceBufs {
+                buf: at,
+                cap: bytes,
+                spans: std::ptr::null_mut(),
+                spans_cap: 0,
+            },
+        };
+        let crossed = self.cross(
+            op::SNAPSHOT_READ,
+            |t| t.snapshot_read,
+            &input,
+            check_snapshot_read,
+        )?;
+        if let (Outcome::Failed, _, Filled::Written) = crossed {
+            return Ok(None);
+        }
+        let out = ready(crossed)?;
+        // SAFETY: `buf` is ours, `bytes` long; the check held `len` within it.
+        let laid = unsafe { std::slice::from_raw_parts(at.cast_const(), out.len as usize) };
+        snapshot::read(laid, out.value)
+            .map(Some)
+            .ok_or(ServiceError::Broken)
+    }
+
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
     /// outcome, the `out` and how it filled the caller's buffers.
     fn cross<I>(
@@ -839,6 +984,16 @@ pub struct Signed<'b> {
     pub named: &'b str,
 }
 
+/// What `sign` answered: the key id the signature verifies under and the signature, views into
+/// the caller's buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Signature<'b> {
+    /// The key id (busbar's key id under the plugin's declared prefix).
+    pub key_id: &'b str,
+    /// The signature bytes.
+    pub signature: &'b [u8],
+}
+
 /// The head of an `I` for `service`, under `handle`.
 const fn head<I>(service: u32, handle: CompletionHandle) -> ServiceHead {
     ServiceHead {
@@ -898,3 +1053,69 @@ fn blank_out() -> ServiceOut {
 #[cfg(test)]
 #[path = "tests/services_tests.rs"]
 mod tests;
+
+/// THE SNAPSHOT LAYOUT, READ BACK: the export kind's scrape layout the host wrote into the caller's
+/// own buffer (`snapshot.read`), lifted into owned families with every pointer checked to name a
+/// range of the bytes the host wrote.
+mod snapshot {
+    use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
+    use crate::abi::mechanism::call::AbiStr;
+    use crate::export_calls::{Family, Sample};
+
+    /// `n` records of `T` at `p`, when they lie inside `laid` (and `p` is aligned for `T`); NULL
+    /// with `n == 0` is the empty list.
+    fn list<T>(laid: &[u8], p: *const T, n: usize) -> Option<&[T]> {
+        if n == 0 {
+            return Some(&[]);
+        }
+        let start = (p as usize).checked_sub(laid.as_ptr() as usize)?;
+        let end = start.checked_add(n.checked_mul(std::mem::size_of::<T>())?)?;
+        if end > laid.len() || !(p as usize).is_multiple_of(std::mem::align_of::<T>()) {
+            return None;
+        }
+        // SAFETY: `n` records of `T`, aligned, inside the caller's own buffer, which the host
+        // wrote with exactly these records (a forged pointer fails the bounds above).
+        Some(unsafe { std::slice::from_raw_parts(p, n) })
+    }
+
+    /// The text `s` names inside `laid`; `Some(None)` for an absent (NULL) string.
+    fn text(laid: &[u8], s: AbiStr) -> Option<Option<String>> {
+        if s.ptr.is_null() {
+            return (s.len == 0).then_some(None);
+        }
+        let bytes = list(laid, s.ptr, s.len)?;
+        std::str::from_utf8(bytes).ok().map(|t| Some(t.to_owned()))
+    }
+
+    /// `n` families at the head of `laid`, read back; `None` when any pointer leaves the layout.
+    pub(super) fn read(laid: &[u8], n: u64) -> Option<Vec<Family>> {
+        let n = usize::try_from(n).ok()?;
+        let families = list(laid, laid.as_ptr().cast::<ScrapeFamily>(), n)?;
+        families
+            .iter()
+            .map(|f| {
+                let samples: &[ScrapeSample] = list(laid, f.samples, f.samples_len)?;
+                Some(Family {
+                    name: text(laid, f.name)??,
+                    help: text(laid, f.help)?,
+                    unit: text(laid, f.unit)?,
+                    kind: f.kind,
+                    samples: samples
+                        .iter()
+                        .map(|s| {
+                            let labels: &[ScrapeLabel] = list(laid, s.labels, s.labels_len)?;
+                            Some(Sample {
+                                name: text(laid, s.name)??,
+                                labels: labels
+                                    .iter()
+                                    .map(|l| Some((text(laid, l.key)??, text(laid, l.value)??)))
+                                    .collect::<Option<_>>()?,
+                                value: text(laid, s.value)??,
+                            })
+                        })
+                        .collect::<Option<_>>()?,
+                })
+            })
+            .collect()
+    }
+}

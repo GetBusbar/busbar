@@ -84,8 +84,8 @@ pub(crate) async fn list_groups(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(crate::v1::contract::LIST_LIMIT_DEFAULT)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -555,7 +555,7 @@ pub(crate) async fn rollback_plugin(
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
-                    &busbar_kernel::admin::v1::contract::PluginRollbackView {
+                    &crate::v1::contract::PluginRollbackView {
                         name: manifest.name,
                         file: req.file,
                         version: manifest.version,
@@ -1719,8 +1719,8 @@ pub(crate) async fn get_audit(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(crate::v1::contract::LIST_LIMIT_DEFAULT)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -1750,8 +1750,8 @@ pub(crate) async fn list_config_versions(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(busbar_kernel::admin::v1::contract::VERSIONS_LIMIT_DEFAULT)
-        .clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(crate::v1::contract::VERSIONS_LIMIT_DEFAULT)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -2099,7 +2099,7 @@ pub(crate) async fn put_auth(
         next.admin_chain = req.admin_auth;
         // DRY-RUN GUARD: this very request's credential, evaluated under the CANDIDATE chain.
         let survives = busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
-            .contains(busbar_kernel::admin::v1::contract::Scope::Full);
+            .contains(crate::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
                 "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
@@ -2410,10 +2410,18 @@ pub(crate) async fn restart(
 
 /// The `POST /api/v1/admin/config/apply` body: a full proposed config (validate's exact shape).
 /// Optimistic concurrency rides `If-Match`.
+///
+/// `config` is carried as a raw [`serde_json::Value`] and parsed by the SAME pre-pass boot runs
+/// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is: the
+/// plane sections (`tools`/`agents`/`streams`/…) are lifted before the frozen `deny_unknown_fields`
+/// `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused every plane section as
+/// an unknown field, so a config that boots could not be applied (ARCHITECT, FLIP-A2A: apply accepts
+/// exactly the boot config shape, plane sections included, and they flow to each plane's refresh
+/// with no restart).
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
-    /// The deploy config (operator-owned `config.yaml` shape).
-    config: busbar_kernel::config::DeployCfg,
+    /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
+    config: serde_json::Value,
     /// The provider definitions (`providers.yaml` shape). Optional — empty validates/fails loudly
     /// on dangling references.
     #[serde(default)]
@@ -2445,6 +2453,17 @@ pub(crate) async fn apply_config(
             )))
         }
     };
+    // The boot pre-pass, as `validate_config` runs it: plane sections lifted, the rest frozen.
+    let req_deploy: busbar_kernel::config::DeployCfg =
+        match busbar_kernel::config::deploy_from_deserializer(req.config) {
+            Ok(d) => d,
+            Err(e) => {
+                return err_json(&AdminError::Validation(format!(
+                    "malformed config body: {e}"
+                )))
+            }
+        };
+    let req_providers = req.providers;
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
@@ -2473,10 +2492,7 @@ pub(crate) async fn apply_config(
                 .overlay_path
                 .as_deref()
                 .and_then(busbar_kernel::config::overlay::read);
-            let ApplyConfigReq {
-                config: mut deploy,
-                providers,
-            } = req;
+            let (mut deploy, providers) = (req_deploy, req_providers);
             if let Some(doc) = overlay_doc.as_ref() {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc);
                 // Without this an apply re-validates against the BASE floors and silently reverts a
@@ -3363,7 +3379,7 @@ pub(crate) async fn plugin_schema(
         let kind = loadable.map(|p| p.manifest.kind.clone());
         let restart_required_default = kind
             .as_deref()
-            .map(busbar_plugin_loader::sign::kind_restart_default);
+            .map(busbar_kernel::plugin_admission::sign::kind_restart_default);
         if described.is_some() {
             return ok_json(
                 StatusCode::OK,
@@ -3373,7 +3389,9 @@ pub(crate) async fn plugin_schema(
         // describe answered null (or the hook never answered at all) — fall back to the manifest
         // baseline, same as a never-loaded plugin, rather than reporting "no schema available"
         // when the manifest actually has one.
-        let (schema, schema_error) = loadable.map(manifest_schema).unwrap_or((None, None));
+        let (schema, schema_error) = loadable
+            .map(|p| manifest_schema(p.manifest.settings_schema.as_deref()))
+            .unwrap_or((None, None));
         return ok_json(
             StatusCode::OK,
             &json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": "manifest", "kind": kind, "restart_required_default": restart_required_default }),
@@ -3383,7 +3401,7 @@ pub(crate) async fn plugin_schema(
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
     let trust = verdict_trust(&loadable.verdict);
-    let (schema, schema_error) = manifest_schema(loadable);
+    let (schema, schema_error) = manifest_schema(loadable.manifest.settings_schema.as_deref());
     ok_json(
         StatusCode::OK,
         &json!({
@@ -3393,7 +3411,7 @@ pub(crate) async fn plugin_schema(
             "trust": trust,
             "source": "manifest",
             "kind": loadable.manifest.kind,
-            "restart_required_default": busbar_plugin_loader::sign::kind_restart_default(&loadable.manifest.kind),
+            "restart_required_default": busbar_kernel::plugin_admission::sign::kind_restart_default(&loadable.manifest.kind),
         }),
     )
 }
@@ -3405,10 +3423,8 @@ pub(crate) async fn plugin_schema(
 /// value fails to parse is a real authoring/packaging bug, distinct from a manifest that never set
 /// it at all — `schema: null` alone would collapse the two, so a parse failure instead reports
 /// `schema_error` and leaves `schema` null.
-fn manifest_schema(
-    loadable: &busbar_plugin_loader::LoadablePlugin,
-) -> (Option<serde_json::Value>, Option<String>) {
-    match loadable.manifest.settings_schema.as_deref() {
+fn manifest_schema(settings_schema: Option<&str>) -> (Option<serde_json::Value>, Option<String>) {
+    match settings_schema {
         None => (None, None),
         Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
             Ok(v) => (Some(v), None),
@@ -3422,14 +3438,14 @@ fn manifest_schema(
 
 /// The catalog's own trust vocabulary (`"trusted" | "unverified" | "rejected"` — see
 /// `docs/admin-api.md`'s plugin catalog and `service.rs`'s `evaluate()` mapping), applied to a
-/// [`busbar_plugin_loader::sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
+/// [`busbar_kernel::plugin_admission::sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
 /// is never `"rejected"` — a rejected artifact is a `SkippedPlugin`, not a load candidate — but
 /// the mapping stays total (not a partial match on `Trusted`/`Allowed` alone) so a future verdict
 /// variant is a compile error here, not a silently-missing label.
-fn verdict_trust(v: &busbar_plugin_loader::sign::Verdict) -> &'static str {
+fn verdict_trust(v: &busbar_kernel::plugin_admission::sign::Verdict) -> &'static str {
     match v {
-        busbar_plugin_loader::sign::Verdict::Trusted { .. } => "trusted",
-        busbar_plugin_loader::sign::Verdict::Allowed { .. } => "unverified",
+        busbar_kernel::plugin_admission::sign::Verdict::Trusted { .. } => "trusted",
+        busbar_kernel::plugin_admission::sign::Verdict::Allowed { .. } => "unverified",
     }
 }
 
@@ -3492,7 +3508,7 @@ pub(crate) async fn hook_status(
                 .metrics
                 .as_ref()
                 .map(|m| {
-                    busbar_kernel::hooks::wire::parse_status_metrics(m)
+                    busbar_contract::hook_wire::reply::parse_status_metrics(m)
                         .into_iter()
                         .map(|metric| {
                             let mut entry =
@@ -4222,7 +4238,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
 
-    use busbar_kernel::admin::v1::contract::taxonomy;
+    use crate::v1::contract::taxonomy;
 
     // ── THE 4xx RESPONSE SET IS A PROJECTION, NOT PROSE (design D) ────────────────────────────
     // Every body-specific 400 / 403-escalation / 404 / 409 is ENUMERATED from the ONE declaration
@@ -4238,7 +4254,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             continue;
         };
         let rel = path
-            .strip_prefix(busbar_kernel::admin::v1::contract::ADMIN_PREFIX)
+            .strip_prefix(crate::v1::contract::ADMIN_PREFIX)
             .unwrap_or(path)
             .to_string();
         for (method, op) in obj.iter_mut() {
@@ -4271,7 +4287,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     _ => continue,
                 };
                 if let Some(op) = op.as_object_mut() {
-                    let scope = busbar_kernel::admin::v1::contract::required_scope(&m, path);
+                    let scope = crate::v1::contract::required_scope(&m, path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
                     // Both accepted credential carriers, on every op.
                     op.insert(
@@ -4397,7 +4413,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             // byte-checked against it (`openapi_json_matches_committed_file`), so adding the row
             // without regenerating hands the next reader a red test — and the regeneration cannot
             // run today: the `openapi-schema` feature build is broken at HEAD for an unrelated
-            // reason (`PlaneDecl.openapi_schemas` is missing from busbar-llm / -mcp / -a2a). The row
+            // reason (`PlaneDecl.openapi_schemas` is missing from the linked plane crates). The row
             // to add, once that compiles again, is:
             //
             //   ("as_of", "A rate-card history sequence number to price against (default: the \
@@ -4610,7 +4626,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }};
     }
 
-    use busbar_kernel::admin::v1::contract::{
+    use crate::v1::contract::{
         AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
         HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
         PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
@@ -4655,7 +4671,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/groups/{name}/usage",
         "get",
         "200",
-        busbar_kernel::admin::v1::contract::GroupUsageView
+        crate::v1::contract::GroupUsageView
     );
     // Auth & credentials.
     typed!("/auth", "get", "200", AuthView);
@@ -4681,7 +4697,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/plugins/rollback",
         "post",
         "200",
-        busbar_kernel::admin::v1::contract::PluginRollbackView
+        crate::v1::contract::PluginRollbackView
     );
     typed!("/usage", "get", "200", UsageView);
     typed!("/config", "get", "200", EffectiveConfigView);
@@ -5300,8 +5316,8 @@ fn openapi_reachable_schemas(doc: &serde_json::Value) -> std::collections::BTree
 ///
 /// `config` is carried as a raw [`serde_json::Value`], NOT a plain-derived `DeployCfg`: the 1.6.0
 /// pre-pass (`busbar_kernel::config::deploy_from_deserializer`) has to run on it first (see
-/// `validate_config` below) to lift the 1.6.0-additive top-level keys (`mcp`/`oauth_as`/`tools`/
-/// `agents`/`streams`, plus `auth.policy`) out BEFORE the frozen `deny_unknown_fields` `DeployCfg`
+/// `validate_config` below) to lift the 1.6.0-additive top-level keys (the planes' own sections,
+/// `oauth_as`, plus `auth.policy`) out BEFORE the frozen `deny_unknown_fields` `DeployCfg`
 /// parses the remainder — deriving `Deserialize` straight onto `DeployCfg` here would refuse any
 /// of those keys as unknown, even though the exact same document loads clean from disk at boot
 /// (DECISIONS #52: admin API and the config file are ONE schema).

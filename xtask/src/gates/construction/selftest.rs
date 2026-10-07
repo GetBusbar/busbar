@@ -1238,6 +1238,43 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
         ],
     ));
 
+    // THE LEAK SPELLED AS A METHOD (2026-10-07). `Box::leak` was on the escape list and `Vec::leak`,
+    // `String::leak` and the `.leak()` method form were not, so a `Vec` of holds leaked whole sailed
+    // past the scan. Planted three ways outside every reviewed site, and once more inside a file whose
+    // OTHER function is reviewed, so the function-scoped entry is shown not to excuse its neighbours.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_leak.rs",
+        "pub fn planted_leak(holds: Vec<Hold>) -> &'static [Hold] {\n    holds.leak()\n}\n\n\
+         pub fn planted_spelled(holds: Vec<Hold>) -> &'static [Hold] {\n    Vec::leak(holds)\n}\n\n\
+         pub fn planted_words(words: String) -> &'static str {\n    String::leak(words)\n}\n",
+    );
+    let door = "crates/busbar-kernel/src/plane/door.rs";
+    if let Ok(basetext) = cx.read(door) {
+        ov.set(
+            door,
+            format!(
+                "{basetext}\npub fn planted_beside_the_fold(holds: Vec<Hold>) -> &'static [Hold] {{\n    \
+                 holds.leak()\n}}\n"
+            ),
+        );
+    }
+    r.push(prove_red(
+        cx,
+        gate,
+        "a Vec of holds is leaked by the method, by Vec::leak and by String::leak, and once beside a \
+         reviewed leak in the same file",
+        &["hold-escapes"],
+        ov,
+        &[
+            "4 deliberate hold escape(s)",
+            "zz_planted_leak.rs:2",
+            "zz_planted_leak.rs:6",
+            "zz_planted_leak.rs:10",
+            "plane/door.rs",
+        ],
+    ));
+
     // ITEM 130: THE HOLD CELL'S TAKE IS COUNTED, NOT ONLY CONFINED. Confinement said where the
     // literal may appear and nothing about how often, so a fourth take written INSIDE teller.rs sat
     // in its home and the row stayed PASS; and the sweep took through a named grant the literal
@@ -1568,10 +1605,20 @@ fn money_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
                 );
             }
         }
-        None => r.note_infra_failure(
-            "no reviewed site carries `verdict = \"double\"`, so the doubles ratchet cannot be \
-             planted against",
-        ),
+        // NO REVIEWED DOUBLE REMAINS (the ratchet reached 0, p6-ledger-fix), so there is no site to
+        // add a second construction to. The honest plant is the ratchet's own failure: review the
+        // planted file's construction AS a double, which is one more than a ceiling of zero allows.
+        None => match cx.read("qa/construction.toml") {
+            Ok(text) => ov.set(
+                "qa/construction.toml",
+                format!(
+                    "{text}\n[rules.no-test-doubles-in-production.known_sites.zz-planted-double]\n\
+                     file = \"crates/busbar/src/zz_planted_double.rs\"\nsymbol = \"NullShipper\"\n\
+                     verdict = \"double\"\nbecause = \"a planted reviewed double\"\n"
+                ),
+            ),
+            Err(e) => r.note_infra_failure(format!("qa/construction.toml unreadable: {e}")),
+        },
     }
     // item 381 (Q11/Q32): `rules.legacy-reach.prefixes` struck the two dead prefixes
     // (busbar_core, busbar_substrate — 0 hits forever) and added the three live retiring engines

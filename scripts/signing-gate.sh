@@ -29,8 +29,13 @@ LIB=$(cd "$(dirname "${5:?cdylib path}")" && pwd)/$(basename "$5")
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-PACK="$BUSBAR_DIR/target/release/busbar-plugin-pack"
-BUSBAR="$BUSBAR_DIR/target/release/busbar"
+# Where cargo puts what it builds below: CARGO_TARGET_DIR when the caller set one (relative to the
+# checkout, where the builds run), else the checkout's own target/. Reading target/ unconditionally
+# ran the PREVIOUS build's binaries, or none, under a runner that sets a target dir.
+TARGET_DIR=${CARGO_TARGET_DIR:-target}
+case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$BUSBAR_DIR/$TARGET_DIR" ;; esac
+PACK="$TARGET_DIR/release/busbar-plugin-pack"
+BUSBAR="$TARGET_DIR/release/busbar"
 
 # ── 0. Ephemeral keypair ─────────────────────────────────────────────────────────────────────────
 # CI may pre-generate the pair (BUSBAR_GATE_SIGN_KEY/BUSBAR_GATE_PUBKEY) so the busbar binary built
@@ -125,18 +130,23 @@ EOF
 #     hit that refuses to boot.
 # store/secret are unchanged. Each kind gets ONLY its own reference: a store or hook invocation must
 # not grow a spurious `identity-providers:` entry, which would itself be a dangling-module error.
+# The module is named by the plugin's manifest NAME ($PLUGIN_CRATE), never its alias: a build that
+# links a plugin answering to the same alias (busbar links busbar-store-memory, alias `memory`)
+# keeps the linked row for that alias, so an alias reference would resolve the linked plugin and
+# never judge the tarball under test (crates/busbar/tests/cli_validate.rs pins this).
 case "$PLUGIN_KIND" in
-  store)  REF=$'store:\n  module: '"$PLUGIN_ALIAS" ;;
-  auth)   REF=$'identity-providers:\n  '"$PLUGIN_ALIAS"$':\n    module: '"$PLUGIN_ALIAS"$'\nauth:\n  chain: ['"$PLUGIN_ALIAS"$']' ;;
-  hook)   REF=$'hooks:\n  signing-gate-ref:\n    module: '"$PLUGIN_ALIAS"$'\n    kind: tap' ;;
+  store)  REF=$'store:\n  module: '"$PLUGIN_CRATE" ;;
+  auth)   REF=$'identity-providers:\n  '"$PLUGIN_ALIAS"$':\n    module: '"$PLUGIN_CRATE"$'\nauth:\n  chain: ['"$PLUGIN_ALIAS"$']' ;;
+  hook)   REF=$'hooks:\n  signing-gate-ref:\n    module: '"$PLUGIN_CRATE"$'\n    kind: tap' ;;
   # kind:secret has no config-reference preflight — the trust verdict is asserted from the
   # --validate summary instead (see the SKIP-mode assertions below).
   secret) REF="" ;;
   *) echo "FAIL: unknown plugin kind '$PLUGIN_KIND'" >&2; exit 1 ;;
 esac
-# A config states its store (busbar refuses one without a `store:` block: t-config, #465). A store
-# plugin's invocation names the plugin under test; every other kind runs on the compiled-in RAM store.
-[ "$PLUGIN_KIND" = store ] || REF="${REF:+$REF$'\n'}"$'store:\n  module: memory'
+# A config names its store (Q-STORE = (B), #465): every kind but store, whose reference IS the
+# `store:` block above, boots on the compiled-in memory store.
+STORE_REF=""
+[ "$PLUGIN_KIND" = store ] || STORE_REF=$'store:\n  module: memory'
 cat > "$WORK/config.yaml" <<EOF
 listen: "127.0.0.1:0"
 providers:
@@ -148,6 +158,7 @@ models:
 plugins:
   enabled: true
   dir: '$WORK/plugins'
+$STORE_REF
 $REF
 EOF
 

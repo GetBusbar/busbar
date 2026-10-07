@@ -697,6 +697,7 @@ pub(crate) fn plugin_manifest(
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -1017,6 +1018,57 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// ARCHITECT Q-P4-13: the pre-flight resolves a hook reference against the SAME claim table boot
+/// opens hooks through — the LINKED hook rows (the hook axis: Statement name, aliases, former names,
+/// hook words) beside the plugins directory's — not the registry alone, which holds no linked hook.
+/// GREEN: a config naming this build's linked hook (the stand-in hook door) passes, with the plugin
+/// subsystem off and on (RED before: "the hooks registry names plugin module(s) [<its name>],
+/// which require the plugin subsystem" / "no plugin matching the hook reference"). RED ARM: an
+/// unknown name is still refused in 1.5.5's BUSBAR-6009 words (golden BOOT-138c).
+#[cfg(feature = "hooks-ranking")]
+#[test]
+fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused() {
+    let hook = |module: &str| {
+        let cfg: crate::config::HookCfg =
+            serde_yaml::from_str(&format!("kind: gate\nmodule: {module}\n")).expect("a hook");
+        std::collections::HashMap::from([("h".to_string(), cfg)])
+    };
+    let dir = tmp_plugin_dir("linked-hook");
+    let run = |module: &str, enabled: bool| {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &hook(module),
+            &plugins_cfg(&dir, enabled),
+            &Default::default(),
+        )
+    };
+    let linked = linked_hook_name();
+    for enabled in [false, true] {
+        run(linked, enabled).unwrap_or_else(|e| {
+            panic!("the linked hook '{linked}' passes (plugins.enabled: {enabled}): {e}")
+        });
+    }
+    let err = run("oracle-hook", true).expect_err("an unknown hook is refused");
+    assert!(
+        err.starts_with(&format!(
+            "no plugin matching the hook reference 'oracle-hook' is installed in '{}' (plugins ARE \
+             enabled; loadable: []). Two things to check: is the plugin subsystem enabled? (it is) \
+             — and is the signed `kind: hook` tarball actually IN the folder?",
+            dir.display()
+        )),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The linked hook's Statement name, as this test build links it (the stand-in hook door).
+#[cfg(feature = "hooks-ranking")]
+fn linked_hook_name() -> &'static str {
+    fixture_hook::NAME
+}
+
 /// K5b (3c) exit test, on the hook door: the built-in ranking strategies are the HOOK WORDS of ONE
 /// linked `hooks-ranking` door on the hook axis — each strategy word names that row, and opens (with
 /// `{"policy": "<word>"}`) as the strategy it spells. `weighted` stays the inline floor (no row).
@@ -1089,6 +1141,7 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
         prompt: None,
         identity: None,
         signals: Default::default(),
+        session: None,
     };
     let ctx = RoutingContext {
         pool: "p",
@@ -1477,7 +1530,7 @@ fn secrets_block_rejects_non_secret_kind() {
 /// read.
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
-    crate::metrics::init();
+    crate::snapshot::init();
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
     let unset_var = format!("BUSBAR_TEST_PROVIDER_KEY_UNSET_{}", std::process::id());
@@ -1529,7 +1582,7 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 /// re-derived here through a lane accessor that exists only for the test.
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.models
         .insert("m0".to_string(), model_cfg_for_provider("acme"));
@@ -1668,7 +1721,7 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 /// 1.5.4.
 #[test]
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let cfg = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_SESSION_STORE",
@@ -1749,7 +1802,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
 /// of them uses this deliberately-illegal number.
 #[test]
 fn a_rejected_config_leaves_no_limits_behind() {
-    crate::metrics::init();
+    crate::snapshot::init();
     // Below `REQUEST_BODY_MAX_BYTES_FLOOR` (64 KiB) — `validate_limits` refuses it, which is the
     // whole point: the refusal happens AFTER the install.
     const ILLEGAL: usize = 4096;
@@ -1796,7 +1849,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
 /// is ever buffered.)
 #[tokio::test]
 async fn oversized_request_413_is_reshaped_on_the_live_stack() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
     let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
@@ -1865,7 +1918,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
 /// `busbar;dur=<ms>` shape.
 #[tokio::test]
 async fn server_timing_header_absent_by_default_present_when_enabled() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let client = reqwest::Client::new();
 
     // Default OFF.
@@ -1923,7 +1976,7 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
 /// into every other test that shares this process.
 #[tokio::test]
 async fn route_policy_headers_absent_by_default_on_the_live_stack() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2484,7 +2537,7 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 /// (learned reliability survives every apply).
 #[test]
 fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let planeless = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_PLANES",
@@ -2567,7 +2620,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
 #[tokio::test]
 async fn a_panicking_handler_fails_only_its_own_request() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
     async fn boom() -> &'static str {

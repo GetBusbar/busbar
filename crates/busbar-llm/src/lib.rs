@@ -208,6 +208,50 @@ use busbar_kernel::{
     proto::install_stream_translator_factory,
 };
 
+/// The number of classes the LLM plane ledgers: the four reserved token tiers and every open class.
+const LLM_BILLABLE_COUNT: usize = 4 + busbar_plane_llm::codec::ir::open_class::OPEN_CLASS_COUNT;
+
+/// THE LLM PLANE'S BILLABLE CLASSES, in the tail's order: the four reserved token tiers, then every
+/// open class the codec declares (`open_class::OPEN_CLASSES`, the same table the plane's tail
+/// states). `search_units` keeps the `count` family this declaration always gave it.
+const LLM_BILLABLE_CLASSES: [BillableClass; LLM_BILLABLE_COUNT] = {
+    use busbar_plane_llm::codec::ir::open_class::{OPEN_CLASSES, OPEN_CLASS_COUNT};
+    const EMPTY: BillableClass = BillableClass {
+        class: "",
+        family: "",
+    };
+    let mut out = [EMPTY; LLM_BILLABLE_COUNT];
+    out[0] = BillableClass {
+        class: busbar_contract::records::UNIT_INPUT,
+        family: TOKEN_FAMILY,
+    };
+    out[1] = BillableClass {
+        class: busbar_contract::records::UNIT_OUTPUT,
+        family: TOKEN_FAMILY,
+    };
+    out[2] = BillableClass {
+        class: busbar_contract::records::UNIT_CACHE_READ,
+        family: TOKEN_FAMILY,
+    };
+    out[3] = BillableClass {
+        class: busbar_contract::records::UNIT_CACHE_WRITE,
+        family: TOKEN_FAMILY,
+    };
+    out[4] = BillableClass {
+        class: OPEN_CLASSES[0].0,
+        family: "count",
+    };
+    let mut k = 1;
+    while k < OPEN_CLASS_COUNT {
+        out[4 + k] = BillableClass {
+            class: OPEN_CLASSES[k].0,
+            family: OPEN_CLASSES[k].1,
+        };
+        k += 1;
+    }
+    out
+};
+
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to
@@ -251,30 +295,10 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
         // THE CLASSES THIS PLANE LEDGERS (#71): the four reserved token tiers every dialect reports,
-        // and billed searches (the one open class a codec counts: a rerank's search units, an
-        // Anthropic turn's web searches). A present card must configure all five (Q29/Q35).
-        billable_classes: &[
-            BillableClass {
-                class: busbar_contract::records::UNIT_INPUT,
-                family: TOKEN_FAMILY,
-            },
-            BillableClass {
-                class: busbar_contract::records::UNIT_OUTPUT,
-                family: TOKEN_FAMILY,
-            },
-            BillableClass {
-                class: busbar_contract::records::UNIT_CACHE_READ,
-                family: TOKEN_FAMILY,
-            },
-            BillableClass {
-                class: busbar_contract::records::UNIT_CACHE_WRITE,
-                family: TOKEN_FAMILY,
-            },
-            BillableClass {
-                class: busbar_plane_llm::codec::ir::rerank::SEARCH_UNITS_CLASS,
-                family: "count",
-            },
-        ],
+        // then every open class a codec counts beside them (owner LEDGER-100: every reported unit
+        // is a ledger line; `busbar_plane_llm::codec::ir::open_class::OPEN_CLASSES`). A present card
+        // must configure every one (Q29/Q35); an explicit 0 makes one free.
+        billable_classes: &LLM_BILLABLE_CLASSES,
         // 1.6.0 pools stage-B: the providers/models/pools LOGIC seam. `providers`/`pools` stay
         // CORE-OWNED-CONCRETE (never listed in `owned_config_sections` — see that field's doc), but
         // the per-provider catalog/deployment MERGE logic now lives here; core calls it at the exact
@@ -291,6 +315,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // this plane refuses a document missing either, with the config grammar's own message.
         required_config_sections: &[Kind::Transport.root(), "models"],
         trust_keys: &[],
+        caller_credential_refusal: None,
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

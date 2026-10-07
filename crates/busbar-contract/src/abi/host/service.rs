@@ -152,10 +152,12 @@ pub mod op {
     pub const RECORDS_SECRET: u32 = 21;
     /// `disk.append`.
     pub const DISK_APPEND: u32 = 22;
+    /// `snapshot.read`.
+    pub const SNAPSHOT_READ: u32 = 23;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 23;
+pub const SERVICES: u32 = 24;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -171,6 +173,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::RANDOM_FILL
             | op::NEED_ADMIT
             | op::TRUST_VERIFY
+            | op::SNAPSHOT_READ
     ) && service < SERVICES
 }
 
@@ -305,19 +308,29 @@ pub struct DestJudgeIn {
     pub dest: AbiStr,
     /// The egress class whose rules apply; `0` = the host's default.
     pub egress_class: u32,
-    /// [`DEST_RESOLVE`].
+    /// [`DEST_RESOLVE`] | [`DEST_REFUSE_PRIVATE`] | [`DEST_EXPLAIN`].
     pub flags: u32,
     /// Appended: where the judged addresses go under [`DEST_RESOLVE`], one span each (key = the
-    /// address as text, an IP literal without port or brackets; value absent). Written only on
+    /// address as text, an IP literal without port or brackets; value absent). On
     /// [`DEST_ALLOWED`]: every address the judgement admitted, in the resolver's order, the first
     /// the one a dial pins. The set a plane hands back as `EstablishIn::within`, so the judge, its
-    /// overlap check and the dial see one address set. Without [`DEST_RESOLVE`] nothing is written.
+    /// overlap check and the dial see one address set. On a refusal, nothing, unless
+    /// [`DEST_EXPLAIN`] asks for what decided it. Without [`DEST_RESOLVE`] nothing is written.
     pub into: ServiceBufs,
 }
 
 /// [`DestJudgeIn::flags`]: resolve a name and judge every address it answers, and write the
 /// addresses judged into [`DestJudgeIn::into`]; without it the judgement is the name's alone.
 pub const DEST_RESOLVE: u32 = 1;
+/// [`DestJudgeIn::flags`]: refuse every private address (and loopback name) under this judgement,
+/// whatever the deployment's private-address setting and the class: the caller's own
+/// configuration forbids the reach. The metadata refusal and the allow-list stand as they are.
+pub const DEST_REFUSE_PRIVATE: u32 = 2;
+/// [`DestJudgeIn::flags`], with [`DEST_RESOLVE`]: on a refusal an address or the resolution
+/// decided, write ONE span into [`DestJudgeIn::into`] naming what decided it (key = the refused
+/// address as text for [`DEST_INTERNAL`] / [`DEST_METADATA`]; the resolver's own reason for
+/// [`DEST_UNRESOLVABLE`]; value absent). A refusal the name alone decided writes nothing.
+pub const DEST_EXPLAIN: u32 = 4;
 
 /// `dest.judge` verdict: admissible.
 pub const DEST_ALLOWED: u64 = 0;
@@ -583,6 +596,12 @@ pub const NOT_ENTITLED: u64 = 0;
 /// `entitlement.check`: entitled.
 pub const ENTITLED: u64 = 1;
 
+/// [`op::ENTITLEMENT_CHECK`]'s target that asks whether the unit's PRINCIPAL STILL STANDS: the host
+/// re-resolves it live (gone, disabled, expired, or a role binding withdrawn is not entitled). Every
+/// other target is judged against the principal as re-resolved now, never the one admitted (a
+/// long-lived response re-asks per frame, ARCHITECT round 4 Q-L3B-SURFACES (a)).
+pub const ENTITLEMENT_STANDING: &str = "standing:";
+
 // ── random ────────────────────────────────────────────────────────────────────────────────────
 
 /// The most bytes one `random.fill` answers.
@@ -641,23 +660,112 @@ pub const CONTENT_BLOCK: u64 = 1;
 
 // ── hook ──────────────────────────────────────────────────────────────────────────────────────
 
-/// [`op::HOOK_CALL`]'s `in`: run a hook stage for an in-session sub-operation, over the hook kind's
-/// own [`RequestView`](crate::abi::hook::RequestView). `value` = the stage's decision, as the hook
-/// kind numbers it; the bytes and spans are its reply.
+/// [`op::HOOK_CALL`]'s `in` (THE DESIGN, host services; ARCHITECT H2 ruling: op 17): run the calling
+/// unit's hook stage for an in-session sub-operation, over the hook kind's own
+/// [`PromptView`](crate::abi::hook::PromptView). The hooks that run are the ones the CALLING UNIT
+/// binds (its kernel-recorded plane and pool, never a field of the view), at the configuration
+/// generation the unit was bound under, a resumed chain included. The host refuses an `in` that
+/// breaks [`check_hook_call_in`]. `value`:
+///
+/// * [`HOOK_GATE`]: `0` = every gate passed; `400..=599` = a gate stopped it, that status, the
+///   bytes its words;
+/// * [`HOOK_REWRITE`], the chain from hook `from`: `0` = no hook from there on rewrote it;
+///   `1 + i` = hook `i` rewrote it, the bytes the rewrite (`{"messages", "tools"}`, the document
+///   `project`'s `rewrite` takes) — the plugin applies it and resumes with `from = 1 + i`;
+///   `400..=599` = a hook stopped it, that status, the bytes its words.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HookCallIn {
     /// The head.
     pub head: ServiceHead,
-    /// The stage, as the hook kind numbers it.
+    /// [`HOOK_GATE`] | [`HOOK_REWRITE`].
     pub stage: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The view.
-    pub view: *const crate::abi::hook::RequestView,
+    /// Where the rewrite chain resumes: the `value` the last call answered (`0` = its start), at
+    /// most [`HOOK_FROM_MAX`]; `0` for a gate.
+    pub from: u32,
+    /// The view of the sub-operation's prompt.
+    pub prompt: *const crate::abi::hook::PromptView,
     /// Where the reply goes.
     pub into: ServiceBufs,
 }
+
+/// `hook.call` stage: the calling unit's decision gates.
+pub const HOOK_GATE: u32 = 0;
+/// `hook.call` stage: the calling unit's rewrite chain.
+pub const HOOK_REWRITE: u32 = 1;
+/// The furthest a rewrite chain resumes (`HookCallIn::from`), and the most hooks one chain runs.
+pub const HOOK_FROM_MAX: u32 = 255;
+/// The least status a stopping hook answers `hook.call` with.
+pub const HOOK_STOP_MIN: u64 = 400;
+/// The greatest status a stopping hook answers `hook.call` with.
+pub const HOOK_STOP_MAX: u64 = 599;
+
+/// A `hook.call` `in`, before any hook runs: a known stage, a chain resumed no further than
+/// [`HOOK_FROM_MAX`], a gate never resumed, and a prompt view. The host REFUSES an `in` that breaks
+/// this, a distinct message per arm.
+///
+/// # Errors
+///
+/// [`Rule::UnknownCode`] for a stage that is neither; [`Rule::OverMax`] for `from` past
+/// [`HOOK_FROM_MAX`]; [`Rule::Contradiction`] for a gate with a `from`; [`Rule::Missing`] for a NULL
+/// prompt.
+pub fn check_hook_call_in(i: &HookCallIn) -> Result<(), Fault> {
+    if i.stage != HOOK_GATE && i.stage != HOOK_REWRITE {
+        return Err(fault(Rule::UnknownCode, "hook_call.stage"));
+    }
+    if i.from > HOOK_FROM_MAX {
+        return Err(fault(Rule::OverMax, "hook_call.from"));
+    }
+    if i.stage == HOOK_GATE && i.from != 0 {
+        return Err(fault(Rule::Contradiction, "hook_call.from"));
+    }
+    if i.prompt.is_null() {
+        return Err(fault(Rule::Missing, "hook_call.prompt"));
+    }
+    Ok(())
+}
+
+// ── snapshot ──────────────────────────────────────────────────────────────────────────────────
+
+/// [`op::SNAPSHOT_READ`]'s `in`: THE HOST SNAPSHOT SERVICE (kind-neutral; `BUSBAR-1.6.0.md` owner
+/// law 2026-09-27, "the data a plugin needs arrives through a kind-neutral host service, for example
+/// a metrics snapshot service"). The host's metric families of `scope` ([`SNAPSHOT_SCOPE_WHOLE`] |
+/// [`SNAPSHOT_SCOPE_HOOKS`]), laid out in the caller's `into.buf` in the export kind's scrape layout
+/// ([`ScrapeFamily`](crate::abi::export::ScrapeFamily), its samples and their labels, every pointer
+/// naming a range of that same buffer): READY with `value` = how many families, the
+/// `ScrapeFamily` array at offset `0`, `len` the bytes the layout used; no spans. `into.buf` holds
+/// [`SNAPSHOT_ALIGN`] alignment, or the call is FAULT.
+///
+/// FAILED with no `needed_*` = NOT READY (the host's recorder is not installed yet): the caller
+/// answers "not ready, retry", never an empty success. A short buffer is FAILED with
+/// `needed_bytes`, as every service. The scope is a kind-neutral argument, never a plugin's name.
+/// The host lends the snapshot only to the crossing it granted it (the instance that serves its
+/// well-known exposition routes); any other caller is REFUSED. Never pends: a ticketless re-call
+/// after a short answer reads the snapshot again.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotReadIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// [`SNAPSHOT_SCOPE_WHOLE`] | [`SNAPSHOT_SCOPE_HOOKS`].
+    pub scope: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+    /// Where the families are laid out (bytes only; `spans_cap` may be `0`).
+    pub into: ServiceBufs,
+}
+
+/// [`SnapshotReadIn::scope`]: the host recorder's WHOLE snapshot, in its order (kind, then name),
+/// read after the host refreshes its scrape-time gauges and folds every export instance's status.
+pub const SNAPSHOT_SCOPE_WHOLE: u32 = 0;
+/// [`SnapshotReadIn::scope`]: the families the configured hooks REPORT (each hook's own metrics,
+/// labelled with its name), folded from the host's cache (it never waits on a hook).
+pub const SNAPSHOT_SCOPE_HOOKS: u32 = 1;
+/// How many scopes there are; a scope at or past it is REFUSED.
+pub const SNAPSHOT_SCOPES: u32 = 2;
+/// The alignment [`SnapshotReadIn::into`]'s `buf` holds (the scrape layout's: every record of it
+/// is pointer-aligned).
+pub const SNAPSHOT_ALIGN: usize = 8;
 
 // ── need ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -799,6 +907,8 @@ pub struct HostSlots {
     pub records_secret: Option<ServiceFn>,
     /// [`op::DISK_APPEND`], in [`DiskAppendIn`].
     pub disk_append: Option<ServiceFn>,
+    /// [`op::SNAPSHOT_READ`], in [`SnapshotReadIn`].
+    pub snapshot_read: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -1031,6 +1141,39 @@ pub fn check_records_secret(
         out,
         into(op::RECORDS_SECRET, i.into, (SECRET_NOT_LIVE, SECRET_LIVE)),
     )
+}
+
+/// `snapshot.read`'s answer: the common rules; READY writes no spans.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_snapshot_read(
+    i: &SnapshotReadIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let bytes_only = ServiceBufs {
+        spans: core::ptr::null_mut(),
+        spans_cap: 0,
+        ..i.into
+    };
+    answer(ret, &i.head, out, into(op::SNAPSHOT_READ, bytes_only, ANY))
+}
+
+/// A `snapshot.read` `in`: a known scope, and a buffer of the scrape layout's alignment.
+///
+/// # Errors
+///
+/// [`Rule::UnknownCode`] for an unknown scope; [`Rule::Foreign`] for a misaligned buffer.
+pub fn check_snapshot_read_in(i: &SnapshotReadIn) -> Result<(), Fault> {
+    if i.scope >= SNAPSHOT_SCOPES {
+        return Err(fault(Rule::UnknownCode, "snapshot_read.scope"));
+    }
+    if !i.into.buf.is_null() && !(i.into.buf as usize).is_multiple_of(SNAPSHOT_ALIGN) {
+        return Err(fault(Rule::Foreign, "snapshot_read.into.buf"));
+    }
+    Ok(())
 }
 
 /// `records.list`'s answer.
@@ -1277,13 +1420,28 @@ pub fn check_content_scan(
     )
 }
 
-/// `hook.call`'s answer.
+/// `hook.call`'s answer: the common rules, and on READY `0`, a stopping status
+/// ([`HOOK_STOP_MIN`]`..=`[`HOOK_STOP_MAX`]), or, for [`HOOK_REWRITE`] only, the `1 + i` of a
+/// rewriting hook within [`HOOK_FROM_MAX`].
 ///
 /// # Errors
 ///
 /// The rule the answer breaks.
 pub fn check_hook_call(i: &HookCallIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, into(op::HOOK_CALL, i.into, ANY))
+    let filled = answer(
+        ret,
+        &i.head,
+        out,
+        into(op::HOOK_CALL, i.into, (0, HOOK_STOP_MAX)),
+    )?;
+    // READY answers `0`, a stopping status, or (a rewrite chain only) `1 + i` within the cap.
+    if ret.outcome() == Outcome::Ready && out.value != 0 && out.value < HOOK_STOP_MIN {
+        let resumable = i.stage == HOOK_REWRITE && out.value <= u64::from(HOOK_FROM_MAX);
+        if !resumable {
+            return Err(fault(Rule::UnknownCode, "hook_call.out.value"));
+        }
+    }
+    Ok(filled)
 }
 
 /// `need.admit`'s answer: never pends; READY (`value` 0) = admitted, REFUSED = not, with the

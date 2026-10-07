@@ -77,6 +77,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         trust_verify: None,
         records_secret: None,
         disk_append: None,
+        snapshot_read: None,
     }
 }
 
@@ -1213,5 +1214,97 @@ fn the_nest_wrapper_reads_the_childs_status_body_and_fields() {
     assert_eq!(
         nested.fields().collect::<Vec<_>>(),
         vec![(b"a".as_slice(), b"b".as_slice())]
+    );
+}
+
+// ── sign ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// The key id and signature [`signs`] answers.
+const KID: &str = "door-1";
+const SIG: &[u8] = b"\x01\x02\x03";
+
+/// A signer in the kernel's layout: span `0`, key = the key id, value = the signature (here the
+/// data reversed after a fixed prefix, so the answer depends on the call); short when the buffers
+/// are.
+extern "C" fn signs(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `SignIn` naming its live data and buffers, and a live `out`.
+    unsafe {
+        let i = input.cast::<SignIn>().read_unaligned();
+        let data = std::slice::from_raw_parts(i.data.ptr, i.data.len);
+        let mut sig = SIG.to_vec();
+        sig.extend(data.iter().rev());
+        let need = KID.len() + sig.len();
+        if i.into.cap < need || i.into.spans_cap < 1 {
+            (*out).needed_bytes = need as u64;
+            (*out).needed_items = 1;
+            return answer(out, Outcome::Failed, 0, 0, 0);
+        }
+        std::ptr::copy_nonoverlapping(KID.as_ptr(), i.into.buf, KID.len());
+        std::ptr::copy_nonoverlapping(sig.as_ptr(), i.into.buf.add(KID.len()), sig.len());
+        *i.into.spans = ItemSpan {
+            key: Span {
+                offset: 0,
+                len: KID.len() as u32,
+            },
+            value: Span {
+                offset: KID.len() as u32,
+                len: sig.len() as u32,
+            },
+        };
+        answer(out, Outcome::Ready, 0, need as u64, 1)
+    }
+}
+
+/// A signer that answers READY with no span.
+extern "C" fn signs_nothing(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    answer(out, Outcome::Ready, 0, 0, 0)
+}
+
+fn sign_table(slot: Option<ServiceFn>) -> HostSlots {
+    HostSlots {
+        sign: slot,
+        ..table(None)
+    }
+}
+
+#[test]
+fn sign_answers_the_key_id_and_the_signature_from_the_callers_buffers() {
+    let t = sign_table(Some(signs));
+    let s = services(&t);
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 1]);
+    let signed = s
+        .sign(handle(), b"ab", &mut buf, &mut spans)
+        .expect("signed");
+    assert_eq!(signed.key_id, KID);
+    assert_eq!(signed.signature, b"\x01\x02\x03ba");
+    let (mut small, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
+    assert_eq!(
+        s.sign(handle(), b"ab", &mut small, &mut spans),
+        Err(ServiceError::Short {
+            bytes: 11,
+            items: 1
+        })
+    );
+}
+
+#[test]
+fn sign_failures_are_errors() {
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 1]);
+    assert_eq!(
+        services(&sign_table(None)).sign(handle(), b"x", &mut buf, &mut spans),
+        Err(ServiceError::Unserved)
+    );
+    assert_eq!(
+        services(&sign_table(Some(fails))).sign(handle(), b"x", &mut buf, &mut spans),
+        Err(ServiceError::Declined(Outcome::Failed))
+    );
+    assert_eq!(
+        services(&sign_table(Some(signs_nothing))).sign(handle(), b"x", &mut buf, &mut spans),
+        Err(ServiceError::Broken),
+        "a READY sign with no key id and no signature is a broken host"
     );
 }

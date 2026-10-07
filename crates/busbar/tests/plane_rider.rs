@@ -80,7 +80,8 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: None,
+        // These rows read the clock only: the plane's need is not declared, bound as a probe.
+        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
     };
     let plugin = match way {
         Way::Linked => {
@@ -109,6 +110,7 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
                 ptr: std::ptr::null(),
                 len: 0,
             },
+            owned: NO_BLOB,
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -170,7 +172,12 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
                 len: 0,
             },
             route: 0,
-            _route_reserved: [0; 7],
+            route_flags: 0,
+            _route_reserved: [0; 6],
+            affinity: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
         },
     );
     let outcome = plugin.call(slot::ARRIVE, &mut frame).outcome;

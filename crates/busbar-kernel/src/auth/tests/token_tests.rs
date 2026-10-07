@@ -943,7 +943,7 @@ fn pkce_code_challenge_is_s256_of_verifier() {
 /// stays exempt; `/metrics` still 401s; and the bypass is EXACT-MATCH (no `/auth` prefix over-match).
 #[tokio::test]
 async fn auth_token_bypasses_middleware_exact_match() {
-    crate::metrics::init();
+    crate::snapshot::init();
     // A chain that 401s every un-exempt request: the built-in `keys` verifier with no key presented.
     let mut cfg = crate::config::AuthCfg::default_none();
     cfg.chain = vec![crate::config::AuthChainEntry::bare("keys")];
@@ -1002,7 +1002,7 @@ async fn auth_token_bypasses_middleware_exact_match() {
 
 #[tokio::test]
 async fn auth_token_absent_from_admin_router() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec![]) // open admin posture so a hit would reach a handler, not 401
         .public_url("https://busbar.example.com")
@@ -1050,7 +1050,7 @@ async fn auth_token_absent_from_admin_router() {
 /// generated at mount time exists to make impossible.
 #[tokio::test]
 async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .keys_chain() // a CLOSED data-plane posture: no credential ⇒ 401
         .public_url("https://busbar.example.com")
@@ -1102,7 +1102,7 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
 /// undeclared method on a declared-open path takes the normal bar.
 #[tokio::test]
 async fn core_route_bypass_is_exact_in_path_and_method() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let mut cfg = crate::config::AuthCfg::default_none();
     cfg.chain = vec![crate::config::AuthChainEntry::bare("keys")];
     let auth = std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg));

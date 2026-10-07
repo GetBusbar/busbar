@@ -101,7 +101,7 @@ use busbar_kernel_ledger::checkpoint::{
     AnchoredHead, Checkpoint, CheckpointAnchor, SelfAttestingAnchor,
 };
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
-use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
+use busbar_kernel_ledger::legacy::{LegacyRows, SummedRows};
 use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_ledger::settle::{Figures, Ledger, Settlement};
 use busbar_kernel_ledger::totals::{
@@ -2130,7 +2130,7 @@ pub struct NodeBook {
     pub durability: std::sync::Arc<std::sync::Mutex<Durability>>,
     /// The previous release's rows, as the dual write fills them. The write half is inside the
     /// ledger; this is the same value, kept so a view has somewhere to read them from.
-    pub rows: std::sync::Arc<RecordingRows>,
+    pub rows: std::sync::Arc<SummedRows>,
 }
 
 /// Open the one book a process settles onto.
@@ -2159,12 +2159,12 @@ pub fn node_book() -> NodeBook {
 /// [`node_book`], naming where its money view reads the dated rate-card history.
 #[must_use]
 pub fn node_book_over(history: HistorySource) -> NodeBook {
-    let rows = std::sync::Arc::new(RecordingRows::new());
+    let rows = std::sync::Arc::new(SummedRows::new());
     let durability = build_priced(
         &DurabilityConfig { data_dir: None },
         0,
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(RecordingRows::clone(&rows)),
+        Box::new(SummedRows::clone(&rows)),
         history,
     )
     .expect("a memory-buffered journal cannot fail to open");
@@ -2290,7 +2290,7 @@ pub fn build_with_cards(
             quarantine = ?q.kept,
             "{q}"
         );
-        metrics::counter!(busbar_kernel::metrics::JOURNAL_QUARANTINED_TOTAL).increment(1);
+        metrics::counter!(busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL).increment(1);
     }
 
     // THE BOOK IS REBUILT FROM THE CHAIN, not opened empty (item 128). An empty book here was the

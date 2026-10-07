@@ -655,6 +655,9 @@ unsafe fn facts_of(facts: *const WireConnFacts) -> Result<ConnFacts, WireOutcome
             alpn: owned(f.alpn)?,
             peer_cert,
             claim: owned(f.claim)?,
+            // The far end's key pin and whether busbar presented its client identity reach a
+            // plugin on the host connector's FACTS service (`connector::StreamFacts`), not here.
+            ..ConnFacts::default()
         })
     }
 }

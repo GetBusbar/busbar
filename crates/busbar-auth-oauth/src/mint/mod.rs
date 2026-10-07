@@ -22,15 +22,18 @@
 pub(crate) mod host_wire;
 pub(crate) mod jwt_bearer;
 pub(crate) mod oauth_client_credentials;
+pub(crate) mod token_exchange;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use busbar_contract::conn::{ConnError, ConnId, PieceKind};
 use busbar_contract::redacted::Redacted;
 
-use crate::token_response::{default_expires_in, deserialize_expires_in};
+use crate::token_response::{
+    default_expires_in, deserialize_expires_in, deserialize_redacted, json_err,
+};
 use busbar_contract::header::{is_legal_header_value, token_value};
 
 /// Refresh this many seconds BEFORE the token's stated expiry, so a request never races an expired
@@ -62,8 +65,8 @@ pub(crate) fn now_epoch() -> u64 {
 }
 
 /// THE PLUGIN'S OWN NEEDS, by their index in the Statement (`crate::NEEDS`): the token endpoint
-/// each style POSTs to, its target the binding's own setting (THE DESIGN §5: egress class
-/// `open-web`, "auth mint endpoints (`token_url`, `token_uri`)").
+/// each style POSTs to, its target the binding's own setting (egress class `loopback-allowed`: https
+/// or loopback plaintext, as 1.5.5 validated a mint endpoint; ARCHITECT ruling, SEAM-4f).
 pub(crate) mod need {
     /// `oauth-client-credentials`: `settings.token_url`.
     pub const TOKEN_URL: u32 = 0;
@@ -85,12 +88,18 @@ pub(crate) struct TokenRequest {
 }
 
 impl TokenRequest {
-    /// A form POST of `body` to `target`, over the need `need`.
+    /// A form POST of `body` to `target`, over the need `need`. Its fields are 1.5.5's, in 1.5.5's
+    /// order: the form's `content-type`, then reqwest's client-default `accept: */*`, which the
+    /// request carries itself (the http door writes no field the caller did not: transport
+    /// neutrality, SEAM-4i).
     pub(crate) fn form(need: u32, target: String, body: String) -> Self {
         Self {
             need,
             target,
-            fields: vec![("content-type", "application/x-www-form-urlencoded")],
+            fields: vec![
+                ("content-type", "application/x-www-form-urlencoded"),
+                ("accept", "*/*"),
+            ],
             body: Redacted::new(body),
         }
     }
@@ -102,6 +111,9 @@ pub(crate) enum Minter {
     JwtBearer(Box<jwt_bearer::Signer>),
     /// RFC 6749 §4.4.
     ClientCredentials(oauth_client_credentials::ClientCreds),
+    /// RFC 8693, for one scope: minted ON DEMAND (a request that finds no usable token starts the
+    /// exchange), never refreshed ahead of a request.
+    TokenExchange(token_exchange::Scoped),
 }
 
 impl Minter {
@@ -109,6 +121,7 @@ impl Minter {
         match self {
             Minter::JwtBearer(s) => s.request(now),
             Minter::ClientCredentials(c) => c.request(),
+            Minter::TokenExchange(x) => x.request(),
         }
     }
 }
@@ -135,12 +148,14 @@ impl std::fmt::Debug for CachedToken {
 
 impl CachedToken {
     /// Construct a `CachedToken`, building its header once here. The second value is whether the
-    /// token was omitted for bytes invalid in a header value (the caller reports it).
-    pub(crate) fn new(token: String, expires_at: u64) -> (Self, bool) {
-        let (header, invalid) = if token.is_empty() {
+    /// token was omitted for bytes invalid in a header value (the caller reports it). The token
+    /// arrives already [`Redacted`] (the minters decode it straight into one); the header build
+    /// below is its one exposure.
+    pub(crate) fn new(token: Redacted<String>, expires_at: u64) -> (Self, bool) {
+        let (header, invalid) = if token.expose_secret().is_empty() {
             (None, false)
         } else {
-            let v = token_value(&token);
+            let v = token_value(token.expose_secret());
             if is_legal_header_value(&v) {
                 (Some(Redacted::new(v)), false)
             } else {
@@ -149,7 +164,7 @@ impl CachedToken {
         };
         (
             Self {
-                token: Redacted::new(token),
+                token,
                 expires_at,
                 header,
             },
@@ -190,9 +205,12 @@ pub(crate) fn next_refresh_secs(expires_at: u64, now: u64) -> u64 {
     }
 }
 
+/// An OAuth token endpoint's success body (RFC 6749 section 5.1), as far as a minter reads it.
+/// Deserialize-only, and `access_token` is decoded straight into [`Redacted`] (secret-hygiene #53).
 #[derive(serde::Deserialize)]
 struct TokenResponse {
-    access_token: String,
+    #[serde(deserialize_with = "deserialize_redacted")]
+    access_token: Redacted<String>,
     #[serde(
         default = "default_expires_in",
         deserialize_with = "deserialize_expires_in"
@@ -219,8 +237,9 @@ pub(crate) fn parse_response(
             body.chars().take(200).collect::<String>()
         ));
     }
+    // A decode failure is described without the decoder's text, which can quote the token.
     let tok: TokenResponse =
-        serde_json::from_str(&body).map_err(|e| format!("token response JSON invalid: {e}"))?;
+        serde_json::from_str(&body).map_err(json_err("token response JSON invalid"))?;
     Ok(CachedToken::new(
         tok.access_token,
         // saturating_add: `expires_in` is attacker-influenced (comes off the token endpoint), so a
@@ -299,18 +318,47 @@ pub(crate) struct Minted {
     token: RwLock<Arc<CachedToken>>,
     exchange: Mutex<Exchange>,
     refresh_failed: AtomicBool,
+    /// Minted on demand ([`Minter::TokenExchange`]): no refresh ahead of a request, no retry on a
+    /// schedule; a request that finds no usable token arms the next exchange.
+    on_demand: bool,
+    /// An on-demand cell's token is presented until this wall-clock epoch second: the instant a
+    /// scheduled style would refresh it ([`next_refresh_secs`] from its mint).
+    usable_until: AtomicU64,
 }
 
 impl Minted {
     /// A cell that has minted nothing yet; its first exchange is due on the first `tick`.
     pub(crate) fn new(minter: Minter, max_response_bytes: usize) -> Self {
         Self {
+            on_demand: matches!(minter, Minter::TokenExchange(_)),
             minter,
             max_response_bytes,
-            token: RwLock::new(Arc::new(CachedToken::new(String::new(), 0).0)),
+            token: RwLock::new(Arc::new(CachedToken::new(String::new().into(), 0).0)),
             exchange: Mutex::new(Exchange::Idle { due_ns: 0 }),
             refresh_failed: AtomicBool::new(false),
+            usable_until: AtomicU64::new(0),
         }
+    }
+
+    /// Minted on demand (the token-exchange style's per-scope cell).
+    pub(crate) fn on_demand(&self) -> bool {
+        self.on_demand
+    }
+
+    /// No exchange is in flight.
+    pub(crate) fn idle(&self) -> bool {
+        matches!(
+            *self
+                .exchange
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Exchange::Idle { .. }
+        )
+    }
+
+    /// An on-demand cell holds a token it presents at wall-clock `now`.
+    pub(crate) fn usable(&self, now: u64) -> bool {
+        self.is_ready() && now < self.usable_until.load(Ordering::Acquire)
     }
 
     fn current(&self) -> Arc<CachedToken> {
@@ -329,6 +377,18 @@ impl Minted {
     /// (so the borrow of the cached value never escapes the read).
     pub(crate) fn read<T>(&self, now: u64, f: impl FnOnce(Read<'_>) -> T) -> T {
         let tok = self.current();
+        // ON DEMAND: a token past its use is not presented; the request arms the next exchange
+        // (due at once, when none is in flight) and waits for it.
+        if self.on_demand && !self.usable(now) {
+            if let Exchange::Idle { due_ns } = &mut *self
+                .exchange
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            {
+                *due_ns = 0;
+            }
+            return f(Read::Wait);
+        }
         if tok.token.expose_secret().is_empty() {
             return f(Read::Wait);
         }
@@ -451,17 +511,32 @@ impl Minted {
             // self-healing. Retry at MIN_SLEEP instead, exactly like a mint error.
             Ok((fresh, _)) if fresh.token.expose_secret().is_empty() => {
                 self.refresh_failed.store(true, Ordering::Release);
-                *ex = Exchange::Idle {
-                    due_ns: now_ns + MIN_SLEEP_SECS * NS,
+                let due = if self.on_demand {
+                    u64::MAX
+                } else {
+                    now_ns + MIN_SLEEP_SECS * NS
                 };
-                (now_ns + MIN_SLEEP_SECS * NS, Some(Report::EmptyToken))
+                *ex = Exchange::Idle { due_ns: due };
+                (due, Some(Report::EmptyToken))
             }
             Ok((fresh, invalid)) => {
-                let due = now_ns + next_refresh_secs(fresh.expires_at, now_epoch()) * NS;
+                let now = now_epoch();
+                let ahead = next_refresh_secs(fresh.expires_at, now);
+                // An on-demand token is presented until a scheduled style would refresh it, and no
+                // exchange is due until a request finds it past that.
+                let due = if self.on_demand {
+                    u64::MAX
+                } else {
+                    now_ns + ahead * NS
+                };
                 *self
                     .token
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(fresh);
+                if self.on_demand {
+                    self.usable_until
+                        .store(now.saturating_add(ahead), Ordering::Release);
+                }
                 self.refresh_failed.store(false, Ordering::Release);
                 *ex = Exchange::Idle { due_ns: due };
                 (
@@ -477,10 +552,15 @@ impl Minted {
         }
     }
 
-    /// A failed mint: keep serving whatever token is current, and retry at `MIN_SLEEP_SECS`.
+    /// A failed mint: keep serving whatever token is current, and retry at `MIN_SLEEP_SECS` (an
+    /// on-demand cell retries when a request next arms it).
     fn failed(&self, ex: &mut Exchange, now_ns: u64, e: String) -> (u64, Option<Report>) {
         self.refresh_failed.store(true, Ordering::Release);
-        let due = now_ns + MIN_SLEEP_SECS * NS;
+        let due = if self.on_demand {
+            u64::MAX
+        } else {
+            now_ns + MIN_SLEEP_SECS * NS
+        };
         *ex = Exchange::Idle { due_ns: due };
         (due, Some(Report::MintFailed(e)))
     }

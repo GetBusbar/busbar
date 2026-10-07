@@ -412,7 +412,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_eight() {
+fn the_services_that_never_pend_are_exactly_the_stated_nine() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -424,7 +424,8 @@ fn the_services_that_never_pend_are_exactly_the_stated_eight() {
             op::ENTITLEMENT_CHECK,
             op::RANDOM_FILL,
             op::NEED_ADMIT,
-            op::TRUST_VERIFY
+            op::TRUST_VERIFY,
+            op::SNAPSHOT_READ
         ]
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
@@ -486,6 +487,7 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, trust_verify), op::TRUST_VERIFY),
         (offset_of!(HostSlots, records_secret), op::RECORDS_SECRET),
         (offset_of!(HostSlots, disk_append), op::DISK_APPEND),
+        (offset_of!(HostSlots, snapshot_read), op::SNAPSHOT_READ),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -726,6 +728,77 @@ fn a_work_record_past_its_cap_is_refused() {
     );
 }
 
+fn hook_in(stage: u32, from: u32, prompt: *const crate::abi::hook::PromptView) -> HookCallIn {
+    HookCallIn {
+        head: head(op::HOOK_CALL, TICKET, core::mem::size_of::<HookCallIn>()),
+        stage,
+        from,
+        prompt,
+        into: ServiceBufs {
+            buf: core::ptr::null_mut(),
+            cap: 0,
+            spans: core::ptr::null_mut(),
+            spans_cap: 0,
+        },
+    }
+}
+
+/// RED, one arm each: an unknown stage, a chain resumed past the cap, a resumed gate, no prompt.
+#[test]
+fn a_hook_call_in_that_breaks_a_rule_is_refused_by_its_arm() {
+    let view = crate::abi::hook::PromptView {
+        system: none(),
+        message_count: 0,
+        body: empty_blob(),
+        messages: core::ptr::null(),
+        messages_len: 0,
+    };
+    let p: *const crate::abi::hook::PromptView = &view;
+    assert!(check_hook_call_in(&hook_in(HOOK_GATE, 0, p)).is_ok());
+    assert!(check_hook_call_in(&hook_in(HOOK_REWRITE, HOOK_FROM_MAX, p)).is_ok());
+    assert_eq!(
+        check_hook_call_in(&hook_in(2, 0, p)).unwrap_err(),
+        fault(Rule::UnknownCode, "hook_call.stage")
+    );
+    assert_eq!(
+        check_hook_call_in(&hook_in(HOOK_REWRITE, HOOK_FROM_MAX + 1, p)).unwrap_err(),
+        fault(Rule::OverMax, "hook_call.from")
+    );
+    assert_eq!(
+        check_hook_call_in(&hook_in(HOOK_GATE, 1, p)).unwrap_err(),
+        fault(Rule::Contradiction, "hook_call.from")
+    );
+    assert_eq!(
+        check_hook_call_in(&hook_in(HOOK_GATE, 0, core::ptr::null())).unwrap_err(),
+        fault(Rule::Missing, "hook_call.prompt")
+    );
+}
+
+/// RED: `hook.call` answers `0`, a stopping status, or (a rewrite only) `1 + i` within the cap.
+#[test]
+fn a_hook_call_answer_outside_its_values_is_fault() {
+    let gate = hook_in(HOOK_GATE, 0, core::ptr::null());
+    let rewrite = hook_in(HOOK_REWRITE, 0, core::ptr::null());
+    let mut o = out(Outcome::Ready);
+    for (i, value, ok) in [
+        (&gate, 0, true),
+        (&gate, 403, true),
+        (&gate, 1, false),
+        (&rewrite, 1, true),
+        (&rewrite, u64::from(HOOK_FROM_MAX), true),
+        (&rewrite, u64::from(HOOK_FROM_MAX) + 1, false),
+        (&rewrite, 599, true),
+        (&rewrite, 600, false),
+    ] {
+        o.value = value;
+        let r = check_hook_call(i, ready(&o), &o);
+        assert_eq!(r.is_ok(), ok, "stage {} value {value}", i.stage);
+        if !ok {
+            assert_eq!(rule(r), Rule::UnknownCode);
+        }
+    }
+}
+
 /// A `disk.append` `in` appending `bytes` to `key`, its result into `result`.
 fn disk_in(
     ticket: Ticket,
@@ -861,4 +934,20 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     assert!(check(written(0, 0, 0), &pending, TICKET).is_ok());
     assert!(check(written(0, 0, 0), &pending, Ticket::NONE).is_err());
     assert!(may_pend(op::DISK_APPEND));
+}
+
+/// `snapshot.read`'s buffer alignment is the scrape layout's: every record the host lays out in
+/// it (family, sample, label) is aligned at it and is a whole multiple of it.
+#[test]
+fn the_snapshot_alignment_is_the_scrape_layouts() {
+    use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
+    use core::mem::{align_of, size_of};
+    for (align, size) in [
+        (align_of::<ScrapeFamily>(), size_of::<ScrapeFamily>()),
+        (align_of::<ScrapeSample>(), size_of::<ScrapeSample>()),
+        (align_of::<ScrapeLabel>(), size_of::<ScrapeLabel>()),
+    ] {
+        assert!(align <= SNAPSHOT_ALIGN && SNAPSHOT_ALIGN.is_multiple_of(align));
+        assert_eq!(size % SNAPSHOT_ALIGN, 0);
+    }
 }

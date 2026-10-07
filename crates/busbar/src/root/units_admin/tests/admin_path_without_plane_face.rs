@@ -222,7 +222,7 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
 /// that reads it filters on a resource only that cell minted.
 #[cfg(feature = "root-admin")]
 fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     busbar_core_admin::install();
     // Governance ON, with a signer, so a key can be minted, renamed, revoked and deleted.
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -569,7 +569,7 @@ async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(S
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     busbar_core_admin::install();
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
@@ -698,7 +698,7 @@ const THE_REMOVED_VERBS: [(&str, &str); 9] = [
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_nothing() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     busbar_core_admin::install();
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
@@ -802,7 +802,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_amend_path_on_a_node_with_no_operator_key_is_1_5_5_s_404() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     busbar_core_admin::install();
     let mount_under = |operator_key: Option<[u8; 32]>| {
         let app = busbar_kernel::test_support::TestApp::new()
@@ -950,6 +950,7 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     };
 
 /// A door that identifies ANOTHER principal than the operator: authenticated, and holding no grant.
@@ -984,7 +985,7 @@ fn a_q71_node(
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
 ) {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     busbar_core_admin::install();
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])

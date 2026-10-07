@@ -42,9 +42,6 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 /// only as an [`busbar_contract::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
 /// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
 pub mod gate;
-pub mod plugin;
-pub mod scrape;
-pub mod wire;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
 // (`RoutingRequest`, `Candidate`, `RoutingContext`, `RoutingDecision`, …) — lives in the
@@ -218,7 +215,9 @@ impl HookEnv {
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
         let settings = serde_json::Value::Object(settings.clone());
         let calls = axis.open(module, name, &settings, policy_timeout(timeout_ms))?;
-        Ok(plugin::HookPolicy::policy(calls, name))
+        Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
+            calls, name,
+        ))
     }
 
     /// Resolve a hook's opaque `settings:` map — substituting any SecretRef-typed value (e.g. a
@@ -1843,7 +1842,7 @@ pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
     if bytes <= cap {
         return p;
     }
-    metrics::counter!(crate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    metrics::counter!(crate::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
     PromptProjection {
         system: None,
         messages: Vec::new(),

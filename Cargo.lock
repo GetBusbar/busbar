@@ -358,8 +358,11 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "hex",
+ "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "idna_adapter",
  "metrics",
  "opentelemetry-proto",
@@ -550,10 +553,8 @@ dependencies = [
  "busbar-contract",
  "busbar-export-prometheus",
  "busbar-kernel",
- "busbar-kernel-ledger",
  "busbar-llm",
  "busbar-mcp",
- "busbar-plugin-loader",
  "flate2",
  "hex",
  "http-body-util",
@@ -642,7 +643,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=b10cd35eaec72969ac2b40dea379194d655daca9#b10cd35eaec72969ac2b40dea379194d655daca9"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=d4e24f17b57ae9e16026fbe6a56a1e8966773e51#d4e24f17b57ae9e16026fbe6a56a1e8966773e51"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -654,7 +655,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=b10cd35eaec72969ac2b40dea379194d655daca9#b10cd35eaec72969ac2b40dea379194d655daca9"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=d4e24f17b57ae9e16026fbe6a56a1e8966773e51#d4e24f17b57ae9e16026fbe6a56a1e8966773e51"
 dependencies = [
  "busbar-contract",
  "busbar-export-otlp",
@@ -663,7 +664,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1df4b10d12764fef89966b9c9bd007f5d481f6ed#1df4b10d12764fef89966b9c9bd007f5d481f6ed"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=049592be7a06945cd35bfc32d72ac0fb21197a57#049592be7a06945cd35bfc32d72ac0fb21197a57"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -673,7 +674,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1df4b10d12764fef89966b9c9bd007f5d481f6ed#1df4b10d12764fef89966b9c9bd007f5d481f6ed"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=049592be7a06945cd35bfc32d72ac0fb21197a57#049592be7a06945cd35bfc32d72ac0fb21197a57"
 dependencies = [
  "busbar-contract",
  "busbar-export-prometheus",
@@ -773,6 +774,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "url",
  "zeroize",
@@ -1058,7 +1060,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=fc91230af97997994e9206124ee7414f3aec6eee#fc91230af97997994e9206124ee7414f3aec6eee"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a#9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a"
 dependencies = [
  "busbar-contract",
  "bytes",
