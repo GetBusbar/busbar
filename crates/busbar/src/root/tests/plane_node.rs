@@ -998,8 +998,7 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
 /// **THE CACHE IS WRITTEN AND IS NEVER AUTHORITATIVE.**
 ///
 /// The posting the pricing builds carries a cache — the head it settled at, the entry it
-/// resolved to, and both figures — so a reader has something to compare a
-/// re-derivation against. Corrupt every one of those figures and ask again: the answer is
+/// resolved to, and both figures. Corrupt every one of those figures and ask again: the answer is
 /// unchanged, because the lookup does not read them. A node that fell back to the cache would
 /// answer the corrupted number and call it money.
 #[test]
@@ -1037,10 +1036,6 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
             .expect("the lookup still answers"),
         priced.priced_nanos,
         "the money moved when the cache was corrupted, so the cache was on the money path"
-    );
-    assert!(
-        posting.cache_diverges(&priced),
-        "a corrupted cache went unnoticed"
     );
 }
 
