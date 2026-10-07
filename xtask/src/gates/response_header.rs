@@ -430,8 +430,15 @@ impl Gate for ResponseHeaderGate {
         ));
 
         // THE SANCTIONED SITE THAT VANISHED: the allowlist then matches nothing.
+        // A pad file is set in the same breath: the floor sits AT the measured count, so removing
+        // the site alone would trip the floor row first and this case would no longer be about the
+        // allowlist.
         let mut ov = Overlay::new();
         ov.remove(HDR_ROUTE_WIRE_FILE);
+        ov.set(
+            format!("{CORE}/planted_pad.rs"),
+            "// pad: holds the population at its floor\n",
+        );
         report.push(prove_red(
             cx,
             self,
