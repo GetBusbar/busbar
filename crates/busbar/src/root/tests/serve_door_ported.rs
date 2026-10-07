@@ -325,7 +325,6 @@ async fn with_no_card_no_name_is_unpriced_and_the_request_is_served() {
 ///
 /// Ports legacy `engine/tests/ingress_integration_tests.rs::test_budget_exhaustion_downgrades_pool`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: the door's admission (root door_steps DoorSteps::charge) refuses a budget block naming downgrade_to; it never re-admits on the downgrade pool (1.5.5 ingress::admit_check did)"]
 async fn an_exhausted_pool_budget_downgrades_onto_its_downgrade_pool() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-ported-downgrade";
@@ -1703,7 +1702,11 @@ fn apply(rig: &DoorRig, instance: &str, members: &[u16], upstream_secs: u64) -> 
 
 /// The probe schedule the rig's door shares across its generations.
 fn probe_schedule(rig: &DoorRig) -> Arc<busbar_kernel::probe::ProbeSchedule> {
-    Arc::clone(&rig.appliers.0[0].probe_schedule)
+    let probes = rig.appliers.0[0]
+        .probes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(&probes.1)
 }
 
 /// AN APPLY THAT KEEPS THE MEMBER SET CARRIES THE PROBE SCHEDULE (the same one), so a mutation
@@ -1744,7 +1747,6 @@ async fn an_apply_over_the_same_members_carries_the_probe_schedule() {
 /// Ports legacy `engine/tests/runtime_carry_tests.rs::a_rebuild_carries_the_probe_schedule` (its
 /// changed-member-set half).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: root serve.rs mints the door's probe schedule once at compose (DoorApply.probe_schedule) and carries it across every apply, a changed member set included"]
 async fn an_apply_that_changes_the_members_mints_a_fresh_probe_schedule() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-ported-probe-fresh";

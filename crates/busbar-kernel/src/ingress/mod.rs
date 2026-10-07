@@ -133,55 +133,23 @@ pub fn admit_check(
     // (AND / most-restrictive) and every bucket is charged in the same critical section - N
     // concurrent requests can never each read "under the cap" and all charge. Infallible
     // in-memory (write-behind store): admission never blocks on or fails from the durable store.
-    //
-    // BUDGET DOWNGRADE: a budget block whose limit declared
-    // `on_exhaust: downgrade` re-admits through `downgrade_to` instead of refusing - the caller's
-    // expensive traffic gets CHEAPER, not blocked. The chain may cascade (value's own budget may
-    // downgrade further); a visited set bounds it, and every hop re-runs the key's pool ACL (a
-    // downgrade must never route a key into a pool it may not use). The charge lands on the
-    // EFFECTIVE pool's buckets, and the caller dispatches there - accounting follows the traffic.
-    let mut effective: Option<String> = None;
-    let mut visited: Vec<String> = Vec::new();
-    let blocked = loop {
-        let attempt_pool = effective.as_deref().unwrap_or(pool);
-        match g.try_admit(&app.cost, key, attempt_pool, charged_at) {
-            Ok(grant) => return Ok((Some(grant), effective)),
-            Err(crate::governance::LimitBlocked::Limit {
-                downgrade_to: Some(to),
-                group,
-                ..
-            }) if !visited.iter().any(|v| v == &to)
-                // Defense-in-depth, likely unreachable in practice: `visited` is a DUPLICATE-FREE
-                // subset of `app.pools` (the revisit guard above forbids re-pushing an already
-                // seen pool; every push target is also checked against `app.pools.contains_key`
-                // below before being pushed). NOTE this does NOT mean the start pool can never
-                // appear in `visited` — a downgrade target can legally cycle back to the start
-                // pool (e.g. a<->b: hop 1 pushes b, hop 2's target a passes both checks and gets
-                // pushed too), so `visited` is not capped at `app.pools.len() - 1`. The real bound
-                // is `visited.len() <= app.pools.len()` (it can never exceed the pool count, being
-                // duplicate-free): at equality `visited` IS the full pool set, so either the
-                // earlier `!visited.iter().any(...)` clause already rejected `to` (if `to` is a
-                // pool), or the `contains_key` clause below rejects it (if it isn't) — making `<`
-                // vs `<=` behaviorally indistinguishable right here (see
-                // `test_downgrade_cycle_terminates_via_the_revisit_guard`'s doc comment for the
-                // one guard clause that IS distinguishable). Kept as an explicit bound rather than
-                // removed: it's the backstop if the duplicate-free invariant is ever loosened.
-                && visited.len() < app.engine_tables_view().pools().len()
-                && app
-                    .engine_tables_view()
-                    .pools()
-                    .iter()
-                    .any(|(n, _)| *n == to.as_str())
-                && pool_authorized(gov, &to, proto).is_none()
-                && fallback_pools_authorized(app, gov, &to, proto).is_none() =>
-            {
-                tracing::info!(key_id = %key.id, from = attempt_pool, to = %to, group = %group,
-                    "governance: budget exhausted; downgrading pool (on_exhaust: downgrade)");
-                visited.push(to.clone());
-                effective = Some(to);
-            }
-            Err(blocked) => break blocked,
-        }
+    // A budget block that downgrades re-admits on its `downgrade_to` pool ([`admit_downgrading`]).
+    let view = app.engine_tables_view();
+    let pools = view.pools();
+    let names: Vec<&str> = pools.iter().map(|(n, _)| *n).collect();
+    let walked = admit_downgrading(
+        &key.id,
+        pool,
+        &names,
+        |to| {
+            pool_authorized(gov, to, proto).is_none()
+                && fallback_pools_authorized(app, gov, to, proto).is_none()
+        },
+        |at| g.try_admit(&app.cost, key, at, charged_at),
+    );
+    let blocked = match walked {
+        Ok((grant, effective)) => return Ok((Some(grant), effective)),
+        Err(blocked) => blocked,
     };
     {
         // The rejection NAMES WHICH BUCKET blocked (group + metric + window). The key ID
@@ -200,6 +168,67 @@ pub fn admit_check(
             }
         }
         Err(Box::new(resp))
+    }
+}
+
+/// THE BUDGET DOWNGRADE WALK every door admits through: `admit` the request on `pool`; a budget
+/// block whose limit declared `on_exhaust: downgrade` re-admits it on `downgrade_to` instead of
+/// refusing - the caller's expensive traffic gets CHEAPER, not blocked. The chain may cascade (the
+/// downgrade pool's own budget may downgrade further); each hop's target must be one of `pools`, the
+/// deployment's configured pools, that the key may `reach` (its pool grant, and the grant of every
+/// fallback pool beyond it: a downgrade must never route a key into a pool it may not use). A
+/// visited set ends a cycle at the revisit, bounded by the pool count besides. The charge lands on
+/// the EFFECTIVE pool's buckets, and the caller dispatches there - accounting follows the traffic.
+///
+/// `Ok((grant, effective))`: admitted on `effective` (`None` = on `pool` itself).
+///
+/// # Errors
+///
+/// The block the walk ended on, which names its bucket.
+pub fn admit_downgrading<G>(
+    key_id: &str,
+    pool: &str,
+    pools: &[&str],
+    reach: impl Fn(&str) -> bool,
+    mut admit: impl FnMut(&str) -> Result<G, crate::governance::LimitBlocked>,
+) -> Result<(G, Option<String>), crate::governance::LimitBlocked> {
+    let mut effective: Option<String> = None;
+    let mut visited: Vec<String> = Vec::new();
+    loop {
+        let attempt_pool = effective.as_deref().unwrap_or(pool);
+        match admit(attempt_pool) {
+            Ok(grant) => return Ok((grant, effective)),
+            Err(crate::governance::LimitBlocked::Limit {
+                downgrade_to: Some(to),
+                group,
+                ..
+            }) if !visited.iter().any(|v| v == &to)
+                // Defense-in-depth, likely unreachable in practice: `visited` is a DUPLICATE-FREE
+                // subset of `pools` (the revisit guard above forbids re-pushing an already seen
+                // pool; every push target is also checked against `pools` below before being
+                // pushed). NOTE this does NOT mean the start pool can never appear in `visited` — a
+                // downgrade target can legally cycle back to the start pool (e.g. a<->b: hop 1
+                // pushes b, hop 2's target a passes both checks and gets pushed too), so `visited`
+                // is not capped at `pools.len() - 1`. The real bound is `visited.len() <=
+                // pools.len()` (it can never exceed the pool count, being duplicate-free): at
+                // equality `visited` IS the full pool set, so either the earlier
+                // `!visited.iter().any(...)` clause already rejected `to` (if `to` is a pool), or
+                // the `contains` clause below rejects it (if it isn't) — making `<` vs `<=`
+                // behaviorally indistinguishable right here (see
+                // `test_downgrade_cycle_terminates_via_the_revisit_guard`'s doc comment for the
+                // one guard clause that IS distinguishable). Kept as an explicit bound rather than
+                // removed: it's the backstop if the duplicate-free invariant is ever loosened.
+                && visited.len() < pools.len()
+                && pools.contains(&to.as_str())
+                && reach(&to) =>
+            {
+                tracing::info!(key_id, from = attempt_pool, to = %to, group = %group,
+                    "governance: budget exhausted; downgrading pool (on_exhaust: downgrade)");
+                visited.push(to.clone());
+                effective = Some(to);
+            }
+            Err(blocked) => return Err(blocked),
+        }
     }
 }
 
