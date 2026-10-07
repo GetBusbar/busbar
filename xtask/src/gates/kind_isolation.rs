@@ -5097,28 +5097,15 @@ fn plane_owned_steps(cx: &Ctx) -> Result<Vec<String>, String> {
 /// nothing, which is what "unmetered" means when it is a fact rather than a policy.
 const DATA_PATH_STEPS: &[&str] = &["route", "meter"];
 
-/// The UPSTREAM vocabulary a control surface may not name at all — the words that only make sense
-/// when there is something on the other side of the request.
-const UPSTREAM_WORDS: &[&str] = &[
-    "egress", "pool", "routing", "failover", "breaker", "provider",
-];
-
-/// THE ONE CONTROL-TIER CRATE THAT OPENS THE REAL UPSTREAM CONNECTIONS: busbar-core-connector
-/// (CONNECTOR-19 — it dials; W3b — rustls lives only here, by design; Q-L16-4 — the operator
-/// verify-off opt-in). It is cleanliness-tier like admin and oauth2, but unlike them it DOES reach
-/// an upstream, so [`CONNECTOR_INROLE_WORDS`] — the vocabulary of OPENING a connection — is its job,
-/// not control-path debt.
-const EGRESS_HOME: &str = "busbar-core-connector";
-
-/// The connection/TLS vocabulary IN-ROLE for [`EGRESS_HOME`]: how a connection is opened — its
-/// egress class, the pool it is kept in, the TLS/crypto provider it is secured with. Excluded from
-/// the upstream-word finding for THAT crate ALONE; admin and oauth2 are checked on every word.
-///
-/// The DECISION words are deliberately NOT here: `routing`, `failover` and `breaker` are the
-/// kernel's route decision (spec:637 "KERNEL: route (pool walk, member, breaker)"), so the
-/// connector naming one is still a finding — kernel logic in the connector is real debt, not its
-/// in-role vocabulary.
-const CONNECTOR_INROLE_WORDS: &[&str] = &["egress", "pool", "provider"];
+/// WHY THERE IS NO WORD LIST HERE. This rule once also refused six "upstream" words (`egress`,
+/// `pool`, `routing`, `failover`, `breaker`, `provider`) on every cleanliness line. That list was
+/// written for the `control` plugin kind (65542ca51b), which is cancelled (Part 2 #5: "There is no
+/// \"control\" plugin kind"). The cleanliness crates' rule is THE DESIGN §8: each depends one way on
+/// the kernel, names no plugin, and gets its listeners through the connector. Those six words name
+/// no plugin — they are the kernel's route vocabulary (Part 3: "KERNEL | route (pool walk, member,
+/// breaker)"), which the 1.5.5 admin API serves to the operator — so they were struck (ARCHITECT
+/// 2026-10-07). "Names no plugin" is `:matrix`'s armed `law0-neutral-instance` class, which holds
+/// every `Family::Neutral` crate, these three included, at zero on the ship twin.
 
 /// Every `fn <name>` in a crate's shipped source, with the file, line and the body's blanked text.
 struct FnBody {
@@ -5301,36 +5288,6 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
                 }
             }
         }
-        let Ok(files) = cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) else {
-            continue;
-        };
-        for f in &files {
-            let rel = f.rel_str();
-            if !is_shipped_source(&rel) {
-                continue;
-            }
-            for line in production_code(&f.text).iter() {
-                let lineno = line.lineno;
-                let lower = line.blanked.to_lowercase();
-                for w in UPSTREAM_WORDS {
-                    // busbar-core-connector OPENS the real connections, so its connection/TLS
-                    // vocabulary is in-role, not control-path debt ([`CONNECTOR_INROLE_WORDS`]);
-                    // its DECISION words (routing/failover/breaker) stay a finding. No other
-                    // control surface gets this exclusion.
-                    if c.name == EGRESS_HOME && CONNECTOR_INROLE_WORDS.contains(w) {
-                        continue;
-                    }
-                    if word_ci(&lower, w) {
-                        offenders.push(format!(
-                            "upstream\t{rel}:{lineno}\t{} names `{w}` — a control surface has no \
-                             upstream to reach, so the vocabulary of reaching one has no meaning \
-                             on this path",
-                            c.name
-                        ));
-                    }
-                }
-            }
-        }
     }
     offenders.sort();
     offenders.dedup();
@@ -5343,7 +5300,7 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     Row::fail(
         ROW_CONTROL,
-        "a control surface runs the data path or names an upstream",
+        "a control surface runs a data-path step",
         format!(
             "{} finding(s) over {} control surface(s): {}",
             offenders.len(),
@@ -9306,18 +9263,39 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
+        // THE KERNEL'S ROUTE VOCABULARY IS NOT A FINDING ON A CLEANLINESS SURFACE (ARCHITECT
+        // 2026-10-07). `pool`, `failover`, `routing`, `provider`, `egress` and `breaker` name no
+        // plugin; they are the kernel's route words, and the 1.5.5 admin API serves them to the
+        // operator. A cleanliness crate naming them keeps `:control-path` green.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-core-oauth2/src/planted_pool.rs",
-            "pub fn pick(pool: u8) -> u8 { let failover = pool; failover }\n",
+            "pub fn pick(pool: u8, egress: u8) -> u8 { let failover = pool ^ egress; failover }\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a cleanliness surface naming the kernel's route vocabulary is not a control-path finding",
+            &[ROW_CONTROL],
+            ov,
+        ));
+
+        // A CLEANLINESS SURFACE NAMES NO PLUGIN (THE DESIGN §8). The rule that holds it is
+        // `:matrix`'s armed `law0-neutral-instance` class, at zero on the ship twin: a plane
+        // instance noun written in core-admin's shipped source is RED there, whatever
+        // `:control-path` says.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core-admin/src/planted_plane_noun.rs",
+            "pub fn mcp_tools_count() -> usize { 0 }\n",
         );
         report.push(prove_rows_red(
             cx,
             subject,
-            "a control surface naming the vocabulary of reaching an upstream",
-            &[ROW_CONTROL],
+            "a cleanliness surface naming a plane instance is refused at the ship ceiling of zero",
+            &[matrix::ROW_MATRIX],
             ov,
-            &["upstream", "busbar-core-oauth2", "pool"],
+            &["law0-neutral-instance", "busbar-core-admin \u{d7} plane"],
         ));
 
         // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED. The exemption's expiry
@@ -9819,8 +9797,7 @@ impl Gate for KindIsolationGate {
         // NO CONTROL SURFACE REACHED `:control-path`. The rule reads the `cleanliness` kind
         // (admin/oauth2, DECISIONS #5), so the honest fixture for "this rule looked at no surface
         // at all" is every crate of THAT kind out of the census. Zero surfaces run zero data-path
-        // steps and name zero upstreams, which reads exactly like a control kind that keeps to its
-        // own path.
+        // steps, which reads exactly like a control kind that keeps to its own path.
         //
         // It asked for `kinds_gone(["control"])`, a kind no crate resolves to: the overlay was
         // empty, the harness refused it, and the floor had no proof. And it cannot be proven from
