@@ -359,6 +359,31 @@ fn a_panicking_look_surfaces_and_releases_its_flight_never_swallowed() {
     );
 }
 
+/// A LOOK THAT RETURNS KEEPS ITS FLIGHT for the caller to land: the unwinding guard is disarmed,
+/// so its drop releases nothing, the waiter still waits on the look in flight, and another due
+/// unit joins it rather than looking afresh (the twin of the panicking look above, whose guard
+/// drops armed and releases the flight).
+#[test]
+fn a_returning_look_keeps_its_flight_for_the_caller_to_land() {
+    let flights = Flights::default();
+    let (owner, waiter) = (ticket(1), ticket(2));
+    assert_eq!(flights.join("planner", owner), None, "the due unit looks");
+    let seen = flights
+        .join("planner", waiter)
+        .expect("a second due unit waits on its look");
+    assert!(looking((&flights, None, owner), || true));
+    assert_eq!(
+        flights.state("planner", seen, waiter),
+        FlightState::InFlight,
+        "a returning look released nothing: the waiter still waits"
+    );
+    assert_eq!(
+        flights.join("planner", ticket(3)),
+        Some(seen),
+        "the next due unit waits on the same flight"
+    );
+}
+
 /// THE gRPC LINE'S OUTBOX: a whole answer is the rpc's one message at `OK` (no media type, no
 /// length), or the status its error binds with the details field; an answer in events is one
 /// message per event, each emitted on an answer of its own.

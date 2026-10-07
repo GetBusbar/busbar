@@ -86,7 +86,7 @@
     },
     "root-a2a": {
       "plane": "a2a",
-      "file": "crates/busbar/src/root/tests/serve_door.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "feature": "plane-a2a"
     },
     "root-voice": {
@@ -332,7 +332,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_charges_the_presenting_key",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_charges_the_presenting_key",
           "note": "one inbound message/send arrives at the agent door's claim as ONE unit, crosses the door and is relayed to the far agent once, its one admitted request on the presenting key"
         }
       },
@@ -343,7 +343,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::an_agent_unit_whose_body_is_not_json_is_refused_at_its_arrival",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agent_unit_whose_body_is_not_json_is_refused_at_its_arrival",
           "note": "a body that is not JSON is refused by the door's arrive with the parse error's own -32700, and nothing is relayed or charged"
         }
       },
@@ -354,7 +354,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::an_agent_unit_served_through_its_door_charges_the_presenting_key",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agent_unit_served_through_its_door_charges_the_presenting_key",
           "note": "an unkeyed caller is refused 401 at the door's claim and never becomes a unit; the keyed caller is served through the door"
         }
       },
@@ -365,7 +365,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::an_agent_unit_dials_only_the_address_the_guard_admits",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agent_unit_dials_only_the_address_the_guard_admits",
           "note": "an agent whose address the deployment's destination guard refuses is never fetched, approved or dialled; admitted, it is dialled at its own path"
         }
       },
@@ -376,7 +376,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::an_agent_unit_outside_the_callers_grant_is_refused_before_it_dials",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agent_unit_outside_the_callers_grant_is_refused_before_it_dials",
           "note": "a caller the agent is not granted to is refused before any hop, and the agent is never dialled"
         }
       },
@@ -387,7 +387,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::an_agent_unit_past_its_callers_request_limit_is_refused_before_it_dials",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::an_agent_unit_past_its_callers_request_limit_is_refused_before_it_dials",
           "note": "a caller whose group admits one request is relayed once and refused 429 the second time at admission, before the agent is dialled, charging nothing more"
         }
       },
@@ -398,7 +398,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit",
           "note": "a hop to an agent that has gone down is answered inside the unit in the plane's own envelope as the far end's failure, never left hanging"
         }
       },
@@ -409,7 +409,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
           "note": "one relayed unit posts exactly ONE line on the node's book under the lane of the agent it reached"
         }
       },
@@ -420,7 +420,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
           "note": "one relayed unit lands exactly ONE audit row on the kernel's chain, the plane's action, applied, naming the agent it reached, sealed to the row before it"
         }
       },
@@ -431,7 +431,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
           "note": "one relayed unit ends once: one audit row, one book line, every fact of it closed at its end"
         }
       }

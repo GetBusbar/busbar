@@ -1152,6 +1152,47 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
     assert_eq!(per.handle_now(), None, "gone: nothing is presented");
 }
 
+/// A SECRET PASTED WHERE ITS REFERENCE BELONGS IS NEVER ECHOED (secret-hygiene Check 3; coordinator
+/// ruling 2026-10-07: the refusal names the binding, member and key, never the value or a decoder
+/// error over the secret input). Each `secret:` below carries a real-looking value in a shape the
+/// reference decoder cannot read; every refusal names `member 'planner'` and
+/// `upstream_credential.secret`, and none carries the value.
+/// RED before the fix: the flow map `{sk-live-...}` is a map whose one KEY is the secret, and the
+/// decoder's "unknown field `sk-live-...`" error rode into the refusal verbatim.
+#[test]
+fn a_secret_pasted_as_its_reference_is_never_echoed_in_the_refusal() {
+    const SECRET: &str = "sk-live-4f9QzX7pL2mV8rT1";
+    let reach = own_reach();
+    for secret in [
+        format!("{{{SECRET}}}"),
+        format!("{{{SECRET}: {{file: /x}}}}"),
+        SECRET.to_string(),
+        format!("'{SECRET}'"),
+        format!("{{env: {{{SECRET}: 1}}}}"),
+        format!("{{file: [{SECRET}]}}"),
+        format!("{{module: file, settings: {SECRET}}}"),
+        format!("{{module: [{SECRET}]}}"),
+    ] {
+        let registration: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "url: 'https://agent.vendor/planner'\nupstream_credential: {{secret: {secret}}}"
+        ))
+        .expect("yaml");
+        let err = refused(super::upstream_credential_binding(
+            "planner",
+            &registration,
+            &reach,
+        ));
+        assert!(
+            !err.contains(SECRET),
+            "the refusal for `secret: {secret}` echoes the secret: {err}"
+        );
+        assert!(
+            err.contains("member 'planner'") && err.contains("upstream_credential.secret"),
+            "the refusal names the binding: {err}"
+        );
+    }
+}
+
 /// An `OutboundAuth` counting its `open_outbound` calls over the real one.
 struct CountingOpens {
     inner: std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
@@ -1206,7 +1247,7 @@ fn per_hop(path: &std::path::Path, auth: std::sync::Arc<CountingOpens>) -> super
         secrets,
         auth: auth as std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
         style: "bearer",
-        settings,
+        header: None,
         held: std::sync::Mutex::new((
             busbar_contract::abi::sdk::digest::sha256(value.as_bytes()),
             handle,
@@ -1268,6 +1309,38 @@ fn a_rotated_secret_is_presented_on_the_next_hop_and_an_unchanged_one_never_reop
         opens(),
         2,
         "and the new value, unchanged, never re-opens it"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A NAMED-HEADER BINDING RE-OPENED BY A ROTATION keeps its header: the binding holds the typed
+/// placement (no settings bag), and the re-open after a rotation rebuilds the same
+/// `{header: X-API-Key}` settings, so the new value is presented verbatim in that header and never
+/// as `authorization`.
+#[test]
+fn a_rotated_header_credential_is_presented_in_the_same_header() {
+    let path = own_secret("rotate-header", "key-old");
+    let reach = own_reach();
+    let binding = super::upstream_credential_binding(
+        "planner",
+        &registration(&path, ", placement: {header: X-API-Key}"),
+        &reach,
+    )
+    .expect("it binds")
+    .expect("a binding");
+    let per = binding.per_request.as_ref().expect("re-resolved per hop");
+    let first = per.handle_now().expect("it resolves");
+    assert_eq!(
+        presents(&*binding.auth, first),
+        vec![("x-api-key".to_string(), "key-old".to_string())]
+    );
+    rotate(&path, "key-new");
+    let next = per.handle_now().expect("it resolves");
+    assert_ne!(next, first, "the rotation re-opened the binding");
+    assert_eq!(
+        presents(&*binding.auth, next),
+        vec![("x-api-key".to_string(), "key-new".to_string())],
+        "the re-open keeps the header placement"
     );
     let _ = std::fs::remove_file(&path);
 }

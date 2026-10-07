@@ -432,7 +432,7 @@ pub fn delivery_auth(cfg: &Value) -> Result<Option<DeliveryAuth>, String> {
     }
     Ok(Some(DeliveryAuth {
         scheme,
-        credentials,
+        credentials: busbar_contract::Redacted::new(credentials),
     }))
 }
 

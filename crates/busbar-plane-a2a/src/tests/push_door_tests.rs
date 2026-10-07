@@ -49,7 +49,7 @@ fn a_moved_task_with_a_registered_config_queues_its_notification_to_that_config(
     let row = moved(&mut book, "");
     let auth = DeliveryAuth {
         scheme: "Bearer".into(),
-        credentials: "tok".into(),
+        credentials: busbar_contract::Redacted::new("tok".into()),
     };
     let d = Deliveries::new();
     assert!(queue(
@@ -236,7 +236,7 @@ fn queued(callback: &str) -> Deliveries {
     let d = Deliveries::new();
     let auth = DeliveryAuth {
         scheme: "Bearer".into(),
-        credentials: "tok".into(),
+        credentials: busbar_contract::Redacted::new("tok".into()),
     };
     assert!(queue(&d, &row, Some(&config(callback, Some(auth)))));
     d

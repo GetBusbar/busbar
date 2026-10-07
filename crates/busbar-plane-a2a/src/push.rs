@@ -120,19 +120,38 @@ pub fn notification_body(task: &Task) -> Vec<u8> {
 pub struct DeliveryAuth {
     /// The HTTP authentication scheme, as the caller wrote it.
     pub scheme: String,
-    /// The credential itself.
-    pub credentials: String,
+    /// The credential itself, redacted in memory (predev `pushdeliver.rs:117`). Its one way out is
+    /// [`DeliveryAuth::header_value`]; the record's serde form carries it as the plain string the
+    /// sealed field always held.
+    #[serde(with = "sealed_credential")]
+    pub credentials: busbar_contract::Redacted<String>,
 }
 
 impl DeliveryAuth {
     /// The `Authorization` value: `<scheme> <credentials>`, or the bare scheme when there are none.
     #[must_use]
     pub fn header_value(&self) -> String {
-        if self.credentials.is_empty() {
+        let credentials = self.credentials.expose_secret();
+        if credentials.is_empty() {
             self.scheme.clone()
         } else {
-            format!("{} {}", self.scheme, self.credentials)
+            format!("{} {credentials}", self.scheme)
         }
+    }
+}
+
+/// The push_config record's form of [`DeliveryAuth::credentials`]: the plain string, written into
+/// the sealed field and read straight back into a [`busbar_contract::Redacted`].
+mod sealed_credential {
+    use busbar_contract::Redacted;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &Redacted<String>, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(value.expose_secret())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Redacted<String>, D::Error> {
+        String::deserialize(d).map(Redacted::new)
     }
 }
 
