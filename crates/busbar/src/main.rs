@@ -965,7 +965,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 std::sync::Arc::clone(&app),
             );
             std::sync::Arc::new(move || {
-                busbar_kernel::plane_host::engine_host(
+                busbar_kernel::plane::host_impl::engine_host(
                     &live
                         .get()
                         .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load()),
@@ -1049,6 +1049,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    // The boot generation's breaker cells are on `/metrics` from the first scrape; each apply
+    // publishes the generation it refreshes onto.
+    door_appliers.publish_cells(&app_handle.load());
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)
@@ -1115,8 +1118,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.
     if let Some(kernel) = late_services.kernel() {
-        let _attached =
-            kernel.attach_standing(busbar_kernel::plane_host::live_standing(app_handle.clone()));
+        let _attached = kernel.attach_standing(busbar_kernel::plane::host_impl::live_standing(
+            app_handle.clone(),
+        ));
     }
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
@@ -1306,7 +1310,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     if let Some(serve) = stdio_serve.filter(|_| stdio_serve_requested(std::env::args())) {
         // The neutral host factory, minted core-side and threaded into the stdio transport so the plane
         // re-mints the host over each frame's live snapshot without naming the core factory itself.
-        let factory = busbar_kernel::plane_host::live_host_factory(app_handle.clone());
+        let factory = busbar_kernel::plane::host_impl::live_host_factory(app_handle.clone());
         let code = serve(factory).await;
         if let Some(gov) = app_handle.load().governance.clone() {
             let n = gov.flush_budgets();

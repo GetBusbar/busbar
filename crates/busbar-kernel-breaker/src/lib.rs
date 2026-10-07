@@ -375,6 +375,23 @@ impl<J: JournalSink> BreakerUnit<J> {
             .clone()
     }
 
+    /// READ-ONLY: every `(pool, destination)` cell this unit has materialized so far, as it stands.
+    /// The operator surface (`/metrics`) reads each cell's own state from these; a cell no
+    /// admission or observation has touched does not exist and is not listed. Creates nothing.
+    #[must_use]
+    pub fn cells(&self) -> Vec<(String, DestinationId, Arc<BreakerCell>)> {
+        self.cells
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .flat_map(|(pool, by_destination)| {
+                by_destination
+                    .iter()
+                    .map(move |(&d, cell)| (pool.clone(), d, Arc::clone(cell)))
+            })
+            .collect()
+    }
+
     /// Whether a cell for this pool and destination already exists, without creating one.
     ///
     /// Reachability made observable, so a test can wait for the exact moment a cell becomes usable

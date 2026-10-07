@@ -1923,6 +1923,7 @@ impl TestApp {
             config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
+            door_cells: std::sync::Arc::new(crate::metrics::door_cells::DoorCells::new()),
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
             incremental_scan: false,
             tool_pools: self.tool_pools,

@@ -48,7 +48,7 @@ async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
     // field and nothing else. It used to be the plane test-kit's in-memory double, which has moved
     // OUT of core to the one plane that drives it (1.6.0 #33: the kernel tests no plugin).
     let app = TestApp::new().build();
-    let host: Arc<dyn EngineHost> = crate::plane_host::engine_host(&app);
+    let host: Arc<dyn EngineHost> = crate::plane::host_impl::engine_host(&app);
     let ctx = AdminReqCtx {
         host,
         name: "anything".to_string(),

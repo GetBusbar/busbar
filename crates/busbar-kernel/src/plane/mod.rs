@@ -95,6 +95,8 @@ pub mod config;
 pub mod dispatch_scope;
 pub mod door;
 pub mod host;
+// The kernel's `EngineHost` over the live `App` (D2 step 4a, from plane_host).
+pub mod host_impl;
 pub mod observe;
 pub(crate) mod quarantine;
 /// The durable demotion record, which the root attaches to the kernel's host services.

@@ -187,6 +187,7 @@ impl Node {
             caller: InstanceId(1),
             conns: self.conns.clone(),
             breaker: self.breaker.clone(),
+            cells: None,
             capacity: self.capacity.clone(),
             clock: self.clock.clone(),
             journal: self.journal.clone(),

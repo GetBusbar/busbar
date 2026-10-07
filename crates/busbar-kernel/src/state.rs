@@ -94,6 +94,11 @@ pub struct App {
     /// dead upstream. See [`crate::store::PlaneBreakers`] for why it is not the fallback plane's own
     /// store.
     pub plane_breakers: Arc<crate::store::PlaneBreakers>,
+    /// THE DOOR PLANES' BREAKER CELLS, as `/metrics` reads them: each served door plane's current
+    /// generation of the breaker unit its egress walk trips, published by the composition root.
+    /// Shared by every clone-derived snapshot and REUSED across applies like `plane_breakers`, so a
+    /// scrape after an apply reads the generation the plane serves now.
+    pub door_cells: Arc<crate::metrics::door_cells::DoorCells>,
     /// THE NEUTRAL PER-SESSION SUBSTRATE ([`crate::session::SessionStore`]) — PROCESS-LIFETIME, reused
     /// across `build_app_from_config` applies exactly like `plane_breakers`, because a session's state
     /// (today the gate's cleared-scan set; tomorrow any tenant) must survive a config swap or every

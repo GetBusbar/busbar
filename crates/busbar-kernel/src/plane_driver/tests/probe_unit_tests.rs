@@ -47,6 +47,8 @@ const PROBE: (&[u8], &[u8]) = (b"GET", b"/health");
 struct Prober {
     /// Refuse every arrival.
     refuse: bool,
+    /// Answer an organic unit's ATTEMPT piece as a probe's: emit the same request to the far end.
+    organic: bool,
     /// The claim every `arrive` carried.
     claims: Mutex<Vec<u32>>,
     /// Every `on_piece`'s source and attempt number.
@@ -191,7 +193,7 @@ impl PlaneCalls for Prober {
     ) -> Box<dyn PieceInFlight> {
         self.pieces.lock().unwrap().push((i.from, i.attempt_no));
         match i.from {
-            FROM_KERNEL if i.claim == CLAIM_PROBE => {
+            FROM_KERNEL if i.claim == CLAIM_PROBE || self.organic => {
                 let (verb, target) = PROBE;
                 let words = [verb, target].concat();
                 assert!(words.len() <= i.arena_cap);
@@ -453,3 +455,6 @@ fn an_undeclared_plane_and_a_passthrough_member_are_never_probed() {
         "the rig's second member is passthrough"
     );
 }
+
+#[path = "reclaim_tests.rs"]
+mod reclaim;

@@ -737,6 +737,8 @@ pub fn compose(
             caller,
             conns,
             breaker: Arc::new(breaker),
+            // The kernel's own lane store: its cells are scraped from the store.
+            cells: None,
             capacity: permits,
             clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
             journal,

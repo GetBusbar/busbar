@@ -363,7 +363,7 @@ fn mount_one_admin_spec(
             // LOAD + MINT stays 100% core-side (the plane names neither `AppHandle` nor the host
             // factory). `from_handle` mirrors the data-plane adapter; the verbs here read only the BOUND
             // slot, so it is byte-identical to the pre-seam `engine_host(&handle.load())` mint.
-            let host = busbar_kernel::plane_host::engine_host_from_handle(&handle);
+            let host = busbar_kernel::plane::host_impl::engine_host_from_handle(&handle);
             let ctx = AdminReqCtx {
                 host,
                 name: name.clone(),

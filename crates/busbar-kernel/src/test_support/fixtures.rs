@@ -333,7 +333,7 @@ impl busbar_kernel::test_support::TestAppSeam for TestApp {
 // ── THE NEUTRAL BUILT-APP SEAM (busbar_kernel::test_support::BuiltAppSeam) ────────────────────────────
 // The second half of the fixture doorway: what a plane's tests drive on the `Arc<App>` that came OUT
 // of `TestApp::build()`. Each method is a thin delegate to the very fn the plane's tests used to name
-// directly (`plane_host::engine_host`, `build_router`, `App::plane_slot_mut`,
+// directly (`plane::host_impl::engine_host`, `build_router`, `App::plane_slot_mut`,
 // `metrics::refresh_scrape_gauges`), so a plane's money-path tests forward a request / mount the real
 // router / mutate their runtime slot through the trait, generic over `A: BuiltAppSeam`, naming no
 // `busbar_kernel::` item.
@@ -341,13 +341,13 @@ impl busbar_kernel::test_support::BuiltAppSeam for crate::state::App {
     fn engine_host_of(
         app: &std::sync::Arc<Self>,
     ) -> std::sync::Arc<dyn busbar_kernel::plane::host::EngineHost> {
-        crate::plane_host::engine_host(app)
+        crate::plane::host_impl::engine_host(app)
     }
 
     fn engine_host_value_of(
         app: std::sync::Arc<Self>,
     ) -> impl busbar_kernel::plane::host::EngineHost + 'static {
-        crate::plane_host::engine_host_value(&app)
+        crate::plane::host_impl::engine_host_value(&app)
     }
 
     fn router_of(app: std::sync::Arc<Self>) -> axum::Router {

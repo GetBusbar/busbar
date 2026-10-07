@@ -181,6 +181,9 @@ impl Capacity for MemberPermits {
 #[derive(Debug, Default)]
 pub struct WalkTelemetry {
     names: HashMap<DestinationId, String>,
+    /// The `pool` label each pool key the walk counts under is stated as; a key with none is
+    /// counted under the key itself.
+    pools: HashMap<String, String>,
     depths: Mutex<HashMap<String, i64>>,
 }
 
@@ -190,8 +193,22 @@ impl WalkTelemetry {
     pub fn new(names: impl IntoIterator<Item = (DestinationId, String)>) -> Self {
         WalkTelemetry {
             names: names.into_iter().collect(),
+            pools: HashMap::new(),
             depths: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Count each pool key under the `pool` label stated for it, `(key, label)`.
+    #[must_use]
+    pub fn with_pools(mut self, pools: impl IntoIterator<Item = (String, String)>) -> Self {
+        self.pools = pools.into_iter().collect();
+        self
+    }
+
+    /// A pool key's `pool` label: the one stated for it, else the key.
+    #[must_use]
+    pub fn pool<'p>(&'p self, pool: &'p str) -> &'p str {
+        self.pools.get(pool).map_or(pool, String::as_str)
     }
 
     /// A member's lane label: its configured name; empty for a member the seal did not name.
@@ -214,22 +231,27 @@ impl WalkTelemetry {
 
 impl Telemetry for WalkTelemetry {
     fn upstream_attempt(&self, pool: &str, destination: DestinationId) {
-        busbar_kernel::telemetry::upstream_attempt_on(pool, self.lane(destination));
+        busbar_kernel::telemetry::upstream_attempt_on(self.pool(pool), self.lane(destination));
     }
 
     fn upstream_failure(&self, pool: &str, destination: DestinationId, disposition: &'static str) {
-        busbar_kernel::telemetry::upstream_failure_on(pool, self.lane(destination), disposition);
+        busbar_kernel::telemetry::upstream_failure_on(
+            self.pool(pool),
+            self.lane(destination),
+            disposition,
+        );
     }
 
     fn failover(&self, pool: &str, reason: &'static str) {
-        busbar_kernel::telemetry::failover_on(pool, reason);
+        busbar_kernel::telemetry::failover_on(self.pool(pool), reason);
     }
 
     fn breaker_trip(&self, pool: &str, destination: DestinationId) {
-        busbar_kernel::telemetry::breaker_trip_on(pool, self.lane(destination));
+        busbar_kernel::telemetry::breaker_trip_on(self.pool(pool), self.lane(destination));
     }
 
     fn queued(&self, pool: &str, delta: i64) {
+        let pool = self.pool(pool);
         let depth = {
             let mut depths = self
                 .depths

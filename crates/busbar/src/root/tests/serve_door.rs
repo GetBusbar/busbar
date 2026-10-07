@@ -538,7 +538,9 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
 struct Serving {
     router: axum::Router,
     token: String,
-    _handle: Arc<busbar_kernel::state::AppHandle>,
+    handle: Arc<busbar_kernel::state::AppHandle>,
+    /// The section key the door serves: the scope its series are labelled in.
+    section: &'static str,
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -663,6 +665,7 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
     served.post = Some(Arc::clone(&post));
+    let appliers = served.appliers();
     let app = busbar_kernel::test_support::TestApp::new()
         .keys_chain()
         .governance(Arc::clone(&gov))
@@ -671,10 +674,13 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
+    // As the binary's boot does: the boot generation's breaker cells are published to `/metrics`.
+    appliers.publish_cells(&handle.load());
     Serving {
         router,
         token: token.expose_secret().to_string(),
-        _handle: handle,
+        handle,
+        section: section_key,
     }
 }
 
@@ -800,6 +806,67 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
         reached, None,
         "under the default one 503 benches the sole member: the next call never reaches the far end"
     );
+}
+
+#[cfg(feature = "plane-decisions")]
+/// A DOOR PLANE'S TRIP IS ON `/metrics`, UNDER THE LABELS ITS COUNTERS CARRY (D2 step 4a; 1.5.5's
+/// convention, `metrics.rs:214-217`, generalised): the decisions door's sole member, benched by one
+/// 503 under the default cell, is a `busbar_lane_state` sample of 2 at `pool="<section>/m"`,
+/// `lane="m"` (a direct route: the scope the plane states, then the entry), and its walk's
+/// `busbar_upstream_attempts_total` carries the very same `pool` and `lane`, so the two join. No
+/// label value carries a control byte. The cell is read off the breaker unit the door's egress walk
+/// tripped, published at boot as the binary publishes it. RED: the walk's internal
+/// `"<plane>\u{1f}m"` key as the label (the gauge and counters both), or the door cells unpublished.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_door_planes_tripped_member_is_on_the_metrics_scrape() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-breaker-scrape";
+    let _published = Published(instance);
+    busbar_kernel::metrics::init();
+    let silent = declaring("{}");
+    let (port, mut heard) = far_end_failing_first(1).await;
+    let serving = serve_over(&silent, instance, port).await;
+    let (status, reached) = call_once(&serving, &mut heard).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "the far end's one transient failure"
+    );
+    assert!(reached.is_some(), "the failing call reached the far end");
+
+    busbar_kernel::metrics::refresh_scrape_gauges(&serving.handle.load());
+    let scrape = busbar_kernel::metrics::render();
+    let pool = format!("{}/m", serving.section);
+    let line = |family: &str| {
+        scrape
+            .lines()
+            .find(|l| {
+                l.starts_with(&format!("{family}{{"))
+                    && l.contains(&format!("pool=\"{pool}\""))
+                    && l.contains("lane=\"m\"")
+            })
+            .unwrap_or_else(|| panic!("no {family} sample at pool={pool} lane=m:\n{scrape}"))
+            .to_string()
+    };
+    let gauge = line("busbar_lane_state");
+    assert!(
+        gauge.ends_with(" 2"),
+        "the benched member reads 2 (refusing): {gauge}"
+    );
+    let _attempts = line("busbar_upstream_attempts_total");
+    for family in [
+        "busbar_lane_state{",
+        "busbar_upstream_attempts_total{",
+        "busbar_upstream_failures_total{",
+        "busbar_breaker_trips_total{",
+    ] {
+        for l in scrape.lines().filter(|l| l.starts_with(family)) {
+            assert!(
+                !l.contains('\u{1f}'),
+                "no label value carries the walk's separator byte: {l}"
+            );
+        }
+    }
 }
 
 // ── THE DOOR SERVING THE `pools` MAP: ITS CAPABILITY CELLS (Q128 U14) ───────────────────────────

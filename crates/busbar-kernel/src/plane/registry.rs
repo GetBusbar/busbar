@@ -198,7 +198,7 @@ impl PlaneBootCtx for BootCtx {
     /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the
     /// snapshot-only mint a hydrate hook drives its durable boot-replay off (no live handle yet at
     /// hydration, which is correct: hydration reads exactly the generation it is restoring into). Named
-    /// HERE so a plane's own hydrate hook mints its host without naming `crate::plane_host::engine_host`
+    /// HERE so a plane's own hydrate hook mints its host without naming `crate::plane::host_impl::engine_host`
     /// or an `App`: the returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
     /// wraps is the core-owned hydrate-phase `App`.
     fn engine_host(&self) -> std::sync::Arc<dyn busbar_kernel::plane::host::EngineHost> {
@@ -208,12 +208,12 @@ impl PlaneBootCtx for BootCtx {
         // (`from_handle`, so `plane_slot_live` sees the current generation), byte-identical to the old
         // start hook's `handle.load()`-driven reads. Exactly one of the two is present per phase.
         if let Some(handle) = self.handle.as_ref() {
-            crate::plane_host::engine_host_from_handle(handle)
+            crate::plane::host_impl::engine_host_from_handle(handle)
         } else {
             let app = self.app.as_ref().expect(
                 "engine_host runs in the HYDRATE phase (app) or the START phase (handle); one is present",
             );
-            crate::plane_host::engine_host(app)
+            crate::plane::host_impl::engine_host(app)
         }
     }
 

@@ -1821,6 +1821,12 @@ pub fn build_app_from_config(
                 _ => Arc::new(crate::store::PlaneBreakers::new_inert()),
             }
         },
+        // The door planes' breaker cells: reused across an apply like `plane_breakers`, so the
+        // generation each plane publishes is the one a scrape reads.
+        door_cells: prior.map_or_else(
+            || Arc::new(crate::metrics::door_cells::DoorCells::new()),
+            |p| Arc::clone(&p.door_cells),
+        ),
         // The neutral per-session substrate: PROCESS-LIFETIME like `plane_breakers`, reused across an
         // apply so a config swap never forgets a live session. Bounded (`SESSION_STORE_CAPACITY`
         // slots, LRU-evicted) and TTL-defaulted so an idle session's state cannot accumulate — the

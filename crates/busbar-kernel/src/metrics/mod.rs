@@ -54,6 +54,10 @@ use crate::state::App;
 /// the rest of this module is routing weights, durations and lane health, all legitimate floats.
 mod money;
 
+/// The door planes' breaker cells, published by the composition root and read by
+/// `busbar_lane_state` ([`refresh_scrape_gauges`]).
+pub mod door_cells;
+
 // ── THE RECORDER INSTALL, RE-EXPORTED BY IDENTITY FROM THE NEUTRAL SUBSTRATE ─────────────────────
 //
 // The opt-in flag, the install, the maintenance drain, the HELP/TYPE registrations, `render()` and
@@ -369,6 +373,13 @@ pub fn refresh_scrape_gauges(app: &App) {
             "lane" => member.to_string()
         )
         .set(lane_state_value(state, cooldown, now));
+    }
+    // Every served door plane's destinations: the cells of the breaker unit its egress walk trips,
+    // read from each cell alone, under the `pool`/`lane` labels the plane's egress stated for them
+    // (the same pair its walk's counters carry, so the two join as 1.5.5's did).
+    for (pool, lane, state, cooldown) in app.door_cells.cell_readings(now) {
+        metrics::gauge!(LANE_STATE, "pool" => pool, "lane" => lane)
+            .set(lane_state_value(state, cooldown, now));
     }
 }
 

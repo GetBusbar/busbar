@@ -399,7 +399,7 @@ const SERVED_LEDGER_SEAM: &str = "meter_ledger(";
 
 /// Where the host implements that seam, relative to `crates/`, and the kernel accrual its body must
 /// reach. A seam whose body stops reaching the accrual ledgers every plane behind it into nothing.
-const HOST_LEDGER_SEAM_FILE: &str = "busbar-kernel/src/plane_host/mod.rs";
+const HOST_LEDGER_SEAM_FILE: &str = "busbar-kernel/src/plane/host_impl.rs";
 const HOST_LEDGER_SEAM_STEP: &str = "fn meter_ledger(";
 const KERNEL_ACCRUAL: &str = "record_usage(";
 

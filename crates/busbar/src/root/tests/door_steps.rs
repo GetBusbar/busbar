@@ -933,3 +933,144 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         "a membership probe on the request path allocates nothing"
     );
 }
+
+/// The facts of a door plane keyed `plane`, serving the section `scope`.
+fn scoped(plane: &str, scope: &str) -> super::DoorFacts {
+    let mut facts = super::door_facts(plane, &[], &[], &[], "", Vec::new());
+    facts.metric_scope = scope.to_string();
+    facts
+}
+
+/// THE STATED `pool` LABEL (ARCHITECT D2 4a, 1.5.5's convention generalised): a named pool is
+/// labelled `"<scope>/<pool>"`, a direct route `"<scope>/<entry>"`, and no label carries the walk's
+/// internal `(plane, entry)` key or its separator byte. The plane serving the `pools` map keeps
+/// 1.5.5's bare names. RED: the walk's internal key, `"<plane>\u{1f}<entry>"`, as the label.
+#[test]
+fn a_door_planes_pool_label_is_its_scope_and_its_configured_name() {
+    let p = pools(
+        "models: {fs: {provider: x}, git: {provider: x}}\npools: {both: {members: [fs, git]}}",
+    );
+    let labels = super::door_pool_labels(&scoped("planea", "tools"), &p, p.entries());
+    let sep = busbar_kernel::governance::PLANE_LANE_SEP;
+    assert_eq!(labels.get("both").map(String::as_str), Some("tools/both"));
+    assert_eq!(
+        labels.get(&format!("planea{sep}fs")).map(String::as_str),
+        Some("tools/fs"),
+        "a direct route's cell key is labelled by its entry"
+    );
+    assert!(
+        labels.values().all(|l| !l.contains(sep)),
+        "no label carries the separator byte: {labels:?}"
+    );
+    let bare = super::door_pool_labels(&scoped("", ""), &p, p.entries());
+    assert_eq!(bare.get("both").map(String::as_str), Some("both"));
+    assert_eq!(
+        bare.get("fs").map(String::as_str),
+        Some("fs"),
+        "1.5.5's own"
+    );
+}
+
+/// TWO DOOR PLANES NAMING THE SAME ENTRY ARE TWO SERIES: their scopes keep them apart.
+#[test]
+fn two_door_planes_naming_the_same_entry_are_two_series() {
+    let p = pools("models: {fs: {provider: x}}");
+    let sep = busbar_kernel::governance::PLANE_LANE_SEP;
+    let a = super::door_pool_labels(&scoped("planea", "tools"), &p, p.entries());
+    let b = super::door_pool_labels(&scoped("planeb", "agents"), &p, p.entries());
+    let (la, lb) = (&a[&format!("planea{sep}fs")], &b[&format!("planeb{sep}fs")]);
+    assert_eq!((la.as_str(), lb.as_str()), ("tools/fs", "agents/fs"));
+    assert_ne!(la, lb, "one entry name, two planes, two series");
+}
+
+/// The pools of one generation: `members` in order, every one also its own direct pool.
+fn generation(members: &[&str]) -> std::collections::HashMap<String, busbar_kernel_egress::Pool> {
+    let list: Vec<busbar_kernel_egress::Member> = members
+        .iter()
+        .zip(0u64..)
+        .map(|(n, id)| {
+            busbar_kernel_egress::Member::new(busbar_contract::dest::DestinationId::new(id), *n, 1)
+        })
+        .collect();
+    let mut pools: std::collections::HashMap<String, busbar_kernel_egress::Pool> = list
+        .iter()
+        .map(|m| {
+            (
+                m.name.clone(),
+                busbar_kernel_egress::Pool::new(m.name.clone(), vec![m.clone()]),
+            )
+        })
+        .collect();
+    pools.insert(
+        "both".to_string(),
+        busbar_kernel_egress::Pool::new("both", list),
+    );
+    pools
+}
+
+fn tripped_in(
+    unit: &busbar_kernel_breaker::BreakerUnit,
+    pools: &std::collections::HashMap<String, busbar_kernel_egress::Pool>,
+    pool: &str,
+    member: &str,
+) -> bool {
+    let d = pools[pool]
+        .members
+        .iter()
+        .find(|m| m.name == member)
+        .expect("a member")
+        .destination;
+    unit.cells().iter().any(|(p, dest, cell)| {
+        p == pool
+            && *dest == d
+            && !matches!(
+                cell.state(),
+                busbar_kernel_breaker::cell::BreakerState::Closed
+            )
+    })
+}
+
+/// A CONFIG APPLY KEEPS WHAT THE BREAKER LEARNED (v1.5.5 `main.rs:3095-3109`): a member tripped in
+/// one generation is still tripped in the next, sealed over an unchanged section. RED: the next
+/// generation's fresh unit, nothing carried.
+#[test]
+fn an_apply_of_an_unchanged_section_keeps_a_tripped_member_tripped() {
+    let now = busbar_kernel::store::now();
+    let (before, after) = (generation(&["fs", "git"]), generation(&["fs", "git"]));
+    let old = busbar_kernel_breaker::BreakerUnit::new();
+    old.cell("both", busbar_contract::dest::DestinationId::new(1))
+        .hard_down(now, 600);
+    let new = busbar_kernel_breaker::BreakerUnit::new();
+    super::carry_cells(&before, &old, &after, &new);
+    assert!(tripped_in(&new, &after, "both", "git"), "still tripped");
+    assert!(!tripped_in(&new, &after, "both", "fs"));
+}
+
+/// BY STABLE IDENTITY, NEVER BY ENTRY ORDER: reordering the entries moves every member's
+/// destination id, and the trip follows the member by name; its neighbour, now at its old id, is
+/// not tripped. A member the apply removed takes its cells with it. RED: carried by destination id.
+#[test]
+fn an_apply_that_reorders_the_entries_keeps_the_same_member_tripped() {
+    let now = busbar_kernel::store::now();
+    let before = generation(&["fs", "git", "gone"]);
+    let after = generation(&["git", "fs"]);
+    let old = busbar_kernel_breaker::BreakerUnit::new();
+    old.cell("both", busbar_contract::dest::DestinationId::new(0))
+        .hard_down(now, 600);
+    old.cell("gone", busbar_contract::dest::DestinationId::new(2))
+        .hard_down(now, 600);
+    let new = busbar_kernel_breaker::BreakerUnit::new();
+    super::carry_cells(&before, &old, &after, &new);
+    assert!(
+        tripped_in(&new, &after, "both", "fs"),
+        "fs is still tripped, at its new id"
+    );
+    assert!(
+        !tripped_in(&new, &after, "both", "git"),
+        "its neighbour, now at fs's old id, is not"
+    );
+    assert!(
+        new.cells().iter().all(|(p, _, _)| p != "gone"),
+        "a removed member's cells are gone"
+    );
+}

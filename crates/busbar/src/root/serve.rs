@@ -557,6 +557,10 @@ impl DoorApply {
             .map_or_else(|| now.section.clone(), |s| s.section.value.clone());
         match self.refreshed(&section, now.generation + 1, &*app.secret_resolver) {
             Ok(next) => {
+                // The generation it serves now is the one `/metrics` reads its breaker cells off.
+                if let Some(egress) = &next.egress {
+                    app.door_cells.publish(self.facts.plane.as_str(), egress);
+                }
                 *self
                     .live
                     .write()
@@ -610,7 +614,7 @@ impl DoorApply {
                     &self.served_facts,
                     &reach,
                 )?;
-                Some(Arc::new(crate::root::door_steps::compose_egress(
+                let next = crate::root::door_steps::compose_egress(
                     &self.facts,
                     &pools,
                     self.plugin.instance(),
@@ -618,7 +622,12 @@ impl DoorApply {
                     &routes,
                     Arc::clone(&r.journal),
                     r.stream_ceiling_secs,
-                )?))
+                )?;
+                // What the breaker learned survives the apply (v1.5.5 `main.rs:3095-3109`).
+                if let Some(prior) = &self.current().egress {
+                    crate::root::door_steps::carry_breaker_cells(prior, &next);
+                }
+                Some(Arc::new(next))
             }
             None => None,
         };
@@ -644,6 +653,17 @@ impl DoorAppliers {
     pub fn apply(&self, app: &busbar_kernel::state::App) {
         for plane in &self.0 {
             plane.apply(app);
+        }
+    }
+
+    /// Publish every served door plane's current generation to `app`'s door cells, so `/metrics`
+    /// reads the breaker cells its egress walk trips. The boot generation's publish: a config apply
+    /// publishes the generation it refreshes onto ([`DoorApply::apply`]).
+    pub fn publish_cells(&self, app: &busbar_kernel::state::App) {
+        for plane in &self.0 {
+            if let Some(egress) = &plane.current().egress {
+                app.door_cells.publish(plane.facts.plane.as_str(), egress);
+            }
         }
     }
 
@@ -1282,6 +1302,13 @@ fn seal_live(
             .collect(),
     );
     facts.bench_below_trip_threshold = bench_below_trip_threshold;
+    // The scope its series are labelled in: the section it serves, as the plane states it; the
+    // plane serving the `pools` map keeps 1.5.5's bare labels.
+    facts.metric_scope = if models_plane {
+        String::new()
+    } else {
+        served_facts.section.to_string()
+    };
     if let Some(egress) = egress {
         facts.translations = (
             served_facts

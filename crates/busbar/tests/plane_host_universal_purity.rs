@@ -7,7 +7,7 @@
 //!
 //! ## The coupling this gate mechanises
 //!
-//! `crates/busbar-kernel/src/plane_host/mod.rs` declares the universal host seam `EngineHost` as
+//! `crates/busbar-kernel/src/plane/host.rs` declares the universal host seam `EngineHost` as
 //! the SUM of ~13 capability-slice supertraits (`BreakerHost`, `LanePoolHost`, `MeteringHost`,
 //! `ClockHost`, `TelemetryHost`, `JournalHost`, `MountHost`, `RegistryHost`, `HookConfigHost`,
 //! `BudgetHost`, `IdentityHost`, `AdmissionHost`, `CompletionHost`). Every plane holds an
@@ -25,7 +25,7 @@
 //! "Is a host capability plane-specific?" becomes a MECHANICAL one: how many of the four plane crates
 //! (`busbar-{llm,mcp,a2a,voice}`) call a method of that name? The gate:
 //!   1. ENUMERATES every method on `EngineHost` and its slice supertraits by parsing the trait defs in
-//!      `plane_host/mod.rs` (brace-matched trait bodies; `fn <name>(` extraction, robust to
+//!      `plane/host.rs` (brace-matched trait bodies; `fn <name>(` extraction, robust to
 //!      `#[allow(...)]`/doc lines since it scans only the trait body for the `fn` keyword);
 //!   2. COUNTS, per method, how many DISTINCT plane crates contain a call `.<name>(` to it (comments
 //!      stripped, non-test `.rs` only — the same detection discipline as `plane_transport_neutrality.rs`);
@@ -38,7 +38,7 @@
 //! is either (a) moved to a plane-narrowed slice that is NOT a supertrait of `EngineHost` (the F3 fix,
 //! e.g. an `Arc<dyn McpTrustHost>` MCP narrows to), or (b) added to the allowlist with a justification.
 //! That is the mechanical backstop for the semantic-coupling class — it does not itself perform the F3
-//! refactor (which must not touch `plane_host/mod.rs`); it PINS the debt and blocks new instances.
+//! refactor (which must not touch `plane/host.rs`); it PINS the debt and blocks new instances.
 //!
 //! ## Detection limits (name-based, by design)
 //!

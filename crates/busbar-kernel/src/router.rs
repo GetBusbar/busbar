@@ -638,7 +638,7 @@ fn mount_plane_route(
                 // D1: mint the NEUTRAL host seam over the request's live engine snapshot BEFORE
                 // erasing the handle, so the plane reaches host capabilities by calling typed methods
                 // on `ctx.host` rather than naming `busbar_kernel::plane_host::*_over`.
-                let host = crate::plane_host::engine_host_from_handle(&handle);
+                let host = crate::plane::host_impl::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
@@ -714,7 +714,7 @@ fn mount_plane_session(
                 let caller_principal = gov
                     .as_ref()
                     .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
-                let host = crate::plane_host::engine_host_from_handle(&handle);
+                let host = crate::plane::host_impl::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
@@ -812,7 +812,7 @@ fn mount_ws_arrivals(
                         .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
                     // Mint the neutral host seam over the request's live engine snapshot, exactly as
                     // `mount_plane_route` does — the accept fn reaches host capabilities through it.
-                    let host = crate::plane_host::engine_host_from_handle(&handle);
+                    let host = crate::plane::host_impl::engine_host_from_handle(&handle);
                     let arrival = busbar_kernel::ingress::duplex_ws::WsArrival {
                         upgrade,
                         gov,

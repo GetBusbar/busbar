@@ -1039,7 +1039,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     let stage = HookStage {
         host: {
             let app = Arc::clone(&app);
-            Arc::new(move || busbar_kernel::plane_host::engine_host(&app))
+            Arc::new(move || busbar_kernel::plane::host_impl::engine_host(&app))
         },
         gov: Arc::clone(&gov),
     };

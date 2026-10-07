@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// while the test App is being BUILT; this trait is what it drives on the App that came OUT of
 /// `build()`, so a plane's money-path tests forward a request, mount the real HTTP router and mutate
 /// their own runtime slot in place WITHOUT naming `busbar_kernel::state::App`,
-/// `busbar_kernel::plane_host::engine_host` or `busbar_kernel::build_router`. Core implements it for its
+/// `busbar_kernel::plane::host_impl::engine_host` or `busbar_kernel::build_router`. Core implements it for its
 /// `App` (thin delegates to those very fns), and a plane's test helpers are generic over `A:
 /// BuiltAppSeam`, taking the `Arc<A>` the fixture's `build()` hands back. Every signature names only
 /// neutral ABI types (the `EngineHost` seam, axum's `Router`, an opaque `Arc<dyn Any>` slot).
@@ -63,7 +63,7 @@ pub trait BuiltAppSeam: PlaneSlots {
 }
 
 /// Free-fn sugar over [`BuiltAppSeam::engine_host_of`], so a test reads
-/// `test_support::engine_host(&app)` where it used to read `busbar_kernel::plane_host::engine_host(&app)`.
+/// `test_support::engine_host(&app)` where it used to read `busbar_kernel::plane::host_impl::engine_host(&app)`.
 pub fn engine_host<A: BuiltAppSeam + ?Sized>(app: &Arc<A>) -> Arc<dyn EngineHost> {
     A::engine_host_of(app)
 }

@@ -397,6 +397,12 @@ pub struct DoorFacts {
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
     pub bench_below_trip_threshold: Option<bool>,
+    /// THE SCOPE ITS SERIES ARE LABELLED IN: the section key the plane serves (the operator's
+    /// configured name for it), stated by the plane. Its egress's `pool` labels are
+    /// `"<scope>/<pool>"` (`"<scope>/<entry>"` for a direct route) so two planes naming the same pool
+    /// or entry are two series; empty for the plane serving the `pools` map, whose labels are
+    /// 1.5.5's own, bare.
+    pub metric_scope: String,
 }
 
 /// What one unit carries between its steps.
@@ -1121,6 +1127,7 @@ pub fn door_facts(
         keeps,
         translations: (Arc::from(Vec::new()), Arc::default()),
         bench_below_trip_threshold: None,
+        metric_scope: String::new(),
     }
 }
 
@@ -1186,9 +1193,10 @@ pub fn compose_egress(
             .map_err(|e| format!("member '{entry}': its private reach could not be sealed: {e}"))?;
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
-        members.insert(entry.clone(), Member::new(destination, name.clone(), 1));
+        members.insert(entry.clone(), Member::new(destination, name, 1));
         sealed.insert(destination, route);
-        names.push((destination, name));
+        // 1.5.5's `lane` label: the member's configured name.
+        names.push((destination, entry.clone()));
     }
     let mut built: HashMap<String, Pool> = HashMap::new();
     for (label, entries) in pools.pools() {
@@ -1212,6 +1220,7 @@ pub fn compose_egress(
             Pool::new(member.name.clone(), vec![member.clone()]),
         );
     }
+    let pool_labels = door_pool_labels(facts, pools, members.keys());
     // Every cell of this plane's members under the default ladder, with the plane's declared
     // breaker fact where it states one (ARCHITECT Q4); where it states none, the default holds.
     let cell = || {
@@ -1225,20 +1234,101 @@ pub fn compose_egress(
         crate::root::adapters::BreakerPolicy::new().with_default_cell(cell()),
         |policy, pool| policy.with_pool(pool.as_str(), cell()),
     );
+    // The plane's own breaker unit: its walk trips these cells, and `/metrics` reads them once the
+    // generation is published (`busbar_kernel::metrics::door_cells`).
+    let breaker = crate::root::adapters::BreakerAdapter::with_policy(policy);
+    let cells = Some(busbar_kernel::metrics::door_cells::DoorBreaker {
+        unit: breaker.unit(),
+        pools: pool_labels.clone(),
+        lanes: names.iter().cloned().collect(),
+    });
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
         conns,
-        breaker: Arc::new(crate::root::adapters::BreakerAdapter::with_policy(policy)),
+        breaker: Arc::new(breaker),
+        cells,
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
         clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
         journal,
-        telemetry: Arc::new(crate::root::egress_ports::WalkTelemetry::new(names)),
+        telemetry: Arc::new(
+            crate::root::egress_ports::WalkTelemetry::new(names).with_pools(pool_labels),
+        ),
         floor: busbar_kernel_egress::WeightedFloor::new(),
         pools: built,
         routes: sealed,
         stream_ceiling_secs,
         error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
     })
+}
+
+/// THE `pool` LABEL EACH OF A DOOR PLANE'S POOL KEYS IS SCRAPED AND COUNTED UNDER, `(key, label)`:
+/// 1.5.5's convention (`metrics.rs:214-217`: the configured pool's name, the model's for a direct
+/// route), in the plane's stated scope (`"<scope>/<name>"`; bare for the plane serving the `pools`
+/// map). A named pool's key is its name; a direct route's is its member's `(plane, entry)` key,
+/// labelled by the entry. No label carries the walk's internal key.
+pub fn door_pool_labels<'e>(
+    facts: &DoorFacts,
+    pools: &DoorPools,
+    entries: impl IntoIterator<Item = &'e String>,
+) -> HashMap<String, String> {
+    let stated = |name: &str| match facts.metric_scope.as_str() {
+        "" => name.to_string(),
+        scope => format!("{scope}/{name}"),
+    };
+    pools
+        .pools()
+        .keys()
+        .map(|label| (label.clone(), stated(label)))
+        .chain(
+            entries
+                .into_iter()
+                .map(|entry| (plane_lane(&facts.plane, entry), stated(entry))),
+        )
+        .collect()
+}
+
+/// A CONFIG APPLY KEEPS WHAT THE BREAKER LEARNED (v1.5.5 `main.rs:3095-3109`: an apply rebuilds the
+/// health store "with every surviving lane's learned health state RESTORED BY STABLE IDENTITY",
+/// `main.rs:1749-1752`): every cell of `prior`'s breaker unit whose member survives into `next`,
+/// under the same pool, is restored into `next`'s unit, re-keyed by the member's NAME (its
+/// destination id is its position in this generation's entries, which an apply may shift). A member
+/// or a pool the apply removed takes its cells with it. A generation with no unit of its own (the
+/// kernel's lane store carries itself) carries nothing.
+pub fn carry_breaker_cells(
+    prior: &busbar_kernel::plane_driver::Egress,
+    next: &busbar_kernel::plane_driver::Egress,
+) {
+    if let (Some(old), Some(new)) = (&prior.cells, &next.cells) {
+        carry_cells(&prior.pools, &old.unit, &next.pools, &new.unit);
+    }
+}
+
+/// [`carry_breaker_cells`] over the two generations' pools and units: each of `old`'s cells whose
+/// pool is in `next_pools` and whose member (by name) is still in it is restored into `new`, under
+/// the member's destination in `next_pools`.
+pub fn carry_cells(
+    prior_pools: &HashMap<String, busbar_kernel_egress::Pool>,
+    old: &busbar_kernel_breaker::BreakerUnit,
+    next_pools: &HashMap<String, busbar_kernel_egress::Pool>,
+    new: &busbar_kernel_breaker::BreakerUnit,
+) {
+    for (pool, destination, cell) in old.cells() {
+        let Some(name) = prior_pools
+            .get(&pool)
+            .and_then(|p| p.members.iter().find(|m| m.destination == destination))
+            .map(|m| m.name.as_str())
+        else {
+            continue;
+        };
+        let Some(survivor) = next_pools
+            .get(&pool)
+            .and_then(|p| p.members.iter().find(|m| m.name == name))
+        else {
+            continue;
+        };
+        let learned = cell.snapshot();
+        let _ = new.cell_seeded(&pool, survivor.destination, |c| c.restore(learned));
+    }
 }
 
 // ── one configuration generation, as the door planes are sealed over it ─────────────────────────

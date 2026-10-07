@@ -210,6 +210,10 @@ pub struct Egress {
     pub conns: Arc<dyn PollConns>,
     /// The breaker.
     pub breaker: Arc<dyn Breaker>,
+    /// The breaker unit behind `breaker`, when it is this plane's own, with the labels its cells
+    /// are scraped under: `/metrics` reads them ([`crate::metrics::door_cells::DoorCells`]). `None`
+    /// when the breaker is the kernel's own lane store, whose cells are scraped from the store.
+    pub cells: Option<crate::metrics::door_cells::DoorBreaker>,
     /// The pools' permits.
     pub capacity: Arc<dyn Capacity>,
     /// The clock and its sleep.
