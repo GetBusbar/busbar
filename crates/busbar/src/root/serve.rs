@@ -3268,6 +3268,11 @@ mod planes_tests;
 #[path = "tests/serve_door.rs"]
 mod door_tests;
 
+// The legacy engine's end-to-end tests, held to the door serving the `pools` map (U11).
+#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[path = "tests/serve_door_ported.rs"]
+mod door_ported_tests;
+
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_money.rs"]
 mod money_tests;

@@ -443,6 +443,26 @@ pub(super) struct RigOpts<'a> {
     /// The plane's owned webhook section configures its `openai` receiver, its callers verified under the
     /// `webhook-signature` scheme by a Standard Webhooks instance holding [`WEBHOOK_SECRET`].
     pub webhook: bool,
+    /// Each member's model name (`None`: `m<i>`).
+    pub names: Option<&'a [&'a str]>,
+    /// Lines written under member `i`'s model entry (the rig indents them as its fields).
+    pub model_yaml: &'a [(usize, &'a str)],
+    /// Lines written under member `i`'s entry in pool `p` (the rig indents them as its fields).
+    pub member_yaml: &'a [(usize, &'a str)],
+    /// Lines written under pool `p` (the rig indents them as its fields).
+    pub pool_yaml: Option<&'a str>,
+    /// Further pools beside `p`: each its name, its members (by index, weight 1) and lines written
+    /// under it.
+    pub pools: &'a [(&'a str, &'a [usize], &'a str)],
+    /// Further limits on the key's group (its all-time `budget_cents` one, when set, first); a
+    /// group is made for them when `budget_cents` makes none.
+    pub limits: &'a [busbar_kernel::config::groups::LimitCfg],
+    /// The deployment's data front door is open (no `keys` chain): an unkeyed caller is admitted
+    /// anonymously.
+    pub open: bool,
+    /// The deployment's `limits.upstream_request_timeout_secs`: the transports' wait for a far
+    /// end's head, and (unless `stream_ceiling_secs` says otherwise) the stream ceiling.
+    pub upstream_request_timeout_secs: Option<u64>,
 }
 
 /// The Standard Webhooks signing secret the rig's `webhook-signature` instance holds (`whsec_` +
@@ -514,6 +534,16 @@ pub(super) struct DoorRig {
     pub scheme_check: (Result<(), String>, Result<(), String>),
     /// The public routes the composed planes state: `(verb, target)`.
     pub public_routes: Vec<(String, String)>,
+    /// Every served plane's config apply (`Served::appliers`), kept before the planes moved into
+    /// the data routes.
+    pub appliers: super::DoorAppliers,
+    /// What a config apply re-seals the egress over, as production keeps it from the boot: the
+    /// connector, the auth plugins and the journal.
+    pub conns: Arc<dyn PollConns>,
+    /// The auth plugins.
+    pub auths: Arc<OutboundAuths>,
+    /// The journal.
+    pub journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
 }
 
 impl DoorRig {
@@ -632,13 +662,15 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         ..Default::default()
     })
     .expect("the guard");
+    let transport_settings = {
+        let mut s = busbar_contract::transport::TransportSettings::default();
+        if let Some(secs) = opts.upstream_request_timeout_secs {
+            s.request_timeout_secs = secs;
+        }
+        s
+    };
     let connector = busbar_core_connector::process::build(
-        || {
-            crate::root::connector::entries(
-                crate::LINKED_TRANSPORT_DOORS,
-                &busbar_contract::transport::TransportSettings::default(),
-            )
-        },
+        || crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS, &transport_settings),
         judge,
         &[],
         Arc::new(|_| {}),
@@ -668,6 +700,18 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         std::process::id()
     ));
     std::fs::write(&key_file, "sk-seats").expect("the credential file");
+    let name = |i: usize| {
+        opts.names
+            .and_then(|n| n.get(i))
+            .map_or_else(|| format!("m{i}"), |n| (*n).to_string())
+    };
+    let indent = |lines: &str, by: usize| -> String {
+        lines
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| format!("{:by$}{l}\n", ""))
+            .collect()
+    };
     let mut yaml = String::from("providers:\n");
     for (i, _) in opts.members.iter().enumerate() {
         yaml.push_str(&format!(
@@ -677,14 +721,23 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     }
     yaml.push_str("models:\n");
     for (i, _) in opts.members.iter().enumerate() {
-        yaml.push_str(&format!("  m{i}:\n    provider: oai{i}\n"));
+        yaml.push_str(&format!("  '{}':\n    provider: oai{i}\n", name(i)));
+        for (_, lines) in opts.model_yaml.iter().filter(|(at, _)| *at == i) {
+            yaml.push_str(&indent(lines, 4));
+        }
     }
     yaml.push_str("pools:\n  p:\n    members:\n");
     let pooled = opts.pooled.unwrap_or(opts.members.len());
     for (i, (_, weight)) in opts.members.iter().enumerate().take(pooled) {
-        yaml.push_str(&format!("      - model: m{i}\n        weight: {weight}\n"));
+        yaml.push_str(&format!(
+            "      - model: '{}'\n        weight: {weight}\n",
+            name(i)
+        ));
         if opts.described {
             yaml.push_str(&format!("        tier: t{i}\n        tags: [g{i}]\n"));
+        }
+        for (_, lines) in opts.member_yaml.iter().filter(|(at, _)| *at == i) {
+            yaml.push_str(&indent(lines, 8));
         }
     }
     if let Some(secs) = opts.failover_timeout_secs {
@@ -694,6 +747,19 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         yaml.push_str(&format!(
             "    affinity:\n      mode: session\n      header_name: {header}\n"
         ));
+    }
+    if let Some(lines) = opts.pool_yaml {
+        yaml.push_str(&indent(lines, 4));
+    }
+    for (pool, members, lines) in opts.pools {
+        yaml.push_str(&format!("  {pool}:\n    members:\n"));
+        for i in *members {
+            yaml.push_str(&format!(
+                "      - model: '{}'\n        weight: 1\n",
+                name(*i)
+            ));
+        }
+        yaml.push_str(&indent(lines, 4));
     }
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("a deployment");
     let mut defs_yaml = String::new();
@@ -729,25 +795,29 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
             .expect("governance"),
     );
-    let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = opts
+    let limits: Vec<busbar_kernel::config::groups::LimitCfg> = opts
         .budget_cents
-        .map(|amount| {
-            let limit = busbar_kernel::config::groups::LimitCfg {
-                metric: busbar_kernel::config::groups::LimitMetric::Budget,
-                amount,
-                per: Some(busbar_kernel::config::groups::LimitWindow::Day),
-                scope: None,
-                on_exhaust: None,
-                downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
-            };
+        .map(|amount| busbar_kernel::config::groups::LimitCfg {
+            metric: busbar_kernel::config::groups::LimitMetric::Budget,
+            amount,
+            per: Some(busbar_kernel::config::groups::LimitWindow::Day),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        })
+        .into_iter()
+        .chain(opts.limits.iter().cloned())
+        .collect();
+    let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = (!limits.is_empty())
+        .then(|| {
             (
                 format!("{instance}-group"),
                 busbar_kernel::config::GroupCfg {
                     parent: None,
                     enabled: true,
-                    limits: vec![limit],
+                    limits,
                     ..Default::default()
                 },
             )
@@ -794,12 +864,14 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         } else {
             busbar_kernel::auth::inbound::InboundSchemes::none()
         })
-        .keys_chain()
         .governance(Arc::clone(&gov))
         .cost(cost);
+    if !opts.open {
+        builder = builder.keys_chain();
+    }
     for (i, (port, _)) in opts.members.iter().enumerate() {
         let lane = busbar_kernel::test_support::LaneSpec::new(
-            &format!("m{i}"),
+            &name(i),
             match opts.dialect {
                 Some("anthropic") => "anthropic",
                 _ => "openai",
@@ -818,7 +890,12 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         .take(pooled)
         .map(|(i, (_, w))| (i, *w))
         .collect();
-    let mut app = builder.pool("p", &weights).build();
+    builder = builder.pool("p", &weights);
+    for (pool, members, _) in opts.pools {
+        let weights: Vec<(usize, u32)> = members.iter().map(|i| (*i, 1)).collect();
+        builder = builder.pool(pool, &weights);
+    }
+    let mut app = builder.build();
     let log = Arc::new(Mutex::new(Vec::new()));
     let read: Arc<dyn Fn() -> Ledger + Send + Sync> = {
         let (gov, cost, key_id) = (Arc::clone(&gov), app.cost.clone(), key.id.clone());
@@ -892,9 +969,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     ));
     let models = crate::root::model_egress::ModelServing {
         pools: model_pools,
-        lanes: (0..opts.members.len())
-            .map(|i| (format!("m{i}"), i))
-            .collect(),
+        lanes: (0..opts.members.len()).map(|i| (name(i), i)).collect(),
         app: {
             let app = Arc::clone(&app);
             Arc::new(move || Arc::clone(&app))
@@ -903,9 +978,12 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     let reach = DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths,
+        auths: Arc::clone(&auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
-        stream_ceiling_secs: opts.stream_ceiling_secs.unwrap_or(600),
+        stream_ceiling_secs: opts
+            .stream_ceiling_secs
+            .or(opts.upstream_request_timeout_secs)
+            .unwrap_or(600),
         models: Some(&models),
         upgrades: Vec::new(),
     };
@@ -952,6 +1030,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
             crate::root::public_verify::refuse_unserved(&served, &one),
         )
     };
+    let appliers = served.appliers();
     let doors = door_routes(
         served,
         || CARD.pin(),
@@ -975,6 +1054,10 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         tokens,
         scheme_check,
         public_routes,
+        appliers,
+        conns: Arc::clone(&connector) as Arc<dyn PollConns>,
+        auths: Arc::clone(&auths),
+        journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
     }
 }
 
