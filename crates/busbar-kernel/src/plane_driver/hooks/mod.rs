@@ -1059,6 +1059,24 @@ fn narrow(keep: &mut HashSet<usize>, facts: &[CandidateFacts], tags_any: &[Strin
 
 // ── the stage, on the unit ──────────────────────────────────────────────────────────────────────
 
+/// A COMMITTED REWRITE AS IT CROSSES TO THE PLANE (`ProjectIn::rewrite`, and the in-session
+/// stage's answer): the hook's reply as `{"messages": [...], "tools": [...]}`, for the plane to
+/// apply in its own dialect. These bytes are never empty, so a committed rewrite never crosses as
+/// the absent blob ([`blob`] reads empty bytes as "no rewrite"); a reply naming no messages crosses
+/// as one, and the plane applies it as nothing, as 1.5.5 did
+/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines).
+fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "messages": rw.messages,
+        "tools": rw.tools,
+    }))
+    .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[path = "tests/rewrite_crossing_tests.rs"]
+mod rewrite_crossing_tests;
+
 /// The buffers one `project` crossing lends.
 struct ProjectBufs {
     signals: Vec<SignalEntry>,
@@ -1311,11 +1329,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             drop(req);
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
-                    let bytes = serde_json::to_vec(&serde_json::json!({
-                        "messages": rw.messages,
-                        "tools": rw.tools,
-                    }))
-                    .unwrap_or_default();
+                    let bytes = rewrite_bytes(&rw);
                     match self.project(Some(&bytes)) {
                         Ok(next) => {
                             if let Some(body) = &next.rewritten {
@@ -2000,11 +2014,7 @@ impl SessionStage {
                 TransformOutcome::Rewrite(rw) => {
                     return StageAnswer::Rewrote {
                         index: u32::try_from(i).unwrap_or(u32::MAX),
-                        rewrite: serde_json::to_vec(&serde_json::json!({
-                            "messages": rw.messages,
-                            "tools": rw.tools,
-                        }))
-                        .unwrap_or_default(),
+                        rewrite: rewrite_bytes(&rw),
                     };
                 }
                 TransformOutcome::Reject { status, message } => {
