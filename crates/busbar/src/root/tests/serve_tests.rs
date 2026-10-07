@@ -6737,21 +6737,18 @@ mod agent_door {
     }
 
     /// THE REROUTE BATTERY (predev `reroute_battery`): the first fresh submission addressed to the
-    /// pool's primary reaches it and its refusal is the hop's failure (`502`), tripping it; the
+    /// pool's primary reaches it and its refusal of busbar is the hop's failure (`first`), tripping
+    /// it; the
     /// second is placed on the twin by the kernel's walk before any socket, answered `200` with a
     /// result, and the dead primary hears nothing more. `heard` counts each member's requests.
     async fn reroute_battery(
         s: &Served,
         heard: &mut dyn FnMut() -> (usize, usize),
-        method: &str,
-        params: &str,
+        (method, params): (&str, &str),
+        first: StatusCode,
     ) {
         let (s1, b1) = answered(&s.router, rpc("planner-a", method, params, Some(&s.token))).await;
-        assert_eq!(
-            s1,
-            StatusCode::BAD_GATEWAY,
-            "the first failure is the hop's: {b1}"
-        );
+        assert_eq!(s1, first, "the first failure is the hop's: {b1}");
         assert_eq!(heard(), (1, 0), "the primary was dialled, the twin not");
         let t0 = std::time::Instant::now();
         let (s2, b2) = answered(&s.router, rpc("planner-a", method, params, Some(&s.token))).await;
@@ -6789,19 +6786,29 @@ mod agent_door {
             hear(&mut agent, &mut log);
             (hits(&log, "planner-a"), hits(&log, "planner-b"))
         };
-        reroute_battery(&s, &mut heard, "message/send", SEND).await;
+        reroute_battery(
+            &s,
+            &mut heard,
+            ("message/send", SEND),
+            StatusCode::BAD_GATEWAY,
+        )
+        .await;
     }
 
     /// The same battery on the gRPC binding (predev
     /// `a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding`): the selection sits
     /// above the binding axis. Two gRPC agents serving ONE card (one deployment registered twice),
-    /// the primary refusing busbar itself at the HTTP layer (`401`, as predev's harness answered it).
+    /// the primary refusing busbar itself (`UNAUTHENTICATED`; predev's harness answered an HTTP
+    /// `401`, which on this binding does not take the member out of the door's walk: measured in
+    /// job cli-935ec05c-0c73-45dd-8860-28f7c38af158, the second submission went to the primary).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-pool-reroute-grpc";
         let _published = Published(instance);
-        let mut primary = GrpcAgent::serving(grpc_working_answer(), "0", 401, None).await;
+        // UNAUTHENTICATED (16): the gRPC binding's refusal of busbar itself, as a 401 is on
+        // JSON-RPC.
+        let mut primary = GrpcAgent::serving(Vec::new(), "16", 200, None).await;
         let mut twin =
             GrpcAgent::serving(grpc_working_answer(), "0", 200, Some(primary.port)).await;
         let entries = format!(
@@ -6828,7 +6835,14 @@ mod agent_door {
             (a, b)
         };
         let params = r#"{"message":{"messageId":"m-1","role":"ROLE_USER","parts":[{"text":"PLAN THE MIGRATION"}]}}"#;
-        reroute_battery(&s, &mut heard, "SendMessage", params).await;
+        // The gRPC hop renders a backend's refusal of busbar as its own error (500, -32603).
+        reroute_battery(
+            &s,
+            &mut heard,
+            ("SendMessage", params),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )
+        .await;
     }
 
     /// THE PINNING SEMANTICS (predev
