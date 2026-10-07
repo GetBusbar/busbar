@@ -21,6 +21,11 @@ use super::{
     ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS,
     UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
+use super::{
+    DatagramRoute, KeyingMaterial, RendezvousTerms, FINGERPRINT_BYTES, HANDSHAKE_ANSWERS,
+    HANDSHAKE_NONE, LANE_CLEAR, LANE_SECURED, MAX_KEYING_BYTES, MAX_ROUTES, PATH_REQUEST_BIND,
+    PATH_REQUEST_NONE, PATH_REQUEST_REBIND,
+};
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
     bits, bounded, code, fault, first, index, listed, range, result, results, text, texts, within,
@@ -269,6 +274,53 @@ pub fn check_framer(
             "framer.piece.status_class",
         )?;
     }
+    Ok(())
+}
+
+/// A datagram framer's answer ([`super::datagram`]), after [`check_framer`] passed: at most
+/// `routes_cap` (and [`MAX_ROUTES`]) routes, each one nonempty datagram inside the wire bytes
+/// written, to a nonzero path, on [`LANE_CLEAR`] or [`LANE_SECURED`] (a rendezvous is never sent);
+/// a FAILED answer routes nothing and asks for nothing; at most one path request, its paths named
+/// exactly as its kind needs; rendezvous terms either absent whole or carrying all four
+/// credentials and a [`FINGERPRINT_BYTES`] fingerprint inside the frame bytes written.
+///
+/// A stream framer's zeroed yield passes.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_datagram(
+    outcome: Outcome,
+    out: &FramerOut,
+    routes: &[DatagramRoute],
+    routes_cap: u64,
+) -> Result<(), Fault> {
+    // RED: the rules are not judged yet.
+    let _ = (outcome, out, routes, routes_cap);
+    Ok(())
+}
+
+/// Rendezvous terms: absent whole, or every credential nonempty and the fingerprint exactly
+/// [`FINGERPRINT_BYTES`], each inside the first `frame_len` bytes of the frame.
+///
+/// # Errors
+///
+/// The rule the terms break.
+pub fn check_terms(t: &RendezvousTerms, frame_len: u64) -> Result<(), Fault> {
+    // RED: the rules are not judged yet.
+    let _ = (t, frame_len);
+    Ok(())
+}
+
+/// The keying-material item a host presents: its own size, a nonzero profile, and
+/// `1..=`[`MAX_KEYING_BYTES`] bytes behind a non-NULL pointer.
+///
+/// # Errors
+///
+/// The rule the item breaks.
+pub fn check_keying(k: &KeyingMaterial) -> Result<(), Fault> {
+    // RED: the rules are not judged yet.
+    let _ = k;
     Ok(())
 }
 
