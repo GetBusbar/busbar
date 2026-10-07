@@ -8725,8 +8725,12 @@ mod agent_door {
         let (twin, calls) = (Arc::clone(&twin_status), Arc::clone(&primary_calls));
         let (mut agent, section) = twins(Arc::new(move |request: &str| {
             if to_member(request, "planner-a") {
-                // F, S, F, S, F ...: the primary's cell trips on its fifth outcome, streak 1.
-                if calls.fetch_add(1, Ordering::SeqCst) % 2 == 0 {
+                // F, S, F, S, F ...: the primary's cell trips on its fifth outcome, streak 1. The
+                // fixture reads this twice per request (its status, then `twins`' body), so a
+                // request is every second read: both reads of one request agree, and a failure is
+                // a 503 saying "denied", never a 503 carrying a task (a protocol answer the plane
+                // reads healthy, eec1f2820d).
+                if (calls.fetch_add(1, Ordering::SeqCst) / 2) % 2 == 0 {
                     503
                 } else {
                     200
