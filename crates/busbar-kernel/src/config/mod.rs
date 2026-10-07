@@ -568,7 +568,8 @@ impl RootCfg {
 pub use busbar_kernel::config::sections::TlsCfg;
 
 pub use busbar_kernel::config::auth::{
-    builtin_identity_providers, operator_principal_id, operator_provider,
+    builtin_identity_providers, is_builtin_identity_module, names_operator, operator_principal_id,
+    operator_provider,
 };
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map, the resolved auth-chain
 /// entry, the role-binding grant, the token-mint policy, the built-in provider names, and the
@@ -619,7 +620,7 @@ pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// entirely — the API answered 200 and stored the misplaced credential, and the error surfaced only
 /// once something named the provider.
 pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
-    if has_token && module != operator_provider() {
+    if has_token && !names_operator(module) {
         let op = operator_provider();
         return Err(busbar_kernel_identity::operator::misplaced_definition_token(op, name, module));
     }
@@ -644,7 +645,7 @@ pub fn resolve_auth(
                     errors.push(e);
                 }
                 let max_admin_scope = def.max_admin_scope.clone().or_else(|| {
-                    (module != operator_provider()).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
+                    (!names_operator(&module)).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
                 });
                 AuthChainEntry {
                     name: name.clone(),
@@ -687,7 +688,7 @@ pub fn resolve_auth(
     // exactly what the retired `auth.methods:` map allowed, so nothing narrows.)
     let methods: AuthMethods = providers
         .iter()
-        .filter(|(_, def)| !builtin_identity_providers().contains(&def.module.trim()))
+        .filter(|(_, def)| !is_builtin_identity_module(def.module.trim()))
         .map(|(name, def)| {
             (
                 name.clone(),

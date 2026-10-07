@@ -368,7 +368,9 @@ fn validate_config_command() -> i32 {
     if loaded.deploy.plugins.enabled {
         println!(
             "  plugins:   enabled — {} validated, {} skipped (untrusted) in '{}'",
-            registry.loadable().len(),
+            // A copy of a plugin this build links, at its version, was validated too: the linked
+            // row serves it (the one-version rule, ARCHITECT C').
+            registry.loadable().len() + registry.linked_copies().len(),
             registry.skipped().len(),
             loaded.deploy.plugins.dir,
         );

@@ -376,7 +376,8 @@ pub fn open_operator(
     let axis = crate::preflight::auth_axis(registry.clone());
     let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
     let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
-    Operator::open(op, defs, answered, digest, |d| {
+    let is_op = |m: &str| crate::config::names_operator(m);
+    Operator::open(op, defs, &is_op, answered, digest, |d| {
         let axis = axis.ok_or_else(|| format!("no `kind: auth` plugin answers to '{op}'"))?;
         axis.open(op, op, &serde_json::Value::String(d.to_string()))
     })
@@ -418,11 +419,12 @@ impl AdminAuthChain {
         let mut modules: std::collections::HashMap<String, AdminModule> =
             std::collections::HashMap::new();
         let op = crate::config::operator_provider();
+        let is_op = |m: &str| crate::config::names_operator(m);
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.admin_auth {
             match entry.module.as_str() {
                 // The operator credential is opened beside the chain ([`open_operator`]).
-                module if Operator::backed(op, &entry.name, Some(module)) => {}
+                module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
                 // TEST-ONLY inline admin stand-ins (dispatched by name in `run_admin_chain`); never
                 // resolved as plugins. Compiled out of release binaries.
                 #[cfg(any(test, feature = "test-support"))]

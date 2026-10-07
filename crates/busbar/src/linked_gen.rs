@@ -19,8 +19,11 @@
 //   [package.metadata.busbar.root-units]    <cargo feature> = "<root module>"    (`ROOT_UNIT` of
 //                                            `crate::root::<module>`, in order)
 //   [package.metadata.busbar.linked-name]   <row key> = "<registry key>"         (the key an `auths`
-//                                            row answers on the auth axis: what its signed tarball's
-//                                            manifest would state as its name)
+//                                            row answers on the auth axis, and every surface prints)
+//   [package.metadata.busbar.linked-canonical] <row key> = "<manifest name>"     (an `auths` row's
+//                                            CANONICAL name, when it is not its key: the manifest
+//                                            name its signed tarball states, plugins.yaml
+//                                            `manifest_name`; config may name the row by either)
 //
 // and this turns the rows whose feature is ENABLED into `extern crate <crate> as _;` lines, one table
 // per registration axis over each entry module's item for that axis (the `LINKED` value), the cfgs
@@ -99,7 +102,8 @@ const SECRET_AXIS: &str = "secret-doors";
 /// The auth axis (#2 rule (1), #40): each row's entry (its crate root) exports, at `door::door`, the
 /// memory-ABI door every `kind: auth` plugin exports (the same door its dropped-in build exports as
 /// `busbar_plugin_door`: THE DESIGN, compiled-in = dropped-in), registered under the key its
-/// `linked-name` row states.
+/// `linked-name` row states and the canonical name its `linked-canonical` row states (the key, when
+/// it has none).
 const AUTH_AXIS: &str = "auths";
 
 /// The `value` of `key` under the `[table]` header, when the table and the row exist. The optional
@@ -425,7 +429,10 @@ pub(crate) fn linked_source(
                          `[package.metadata.busbar.linked-name]` row naming its registry key"
                     )
                 });
-            out.push_str(&format!("({name:?}, {entry}::door::door), "));
+            let canonical =
+                metadata_value(manifest, "package.metadata.busbar.linked-canonical", feature)
+                    .unwrap_or_else(|| name.clone());
+            out.push_str(&format!("({name:?}, {canonical:?}, {entry}::door::door), "));
         }
     }
     out.push_str("],\n");

@@ -420,7 +420,7 @@ impl AuthCfg {
         self.admin_auth
             .iter()
             .chain(self.chain.iter())
-            .find(|e| e.module == operator_provider())
+            .find(|e| names_operator(&e.module))
             .and_then(|e| e.token.as_ref())
     }
 
@@ -441,7 +441,7 @@ impl AuthCfg {
             return true;
         }
         self.admin_auth.iter().any(|e| {
-            let operator = e.module == operator_provider();
+            let operator = names_operator(&e.module);
             (operator && e.token.is_some())
                 || (!operator && matches!(e.max_admin_scope.as_deref(), Some("full")))
         })
@@ -460,12 +460,30 @@ pub use busbar_kernel_identity::operator::{
     principal_id as operator_principal_id, provider as operator_provider,
 };
 
+/// Whether `module` names THE OPERATOR CREDENTIAL'S PLUGIN, by its identity rather than one spelling
+/// (ARCHITECT C'): the [`operator_provider`] key, the canonical name its linked row answers to, or a
+/// former name the root legacy table gives that key — every name the registry resolves to that row.
+pub fn names_operator(module: &str) -> bool {
+    let op = operator_provider();
+    busbar_kernel_identity::operator::names(op, module)
+        || (!op.is_empty()
+            && crate::config::legacy::former_names(op)
+                .iter()
+                .any(|f| f == module))
+}
+
 /// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
 /// `identity-providers:` definition at all: the signed-key verifier and the operator credential. A
 /// definition entry for one of these exists only when it needs config — the operator credential
 /// carrying its `token:` secret ref is the one real case.
 pub fn builtin_identity_providers() -> [&'static str; 2] {
     [KEYS_MODULE, operator_provider()]
+}
+
+/// Whether a provider's `module:` names a BUILT-IN: one of [`builtin_identity_providers`], or the
+/// operator credential's plugin by any other name it answers to ([`names_operator`]).
+pub fn is_builtin_identity_module(module: &str) -> bool {
+    builtin_identity_providers().contains(&module) || names_operator(module)
 }
 
 /// The MOST RESTRICTIVE admin ceiling — the default for a provider whose definition omits

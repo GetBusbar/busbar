@@ -1239,7 +1239,7 @@ pub fn declared_diagnostics(
     let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
     let mut declared: Vec<&'static Diagnostic> = Vec::new();
     for p in registry.linked().iter().chain(registry.loadable()) {
-        let (name, decls) = (&p.manifest.name, &p.manifest.declares.diagnostics);
+        let (name, decls) = (p.key(), &p.manifest.declares.diagnostics);
         if !decls.is_empty() && !p.first_party() {
             return Err(format!(
                 "plugin '{name}' declares diagnostics but is not first-party; only a first-party \
@@ -1339,6 +1339,10 @@ mod auth_tests;
 #[cfg(test)]
 #[path = "tests/metric_family_conformance.rs"]
 mod metric_family_conformance;
+
+#[cfg(test)]
+#[path = "tests/linked_canonical.rs"]
+mod linked_canonical;
 
 #[cfg(all(test, linked_every_plane))]
 #[path = "tests/linked_protocols.rs"]

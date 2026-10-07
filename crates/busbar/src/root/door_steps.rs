@@ -1169,7 +1169,7 @@ impl std::fmt::Debug for OutboundAuths {
         f.debug_struct("OutboundAuths")
             .field(
                 "linked",
-                &self.linked.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+                &self.linked.iter().map(|(n, _, _)| *n).collect::<Vec<_>>(),
             )
             .finish_non_exhaustive()
     }
@@ -1230,7 +1230,7 @@ impl OutboundAuths {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
         let mut rows = Vec::new();
-        for (name, door) in &self.linked {
+        for (name, _, door) in &self.linked {
             if let Ok(plugin) =
                 LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, self.bind(name)))
             {

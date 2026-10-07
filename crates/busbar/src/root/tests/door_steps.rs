@@ -719,8 +719,11 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
-    let linked: [busbar_kernel::preflight::LinkedAuth; 1] =
-        [("busbar-auth-oauth", busbar_auth_oauth::door)];
+    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(
+        "busbar-auth-oauth",
+        "busbar-auth-oauth",
+        busbar_auth_oauth::door,
+    )];
     let auths = super::OutboundAuths::new(
         dispatcher,
         &linked,
