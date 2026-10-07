@@ -28,9 +28,11 @@
 //!   a break named so the door reports it.
 //! * A DELETE IS A TOMBSTONE: a put with an empty value, which the kernel's reads treat as absent;
 //!   on the chained kind it drops the whole chain.
-//! * RETENTION is the engine's `evict_terminal` policy with the same numbers ([`TERMINAL_TTL_SECS`],
-//!   [`ABANDON_SECS`], [`MAX_RETAINED`]): a read never answers a terminal task past its window, and
-//!   [`sweep`] tombstones it, cancels an abandoned active one, and holds the cap.
+//! * RETENTION bounds only SETTLED handles ([`TERMINAL_TTL_SECS`], [`MAX_RETAINED`]; spec
+//!   docs/design/BUSBAR-1.6.0.md :198-203, Q128 K2-H5, coordinator 2026-10-07): a read never answers
+//!   a terminal task past its window, and [`sweep`] tombstones it and holds the cap over terminal
+//!   tasks. An active task is never evicted however long it sits idle; live tasks are bounded at
+//!   admission by the kernel's `work.max_live`.
 
 use busbar_contract::vocab::{EV_ARTIFACT, EV_DELEGATED, EV_SUBMITTED};
 use serde::{Deserialize, Serialize};
@@ -42,10 +44,9 @@ use crate::{TaskEventRow, TaskRow};
 
 /// How long a terminal task stays readable after its terminal transition, in seconds.
 pub const TERMINAL_TTL_SECS: u64 = 300;
-/// The most tasks kept; past it the oldest terminal ones go first, an active one never.
+/// The most terminal tasks kept; past it the oldest go first. An active task is never counted
+/// against it and never evicted.
 pub const MAX_RETAINED: usize = 4096;
-/// How long an active task may sit unchanged before it is canceled as abandoned, in seconds.
-pub const ABANDON_SECS: u64 = 86_400;
 /// How long a won sequence claim stands. Only writers racing inside one op contend for it; a claim
 /// whose writer never wrote frees its sequence again after this, in milliseconds.
 pub const CLAIM_TTL_MS: u64 = 60_000;
@@ -620,10 +621,11 @@ pub fn record_push_delivery(
     change(rec, at, task, &mut plan, out).map(|_| ())
 }
 
-/// THE RETENTION SWEEP at `now`, over every task this instance holds: an active task unchanged for
-/// longer than [`ABANDON_SECS`] is canceled through its chain; a terminal one past its window is
-/// tombstoned with its events and its push config; while [`MAX_RETAINED`] or more are held, the
-/// oldest terminal ones go too. At most `budget` tasks are touched; the rest wait for the next sweep.
+/// THE RETENTION SWEEP at `now`, over the TERMINAL tasks this instance holds and no others: one
+/// past its window is tombstoned with its events and its push config; while [`MAX_RETAINED`] or
+/// more terminal ones are held, the oldest go too. An active task is never touched, however long
+/// it has been idle (Q128 K2-H5, coordinator 2026-10-07; spec :198-203). At most `budget` tasks are
+/// touched; the rest wait for the next sweep.
 ///
 /// # Errors
 /// [`Halt`].
@@ -637,30 +639,13 @@ pub fn sweep(
         .list(KIND_TASK, "")?
         .into_iter()
         .filter_map(|(k, b)| Some((k.split_once('/')?.0.to_string(), decode(&b)?.row)))
+        .filter(|(_, row)| terminal(&row.state))
         .collect();
     held.sort_by(|a, b| (a.1.updated_at, &a.1.task_id).cmp(&(b.1.updated_at, &b.1.task_id)));
     let mut touched = 0usize;
-    for (caller, row) in &held {
-        if touched < budget
-            && !terminal(&row.state)
-            && now.saturating_sub(row.updated_at) > ABANDON_SECS
-        {
-            let at = Step {
-                caller,
-                request_id: "",
-                now,
-            };
-            // An abandon that cannot be made leaves the task active for the next sweep.
-            if let Err(Halt::Pending) = transition(rec, &at, &row.task_id, TaskState::Canceled, out)
-            {
-                return Err(Halt::Pending);
-            }
-            touched += 1;
-        }
-    }
     let mut kept = held.len();
     for (caller, row) in &held {
-        if touched < budget && terminal(&row.state) && (kept >= MAX_RETAINED || expired(row, now)) {
+        if touched < budget && (kept >= MAX_RETAINED || expired(row, now)) {
             forget(caller, &row.task_id, out);
             kept -= 1;
             touched += 1;

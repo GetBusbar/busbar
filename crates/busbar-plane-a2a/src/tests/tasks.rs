@@ -509,10 +509,12 @@ fn a_terminal_task_past_its_window_reads_as_absent() {
         .is_empty());
 }
 
-/// THE SWEEP: an abandoned active task is canceled through its chain; an expired terminal task goes
-/// as tombstones (its row, its events, its push config), and a task whose id it prefixes stays.
+/// THE SWEEP: an expired terminal task goes as tombstones (its row, its events, its push config),
+/// and a task whose id it prefixes stays, active and untouched however long it sat idle (amended
+/// to Q128 K2-H5, coordinator 2026-10-07; spec docs/design/BUSBAR-1.6.0.md :198-203: it pinned
+/// the abandon-cancel of idle active tasks).
 #[test]
-fn the_sweep_cancels_the_abandoned_and_tombstones_the_expired() {
+fn the_sweep_tombstones_the_expired_and_leaves_the_idle_active() {
     let mut book = Book::default();
     submitted(&mut book, ALICE, "t1", 100);
     submitted(&mut book, ALICE, "t10", 100);
@@ -532,7 +534,7 @@ fn the_sweep_cancels_the_abandoned_and_tombstones_the_expired() {
         key: task_key(ALICE, "t1"),
         value: b"{}".to_vec(),
     }]);
-    let now = 101 + ABANDON_SECS;
+    let now = 101 + 86_400;
     let mut out = Vec::new();
     sweep(&mut book, now, 64, &mut out).unwrap();
     book.apply(&out);
@@ -550,13 +552,50 @@ fn the_sweep_cancels_the_abandoned_and_tombstones_the_expired() {
     );
     for (caller, task) in [(ALICE, "t10"), (BOB, "idle")] {
         let held = get(&mut book, caller, task, now).unwrap().unwrap();
-        assert_eq!(held.row.state, "canceled", "{task} was abandoned");
-        assert_eq!(event(&book, caller, task, 2).kind, "task.terminal");
+        assert_eq!(held.row.state, "submitted", "{task} is active and stays so");
+        assert!(
+            book.value(KIND_TASK_EVENT, &event_key(caller, task, 2))
+                .is_none(),
+            "{task} gained no event"
+        );
     }
 }
 
-/// THE CAP: while the store holds MAX_RETAINED or more, the oldest terminal tasks go, and an active
-/// one never does; the sweep touches no more than its budget.
+/// AN ACTIVE TASK IS NEVER EVICTED (Q128 K2-H5, coordinator 2026-10-07; spec docs/design/BUSBAR-1.6.0.md
+/// :198-203, "An active work handle is never evicted ... Retention bounds only settled handles"): an
+/// active task idle for far longer than the old 86_400 s abandon window is still live after a sweep,
+/// its state unchanged, readable through the get and the list, and its push token still validates.
+/// RED on the base: the sweep canceled it.
+#[test]
+fn an_idle_active_task_survives_the_sweep_with_its_push_token() {
+    let mut book = Book::default();
+    submitted(&mut book, ALICE, "idle", 100);
+    let tokens = crate::push::Tokens::new();
+    let token = tokens.mint(ALICE, "idle", b"sig").unwrap();
+    let now = 100 + 86_400 * 30;
+    let mut out = Vec::new();
+    sweep(&mut book, now, 64, &mut out).unwrap();
+    book.apply(&out);
+    let held = get(&mut book, ALICE, "idle", now).unwrap().unwrap();
+    assert_eq!(
+        held.row.state, "submitted",
+        "an idle active task is not canceled"
+    );
+    assert_eq!(held.row.updated_at, 100, "the sweep wrote nothing to it");
+    assert_eq!(
+        list(&mut book, ALICE, now).unwrap().len(),
+        1,
+        "ListTasks still has it"
+    );
+    assert!(
+        tokens.claim(&token).is_some(),
+        "its push token stays valid while the task is active"
+    );
+}
+
+/// THE CAP: while MAX_RETAINED or more TERMINAL tasks are held, the oldest go; active tasks are
+/// not counted against the cap and none goes (amended to Q128 K2-H5, coordinator 2026-10-07; spec
+/// :198-203: it counted active tasks toward the cap); the sweep touches no more than its budget.
 #[test]
 fn the_sweep_holds_the_cap_with_terminal_tasks_only() {
     let mut book = Book::default();
@@ -565,8 +604,11 @@ fn the_sweep_holds_the_cap_with_terminal_tasks_only() {
         row.state = state.to_string();
         Held { row, next_seq: 2 }
     };
+    for i in 0..5 {
+        book.hold(ALICE, &held(format!("act{i}"), "working", 5));
+    }
     for i in 0..MAX_RETAINED - 1 {
-        book.hold(ALICE, &held(format!("a{i:05}"), "working", 50));
+        book.hold(ALICE, &held(format!("a{i:05}"), "completed", 50));
     }
     book.hold(ALICE, &held("old".into(), "completed", 10));
     book.hold(ALICE, &held("new".into(), "completed", 20));
@@ -587,8 +629,8 @@ fn the_sweep_holds_the_cap_with_terminal_tasks_only() {
     assert!(book.value(KIND_TASK, &task_key(ALICE, "new")).is_none());
     assert_eq!(
         list(&mut book, ALICE, 30).unwrap().len(),
-        MAX_RETAINED - 1,
-        "no active task goes"
+        MAX_RETAINED - 1 + 5,
+        "the cap held over terminal tasks; no active task goes"
     );
 }
 
