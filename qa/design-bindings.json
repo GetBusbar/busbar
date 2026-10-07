@@ -2940,7 +2940,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix",
+     "ref": "crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix",
      "proves": "reads are read-only, mutations full, config/validate and plugins/inspect read-only",
      "source": "curated",
      "status": "mapped"
@@ -2961,7 +2961,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
+   "verdict_detail": "test:crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
   },
   {
    "id": "PB-63",

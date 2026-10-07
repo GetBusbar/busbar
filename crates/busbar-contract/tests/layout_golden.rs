@@ -2172,6 +2172,7 @@ fn compute_layout() -> String {
             trust_verify,
             records_secret,
             disk_append,
+            snapshot_read,
             trust_sight_item,
             trust_serves,
             trust_decide
@@ -2190,6 +2191,7 @@ fn compute_layout() -> String {
         hsvc::DiskWritten,
         [size, rotated, faults, _reserved, written]
     );
+    record!(s, hsvc::SnapshotReadIn, [head, scope, _reserved, into]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);

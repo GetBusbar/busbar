@@ -286,6 +286,10 @@ impl HostServices for CredentialServices {
     fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
         self.inner.hook_call(caller, unit, ask, later)
     }
+
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        self.inner.snapshot_read(caller, scope)
+    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,8 @@
 
 //! THE PLANE TRUST VERB SURFACE on the admin API, written ONCE and parameterised by plane — the
 //! CORE-side half of the neutral seam whose plane-facing half is [`busbar_kernel::admin_verbs`].
+//! Moved here from the kernel's `admin::planeverbs` (P2 D4, ARCHITECT Q-D4-ADMIN (b) 2026-10-04); the
+//! composition root binds [`CorePlaneAdminEnvelope`] into the kernel's `admin_verbs` seam.
 //!
 //! Every plane that fronts a registered upstream owes an operator the same three things, in the same
 //! order: resolve the registration or refuse with a `404`, GO AND LOOK at the upstream, and record
@@ -31,7 +33,7 @@
 //! [`busbar_kernel::admin_verbs::registered`] is where that is decided once; the not-found WORDING is
 //! reconstructed here, in [`to_admin_error`], from the plane decl.
 
-use crate::admin::v1::contract::AdminError;
+use crate::v1::contract::AdminError;
 
 /// Re-export the relocated resolve/look seam so `crate::admin::planeverbs::{PlaneTrust, PlaneVerbError,
 /// registered}` keeps resolving for the in-core (a2a) callers and the shared `connect` bound.
@@ -47,10 +49,10 @@ pub fn audit(
     verb: &str,
     name: &str,
     outcome: &'static str,
-    principal: &crate::auth::AuthPrincipal,
+    principal: &busbar_kernel::auth::AuthPrincipal,
 ) {
-    let audit_kind = crate::plane::plane_decl(plane).audit_kind;
-    crate::audit_ring::AUDIT.record_by(
+    let audit_kind = busbar_kernel::plane::plane_decl(plane).audit_kind;
+    crate::v1::json::audit::AUDIT.record_by(
         &format!("{audit_kind}.{verb}"),
         &format!("{audit_kind}:{name}"),
         outcome,
@@ -67,7 +69,7 @@ pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> A
     match err {
         PlaneVerbError::NotFound => AdminError::not_found(format!(
             "{} `{name}`",
-            crate::plane::plane_decl(plane).subject_noun
+            busbar_kernel::plane::plane_decl(plane).subject_noun
         )),
         PlaneVerbError::Validation(msg) | PlaneVerbError::ValidationOf(msg, _) => {
             AdminError::Validation(msg)
@@ -89,16 +91,16 @@ pub fn refusal_response(
     };
     let e = to_admin_error(plane, name, err);
     match cond {
-        Some(cond) => crate::admin::v1::json::err_json_cond(&e, cond_of(cond)),
-        None => crate::admin::v1::json::err_json(&e),
+        Some(cond) => crate::v1::json::err_json_cond(&e, cond_of(cond)),
+        None => crate::v1::json::err_json(&e),
     }
 }
 
 /// The frozen taxonomy condition a plane's neutral condition tag names.
 fn cond_of(
     cond: busbar_kernel::admin_verbs::PlaneAdminCond,
-) -> crate::admin::v1::contract::taxonomy::Cond {
-    use crate::admin::v1::contract::taxonomy::Cond;
+) -> crate::v1::contract::taxonomy::Cond {
+    use crate::v1::contract::taxonomy::Cond;
     use busbar_kernel::admin_verbs::PlaneAdminCond;
     match cond {
         PlaneAdminCond::MalformedBody => Cond::MalformedBody,
@@ -124,7 +126,7 @@ impl busbar_kernel::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelope {
         name: &str,
         err: busbar_kernel::admin_verbs::PlaneVerbError,
     ) -> axum::response::Response {
-        crate::admin::v1::json::err_json(&to_admin_error(plane, name, err))
+        crate::v1::json::err_json(&to_admin_error(plane, name, err))
     }
 
     fn validation(
@@ -134,13 +136,13 @@ impl busbar_kernel::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelope {
     ) -> axum::response::Response {
         let e = AdminError::Validation(msg);
         match cond {
-            Some(cond) => crate::admin::v1::json::err_json_cond(&e, cond_of(cond)),
-            None => crate::admin::v1::json::err_json(&e),
+            Some(cond) => crate::v1::json::err_json_cond(&e, cond_of(cond)),
+            None => crate::v1::json::err_json(&e),
         }
     }
 
     fn not_found(&self, what: String) -> axum::response::Response {
-        crate::admin::v1::json::err_json(&AdminError::not_found(what))
+        crate::v1::json::err_json(&AdminError::not_found(what))
     }
 
     fn ok(&self, status: u16, body: String) -> axum::response::Response {
@@ -150,8 +152,8 @@ impl busbar_kernel::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelope {
         // plane having handed `ok_json` its view directly.
         let status = axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::OK);
         match serde_json::value::RawValue::from_string(body) {
-            Ok(raw) => crate::admin::v1::json::ok_json(status, &raw),
-            Err(_) => crate::admin::v1::json::ok_json(status, &serde_json::json!({})),
+            Ok(raw) => crate::v1::json::ok_json(status, &raw),
+            Err(_) => crate::v1::json::ok_json(status, &serde_json::json!({})),
         }
     }
 
@@ -161,7 +163,7 @@ impl busbar_kernel::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelope {
         verb: &'static str,
         name: &str,
         outcome: &'static str,
-        principal: &crate::auth::AuthPrincipal,
+        principal: &busbar_kernel::auth::AuthPrincipal,
     ) {
         audit(plane, verb, name, outcome, principal);
     }
