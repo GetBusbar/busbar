@@ -18,6 +18,14 @@
 //! line too, its id before its text. The records one reply could not carry are one line saying how
 //! many.
 //!
+//! OFF THE DISPATCH WORKER (§11.2: no blocking on the hot path; §11.11 R4: the bounded disk lane is
+//! the SQLite store's and the file export sink's alone, so plugin logging may not claim it). The
+//! sink is fed inside the crossing, where the reply's records are still plugin memory, so there it
+//! only checks the level, copies the record and hands it to the instance's own writer thread with
+//! a send that never waits. The writer opens, rotates and writes the file. Its queue holds
+//! [`LOG_QUEUE_LINES`]; a line handed over while it is full is counted, not written, and the lines
+//! one full queue lost are one line saying how many, written once the writer has caught up.
+//!
 //! ROTATION follows the host's one file rule (the host-effect `rotate`): once the file holds the
 //! configured size, it is renamed to `<file>.1` (older archives shift up, `keep` of them kept) and a
 //! new file begins. No size configured: never rotated.
@@ -33,7 +41,9 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{
     DIAG_LOG, SEVERITY_DEBUG, SEVERITY_ERROR, SEVERITY_INFO, SEVERITY_TRACE, SEVERITY_WARN,
@@ -196,22 +206,21 @@ impl PluginLogConfig {
         kind: KindCode,
         metrics: Arc<dyn EnvelopeSink>,
     ) -> Result<PluginLogSink, String> {
-        let sink = PluginLogSink {
+        let writer = Writer {
             instance: instance.to_string(),
             kind: format!("{kind:?}").to_ascii_lowercase(),
-            level: self.level_for(instance),
             path: self.path_for(instance),
             rotate_bytes: self.rotate_bytes,
             keep: self.keep,
-            metrics,
-            clock: wall_secs,
-            file: Mutex::new(None),
+            over: Arc::default(),
+            file: None,
         };
-        if self.named_dir {
-            let opened = sink.open().map_err(|e| sink.refusal(&e))?;
-            *sink.file.lock().unwrap_or_else(|p| p.into_inner()) = Some(opened);
-        }
-        Ok(sink)
+        let file = if self.named_dir {
+            Some(writer.open().map_err(|e| writer.refusal(&e))?)
+        } else {
+            None
+        };
+        PluginLogSink::start(Writer { file, ..writer }, self.level_for(instance), metrics)
     }
 }
 
@@ -222,18 +231,45 @@ fn wall_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// ONE plugin instance's log file, as an [`EnvelopeSink`].
+/// The most lines one instance's writer holds unwritten. A line handed over while it is full is
+/// not written: it is counted, and the count is ONE line once the writer has caught up.
+pub const LOG_QUEUE_LINES: usize = 1024;
+
+/// ONE plugin instance's log file, as an [`EnvelopeSink`]. It formats nothing and touches no file:
+/// each admitted record is copied, stamped and handed to the instance's own writer thread without
+/// waiting ([`LOG_QUEUE_LINES`]).
 pub struct PluginLogSink {
     instance: String,
     kind: String,
     level: LogLevel,
     path: PathBuf,
-    rotate_bytes: Option<u64>,
-    keep: u32,
     metrics: Arc<dyn EnvelopeSink>,
     clock: fn() -> u64,
-    /// The open file, and the bytes it holds; every line is written under this lock.
-    file: Mutex<Option<(File, u64)>>,
+    /// The writer's queue; never waited on from [`EnvelopeSink`].
+    lane: SyncSender<Job>,
+    /// The lines the queue had no room for, shared with the writer that reports them.
+    over: Arc<Over>,
+}
+
+/// The lines a full queue refused, not yet reported, and the time of the last of them.
+#[derive(Default)]
+struct Over {
+    lines: AtomicU64,
+    at: AtomicU64,
+}
+
+/// What the writer thread is handed.
+enum Job {
+    /// One record: its time, its level and its text as the plugin sent it.
+    Line {
+        at: u64,
+        level: LogLevel,
+        text: Vec<u8>,
+    },
+    /// Report the lines a full queue refused, here in the file's order.
+    Tally,
+    /// Answer once every line handed over before this one is written.
+    Flush(SyncSender<()>),
 }
 
 impl std::fmt::Debug for PluginLogSink {
@@ -248,10 +284,124 @@ impl std::fmt::Debug for PluginLogSink {
 }
 
 impl PluginLogSink {
+    /// The sink of `writer`'s instance, its writer thread started (its file already open under a
+    /// named directory).
+    fn start(
+        writer: Writer,
+        level: LogLevel,
+        metrics: Arc<dyn EnvelopeSink>,
+    ) -> Result<Self, String> {
+        let (lane, queue) = sync_channel(LOG_QUEUE_LINES);
+        let sink = Self {
+            instance: writer.instance.clone(),
+            kind: writer.kind.clone(),
+            level,
+            path: writer.path.clone(),
+            metrics,
+            clock: wall_secs,
+            lane,
+            over: writer.over.clone(),
+        };
+        std::thread::Builder::new()
+            .name("busbar-plugin-log".into())
+            .spawn(move || writer.drain(&queue))
+            .map_err(|e| {
+                format!(
+                    "plugins.logs: the log writer of {} could not start: {e}",
+                    sink.instance
+                )
+            })?;
+        Ok(sink)
+    }
+
     /// The same sink with its time read from `clock` (seconds since the epoch).
     #[must_use]
     pub fn with_clock(self, clock: fn() -> u64) -> Self {
         Self { clock, ..self }
+    }
+
+    /// The file this sink writes.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Wait until every line handed over before this call is in the file (or was reported lost).
+    /// It waits on the writer: never call it on a dispatch worker.
+    pub fn flush(&self) {
+        let (done, wait) = sync_channel(1);
+        if self.lane.send(Job::Flush(done)).is_ok() {
+            let _ = wait.recv();
+        }
+    }
+
+    /// Hand one line at `level` to the writer, if the instance's level admits it. Never waits: a
+    /// full queue counts the line instead, and the count is written once the writer catches up.
+    fn line(&self, level: LogLevel, text: Vec<u8>) {
+        if level == LogLevel::Off || level > self.level {
+            return;
+        }
+        let at = (self.clock)();
+        if self.over.lines.load(Ordering::Acquire) > 0 {
+            // The lines lost so far are reported before this one, in the file's order.
+            let _ = self.lane.try_send(Job::Tally);
+        }
+        if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
+            self.lane.try_send(Job::Line { at, level, text })
+        {
+            self.over.at.store(at, Ordering::Release);
+            self.over.lines.fetch_add(1, Ordering::AcqRel);
+            // The writer may have emptied the queue since: then this Tally reports the count; if
+            // the queue is still full, the writer reports it when it has drained what it holds.
+            let _ = self.lane.try_send(Job::Tally);
+        }
+    }
+}
+
+/// THE WRITER: one instance's file, owned by its own thread. Every open, rotation and write of the
+/// file happens here, never on the thread that crossed into the plugin.
+struct Writer {
+    instance: String,
+    kind: String,
+    path: PathBuf,
+    rotate_bytes: Option<u64>,
+    keep: u32,
+    over: Arc<Over>,
+    /// The open file, and the bytes it holds.
+    file: Option<(File, u64)>,
+}
+
+impl Writer {
+    /// Write every job until the sink is gone; whenever the queue runs empty, report what a full
+    /// queue refused.
+    fn drain(mut self, queue: &Receiver<Job>) {
+        while let Ok(job) = queue.recv() {
+            self.run(job);
+            while let Ok(job) = queue.try_recv() {
+                self.run(job);
+            }
+            self.tally();
+        }
+    }
+
+    fn run(&mut self, job: Job) {
+        match job {
+            Job::Line { at, level, text } => self.line(at, level, &text),
+            Job::Tally => self.tally(),
+            Job::Flush(done) => {
+                self.tally();
+                let _ = done.send(());
+            }
+        }
+    }
+
+    /// The lines a full queue refused, as ONE line saying how many.
+    fn tally(&mut self) {
+        let n = self.over.lines.swap(0, Ordering::AcqRel);
+        if n > 0 {
+            let at = self.over.at.load(Ordering::Acquire);
+            let text = format!("busbar: {n} log lines were dropped: the log writer was behind");
+            self.line(at, LogLevel::Warn, text.as_bytes());
+        }
     }
 
     /// Create the directory if it is missing (create-or-reuse), then open the file for append.
@@ -273,20 +423,12 @@ impl PluginLogSink {
         format!("plugins.logs.dir {}: {e}", dir.display())
     }
 
-    /// The file this sink writes.
-    pub fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-
-    /// Write one line at `level`, if the instance's level admits it. A failure to write is reported
-    /// on the host's own log and the line is lost; it never reaches the plugin.
-    fn line(&self, level: LogLevel, text: &[u8]) {
-        if level == LogLevel::Off || level > self.level {
-            return;
-        }
+    /// Write one line. A failure to write is reported on the host's own log and the line is lost;
+    /// it never reaches the plugin.
+    fn line(&mut self, at: u64, level: LogLevel, text: &[u8]) {
         let mut line = format!(
             "{} {} {} {} ",
-            busbar_contract::civil::rfc3339_from_secs((self.clock)()),
+            busbar_contract::civil::rfc3339_from_secs(at),
             level.label(),
             self.instance,
             self.kind
@@ -309,21 +451,20 @@ impl PluginLogSink {
         }
     }
 
-    fn append(&self, bytes: &[u8]) -> std::io::Result<()> {
-        let mut file = self.file.lock().unwrap_or_else(|p| p.into_inner());
-        let due = match (&*file, self.rotate_bytes) {
+    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        let due = match (&self.file, self.rotate_bytes) {
             (Some((_, held)), Some(limit)) => *held >= limit,
             (None, Some(limit)) => std::fs::metadata(&self.path).is_ok_and(|m| m.len() >= limit),
             _ => false,
         };
         if due {
-            *file = None;
+            self.file = None;
             crate::host::rotate(&self.path.to_string_lossy(), self.keep);
         }
-        if file.is_none() {
-            *file = Some(self.open()?);
+        if self.file.is_none() {
+            self.file = Some(self.open()?);
         }
-        let Some((f, held)) = file.as_mut() else {
+        let Some((f, held)) = self.file.as_mut() else {
             return Ok(());
         };
         f.write_all(bytes)?;
@@ -340,12 +481,13 @@ impl EnvelopeSink for PluginLogSink {
     fn diag(&self, d: Diagnostic<'_>) {
         let level = LogLevel::of_severity(d.severity);
         if d.id == DIAG_LOG {
-            return self.line(level, d.text);
+            return self.line(level, d.text.to_vec());
         }
-        let mut text = d.name.to_vec();
+        let mut text = Vec::with_capacity(d.name.len() + 2 + d.text.len());
+        text.extend_from_slice(d.name);
         text.extend_from_slice(b": ");
         text.extend_from_slice(d.text);
-        self.line(level, &text);
+        self.line(level, text);
     }
 
     fn dropped(&self, why: Dropped) {
@@ -353,7 +495,7 @@ impl EnvelopeSink for PluginLogSink {
             self.line(
                 LogLevel::Warn,
                 format!("busbar: {n} log records of one reply were dropped over the bound")
-                    .as_bytes(),
+                    .into_bytes(),
             );
         }
         self.metrics.dropped(why);

@@ -26,7 +26,7 @@ use busbar_contract::abi::mechanism::KindCode;
 
 use crate::dispatch::{
     in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Adopter, Bind,
-    EnvelopeSink, Frame, Kind, LinkedRow, LogLevel, NoSink, Plugin, PluginLogConfig,
+    EnvelopeSink, Frame, Kind, LinkedRow, LogLevel, NoSink, Plugin, PluginLogConfig, PluginLogSink,
     MAX_LOG_RECORDS, NO_BLOB,
 };
 
@@ -82,7 +82,7 @@ fn bind(sink: Arc<dyn EnvelopeSink>) -> Bind {
 }
 
 /// The sink `dir` gives the witness instance, on the fixed clock.
-fn sink(dir: &Path, level: LogLevel) -> Arc<dyn EnvelopeSink> {
+fn sink(dir: &Path, level: LogLevel) -> Arc<PluginLogSink> {
     Arc::new(
         config(dir, level)
             .sink(INSTANCE, witness::KIND, Arc::new(NoSink))
@@ -193,7 +193,9 @@ fn run(p: Plugin<WitnessKind>) {
     .expect("the script runs");
 }
 
-fn read(dir: &Path) -> String {
+/// What the witness instance's file holds once `sink`'s writer has written every line handed over.
+fn read(dir: &Path, sink: &PluginLogSink) -> String {
+    sink.flush();
     let path = config(dir, LogLevel::Trace).path_for(INSTANCE);
     std::fs::read_to_string(path).unwrap_or_default()
 }
@@ -203,12 +205,13 @@ fn read(dir: &Path) -> String {
 #[test]
 fn a_linked_and_a_dropped_plugin_write_byte_identical_log_files() {
     let (ld, dd) = (scratch("linked"), scratch("dropped"));
-    run(linked(sink(&ld, LogLevel::Trace)));
-    let Some(p) = dropped(sink(&dd, LogLevel::Trace)) else {
+    let (ls, ds) = (sink(&ld, LogLevel::Trace), sink(&dd, LogLevel::Trace));
+    run(linked(ls.clone()));
+    let Some(p) = dropped(ds.clone()) else {
         return;
     };
     run(p);
-    let (l, d) = (read(&ld), read(&dd));
+    let (l, d) = (read(&ld, &ls), read(&dd, &ds));
     for want in [
         " INFO  log-witness export log_witness: tracing from the plugin who=\"a\" calls=1",
         " DEBUG log-witness export log_witness: tracing at debug from the plugin",
@@ -246,7 +249,11 @@ fn a_write_outside_the_capture_never_reaches_the_plugin_log() {
     for (tag, load) in [("outside-linked", true), ("outside-dropped", false)] {
         let dir = scratch(tag);
         let s = sink(&dir, LogLevel::Trace);
-        let p = if load { Some(linked(s)) } else { dropped(s) };
+        let p = if load {
+            Some(linked(s.clone()))
+        } else {
+            dropped(s.clone())
+        };
         let Some(p) = p else { continue };
         std::thread::spawn(move || {
             open(&p);
@@ -254,7 +261,7 @@ fn a_write_outside_the_capture_never_reaches_the_plugin_log() {
         })
         .join()
         .expect("the script runs");
-        let text = read(&dir);
+        let text = read(&dir, &s);
         assert!(!text.contains("standard error"), "{tag}: {text}");
         assert!(!text.contains("thread of its own"), "{tag}: {text}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -268,8 +275,9 @@ fn a_write_outside_the_capture_never_reaches_the_plugin_log() {
 #[test]
 fn two_plugin_images_on_one_thread_keep_their_own_records() {
     let (da, db) = (scratch("image-a"), scratch("image-b"));
-    let a = linked(sink(&da, LogLevel::Trace));
-    let b = linked_b(sink(&db, LogLevel::Trace));
+    let (sa, sb) = (sink(&da, LogLevel::Trace), sink(&db, LogLevel::Trace));
+    let a = linked(sa.clone());
+    let b = linked_b(sb.clone());
     std::thread::spawn(move || {
         open(&a);
         open(&b);
@@ -278,7 +286,7 @@ fn two_plugin_images_on_one_thread_keep_their_own_records() {
     })
     .join()
     .expect("the script runs");
-    let (ta, tb) = (read(&da), read(&db));
+    let (ta, tb) = (read(&da, &sa), read(&db, &sb));
     assert!(ta.contains("a, before the nested call"), "{ta}");
     assert!(ta.contains("a, after the nested call"), "{ta}");
     assert!(
@@ -301,14 +309,15 @@ fn two_plugin_images_on_one_thread_keep_their_own_records() {
 #[test]
 fn the_instance_level_filters_its_file() {
     let dir = scratch("level");
-    let p = linked(sink(&dir, LogLevel::Warn));
+    let s = sink(&dir, LogLevel::Warn);
+    let p = linked(s.clone());
     std::thread::spawn(move || {
         open(&p);
         tick(&p, witness::LOG);
     })
     .join()
     .expect("the script runs");
-    let text = read(&dir);
+    let text = read(&dir, &s);
     assert!(text.contains(" WARN  "), "{text}");
     for below in [" INFO  ", " DEBUG ", " TRACE "] {
         assert!(
@@ -341,6 +350,7 @@ fn the_file_rotates_and_keeps_one_record_per_line() {
             text: format!("record {i}\nsecond half").as_bytes(),
         });
     }
+    s.flush();
     let live = std::fs::read_to_string(dir.join("a_b_c.log")).expect("the live file");
     let archive = std::fs::read_to_string(dir.join("a_b_c.log.1")).expect("the archive");
     assert!(archive.contains("record 0\\nsecond half"), "{archive}");
@@ -399,4 +409,166 @@ fn the_config_resolves_and_refuses_a_bad_level() {
     levels.insert("typo".to_string(), "loud".to_string());
     let err = PluginLogConfig::from_words(None, None, &levels, None, None).unwrap_err();
     assert!(err.contains("plugins.logs.levels['typo']"), "{err}");
+}
+
+/// A config under `dir` whose file is opened at its first line (the default directory's rule), so
+/// the first line is what meets a stalled file.
+#[cfg(unix)]
+fn deferred(dir: &Path, level: LogLevel) -> PluginLogConfig {
+    PluginLogConfig {
+        named_dir: false,
+        ..config(dir, level)
+    }
+}
+
+/// A FIFO where the instance's file goes: opening it to write waits until a reader opens it, as a
+/// disk that does not answer would.
+#[cfg(unix)]
+fn stall(path: &Path) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("a path without NUL");
+    // SAFETY: `c` is a live NUL-terminated path.
+    let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+    assert_eq!(made, 0, "mkfifo {}", path.display());
+}
+
+/// Open the stalled file to read, which lets its writer through, and hand over each line it reads.
+#[cfg(unix)]
+fn release(path: PathBuf) -> std::sync::mpsc::Receiver<String> {
+    use std::io::BufRead as _;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let f = std::fs::File::open(path).expect("the stalled file opens to read");
+        for line in std::io::BufReader::new(f).lines() {
+            let Ok(line) = line else { return };
+            if tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    rx
+}
+
+/// **RED ARM: A STALLED LOG FILE NEVER STALLS THE PLUGIN CALL** (§11.2: no blocking on the hot path;
+/// §11.11 R4: the bounded disk lane is not plugin logging's). The instance's file is a FIFO nobody
+/// reads, so opening it waits; the plugin call that logs still answers, and its lines reach the
+/// file, in the one line format, once the file is read.
+#[cfg(unix)]
+#[test]
+fn a_stalled_log_file_never_stalls_the_plugin_call() {
+    let dir = scratch("stalled");
+    let cfg = deferred(&dir, LogLevel::Trace);
+    let path = cfg.path_for(INSTANCE);
+    stall(&path);
+    let s: Arc<dyn EnvelopeSink> = Arc::new(
+        cfg.sink(INSTANCE, witness::KIND, Arc::new(NoSink))
+            .expect("the sink opens")
+            .with_clock(fixed_clock),
+    );
+    let p = linked(s);
+    let (called, answered) = std::sync::mpsc::channel();
+    let caller = std::thread::spawn(move || {
+        open(&p);
+        tick(&p, witness::LOG);
+        let _ = called.send(());
+        p
+    });
+    let returned = answered
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .is_ok();
+    // Let the file through either way, so a call that did wait finishes before the verdict.
+    let lines = release(path);
+    let p = caller.join().expect("the script runs");
+    let want = " INFO  log-witness export log_witness: tracing from the plugin who=\"a\" calls=1";
+    let mut read = Vec::new();
+    while let Ok(line) = lines.recv_timeout(std::time::Duration::from_secs(30)) {
+        let found = line.contains(want);
+        read.push(line);
+        if found {
+            break;
+        }
+    }
+    drop(p);
+    assert!(
+        returned,
+        "the plugin call waited on its stalled log file (no answer in 10 s)"
+    );
+    assert!(
+        read.iter()
+            .any(|l| l.starts_with("2026-09-21T") && l.contains(want)),
+        "the line reached the file once it was read: {read:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **RED ARM: A FULL QUEUE COUNTS, IT NEVER WAITS.** With the file stalled, more lines than the
+/// writer's queue holds are handed to the sink: every hand-over returns, and once the file is read
+/// each line is either written or counted in ONE line saying how many were dropped.
+#[cfg(unix)]
+#[test]
+fn a_full_log_queue_counts_its_lines_and_never_waits() {
+    use crate::dispatch::log_file::LOG_QUEUE_LINES;
+    use crate::dispatch::Diagnostic;
+    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO};
+    let dir = scratch("full");
+    let cfg = deferred(&dir, LogLevel::Info);
+    let path = cfg.path_for(INSTANCE);
+    stall(&path);
+    let s = cfg
+        .sink(INSTANCE, witness::KIND, Arc::new(NoSink))
+        .expect("the sink opens")
+        .with_clock(fixed_clock);
+    let sent = LOG_QUEUE_LINES + 100;
+    let (handed, over) = std::sync::mpsc::channel();
+    let feeder = std::thread::spawn(move || {
+        for i in 0..sent {
+            s.diag(Diagnostic {
+                id: DIAG_LOG,
+                name: &[],
+                severity: SEVERITY_INFO,
+                text: format!("record {i}").as_bytes(),
+            });
+        }
+        let _ = handed.send(());
+        s
+    });
+    let returned = over
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .is_ok();
+    let lines = release(path);
+    // The sink goes: its writer writes what it holds, reports what it lost, and closes the file.
+    drop(feeder.join().expect("the feeder runs"));
+    let mut read = Vec::new();
+    while let Ok(line) = lines.recv_timeout(std::time::Duration::from_secs(30)) {
+        read.push(line);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        returned,
+        "a stalled log file made the sink wait (no return in 10 s)"
+    );
+    let written = read
+        .iter()
+        .filter(|l| l.contains(" INFO  log-witness export record "))
+        .count();
+    let tallies: Vec<&String> = read
+        .iter()
+        .filter(|l| l.contains(" WARN  log-witness export busbar: "))
+        .collect();
+    assert_eq!(
+        tallies.len(),
+        1,
+        "one line counts the lost lines: {tallies:#?}"
+    );
+    let lost: usize = tallies[0]
+        .split("busbar: ")
+        .nth(1)
+        .and_then(|t| t.strip_suffix(" log lines were dropped: the log writer was behind"))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("the count line names a number: {}", tallies[0]));
+    assert_eq!(written + lost, sent, "every line is written or counted");
+    assert!(
+        lost + LOG_QUEUE_LINES + 1 >= sent,
+        "the queue held at most {LOG_QUEUE_LINES} lines and the writer one: {lost} lost"
+    );
 }
