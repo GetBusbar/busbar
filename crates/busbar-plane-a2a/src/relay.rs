@@ -893,15 +893,27 @@ impl Relay {
                 }
             }
             From::Caller => {
-                let bytes = match &self.instead {
-                    Some(_) if self.instead_sent => Vec::new(),
+                let (bytes, message) = match &self.instead {
+                    Some(_) if self.instead_sent => (Vec::new(), false),
                     Some(instead) => {
                         self.instead_sent = true;
-                        instead.clone()
+                        (instead.clone(), true)
                     }
-                    None => piece.bytes.to_vec(),
+                    None => (piece.bytes.to_vec(), false),
                 };
-                self.sent = self.sent.saturating_add(bytes.len() as u64);
+                // THE BILLED REQUEST BYTES are the body on the hop's wire (predev
+                // `relay_billing.rs:15-18`: "the framed body ... gRPC length-prefixed message",
+                // counted at `relay.rs:1800` `add_sent(request.body.len())`). On the gRPC binding
+                // the grpc transport frames the one request message the plane hands it (its
+                // `msg::frame`, even an empty one), so the wire carries its length prefix too.
+                let prefix = if message && self.binding == Binding::Grpc {
+                    crate::framed::MESSAGE_PREFIX
+                } else {
+                    0
+                };
+                self.sent = self
+                    .sent
+                    .saturating_add(bytes.len().saturating_add(prefix) as u64);
                 if bytes.is_empty() {
                     Answer::Nothing
                 } else {
@@ -1057,7 +1069,9 @@ impl Relay {
         if self.answered {
             return Answer::Nothing;
         }
-        self.received = self.received.saturating_add(bytes.len() as u64);
+        // NOT BILLED: a field block is no payload (predev `relay_billing.rs:23-24` excludes "every
+        // header in both directions"; predev's hop counted the response body alone, `relay.rs:1796`
+        // `resp.body.len()`), so the trailers never count toward the hop's billed bytes.
         if self.binding == Binding::Grpc {
             if let Some(ended) = crate::framed::ended(bytes, status) {
                 self.grpc.ended = Some(ended);
