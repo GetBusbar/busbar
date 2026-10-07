@@ -1655,16 +1655,6 @@ why     = "busbar-kernel names busbar-secret-file as `fixture-secret-file`: decl
 drain   = "delete the `fixture-secret-file` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their secret rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-secret-file)."
 
 [[dep]]
-from    = "busbar-core-admin"
-to      = "busbar-export-prometheus"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-core-admin names busbar-export-prometheus: declared dev in the test graph so the named-map tests resolve `module: prometheus` against the scrape sink LINKED into the test binary, as the composition root links it into the shipped one. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "moves with the plugin-specific tests under BUSBAR-CI-PLUGIN-AGNOSTIC (owner 2026-10-03): the named-map tests resolve the export axis through a contract-only row, and the dev-dependency is deleted."
-
-[[dep]]
 from    = "busbar-plugin-loader"
 to      = "busbar-export-otlp"
 half    = "test"
