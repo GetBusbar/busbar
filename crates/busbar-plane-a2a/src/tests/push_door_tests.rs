@@ -379,3 +379,43 @@ fn a_deleted_config_takes_its_credential_out_of_memory() {
     forget_deleted(&d, ALICE, &[tombstone(ALICE)]);
     assert!(!presented(&d), "the deleted config's credential is gone");
 }
+
+/// A queued notification wakes the instance's driver ticket (R-PUSH), so the kernel ticks and
+/// attempts it at once; a task that queues nothing wakes nothing; an unarmed wake is a no-op.
+#[test]
+fn a_queued_notification_wakes_the_driver_ticket() {
+    let mut book = Book::default();
+    let row = moved(&mut book, "https://inline.example/cb");
+    let (told, woken) = std::sync::mpsc::channel::<()>();
+    let d = Deliveries::new();
+    assert!(queue(&d, &row, None), "unarmed: queued, no wake to make");
+    d.arm(|| {
+        Box::new(move || {
+            let _ = told.send(());
+        })
+    });
+    d.arm(|| panic!("armed once"));
+    assert_eq!(woken.try_iter().count(), 0, "arming wakes nothing");
+    assert!(queue(&d, &row, None));
+    assert_eq!(woken.try_iter().count(), 1, "queue wakes the ticket");
+    let silent = moved(&mut Book::default(), "");
+    assert!(!queue(&d, &silent, None));
+    assert_eq!(woken.try_iter().count(), 0, "nothing queued, nothing woken");
+}
+
+/// The pushback path (`queue_moved`, the agent's own report of a task's move) wakes the driver
+/// ticket after queueing the caller's delivery.
+#[test]
+fn queue_moved_wakes_the_driver_ticket() {
+    let mut book = Book::default();
+    let row = moved(&mut book, "https://inline.example/cb");
+    let (told, woken) = std::sync::mpsc::channel::<()>();
+    let d = Deliveries::new();
+    d.arm(|| {
+        Box::new(move || {
+            let _ = told.send(());
+        })
+    });
+    assert!(queue_moved(&d, &mut book, ALICE, &row).unwrap());
+    assert_eq!(woken.try_iter().count(), 1);
+}

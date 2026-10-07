@@ -70,6 +70,8 @@ pub fn queue(deliveries: &Deliveries, row: &TaskRow, config: Option<&PushConfig>
         return false;
     };
     deliveries.enqueue(delivery, 0);
+    // The delivery is attempted on this wake of the driver ticket, not at the next scheduled tick.
+    deliveries.wake();
     true
 }
 
@@ -272,6 +274,9 @@ pub(crate) fn tick(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>, now_ns: u6
         return Outcome::Ready;
     }
     let deliveries = &plane.deliveries;
+    // This op runs on the instance's driver ticket: the one a queued delivery wakes.
+    let driver = *host;
+    deliveries.arm(|| Box::new(move || driver.wake(ticket)));
     let mut flight = match instance.resume::<Flight>() {
         Some(flight) => *flight,
         None => match deliveries.next_due(now_ns) {

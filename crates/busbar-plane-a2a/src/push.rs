@@ -279,6 +279,18 @@ pub enum Settled {
 #[derive(Debug, Default)]
 pub struct Deliveries {
     book: Keyed<(), Book>,
+    wake: Wakeup,
+}
+
+/// The way to wake the instance's driver ticket (R-PUSH): armed by the first `tick`, which is the
+/// op that carries the ticket.
+#[derive(Default)]
+struct Wakeup(std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>);
+
+impl std::fmt::Debug for Wakeup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Wakeup").finish_non_exhaustive()
+    }
 }
 
 impl Deliveries {
@@ -291,6 +303,29 @@ impl Deliveries {
     fn with<R>(&self, f: impl FnOnce(&mut Book) -> R) -> R {
         self.book
             .with_all(|m| f(m.entry(()).or_insert_with(Book::default)))
+    }
+
+    /// Arm the wake of the instance's driver ticket, once: a queued delivery is attempted on that
+    /// wake, not at the next scheduled `tick` (R-PUSH: a wake runs `drive`, then re-polls `tick`).
+    pub fn arm(&self, wake: impl FnOnce() -> Box<dyn Fn() + Send + Sync>) {
+        let mut held = self.wake.0.lock().unwrap_or_else(|e| e.into_inner());
+        if held.is_none() {
+            *held = Some(wake());
+        }
+    }
+
+    /// Wake the driver ticket so the kernel ticks now; a no-op until armed (the first `tick` runs
+    /// at boot and finds what is queued).
+    pub fn wake(&self) {
+        if let Some(wake) = self
+            .wake
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            wake();
+        }
     }
 
     /// File `delivery` behind its task's earlier ones. Answers whether the oldest waiting one was
