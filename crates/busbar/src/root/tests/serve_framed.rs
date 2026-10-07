@@ -98,6 +98,44 @@ async fn a_framed_stream_that_ends_whole_is_closed_by_its_framer_as_whole() {
     assert_eq!(closing(&a), (Some("0"), Some(""), Some("")));
 }
 
+/// A UNIT THAT FAILS AFTER ITS HEAD IS TOLD TO THE CLIENT (`BUSBAR-1.6.0.md` §7, "a cut is told
+/// to the client"; audit root-R1 leftover C2): `/framed/fail` states its head and one message,
+/// then the plane fails the unit on the re-call for the rest, and the route step refuses it for
+/// the plane's fault. Its stream closes as that refusal, the framer rendering the refusal's status
+/// in the claim's numbering. RED before the fix: the stream closed as one that ended whole
+/// (`frame-status: 0`), a failed unit read as a success.
+#[tokio::test]
+async fn a_framed_unit_that_fails_after_its_head_closes_as_a_refusal_never_as_whole() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-framed-fail", false) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let a = framed(&g, "/framed/fail", b"\x01x").await;
+    assert_eq!(
+        (a.status, a.body.as_slice()),
+        (200, b"\x01x".as_slice()),
+        "the head and the one message reached the client before the unit failed"
+    );
+    let t = a.trailers.as_ref().expect("the stream is closed");
+    assert_ne!(
+        field(t, "frame-status"),
+        Some("0"),
+        "RED: a unit that failed after its head is never closed as whole"
+    );
+    assert_eq!(
+        field(t, "frame-status"),
+        Some(
+            busbar_kernel::plane_driver::refusal_status(
+                busbar_contract::caps::ReasonCode::PlanePanic
+            )
+            .to_string()
+            .as_str()
+        ),
+        "the stream closes as the unit's refusal, the plane's fault"
+    );
+}
+
 #[tokio::test]
 async fn a_refused_framed_stream_is_answered_by_its_framers_closing_block_alone() {
     let _one = PUBLISHING.lock().await;
