@@ -631,6 +631,10 @@ fn scan_roots(cx: &Ctx) -> Result<(Vec<crate::ctx::SourceFile>, Vec<String>), Ve
     }
 }
 
+/// A selftest RED case over appended declarations: its name, the `(file, text)` appends, and
+/// the needles its red must print.
+type RedCase<'a> = (&'a str, Vec<(String, &'a str)>, Vec<&'a str>);
+
 /// A file's text as an overlay would show it (the overlay's own plant first), for stacking edits.
 fn ov_read(cx: &Ctx, ov: &Overlay, rel: &str) -> Option<String> {
     let planted = cx.with_overlay(ov.clone());
@@ -1041,7 +1045,7 @@ impl Gate for PlaneAbiNeutralityGate {
         let plane_check = format!("{ABI_DIR}/plane/check.rs");
         let host_hook = format!("{ABI_DIR}/host/hook.rs");
         let host_service = format!("{ABI_DIR}/host/service.rs");
-        let red_cases: Vec<(&str, Vec<(String, &str)>, Vec<&str>)> = vec![
+        let red_cases: Vec<RedCase> = vec![
             (
                 "a whole-word protocol noun (ToolSlot) is still a finding, once per name across \
                  its sites",
