@@ -93,7 +93,7 @@ busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webh
 busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "0ff0e022e8d93ac300f9d6184ea4b54456550934" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
-busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "3430de60cfc903093a6c40d062e69a4cbb1bc896" }
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "1303273a732bdd208305c4b96c8f4a5d0c05400f" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
 busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "2fd38617db6b139a14adc7a32affeed239f60ab3" }
