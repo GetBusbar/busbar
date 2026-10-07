@@ -74,6 +74,12 @@ fn refused(status: u16, code: &str, message: &str) -> AdminAnswer {
     }
 }
 
+/// A durable verb the store has not acknowledged: `503` with the reason (ARCHITECT 2026-10-07 H3
+/// ruling (d)). A refusal the previous release never answered: it kept no journal.
+pub(crate) fn journal_unavailable(why: &str) -> AdminAnswer {
+    refused(503, "service_unavailable", why)
+}
+
 /// A `200` carrying `value` as JSON.
 fn answer(value: &serde_json::Value) -> Result<AdminAnswer, GovernanceError> {
     serde_json::to_vec(value)
@@ -320,7 +326,8 @@ pub(crate) fn plane_record_write_effect(
 /// conflict` and seals nothing. The committed release is sealed on the node's journal as a
 /// `Policy` record ([`COMMIT_UPGRADE_RECORD_TAG`], the release, the second, the principal) before
 /// the answer names its position and chain hash. A node with no journal bound refuses (`Store`):
-/// a commit nothing recorded did not happen.
+/// a commit nothing recorded did not happen. Where the store keeps the journal, the commit answers
+/// only once the store acknowledged its record, and `503` with the reason otherwise.
 pub(crate) fn commit_upgrade_effect(
     body: &[u8],
     at: u64,
@@ -345,12 +352,21 @@ pub(crate) fn commit_upgrade_effect(
         ));
     }
     let journal = journal.ok_or(GovernanceError::Store)?;
+    if let Err(why) = journal.admit() {
+        return Ok(journal_unavailable(&why));
+    }
     let mut record = busbar_kernel_wal::BodyWriter::new();
     record.text(COMMIT_UPGRADE_RECORD_TAG);
     record.text(version);
     record.num(at);
     record.text(principal);
     let (node_seq, hash) = journal.seal_policy(record.finish(), at)?;
+    if let Err(why) = journal.acked(node_seq) {
+        return Ok(journal_unavailable(&format!(
+            "the commit is sealed at journal position {node_seq} and not yet kept by the store: \
+             {why}; do not re-submit"
+        )));
+    }
     answer(&serde_json::json!({
         "committed": version,
         "committed_at": at,

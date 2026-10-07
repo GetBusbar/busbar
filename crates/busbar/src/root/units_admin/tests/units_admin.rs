@@ -5905,3 +5905,153 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
         .verify_seal(&crate::root::durability::KeySetVerifier::new(keys))
         .expect("the signed checkpoint verifies against the served key");
 }
+
+// ---------------------------------------------------------------------------------------------
+// H3 (ARCHITECT 2026-10-07 ruling (d)): THE DURABLE VERBS OVER A JOURNAL THE STORE KEEPS
+// ---------------------------------------------------------------------------------------------
+
+/// A book with no data directory whose journal is kept by `slots`, as the production boot builds
+/// one over the configured store.
+#[cfg(test)]
+fn a_book_over_the_store(
+    slots: &crate::root::store_double::RecordSlots,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "memory")
+        .expect("the lane starts");
+    Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            0,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+            None,
+        )
+        .expect("the store reads back"),
+    ))
+}
+
+/// The status and body of a packed admin answer.
+#[cfg(test)]
+fn status_and_body(packed: &[u8]) -> (u16, String) {
+    let answer = AdminAnswer::unpack(packed).expect("a packed answer");
+    (
+        answer.status,
+        String::from_utf8_lossy(&answer.body).into_owned(),
+    )
+}
+
+/// **A SIGNED BACK-DATED CORRECTION SURVIVES A RESTART ON A NODE WITH NO DATA DIRECTORY**
+/// (ARCHITECT 2026-10-07 H3 ruling (a), (b), (d)): `amend_rate_history` answers 200 only once the
+/// store acknowledged its record, and a fresh book over the same store reads the amendment back,
+/// figures and all.
+///
+/// RED before the fix: the journal shipped to the store adapter's shim, which acknowledged and kept
+/// a count — the verb answered 200 and the restarted book held no amendment.
+#[test]
+fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_survives_a_restart() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let book = a_book_over_the_store(&slots);
+        let answered = amend_rate_history_effect(
+            &a_seeded_history(),
+            Some(&a_journal_over(&book)),
+            &a_priced_correction(5, serde_json::json!(1.5)),
+            6,
+            a_sealed_operator(),
+            &an_attribution(),
+        )
+        .expect("the correction applies");
+        let (status, body) = status_and_body(&answered);
+        assert_eq!(status, 200, "{body}");
+    }
+    let restarted = a_book_over_the_store(&slots);
+    let records = replayed_amendments(&restarted.lock().unwrap());
+    assert_eq!(
+        records.len(),
+        1,
+        "the store kept the amendment and the restart read it back"
+    );
+    assert_eq!(records[0].sealed_fee, 5);
+}
+
+/// **A STORE THAT REFUSES THE RECORD REFUSES THE VERB** (ARCHITECT 2026-10-07 H3 ruling (d)):
+/// `amend_rate_history` answers 503 with the store's reason, never 200 over a record nothing kept.
+///
+/// RED before the fix: the verb answered 200.
+#[test]
+fn a_correction_the_store_refuses_answers_503_with_the_reason() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    slots.refuse(true);
+    let book = a_book_over_the_store(&slots);
+    let answered = amend_rate_history_effect(
+        &a_seeded_history(),
+        Some(&a_journal_over(&book)),
+        &a_priced_correction(5, serde_json::json!(1.5)),
+        6,
+        a_sealed_operator(),
+        &an_attribution(),
+    )
+    .expect("an answer, not an error");
+    let (status, body) = status_and_body(&answered);
+    assert_eq!(status, 503, "{body}");
+    assert!(
+        body.contains("the test store refuses writes"),
+        "the store's reason is stated: {body}"
+    );
+    // A second correction while the store still refuses records nothing at all.
+    let before = book.lock().unwrap().journal.next_seq();
+    let again = amend_rate_history_effect(
+        &a_seeded_history(),
+        Some(&a_journal_over(&book)),
+        &a_priced_correction(6, serde_json::json!(2)),
+        7,
+        a_sealed_operator(),
+        &an_attribution(),
+    )
+    .expect("an answer");
+    assert_eq!(status_and_body(&again).0, 503);
+    assert_eq!(
+        book.lock().unwrap().journal.next_seq(),
+        before,
+        "nothing is recorded while the store refuses"
+    );
+}
+
+/// **`commit_upgrade` OVER A STORE THAT REFUSES ANSWERS 503** with the reason ("a commit nothing
+/// recorded did not happen"), and 200 over a store that takes it (ARCHITECT 2026-10-07 H3 ruling
+/// (d)).
+///
+/// RED before the fix: 200 over the refusing store.
+#[test]
+fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
+    let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
+        .expect("json");
+
+    let refusing = crate::root::store_double::RecordSlots::new();
+    refusing.refuse(true);
+    let book = a_book_over_the_store(&refusing);
+    let answer =
+        bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .expect("an answer");
+    assert_eq!(
+        answer.status,
+        503,
+        "{}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    assert!(String::from_utf8_lossy(&answer.body).contains("the test store refuses writes"));
+
+    let taking = crate::root::store_double::RecordSlots::new();
+    let book = a_book_over_the_store(&taking);
+    let answer =
+        bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .expect("an answer");
+    assert_eq!(
+        answer.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    assert!(taking.rows_under(crate::root::durability::JOURNAL_SCHEMA) >= 1);
+}

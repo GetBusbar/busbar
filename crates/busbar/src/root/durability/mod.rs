@@ -30,9 +30,9 @@
 //! ## The branch, and why it is the only place the data directory is read
 //!
 //! A deployment that configures no data directory needs none: without one the journal is
-//! memory-buffered and shipped to the configured store, and durability is the store's durability.
-//! That is not a degraded mode — it is the previous release's shape, and the great majority of
-//! deployments run it.
+//! memory-buffered and its records are kept by the configured store, and durability is the store's
+//! durability. That is not a degraded mode — the great majority of deployments run it — but it is
+//! only true because the store KEEPS the records and the boot READS THEM BACK; see the next section.
 //!
 //! The journal unit states the rule as a type, and says so in its own words: *constructing an
 //! on-disk log IS the decision to write to a disk; nothing probes for a directory or guesses at
@@ -42,32 +42,38 @@
 //! asked for none is the failure this shape exists to make impossible, and the tests below assert
 //! it by listing the directory rather than by trusting the code.
 //!
-//! ## The shipper is part of the answer, not an optimisation, and it has a name
+//! ## Where the records go, and how a restart gets them back
 //!
-//! Without a data directory, the journal is *shipped to the configured store synchronously*, which
-//! is why the unset branch takes the store's shipper rather than the null one. That shipper is the
-//! store adapter's, and the verb behind it is the contract's `append_batch(stream, records)` —
-//! segment-level batched, idempotent on the `(node, node_seq)` pair the journal's records carry,
-//! which is what makes a re-offered batch after a store hiccup append what is new and pass over what
-//! is already there. Reading one record of the chain back by key is the other three the contract
-//! adds for a kernel-held durable record, `record_put`, `record_get` and `record_scan`.
+//! The production boot builds the book over the configured store ([`build_on_store`], ARCHITECT
+//! 2026-10-07 H3 ruling (a)-(c)). Each journal record is written through the store's v3
+//! `record_put` slot under the journal schema, keyed `(node, node_seq)` big-endian so `record_scan`
+//! returns chain order ([`store_chain`]). The write is WRITE-BEHIND on the host's one bounded lane
+//! ([`JournalLane`]): the journal appends under the book's lock on the request path and hands the
+//! batch to the lane, which never calls the store there; its own worker puts the records in order,
+//! off every runtime worker, and keeps a refused record and offers it again.
 //!
-//! On every store this binary can load, all four are answered by the adapter's NODE-LOCAL SHIM: the
-//! binary's store window tops out below the payload schema at which those operations gain a wire, so
-//! there is no published store that speaks them and the shim is the answer rather than a fallback.
-//! It acknowledges and never fails, which is why a memory-buffered journal on such a deployment
-//! never sees a durability loss it did not deserve. A node with no store configured and no directory
-//! keeps nothing, which is again the previous release's behaviour and not a silent data loss: there
-//! was nowhere it was ever going.
+//! With no data directory the boot RESUMES the chain from the store: `record_scan` reads it back,
+//! the journal is seeded with it (so `replay` answers it and `node_seq` continues), and everything a
+//! chain rebuilds is rebuilt from it exactly as from a disk — the book, the open holds a predecessor
+//! left, the audit records and their cache, the checkpoints' anchor, the dated rate-card history
+//! with its signed corrections, and the node amendment journal ([`Durability::keeps_chain`]).
+//! Before this, the store adapter's shipper acknowledged every batch and kept a count, so a node
+//! with no data directory lost all of it on every restart.
 //!
-//! **One constraint this places on the caller, and it is load-bearing.** In the memory-buffered
-//! mode the shipper's answer is part of the commit: a failed ship comes back as a durability loss
-//! with the batch retained. On a node with no configured peers — which is every previous-release
-//! deployment — a store hiccup must still be write-behind. The retained batch is re-appended, and
-//! that is write-behind by another name; what must not happen is the caller turning that answer
-//! into a refusal at the door. The previous release served through a store hiccup, and a refusal
-//! there would be a deployment that started refusing requests it used to serve. The retention is
-//! bounded and the bound's behaviour is the journal unit's named decision, not this module's.
+//! **What a full lane means, and why it is the caller's decision.** While the lane has room a store
+//! that refuses costs nothing a client sees: the units are served and their records wait in the
+//! lane. When it is full the journal's next batch is turned away and retained by the log, which
+//! re-offers it on the next append, and the node FAILS CLOSED: a new money-bearing unit is refused
+//! 503 with the reason ([`Durability::refuses_money`]) until the store takes what waits. The journal
+//! is built to keep every record at its bound for this ([`Journal::retaining_at_bound`]); no record
+//! is dropped. The durable admin verbs go further and answer only once the store has acknowledged
+//! their own record (`units_admin`).
+//!
+//! With a data directory the disk is the record and the store is catch-up work: the same lane ships
+//! to it, and a full lane refuses nothing.
+//!
+//! A configured store that does not offer the record slots at all cannot keep a journal, and the
+//! boot refuses it, naming the store and the slots (`root::boot::book`).
 //!
 //! ## Dual writing is the default, not an option
 //!
@@ -120,6 +126,14 @@ use busbar_kernel_wal::{
 mod replay;
 use replay::{apply_opened, replay_into, same_movement, Replayed};
 pub use replay::{JournalDisagreement, Recoverable};
+
+/// The journal kept in the configured store: its schema and keys, the boot's read-back and the
+/// host's write-behind lane. A private child module; its public items are re-exported here.
+mod store_chain;
+pub use store_chain::{read_chain, JournalLane, ACK_DEADLINE, RECORD_SLOTS};
+// What the tests read the store's rows back by.
+#[cfg(test)]
+pub use store_chain::{part_key, JOURNAL_SCHEMA};
 
 /// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
 /// journal rebuilt from the chain at boot. A private child module, as `replay` is.
@@ -176,7 +190,7 @@ pub struct DurabilityConfig {
 /// The durability stack the root owns: the journal, the ledger and the audit record chain.
 pub struct Durability {
     /// The one journal. On disk only where a data directory was configured; otherwise
-    /// memory-buffered and shipped through the store adapter's plane-record verbs.
+    /// memory-buffered, its records kept by the configured store through [`Durability::lane`].
     pub journal: Journal,
     /// The ledger, dual-writing onto the previous release's rows.
     pub ledger: Ledger,
@@ -280,6 +294,12 @@ pub struct Durability {
     /// THE CHECKPOINT CADENCE (BUSBAR-1.6.0.md THE DESIGN, §7), once [`Durability::arm_checkpoints`] armed
     /// it. `None` on a book nobody armed, which seals nothing on its own.
     cadence: Option<Cadence>,
+    /// THE HOST'S LANE TO THE CONFIGURED STORE the journal ships through, on a book built over one
+    /// ([`build_on_store`]). `None` on a book built over a bare shipper.
+    lane: Option<JournalLane>,
+    /// The memory-buffered journal was RESUMED from the chain the configured store kept, so the
+    /// chain has a durable source as a disk would be one.
+    resumed: bool,
 }
 
 /// Where the book reads the dated rate-card history a replay prices against: a snapshot pinned
@@ -305,6 +325,39 @@ impl Durability {
     #[must_use]
     pub fn on_disk(&self) -> bool {
         matches!(self.journal.mode(), Mode::OnDisk)
+    }
+
+    /// WHETHER THE CHAIN HAS A DURABLE SOURCE: on a disk, or resumed from the configured store. The
+    /// chain-rebuilt state — the dated history, the amendment journal, an audit window older than
+    /// the cache — is rebuilt from it then, and only then.
+    #[must_use]
+    pub fn keeps_chain(&self) -> bool {
+        self.on_disk() || self.resumed
+    }
+
+    /// The host's lane to the configured store, on a book built over one.
+    #[must_use]
+    pub fn lane(&self) -> Option<&JournalLane> {
+        self.lane.as_ref()
+    }
+
+    /// Whether the store is where this journal's durability is: no disk, and a lane to the store.
+    /// A durable verb then answers only once the store acknowledged its record.
+    #[must_use]
+    pub fn durable_in_store(&self) -> bool {
+        !self.on_disk() && self.lane.is_some()
+    }
+
+    /// WHY A NEW MONEY-BEARING UNIT IS REFUSED (ARCHITECT 2026-10-07 H3 ruling): the store is where
+    /// this journal is kept and the lane to it is full, so admitting more work would grow what the
+    /// node holds for the store without bound. `None` otherwise — always on a disk, where the store
+    /// is catch-up work.
+    #[must_use]
+    pub fn refuses_money(&self) -> Option<String> {
+        if self.on_disk() {
+            return None;
+        }
+        self.lane.as_ref().and_then(JournalLane::refuses_money)
     }
 
     /// Put a durable `ChainBreak` record on the journal for every segment remainder boot recovery
@@ -2141,16 +2194,14 @@ pub struct NodeBook {
 /// dual write is keeping up — would answer over a book nothing settles into. That is not a
 /// hypothetical shape; it is what a node has when each mount builds its own.
 ///
-/// THE NO-STORE FALLBACK, and it is that rather than the boot path. Memory-buffered, keeping
-/// nothing: a node with no configured store has nowhere to ship a batch to, so it takes the null
-/// shipper and reads no data directory, which is the previous release's behaviour for that
-/// deployment and not a silent data loss — there was nowhere the records were ever going.
+/// A BOOK WITH NO STORE BEHIND IT: memory-buffered over the null shipper, reading no data
+/// directory, keeping its chain for the life of the process and no longer. The boot never builds
+/// one — a 1.6.0 configuration names its store (Q-STORE = (B)) and `root::boot::book` refuses one
+/// that does not — so this is for a caller with no store to ship to by construction: a tool, a test.
 ///
-/// **A DEPLOYMENT WITH A STORE DOES NOT COME THROUGH HERE.** It is composed by the binary's
-/// `root::boot::compose_book`, which takes the CONFIGURED data directory and the configured store's
-/// shipper and seals the opening before it hands the book back. This constructor hard-codes both
-/// answers, which is correct only because the one caller that reaches it has already established
-/// that there is no store to make either decision against.
+/// **A DEPLOYMENT DOES NOT COME THROUGH HERE.** It is composed by the binary's
+/// `root::boot::compose_book` over the configured store ([`build_on_store`]), which takes the
+/// CONFIGURED data directory and seals the opening before it hands the book back.
 #[must_use]
 pub fn node_book() -> NodeBook {
     node_book_over(root_history())
@@ -2236,14 +2287,74 @@ pub fn build_with_cards(
     history: HistorySource,
     cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
+    build_inner(cfg, node, shipper, None, legacy_rows, history, cards)
+}
+
+/// THE BOOK OVER THE CONFIGURED STORE — the production boot's (ARCHITECT 2026-10-07 H3 ruling
+/// (a)-(c)): the journal ships through `lane` to the store's record slots, and with no data
+/// directory it RESUMES from the chain the store kept ([`read_chain`]), keeping every record at its
+/// bound so a full lane refuses new money-bearing work rather than dropping anything. With a data
+/// directory the disk is the record and the store is catch-up work, read nothing back from.
+///
+/// # Errors
+///
+/// As [`build_for_node`], and: the store would not read its journal back, or the chain it holds
+/// could not be seeded.
+pub fn build_on_store(
+    cfg: &DurabilityConfig,
+    node: u64,
+    lane: JournalLane,
+    legacy_rows: Box<dyn LegacyRows>,
+    history: HistorySource,
+    cards: Option<&'static crate::root::kernel::RootHistory>,
+) -> Result<Durability, OpenError> {
+    let resume = match cfg.data_dir {
+        Some(_) => None,
+        None => Some(read_chain(lane.calls().as_ref(), node).map_err(|why| {
+            OpenError::Io(std::io::Error::other(format!(
+                "the journal could not be read back from the store `{}`: {why}",
+                lane.store()
+            )))
+        })?),
+    };
+    let mut durability = build_inner(
+        cfg,
+        node,
+        lane.shipper(),
+        Some(resume.unwrap_or_default()),
+        legacy_rows,
+        history,
+        cards,
+    )?;
+    durability.lane = Some(lane);
+    Ok(durability)
+}
+
+/// The one construction every builder above shares. `resume` is `Some` on a book over the
+/// configured store: with no data directory its journal is seeded with those records (the chain
+/// the store kept, possibly none) and keeps every record at its bound.
+fn build_inner(
+    cfg: &DurabilityConfig,
+    node: u64,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
+    resume: Option<Vec<busbar_kernel_wal::Record>>,
+    legacy_rows: Box<dyn LegacyRows>,
+    history: HistorySource,
+    cards: Option<&'static crate::root::kernel::RootHistory>,
+) -> Result<Durability, OpenError> {
     // The journal is handed the root's wall clock: the log unit reads none of its own.
     let clock = busbar_kernel::store::now_ms;
-    let journal = match cfg.data_dir.as_deref() {
-        // The previous release's shape: nothing is opened, nothing is probed, and durability is
-        // whatever the store the batches are shipped to provides.
-        None => Journal::memory_buffered_to(node, shipper, clock),
+    let resumed = cfg.data_dir.is_none() && resume.is_some();
+    let journal = match (cfg.data_dir.as_deref(), &resume) {
+        // No disk, and the store is where the chain is kept: resume it. Nothing is opened and
+        // nothing is probed; the records come back from the store.
+        (None, Some(records)) => {
+            Journal::memory_resumed(node, records, shipper, clock)?.retaining_at_bound()
+        }
+        // No disk and no store behind the shipper: the chain lives as long as the process.
+        (None, None) => Journal::memory_buffered_to(node, shipper, clock),
         // The operator asked for a journal on this node's own disk. This call is that decision.
-        Some(dir) => Journal::in_directory(node, dir, shipper, clock)?,
+        (Some(dir), _) => Journal::in_directory(node, dir, shipper, clock)?,
     };
 
     let mut durability = Durability {
@@ -2272,6 +2383,8 @@ pub fn build_with_cards(
         cards_from: None,
         amendments_through: None,
         cadence: None,
+        lane: None,
+        resumed,
     };
 
     // A CORRUPT JOURNAL DOES NOT STOP THE BOOT, AND IT IS NEVER SILENT. The log has already kept
@@ -2297,15 +2410,23 @@ pub fn build_with_cards(
     // money view resetting to zero on every restart — and the reconciliation passing, because both
     // sides were zero. Every hold opened and every settlement posted is replayed through the
     // ledger's own arithmetic, the dual write included, so the book and the rows it feeds are what
-    // they were when the node stopped. A memory-buffered journal replays nothing: it starts empty.
+    // they were when the node stopped. A memory-buffered journal resumed from the store replays
+    // what the store kept; one with no store behind it starts empty.
     //
     // AND THE DATED RATE-CARD HISTORY IS REBUILT FROM THE CHAIN FIRST (#79, OWNER RULING Q14), so a
     // replayed posting prices at the card in force when it arrived — never at the boot card.
-    let chain = durability.journal.replay();
+    //
+    // A RESUMED chain is read from what the store returned rather than off the seeded buffer: the
+    // buffer keeps its newest memory segment resident, the store keeps all of it.
+    let chain = match resume.filter(|_| resumed) {
+        Some(records) => Ok(busbar_kernel_wal::decode_run(&records)
+            .and_then(|decoded| busbar_kernel_wal::verify_journal(&decoded).map(|()| decoded))),
+        None => durability.journal.replay(),
+    };
     let mut refused_corrections = Vec::new();
     if let Some(cards) = cards {
-        let records = match (&cfg.data_dir, &chain) {
-            (Some(_), Ok(Ok(records))) => Some(records.as_slice()),
+        let records = match (durability.keeps_chain(), &chain) {
+            (true, Ok(Ok(records))) => Some(records.as_slice()),
             _ => None,
         };
         // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).

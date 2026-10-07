@@ -8,24 +8,21 @@
 //! ## The rule, as ruled
 //!
 //! - The keyset is MINTED at the first boot's `Bootstrap`: a fresh ed25519 seed from the OS CSPRNG.
-//! - It is SEALED IN THE STORE where the store's ABI can hold it. **No store this binary can load
-//!   can hold it today**: the native store verbs that would carry it (`record_put` / `record_get`
-//!   on `busbar_contract::abi::sdk::store::StoreSlots`) have no wire below [`STORE_ABI_WITH_NEW_OPS`], which is
-//!   above the top of this binary's store window, so the store adapter's node-local shim answers
-//!   them and nothing survives the process. The store half therefore has no carrier yet, and this
-//!   module implements only the two halves that do.
-//! - On a store that cannot hold it — the 1.5.5 ABI-2 store and the memory store, i.e. every store
-//!   today — and with no `data_dir`, the keyset is NODE-LOCAL AND EPHEMERAL (PB-13): minted per
+//! - It is SEALED IN THE STORE where the store can hold it. The store's v3 record slots
+//!   (`record_put` / `record_get` / `record_scan`) are a carrier for it — the node's journal is kept
+//!   in them (ARCHITECT 2026-10-07 H3 ruling) — but sealing the keyset there is not built in this
+//!   release, so this module implements only the two halves below.
+//! - With no `data_dir`, the keyset is NODE-LOCAL AND EPHEMERAL (PB-13): minted per
 //!   process, never written anywhere, and NOTHING depends on it — no fingerprint check, no
-//!   `KeysetMissing`, no ceremony. A node verifies the signatures of its own boot against it.
+//!   `KeysetMissing`, no ceremony. A node verifies the signatures of its own boot against it. A
+//!   chain resumed from the store therefore carries records a predecessor signed under a key this
+//!   boot does not hold, and a walk of them names that key rather than verifying it.
 //! - With `data_dir` written, [`KEYSET_FILE`] under it (mode 0600) is a LOCAL CACHE of the
 //!   deployment keyset, and the first boot journals a `Bootstrap` record sealing its fingerprint.
 //!   [`KeysetMissing`] fires ONLY when `data_dir` is set, a `Bootstrap` is on the chain, and
 //!   neither the file nor the store yields the fingerprint that `Bootstrap` sealed.
 //! - There is NO off-node import/export CLI: the owner cut `export_keyset`, so an import would have
 //!   no source.
-//!
-//! [`STORE_ABI_WITH_NEW_OPS`]: crate::root::loader::store_adapter::STORE_ABI_WITH_NEW_OPS
 
 use std::path::{Path, PathBuf};
 

@@ -1560,6 +1560,12 @@ fn amend_rate_history_effect(
         .dual_control
         .ok_or(GovernanceError::Validation)?;
     let journal = journal.ok_or(GovernanceError::Store)?;
+    // WHERE THE STORE KEEPS THE JOURNAL, nothing is recorded while it is refusing the journal's
+    // records: the correction is refused 503 with the reason (ARCHITECT 2026-10-07 H3 ruling (d)).
+    if let Err(why) = journal.admit() {
+        return Ok(bound::journal_unavailable(&why).pack());
+    }
+    let sealed_at: std::cell::Cell<Option<u64>> = std::cell::Cell::new(None);
     let correction = crate::root::kernel::Correction {
         effective_from,
         effective_until,
@@ -1602,7 +1608,9 @@ fn amend_rate_history_effect(
                 signed_payload: canonical_amend_payload(obj),
                 signature: signature.to_string(),
             };
-            journal.record(&record, arrival_secs)
+            journal
+                .seal_policy(amendment_body(&record), arrival_secs)
+                .map(|(node_seq, _)| sealed_at.set(Some(node_seq)))
         })
         .map_err(|refused| match refused {
             crate::root::kernel::AmendRefused::NoHistory => GovernanceError::NotFound,
@@ -1618,6 +1626,18 @@ fn amend_rate_history_effect(
             }
             crate::root::kernel::AmendRefused::Seal(e) => e,
         })?;
+    // AND THE ANSWER WAITS FOR THE STORE (ARCHITECT 2026-10-07 H3 ruling (d)). The correction is on
+    // the chain and in force on this node, as the chain says; until the store has acknowledged it, a
+    // restart elsewhere could not read it back, so it is not answered as done.
+    if let Some(node_seq) = sealed_at.get() {
+        if let Err(why) = journal.acked(node_seq) {
+            return Ok(bound::journal_unavailable(&format!(
+                "the correction is sealed at journal position {node_seq} and not yet kept by the \
+                 store: {why}; do not re-submit"
+            ))
+            .pack());
+        }
+    }
 
     let mut out = String::new();
     out.push_str("{\"history_seq\":");
@@ -1843,9 +1863,15 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
 /// other journal record takes.
 ///
 /// Not the admin ring and not a store of its own. The journal is on disk where the operator named a
-/// data directory and shipped to the configured store otherwise; it is never pruned by volume, it
-/// replays after a restart, and it gives the amendment a POSITION relative to the postings it
-/// reprices.
+/// data directory and kept by the configured store otherwise (its v3 record slots, read back at
+/// boot); it is never pruned by volume, it replays after a restart, and it gives the amendment a
+/// POSITION relative to the postings it reprices.
+///
+/// WHERE THE STORE IS THE JOURNAL'S DURABILITY (no data directory), a durable verb answers only
+/// once the store ACKNOWLEDGED its record (ARCHITECT 2026-10-07 H3 ruling (d)): [`Self::admit`]
+/// refuses before anything is recorded while the store is refusing the journal's records, and
+/// [`Self::acked`] waits for the record's acknowledgement before the verb answers 200. Either
+/// refusal is a 503 with the reason (`bound::journal_unavailable`).
 pub struct AmendmentJournal {
     book: Arc<Mutex<crate::root::durability::Durability>>,
     token: Grant<busbar_contract::caps::DurableWrite>,
@@ -1878,21 +1904,47 @@ impl AmendmentJournal {
         record: &AmendmentRecord,
         wall_secs: u64,
     ) -> Result<(), busbar_core_admin::GovernanceError> {
-        let entry = busbar_kernel_wal::Entry::new(
-            busbar_kernel_wal::RecordClass::Policy,
-            amendment_body(record),
-        )
-        .at(wall_secs, 0);
-        let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
-        durability
-            .journal
-            .append(
-                &self.token,
-                busbar_contract::caps::StepName::Route,
-                &[entry],
-            )
+        self.seal_policy(amendment_body(record), wall_secs)
             .map(|_| ())
-            .map_err(|_| busbar_core_admin::GovernanceError::Store)
+    }
+
+    /// The durable verb's gate, BEFORE it records anything: `Err` with the reason while the store
+    /// is where this journal is kept and is refusing its records (or the lane to it is full). A
+    /// journal on a disk always admits.
+    ///
+    /// # Errors
+    ///
+    /// The reason the store is not taking the journal's records.
+    pub fn admit(&self) -> Result<(), String> {
+        let lane = {
+            let durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+            if !durability.durable_in_store() {
+                return Ok(());
+            }
+            durability.lane().cloned()
+        };
+        lane.map_or(Ok(()), |lane| lane.healthy())
+    }
+
+    /// WAIT FOR THE STORE TO ACKNOWLEDGE the record this journal sealed at `node_seq` (and so every
+    /// record before it), at most [`crate::root::durability::ACK_DEADLINE`], without the book's
+    /// lock. A journal on a disk answers at once: the disk took it.
+    ///
+    /// # Errors
+    ///
+    /// The store refused or did not answer in time. The record stays on the chain and is offered
+    /// again.
+    pub fn acked(&self, node_seq: u64) -> Result<(), String> {
+        let (lane, node) = {
+            let durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+            if !durability.durable_in_store() {
+                return Ok(());
+            }
+            (durability.lane().cloned(), durability.journal.node())
+        };
+        lane.map_or(Ok(()), |lane| {
+            lane.wait_acked(node, node_seq, crate::root::durability::ACK_DEADLINE)
+        })
     }
 
     /// Append one `Policy`-class record whose body the caller built, dated `wall_secs`, and answer

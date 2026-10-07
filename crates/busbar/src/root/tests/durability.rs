@@ -2465,3 +2465,241 @@ fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// H3 (ARCHITECT 2026-10-07): THE JOURNAL KEPT BY THE CONFIGURED STORE
+// ---------------------------------------------------------------------------------------------
+
+/// A book over `slots` with no data directory, as node `node`: the production boot's shape.
+fn store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -> Durability {
+    store_book_bounded(slots, node, busbar_kernel_wal::MEMORY_BUFFER_RECORDS)
+}
+
+/// [`store_book`], its lane to the store bounded at `capacity` records.
+fn store_book_bounded(
+    slots: &crate::root::store_double::RecordSlots,
+    node: u64,
+    capacity: usize,
+) -> Durability {
+    let lane =
+        JournalLane::with_capacity(slots.calls(), "memory", capacity).expect("the lane starts");
+    build_on_store(
+        &DurabilityConfig { data_dir: None },
+        node,
+        lane,
+        rows(),
+        priced(),
+        None,
+    )
+    .expect("the store reads back")
+}
+
+/// Wait until the store took everything the book's lane holds.
+fn drained(durability: &Durability) {
+    assert!(
+        durability
+            .lane()
+            .expect("a book over the store")
+            .drain(std::time::Duration::from_secs(5)),
+        "the store takes the journal's records"
+    );
+}
+
+/// **A NODE WITH NO DATA DIRECTORY KEEPS ITS CHAIN IN ITS STORE ACROSS A RESTART** (ARCHITECT
+/// 2026-10-07 H3 ruling (a)-(b); THE DESIGN §7). Sealed audit records, an open hold killed with the
+/// node (kill -9) and a settled posting go on the chain; a second book over the SAME store resumes
+/// that chain: the audit cache is rebuilt from it, the hold a predecessor left is recovered, the
+/// settled figure is on the book, and the numbering continues past every stored record.
+///
+/// RED before the fix: the store adapter's shipper acknowledged every batch and kept a count, and a
+/// memory-buffered journal opened empty, so the restarted book had no audit record, no hold and no
+/// money, and numbered from one again.
+#[test]
+fn a_restart_over_the_same_store_keeps_the_chain_the_audit_records_and_the_holds() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let key = totals_key("vk_store_restart");
+    let held = totals_key("vk_store_held");
+    let (head, next) = {
+        let mut durability = store_book(&slots, 11);
+        for unit in 1..=3 {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        settle_one(&mut durability, &key, 1_000, 600, 1);
+        let durability_token = token();
+        let mut at = settling(&held, &durability_token);
+        at.stamp.mono = 77;
+        durability
+            .open_hold(
+                &at,
+                &busbar_contract::caps::PrincipalId::new("vk_store_held"),
+                &inputs(2_000),
+                ARRIVED_MS,
+            )
+            .expect("the hold goes on the chain");
+        drained(&durability);
+        let out = (durability.journal.head(), durability.journal.next_seq());
+        // kill -9: no settle, no destructor of the book, nothing flushed on the way out.
+        std::mem::forget(durability);
+        out
+    };
+    assert!(
+        slots.rows_under(JOURNAL_SCHEMA) > 0,
+        "the store keeps the records"
+    );
+
+    let restarted = store_book(&slots, 11);
+    assert!(
+        restarted.keeps_chain(),
+        "the chain was resumed from the store"
+    );
+    assert_eq!(
+        restarted.audit_records.len(),
+        3,
+        "the audit records survive the restart"
+    );
+    assert_eq!(
+        restarted.recovered_holds, 1,
+        "the hold a predecessor left open is recovered"
+    );
+    assert_eq!(
+        restarted.ledger.book().get(&key, 86_400).settled,
+        600,
+        "the settled money survives the restart"
+    );
+    assert!(
+        restarted.journal.next_seq() > next,
+        "the numbering continues past the stored chain (and the recovery's own record)"
+    );
+    let replayed = restarted
+        .journal
+        .replay()
+        .expect("reads back")
+        .expect("verifies");
+    assert!(
+        replayed.iter().any(|r| r.hash == head),
+        "the stored chain is the restarted node's chain"
+    );
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+}
+
+/// **A STORE THAT REFUSES DOES NOT REFUSE A DATA UNIT** (ARCHITECT 2026-10-07 H3 ruling (c)): the
+/// unit settles, its record waits in the lane and is re-offered, and it lands once the store
+/// recovers — read back by the next boot. Meanwhile the lane is unhealthy, which is what a durable
+/// verb refuses on.
+#[test]
+fn a_data_unit_rides_a_refusing_store_and_its_record_lands_once_it_recovers() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let key = totals_key("vk_refused");
+    let mut durability = store_book(&slots, 12);
+    slots.refuse(true);
+    settle_one(&mut durability, &key, 1_000, 400, 1);
+    assert_eq!(
+        durability.ledger.book().get(&key, 86_400).settled,
+        400,
+        "the unit is served and settled"
+    );
+    let lane = durability.lane().expect("a lane").clone();
+    assert!(lane.pending() > 0, "its records wait for the store");
+    assert!(
+        lane.wait_acked(
+            12,
+            durability.journal.next_seq() - 1,
+            std::time::Duration::from_secs(5)
+        )
+        .is_err(),
+        "the store refused them"
+    );
+    assert!(lane.healthy().is_err(), "a durable verb refuses meanwhile");
+    assert!(
+        durability.refuses_money().is_none(),
+        "the lane has room: money is admitted"
+    );
+
+    slots.refuse(false);
+    drained(&durability);
+    drop(durability);
+    let restarted = store_book(&slots, 12);
+    assert_eq!(
+        restarted.ledger.book().get(&key, 86_400).settled,
+        400,
+        "the re-offered records landed and read back"
+    );
+}
+
+/// **A FULL LANE FAILS CLOSED AND DROPS NOTHING** (ARCHITECT 2026-10-07 H3 ruling): with the store
+/// refusing, the lane fills; the book then refuses new money-bearing work with its reason, the
+/// journal keeps every record it is handed (no `ChainBreak`, nothing dropped), and once the store
+/// recovers everything lands and the book admits again.
+#[test]
+fn a_full_lane_refuses_new_money_and_drops_no_record() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let key = totals_key("vk_full");
+    let mut durability = store_book_bounded(&slots, 13, 4);
+    slots.refuse(true);
+    assert!(durability.refuses_money().is_none());
+    // Holds past the lane's bound: each is one record.
+    let mut lost = 0;
+    for mono in 1..=6 {
+        let durability_token = token();
+        let mut at = settling(&key, &durability_token);
+        at.stamp.mono = mono;
+        if durability
+            .open_hold(
+                &at,
+                &busbar_contract::caps::PrincipalId::new("vk_full"),
+                &inputs(10),
+                ARRIVED_MS,
+            )
+            .is_err()
+        {
+            lost += 1;
+        }
+    }
+    assert!(
+        lost > 0,
+        "past the lane's bound the store's answer is a durability loss"
+    );
+    let why = durability
+        .refuses_money()
+        .expect("a full lane refuses new money-bearing work");
+    assert!(why.contains("journal is full"), "{why}");
+    assert_eq!(
+        durability.journal.dropped_total(),
+        0,
+        "no record is dropped"
+    );
+    assert!(
+        durability.journal.overflows().is_empty(),
+        "no ChainBreak: the bound is the caller's refusal"
+    );
+    let written = durability.journal.next_seq() - 1;
+
+    slots.refuse(false);
+    drained(&durability);
+    // The journal's retained batch is re-offered on its next append.
+    durability
+        .journal
+        .append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(RecordClass::Load, Vec::new())],
+        )
+        .expect("the store takes the retained batch and the new record");
+    drained(&durability);
+    assert!(
+        durability.refuses_money().is_none(),
+        "the node admits again"
+    );
+    let kept = read_chain(slots.calls().as_ref(), 13).expect("reads back");
+    assert_eq!(
+        kept.len() as u64,
+        written + 1,
+        "every record the journal sealed is in the store, once"
+    );
+}

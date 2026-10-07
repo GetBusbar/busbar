@@ -4800,3 +4800,69 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
     assert_eq!(derived.requests, 0, "a veto admits nothing");
     rig.server.shutdown().await;
 }
+
+/// **A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED** (ARCHITECT 2026-10-07 H3 ruling):
+/// the book's journal is kept by the configured store, the store refuses and the lane to it is
+/// full, so a new money-bearing unit is answered 503 with the reason — before anything is built,
+/// held or journalled for it — and nothing the journal holds is dropped. A state 1.5.5 never
+/// reached (it kept no journal).
+///
+/// RED before the fix: the node admitted the unit and drove its build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    slots.refuse(true);
+    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "memory", 1)
+        .expect("the lane starts");
+    let book = Arc::new(std::sync::Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            0,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+            None,
+        )
+        .expect("the store reads back"),
+    ));
+    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+    for _ in 0..3 {
+        let _lost = book.lock().unwrap().journal.append(
+            &token,
+            busbar_contract::caps::StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                busbar_kernel_wal::RecordClass::Load,
+                Vec::new(),
+            )],
+        );
+    }
+    let node = Node::new();
+    node.bind_book(Arc::clone(&book));
+    let built = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw = Arc::clone(&built);
+    let handed: crate::root::linked::node::Handed = (
+        PrincipalId::new("acct:full"),
+        busbar_contract::caps::OpClassId::new("call"),
+        PROTO,
+        Box::new(move |_lent| {
+            saw.store(true, std::sync::atomic::Ordering::SeqCst);
+            panic!("a refused unit is never built");
+        }),
+    );
+    let response = node.answer(handed).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body");
+    let body = String::from_utf8_lossy(&body);
+    assert!(
+        body.contains("journal is full") && body.contains("`memory`"),
+        "the reason names the full journal and the store: {body}"
+    );
+    assert!(!built.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        book.lock().unwrap().journal.dropped_total(),
+        0,
+        "no record is dropped"
+    );
+}
