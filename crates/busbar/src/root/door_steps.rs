@@ -1204,11 +1204,11 @@ impl OutboundAuths {
         self.bind_with(name, self.conns.clone())
     }
 
-    /// [`Self::bind`] with the needs declared on `conns` (`None`: no need is granted).
+    /// [`Self::bind`] with the needs declared on `conns` (`ConnTable::NoNeeds`: no need is granted).
     fn bind_with(
         &self,
         name: &str,
-        conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+        conns: crate::root::loader::dispatch::ConnTable,
     ) -> crate::root::loader::dispatch::Bind {
         use crate::root::loader::dispatch::{EnvelopeSink, NoSink};
         let sink: Arc<dyn EnvelopeSink> = crate::root::boot::plugin_logs()
@@ -1252,8 +1252,16 @@ impl OutboundAuths {
     )> {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
-        let bind =
-            |name: &str| self.bind_with(name, if granted { self.conns.clone() } else { None });
+        let bind = |name: &str| {
+            self.bind_with(
+                name,
+                if granted {
+                    self.conns.clone()
+                } else {
+                    crate::root::loader::dispatch::ConnTable::NoNeeds
+                },
+            )
+        };
         let mut rows = Vec::new();
         for (name, door) in &self.linked {
             if let Ok(plugin) =
