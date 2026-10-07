@@ -881,7 +881,7 @@ mod agent_door {
                         conns: crate::root::loader::dispatch::ConnTable::Probe,
                     },
                 )
-                .is_ok_and(|plane| plane.served().owns.contains(&section))
+                .is_ok_and(|plane| plane.served().section == section)
             })
         })
     }
