@@ -2477,7 +2477,11 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let drain_targets: BTreeSet<&str> = DRAIN_TARGET_KINDS.iter().copied().collect();
     let granted = match half {
-        Half::Test => conformance_witness_edges(cx, crates),
+        Half::Test => {
+            let mut g = conformance_witness_edges(cx, crates);
+            g.extend(loader_fixture_edges(cx, crates));
+            g
+        }
         Half::Shipped => BTreeSet::new(),
     };
     let measured = measure_edges_granting(crates, half, &granted);
@@ -5619,6 +5623,51 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
     out
 }
 
+/// THE LOADER'S REAL-PLUGIN FIXTURES (spec BUSBAR-1.6.0.md:3870, OWNER RULING 2026-09-25 "PLUGINS
+/// LIVE IN THEIR OWN REPOS", ARCHITECT SEQUENCING step (3): "the in-repo loader conformance tests pin
+/// the real plugin repos as dev-deps"; "Fixtures deleted; real plugins are the both-ways proofs").
+/// The mirror of [`conformance_witness_edges`]: the `(busbar-plugin-loader, plugin)` TEST edges
+/// returned here are ruled architecture, so no rule of this gate measures them (ARCHITECT
+/// 2026-10-07, KI plan C).
+///
+/// Granted exactly when: the loader is `plugin-tooling`; the edge is a `[dev-dependencies]` edge
+/// and NOT a `[dependencies]` one; the target is a crate of one of the seven plugin kinds; and no
+/// SHIPPED source of the loader names the target as code (only its tests do, or none of its files
+/// does and the edge builds the target's door for a test to open). A shipped use is the loader
+/// linking a plugin, and stays the finding it always was. Nothing is granted to any other crate:
+/// the kernel's and the cleanliness crates' tests use in-crate doubles (R-FIX3, :3894).
+fn loader_fixture_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    let Some(loader) = crates
+        .iter()
+        .find(|c| c.name == CONFORMANCE_LOADER && c.kind == Some(WIRE_FIXTURE_KIND))
+    else {
+        return out;
+    };
+    let files = cx
+        .walk(&WalkSpec::new([loader.dir.clone()]).ext("rs").allow_empty())
+        .unwrap_or_default();
+    let shipped: Vec<String> = files
+        .iter()
+        .filter(|f| is_shipped_source(&f.rel_str()))
+        .map(|f| code_only(&f.text))
+        .collect();
+    for d in &loader.dev_deps {
+        let is_plugin = crates
+            .iter()
+            .any(|c| c.name == d.pkg && c.kind.is_some_and(|k| truths::PLUGIN_KINDS.contains(&k)));
+        if !is_plugin || loader.deps.iter().any(|s| s.pkg == d.pkg) {
+            continue;
+        }
+        let path = format!("{}::", d.key.replace('-', "_"));
+        if shipped.iter().any(|code| code.contains(path.as_str())) {
+            continue;
+        }
+        out.insert((loader.name.clone(), d.pkg.clone()));
+    }
+    out
+}
+
 /// Whether a vocabulary hit is the granted witness naming its loader: a `plugin-tooling` hit in a
 /// crate [`conformance_witness_edges`] grants, in its witness file ([`witness_file`]), or on the
 /// manifest line that declares the loader. Every other column is still counted in both files.
@@ -7278,6 +7327,49 @@ impl Gate for KindIsolationGate {
                     "new-forbidden-edge",
                     "busbar-store-memory -> busbar-plugin-loader",
                 ],
+            ));
+
+            // THE LOADER'S REAL-PLUGIN FIXTURES ARE RULED (spec :3870, step (3); ARCHITECT
+            // 2026-10-07): its dev-edges to plugin crates its tests alone use are not measured.
+            // The grant ends where the ruling does. The loader's SHIPPED source naming the same
+            // plugin is the loader linking it, and the edge is measured again; and the kernel taking
+            // a plugin as a dev-edge is not the loader's conformance test at all (R-FIX3, :3894).
+            let loader_manifest = "crates/plugin-loader/Cargo.toml";
+            if cx
+                .read(loader_manifest)
+                .is_ok_and(|t| t.contains("busbar-export-file = "))
+            {
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/plugin-loader/src/planted_link.rs",
+                    "pub use busbar_export_file::door;\n",
+                );
+                report.push(prove_rows_red(
+                    cx,
+                    subject,
+                    "the loader's shipped source naming a fixture plugin ends the fixture grant",
+                    &[ROW_TEST_DEPS],
+                    ov,
+                    &["busbar-plugin-loader -> busbar-export-file"],
+                ));
+            }
+            let kernel_manifest = "crates/busbar-kernel/Cargo.toml";
+            let mut ov = Overlay::new();
+            ov.set(
+                kernel_manifest,
+                cx.read(kernel_manifest).unwrap_or_default().replacen(
+                    "[dev-dependencies]\n",
+                    "[dev-dependencies]\nbusbar-export-file = { workspace = true }\n",
+                    1,
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "the kernel taking a real plugin as a dev-edge is not the loader's fixture grant",
+                &[ROW_TEST_DEPS],
+                ov,
+                &["busbar-kernel -> busbar-export-file"],
             ));
 
             // THE SAME GRANT FOR A CLEANLINESS CRATE'S UNIVERSAL-NEEDS WITNESS,
