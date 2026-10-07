@@ -35745,7 +35745,7 @@
       "why": "x-api-key is NOT a rung for /v1/models"
     },
     {
-      "id": "plugins.abi|json-contract|store-sqlite",
+      "id": "plugins.abi|json-contract|store-sqlite@1.5-line",
       "plane": "core",
       "family": "plugins.abi",
       "driver": "capture",
@@ -35831,6 +35831,7 @@
         "plugins": [
           "store-sqlite"
         ],
+        "plugins_line": "1.5",
         "boot": {
           "expect": "exit",
           "secs": 15

@@ -2289,7 +2289,6 @@ ops.scrape|v1models|anthropic-fp	PASS	HTTP 200; usage Δ {}
 ops.scrape|v1models|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1models|openai-fp	PASS	HTTP 200; usage Δ {}	
 ops.scrape|v1models|x-api-key	PASS	HTTP 200; usage Δ {}	
-plugins.abi|json-contract|store-sqlite	PASS	capture	
 plugins.load|auth-github	PASS	script plugin-list.sh: status 0	
 plugins.load|auth-ldap	PASS	script plugin-list.sh: status 0	
 plugins.load|auth-oidc	PASS	script plugin-list.sh: status 0	
