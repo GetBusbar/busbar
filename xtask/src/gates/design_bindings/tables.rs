@@ -693,7 +693,7 @@ pub static SUGGEST: &[(&str, &str)] = &[
     ("PB-66", "header unit tests: no client header forwarded, four-group egress headers, per-writer relayed response header set; llm.wire cells diff the headers"),
     ("PB-67", "table-driven unit test over the 27-row matrix and the 11 KIND literals; one llm.wire upstream_down cell per row"),
     ("PB-68", "network guard unit tests: denylist precedence, allow_overrides, CIDR rejection, alternate-IPv4 expansion, scheme rule literals"),
-    ("PB-69", "server posture unit test: ALPN http/1.1 only, header_read_timeout 30 s, body read timeout 30 s, handshake timeout 10 s"),
+    ("PB-69", "server posture unit test: ALPN h2, http/1.1 (Q137), header_read_timeout 30 s, body read timeout 30 s, handshake timeout 10 s"),
     ("PB-70", "ops.scrape|metrics cell on a 1.5.5 config diffs the series set; add a unit test that no ledger series is registered without data_dir"),
     ("PB-72", "lint: every PB row's inventory column resolves to an existing inventory file and anchor (a docs consistency lint, red on a dangling ref)"),
     ("PB-73", "middleware unit test: Server-Timing on every response when enabled; route headers only with route_policy and a non-default ordering hook"),

@@ -13,6 +13,13 @@
 use std::sync::OnceLock;
 
 use busbar_contract::conn::{ConnError, PieceKind};
+// The test support's own paths (`super::carrier`, `super::hostio`, ...) resolve at this crate root.
+#[allow(unused_imports)]
+use busbar_core_connector::{carrier, compose, framer, hostio};
+
+#[allow(dead_code, unsafe_code, unused_imports)]
+#[path = "../src/tests/support.rs"]
+mod support;
 
 // ── the connector drives a dropped-in framer door ───────────────────────────────────────────────
 
@@ -138,7 +145,8 @@ fn open_stated(
         dispatcher: ONE
             .get_or_init(|| Dispatcher::new(DispatchConfig::default()))
             .adopter(),
-        conns: None,
+        // A transport door is a framer the connector drives: it declares no need.
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_dropped::<Transport>(path, &rendering, bind).ok()?;
     let stated = plugin.context::<TransportFacts>().cloned()?;
@@ -155,6 +163,8 @@ fn open_stated(
                 claims: stated.claims,
                 role: stated.role,
                 composes_over: stated.composes_over,
+                ported: stated.ported,
+                status_rows: stated.status_rows,
             },
             plugin,
         }),
@@ -186,6 +196,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
         .await;
         let mut c = Connection::dial(
             door,
+            &support::via(),
             Dial {
                 target: format!("{scheme}://{far}/v1/probe"),
                 tls: None,
@@ -266,6 +277,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
         });
         let mut c = Connection::dial(
             door,
+            &support::via(),
             Dial {
                 target: far,
                 tls: None,
@@ -320,8 +332,9 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
     let door = composing_door();
     let scheme = door.facts().claims[0];
     // The connector serves a CARRIER beside the framer (no transport names another; the carrier is
-    // the connector's choice): the neutral frame door, which names no transport.
-    let layer = socket_framer_door().expect("a carrier door is built beside the test");
+    // the connector's choice): the test carrier over the process's host I/O.
+    let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
+        std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
     let response = respond(scheme, response);
     // An IP literal is its own address: the judge the test needs, and no more.
     let judge = |dest: &str, _: u32, _: Judged| {
@@ -533,7 +546,7 @@ async fn serve_once(
 /// RED: A FRAMED REQUEST'S HEAD WORDS GO OUT THROUGH THE CONNECTION TABLE. An open whose
 /// descriptor states head words sends them as the opening message's own request line, byte for
 /// byte; an open that names no target dials the need's declared one. The table reports the
-/// composing door's need framed and the socket framer's raw.
+/// composing door's need framed and the carrier's raw.
 #[test]
 fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
     use busbar_contract::conn::{Conns, DeclaredConns, InstanceId, NeedId, OpenDesc};
@@ -542,8 +555,12 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
 
     let door = composing_door();
     let scheme = door.facts().claims[0];
-    let plain = socket_framer_door().expect("a carrier door is built beside the test");
-    let raw = plain.facts().claims[0];
+    // The framer rides the connector's ADDRESS carrier (the first carrier in declared order whose
+    // claim serves a port): the test carrier over the process's host I/O. A need over the carrier's
+    // own claim is a raw stream.
+    let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
+        std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
+    let raw = layer.facts().claims[0];
     let judge = |dest: &str, _: u32, _: Judged| {
         Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
     };
@@ -554,7 +571,7 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
                 alpn: Vec::new(),
             },
             Entry {
-                door: plain,
+                door: layer,
                 alpn: Vec::new(),
             },
         ])

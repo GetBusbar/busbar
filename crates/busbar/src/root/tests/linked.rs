@@ -24,8 +24,6 @@
 
 use super::*;
 use crate::root::boot::dropped_planes;
-#[cfg(linked_egress)]
-use crate::root::boot::HostEgressCarrier;
 use crate::root::loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
 use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
@@ -46,6 +44,7 @@ pub(super) fn linked(
         plane_doors: &[],
         secrets: &[],
         plane_door_slots: &[],
+        plane_door_declares: &[],
         protocols: &[],
         path_ingress: &[],
         body_ingress: &[],
@@ -56,7 +55,6 @@ pub(super) fn linked(
         compose: &[],
         stdio_serve: &[],
         cli_help: &[],
-        exports: &[],
         export_doors: &[],
         stores: &[],
         hook_doors: &[],
@@ -869,27 +867,36 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
 }
 
 /// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
-/// so the refusal of a row "spelling a built-in module" has nothing left to guard and is gone. What
-/// replaces it: every module is a row of the axis, and each LINKED export row answers its own
-/// module ahead of any row a plugins directory drops in under the same alias — a dropped-in row
-/// never takes a module from the sink this build links. RED: without the linked rows, the
-/// dropped-in one answers.
+/// so every module is a row of the axis. ARCHITECT Q-P4-12 (BUSBAR-1.6.0.md:106, "it refuses at boot
+/// when two plugins claim the same thing"): a LINKED export row and a DIFFERENT dropped-in plugin
+/// spelling its module refuse the boot, naming both plugins and the module. No door outranks the
+/// other (compiled in = dropped in), so the ambiguity is never resolved by picking a winner. This
+/// replaces the K9e-2-era rule that the linked row answered ahead. GREEN arm: the linked rows alone
+/// answer their modules, and the dropped-in row alone answers its own.
 #[test]
-fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
+fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_refuse_the_boot() {
     let release = test_plugins::key(7);
-    let linked = crate::LINKED
-        .exports
-        .iter()
-        .map(|&(name, alias, ..)| (name, alias));
     let doors = crate::LINKED.export_doors.iter().map(|d| (d.name, d.alias));
-    for (name, alias) in linked.chain(doors) {
+    for (name, alias) in doors {
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
-        let rows = linked_exports(crate::LINKED.exports, crate::LINKED.export_doors)
-            .expect("the linked export rows");
-        let both = scan().link(rows).expect("the linked door admits them");
+        let rows = || linked_exports(crate::LINKED.export_doors).expect("the linked export rows");
+        // RED ARM: both doors claim the module, as two different plugins.
+        let refused = scan()
+            .link(rows())
+            .expect_err("a linked row and a different dropped-in plugin claiming one module");
+        assert!(
+            refused.contains("claim conflict")
+                && refused.contains(&format!("'{alias}'"))
+                && refused.contains(name)
+                && refused.contains("k9e-dropped"),
+            "{alias}: {refused}"
+        );
+        // GREEN: each door alone answers.
         let answering = |r: &PluginRegistry| r.resolve(alias).map(|p| p.manifest.name.clone());
-        assert_eq!(answering(&both).as_deref(), Some(name), "{alias}");
-        // RED ARM: the dropped-in row alone answers.
+        let alone = PluginRegistry::empty()
+            .link(rows())
+            .expect("the linked rows alone");
+        assert_eq!(answering(&alone).as_deref(), Some(name), "{alias}");
         assert_eq!(
             answering(&scan()).as_deref(),
             Some("k9e-dropped"),
@@ -1040,168 +1047,6 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
     }
 }
 
-/// **K9a S5 — THE HOST'S EGRESS CARRIER applies the host's URL policy before any hop.** A target the
-/// built-in webhook guard refuses — plaintext, loopback, cloud metadata — is refused with the
-/// guard's own words and nothing is dialled, so a plugin sink can reach no further than the host's
-/// own telemetry egress may. RED: carry the request without the policy check and the loopback
-/// target is dialled (a `request` failure, not a `refused` one).
-#[cfg(linked_egress)]
-#[test]
-fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
-    use crate::root::loader::EgressCarrier as _;
-    use busbar_contract::abi::cold::export::{HostResult, HttpRequest};
-    for url in [
-        "http://collector.example/v1",
-        "https://127.0.0.1:9/v1",
-        "https://169.254.169.254/latest",
-    ] {
-        let request = HttpRequest {
-            method: "POST".into(),
-            url: url.into(),
-            headers: Vec::new(),
-            body: "{}".into(),
-            timeout_ms: 500,
-        };
-        match HostEgressCarrier.carry(&request) {
-            HostResult::Failed { step, error, .. } => {
-                assert_eq!(step, "refused", "{url}: {error}");
-                let guard = busbar_kernel::observability::validate_webhook_url(Some(url.into()));
-                assert_eq!(Err(error), guard, "{url}");
-            }
-            other => panic!("{url} was carried: {other:?}"),
-        }
-        // K9c: the policy asked WITHOUT carrying — the same guard, the same words.
-        let guard = busbar_kernel::observability::validate_webhook_url(Some(url.into()));
-        assert_eq!(HostEgressCarrier.admit(url), guard.map(|_| ()), "{url}");
-    }
-    assert_eq!(
-        HostEgressCarrier.admit("https://collector.example/v1"),
-        Ok(())
-    );
-}
-
-/// **K9e-2 — THE COLLECTOR POLICY, AND OCTETS ON THE WIRE.** Under the collector policy a sink may
-/// declare, the host's carrier takes a BINARY body to a plaintext loopback collector — the listener
-/// receives exactly the octets and headers the sink asked for — while refusing, with the OTLP
-/// endpoint guard's own words and nothing dialled, a plaintext remote collector, a private address
-/// and cloud metadata. RED ARM: the same loopback request under the open web (the webhook policy
-/// every undeclared sink gets) is refused and never reaches the listener.
-#[cfg(linked_egress)]
-#[tokio::test(flavor = "multi_thread")]
-async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing_else() {
-    use crate::root::loader::{EgressCarrier as _, EgressPolicy};
-    use busbar_contract::abi::cold::export::{HostResult, HttpRequest};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    tokio::spawn(async move {
-        while let Ok((mut conn, _)) = listener.accept().await {
-            let seen_tx = seen_tx.clone();
-            tokio::spawn(async move {
-                let mut raw = Vec::new();
-                let mut buf = [0u8; 4096];
-                loop {
-                    let n = conn.read(&mut buf).await.unwrap_or(0);
-                    if n == 0 {
-                        return;
-                    }
-                    raw.extend_from_slice(&buf[..n]);
-                    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
-                        continue;
-                    };
-                    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
-                    let length: usize = head
-                        .lines()
-                        .find_map(|l| l.strip_prefix("content-length:"))
-                        .and_then(|v| v.trim().parse().ok())
-                        .unwrap_or(0);
-                    if raw.len() >= end + 4 + length {
-                        let _ = seen_tx.send(raw.clone());
-                        let _ = conn
-                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
-                            .await;
-                        return;
-                    }
-                }
-            });
-        }
-    });
-    let collector = format!("http://127.0.0.1:{port}/v1/traces");
-    let octets = vec![0x0a, 0x00, 0xff, 0x80, 0x0d, 0x0a];
-    let request = |url: &str| HttpRequest {
-        method: "POST".into(),
-        url: url.into(),
-        headers: vec![("content-type".into(), "application/x-protobuf".into())],
-        body: String::new(),
-        timeout_ms: 5000,
-    };
-    let carried = HostEgressCarrier
-        .carry_under_async(EgressPolicy::Collector, request(&collector), octets.clone())
-        .await;
-    assert!(
-        matches!(carried, HostResult::Http(ref r) if r.status == 200),
-        "{carried:?}"
-    );
-    let raw = seen
-        .recv()
-        .await
-        .expect("the collector received the request");
-    let end = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .expect("a head")
-        + 4;
-    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
-    assert!(head.starts_with("post /v1/traces http/1.1\r\n"), "{head}");
-    assert!(
-        head.contains("content-type: application/x-protobuf\r\n"),
-        "{head}"
-    );
-    assert_eq!(&raw[end..], &octets[..], "the octets arrive exactly");
-    assert_eq!(
-        HostEgressCarrier.admit_under(EgressPolicy::Collector, "http://localhost:4318/v1/traces"),
-        Ok(())
-    );
-
-    for url in [
-        "http://collector.example/v1/traces",
-        "https://10.0.0.1/v1/traces",
-        "https://169.254.169.254/latest",
-    ] {
-        let guard = crate::root::otlp::collector_policy(url, false);
-        assert!(guard.is_err(), "{url}");
-        let answer = HostEgressCarrier
-            .carry_under_async(EgressPolicy::Collector, request(url), octets.clone())
-            .await;
-        match answer {
-            HostResult::Failed { step, error, .. } => {
-                assert_eq!((step.as_str(), Err(error)), ("refused", guard), "{url}")
-            }
-            other => panic!("{url} was carried: {other:?}"),
-        }
-    }
-
-    // RED ARM: the loopback collector under the open web is refused, and nothing arrives.
-    let open_web = HostEgressCarrier
-        .carry_under_async(EgressPolicy::OpenWeb, request(&collector), octets)
-        .await;
-    let guard = busbar_kernel::observability::validate_webhook_url(Some(collector.clone()));
-    match open_web {
-        HostResult::Failed { step, error, .. } => {
-            assert_eq!((step.as_str(), Err(error)), ("refused", guard.map(|_| ())))
-        }
-        other => panic!("the open web carried a loopback request: {other:?}"),
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    assert!(
-        seen.try_recv().is_err(),
-        "a refused request reached the collector"
-    );
-}
-
 /// K5d (DECISIONS #2 rule (1), #40) — THE LINKED STORE AND THE RANKING HOOKS ARE ROWS OF THE ROOT'S
 /// LINKED TABLES. The kernel names neither; `main` hands the `stores`/`hooks` tables to the kernel's
 /// cold-kind axis (`root::linked::register_stores` -> `preflight::install_linked_rows`), which
@@ -1297,7 +1142,7 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     let legacy = &native("seam-l-shared")[0];
     let other = &native("seam-l-other")[0];
     let door = &native("seam-l-shared")[0];
-    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]);
+    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]).expect("the fold");
     assert_eq!(rows.len(), 2, "the legacy row yields the shared key");
     assert!(
         std::ptr::eq(rows[0], other),
@@ -1312,6 +1157,100 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     assert!(
         std::ptr::eq(*shared, door),
         "the boot fold keeps the door's row"
+    );
+}
+
+/// SEAM-L(s), THE ENGINE RIDES THE KEY: a door taking the key of the legacy row that is the fallback
+/// plane takes over that row's engine (the fallback flag, the runtime it builds and the view the
+/// core's own readers walk) and keeps every other word of its own. RED: the fold dropped the legacy
+/// row whole, so with a linked llm door the node had no fallback runtime and `/metrics` lost its lane
+/// gauges (`metrics_scrape_boot_window` under `--features llm-on-driver`).
+#[test]
+fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
+    let base = &native("seam-l-engine")[0];
+    let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+        declaration: PlaneDeclaration {
+            fallback: true,
+            ..base.declaration
+        },
+        build_runtime: Some(|_, _| Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),
+        viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
+        ..*base
+    }));
+    let door: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+        declaration: PlaneDeclaration {
+            config_section: "seam-l-door-section",
+            ..base.declaration
+        },
+        ..*base
+    }));
+    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]).expect("the fold");
+    assert_eq!(rows.len(), 1, "one row serves the key");
+    let row = rows[0];
+    assert!(!std::ptr::eq(row, legacy), "the door serves the plane");
+    assert_eq!(
+        row.config_section, "seam-l-door-section",
+        "the door's own words stay"
+    );
+    assert!(
+        row.fallback,
+        "the fallback plane is still the fallback plane"
+    );
+    assert!(
+        row.build_runtime.is_some() && row.viewer.is_some(),
+        "the engine's runtime and view ride the key"
+    );
+    let folded = merged_boot_plane_decls(&rows, &[]);
+    let kept = folded
+        .iter()
+        .find(|d| d.key == "seam-l-engine")
+        .expect("the key is registered");
+    assert!(
+        kept.fallback && kept.viewer.is_some(),
+        "the boot fold keeps it"
+    );
+    // A legacy row with no engine leaves the door's row untouched (the shared-key case above).
+    let plain = &native("seam-l-plain")[0];
+    let plain_door = &native("seam-l-plain")[0];
+    let rows =
+        doors_own_their_plane_keys(vec![plain, plain_door], &[plain_door]).expect("the fold");
+    assert!(std::ptr::eq(rows[0], plain_door), "nothing to carry");
+}
+
+/// SEAM-L(s), A FULL CARRY TABLE REFUSES BY NAME: a door taking an engine when every slot already
+/// carries another key's row is a boot refusal naming the door, never a row served without the
+/// engine. Driven on a one-slot table of its own, so the process's table is untouched. RED: the carry
+/// answered "nothing to carry" and the door served its key with no fallback runtime.
+#[test]
+fn a_door_carried_past_the_last_slot_refuses_by_name() {
+    static ONE: [std::sync::OnceLock<PlaneDecl>; 1] = [const { std::sync::OnceLock::new() }; 1];
+    let engine = |key: &'static str| -> (&'static PlaneDecl, &'static PlaneDecl) {
+        let base = &native(key)[0];
+        let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+            declaration: PlaneDeclaration {
+                fallback: true,
+                ..base.declaration
+            },
+            viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
+            ..*base
+        }));
+        (legacy, &native(key)[0])
+    };
+    let (legacy, door) = engine("seam-l-full-a");
+    let first = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
+        .expect("the one slot carries the first door");
+    assert!(first[0].fallback, "the first door carries its engine");
+    let again = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
+        .expect("the same key answers its row again");
+    assert!(std::ptr::eq(first[0], again[0]), "one row per key");
+    let (legacy, door) = engine("seam-l-full-b");
+    let Err(refusal) = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
+    else {
+        panic!("no slot is left for a second key, and the fold answered rows");
+    };
+    assert!(
+        refusal.contains("seam-l-full-b") && refusal.contains("1 door planes"),
+        "{refusal}"
     );
 }
 

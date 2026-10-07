@@ -43,7 +43,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("compose", "compose", "compose"),
     ("stdio-serve", "stdio_serve", "stdio_serve"),
     ("cli-help", "cli_help", "CLI_HELP"),
-    ("exports", "exports", "EXPORT"),
     ("stores", "stores", "STORE"),
     // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
     // dropped-in build exports.
@@ -372,6 +371,26 @@ pub(crate) fn linked_source(
         }
     }
     out.push_str("],\n");
+    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, door, declares)`, the JSON its
+    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as
+    // every default-linked plugin's `declares` section is, beside the door it belongs to (so the
+    // root finds a bound door plane's declaration by its Statement). A door row with no such row
+    // declares none.
+    out.push_str("    plane_door_declares: &[");
+    for ((feature, krate), (entry, _)) in on.iter().zip(&linked) {
+        let is_door = axes
+            .iter()
+            .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS));
+        if !is_door {
+            continue;
+        }
+        if let Some(path) =
+            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
+        {
+            out.push_str(&format!("({krate:?}, {entry}::door, {path}), "));
+        }
+    }
+    out.push_str("],\n");
     out.push_str("    transports: &[");
     let mut door_builds = String::new();
     for (n, (e, axes)) in linked
@@ -384,7 +403,7 @@ pub(crate) fn linked_source(
                 "fn __door_build_{n}(\n    lower: Option<std::sync::Arc<dyn busbar_contract::Transport>>,\n    \
                  settings: &busbar_contract::transport::TransportSettings,\n\
                  ) -> std::sync::Arc<dyn busbar_contract::Transport> {{\n    \
-                 crate::root::doors::build({e}::KEY, {e}::door, lower, settings)\n}}\n\
+                 crate::root::doors::build({e}::KEY, {e}::door, lower, settings, Some(crate::root::connector::address_carrier()))\n}}\n\
                  fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
                  crate::root::doors::claims_of({e}::door)\n}}\n\
                  fn __door_upgrades_{n}() -> Vec<&'static str> {{\n    \
@@ -465,7 +484,10 @@ pub(crate) fn linked_source(
         .iter()
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
     {
-        if axes.iter().any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS) {
+        if axes
+            .iter()
+            .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
+        {
             out.push_str(&format!("({e}::KEY, {e}::door), "));
         }
     }

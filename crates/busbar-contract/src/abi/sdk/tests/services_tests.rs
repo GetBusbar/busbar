@@ -76,6 +76,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         need_admit: None,
         trust_verify: None,
         records_secret: None,
+        disk_append: None,
     }
 }
 
@@ -125,6 +126,7 @@ fn services(t: &HostSlots) -> Services {
         wake: None,
         conns: std::ptr::null(),
         services: t,
+        io: std::ptr::null(),
     };
     Services::of(&tables).expect("a table was handed")
 }
@@ -169,6 +171,7 @@ fn no_table_is_no_services() {
         wake: None,
         conns: std::ptr::null(),
         services: std::ptr::null(),
+        io: std::ptr::null(),
     };
     assert!(Services::of(&tables).is_none());
 }

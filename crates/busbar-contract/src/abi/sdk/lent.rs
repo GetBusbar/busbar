@@ -231,6 +231,24 @@ impl<'a, T: Copy> HostBuf<'a, T> {
         self.cap
     }
 
+    /// The room left, as the raw parts a HOST call writes into (`abi::sdk::io`: a carrier reads
+    /// straight into the host's buffer): a pointer and how many `T`s fit there. NULL with `0` when
+    /// none is left.
+    pub(crate) fn room(&mut self) -> (*mut T, usize) {
+        let left = self.cap.saturating_sub(self.asked);
+        if left == 0 {
+            return (ptr::null_mut(), 0);
+        }
+        // SAFETY: `asked < cap`, inside the `cap` `T`s the host lent at `ptr` (`new`).
+        (unsafe { self.ptr.add(self.asked) }, left)
+    }
+
+    /// Count `n` values a host call wrote into [`HostBuf::room`] (at most what it offered).
+    pub(crate) fn advance(&mut self, n: usize) {
+        let left = self.cap.saturating_sub(self.asked);
+        self.asked = self.asked.saturating_add(n.min(left));
+    }
+
     /// Every value asked of it so far, written or not.
     #[must_use]
     pub const fn asked(&self) -> usize {
@@ -476,8 +494,9 @@ use crate::abi::plane::{
     ServeIn, UnitCount,
 };
 use crate::abi::transport::{
-    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerSink,
-    HeadSlots, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, Destination, DialIn, EmitIn, EncodeIn,
+    FinishIn, FramePiece, FramerSink, HeadSlots, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn,
+    WriteIn,
 };
 
 lend! {
@@ -549,6 +568,11 @@ lend! {
     ListenIn { buf(addr_buf, addr_cap) -> u8; }
     AcceptIn { buf(peer_buf, peer_cap) -> u8; }
     ArrivalIn { buf(peer_buf, peer_cap) -> u8; }
+    DialIn { one(dest) -> Destination; }
+    Destination {
+        list(args, args_len) -> AbiStr;
+        list(env, env_len) -> Field;
+    }
     ReadIn { buf(buf, cap) -> u8; }
     WriteIn { bytes(bytes, len); }
     LocateIn {
@@ -556,7 +580,10 @@ lend! {
         buf(name_buf, name_cap) -> u8;
         buf(alpn_buf, alpn_cap) -> u8;
     }
-    BeginIn { one(facts) -> ConnFacts; }
+    BeginIn {
+        one(facts) -> ConnFacts;
+        list(fields, fields_len) -> Field;
+    }
     IngestIn { bytes(bytes, len); }
     EmitIn { bytes(bytes, len); }
     EncodeIn {
@@ -564,6 +591,7 @@ lend! {
         bytes(body, body_len);
     }
     RefuseIn { bytes(bytes, len); }
+    FinishIn { bytes(final_bytes, final_bytes_len); }
     AdoptIn {
         one(facts) -> ConnFacts;
         bytes(leftover, leftover_len);

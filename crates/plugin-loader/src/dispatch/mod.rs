@@ -28,6 +28,8 @@
 pub mod answer;
 pub mod auth_outbound;
 pub mod conn_services;
+pub mod inline;
+pub mod io_slots;
 pub mod kinds;
 pub mod load;
 pub mod log_file;
@@ -57,6 +59,7 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
+pub use inline::{InlineTicket, InlineTickets};
 pub use kinds::plane::PlaneCancel;
 pub use load::{
     load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, LinkedRow,
@@ -64,8 +67,8 @@ pub use load::{
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{
-    install_member_secrets, Bind, Called, Diagnostic, Dropped, EnvelopeSink, MemberSecretFn,
-    Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
+    install_member_secrets, Bind, Called, ConnTable, Diagnostic, Dropped, EnvelopeSink,
+    MemberSecretFn, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use ticket::{Completions, Redeem};

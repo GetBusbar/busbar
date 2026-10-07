@@ -16,7 +16,7 @@ use crate::sign::validate_structure;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::abi::transport::ROLE_CARRIER;
+use busbar_contract::abi::transport::ROLE_FRAMER;
 
 /// The test-only HOT carrier the conformance and stack witnesses below drive.
 #[path = "mem_carrier.rs"]
@@ -72,7 +72,7 @@ fn bind() -> Bind {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
     }
 }
 
@@ -112,13 +112,13 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
     let door = &entries.doors[0];
     let facts = door.context::<TransportFacts>().expect("its tail");
     assert_eq!(
-        facts.role, ROLE_CARRIER,
-        "the neutral door carries its byte stream as itself"
+        facts.role, ROLE_FRAMER,
+        "the neutral door frames a byte stream; it is never a carrier"
     );
     assert_eq!(facts.claims, [door.name()], "one claim: its own");
     assert!(
         facts.composes_over.is_empty(),
-        "it frames the host's socket"
+        "it frames whatever carrier the connector rides"
     );
     let mut i: OpenIn = blank_in();
     i.head = in_head();

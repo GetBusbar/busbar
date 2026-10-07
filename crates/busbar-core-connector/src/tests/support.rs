@@ -1,24 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A TEST FRAMER ENTRY, in Rust behind the [`FramerDoor`] seam: an identity framer (the bytes are the
-//! frames, one frame per ingest on stream `0`) with knobs a test turns — a target that asks for
-//! connection security, a silence deadline, a `locate` that names another authority — and a record
-//! of every crossing and the thread it ran on. The one place in this crate that writes a host sink
-//! through its raw pointers, as a plugin does.
+//! A TEST TRANSPORT ENTRY, in Rust behind the [`FramerDoor`] seam: an identity framer (the bytes are
+//! the frames, one frame per ingest on stream `0`) with knobs a test turns — a target that asks for
+//! connection security, a silence deadline, a `locate` that names another authority — and, stated a
+//! CARRIER, a carrier over the process's host I/O (`crate::hostio`, called as a carrier calls
+//! `io.*`); a record of every crossing and the thread it ran on. The one place in this crate that
+//! writes a host sink through its raw pointers, as a plugin does.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Poll, Wake, Waker};
 use std::thread::ThreadId;
 use std::time::Duration;
 
+use busbar_contract::abi::host::io::DIR_WRITE;
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
-    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, EMIT_TEXT, PIECE_END_OF_FRAME,
-    PIECE_TEXT, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT,
+    PIECE_END_OF_FRAME, PIECE_TEXT, READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
+use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
+use futures::task::AtomicWaker;
 
+use super::carrier::{Carry, Side};
+use super::compose::Via;
 use super::framer::{Call, Crossed, DoorFacts, FramerDoor};
 
 /// The knobs.
@@ -59,6 +67,10 @@ pub struct TestDoor {
     next: AtomicU64,
     /// Every crossing, by op.
     pub crossings: Mutex<Vec<&'static str>>,
+    /// Every CARRIER crossing, by op.
+    pub carried: Mutex<Vec<&'static str>>,
+    /// The sides of its carried connections, by their ticket's slot.
+    sides: Mutex<HashMap<u32, Arc<TestSide>>>,
     /// Every thread a crossing ran on.
     pub threads: Mutex<HashSet<ThreadId>>,
     /// The neutral status every `refuse` crossing carried, in order.
@@ -79,21 +91,33 @@ impl TestDoor {
         composes_over: &[&'static str],
         knobs: Knobs,
     ) -> Self {
+        // A knob only a framer answers (a secure target, a protocol offer, a head, text frames, a
+        // silence deadline, another authority) states the entry a FRAMER: a carrier frames nothing.
+        let frames = knobs.secure_name.is_some()
+            || knobs.offer.is_some()
+            || knobs.head
+            || knobs.text
+            || knobs.silence.is_some()
+            || knobs.authority.is_some();
         Self {
             facts: DoorFacts {
                 name: name.to_owned(),
                 claims: claims.to_vec(),
-                role: if composes_over.is_empty() {
+                role: if composes_over.is_empty() && !frames {
                     busbar_contract::abi::transport::ROLE_CARRIER
                 } else {
                     busbar_contract::abi::transport::ROLE_FRAMER
                 },
                 composes_over: composes_over.to_vec(),
+                ported: composes_over.is_empty() && !frames,
+                status_rows: Vec::new(),
             },
             knobs,
             framings: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             crossings: Mutex::new(Vec::new()),
+            carried: Mutex::new(Vec::new()),
+            sides: Mutex::new(HashMap::new()),
             threads: Mutex::new(HashSet::new()),
             refused_statuses: Mutex::new(Vec::new()),
             begun_fields: Mutex::new(Vec::new()),
@@ -105,6 +129,22 @@ impl TestDoor {
     #[must_use]
     pub fn with_role(mut self, role: u32) -> Self {
         self.facts.role = role;
+        self.facts.ported = role == busbar_contract::abi::transport::ROLE_CARRIER;
+        self
+    }
+
+    /// The same entry, its claim serving no port (a carrier reached by a path or a program).
+    #[must_use]
+    pub fn unported(mut self) -> Self {
+        self.facts.ported = false;
+        self
+    }
+
+    /// The same entry, its claim reading a port whatever its role (a framer stating one is still no
+    /// carrier).
+    #[must_use]
+    pub fn with_port(mut self) -> Self {
+        self.facts.ported = true;
         self
     }
 
@@ -188,6 +228,25 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
 impl FramerDoor for TestDoor {
     fn facts(&self) -> &DoorFacts {
         &self.facts
+    }
+
+    fn side(&self) -> Option<Box<dyn Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
+            return None;
+        }
+        let side = Arc::new(TestSide {
+            ticket: TICKETS.fetch_add(1, Ordering::Relaxed),
+            waker: AtomicWaker::new(),
+        });
+        self.sides
+            .lock()
+            .unwrap()
+            .insert(side.ticket, Arc::clone(&side));
+        Some(Box::new(Held(side)))
+    }
+
+    fn carry(&self, side: &dyn Side, _resume: bool, call: Carry<'_>) -> Crossed {
+        self.carry_io(side, call)
     }
 
     fn cross(&self, call: Call<'_>) -> Crossed {
@@ -403,4 +462,211 @@ pub fn worker() -> tokio::runtime::Runtime {
         .enable_all()
         .build()
         .unwrap()
+}
+
+/// The owner every test carrier's host I/O calls are made under.
+pub const OWNER: u64 = 0x7e57;
+
+/// A side of a test carrier's connection: a ticket and the task its pending op wakes.
+#[derive(Default)]
+pub struct TestSide {
+    ticket: u32,
+    waker: AtomicWaker,
+}
+
+impl Wake for TestSide {
+    fn wake(self: Arc<Self>) {
+        self.waker.wake();
+    }
+}
+
+/// A side as the connector holds it.
+struct Held(Arc<TestSide>);
+
+impl Side for Held {
+    fn ticket(&self) -> Ticket {
+        Ticket {
+            slot: self.0.ticket,
+            generation: 1,
+        }
+    }
+    fn register(&self, waker: &Waker) {
+        self.0.waker.register(waker);
+    }
+}
+
+static TICKETS: AtomicU32 = AtomicU32::new(1);
+
+/// A host answer as a carrier's crossing reads it.
+fn io_crossed<T>(r: Result<T, IoRefusal>, ok: impl FnOnce(T)) -> Crossed {
+    match r {
+        Ok(v) => {
+            ok(v);
+            Crossed {
+                outcome: Outcome::Ready,
+                error: None,
+            }
+        }
+        Err(IoRefusal::Refused(t)) => Crossed {
+            outcome: Outcome::Refused,
+            error: Some(t.into_bytes()),
+        },
+        Err(IoRefusal::Failed(t)) => Crossed {
+            outcome: Outcome::Failed,
+            error: Some(t.into_bytes()),
+        },
+    }
+}
+
+fn polled<T>(p: Poll<Result<T, IoRefusal>>, ok: impl FnOnce(T)) -> Crossed {
+    match p {
+        Poll::Pending => Crossed {
+            outcome: Outcome::Pending,
+            error: None,
+        },
+        Poll::Ready(r) => io_crossed(r, ok),
+    }
+}
+
+fn text_of(s: busbar_contract::abi::mechanism::call::AbiStr) -> String {
+    String::from_utf8_lossy(raw(s.ptr, s.len)).into_owned()
+}
+
+impl TestDoor {
+    /// The carrier ops: a byte-stream carrier over the process's host I/O, each connection named by
+    /// the host's own handle.
+    fn carry_io(&self, side: &dyn Side, call: Carry<'_>) -> Crossed {
+        let io = super::hostio::process();
+        let t = side.ticket();
+        self.threads
+            .lock()
+            .unwrap()
+            .insert(std::thread::current().id());
+        let (op, c) = match call {
+            Carry::Listen(i, o) => {
+                let bind = text_of(i.bind);
+                (
+                    "listen",
+                    io_crossed(io.listen(OWNER, t, &bind), |(h, addr)| {
+                        let mut bytes: VecDeque<u8> = addr.into_bytes().into();
+                        let n = bytes.len().min(i.addr_cap);
+                        put(i.addr_buf, &mut bytes, n);
+                        o.addr_written = n as u64;
+                        o.listener = h;
+                    }),
+                )
+            }
+            Carry::Accept(i, o) => (
+                "accept",
+                polled(
+                    io.accept(OWNER, t, i.listener, &self.waker_of(side)),
+                    |(h, peer)| {
+                        let mut bytes: VecDeque<u8> = peer.into_bytes().into();
+                        let n = bytes.len().min(i.peer_cap);
+                        put(i.peer_buf, &mut bytes, n);
+                        o.peer_written = n as u64;
+                        o.conn = h;
+                    },
+                ),
+            ),
+            Carry::Dial(i, o) => {
+                // SAFETY: the connector's destination, live for the call.
+                let d = unsafe { &*i.dest };
+                let r = if d.kind == DEST_PROGRAM {
+                    let program = text_of(d.program);
+                    let args: Vec<String> = (0..d.args_len)
+                        // SAFETY: `args_len` strings at `args`.
+                        .map(|k| text_of(unsafe { *d.args.add(k) }))
+                        .collect();
+                    let env: Vec<(String, String)> = (0..d.env_len)
+                        .map(|k| {
+                            // SAFETY: `env_len` fields at `env`.
+                            let f = unsafe { *d.env.add(k) };
+                            (text_of(f.name), text_of(f.value))
+                        })
+                        .collect();
+                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                    let env: Vec<(&str, &str)> =
+                        env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                    io.spawn(
+                        OWNER,
+                        t,
+                        &Spawn {
+                            program: &program,
+                            args: &args,
+                            env: &env,
+                        },
+                    )
+                } else {
+                    io.open(OWNER, t, &text_of(d.authority))
+                };
+                ("dial", io_crossed(r, |h| o.conn = h))
+            }
+            Carry::Read(i, o) => {
+                // SAFETY: the host's buffer of `cap` bytes.
+                let buf = unsafe { std::slice::from_raw_parts_mut(i.buf, i.cap) };
+                (
+                    "read",
+                    polled(io.read(OWNER, i.conn, buf, &self.waker_of(side)), |n| {
+                        o.len = n as u64;
+                        if n > 0 {
+                            o.flags = READ_END_OF_FRAME;
+                        }
+                    }),
+                )
+            }
+            Carry::Write(i, o) => (
+                "write",
+                polled(
+                    io.write(OWNER, i.conn, raw(i.bytes, i.len), &self.waker_of(side)),
+                    |n| o.len = n as u64,
+                ),
+            ),
+            Carry::Flush(i, _) => (
+                "flush",
+                polled(
+                    io.ready(OWNER, i.conn, DIR_WRITE, &self.waker_of(side)),
+                    |()| {},
+                ),
+            ),
+            Carry::Shut(i, _) => {
+                let _ = io.close(OWNER, i.conn);
+                ("shut", io_crossed(Ok(()), |()| {}))
+            }
+            Carry::Arrival(i, o) => (
+                "arrival",
+                io_crossed(io.ends(OWNER, i.conn), |(port, peer)| {
+                    let mut bytes: VecDeque<u8> = peer.into_bytes().into();
+                    let n = bytes.len().min(i.peer_cap);
+                    put(i.peer_buf, &mut bytes, n);
+                    o.peer_written = n as u64;
+                    o.local_port = u32::from(port);
+                }),
+            ),
+            Carry::Cancel(_, _) => ("cancel", io_crossed(Ok(()), |()| {})),
+        };
+        self.carried.lock().unwrap().push(op);
+        c
+    }
+
+    /// A waker that wakes whatever task `side` registered.
+    fn waker_of(&self, side: &dyn Side) -> Waker {
+        let slot = side.ticket().slot;
+        self.sides
+            .lock()
+            .unwrap()
+            .get(&slot)
+            .map(|s| Waker::from(Arc::clone(s)))
+            .unwrap_or_else(|| Waker::noop().clone())
+    }
+}
+
+/// THE TEST CARRIER every test dial rides: a test entry stated a carrier, over the process's host I/O.
+pub fn via() -> Via {
+    static CARRIER: std::sync::OnceLock<Arc<dyn FramerDoor>> = std::sync::OnceLock::new();
+    let door = Arc::clone(CARRIER.get_or_init(|| Arc::new(TestDoor::identity("test-carrier"))));
+    Via {
+        door,
+        io: super::hostio::process(),
+    }
 }

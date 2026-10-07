@@ -735,6 +735,7 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
         wake: None,
         conns: &PENDING_SLOTS,
         services: std::ptr::null(),
+        io: std::ptr::null(),
     };
     let mut open: OpenIn = zeroed();
     open.host = &tables;

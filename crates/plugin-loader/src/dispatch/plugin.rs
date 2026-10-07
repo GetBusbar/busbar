@@ -148,6 +148,19 @@ impl EnvelopeSink for NoSink {
 /// The next instance identity bind mints; `0` is never minted.
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
+/// MINT ONE INSTANCE IDENTITY off `next`, never `0`: `0` is the composition root's own identity on
+/// the one connector (`busbar`'s `root::connector::ROOT_OWNER`, the authorization server's needs),
+/// so a plugin minted `0` would share that table's needs and connections. A counter that wraps
+/// past `u64::MAX` skips `0` rather than handing it out.
+fn mint_instance(next: &AtomicU64) -> InstanceId {
+    loop {
+        let id = next.fetch_add(1, Ordering::Relaxed);
+        if id != 0 {
+            return InstanceId(id);
+        }
+    }
+}
+
 /// What the host binds a loaded plugin to.
 #[derive(Clone)]
 pub struct Bind {
@@ -168,10 +181,55 @@ pub struct Bind {
     /// let _ = busbar_plugin_loader::dispatch::Bind { instance: "a".into(), max_inflight_cap: 1, sink };
     /// ```
     pub dispatcher: super::worker::Adopter,
-    /// The host's ONE connection table. An instance whose Statement declares a need is declared on
-    /// it at bind (each need under its Statement index) and handed the connector slots
+    /// The host's ONE connection table, or why the bind has none, stated at every call site
+    /// ([`ConnTable`]). An instance whose Statement declares a need is declared on the table at bind
+    /// (each need under its Statement index) and handed the connector slots
     /// ([`super::conn_services::CONN_SLOTS`]); any other instance is handed none.
-    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    pub conns: ConnTable,
+}
+
+/// THE BIND'S CONNECTION TABLE (Q-P4-3): the host's table, or, explicitly, why there is none. A
+/// door that declares a need and is bound to serve with no table is REFUSED at bind, naming the
+/// plugin ([`LoadError::NoConnectionTable`]); only a probe binds it with none.
+#[derive(Clone)]
+pub enum ConnTable {
+    /// The host's one connection table: a need the Statement declares is declared on it.
+    Host(Arc<dyn busbar_contract::conn::DeclaredConns>),
+    /// A PROBE or CHECK bind: the instance is only validated or read for its facts, never opened to
+    /// serve, so a need it declares is not declared and it is handed no table (nothing is opened to
+    /// the network while a configuration is judged). Not refused.
+    Probe,
+    /// A bind to SERVE with no connection table: the door must declare no need. One that declares
+    /// a need is refused ([`LoadError::NoConnectionTable`]).
+    NoNeeds,
+}
+
+impl ConnTable {
+    /// A SERVING bind over the table an axis holds: [`ConnTable::Host`] when it holds one, else
+    /// [`ConnTable::NoNeeds`] (an axis handed no table serves only doors that declare no need).
+    #[must_use]
+    pub fn serving(table: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>) -> Self {
+        table.map_or(Self::NoNeeds, Self::Host)
+    }
+
+    /// The table, when the bind has one.
+    #[must_use]
+    pub fn table(&self) -> Option<&Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        match self {
+            Self::Host(t) => Some(t),
+            Self::Probe | Self::NoNeeds => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ConnTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Host(_) => "Host",
+            Self::Probe => "Probe",
+            Self::NoNeeds => "NoNeeds",
+        })
+    }
 }
 
 impl std::fmt::Debug for Bind {
@@ -179,6 +237,7 @@ impl std::fmt::Debug for Bind {
         f.debug_struct("Bind")
             .field("instance", &self.instance)
             .field("max_inflight_cap", &self.max_inflight_cap)
+            .field("conns", &self.conns)
             .finish_non_exhaustive()
     }
 }
@@ -305,8 +364,13 @@ pub(crate) struct Instance {
     /// crosses (and kept once it closed). `close` enters only when nothing else is crossing, and
     /// nothing enters while it is set, so no crossing ever meets a freed instance.
     gate: AtomicU32,
-    /// Crossings actually made (the witness of "without a crossing").
+    /// Crossings actually made (the witness of "without a crossing"), RESUMES included.
     pub(crate) crossings: AtomicU64,
+    /// Of [`Instance::crossings`], the RESUME re-invocations ([`FLAG_RESUME`]: the same op
+    /// re-entered on its ticket after it answered PENDING; THE DESIGN §11.2, A.3 "Resume"). An
+    /// op's FIRST invocations are `crossings - resumes`: "one op = one crossing", however often
+    /// the op pends.
+    pub(crate) resumes: AtomicU64,
     /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
     pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
     next_call: AtomicU64,
@@ -535,6 +599,48 @@ impl Instance {
         }
     }
 
+    /// Bind each DESTINATION key the instance was granted to the file `settings` (the settings
+    /// `open` or `refresh` hands the plugin) give it, before the plugin sees them: a non-empty path
+    /// under the key, rotated at the `rotate_mb` (the host's rotation key,
+    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it, keeping
+    /// [`busbar_contract::services::DISK_KEEP`] archives. A key the settings leave unset is not
+    /// bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the file.
+    fn bind_destinations(&self, settings: Blob) {
+        let Some(keys) = self.wake.destinations.get() else {
+            return;
+        };
+        let bytes: &[u8] = if settings.ptr.is_null() {
+            &[]
+        } else {
+            // SAFETY: the host's own settings blob, live for the crossing it is handed to.
+            unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
+        };
+        let doc = serde_json::from_slice::<serde_json::Value>(bytes).unwrap_or_default();
+        let rotate_at = doc
+            .get(busbar_contract::services::DISK_ROTATE_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .map(|mb| mb.saturating_mul(1024 * 1024));
+        let bound = keys
+            .iter()
+            .filter_map(|key| {
+                let path = doc.get(key)?.as_str()?;
+                (!path.is_empty() && !path.contains('\0')).then(|| {
+                    busbar_contract::services::DiskDest {
+                        key: key.clone(),
+                        path: path.to_owned(),
+                        rotate_at,
+                        keep: busbar_contract::services::DISK_KEEP,
+                    }
+                })
+            })
+            .collect();
+        *self
+            .wake
+            .bound
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = bound;
+    }
+
     pub(crate) fn leave_lifecycle(&self) {
         self.lifecycle_busy.store(false, Ordering::Release);
     }
@@ -628,11 +734,15 @@ impl Instance {
             return Crossed::host(Outcome::Fault);
         }
         // SAFETY: the caller's contract.
-        let (ticket, instance) = unsafe {
+        let (ticket, instance, resumed) = unsafe {
             let head = &mut *input;
             head.op = s;
             head.host = self.ctx();
-            (head.ticket, self.ptr.load(Ordering::Acquire))
+            (
+                head.ticket,
+                self.ptr.load(Ordering::Acquire),
+                head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0,
+            )
         };
         // A `validate`, of every kind, is lent a reason buffer for its crossing alone (it never
         // pends): it names what it wrote in `head.error`, read below while the buffer lives.
@@ -657,7 +767,9 @@ impl Instance {
                 open.err_cap = err_cap;
             }
             // SAFETY: as above.
-            self.declare_targeted(unsafe { (*input.cast::<OpenIn>()).settings });
+            let settings = unsafe { (*input.cast::<OpenIn>()).settings };
+            self.declare_targeted(settings);
+            self.bind_destinations(settings);
         }
         if s == slot::READY {
             // `ready` is handed the same host tables `open` was.
@@ -667,7 +779,9 @@ impl Instance {
         // SAFETY: the host wrote `in.size`; a frame that holds a `RefreshIn` is read as one.
         if s == slot::REFRESH && unsafe { (*input).size } as usize >= size_of::<RefreshIn>() {
             // SAFETY: as above.
-            self.declare_targeted(unsafe { (*input.cast::<RefreshIn>()).settings });
+            let settings = unsafe { (*input.cast::<RefreshIn>()).settings };
+            self.declare_targeted(settings);
+            self.bind_destinations(settings);
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
         // tail field absent), then states its size: the plugin writes at most min(out.size, own).
@@ -682,6 +796,9 @@ impl Instance {
             _ => self.slots[s as usize],
         };
         self.crossings.fetch_add(1, Ordering::Relaxed);
+        if resumed {
+            self.resumes.fetch_add(1, Ordering::Relaxed);
+        }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
         // The unit this crossing serves, for the host services it calls.
@@ -1023,6 +1140,46 @@ impl<K: Kind> std::fmt::Debug for Plugin<K> {
     }
 }
 
+/// The kind's name as the host's observer knows it (the cold wire's kind words).
+fn kind_word(kind: KindCode) -> &'static str {
+    use busbar_contract::abi::mechanism::kind;
+    match kind {
+        KindCode::Store => kind::STORE,
+        KindCode::Secret => kind::SECRET,
+        KindCode::Auth => kind::AUTH,
+        KindCode::Hook => kind::HOOK,
+        KindCode::Export => kind::EXPORT,
+        KindCode::Plane => kind::PLANE,
+        KindCode::Transport => kind::TRANSPORT,
+    }
+}
+
+/// THE #85 ENVELOPE, OBSERVED FOR EVERY KIND (ARCHITECT ruling ENVELOPE-ALL 2026-10-03): the
+/// binder's sink, with the host's observability standing before it
+/// ([`crate::observe::EnvelopeObserver`]): every metric of a family the Statement declares and every
+/// declared diagnostic reach the installed observer, under the plugin's name and kind, whoever bound
+/// the door, and the binder's sink is still handed every entry.
+fn observed(
+    then: &Arc<dyn EnvelopeSink>,
+    st: &busbar_contract::abi::mechanism::door::Statement,
+    kind: KindCode,
+    name: &[u8],
+) -> Arc<dyn EnvelopeSink> {
+    // SAFETY: `validate` ran `check_statement` on this Statement; the rendering reads its
+    // `'static` lists.
+    let families = unsafe { busbar_contract::abi::mechanism::rendering::render(st) }
+        .ok()
+        .and_then(|b| busbar_contract::abi::mechanism::rendering::read(&b).ok())
+        .map(|r| r.families)
+        .unwrap_or_default();
+    Arc::new(crate::observe::EnvelopeObserver::before(
+        then.clone(),
+        &String::from_utf8_lossy(name),
+        kind_word(kind),
+        families,
+    ))
+}
+
 impl<K: Kind> Plugin<K> {
     pub(crate) fn bind(v: Validated, lib: Option<Lib>, bind: Bind) -> Result<Self, LoadError> {
         let st = v.statement;
@@ -1041,11 +1198,19 @@ impl<K: Kind> Plugin<K> {
         let wake: &'static InstanceWake = Box::leak(Box::default());
         // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
         // need under its Statement index, when the Statement declares a need; otherwise none.
-        let instance = InstanceId(NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed));
+        let instance = mint_instance(&NEXT_INSTANCE);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
-                (Some(table), n) if n > 0 => {
+                (ConnTable::NoNeeds, n) if n > 0 => {
+                    return Err(LoadError::NoConnectionTable {
+                        plugin: str_bytes(st.name)
+                            .map(|n| String::from_utf8_lossy(n).into_owned())
+                            .unwrap_or_default(),
+                        needs: n,
+                    });
+                }
+                (ConnTable::Host(table), n) if n > 0 => {
                     // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a
                     // count; the rendering reads the Statement's `'static` lists.
                     let needs = unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }
@@ -1093,6 +1258,7 @@ impl<K: Kind> Plugin<K> {
             wake: Some(host_wake),
             conns,
             services: &super::services::HOST_SLOTS,
+            io: &super::io_slots::IO_SLOTS,
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
@@ -1123,6 +1289,7 @@ impl<K: Kind> Plugin<K> {
                 closed: AtomicBool::new(false),
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),
+                resumes: AtomicU64::new(0),
                 calls: Mutex::new(Vec::new()),
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
@@ -1136,7 +1303,7 @@ impl<K: Kind> Plugin<K> {
                 unit_of: K::unit_of,
                 cancel_frame: K::cancel_frame,
                 context,
-                sink: bind.sink.clone(),
+                sink: observed(&bind.sink, &st, v.kind, name),
                 wake,
                 tables,
                 open_reason: Mutex::new(Vec::new()),
@@ -1147,6 +1314,20 @@ impl<K: Kind> Plugin<K> {
         };
         bind.dispatcher.adopt(&plugin.inner);
         Ok(plugin)
+    }
+
+    /// The envelope sink the dispatcher ingests this instance's replies into (a witness).
+    #[cfg(test)]
+    pub(crate) fn envelope_sink(&self) -> Arc<dyn EnvelopeSink> {
+        self.inner.sink.clone()
+    }
+
+    /// GRANT this instance the DESTINATIONS its manifest declares (the settings keys that name a
+    /// file the host appends to for it, `declares.destinations`), before it opens: its `open` and
+    /// `refresh` bind each to the path its settings give, and `disk.append` serves it those only.
+    /// Granted once; a second grant is ignored.
+    pub fn grant_destinations(&self, keys: &[String]) {
+        let _ = self.inner.wake.destinations.set(keys.to_vec());
     }
 
     /// What the kind read from the Statement at bind ([`Kind::context`]), as the kind's type `T`.
@@ -1233,6 +1414,22 @@ impl<K: Kind> Plugin<K> {
         self.call_once(s, frame, true)
     }
 
+    /// AN INLINE CALL on `ticket` (an inline ticket's, `super::inline::InlineTicket::ticket`): on the caller's thread, like [`Plugin::call`],
+    /// but on a REAL ticket, so the op may answer PENDING — the op's wake (an `io.*` slot's, or the
+    /// plugin's own) wakes the task `ticket` registered, which calls again with `resume` (the
+    /// mechanism's `FLAG_RESUME`: the same op on the same ticket). The caller serializes the ops on
+    /// one ticket. A carrier's connection is driven so, one inline ticket per side, with no thread
+    /// handoff (#30).
+    pub fn call_inline<I: InFrame, O: OutFrame>(
+        &self,
+        ticket: Ticket,
+        resume: bool,
+        s: u32,
+        frame: &mut Frame<I, O>,
+    ) -> Called {
+        self.call_ticketed(s, frame, ticket, resume)
+    }
+
     fn instance_id(&self) -> usize {
         Arc::as_ptr(&self.inner) as usize
     }
@@ -1242,6 +1439,20 @@ impl<K: Kind> Plugin<K> {
         s: u32,
         frame: &mut Frame<I, O>,
         recall: bool,
+    ) -> Called {
+        let called = self.call_ticketed(s, frame, Ticket::NONE, false);
+        if recall && called.recall.is_some() {
+            return Called::from(Crossed::host(Outcome::Fault));
+        }
+        called
+    }
+
+    fn call_ticketed<I: InFrame, O: OutFrame>(
+        &self,
+        s: u32,
+        frame: &mut Frame<I, O>,
+        ticket: Ticket,
+        resume: bool,
     ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
@@ -1264,18 +1475,23 @@ impl<K: Kind> Plugin<K> {
         let crossed = unsafe {
             let head = &mut *i;
             head.size = size_of::<I>() as u32;
-            head.flags = 0;
-            head.deadline_class = DeadlineClass::Call as u8;
-            head.ticket = Ticket::NONE;
+            head.flags = if resume {
+                busbar_contract::abi::mechanism::call::FLAG_RESUME
+            } else {
+                0
+            };
+            head.deadline_class = if ticket.is_none() {
+                DeadlineClass::Call as u8
+            } else {
+                DeadlineClass::Connection as u8
+            };
+            head.ticket = ticket;
             inst.cross(s, i, o, out_size)
         };
         inst.lock_calls().retain(|c| c.0 != id);
         inst.release(units);
         if lifecycle {
             inst.leave_lifecycle();
-        }
-        if recall && crossed.short {
-            return Called::from(Crossed::host(Outcome::Fault));
         }
         let token = crossed.short.then(|| Recall {
             instance: self.instance_id(),
@@ -1398,3 +1614,7 @@ pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
 }
+
+#[cfg(test)]
+#[path = "../tests/instance_id_tests.rs"]
+mod instance_id_tests;

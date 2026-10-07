@@ -58,8 +58,8 @@ use busbar_contract::abi::plane::{
 use serde_json::Value;
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, json, load, output, ready_step, release,
-    tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, json, load, output, ready_step, release, tick,
+    validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
 use crate::dispatch::{Called, Frame, Plugin};
@@ -344,7 +344,7 @@ fn generation(p: &Plugin<Plane>, s: u32, generation: u64) -> String {
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = Inputs::of(s.kind_inputs("plane"));
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let head: Vec<Field> = k
         .head
         .iter()
@@ -355,7 +355,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .collect();
 
     let d = dispatcher();
-    let p = load::<Plane>(s, leg, bind(&d, "plane")).expect("the plane door loads");
+    let p = load::<Plane>(s, leg, s.bind(&d, "plane")).expect("the plane door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(

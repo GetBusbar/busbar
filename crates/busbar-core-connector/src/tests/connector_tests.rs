@@ -237,11 +237,19 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
             s.read_exact(&mut buf).await.unwrap();
             let _ = tx.send(buf.to_vec());
         });
-        let door = Arc::new(TestDoor::identity("bytes"));
-        let view = Transports::new(vec![Entry {
-            door: door.clone(),
-            alpn: Vec::new(),
-        }])
+        let door = Arc::new(
+            TestDoor::identity("bytes").with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+        );
+        let view = Transports::new(vec![
+            Entry {
+                door: door.clone(),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::identity("carrier")),
+                alpn: Vec::new(),
+            },
+        ])
         .unwrap();
         let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_: Ticket| {}));
         c.declare_over(OWNER, NeedId(0), "bytes")
@@ -1287,7 +1295,7 @@ mod transport_pin {
                 key_pin: Some(server.pin.clone()),
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![client.der.clone()],
-                    private_key: client.key.clone(),
+                    private_key: client.key.clone().into(),
                 }),
                 private_reach: false,
             };
@@ -1324,7 +1332,7 @@ mod transport_pin {
                 key_pin: None,
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![leaf.der.clone()],
-                    private_key: b"not a key".to_vec(),
+                    private_key: b"not a key".to_vec().into(),
                 }),
                 private_reach: false,
             };

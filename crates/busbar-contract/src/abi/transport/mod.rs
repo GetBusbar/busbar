@@ -79,6 +79,12 @@
 //!
 //! The tokens an `out` carries (`listener`, `conn`, `framing`) are names, not results.
 //!
+//! A CARRIER MOVES BYTES OVER THE HOST'S HANDLES. It opens, binds, accepts, reads, writes, shuts
+//! and spawns through the host's I/O table (`abi::host::io`, `io.*`): it never holds a descriptor,
+//! and the host opens only what it admitted for the dial that asked. Its frames: a carrier carried
+//! as ITSELF (a need over its own claim, no framer above it) delimits them with
+//! [`READ_END_OF_FRAME`] and [`WRITE_END_OF_FRAME`]; under a framer, its bytes are a stream.
+//!
 //! WHAT THE HOT-LANE `TransportDecl` BECOMES (a mechanical re-heading):
 //!
 //! | `TransportDecl` / slot table | here |
@@ -139,7 +145,7 @@ pub use super::auth::{
     AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER,
 };
 
-use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead};
+use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead, Span};
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
@@ -305,6 +311,17 @@ pub const FACT_DECODES_PAYLOAD: u32 = 2;
 pub const SIDE_ACCEPT: u32 = 0;
 /// `side`: the dialing end.
 pub const SIDE_DIAL: u32 = 1;
+/// `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries
+/// (ARCHITECT 4l, 2026-10-05: one listener port carries every claim's streams, so a claim's framer
+/// frames the stream, not the connection). Its one stream is stream `1`. `begin` takes the stream's
+/// target and its head fields ([`BeginIn::fields`]); `ingest` takes the stream's body bytes and
+/// yields each message as a piece that ends its frame (no piece ends the stream: the host's framer
+/// knows where its body ended); `emit` takes one message's bytes (`end_of_frame` = it ends) and yields the
+/// stream's body bytes in `wire`; `refuse` and `finish` yield the stream's CLOSING FIELD BLOCK in
+/// `wire`, as field lines (`name: value` CRLF each), which the host sends verbatim: after a head as
+/// its trailers, before one as the fields of an answer that is nothing else. `finish` states the
+/// stream's final status ([`FinishIn::final_status`]).
+pub const SIDE_ACCEPT_STREAM: u32 = 2;
 
 /// Close reason: normal.
 pub const CLOSE_NORMAL: u32 = 0;
@@ -411,6 +428,17 @@ pub const PIECE_TEXT: u16 = 64;
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
 /// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
 pub const EMIT_TEXT: u32 = 1;
+
+/// [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that
+/// delimits frames itself (a carrier carried as itself, with no framer above it). A carrier that
+/// carries an undelimited byte stream ignores it.
+pub const WRITE_END_OF_FRAME: u32 = 1;
+
+/// [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier
+/// whose wire is an undelimited byte stream sets it on every read: each read is a frame, the
+/// degenerate case. A frame longer than the host's buffer comes in several reads, the last one
+/// carrying it.
+pub const READ_END_OF_FRAME: u32 = 1;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
@@ -811,6 +839,10 @@ pub struct WriteIn {
     pub bytes: *const u8,
     /// How many.
     pub len: usize,
+    /// `WRITE_*` bits: [`WRITE_END_OF_FRAME`].
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `read`'s and `write`'s `out`.
@@ -821,6 +853,10 @@ pub struct IoOut {
     pub head: OutHead,
     /// Bytes read (`0` = the end) or taken.
     pub len: u64,
+    /// `READ_*` bits on a `read`: [`READ_END_OF_FRAME`]. `0` on a `write`.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `flush`'s `in`.
@@ -949,11 +985,11 @@ pub struct FramerOut {
 pub struct BeginIn {
     /// The head.
     pub head: InHead,
-    /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`].
+    /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`] | [`SIDE_ACCEPT_STREAM`].
     pub side: u32,
     /// Alignment padding.
     pub _reserved: u32,
-    /// The target.
+    /// The target ([`SIDE_ACCEPT_STREAM`]: the stream's path and query).
     pub target: AbiStr,
     /// What connection security established.
     pub facts: *const ConnFacts,
@@ -963,6 +999,7 @@ pub struct BeginIn {
     /// own, in order), for a framer whose wire carries them on its connection's opening (an
     /// upgrade request) rather than on a message; a framer that renders them per message takes them
     /// in `encode` too and ignores these (ARCHITECT Q-L5B-WS-DIAL 2026-10-03). A tail addition.
+    /// [`SIDE_ACCEPT_STREAM`]: the stream's head fields, as the caller sent them.
     pub fields: *const Field,
     /// How many.
     pub fields_len: usize,
@@ -1071,6 +1108,15 @@ pub struct RefuseIn {
 }
 
 /// `finish`'s `in` (the framer's `close`).
+///
+/// THE FINAL STATUS (ARCHITECT 4l, 2026-10-05): on a framing begun on [`SIDE_ACCEPT_STREAM`], the
+/// close is the stream's last answer, and the four `final_*` fields state how it ended, as the unit
+/// stated it: `final_status` in the numbering of the claim the stream arrived on (a number the
+/// claim's status rows cover; `0` where the unit stated none and the claim's numbering has one for
+/// success), its message and its details as byte ranges of `final_bytes`, each empty where the
+/// unit stated none. The framer renders them on its own wire, verbatim; the host renders nothing.
+/// The same names and shape as the plane's `OnPieceOut` final tail. Any other framing's close
+/// carries the four zeroed. A tail addition (pre-tag v1).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FinishIn {
@@ -1084,6 +1130,18 @@ pub struct FinishIn {
     pub _reserved: u32,
     /// The sink.
     pub sink: FramerSink,
+    /// The status the stream ended with, in its claim's numbering.
+    pub final_status: u32,
+    /// Alignment padding.
+    pub _final_reserved: u32,
+    /// The status's message, a range of `final_bytes`; empty = none.
+    pub final_message: Span,
+    /// The status's details, a range of `final_bytes`, passed through as stated; empty = none.
+    pub final_details: Span,
+    /// The bytes `final_message` and `final_details` index (host memory, valid for the call).
+    pub final_bytes: *const u8,
+    /// How many.
+    pub final_bytes_len: usize,
 }
 
 /// `detach`'s and `timer`'s `in`.

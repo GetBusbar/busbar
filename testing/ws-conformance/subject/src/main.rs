@@ -6,9 +6,10 @@
 //!
 //! Every inbound socket busbar serves is the connector's (`busbar_core_connector::listen`, the one
 //! listener source since INBOUND-LISTEN H5), framed through a transport door admitted by the one
-//! dispatcher. This binary takes exactly that path for the `ws` door — the door
-//! (`busbar_transport_ws::door::door`) admitted and opened by the root's own doors module
-//! (`crates/busbar/src/root/doors.rs`, mounted here), bound with `Listening::bind`, each connection
+//! dispatcher, over the carrier that listens and accepts (the `tcp` door, over the host's I/O). This
+//! binary takes exactly that path for the `ws` door — the door (`busbar_transport_ws::door::door`)
+//! admitted and opened by the root's own doors module (`crates/busbar/src/root/doors.rs`, mounted
+//! here), bound with `Listening::bind` over the carrier, each connection
 //! taken with `poll_accept` — and echoes every message back on the stream it came on. The
 //! fuzzingclient sends each case's frames and grades the echo, the handshake, the pings and the
 //! close the framer answers with, so what Autobahn grades is busbar's own RFC 6455 framer.
@@ -34,20 +35,38 @@ mod loader {
     pub use busbar_plugin_loader::*;
 }
 
-/// The `ws` door, admitted through the one dispatcher under its row's name and opened.
-fn ws_door() -> Arc<dyn FramerDoor> {
+/// A door, admitted through the one dispatcher under its row's name and opened.
+fn open(key: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<dyn FramerDoor> {
     use loader::dispatch::{kinds::transport::Transport as TransportKind, load_linked, LinkedRow};
-    let key = busbar_transport_ws::linked::KEY;
-    let plugin = LinkedRow::of(busbar_transport_ws::door::door)
+    let plugin = LinkedRow::of(door)
         .and_then(|row| load_linked::<TransportKind>(&row, doors::row_bind(key)))
-        .unwrap_or_else(|e| panic!("ws-conformance-subject: the ws door is refused: {e}"));
+        .unwrap_or_else(|e| panic!("ws-conformance-subject: the `{key}` door is refused: {e}"));
     Arc::new(
         doors::Dispatched::open(
             plugin,
             &busbar_contract::transport::TransportSettings::default(),
         )
-        .unwrap_or_else(|e| panic!("ws-conformance-subject: the ws door would not open: {e}")),
+        .unwrap_or_else(|e| panic!("ws-conformance-subject: the `{key}` door would not open: {e}")),
     )
+}
+
+/// The `ws` door.
+fn ws_door() -> Arc<dyn FramerDoor> {
+    open(
+        busbar_transport_ws::linked::KEY,
+        busbar_transport_ws::door::door,
+    )
+}
+
+/// The carrier it frames over: the `tcp` door, served from the host's I/O.
+fn carrier() -> busbar_core_connector::compose::Via {
+    busbar_core_connector::compose::Via {
+        door: open(
+            busbar_transport_tcp::linked::KEY,
+            busbar_transport_tcp::door::door,
+        ),
+        io: busbar_core_connector::hostio::process(),
+    }
 }
 
 /// Offer one whole message on `stream`, waiting for the socket to take what the write buffer
@@ -76,8 +95,9 @@ async fn echo(mut conn: Connection) {
     // A message keeps the type its first frame carried (text or binary); the echo answers in kind.
     let mut text = false;
     while let Ok(Some(piece)) = poll_fn(|cx| conn.poll_piece(cx)).await {
-        // A field block (a head) is the handshake's, not a message.
-        if piece.fields {
+        // A field block (a head) is the handshake's, not a message; a failed stream's piece is
+        // its reason, not a message either.
+        if piece.fields || piece.failed {
             continue;
         }
         if message.is_empty() {
@@ -104,7 +124,8 @@ fn main() {
     let local = tokio::task::LocalSet::new();
     local.block_on(&worker, async {
         let mut listener = Listening::bind(
-            ws_door(),
+            Some(ws_door()),
+            &carrier(),
             "127.0.0.1:0",
             None,
             Vec::new(),

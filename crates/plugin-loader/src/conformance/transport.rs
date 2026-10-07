@@ -72,11 +72,9 @@
 //!   carry, at least 1, over a sink of [`TIGHT_WIRE`] wire bytes, [`TIGHT_FRAME`] frame bytes and
 //!   ONE piece (so every frame's pieces are counted alone).
 //!
-//! THE SCRIPT IS CHOSEN BY THE DECLARED ROLE ([`script_for`]): a FRAMER runs the framer script above.
-//! A CARRIER is REFUSED with a named error for now: this is an INTERIM GUARD ONLY, until branch
-//! `p2-transport-carrier` (stage B of p2-transport-stack, ARCHITECT ruling: TRANSPORT-STACK (2)'s
-//! carrier surface, listen/accept/dial/read/write/close/arrival over host io) lands the carrier
-//! script and the carriers' real slots. An unknown role fails the suite.
+//! THE SCRIPT IS CHOSEN BY THE DECLARED ROLE ([`script_for`]): a FRAMER runs the framer script above;
+//! a CARRIER runs the carrier script (`super::carrier`: listen/accept, dial, read, write, flush,
+//! shut and arrival over the suite's host I/O). An unknown role fails the suite.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, OutHead, Outcome};
 use busbar_contract::abi::transport::{
@@ -88,29 +86,30 @@ use busbar_contract::abi::transport::{
 };
 
 use super::{
-    bind, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick,
-    validate, Fold, Leg, Recorder, Subject,
+    close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick, validate,
+    Fold, Leg, Recorder, Subject,
 };
 use busbar_contract::abi::transport::ROLE_CARRIER;
 
-/// Which script a transport's declared `role` runs, or why none does. A FRAMER runs the framer
-/// script. A CARRIER is refused by name: INTERIM GUARD ONLY, until branch `p2-transport-carrier`
-/// (stage B of p2-transport-stack) lands the carrier script (TRANSPORT-STACK (2): listen/accept,
-/// dial, read, write, close, arrival facts, poll-shaped with the host waker). Any other role is not a
-/// transport this suite knows, and fails.
+/// The script a transport's declared role runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Script {
+    /// The framer script (this module).
+    Framer,
+    /// The carrier script (`super::carrier`).
+    Carrier,
+}
+
+/// Which script a transport's declared `role` runs. Any other role is not a transport this suite
+/// knows, and fails.
 ///
 /// # Errors
 ///
-/// The role is a carrier (no carrier script yet) or no known role.
-pub(super) fn script_for(role: u32) -> Result<(), String> {
+/// The role is no known role.
+pub(super) fn script_for(role: u32) -> Result<Script, String> {
     match role {
-        ROLE_FRAMER => Ok(()),
-        ROLE_CARRIER => Err(
-            "CarrierScriptPending: the transport declares ROLE_CARRIER and the carrier script \
-             lands with branch p2-transport-carrier (stage B of p2-transport-stack); the suite \
-             refuses rather than run the framer script over a carrier"
-                .to_owned(),
-        ),
+        ROLE_FRAMER => Ok(Script::Framer),
+        ROLE_CARRIER => Ok(Script::Carrier),
         other => Err(format!(
             "UnknownRole: the transport declares role {other}, neither ROLE_CARRIER nor ROLE_FRAMER"
         )),
@@ -574,16 +573,21 @@ fn yielded_line(wire: &[u8], frames: &[Vec<u8>], raw: &[u8], flags: u32, framing
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("transport");
     assert!(k.is_object(), "conformance.json has no `transport` inputs");
-    let settings = s.settings();
+    let settings = leg.settings(s);
 
     let d = dispatcher();
-    let p = load::<Transport>(s, leg, bind(&d, "transport")).expect("the transport door loads");
+    let p = load::<Transport>(s, leg, s.bind(&d, "transport")).expect("the transport door loads");
     let facts = p
         .context::<TransportFacts>()
         .cloned()
         .expect("a transport states its tail");
-    if let Err(why) = script_for(facts.role) {
-        panic!("{why}");
+    match script_for(facts.role) {
+        Ok(Script::Framer) => {}
+        Ok(Script::Carrier) => {
+            drop(p);
+            return super::carrier::fold(s, leg);
+        }
+        Err(why) => panic!("{why}"),
     }
     let mut want: Vec<(String, Want)> = Vec::new();
     let mut r = Recorder::new(crossings(&p));
@@ -1093,24 +1097,8 @@ fn contract(fold: &Fold, want: &[(String, Want)]) {
 }
 
 #[cfg(test)]
-mod role_tests {
-    use super::script_for;
-    use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
-
-    /// A framer runs the framer script; a carrier is refused BY NAME (the interim guard until
-    /// `p2-transport-carrier`); an unknown role fails. RED arms: the carrier and the unknown role.
-    #[test]
-    fn the_script_is_chosen_by_the_declared_role() {
-        assert_eq!(script_for(ROLE_FRAMER), Ok(()));
-        let carrier = script_for(ROLE_CARRIER).expect_err("RED: a carrier is refused");
-        assert!(carrier.starts_with("CarrierScriptPending"), "{carrier}");
-        assert!(carrier.contains("p2-transport-carrier"), "{carrier}");
-        for role in [0, ROLE_CARRIER | ROLE_FRAMER, 7] {
-            let e = script_for(role).expect_err("RED: an unknown role fails");
-            assert!(e.starts_with("UnknownRole"), "{e}");
-        }
-    }
-}
+#[path = "../tests/conformance_role_tests.rs"]
+mod role_tests;
 
 #[cfg(test)]
 #[path = "../tests/conformance_transport_opening_tests.rs"]

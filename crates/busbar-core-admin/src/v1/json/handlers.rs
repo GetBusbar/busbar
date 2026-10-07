@@ -2413,10 +2413,18 @@ pub(crate) async fn restart(
 
 /// The `POST /api/v1/admin/config/apply` body: a full proposed config (validate's exact shape).
 /// Optimistic concurrency rides `If-Match`.
+///
+/// `config` is carried as a raw [`serde_json::Value`] and parsed by the SAME pre-pass boot runs
+/// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is: the
+/// plane sections (`tools`/`agents`/`streams`/…) are lifted before the frozen `deny_unknown_fields`
+/// `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused every plane section as
+/// an unknown field, so a config that boots could not be applied (ARCHITECT, FLIP-A2A: apply accepts
+/// exactly the boot config shape, plane sections included, and they flow to each plane's refresh
+/// with no restart).
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
-    /// The deploy config (operator-owned `config.yaml` shape).
-    config: busbar_kernel::config::DeployCfg,
+    /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
+    config: serde_json::Value,
     /// The provider definitions (`providers.yaml` shape). Optional — empty validates/fails loudly
     /// on dangling references.
     #[serde(default)]
@@ -2448,6 +2456,17 @@ pub(crate) async fn apply_config(
             )))
         }
     };
+    // The boot pre-pass, as `validate_config` runs it: plane sections lifted, the rest frozen.
+    let req_deploy: busbar_kernel::config::DeployCfg =
+        match busbar_kernel::config::deploy_from_deserializer(req.config) {
+            Ok(d) => d,
+            Err(e) => {
+                return err_json(&AdminError::Validation(format!(
+                    "malformed config body: {e}"
+                )))
+            }
+        };
+    let req_providers = req.providers;
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
@@ -2476,10 +2495,7 @@ pub(crate) async fn apply_config(
                 .overlay_path
                 .as_deref()
                 .and_then(busbar_kernel::config::overlay::read);
-            let ApplyConfigReq {
-                config: mut deploy,
-                providers,
-            } = req;
+            let (mut deploy, providers) = (req_deploy, req_providers);
             if let Some(doc) = overlay_doc.as_ref() {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc);
                 // Without this an apply re-validates against the BASE floors and silently reverts a
@@ -3376,7 +3392,9 @@ pub(crate) async fn plugin_schema(
         // describe answered null (or the hook never answered at all) — fall back to the manifest
         // baseline, same as a never-loaded plugin, rather than reporting "no schema available"
         // when the manifest actually has one.
-        let (schema, schema_error) = loadable.map(manifest_schema).unwrap_or((None, None));
+        let (schema, schema_error) = loadable
+            .map(|p| manifest_schema(p.manifest.settings_schema.as_deref()))
+            .unwrap_or((None, None));
         return ok_json(
             StatusCode::OK,
             &json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": "manifest", "kind": kind, "restart_required_default": restart_required_default }),
@@ -3386,7 +3404,7 @@ pub(crate) async fn plugin_schema(
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
     let trust = verdict_trust(&loadable.verdict);
-    let (schema, schema_error) = manifest_schema(loadable);
+    let (schema, schema_error) = manifest_schema(loadable.manifest.settings_schema.as_deref());
     ok_json(
         StatusCode::OK,
         &json!({
@@ -3408,10 +3426,8 @@ pub(crate) async fn plugin_schema(
 /// value fails to parse is a real authoring/packaging bug, distinct from a manifest that never set
 /// it at all — `schema: null` alone would collapse the two, so a parse failure instead reports
 /// `schema_error` and leaves `schema` null.
-fn manifest_schema(
-    loadable: &busbar_plugin_loader::LoadablePlugin,
-) -> (Option<serde_json::Value>, Option<String>) {
-    match loadable.manifest.settings_schema.as_deref() {
+fn manifest_schema(settings_schema: Option<&str>) -> (Option<serde_json::Value>, Option<String>) {
+    match settings_schema {
         None => (None, None),
         Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
             Ok(v) => (Some(v), None),
@@ -3425,7 +3441,7 @@ fn manifest_schema(
 
 /// The catalog's own trust vocabulary (`"trusted" | "unverified" | "rejected"` — see
 /// `docs/admin-api.md`'s plugin catalog and `service.rs`'s `evaluate()` mapping), applied to a
-/// [`busbar_plugin_loader::sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
+/// the loader's `sign::Verdict`. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
 /// is never `"rejected"` — a rejected artifact is a `SkippedPlugin`, not a load candidate — but
 /// the mapping stays total (not a partial match on `Trusted`/`Allowed` alone) so a future verdict
 /// variant is a compile error here, not a silently-missing label.
@@ -4400,7 +4416,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             // byte-checked against it (`openapi_json_matches_committed_file`), so adding the row
             // without regenerating hands the next reader a red test — and the regeneration cannot
             // run today: the `openapi-schema` feature build is broken at HEAD for an unrelated
-            // reason (`PlaneDecl.openapi_schemas` is missing from busbar-llm / -mcp / -a2a). The row
+            // reason (`PlaneDecl.openapi_schemas` is missing from the linked plane crates). The row
             // to add, once that compiles again, is:
             //
             //   ("as_of", "A rate-card history sequence number to price against (default: the \
@@ -5303,8 +5319,8 @@ fn openapi_reachable_schemas(doc: &serde_json::Value) -> std::collections::BTree
 ///
 /// `config` is carried as a raw [`serde_json::Value`], NOT a plain-derived `DeployCfg`: the 1.6.0
 /// pre-pass (`busbar_kernel::config::deploy_from_deserializer`) has to run on it first (see
-/// `validate_config` below) to lift the 1.6.0-additive top-level keys (`mcp`/`oauth_as`/`tools`/
-/// `agents`/`streams`, plus `auth.policy`) out BEFORE the frozen `deny_unknown_fields` `DeployCfg`
+/// `validate_config` below) to lift the 1.6.0-additive top-level keys (the planes' own sections,
+/// `oauth_as`, plus `auth.policy`) out BEFORE the frozen `deny_unknown_fields` `DeployCfg`
 /// parses the remainder — deriving `Deserialize` straight onto `DeployCfg` here would refuse any
 /// of those keys as unknown, even though the exact same document loads clean from disk at boot
 /// (DECISIONS #52: admin API and the config file are ONE schema).

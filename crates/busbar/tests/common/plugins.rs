@@ -25,7 +25,7 @@ use busbar_plugin_loader::{
         load_dropped, load_linked, rendering_of_library, Bind, DispatchConfig, Dispatcher,
         LinkedRow, NoSink, Plugin,
     },
-    list_plugin_files, load_export_from_bytes, plugin_library_filename, scan_and_validate, scrape,
+    list_plugin_files, plugin_library_filename, scan_and_validate,
     sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy},
     supported_abi, tarball, PluginRegistry,
 };
@@ -53,6 +53,7 @@ pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -65,17 +66,28 @@ pub fn pack(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
 /// `lib` packed UNSIGNED as a `kind` plugin, its manifest stating the library's own Statement
 /// rendering when it exports a door (the door is admitted against it), as the pack tool signs it.
 pub fn pack_stated(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
+    let mut m = manifest(kind, name, publisher);
+    state(&mut m, lib);
+    seal(m, lib)
+}
+
+/// `m` states the Statement rendering `lib`'s door answers (what the packer signs into a
+/// memory-ABI plugin's manifest).
+pub fn state(m: &mut Manifest, lib: &[u8]) {
+    // One staging file per call: two tests of one binary may state the same plugin name at once,
+    // and one must not unlink or overwrite the library the other is mapping.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "busbar-stated-{}-{name}{}",
+        "busbar-stated-{}-{n}-{}{}",
         std::process::id(),
+        m.name,
         std::env::consts::DLL_SUFFIX
     ));
     std::fs::write(&path, lib).expect("stage the library");
     let rendering = rendering_of_library(&path).expect("the library states itself");
     let _ = std::fs::remove_file(&path);
-    let mut m = manifest(kind, name, publisher);
     m.statement = rendering.map(hex::encode);
-    seal(m, lib)
 }
 
 /// `lib` packed UNSIGNED under `m`, the manifest bound to the library's hash.
@@ -199,7 +211,8 @@ fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        // A transport door is a framer the connector drives: it declares no need.
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_dropped::<Transport>(path, &stated, bind).ok()?;
     let key = *plugin.context::<TransportFacts>()?.claims.first()?;
@@ -224,7 +237,7 @@ pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
     transport_cdylib_under(&[])
 }
 
-/// [`transport_cdylib`] PINNED TO THE WIRE A PROOF NEEDS: the floor door whose key is one of
+/// [`transport_cdylib`] PINNED TO THE WIRE A PROOF NEEDS: the floor CARRIER whose key is one of
 /// `keys` (the keys the build's linked layers compose over, read off its linked table); every key
 /// when `keys` is empty.
 ///
@@ -243,7 +256,13 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
             return None;
         }
         let (plugin, key) = transport_door(&p)?;
-        if !plugin.context::<TransportFacts>()?.composes_over.is_empty() {
+        let facts = plugin.context::<TransportFacts>()?;
+        // The floor wire is a CARRIER whose claim serves a port: the one that can listen under the
+        // data door (a carrier reached by a program serves no port).
+        if !facts.composes_over.is_empty()
+            || facts.role != busbar_contract::abi::transport::ROLE_CARRIER
+            || !facts.ported
+        {
             return None;
         }
         if !keys.is_empty() && !keys.contains(&key) {
@@ -251,6 +270,15 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
         }
         Some((std::fs::read(&p).ok()?, key))
     })
+}
+
+/// The neutral frame door's library bytes ([`neutral_frame_door`]), for a proof that drops it in.
+pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
+    let file = plugin_library_filename("neutral_frame_door");
+    libraries()
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
+        .and_then(|p| std::fs::read(p).ok())
 }
 
 /// An in-tree export door `cdylib` that loads as a sink carrying exactly the `metrics` stream,
@@ -265,7 +293,8 @@ pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: None,
+            // A probe: the library is only read for what it states, never opened to serve.
+            conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
         };
         let plugin = load_dropped::<Export>(&p, &stated, bind).ok()?;
         let metrics = [ExportStream::Metrics as u8];
@@ -275,15 +304,36 @@ pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
     })
 }
 
-/// The COLD export sink `lib` (loaded as `name`) handed `exposition` read into the recorder
-/// snapshot, as the host hands a sink serving `/metrics` its scrape: the `(content type, body)` it
-/// renders (M6-COLD-DELETE, with the cold export lane).
-pub fn render_snapshot(lib: &[u8], name: &str, exposition: &str) -> (String, String) {
+/// The export sink `lib`, DROPPED IN on the export kind's memory ABI (its door's Statement stated)
+/// and opened under `name` with `settings`, handed `exposition` read into the recorder snapshot, as
+/// the host hands a sink serving `/metrics` its scrape: the body it renders.
+pub fn render_snapshot(lib: &[u8], name: &str, settings: &str, exposition: &str) -> Vec<u8> {
+    use busbar_contract::export_calls::ExportCalls as _;
     let families =
         busbar_contract::export_calls::parse_families(exposition).expect("the snapshot reads");
-    let sink = load_export_from_bytes(lib, "{}", name, "export").expect("the sink loads");
-    sink.scrape(scrape::cold_families(&families))
-        .expect("the sink renders")
+    let path = std::env::temp_dir().join(format!(
+        "busbar-render-{}-{name}{}",
+        std::process::id(),
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::write(&path, lib).expect("stage the library");
+    let stated = rendering_of_library(&path)
+        .expect("the library loads")
+        .expect("the library states itself");
+    let d = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let bind = Bind {
+        instance: std::sync::Arc::from(name),
+        max_inflight_cap: 64,
+        sink: std::sync::Arc::new(NoSink),
+        dispatcher: d.adopter(),
+        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
+    };
+    let plugin = load_dropped::<Export>(&path, &stated, bind).expect("the sink loads");
+    let _ = std::fs::remove_file(&path);
+    let sink =
+        busbar_plugin_loader::export_door::ExportInstance::open(plugin, d, settings.as_bytes())
+            .expect("the sink opens");
+    sink.scrape(&families).expect("the sink renders")
 }
 
 /// THE NEUTRAL FRAME DOOR (the plugin loader's `neutral_frame_door` example): a transport door that

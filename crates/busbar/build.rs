@@ -256,6 +256,8 @@ fn linked_axis_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Vec<Stri
     let mut declared: Vec<String> =
         vec![cfg_of("plane"), cfg_of(EXPORT_DOOR_AXIS), cfg_of(DOOR_AXIS)];
     declared.extend(AXES.iter().map(|(axis, _, _)| cfg_of(axis)));
+    // The memory-ABI export axis: what a test that documents the linked sinks' declarations needs.
+    declared.push(cfg_of(EXPORT_DOOR_AXIS));
     let mut set: Vec<String> = Vec::new();
     for (feature, axes) in metadata_map(manifest, "package.metadata.busbar.linked-axes") {
         if !enabled(&feature) {
@@ -341,7 +343,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             // reads every scheme it claims off its Statement.
             door_builds.push_str(&format!(
                 "fn __door_build_{n}(lower: Option<Wire>, settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
-                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings)\n}}\n\
+                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings, None)\n}}\n\
                  fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
                  self::__busbar_doors::claims_of(::{entry}::door)\n}}\n"
             ));

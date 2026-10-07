@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The export rows (`export_axis.rs`) through BOTH DOORS on the export kind's memory ABI: the real
-//! sinks (owner FIXTURES ruling: "real plugins are the proofs") — the prometheus sink and the OTLP
-//! trace sink — each LINKED by its logic crate's `door` and DROPPED IN as its `-plugin` crate's
+//! sinks (owner FIXTURES ruling: "real plugins are the proofs") — the prometheus sink, the OTLP
+//! trace sink and the request-log webhook sink — each LINKED by its logic crate's `door` and DROPPED IN as its `-plugin` crate's
 //! `cdylib` (signed first-party, its Statement rendering in its manifest), probed, validated and
 //! opened through ONE dispatcher, and required to answer the same. The validate refusal renders
 //! under the instance as 1.5.5 printed it.
@@ -127,7 +127,10 @@ fn the_trace_sink_answers_the_same_through_either_door() {
         return;
     };
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher());
+        // The OTLP sink declares an http need: opened to deliver, it binds over a table (one that
+        // declares it and opens nothing; this row never delivers).
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = "busbar-export-otlp";
         let good = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
         let (streams, clean) = rows.probe(module, "trace", &good).expect("an export row");
@@ -141,6 +144,44 @@ fn the_trace_sink_answers_the_same_through_either_door() {
         );
         let sink = rows
             .open(module, "export.trace", &good)
+            .expect("the sink opens");
+        format!("{refused:?} {:?}", sink.streams())
+    });
+    assert_eq!(transcripts[0], transcripts[1], "both doors answer the same");
+}
+
+/// THE REQUEST-LOG WEBHOOK SINK, BOTH DOORS: each probes as carrying `logs`, validates good settings
+/// clean, refuses a bad key under the instance in 1.5.5's words, and opens on good settings — the
+/// same either way. Its POSTs ride the host's connector over the `http` framer.
+#[test]
+fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
+    let Some(doors) = both(
+        "busbar-export-webhook",
+        busbar_export_webhook::door,
+        "busbar_export_webhook_plugin",
+    ) else {
+        eprintln!("skip: the webhook sink's cdylib is not built");
+        return;
+    };
+    let transcripts = doors.map(|registry| {
+        // The webhook sink declares an http need: opened to deliver, it binds over a table (one that
+        // declares it and opens nothing; this row never delivers).
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_conns(Arc::new(crate::needs_restated::Inert));
+        let module = "busbar-export-webhook";
+        let good = serde_json::json!({ "url": "https://collector.example.com/v1/logs" });
+        let (streams, clean) = rows.probe(module, "audit", &good).expect("an export row");
+        assert_eq!(streams, Some(vec![ExportStream::Logs as u8]));
+        assert!(clean.is_empty(), "{clean:?}");
+        let bad = serde_json::json!({ "url": "https://collector.example.com", "bogus": 1 });
+        let (_, refused) = rows.probe(module, "audit", &bad).expect("an export row");
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(
+            refused[0].starts_with("export.audit.settings: unknown field `bogus`"),
+            "{refused:?}"
+        );
+        let sink = rows
+            .open(module, "export.audit", &good)
             .expect("the sink opens");
         format!("{refused:?} {:?}", sink.streams())
     });

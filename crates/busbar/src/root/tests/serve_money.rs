@@ -25,9 +25,9 @@ use crate::root::plane_node::{Node, NodeEndPost};
 
 /// A governed composition of the test plane: a signing book with one minted key, the plane's
 /// section one entry `m`, its data routes on a data router built with them, over a node of its own.
-struct Governed {
+pub(super) struct Governed {
     _published: Published,
-    router: axum::Router,
+    pub(super) router: axum::Router,
     post: Arc<NodeEndPost>,
     money: Arc<PlaneMoney>,
     gov: Arc<GovState>,
@@ -39,7 +39,7 @@ struct Governed {
 
 /// `keys_chain`: the deployment's data chain verifies a key (a claim that takes a credential is
 /// then refused by the gate when none is presented).
-fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
+pub(super) fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
     governed_with(instance, keys_chain, None)
 }
 
@@ -143,6 +143,9 @@ fn governed_with(
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
+    // The framer of the test plane's framed claim: the neutral frame door, dropped in (ARCHITECT
+    // 4l); no other claim of the test plane is one a framer answers.
+    served.framers = Some(neutral_framers());
     let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
         .expect("its claims mount");
     let app = busbar_kernel::test_support::TestApp::new();
@@ -325,6 +328,26 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
     assert_eq!(g.requests(), 3, "only the parent");
 }
 
+/// THE IN-SESSION SERVICES THROUGH THE ONE TABLE (U22): a dropped-in plane's unit calls
+/// `content.scan`, `hook.call` (a gate, then a rewrite) and `verify.lookup` on its own ticket. The
+/// unit's route leg stated its hook stage, so each is served (none refused as unbound): with no hook
+/// bound the content passes, the gate passes and the chain is unchanged; the verify cache, empty,
+/// makes the caller its leader.
+#[tokio::test]
+async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-money-services", true) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=0 gate=0 rewrite=0 verify=2")
+    );
+    assert_eq!(g.money.open_units(), 0);
+}
+
 /// BUDGET EXHAUSTION MID-NEST: the parent is admitted while its key's budget holds one more fee;
 /// that fee spends it, so the child the parent then nests is refused over budget at its own
 /// admission (one admission chain), charged nothing, and the parent is handed the refusal.
@@ -373,4 +396,32 @@ async fn a_nest_past_the_depth_cap_is_refused() {
         "every unit but the refused one"
     );
     assert_eq!(g.money.open_units(), 0);
+}
+
+/// The framer that answers a claim, for the compositions here: the neutral frame door (the plugin
+/// loader's `neutral_frame_door` example), dropped in and opened through the one door, for its own
+/// claim alone. Under CI a missing artifact is a failure.
+pub(super) fn neutral_framers() -> super::StreamFramers {
+    use busbar_core_connector::framer::FramerDoor;
+    static DOOR: std::sync::OnceLock<Option<Arc<dyn FramerDoor>>> = std::sync::OnceLock::new();
+    let door = DOOR
+        .get_or_init(|| {
+            let (plugin, _key) = crate::root::test_plugins::neutral_frame_door()?;
+            let door = crate::root::doors::Dispatched::open(
+                plugin,
+                &busbar_contract::transport::TransportSettings::default(),
+            )
+            .expect("the neutral frame door opens");
+            Some(Arc::new(door) as Arc<dyn FramerDoor>)
+        })
+        .clone();
+    assert!(
+        door.is_some() || std::env::var_os("CI").is_none(),
+        "the neutral frame door cdylib is built beside the test binary under CI"
+    );
+    super::StreamFramers(Arc::new(move |claim: &str| {
+        door.as_ref()
+            .filter(|d| d.facts().claims.contains(&claim))
+            .cloned()
+    }))
 }

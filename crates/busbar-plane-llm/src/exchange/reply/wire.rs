@@ -293,19 +293,40 @@ pub fn token_usage_of(usage: &Option<Billing>) -> Option<TokenUsage> {
     }
 }
 
-/// Every open class a delivery counted, by class: a counted unit verbatim, nothing for any other
-/// shape.
+/// Every open class a delivery counted that is not a token, by class (owner LEDGER-100: every unit
+/// the far end reports is a ledger line under its meter class):
+///
+/// - a counted unit (a rerank's search units) verbatim;
+/// - a per-image answer's image count as `images`;
+/// - a transcription's reported duration as `audio_ms`, the exact decimal floored to the whole
+///   millisecond (integer only; never more than was reported).
+///
+/// Token usage reaches the ledger through [`token_usage_of`] (its open counts ride
+/// `TokenUsage::open_units`). `Characters` is the TTS request-seam size, no answer carries it,
+/// and `Flat` reports no count. A zero count is no hit on its class.
 #[must_use]
 pub fn open_units_of(usage: &Option<Billing>) -> BTreeMap<String, u64> {
+    use crate::codec::ir::open_class::{add, AUDIO_MS_CLASS, IMAGES_CLASS};
+    let mut open = BTreeMap::new();
     match usage {
-        Some(Billing::Counted { class, count }) => BTreeMap::from([(class.clone(), *count)]),
+        Some(Billing::Counted { class, count }) => {
+            open.insert(class.clone(), *count);
+        }
+        Some(Billing::Images { count, .. }) => add(&mut open, IMAGES_CLASS, u64::from(*count)),
+        Some(Billing::Duration { seconds }) => {
+            let ms = seconds.micros().max(0) / 1_000;
+            add(
+                &mut open,
+                AUDIO_MS_CLASS,
+                u64::try_from(ms).unwrap_or(u64::MAX),
+            );
+        }
         Some(Billing::Tokens(_))
-        | Some(Billing::Duration { .. })
         | Some(Billing::Characters { .. })
-        | Some(Billing::Images { .. })
         | Some(Billing::Flat)
-        | None => BTreeMap::new(),
+        | None => {}
     }
+    open
 }
 
 /// Whether the far end reported this whole answer's generation as failed: its dialect's reader

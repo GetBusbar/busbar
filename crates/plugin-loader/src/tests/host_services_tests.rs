@@ -9,11 +9,14 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
-    check_clock_now, check_dest_judge, check_random_fill, ContentScanIn, EntitlementCheckIn,
-    ItemSpan, RandomFillIn, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
+    check_clock_now, check_content_scan, check_dest_judge, check_hook_call, check_random_fill,
+    check_verify_lookup, check_verify_store, ContentScanIn, EntitlementCheckIn, HookCallIn,
+    ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn, DEST_ALLOWED, DEST_INTERNAL,
+    DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
+use busbar_contract::services::DiskDest;
 
 use super::*;
 
@@ -34,6 +37,8 @@ struct Provider {
     filled: AtomicUsize,
     /// Every `records.secret` read that reached the provider, as `kind:id`.
     secrets: Mutex<Vec<String>>,
+    /// Every `disk.append` that reached the provider: the destination and the bytes.
+    appended: Mutex<Vec<(DiskDest, Vec<u8>)>>,
 }
 
 impl Provider {
@@ -235,6 +240,71 @@ impl HostServices for Provider {
         self.saw(c, "work.resume", format!("{unit:?} {handle}").as_bytes());
         Ran::Now(Stored::ready(0))
     }
+
+    /// Records the key; answers a hit whose entry is `entry`, in span 0, through `later`.
+    fn verify_lookup(&self, c: &Caller, key: &[u8], later: Later) -> Ran {
+        self.saw(c, "verify.lookup", key);
+        let mut stored = Stored::ready(svc::VERIFY_HIT);
+        stored.bytes = b"entry".to_vec();
+        stored.spans = vec![ItemSpan {
+            key: Span {
+                offset: check::SPAN_ABSENT,
+                len: 0,
+            },
+            value: Span { offset: 0, len: 5 },
+        }];
+        later(stored);
+        Ran::Later
+    }
+
+    /// Records `<key> <entry> <ttl>`.
+    fn verify_store(&self, c: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        let arg = [key, b" ", entry, format!(" {ttl_ms}").as_bytes()].concat();
+        self.saw(c, "verify.store", &arg);
+        Stored::ready(0)
+    }
+
+    /// Records `<unit> <content>`; blocks it.
+    fn content_scan(&self, c: &Caller, unit: Option<u64>, content: &[u8], _: Later) -> Ran {
+        let arg = [format!("{unit:?} ").as_bytes(), content].concat();
+        self.saw(c, "content.scan", &arg);
+        Ran::Now(Stored::ready(svc::CONTENT_BLOCK))
+    }
+
+    /// Records `<unit> <stage> <from> <system> <role>=<text>...`; answers `1 + from`, the bytes
+    /// `rw`.
+    fn hook_call(&self, c: &Caller, unit: Option<u64>, ask: HookAsk, _: Later) -> Ran {
+        let mut arg = format!("{unit:?} {} {} {:?}", ask.stage, ask.from, ask.system);
+        for (role, text) in &ask.messages {
+            arg.push_str(&format!(" {role}={text}"));
+        }
+        self.saw(c, "hook.call", arg.as_bytes());
+        Ran::Now(Stored {
+            bytes: b"rw".to_vec(),
+            ..Stored::ready(1 + u64::from(ask.from))
+        })
+    }
+
+    /// The disk-lane double: records the append and answers through `later` — READY with the
+    /// file rotated first, or, for a path ending `.fail`, FAILED at the open step.
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        self.appended.lock().unwrap().push((dest.clone(), bytes));
+        let failing = dest.path.ends_with(".fail");
+        later(
+            DiskReport {
+                step: if failing { svc::DISK_OPEN_FAILED } else { 0 },
+                rotated: true,
+                faults: 0,
+                error: if failing {
+                    "No such file or directory"
+                } else {
+                    ""
+                },
+            }
+            .stored(),
+        );
+        Ran::Later
+    }
 }
 
 /// The records the double's `records.list` holds, in key order.
@@ -423,6 +493,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.need_admit,
         HOST_SLOTS.trust_verify,
         HOST_SLOTS.records_secret,
+        HOST_SLOTS.disk_append,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     for (service, f) in (0..SERVICES).zip(slots) {
@@ -444,38 +515,275 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 busbar_contract::conn::ConnError::UndeclaredNeed.text(),
                 "service {service}"
             );
-        } else if !matches!(
-            service,
-            op::CLOCK_NOW
-                | op::SIGN
-                | op::TRUST_DUE
-                | op::ENTITLEMENT_CHECK
-                | op::RANDOM_FILL
-                | op::TRUST_VERIFY
-        ) {
+        } else if service == op::VERIFY_STORE {
+            // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
-            assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
+            assert_eq!(error(&o), NO_VERIFY_KEY, "service {service}");
+        } else {
+            assert!(
+                matches!(
+                    service,
+                    op::CLOCK_NOW
+                        | op::SIGN
+                        | op::TRUST_DUE
+                        | op::ENTITLEMENT_CHECK
+                        | op::RANDOM_FILL
+                        | op::TRUST_VERIFY
+                ),
+                "service {service}"
+            );
+        }
+        // No slot of the table is left unserved.
+        if !o.error.ptr.is_null() {
+            assert_ne!(error(&o), UNIMPLEMENTED, "service {service}");
         }
     }
 }
 
+fn no_bufs() -> ServiceBufs {
+    ServiceBufs {
+        buf: std::ptr::null_mut(),
+        cap: 0,
+        spans: std::ptr::null_mut(),
+        spans_cap: 0,
+    }
+}
+
+fn over(b: &[u8]) -> AbiStr {
+    AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    }
+}
+
+fn blob_over(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
+    busbar_contract::abi::mechanism::call::Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        fmt: 0,
+        flags: 0,
+    }
+}
+
+/// `verify.lookup` reaches the kernel with the caller and the key, and the entry it answers is
+/// written into the caller's buffers; a lookup that names no key is REFUSED before the cache is
+/// read (RED arm).
 #[test]
-fn every_other_slot_answers_unimplemented_on_a_ticket() {
+fn verify_lookup_answers_the_callers_cache_and_refuses_an_empty_key() {
     let d = double();
-    let i = ContentScanIn {
-        head: head(op::CONTENT_SCAN, TICKET, 0, size_of::<ContentScanIn>()),
-        content: busbar_contract::abi::mechanism::call::Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: 0,
-            flags: 0,
-        },
-        into: bufs(&mut [], &mut []),
+    let (mut buf, mut spans) = ([0u8; 8], [NO_SPAN; 1]);
+    let mut i = VerifyLookupIn {
+        head: head(op::VERIFY_LOOKUP, TICKET, 0, size_of::<VerifyLookupIn>()),
+        key: over(b"card:a"),
+        into: bufs(&mut buf, &mut spans),
     };
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::VERIFY_HIT);
+    assert_eq!(&buf[..o.len as usize], b"entry");
+    assert!(check_verify_lookup(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some(("double".to_string(), "verify.lookup", b"card:a".to_vec()))
+    );
+
+    i.key = over(b"");
+    i.head = head(op::VERIFY_LOOKUP, TICKET, 1, size_of::<VerifyLookupIn>());
+    let before = d.route.provider.scoped.lock().unwrap().len();
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_VERIFY_KEY);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
+}
+
+/// `verify.store` never pends: it is served with no ticket, with the caller, key, entry and ttl;
+/// an empty key is REFUSED before the cache is written (RED arm).
+#[test]
+fn verify_store_is_served_without_a_ticket_and_refuses_an_empty_key() {
+    let d = double();
+    let mut i = VerifyStoreIn {
+        head: head(
+            op::VERIFY_STORE,
+            Ticket::NONE,
+            0,
+            size_of::<VerifyStoreIn>(),
+        ),
+        key: over(b"k"),
+        entry: blob_over(b"e"),
+        ttl_ms: 9,
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert!(check_verify_store(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some(("double".to_string(), "verify.store", b"k e 9".to_vec()))
+    );
+    i.key = over(b"");
+    let mut o = blank();
+    let ret = HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_VERIFY_KEY);
+}
+
+/// `content.scan` reaches the kernel with the unit the crossing serves and the content; called
+/// with no ticket it is REFUSED (it may pend) and never runs (RED arm).
+#[test]
+fn content_scan_scans_for_the_unit_the_crossing_serves() {
+    let d = double();
+    let content = b"tool result";
+    let mut i = ContentScanIn {
+        head: head(op::CONTENT_SCAN, TICKET, 0, size_of::<ContentScanIn>()),
+        content: blob_over(content),
+        into: no_bufs(),
+    };
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(7));
+        HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+    };
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::CONTENT_BLOCK);
+    assert!(check_content_scan(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some((
+            "double".to_string(),
+            "content.scan",
+            b"Some(7) tool result".to_vec()
+        ))
+    );
+    i.head = head(
+        op::CONTENT_SCAN,
+        Ticket::NONE,
+        0,
+        size_of::<ContentScanIn>(),
+    );
+    let before = d.route.provider.scoped.lock().unwrap().len();
     let mut o = blank();
     let ret = HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
     assert_eq!(ret.outcome(), Outcome::Refused);
-    assert_eq!(error(&o), UNIMPLEMENTED);
+    assert_eq!(error(&o), UNTICKETED);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
+}
+
+fn hook_in(
+    stage: u32,
+    from: u32,
+    prompt: *const busbar_contract::abi::hook::PromptView,
+    seq: u32,
+    into: ServiceBufs,
+) -> HookCallIn {
+    HookCallIn {
+        head: head(op::HOOK_CALL, TICKET, seq, size_of::<HookCallIn>()),
+        stage,
+        from,
+        prompt,
+        into,
+    }
+}
+
+/// `hook.call` copies the caller's prompt view and runs the stage for the unit the crossing
+/// serves; the rewrite it answers is written into the caller's buffers.
+#[test]
+fn hook_call_runs_the_stage_over_the_copied_prompt() {
+    use busbar_contract::abi::hook::{MessageView, PromptView};
+    let d = double();
+    let messages = [MessageView {
+        role: over(b"user"),
+        text: over(b"hi"),
+    }];
+    let view = PromptView {
+        system: over(b"sys"),
+        message_count: 1,
+        body: busbar_contract::abi::mechanism::call::Blob::ABSENT,
+        messages: messages.as_ptr(),
+        messages_len: 1,
+    };
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
+    let i = hook_in(svc::HOOK_REWRITE, 2, &view, 0, bufs(&mut buf, &mut spans));
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(4));
+        HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+    };
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!((o.value, &buf[..o.len as usize]), (3, &b"rw"[..]));
+    assert!(check_hook_call(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().last().cloned(),
+        Some((
+            "double".to_string(),
+            "hook.call",
+            b"Some(4) 1 2 Some(\"sys\") user=hi".to_vec()
+        ))
+    );
+}
+
+/// RED, one arm each: an unknown stage, a chain resumed past the cap, a resumed gate and a missing
+/// prompt are each REFUSED in their own words before any hook runs; a prompt view that breaks its
+/// own rules is FAULT.
+#[test]
+fn hook_call_refuses_each_malformed_in_before_any_hook_runs() {
+    use busbar_contract::abi::hook::PromptView;
+    let d = double();
+    let view = PromptView {
+        system: over(b""),
+        message_count: 0,
+        body: busbar_contract::abi::mechanism::call::Blob::ABSENT,
+        messages: std::ptr::null(),
+        messages_len: 0,
+    };
+    let broken = PromptView {
+        message_count: 2,
+        messages_len: 2,
+        ..view
+    };
+    let cases: [(HookCallIn, Outcome, &str); 5] = [
+        (
+            hook_in(7, 0, &view, 0, no_bufs()),
+            Outcome::Refused,
+            HOOK_UNKNOWN_STAGE,
+        ),
+        (
+            hook_in(
+                svc::HOOK_REWRITE,
+                svc::HOOK_FROM_MAX + 1,
+                &view,
+                1,
+                no_bufs(),
+            ),
+            Outcome::Refused,
+            HOOK_FROM_PAST_CAP,
+        ),
+        (
+            hook_in(svc::HOOK_GATE, 1, &view, 2, no_bufs()),
+            Outcome::Refused,
+            HOOK_GATE_RESUMED,
+        ),
+        (
+            hook_in(svc::HOOK_GATE, 0, std::ptr::null(), 3, no_bufs()),
+            Outcome::Refused,
+            HOOK_NO_PROMPT,
+        ),
+        (
+            hook_in(svc::HOOK_GATE, 0, &broken, 4, no_bufs()),
+            Outcome::Fault,
+            "",
+        ),
+    ];
+    for (i, outcome, why) in cases {
+        let mut o = blank();
+        let ret = HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        assert_eq!(ret.outcome(), outcome, "{why}");
+        if outcome == Outcome::Refused {
+            assert_eq!(error(&o), why);
+        }
+    }
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -594,6 +902,7 @@ fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
         wake: None,
         conns: std::ptr::null(),
         services: &HOST_SLOTS,
+        io: std::ptr::null(),
     };
     busbar_contract::abi::sdk::Services::of(&tables).expect("the table is handed")
 }
@@ -1311,4 +1620,106 @@ fn unit_nest_reaches_the_kernel_with_the_unit_its_crossing_serves() {
             b"Some(11) POST /child ask".to_vec()
         )]
     );
+}
+
+/// A `disk.append` `in` naming `key`, appending `bytes`, its result into `result`.
+fn disk_in(
+    key: &'static str,
+    bytes: &'static [u8],
+    seq: u32,
+    result: &mut svc::DiskWritten,
+) -> svc::DiskAppendIn {
+    svc::DiskAppendIn {
+        head: head(op::DISK_APPEND, TICKET, seq, size_of::<svc::DiskAppendIn>()),
+        dest_key: AbiStr {
+            ptr: key.as_ptr(),
+            len: key.len(),
+        },
+        bytes: Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+            flags: 0,
+        },
+        result: std::ptr::from_mut(result),
+    }
+}
+
+fn call_disk(ctx: HostCtx, i: &svc::DiskAppendIn) -> (RawOutcome, ServiceOut) {
+    let mut o = blank();
+    let ret = HOST_SLOTS.disk_append.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    (ret, o)
+}
+
+fn blank_written() -> svc::DiskWritten {
+    svc::DiskWritten {
+        size: 0,
+        rotated: 0,
+        faults: 0,
+        _reserved: [0; 2],
+        written: 0,
+    }
+}
+
+/// THE DESTINATION RULE (THE DESIGN §11.12 `disk.append`): an instance appends only to the
+/// destinations its manifest declares (granted by the opener), at the path its settings bound; a key
+/// it was not granted, or one its settings leave unset, is REFUSED before the kernel sees anything.
+/// A granted, bound key reaches the kernel's disk lane with the bound path and the bytes unchanged,
+/// and the lane's report lands in the caller's result slot (READY: the whole of the bytes; FAILED:
+/// the step in `value`, nothing written). RED: before the slot, `disk.append` was no slot at all.
+#[test]
+fn disk_append_writes_only_to_a_granted_bound_destination() {
+    let d = double();
+    let mut w = blank_written();
+    // The double's instance was granted no destination.
+    let (ret, o) = call_disk(d.ctx, &disk_in("path", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    assert!(d.route.provider.appended.lock().unwrap().is_empty());
+
+    // An instance granted `path`, its settings binding it.
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake.destinations.set(vec!["path".to_string()]).is_ok());
+    let ctx = HostCtx {
+        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
+    };
+    // Granted, not yet bound (its settings set no path): refused.
+    let (ret, o) = call_disk(ctx, &disk_in("path", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    let bound = DiskDest {
+        key: "path".into(),
+        path: "/var/log/busbar/requests.jsonl".into(),
+        rotate_at: Some(1024 * 1024),
+        keep: busbar_contract::services::DISK_KEEP,
+    };
+    wake.bound.write().unwrap().push(bound.clone());
+    // A key the instance was not granted, even with a path under it.
+    let (ret, o) = call_disk(ctx, &disk_in("other", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    assert!(d.route.provider.appended.lock().unwrap().is_empty());
+
+    let i = disk_in("path", b"line\n", 0, &mut w);
+    let (ret, o) = call_disk(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert_eq!((w.rotated, w.faults, w.written), (svc::DISK_ROTATED, 0, 5));
+    assert_eq!(
+        d.route.provider.appended.lock().unwrap().as_slice(),
+        &[(bound, b"line\n".to_vec())]
+    );
+
+    // The lane's FAILED report: the step in `value`, nothing appended, the rotation reported.
+    wake.bound.write().unwrap()[0].path = "/nowhere/requests.fail".into();
+    let mut w = blank_written();
+    let i = disk_in("path", b"line\n", 1, &mut w);
+    let (ret, o) = call_disk(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert_eq!(o.value, svc::DISK_OPEN_FAILED);
+    assert_eq!(error(&o), "No such file or directory");
+    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
 }
