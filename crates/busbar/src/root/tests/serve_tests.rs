@@ -2063,6 +2063,68 @@ mod agent_door {
         }
     }
 
+    /// B2 (restored, #42, #77(5)): A PRESENT AGENTS CARD SILENT ABOUT AN AGENT REFUSES THE CONFIG,
+    /// at boot and on every apply, naming a paste-ready stub for exactly the agents it misses — in
+    /// origin/predev's words (`billed_bytes_tests.rs::
+    /// a_present_agents_card_silent_about_an_agent_refuses_the_config`). The agent set is config,
+    /// so the gap is known before any hop: no hop to it is ever served and ledgered on a lane no
+    /// card prices. The card is lifted off the section before the door sees it (#40), so the
+    /// kernel's judge of the door's section holds the card to its registrations
+    /// (`DoorSection::ledger_lanes`). A card pricing every agent boots.
+    #[test]
+    fn a_present_agents_card_silent_about_an_agent_refuses_the_config() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let folded = {
+            use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+            busbar_kernel::plane::door::fold(
+                registration(linked_probe(door(), "serve-agent-card-row")).expect("the door binds"),
+            )
+            .expect("the door folds")
+        };
+        let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+            busbar_kernel::test_support::neutral_fallback_plane(),
+            folded,
+        ]);
+        let (section, kind) = (surface("section"), surface("resource_kind"));
+        let resolved = |card: &str| {
+            let text = format!(
+                "providers: {{}}\nmodels: {{}}\n{section}:\n  \
+                 planner: {{ url: https://planner.example/rpc, pin: {{ mechanism: unpinned }} }}\n  \
+                 payments: {{ url: https://payments.example/rpc, pin: {{ mechanism: unpinned }} }}\n  \
+                 rate_card:\n{card}"
+            );
+            let deploy =
+                busbar_kernel::config::deploy_from_yaml_str(&text).expect("the config parses");
+            busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves")
+        };
+        let silent = resolved(&format!(
+            "    {kind}:payments: {{ units: {{ bytes: 10000 }} }}\n"
+        ));
+        assert_eq!(
+            busbar_kernel::config_validate::validate(&silent),
+            Err(vec![format!(
+                "{section}.rate_card is present but 1 {noun} has no rate entry (a present card is \
+                 AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+                 Paste these under {section}.rate_card and fill in your rates:\n\n    \
+                 {kind}:planner: {{ units: {{ bytes: 0 }} }}\n",
+                noun = surface("subject_noun"),
+            )]),
+            "a card silent about `planner` refuses before any hop to it can be ledgered"
+        );
+        let complete = resolved(&format!(
+            "    {kind}:payments: {{ units: {{ bytes: 10000 }} }}\n    \
+             {kind}:planner: {{ units: {{ bytes: 0 }} }}\n"
+        ));
+        assert_eq!(
+            busbar_kernel::config_validate::validate(&complete),
+            Ok(()),
+            "a card pricing every agent boots"
+        );
+    }
+
     /// The root cell `egress-auth × a2a-client`: the agent is handed only the credential the egress
     /// plans for its member — none is configured here — and never the caller's own token, which
     /// authenticated the caller to busbar and stops there.
