@@ -79,8 +79,9 @@
 //! READY with `expired_fields` (2 first invocations, as above). Then the FAILING endpoint: `fields`(S) on a ticket
 //! answers the declared `refusal` after EXACTLY ONE attempt (NO RETRY: the endpoint's hit count is 1).
 //!
-//! THE RED ARMS ([`red_outbound_wrong_byte`], [`red_outbound_double_fetch`]): the real door
-//! restated with a `fields` that writes one wrong byte, and with an `open_outbound` that binds a
+//! THE RED ARMS ([`red_outbound_wrong_byte`], [`red_outbound_writes_nothing`],
+//! [`red_outbound_double_fetch`]): the real door restated with a `fields` that writes one wrong
+//! byte, with a `fields` that answers READY having written no field, and with an `open_outbound` that binds a
 //! second token cell (so its mint fetches the token twice) and a `fields` that, waiting, arms a
 //! second on-demand cell too (so the waiting calls fetch twice), each fail this script.
 
@@ -287,6 +288,14 @@ fn expected(v: &serde_json::Value, what: &str) -> String {
             )
         })
         .collect();
+    // A style whose expectation is no field at all would pass a door that writes nothing: every
+    // outbound style presents something (a header, a query parameter), so an empty list is refused
+    // here rather than let the script compare nothing with nothing.
+    assert!(
+        !owned.is_empty(),
+        "conformance.json: {what} is empty: an outbound style writes at least one field, and an \
+         empty expectation would pass a door that writes none"
+    );
     format!(
         "Ready fields=[{}]",
         listing(
@@ -1437,12 +1446,16 @@ fn on_demand_contract(fold: &Fold, i: usize, x: &Style, m: &Minting, od: &OnDema
 static REAL_OPS: Mutex<Option<auth::Ops>> = Mutex::new(None);
 static PLANT_BYTE: Restated = Restated::new();
 static PLANT_FETCH: Restated = Restated::new();
+static PLANT_NOTHING: Restated = Restated::new();
 
 extern "C" fn plant_byte_door() -> *const Door {
     PLANT_BYTE.get()
 }
 extern "C" fn plant_fetch_door() -> *const Door {
     PLANT_FETCH.get()
+}
+extern "C" fn plant_nothing_door() -> *const Door {
+    PLANT_NOTHING.get()
 }
 
 fn real_ops() -> Option<auth::Ops> {
@@ -1471,6 +1484,25 @@ extern "C" fn fields_one_byte_off(
                     *i.field_buf.add(v.offset as usize + v.len as usize - 1) ^= 1;
                 }
             }
+        }
+    }
+    answered
+}
+
+/// `fields`, then the fields it wrote taken back: READY with none written.
+extern "C" fn fields_writing_nothing(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> RawOutcome {
+    let Some(real) = real_ops().and_then(|o| o.fields) else {
+        return RawOutcome::of(Outcome::Fault);
+    };
+    let answered = real(instance, input, out);
+    if answered.outcome() == Outcome::Ready {
+        // SAFETY: the host hands `fields` a `FieldsOut` it owns for the call.
+        unsafe {
+            (*out.cast::<FieldsOut>()).fields_len = 0;
         }
     }
     answered
@@ -1607,6 +1639,36 @@ pub fn red_outbound_wrong_byte(s: &Subject) {
     assert!(
         why.contains("expect_fields") || why.contains("refreshed_fields"),
         "RED: the one-byte plant failed for another reason than the fields written: {why}"
+    );
+}
+
+/// **RED: a door stating the outbound family whose `fields` writes nothing fails the outbound
+/// script.** The real door restated with a `fields` that answers READY having written no field is
+/// driven linked; the script must refuse it on the fields it wrote (every style's expectation
+/// names at least one field: an empty one is refused when the inputs are read). A door with no
+/// outbound family has nothing to plant.
+///
+/// # Panics
+/// When the planted door passes the script, or fails it for another reason.
+pub fn red_outbound_writes_nothing(s: &Subject) {
+    s.apply_env();
+    let Some(st) = outbound_subject(s) else {
+        eprintln!("conformance: the door states no outbound family; no outbound plant to run");
+        return;
+    };
+    plant(s, &PLANT_NOTHING, |o| {
+        o.fields = Some(fields_writing_nothing)
+    });
+    let why = failed(|| {
+        fold(s, Leg::Linked, plant_nothing_door, &st);
+    })
+    .expect("RED: an outbound door writing no field passed the outbound script");
+    assert!(
+        why.contains("expect_fields")
+            || why.contains("refreshed_fields")
+            || why.contains("second_scope_fields")
+            || why.contains("expired_fields"),
+        "RED: the write-nothing plant failed for another reason than the fields written: {why}"
     );
 }
 
