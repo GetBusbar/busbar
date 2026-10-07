@@ -1297,6 +1297,10 @@ pub struct IrUsageDetail {
     /// that reconciles perfectly; carried as its own attribution field. (ADDITIVE — anthropic field
     /// carry; only the Anthropic reader/writer touch it today, other dialects leave it `None`.)
     pub web_search_requests: Option<u64>,
+    /// Anthropic `usage.server_tool_use.web_fetch_requests` — the server-side URL fetches Anthropic
+    /// performed for the turn. A reported count beside the tokens, ledgered as the open class
+    /// `web_fetch_requests` (owner LEDGER-100). Only the Anthropic reader populates it.
+    pub web_fetch_requests: Option<u64>,
     /// Anthropic `usage.service_tier` — which service tier actually SERVED/BILLED the request
     /// (`standard` / `priority` / `batch`). Attribution of which tier the usage was charged at (a
     /// same-priced-total can still be split across tiers), so it belongs with the usage attribution
@@ -1398,10 +1402,14 @@ pub struct IrUsageDetail {
     /// `billable_tokens` ignores this field like every other on the struct, so populating it can
     /// never change what busbar bills.
     pub usage_identity_note: Option<UsageIdentityNote>,
-    /// Counts the reader found that no billing class records (Bedrock's guardrail policy units),
-    /// keyed by the provider's own count name. Never billed: [`IrUsage::to_token_usage`] carries
-    /// them onto [`busbar_contract::billing::TokenUsage::residual_units`], which no billed-usage
-    /// builder reads.
+    /// Counts the reader found under an open class it names (Bedrock's guardrail policy units),
+    /// keyed by that class ([`crate::codec::ir::open_class`]). Billed: [`IrUsage::to_token_usage`]
+    /// carries them onto [`busbar_contract::billing::TokenUsage::open_units`] (owner LEDGER-100).
+    pub open_units: std::collections::BTreeMap<String, u64>,
+    /// Counts the reader found that no billing class records, keyed by the provider's own count
+    /// name. Never billed: [`IrUsage::to_token_usage`] carries them onto
+    /// [`busbar_contract::billing::TokenUsage::residual_units`], which no billed-usage builder
+    /// reads. Under LEDGER-100 no reader puts a reported unit here: every one has an open class.
     pub residual_units: std::collections::BTreeMap<String, u64>,
     /// The tokens split by modality (OpenAI `*_tokens_details.{text,image,audio}_tokens`, Gemini
     /// `*TokensDetails[].{modality,tokenCount}`). PRESENTATION ONLY (ARCHITECT ruling 2026-10-02,
@@ -1478,10 +1486,9 @@ impl IrUsage {
     /// present, WIN over the raw totals for the reserved input/output tiers — a DELIBERATE,
     /// tested per-dialect ledgered-count change (no other dialect populates these, so every other
     /// provider projects byte-identically to before). Cohere's billed `search_units` is the open
-    /// class `search_units` (see `open_units`). Its billed `classifications` has no meter class the
-    /// LLM plane declares: the Cohere reader WARNs it as a residual and it is ledgered nowhere
-    /// (MONEY-AUDIT A-F1; the residual audit row is escalated, A-F4/STR-5/STR-8). Both stay on
-    /// `IrUsageDetail` and are re-emitted by the Cohere writer.
+    /// class `search_units` and its billed `classifications` the open class `classifications`
+    /// (see `open_units`; owner LEDGER-100). Both stay on `IrUsageDetail` and are re-emitted by the
+    /// Cohere writer.
     ///
     /// THE BILLED INPUT IS NETTED AGAINST THE CACHE READ, for the same reason the raw total is.
     /// The billed-wins exception above was written when Cohere reported no cache accounting at all,
@@ -1521,48 +1528,68 @@ impl IrUsage {
         }
     }
 
-    /// THE SEPARATELY BILLED COUNTS, by the meter class each lands in (MONEY-AUDIT A-F1; owner
-    /// 2026-10-02: every billed count lands in an existing class by the provider's own semantics,
-    /// and the plane reports units, never a price). Anthropic bills each server-side web search
-    /// (`usage.server_tool_use.web_search_requests`) as one search, so the count is the declared
-    /// open class `search_units` (a rerank's billed searches, item 134) that a rate card prices per
-    /// lane under `units:`. Cohere's chat `billed_units.search_units` is that same class by name and
-    /// meaning (the units a rerank bills). A zero count is not carried: a zero search is no hit on
-    /// the class.
+    /// THE SEPARATELY REPORTED COUNTS, by the open class each is ledgered under (owner LEDGER-100,
+    /// 2026-10-03: every unit a provider reports is a ledger line under its meter class, priced by
+    /// the ratecard; the plane reports units, never a price):
+    ///
+    /// - `search_units`: Anthropic bills each server-side web search
+    ///   (`usage.server_tool_use.web_search_requests`) as one search, and Cohere's chat
+    ///   `billed_units.search_units` is that same class by name and meaning (the units a rerank
+    ///   bills, item 134).
+    /// - `web_fetch_requests`: Anthropic's `usage.server_tool_use.web_fetch_requests`.
+    /// - `classifications`: Cohere's `billed_units.classifications`.
+    /// - `unitemized_tokens`: the provider-stated total above the itemized sum
+    ///   ([`IrUsageDetail::usage_identity_note`] with a positive `unaccounted`). A total BELOW its
+    ///   terms is no unit, so it adds nothing; its note and WARN still say so. The itemized buckets
+    ///   are untouched, so the four token classes bill exactly what they billed before.
+    /// - every class the reader carried on [`IrUsageDetail::open_units`] (Bedrock's guardrail
+    ///   policy units).
+    ///
+    /// A zero count is not carried: a zero is no hit on the class.
     fn open_units(&self) -> std::collections::BTreeMap<String, u64> {
+        use crate::codec::ir::open_class::{
+            add, CLASSIFICATIONS_CLASS, UNITEMIZED_TOKENS_CLASS, WEB_FETCH_REQUESTS_CLASS,
+        };
+        let mut open = std::collections::BTreeMap::new();
+        for (class, n) in &self.detail.open_units {
+            add(&mut open, class, *n);
+        }
         let searches = (self.detail.web_search_requests.unwrap_or(0))
             .saturating_add(self.detail.search_units.unwrap_or(0));
-        (searches != 0)
-            .then(|| {
-                (
-                    crate::codec::ir::rerank::SEARCH_UNITS_CLASS.to_string(),
-                    searches,
-                )
-            })
-            .into_iter()
-            .collect()
+        add(
+            &mut open,
+            crate::codec::ir::rerank::SEARCH_UNITS_CLASS,
+            searches,
+        );
+        add(
+            &mut open,
+            WEB_FETCH_REQUESTS_CLASS,
+            self.detail.web_fetch_requests.unwrap_or(0),
+        );
+        add(
+            &mut open,
+            CLASSIFICATIONS_CLASS,
+            self.detail.billed_classifications.unwrap_or(0),
+        );
+        if let Some(note) = &self.detail.usage_identity_note {
+            add(
+                &mut open,
+                UNITEMIZED_TOKENS_CLASS,
+                u64::try_from(note.unaccounted).unwrap_or(0),
+            );
+        }
+        open
     }
 
     /// THE RESIDUALS this usage reports, never billed (MONEY LAW, owner 2026-10-02): every count
-    /// the reader carried on [`IrUsageDetail::residual_units`], plus the provider-stated total above
-    /// the itemized sum ([`IrUsageDetail::usage_identity_note`] with a positive `unaccounted`) as
-    /// `<identity>.stated_total_gap`. A total BELOW its terms is no unbilled count, so it adds
-    /// nothing here; its note and WARN still say so.
+    /// the reader carried on [`IrUsageDetail::residual_units`]. Under LEDGER-100 (owner 2026-10-03)
+    /// every reported unit has an open class ([`Self::open_units`]), so no reader carries one here
+    /// and the map is empty; the carrier and its `usage.residual` audit row stay for a count a
+    /// reader cannot class.
     fn residual_units(&self) -> std::collections::BTreeMap<String, u64> {
-        let mut residual = self.detail.residual_units.clone();
-        if let Some(note) = &self.detail.usage_identity_note {
-            let gap = u64::try_from(note.unaccounted).unwrap_or(0);
-            if gap > 0 {
-                let identity = note.identity;
-                residual.insert(format!("{identity}.{STATED_TOTAL_GAP}"), gap);
-            }
-        }
-        residual
+        self.detail.residual_units.clone()
     }
 }
-
-/// The residual key suffix for a provider-stated total above its itemized sum.
-const STATED_TOTAL_GAP: &str = "stated_total_gap";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrBlockMeta {

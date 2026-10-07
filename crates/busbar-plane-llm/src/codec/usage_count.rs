@@ -179,6 +179,8 @@ pub enum CountSlot {
     CacheWrite1h,
     /// `IrUsageDetail::web_search_requests`.
     WebSearchRequests,
+    /// `IrUsageDetail::web_fetch_requests`.
+    WebFetchRequests,
     /// `IrUsageDetail::search_units`.
     SearchUnits,
     /// `IrUsageDetail::billed_input_tokens`.
@@ -199,7 +201,7 @@ pub enum CountSlot {
     RejectedPrediction,
 }
 
-const SLOTS: usize = 17;
+const SLOTS: usize = 18;
 
 /// How one count is read off the usage object and folded into its slot. A path names the member
 /// from the usage object down; every member before the last is a parent object.
@@ -367,6 +369,7 @@ pub fn read_usage(
             cache_creation_5m_input_tokens: get(CountSlot::CacheWrite5m),
             cache_creation_1h_input_tokens: get(CountSlot::CacheWrite1h),
             web_search_requests: get(CountSlot::WebSearchRequests),
+            web_fetch_requests: get(CountSlot::WebFetchRequests),
             search_units: get(CountSlot::SearchUnits),
             billed_input_tokens: get(CountSlot::ProviderInput),
             billed_output_tokens: get(CountSlot::ProviderOutput),
@@ -384,8 +387,9 @@ pub fn read_usage(
 /// THE STATED-TOTAL CROSS-CHECK: the total a provider states beside its itemized counts, against
 /// what the dialect's usage table LEDGERS from those counts (the four meter classes: uncached
 /// input, cache read, cache write, output). A provider's total is its own sum of the counts it
-/// itemizes, never a unit: nothing is ledgered from it, and nothing is zeroed, clamped or
-/// back-filled to make the two agree.
+/// itemizes, never a unit: nothing is zeroed, clamped or back-filled to make the two agree, and
+/// the itemized counts stay exactly as reported. A total ABOVE them is the open class
+/// `unitemized_tokens` (`IrUsage::to_token_usage`, owner LEDGER-100).
 ///
 /// `None` in the ordinary case — no total on the usage object (absent, `null`, or not a count: a
 /// total is checked, never billed, so an unreadable one is not a refusal), or a total equal to the
@@ -418,8 +422,9 @@ pub fn stated_total_note(
         unaccounted,
         "usage does not reconcile: the provider's stated total disagrees with the sum of the \
          meter classes its itemized counts ledger (input, cache read, cache write, output). The \
-         ledger holds the itemized counts only; the gap is not ledgered. A positive gap is a \
-         count the provider reports that this dialect's usage table does not read."
+         itemized counts are ledgered as reported; a positive gap is ledgered as the open class \
+         unitemized_tokens, a count the provider reports that this dialect's usage table does not \
+         itemize."
     );
     Some(crate::codec::ir::UsageIdentityNote {
         reported_total,

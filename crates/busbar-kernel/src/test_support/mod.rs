@@ -531,7 +531,7 @@ pub struct LaneSpec {
     // witnessed busbar-llm codec, so the witness can be deleted at the final flip.
     protocol: &'static str,
     max: usize,
-    api_key: String,
+    api_key: busbar_contract::redacted::Redacted<String>,
     error_map: std::collections::HashMap<String, String>,
     context_max: Option<usize>,
     path: Option<String>,
@@ -568,7 +568,7 @@ impl LaneSpec {
             base_url: base_url.into(),
             protocol,
             max: 10,
-            api_key: "k".into(),
+            api_key: String::from("k").into(),
             error_map: std::collections::HashMap::new(),
             context_max: None,
             path: None,
@@ -607,7 +607,7 @@ impl LaneSpec {
         self
     }
     pub fn api_key(mut self, k: &str) -> Self {
-        self.api_key = k.into();
+        self.api_key = k.to_string().into();
         self
     }
     pub fn error_map(mut self, m: std::collections::HashMap<String, String>) -> Self {
@@ -702,7 +702,7 @@ impl LaneSpec {
             organization: self.organization.clone(),
             project: self.project.clone(),
             upstream_model: self.upstream_model.clone(),
-            api_key: busbar_contract::redacted::Redacted::new(self.api_key.clone()),
+            api_key: self.api_key.clone(),
             auth_style,
             scope: None,
             token_url: None,
