@@ -8794,6 +8794,143 @@ mod agent_door {
         );
     }
 
+    /// The upstream attempts counted for any member of the `planner` pool, over every lane.
+    fn planner_attempts() -> f64 {
+        let family = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
+        let lines: Vec<String> = busbar_kernel::snapshot::render()
+            .lines()
+            .filter(|l| l.starts_with(&format!("{family}{{")) && l.contains("pool=\"planner"))
+            .map(str::to_string)
+            .collect();
+        total(&lines)
+    }
+
+    /// The audit rows the kernel's chain holds past `before` for `agent`'s resource.
+    fn audited(before: u64, agent: &str) -> usize {
+        let resource = format!("{}:{agent}", surface("resource_kind"));
+        chain()
+            .iter()
+            .filter(|e| e.seq > before && e.resource == resource)
+            .count()
+    }
+
+    /// AN UNADDRESSED LOCAL VERB IS ANSWERED AT THE ONE AGENT THE CALLER'S GRANT REACHES, never over
+    /// its pool (COORDINATOR ruling 2026-10-07, `ROUTE_SCOPE_LOCAL`; predev `receive.rs:1257-1260`
+    /// `select`, `:1279` `admit`, then the local verbs at `:1559-1593`, before the egress gate and
+    /// before `pool_of` `:1839`: no pool, no breaker, no egress). The caller's task is on the twin
+    /// (placed while the primary was tripped), its grant then narrowed to the primary, which stays
+    /// tripped: an unaddressed `tasks/list` is answered `200` as the primary (`refresh_listed_tasks`
+    /// reads the primary's rows, of which there are none open, so nothing is dialled), audited
+    /// under the primary. RED: the list was walked over the pool past the open primary to the
+    /// twin, answered and audited as the twin, and refreshed the caller's task there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unaddressed_local_verb_is_answered_at_the_tripped_agent_its_grant_reaches() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-local-tripped";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(|request: &str| {
+            if to_member(request, "planner-a") {
+                503
+            } else {
+                200
+            }
+        }))
+        .await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let (key, token) = another_caller(
+            &s,
+            "local-tripped",
+            Some(vec![agent_scope("planner-a"), agent_scope("planner-b")]),
+        );
+        // The primary trips on the caller's submissions; the next is served by the twin.
+        let mut placed = None;
+        for _ in 0..32 {
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner-a", "message/send", SEND, Some(&token)),
+            )
+            .await;
+            if status == StatusCode::OK {
+                placed = Some(task_id_of(&body));
+                break;
+            }
+        }
+        let task_id = placed.expect("the twin serves once the primary's cell is open");
+        let mut row = s
+            .gov
+            .store()
+            .get_key(&key.id)
+            .expect("a read")
+            .expect("the key's row");
+        row.allowed_scopes = Some(vec![agent_scope("planner-a")]);
+        s.gov.store().put_key(&row).expect("the grant is written");
+        s.gov.refresh().expect("the book reloads");
+        let mut log = Vec::new();
+        hear(&mut agent, &mut log);
+        let before = chain().last().map_or(0, |e| e.seq);
+
+        let (status, body) = answered(&s.router, rpc("", "tasks/list", "{}", Some(&token))).await;
+        assert_eq!(status, StatusCode::OK, "answered by busbar itself: {body}");
+        let listed: serde_json::Value = serde_json::from_str(&body).expect("a listing");
+        assert!(
+            listed["result"]["tasks"]
+                .as_array()
+                .is_some_and(|tasks| tasks.iter().any(|t| t["id"] == task_id.as_str())),
+            "busbar's own rows for the caller: {body}"
+        );
+        let mut heard = Vec::new();
+        hear(&mut agent, &mut heard);
+        assert_eq!(
+            (hits(&heard, "planner-a"), hits(&heard, "planner-b")),
+            (0, 0),
+            "no refresh reaches the twin, and the tripped primary is not dialled: {heard:?}"
+        );
+        assert_eq!(
+            (audited(before, "planner-a"), audited(before, "planner-b")),
+            (1, 0),
+            "audited under the agent the caller's grant reaches"
+        );
+    }
+
+    /// THE TWIN, the pool's primary HEALTHY: a caller granted the twin alone lists its tasks
+    /// unaddressed and is answered at the twin, the one agent its grant reaches, with nothing
+    /// dialled and no upstream attempt counted, audited under the twin (the same ruling and predev
+    /// lines). RED: the list was walked over the twin's pool to its healthy primary and answered and
+    /// audited as the primary, an agent outside the caller's grant.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unaddressed_local_verb_never_walks_to_a_healthy_primary_outside_the_grant() {
+        busbar_kernel::snapshot::init();
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-local-healthy";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(|_: &str| 200)).await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let (_, token) = another_caller(&s, "local-healthy", Some(vec![agent_scope("planner-b")]));
+        let mut log = Vec::new();
+        hear(&mut agent, &mut log);
+        let before = chain().last().map_or(0, |e| e.seq);
+        let attempts = planner_attempts();
+
+        let (status, body) = answered(&s.router, rpc("", "tasks/list", "{}", Some(&token))).await;
+        assert_eq!(status, StatusCode::OK, "answered by busbar itself: {body}");
+        let mut heard = Vec::new();
+        hear(&mut agent, &mut heard);
+        assert!(heard.is_empty(), "no egress at all: {heard:?}");
+        assert!(
+            (planner_attempts() - attempts).abs() < f64::EPSILON,
+            "no upstream attempt counted"
+        );
+        assert_eq!(
+            (audited(before, "planner-a"), audited(before, "planner-b")),
+            (0, 1),
+            "audited under the twin, the one agent the caller's grant reaches"
+        );
+    }
+
     /// A CONFIG APPLY KEEPS THE POOL (`DoorApply::apply`): the generation an apply installs holds
     /// the section as written (no pools) and the unified pools beside it; the door is refreshed
     /// onto the section carrying them, as boot composes it, so the pool still walks: the primary
