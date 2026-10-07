@@ -141,6 +141,54 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
+    /// Records `<counterparty>/<item> <digest>`; answers a new sighting.
+    fn trust_sight_item(&self, c: &Caller, counterparty: &str, item: &str, digest: &str) -> Stored {
+        let arg = format!("{counterparty}/{item} {digest}");
+        self.saw(c, "trust.sight_item", arg.as_bytes());
+        Stored::ready(svc::TRUST_NEW)
+    }
+
+    /// Records `<counterparty>/<item>@<digest>`; answers that it serves.
+    fn trust_serves(
+        &self,
+        c: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        let arg = format!(
+            "{counterparty}/{}@{}",
+            item.unwrap_or("-"),
+            digest.unwrap_or("-")
+        );
+        self.saw(c, "trust.serves", arg.as_bytes());
+        Stored::ready(svc::DISTRUST_NONE)
+    }
+
+    /// Records `<counterparty>/<item>@<expected> <approve>`; answers serving.
+    fn trust_decide(
+        &self,
+        c: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        let arg = format!(
+            "{}/{}@{} {approve}",
+            key.counterparty,
+            key.item.unwrap_or("-"),
+            expected.unwrap_or("-")
+        );
+        self.saw(c, "trust.decide", arg.as_bytes());
+        Stored::ready(svc::TRUST_DECIDED_SERVING)
+    }
+
+    /// The last verdict, never a sighting: `TRUST_SAME`.
+    fn trust_unreached(&self, c: &Caller, counterparty: &str) -> Stored {
+        self.saw(c, "trust.unreached", counterparty.as_bytes());
+        Stored::ready(svc::TRUST_SAME)
+    }
+
     /// Answers the payload's length as the verdict, and the counterparty as the bytes.
     fn trust_verify(&self, c: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
         self.saw(c, "trust.verify", &[payload, b"|", sigs].concat());
@@ -505,6 +553,9 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.records_secret,
         HOST_SLOTS.disk_append,
         HOST_SLOTS.snapshot_read,
+        HOST_SLOTS.trust_sight_item,
+        HOST_SLOTS.trust_serves,
+        HOST_SLOTS.trust_decide,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     for (service, f) in (0..SERVICES).zip(slots) {
@@ -530,6 +581,12 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), NO_VERIFY_KEY, "service {service}");
+        } else if matches!(
+            service,
+            op::TRUST_SIGHT_ITEM | op::TRUST_SERVES | op::TRUST_DECIDE
+        ) {
+            // Served, with no ticket: the zeroed `in` names empty texts, which reach the kernel.
+            assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
         } else {
             assert!(
                 matches!(
@@ -1734,6 +1791,95 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     assert_eq!(error(&o), "No such file or directory");
     assert!(svc::check_disk_append(&i, ret, &o).is_ok());
     assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
+}
+
+/// `trust.sight` WITH `TRUST_UNREACHABLE` (ARCHITECT 2026-10-06): the plane could not reach the
+/// counterparty; the kernel answers its last verdict and nothing is sighted (the hash is unread,
+/// and may be empty). RED: an outcome the vocabulary does not hold is FAULT, and reaches nothing.
+#[test]
+fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fault() {
+    let d = double();
+    let sight = |outcome: u32| svc::TrustSightIn {
+        head: head(op::TRUST_SIGHT, TICKET, 0, size_of::<svc::TrustSightIn>()),
+        counterparty: text("peer"),
+        catalogue_hash: text(""),
+        outcome,
+        _outcome_reserved: 0,
+    };
+    let call = |i: &svc::TrustSightIn| {
+        let mut o = blank();
+        let ret = HOST_SLOTS.trust_sight.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+        (ret, o)
+    };
+    let unreached = sight(svc::TRUST_UNREACHABLE);
+    let (ret, o) = call(&unreached);
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::TRUST_SAME));
+    assert!(svc::check_trust_sight(&unreached, ret, &o).is_ok());
+    let (ret, _) = call(&sight(svc::TRUST_UNREACHABLE + 1));
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![("double".to_string(), "trust.unreached", b"peer".to_vec())]
+    );
+}
+
+/// The handle of an unticketed op's `seq`th service call.
+const fn unticketed(seq: u32) -> CompletionHandle {
+    CompletionHandle {
+        ticket: Ticket::NONE,
+        seq,
+        _reserved: 0,
+    }
+}
+
+/// `trust.decide` OVER THE SDK (ARCHITECT 2026-10-06): the key, the expected fingerprint and the
+/// decision reach the kernel as the caller's, with no ticket; RED: a decision the vocabulary does
+/// not hold is FAULT and reaches nothing.
+#[test]
+fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
+    let d = double();
+    let s = sdk(&d);
+    assert_eq!(
+        s.trust_decide(unticketed(0), "peer", Some("t"), Some("d1"), true),
+        Ok(svc::TRUST_DECIDED_SERVING)
+    );
+    assert_eq!(
+        s.trust_decide(unticketed(1), "peer", None, None, false),
+        Ok(svc::TRUST_DECIDED_SERVING)
+    );
+    let bad = svc::TrustDecideIn {
+        head: head(
+            op::TRUST_DECIDE,
+            Ticket::NONE,
+            0,
+            size_of::<svc::TrustDecideIn>(),
+        ),
+        counterparty: text("peer"),
+        item: text(""),
+        expected: text(""),
+        decision: svc::TRUST_DECIDE_REVOKE + 1,
+        _reserved: 0,
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_decide.unwrap()(d.ctx, std::ptr::from_ref(&bad).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "double".to_string(),
+                "trust.decide",
+                b"peer/t@d1 true".to_vec()
+            ),
+            (
+                "double".to_string(),
+                "trust.decide",
+                b"peer/-@- false".to_vec()
+            ),
+        ]
+    );
 }
 
 /// The families the double's `snapshot.read` answers: every shape the scrape layout carries (a
