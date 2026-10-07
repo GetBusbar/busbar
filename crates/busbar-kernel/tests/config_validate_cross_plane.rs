@@ -159,13 +159,13 @@ fn distinct_names_across_nouns_and_pools_pass() {
 fn the_agents_section_enumerates_every_secret_reference_its_plane_declares() {
     linked::install();
     let text = "providers: {}\nmodels: {}\nagents:\n  \
-        leased:\n    url: \"https://a.example/a2a\"\n    pin: { mechanism: unpinned }\n    \
+        leased:\n    url: \"https://a.example/rpc\"\n    pin: { mechanism: unpinned }\n    \
         upstream_credential:\n      secret: { env: BUSBAR_TEST_AGENT_LEASE }\n      \
         lease_ttl_ms: 60000\n  \
-        mutual:\n    url: \"https://b.example/a2a\"\n    pin: { mechanism: unpinned }\n    \
+        mutual:\n    url: \"https://b.example/rpc\"\n    pin: { mechanism: unpinned }\n    \
         client_identity:\n      cert: { env: BUSBAR_TEST_AGENT_CERT }\n      \
         key: { env: BUSBAR_TEST_AGENT_KEY }\n  \
-        plain:\n    url: \"https://c.example/a2a\"\n    pin: { mechanism: unpinned }\n";
+        plain:\n    url: \"https://c.example/rpc\"\n    pin: { mechanism: unpinned }\n";
     let deploy = config::deploy_from_yaml_str(text)
         .unwrap_or_else(|e| panic!("the section parses: {e}\n{text}"));
     let mut found: Vec<String> = deploy
