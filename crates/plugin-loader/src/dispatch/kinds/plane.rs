@@ -464,6 +464,55 @@ pub fn linked_probe(
     })
 }
 
+/// THE COMMAND-LINE HELP A LINKED PLANE DOOR STATES: its tail's `cli_help`, read off its `'static`
+/// Statement without binding it (no `validate` or `open` runs), so `busbar --help` can render it
+/// before any configuration is read. `None` when the tail states none.
+///
+/// # Errors
+///
+/// The door, its Statement or its tail is not one this host reads.
+pub fn linked_cli_help(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<Option<&'static str>, String> {
+    let (door, _) = crate::dispatch::load::read_door(door(), Some(KindCode::Plane))
+        .map_err(|e| format!("{e:?}"))?;
+    let st = crate::dispatch::load::statement(&door).map_err(|e| format!("{e:?}"))?;
+    // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
+    // non-NULL kind tail is `'static` plugin data of its stated size.
+    let tail: PlaneTail =
+        unsafe { crate::dispatch::plugin::kind_tail(&st, "a plane", PLANE_TAIL_FROZEN) }?;
+    check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    let help = kept(tail.cli_help);
+    Ok((!help.is_empty()).then_some(help))
+}
+
+/// A linked plane door's DECLARING section, read off its Statement through the one load (the
+/// section the `linked-section` manifest row names for it; the root's tests hold the two together).
+/// `None`: the door declares no section.
+///
+/// # Errors
+///
+/// The door will not load or its Statement breaks the section rules.
+pub fn linked_declaring_section(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<Option<&'static str>, String> {
+    let (door, _) = crate::dispatch::load::read_door(door(), Some(KindCode::Plane))
+        .map_err(|e| format!("{e:?}"))?;
+    let st = crate::dispatch::load::statement(&door).map_err(|e| format!("{e:?}"))?;
+    let sections = if st.sections_len == 0 {
+        &[][..]
+    } else {
+        // SAFETY: a non-NULL `sections` holds `sections_len` `'static` entries.
+        unsafe { std::slice::from_raw_parts(st.sections, st.sections_len) }
+    };
+    check_sections(sections)
+        .map_err(|f| format!("the plane's sections break {:?} at {}", f.rule, f.field))?;
+    Ok(sections
+        .iter()
+        .find(|s| s.flags & SECTION_DECLARING != 0)
+        .map(|s| kept(s.name)))
+}
+
 /// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): its Statement
 /// name, its declaring section and its tail's words, read off the facts kept at its bind, and its
 /// own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe instance

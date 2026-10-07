@@ -460,3 +460,25 @@ fn a_door_rows_probe_binds_on_the_processs_one_dispatcher() {
         &crate::root::dispatch::dispatcher()
     ));
 }
+
+/// THE `linked-section` ROWS ARE THE DOORS' OWN: every section the build set a `linked_section_<name>`
+/// cfg for (`BUSBAR_LINKED_SECTIONS`, from `[package.metadata.busbar.linked-section]`) is the
+/// declaring section a linked plane door's Statement states, so a test gated on that cfg runs exactly
+/// when the plane that declares the section is linked.
+#[test]
+fn every_linked_section_row_is_a_linked_doors_declaring_section() {
+    let stated: Vec<&str> = crate::LINKED
+        .plane_doors
+        .iter()
+        .filter_map(|door| {
+            crate::root::loader::dispatch::kinds::plane::linked_declaring_section(*door)
+                .expect("a linked door's Statement reads")
+        })
+        .collect();
+    for section in env!("BUSBAR_LINKED_SECTIONS").split_whitespace() {
+        assert!(
+            stated.contains(&section),
+            "the `linked-section` row `{section}` is no linked door's declaring section: {stated:?}"
+        );
+    }
+}
