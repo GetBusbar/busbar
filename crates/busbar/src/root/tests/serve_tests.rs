@@ -1091,11 +1091,110 @@ mod agent_door {
         requests: Option<u64>,
         facing: Facing,
     ) -> Served {
+        served_core(
+            instance,
+            section,
+            destinations,
+            allowed_pools,
+            root,
+            hooks,
+            requests,
+            facing,
+            None,
+        )
+    }
+
+    /// What the deployment prices the agent door at, for the cells that read money: the card's rate
+    /// per payload byte of `planner` (none = no `agents.rate_card`, billing off), the plane's
+    /// per-request fee in minor units, and the caller's group `budget` cap in minor units.
+    struct Priced {
+        bytes_rate: Option<u64>,
+        fee: i64,
+        budget: u64,
+    }
+
+    /// The cost model a deployment pricing the door as `priced` resolves: the card is the one the
+    /// configuration composes for the plane's section, the fee the plane's own, the cap the group's.
+    fn priced_cost(
+        priced: &Priced,
+        groups: &BTreeMap<String, busbar_kernel::config::GroupCfg>,
+    ) -> CostModel {
+        let folded = {
+            use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+            busbar_kernel::plane::door::fold(
+                registration(linked_probe(door(), "serve-agent-priced")).expect("the door binds"),
+            )
+            .expect("the door folds")
+        };
+        busbar_kernel::plane::registry::register_test_plane(folded);
+        let (section, kind, class) = (
+            surface("section"),
+            surface("resource_kind"),
+            surface("bytes_class"),
+        );
+        let card = priced.bytes_rate.map_or_else(String::new, |rate| {
+            format!("  rate_card:\n    {kind}:planner: {{ units: {{ {class}: {rate} }} }}\n")
+        });
+        let text = format!(
+            "store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\n{section}:\n  \
+             planner: {{ url: https://planner.example/rpc, pin: {{ mechanism: unpinned }} }}\n{card}"
+        );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&text).expect("the config parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let fees: busbar_kernel::config::PlaneFeesMap = [(
+            surface("plane_key").to_string(),
+            busbar_kernel_ledger::cost::PlaneFees {
+                per_request: priced.fee,
+                per_session: 0,
+            },
+        )]
+        .into_iter()
+        .collect();
+        CostModel::resolve_parts(cfg.rate_card.as_ref(), cfg.per_request_fee, groups)
+            .with_plane_fees(&fees)
+    }
+
+    /// [`served`] over a deployment pricing the door as `priced`: the caller's group capped at its
+    /// budget, the card and the fee as `priced` states them.
+    fn served_priced(instance: &'static str, section: &str, priced: &Priced) -> Served {
+        served_core(
+            instance,
+            section,
+            busbar_kernel::config::Destinations {
+                block_private_addresses: true,
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+            None,
+            Facing::Routes,
+            Some(priced),
+        )
+    }
+
+    /// [`served_full`] over a deployment that prices the door when `priced` is given.
+    #[allow(clippy::too_many_arguments)]
+    fn served_core(
+        instance: &'static str,
+        section: &str,
+        destinations: busbar_kernel::config::Destinations,
+        allowed_pools: Option<Vec<String>>,
+        root: Option<Vec<u8>>,
+        hooks: Option<AgentHooks>,
+        requests: Option<u64>,
+        facing: Facing,
+        priced: Option<&Priced>,
+    ) -> Served {
         // The caller's group, when it is limited: `requests` requests in all.
         let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = requests
-            .map(|amount| {
+            .map(|amount| (busbar_kernel::config::groups::LimitMetric::Requests, amount))
+            .or_else(|| {
+                priced.map(|p| (busbar_kernel::config::groups::LimitMetric::Budget, p.budget))
+            })
+            .map(|(metric, amount)| {
                 let limit = busbar_kernel::config::groups::LimitCfg {
-                    metric: busbar_kernel::config::groups::LimitMetric::Requests,
+                    metric,
                     amount,
                     per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                     scope: None,
@@ -1114,10 +1213,10 @@ mod agent_door {
             })
             .into_iter()
             .collect();
-        let cost = if groups.is_empty() {
-            CostModel::flat(1)
-        } else {
-            CostModel::resolve_parts(None, 1, &groups)
+        let cost = match priced {
+            Some(priced) => priced_cost(priced, &groups),
+            None if groups.is_empty() => CostModel::flat(1),
+            None => CostModel::resolve_parts(None, 1, &groups),
         };
         // The generation's engine host the hook stage reads per unit, set once the App is built.
         let live: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::App>>> = Arc::default();
@@ -2465,6 +2564,196 @@ mod agent_door {
             }
         }
         panic!("the breaker opened within 32 failing calls");
+    }
+
+    /// The bytes of the request body the far agent was sent, read off its `heard` text.
+    fn body_bytes(heard: &str) -> u64 {
+        heard
+            .split_once("\r\n\r\n")
+            .map_or(0, |(_, b)| b.len() as u64)
+    }
+
+    /// **N REQUEST BYTES + M RESPONSE BYTES LEDGER N+M `bytes`**, and with no `agents.rate_card` at
+    /// all that count prices at 0 and nothing refuses: a group `budget:` of one minor unit is never
+    /// tripped by it.
+    /// Ported from busbar-a2a a2a/tests/billed_bytes_tests.rs::a_hop_ledgers_its_request_and_response_body_bytes_and_no_card_reads_zero.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hop_ledgers_its_request_and_response_body_bytes_and_no_card_reads_zero() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-bytes-no-card";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let priced = Priced {
+            bytes_rate: None,
+            fee: 0,
+            budget: 1,
+        };
+        let s = served_priced(instance, &agent.entry("planner", "1h"), &priced);
+        approve(&s, "planner").await;
+        let mut moved = 0u64;
+        for n in 1..=3 {
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "call {n}: billing off serves every call: {body}"
+            );
+            let heard = agent.heard.recv().await.expect("the far agent was dialled");
+            moved += body_bytes(&heard) + ANSWER.len() as u64;
+        }
+        assert!(moved > 3 * ANSWER.len() as u64, "the hops carried bodies");
+        let billed = Billed::of(&s);
+        assert_eq!(
+            billed.bytes, moved,
+            "three hops ledger their request bodies plus the agent's answers verbatim: {billed:?}"
+        );
+        assert_eq!(
+            billed.spend, 0,
+            "no card: billing is off and the counts price at 0, never refused: {billed:?}"
+        );
+    }
+
+    /// **AN `agents.rate_card` PRICES THE BYTES, AND A BUDGET CAP TRIPS ON AGENT TRAFFIC.** One
+    /// minor unit a byte: the first hop's N+M bytes read as N+M minor units, and the second
+    /// submission is refused at the door on the budget the bytes spent (`429`), without dialling.
+    /// Ported from busbar-a2a a2a/tests/billed_bytes_tests.rs::an_agents_card_prices_the_bytes_and_a_budget_cap_trips_on_a2a.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agents_card_prices_the_bytes_and_a_budget_cap_trips() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-bytes-priced";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let priced = Priced {
+            bytes_rate: Some(10_000),
+            fee: 0,
+            budget: 1,
+        };
+        let s = served_priced(instance, &agent.entry("planner", "1h"), &priced);
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "call 1 is under the cap: {body}");
+        let heard = agent.heard.recv().await.expect("the far agent was dialled");
+        let moved = body_bytes(&heard) + ANSWER.len() as u64;
+        let billed = Billed::of(&s);
+        assert_eq!(billed.bytes, moved, "{billed:?}");
+        assert_eq!(
+            billed.spend,
+            i64::try_from(moved).expect("small"),
+            "{moved} bytes x 10,000 micro-units = {moved} minor units: {billed:?}"
+        );
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "call 2 trips the budget the card priced: {body}"
+        );
+        assert!(body.contains("budget"), "{body}");
+        assert!(!agent.relayed(), "the refused call never left");
+    }
+
+    /// **`agents.fees.per_request` CHARGES ONCE PER SERVED HOP.** Each hop is admitted under the
+    /// plane's pool, one fee unit on its fee lane, so a fee of 2 reads 2 x 3 = 6 over three hops.
+    /// (Its refusal of `per_session` is `an_agent_sections_per_request_fee_validates_and_per_session_is_refused`.)
+    /// Ported from busbar-a2a a2a/tests/billed_bytes_tests.rs::agents_fees_per_request_boots_and_charges_and_per_session_refuses.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn agents_fees_per_request_charges_once_per_served_hop() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-fee-charges";
+        let _published = Published(instance);
+        let agent = Agent::start(200, ANSWER).await;
+        let priced = Priced {
+            bytes_rate: None,
+            fee: 2,
+            budget: 1_000,
+        };
+        let s = served_priced(instance, &agent.entry("planner", "1h"), &priced);
+        approve(&s, "planner").await;
+        for n in 1..=3 {
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "call {n}: {body}");
+        }
+        let billed = Billed::of(&s);
+        assert_eq!(billed.fees, 3, "one fee unit per hop: {billed:?}");
+        assert_eq!(
+            billed.spend, 6,
+            "three hops at agents.fees.per_request 2: {billed:?}"
+        );
+    }
+
+    /// **A HOP REFUSED BEFORE THE SOCKET KEEPS NO FEE.** At `agents.fees.per_request: 2`, every hop
+    /// that reaches the failing agent keeps its fee of 2; the submissions after the breaker opens are
+    /// admitted (the admission counts a fee unit each) and then refused before the socket, and each
+    /// gives its fee back: the spend reads 2 per hop that left, not 2 per submission.
+    /// Ported from busbar-a2a a2a/tests/billed_bytes_tests.rs::a_hop_refused_before_the_socket_keeps_no_fee.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hop_refused_before_the_socket_keeps_no_fee() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-refused-no-fee";
+        let _published = Published(instance);
+        let mut agent = Agent::start(503, r#"{"error":"down"}"#).await;
+        let priced = Priced {
+            bytes_rate: None,
+            fee: 2,
+            budget: 1_000,
+        };
+        let s = served_priced(instance, &agent.entry("planner", "1h"), &priced);
+        approve(&s, "planner").await;
+        let mut left = 0u64;
+        let mut tripped = false;
+        for _ in 0..32 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            if agent.relayed() {
+                left += 1;
+            }
+            if body.contains("breaker_open") {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(tripped, "the breaker opened within 32 failing calls");
+        assert!(left >= 1, "the control hop reached the dying agent");
+        for n in 1..=3 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert!(
+                body.contains("breaker_open"),
+                "call {n} is refused by the open breaker: {body}"
+            );
+            assert!(!agent.relayed(), "call {n} never left");
+        }
+        let billed = Billed::of(&s);
+        assert_eq!(
+            billed.fees, left,
+            "only the hops that left keep a fee unit: {billed:?}"
+        );
+        assert_eq!(
+            billed.spend,
+            2 * i64::try_from(left).expect("small"),
+            "the hops that left keep their fees of 2; the refused ones keep none: {billed:?}"
+        );
     }
 
     /// B2 (restored, #42, #77(5)): A PRESENT AGENTS CARD SILENT ABOUT AN AGENT REFUSES THE CONFIG,

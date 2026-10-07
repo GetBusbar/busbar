@@ -377,3 +377,51 @@ fn the_admin_write_path_refuses_mutual_tls_without_a_client_identity_too() {
         .expect_err("the admin path must refuse what the file refuses");
     assert!(err.contains("needs `client_identity:`"), "{err}");
 }
+
+/// The LEASE is a field rather than an adjective, so a lease that could never be presented is
+/// refused where the operator wrote it: a zero `lease_ttl_ms` is refused at parse, naming the key,
+/// and a positive one parses field for field beside the `egress_scopes` it was written with.
+/// Ported from busbar-a2a a2a/tests/config_tests.rs::a_zero_lease_ttl_is_refused_at_parse.
+#[test]
+fn a_zero_lease_ttl_is_refused_at_parse() {
+    let err = parse(&json!({
+        "planner": {
+            "url": "https://x/",
+            "pin": {"mechanism": "unpinned"},
+            "upstream_credential": {"secret": {"env": "VENDOR_TOKEN"}, "lease_ttl_ms": 0}
+        }
+    }))
+    .unwrap_err();
+    assert!(err.contains("lease_ttl_ms"), "got: {err}");
+
+    let cfg = parse(&json!({
+        "planner": {
+            "url": "https://x/",
+            "pin": {"mechanism": "unpinned"},
+            "upstream_credential": {"secret": {"env": "VENDOR_TOKEN"}, "lease_ttl_ms": 60000},
+            "egress_scopes": ["orchestrator"]
+        }
+    }))
+    .expect("a positive TTL is legal");
+    let def = &cfg.agents["planner"];
+    let cred = def.upstream_credential.as_ref().expect("the handle");
+    assert_eq!(cred.lease_ttl_ms, 60_000);
+    assert_eq!(cred.secret.env_var(), Some("VENDOR_TOKEN"));
+    assert_eq!(def.egress_scopes, vec!["orchestrator".to_string()]);
+}
+
+/// An empty egress scope grants nothing and READS as though it grants something, so a blank name
+/// in `egress_scopes` is refused at parse, naming the key.
+/// Ported from busbar-a2a a2a/tests/config_tests.rs::an_empty_egress_scope_is_refused.
+#[test]
+fn an_empty_egress_scope_is_refused() {
+    let err = parse(&json!({
+        "planner": {
+            "url": "https://x/",
+            "pin": {"mechanism": "unpinned"},
+            "egress_scopes": ["  "]
+        }
+    }))
+    .unwrap_err();
+    assert!(err.contains("egress_scopes"), "got: {err}");
+}
