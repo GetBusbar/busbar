@@ -857,9 +857,9 @@ mod agent_door {
         surface("mount")
     }
 
-    /// THE AGENT DOOR: of the linked plane doors, the one whose Statement owns the section the
-    /// fixture names (found by binding each, once); `None` in a build that links no such door, whose
-    /// cells then have nothing to drive.
+    /// THE AGENT DOOR: of the linked plane doors, the one whose Statement declares (or owns) the
+    /// section the fixture names (found by binding each, once); `None` in a build that links no
+    /// such door, whose cells then have nothing to drive.
     fn linked_door() -> Option<DoorFn> {
         static DOOR: std::sync::OnceLock<Option<DoorFn>> = std::sync::OnceLock::new();
         *DOOR.get_or_init(|| {
@@ -881,7 +881,10 @@ mod agent_door {
                         conns: crate::root::loader::dispatch::ConnTable::Probe,
                     },
                 )
-                .is_ok_and(|plane| plane.served().owns.contains(&section))
+                .is_ok_and(|plane| {
+                    let served = plane.served();
+                    served.section == section || served.owns.contains(&section)
+                })
             })
         })
     }
