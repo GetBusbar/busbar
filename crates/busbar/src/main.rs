@@ -1205,12 +1205,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             |dispatch| {
                 // THE ADMIN DOOR: the deployment's live `admin_auth` chain, read per unit off the same
                 // snapshot the kernel middleware reads and `PUT /api/v1/admin/admin-auth` swaps.
-                let mut units = root::kernel::ProductionUnits::admin_only_sharing(
+                // Over the book boot opened AND the store boot bound beside it, so the three
+                // disaster-recovery verbs reach the configured store (row 113).
+                let mut units = root::kernel::ProductionUnits::admin_over_book(
                     dispatch,
                     root::units_admin::live_admin_door(std::sync::Arc::clone(&app_handle)),
-                    std::sync::Arc::clone(&book.durability),
-                    std::sync::Arc::clone(&book.rows)
-                        as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
+                    book,
                 );
                 // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
                 // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
