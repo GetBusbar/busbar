@@ -2252,6 +2252,11 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
     (40, RefusalCode::ClientGone, "client_gone"),
     (41, RefusalCode::DeadlineExceeded, "deadline_exceeded"),
     (42, RefusalCode::Untrusted, "untrusted"),
+    (
+        43,
+        RefusalCode::CredentialUnavailable,
+        "credential_unavailable",
+    ),
 ];
 
 #[test]

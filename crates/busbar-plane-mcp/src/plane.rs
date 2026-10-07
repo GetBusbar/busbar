@@ -390,6 +390,7 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
         // specifically.
         RefusalReason::NoDestination
         | RefusalReason::DestinationUnreachable
+        | RefusalReason::CredentialUnavailable
         | RefusalReason::BreakerOpen
         | RefusalReason::DestinationBudgetExhausted => (
             jsonrpc::CODE_UPSTREAM_UNAVAILABLE,

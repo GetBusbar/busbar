@@ -203,6 +203,7 @@ fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {
         | RefusalReason::DestinationBudgetExhausted
         | RefusalReason::BreakerOpen
         | RefusalReason::DestinationUnreachable
+        | RefusalReason::CredentialUnavailable
         | RefusalReason::Stalled
         | RefusalReason::Drain
         | RefusalReason::ClientGone

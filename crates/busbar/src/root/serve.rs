@@ -549,7 +549,11 @@ impl DoorApply {
             .get(self.facts.plane.as_str())
             .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
             .map_or_else(|| now.section.clone(), |s| s.section.value.clone());
-        match self.refreshed(&section, now.generation + 1, &*app.secret_resolver) {
+        match self.refreshed(
+            &section,
+            now.generation + 1,
+            Arc::clone(&app.secret_resolver) as Arc<dyn busbar_contract::secret::SecretResolve>,
+        ) {
             Ok(next) => {
                 *self
                     .live
@@ -574,7 +578,7 @@ impl DoorApply {
         &self,
         section: &serde_yaml::Value,
         generation: u64,
-        secrets: &dyn busbar_contract::secret::SecretResolve,
+        secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     ) -> Result<DoorLive, String> {
         let settings = if section.is_null() {
             Vec::new()

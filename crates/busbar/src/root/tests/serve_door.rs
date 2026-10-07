@@ -200,7 +200,9 @@ mod decisions_door {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+                conns: crate::root::loader::dispatch::ConnTable::Host(
+                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                ),
             },
         )
         .expect("the linked door binds");
@@ -253,16 +255,19 @@ mod decisions_door {
             "typesafe".to_string(),
             provider,
         )]));
-        let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+        let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+            Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
         let auths = OutboundAuths::new(
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
             None,
-            crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
         );
         let reach = DoorReach {
             providers: &providers,
-            secrets: &secrets,
+            secrets: Arc::clone(&secrets),
             auths: Arc::new(auths),
             conns: Arc::clone(&connector) as Arc<dyn PollConns>,
             stream_ceiling_secs: 600,
@@ -491,7 +496,9 @@ mod decisions_door {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+                conns: crate::root::loader::dispatch::ConnTable::Host(
+                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                ),
             },
         )
         .expect("the linked door binds");
@@ -542,16 +549,19 @@ mod decisions_door {
             "typesafe".to_string(),
             provider,
         )]));
-        let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+        let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+            Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
         let auths = OutboundAuths::new(
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
             None,
-            crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
         );
         let reach = DoorReach {
             providers: &providers,
-            secrets: &secrets,
+            secrets: Arc::clone(&secrets),
             auths: Arc::new(auths),
             conns: Arc::clone(&connector) as Arc<dyn PollConns>,
             stream_ceiling_secs: 600,
@@ -1171,7 +1181,9 @@ mod agent_door {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+                conns: crate::root::loader::dispatch::ConnTable::Host(
+                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                ),
             },
         )
         .expect("the linked door binds");
@@ -1211,16 +1223,19 @@ mod agent_door {
         // THE EGRESS, AS PRODUCTION SEALS IT: no provider (an agent is reached at its own `url`),
         // the process's connector, the node's journal.
         let providers = std::collections::BTreeMap::new();
-        let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+        let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+            Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
         let auths = crate::root::door_steps::OutboundAuths::new(
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
             None,
-            crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
         );
         let reach = crate::root::door_steps::DoorReach {
             providers: &providers,
-            secrets: &secrets,
+            secrets: Arc::clone(&secrets),
             auths: Arc::new(auths),
             conns: Arc::clone(&connector) as Arc<dyn busbar_contract::conn::PollConns>,
             stream_ceiling_secs: 600,

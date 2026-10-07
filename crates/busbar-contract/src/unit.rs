@@ -181,6 +181,8 @@ pub enum RefusalReason {
     DeadlineExceeded,
     /// The counterparty or capability the unit rests on is not trusted (the kernel's Approve).
     Untrusted,
+    /// The member's own credential, re-resolved for this request, is unavailable.
+    CredentialUnavailable,
 }
 
 /// The closed reason codes a failure may carry.

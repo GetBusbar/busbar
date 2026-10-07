@@ -203,7 +203,9 @@ pub fn refusal_status(reason: ReasonCode) -> u32 {
         | ReasonCode::Untrusted => 403,
         ReasonCode::BodyTooLarge => 413,
         ReasonCode::RateLimited | ReasonCode::OverBudget | ReasonCode::GroupFrozen => 429,
-        ReasonCode::DestinationUnreachable | ReasonCode::PlanePanic => 502,
+        ReasonCode::DestinationUnreachable
+        | ReasonCode::PlanePanic
+        | ReasonCode::CredentialUnavailable => 502,
         ReasonCode::DeadlineExceeded | ReasonCode::Stalled => 504,
         _ => 503,
     }

@@ -61,7 +61,7 @@ use busbar_contract::abi::transport::{
     FAULT_NONE, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
-use busbar_contract::caps::{KernelSeal, Pass, Route};
+use busbar_contract::caps::{KernelSeal, Pass, ReasonCode, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
@@ -195,6 +195,10 @@ pub struct AuthBinding {
     /// the caller's own verified credential (THE DESIGN, section 6.6, style `caller-credential`). No other
     /// binding is ever handed it.
     pub passthrough: bool,
+    /// A binding re-resolved on every request (`auth_calls::PerRequestHandle`): its current
+    /// handle is asked for each attempt, in place of `handle`; one that answers none refuses the
+    /// unit `credential_unavailable`. `None` = the handle stands for the generation.
+    pub per_request: Option<Arc<dyn busbar_contract::auth_calls::PerRequestHandle>>,
 }
 
 /// THE EGRESS OF ONE PLANE INSTANCE, sealed per generation by the composition root: its connection
@@ -313,6 +317,7 @@ impl Egress {
                 walk,
                 live: None,
                 probe: None,
+                refused: None,
             }),
             probe_of: None,
         }
@@ -344,6 +349,7 @@ impl Egress {
                 walk,
                 live: None,
                 probe: Some(member),
+                refused: None,
             }),
             probe_of: Some(destination),
         })
@@ -404,6 +410,9 @@ struct State {
     walk: Walk,
     live: Option<Live>,
     probe: Option<Member>,
+    /// The unit is refused for this before its next member: an attempt's re-resolved credential
+    /// was unavailable.
+    refused: Option<ReasonCode>,
 }
 
 /// ONE UNIT'S FAR END over its [`Egress`].
@@ -701,6 +710,9 @@ impl EgressFarEnd<'_> {
         let wait = {
             let mut w = self.lock();
             self.settle(&mut w);
+            if let Some(reason) = w.refused.take() {
+                return Pick::Refused(reason);
+            }
             if !w.walk.ctx().expired(self.egress.clock.now_secs()) {
                 if let Some(member) = w.probe.take() {
                     // ONE member: a probe that brings no answer has nowhere to fail over to, so
@@ -788,6 +800,7 @@ impl EgressFarEnd<'_> {
     async fn auth_fields(
         &self,
         binding: &AuthBinding,
+        handle: u64,
         request: &OutboundRequest,
         url: &str,
         extensions: Vec<u8>,
@@ -835,13 +848,13 @@ impl EgressFarEnd<'_> {
             extensions,
             ..FieldsRequest::default()
         };
-        let answer = match binding.auth.fields_now(binding.handle, &facts) {
+        let answer = match binding.auth.fields_now(handle, &facts) {
             Some(answer) => answer,
             // A plugin that must wait (a token refreshing) is awaited no longer than the attempt
             // may still take: its cap, never beyond what the walk has left (1.5.5's bound).
             None => tokio::time::timeout(
                 Duration::from_millis(self.attempt_cap()),
-                binding.auth.fields(binding.handle, facts, 0),
+                binding.auth.fields(handle, facts, 0),
             )
             .await
             .unwrap_or(Fields::Failed),
@@ -861,9 +874,15 @@ impl EgressFarEnd<'_> {
         // (`abi::auth::SCOPE_REQUEST_FIELD`): taken out here, before anything is encoded, and lent
         // to the member's auth call in its extensions blob. No wire carries it.
         let mut scope = None;
+        // THE PLANE'S WAIVER of its member's binding for this request
+        // (`abi::auth::NO_MEMBER_AUTH_FIELD`): the host's own field, taken out here too.
+        let mut waived = false;
         request.fields.retain(|(name, value)| {
             if busbar_contract::abi::auth::is_scope_field(name) {
                 scope.get_or_insert_with(|| value.clone());
+                false
+            } else if busbar_contract::abi::auth::is_no_member_auth_field(name) {
+                waived = true;
                 false
             } else {
                 true
@@ -917,8 +936,25 @@ impl EgressFarEnd<'_> {
         let url = join(&base_url, &request.target);
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
-        if let Some(binding) = &route.auth {
-            match self.auth_fields(binding, &request, &url, extensions).await {
+        if let Some(binding) = route.auth.as_ref().filter(|_| !waived) {
+            // A binding re-resolved per request answers this attempt's handle; one whose
+            // credential is unavailable refuses the unit before anything is dialled.
+            let handle = match &binding.per_request {
+                Some(per) => per.handle_now(),
+                None => Some(binding.handle),
+            };
+            let Some(handle) = handle else {
+                // Nothing was sent: the dispatch record is abandoned, nothing is recorded
+                // against the destination, and the unit is refused before its next member.
+                let mut w = self.lock();
+                self.settle(&mut w);
+                w.refused = Some(ReasonCode::CredentialUnavailable);
+                return false;
+            };
+            match self
+                .auth_fields(binding, handle, &request, &url, extensions)
+                .await
+            {
                 Some(fields) => auth = fields,
                 None => {
                     // Not the destination's fault: nothing recorded against it; the next member.

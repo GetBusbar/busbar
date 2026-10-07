@@ -686,6 +686,8 @@ pub enum RefusalCode {
     DeadlineExceeded = 41,
     /// `Untrusted`.
     Untrusted = 42,
+    /// `CredentialUnavailable`.
+    CredentialUnavailable = 43,
 }
 
 impl RefusalCode {
@@ -734,6 +736,7 @@ impl RefusalCode {
         RefusalCode::ClientGone,
         RefusalCode::DeadlineExceeded,
         RefusalCode::Untrusted,
+        RefusalCode::CredentialUnavailable,
     ];
 
     /// The number on the wire.
@@ -810,6 +813,7 @@ pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
         ReasonCode::ClientGone => RefusalCode::ClientGone,
         ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
         ReasonCode::Untrusted => RefusalCode::Untrusted,
+        ReasonCode::CredentialUnavailable => RefusalCode::CredentialUnavailable,
     }
 }
 
@@ -865,6 +869,7 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::ClientGone => ReasonCode::ClientGone,
         RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
         RefusalCode::Untrusted => ReasonCode::Untrusted,
+        RefusalCode::CredentialUnavailable => ReasonCode::CredentialUnavailable,
     })
 }
 

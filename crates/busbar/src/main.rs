@@ -880,7 +880,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     );
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
-        secrets: &*app.secret_resolver,
+        secrets: Arc::clone(&app.secret_resolver)
+            as Arc<dyn busbar_contract::secret::SecretResolve>,
         auths: Arc::new(door_auths),
         conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(

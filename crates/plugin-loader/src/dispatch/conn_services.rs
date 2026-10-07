@@ -914,9 +914,18 @@ extern "C" fn write_request(
                     // (`abi::auth::SCOPE_REQUEST_FIELD`): out of the request before anything is
                     // encoded, lent to the member's auth call. No wire carries it.
                     let mut scope = None;
+                    // THE PLUGIN'S WAIVER of the member's binding for this request
+                    // (`abi::auth::NO_MEMBER_AUTH_FIELD`): the host's own field too, taken out here,
+                    // and the request is opened with no member auth.
+                    let mut waived = false;
                     h.fields.retain(|(name, value)| {
                         if busbar_contract::abi::auth::is_scope_field(name.as_bytes()) {
                             scope.get_or_insert_with(|| value.clone());
+                            false
+                        } else if busbar_contract::abi::auth::is_no_member_auth_field(
+                            name.as_bytes(),
+                        ) {
+                            waived = true;
                             false
                         } else {
                             true
@@ -926,14 +935,27 @@ extern "C" fn write_request(
                     // member the connector holds a binding for carries that binding's auth fields,
                     // as the member's relayed calls do. The request is handed over whole; what
                     // became of it is the reply's to say.
-                    s.conn = match table.auth_of(id, *need, target) {
+                    let bound = if waived {
+                        None
+                    } else {
+                        table.auth_of(id, *need, target)
+                    };
+                    // A binding re-resolved per request answers this request's handle; one whose
+                    // credential is unavailable refuses the request, nothing presented.
+                    let handle = bound.as_ref().and_then(|b| match &b.per_request {
+                        Some(per) => per.handle_now(),
+                        None => Some(b.handle),
+                    });
+                    s.conn = match bound {
                         None => {
                             open_with(table, id, *need, (target, within, member), &h, body, &[])
                         }
+                        Some(_) if handle.is_none() => Conn::Failed(ConnError::Refused),
                         Some(binding) => match auth_request(&binding, &h, target, body, scope) {
                             None => Conn::Failed(ConnError::Refused),
                             Some(request) => {
-                                match binding.auth.fields_now(binding.handle, &request) {
+                                let handle = handle.unwrap_or(binding.handle);
+                                match binding.auth.fields_now(handle, &request) {
                                     Some(Fields::Ready(auth)) => open_with(
                                         table,
                                         id,
@@ -947,7 +969,7 @@ extern "C" fn write_request(
                                         Conn::Failed(ConnError::Refused)
                                     }
                                     None => Conn::Authing(Box::new(Authing {
-                                        fielding: binding.auth.fields(binding.handle, request, 0),
+                                        fielding: binding.auth.fields(handle, request, 0),
                                         need: *need,
                                         target: std::mem::take(target),
                                         within: std::mem::take(within),

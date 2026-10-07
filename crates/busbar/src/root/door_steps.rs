@@ -1315,8 +1315,8 @@ impl OutboundAuths {
 pub struct DoorReach<'a> {
     /// The providers, by name ([`provider_routes`]).
     pub providers: &'a BTreeMap<String, ProviderRoute>,
-    /// The secret seam.
-    pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
+    /// The secret seam (shared: a binding re-resolved per hop holds it for its generation).
+    pub secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     /// The auth plugins.
     pub auths: Arc<OutboundAuths>,
     /// The process's connector.
@@ -1429,7 +1429,144 @@ fn token_exchange_binding(
         style_flags: decl.flags,
         points: busbar_contract::abi::auth::AuthPoints(decl.points),
         passthrough: false,
+        per_request: None,
     }))
+}
+
+/// THE `upstream_credential:` BINDING of the registration `registration` (`entry`): busbar's own
+/// credential for the member, its `secret` reference resolved here (the plane validates the block
+/// and never resolves it: `BUSBAR-1.6.0.md` Part 3 section 4, "credentials are auth objects, never a
+/// host-minted header"), opened by the auth plugin serving the style its `placement` names:
+/// `bearer` (absent = it) presents `authorization: Bearer <secret>`, `{header: <name>}` presents
+/// the secret verbatim in that header (the `api-key` style over that header). The kernel presents
+/// it on every request to the member through the auth kind's per-request call. `None` when the
+/// registration states no such block.
+///
+/// # Errors
+///
+/// The block is malformed, its secret does not resolve, or no auth plugin serves or will bind the
+/// style: the load is refused, naming the member.
+fn upstream_credential_binding(
+    entry: &str,
+    registration: &serde_yaml::Value,
+    reach: &DoorReach<'_>,
+) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
+    use busbar_contract::section::{
+        CREDENTIAL_PLACEMENT_KEY, CREDENTIAL_SECRET_KEY, PLACEMENT_BEARER, PLACEMENT_HEADER_KEY,
+        UPSTREAM_CREDENTIAL_KEY,
+    };
+    /// The style a `bearer` placement is bound under.
+    const BEARER_STYLE: &str = "bearer";
+    /// The style a `{header: <name>}` placement is bound under: the named header, verbatim.
+    const HEADER_STYLE: &str = "api-key";
+    let Some(block) = registration.get(UPSTREAM_CREDENTIAL_KEY) else {
+        return Ok(None);
+    };
+    let secret: busbar_contract::secret_ref::SecretRef = block
+        .get(CREDENTIAL_SECRET_KEY)
+        .cloned()
+        .ok_or_else(|| format!("member '{entry}': its upstream credential states no secret"))
+        .and_then(|v| {
+            serde_yaml::from_value(v)
+                .map_err(|e| format!("member '{entry}': its upstream credential's secret: {e}"))
+        })?;
+    let (style, settings) = match block.get(CREDENTIAL_PLACEMENT_KEY) {
+        None => (BEARER_STYLE, serde_json::json!({})),
+        Some(p) if p.as_str() == Some(PLACEMENT_BEARER) => (BEARER_STYLE, serde_json::json!({})),
+        Some(p) => match p
+            .get(PLACEMENT_HEADER_KEY)
+            .and_then(serde_yaml::Value::as_str)
+        {
+            Some(header) if !header.is_empty() => (
+                HEADER_STYLE,
+                serde_json::json!({ PLACEMENT_HEADER_KEY: header }),
+            ),
+            _ => {
+                return Err(format!(
+                    "member '{entry}': its upstream credential's placement is neither \
+                     `{PLACEMENT_BEARER}` nor `{{{PLACEMENT_HEADER_KEY}: <name>}}`"
+                ))
+            }
+        },
+    };
+    let credential = busbar_contract::redacted::Redacted::new(
+        reach
+            .secrets
+            .resolve_string(&secret)
+            .map_err(|e| {
+                format!(
+                    "member '{entry}': busbar's own upstream credential for it cannot resolve: {e}"
+                )
+            })?
+            .into_bytes(),
+    );
+    let (auth, decl) = reach.auths.serving(style, &settings)?.ok_or_else(|| {
+        format!(
+            "member '{entry}': no linked or dropped-in auth plugin serves the style '{style}' its \
+             upstream credential is presented under"
+        )
+    })?;
+    let handle = auth
+        .open_outbound(style, credential.expose_secret(), &settings)
+        .map_err(|e| format!("member '{entry}' {e}"))?;
+    // RE-RESOLVED ON EVERY HOP, as the previous plane read it: the binding holds the reference and
+    // the digest of the value its handle was opened with, never the value.
+    let per_hop = PerHop {
+        secret,
+        secrets: Arc::clone(&reach.secrets),
+        auth: Arc::clone(&auth),
+        style,
+        settings,
+        held: Mutex::new((
+            busbar_contract::abi::sdk::digest::sha256(credential.expose_secret()),
+            handle,
+        )),
+    };
+    drop(credential);
+    Ok(Some(busbar_kernel::plane_driver::AuthBinding {
+        auth,
+        handle,
+        style_flags: decl.flags,
+        points: busbar_contract::abi::auth::AuthPoints(decl.points),
+        passthrough: false,
+        per_request: Some(Arc::new(per_hop)),
+    }))
+}
+
+/// A REGISTRATION'S OWN CREDENTIAL, RE-RESOLVED ON EVERY HOP (`upstream_credential:`): the
+/// reference, the secret seam it resolves through, the auth instance and style it is bound under,
+/// and, under one lock, the SHA-256 of the value the current handle was opened with beside that
+/// handle. A hop re-resolves the value and re-opens the binding only when its digest changed, so
+/// handles grow by rotations and never by hops; the value itself is dropped once compared or
+/// opened, never kept.
+struct PerHop {
+    secret: busbar_contract::secret_ref::SecretRef,
+    secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
+    auth: Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+    style: &'static str,
+    settings: serde_json::Value,
+    held: Mutex<([u8; 32], u64)>,
+}
+
+impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
+    fn handle_now(&self) -> Option<u64> {
+        let value = busbar_contract::redacted::Redacted::new(
+            self.secrets.resolve_string(&self.secret).ok()?.into_bytes(),
+        );
+        let digest = busbar_contract::abi::sdk::digest::sha256(value.expose_secret());
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !busbar_contract::redacted::constant_time_eq(&held.0, &digest) {
+            let handle = self
+                .auth
+                .open_outbound(self.style, value.expose_secret(), &self.settings)
+                .ok()?;
+            *held = (digest, handle);
+        }
+        Some(held.1)
+    }
 }
 
 /// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding (ARCHITECT
@@ -1470,6 +1607,7 @@ pub fn bind_member_fetches(
                 style_flags: binding.style_flags,
                 points: binding.points,
                 passthrough: binding.passthrough,
+                per_request: binding.per_request.clone(),
                 lender: Some(Arc::clone(units) as Arc<dyn busbar_contract::conn::LendCredential>),
             },
         );
@@ -1534,7 +1672,7 @@ pub fn member_routes(
                     .and_then(|r| entry_text(r, key).filter(|t| !t.is_empty()).map(|t| (r, t)))
                 {
                     let anchors =
-                        registration_anchors(entry, registration, need, served, reach.secrets)?;
+                        registration_anchors(entry, registration, need, served, &*reach.secrets)?;
                     registered.insert(
                         entry.clone(),
                         (need, origin_of(target).to_string(), anchors),
@@ -1651,12 +1789,17 @@ pub fn member_routes(
                 style_flags: decl.flags,
                 points: busbar_contract::abi::auth::AuthPoints(decl.points),
                 passthrough: true,
+                per_request: None,
             })
         } else {
             // A `token_exchange:` registration (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): busbar's own
-            // subject token, exchanged per call for the caller's down-scope the plane states.
+            // subject token, exchanged per call for the caller's down-scope the plane states; else
+            // an `upstream_credential:` registration: busbar's own credential, presented per request.
             match section.get(entry.as_str()) {
-                Some(registration) => token_exchange_binding(&entry, registration, reach)?,
+                Some(registration) => match token_exchange_binding(&entry, registration, reach)? {
+                    Some(binding) => Some(binding),
+                    None => upstream_credential_binding(&entry, registration, reach)?,
+                },
                 None => None,
             }
         };
@@ -1742,6 +1885,7 @@ pub fn member_routes(
                     style_flags: decl.flags,
                     points: busbar_contract::abi::auth::AuthPoints(decl.points),
                     passthrough: false,
+                    per_request: None,
                 }),
                 provider: r.name,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),

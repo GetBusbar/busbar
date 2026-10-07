@@ -144,6 +144,7 @@ fn refusal_render(reason: RefusalReason) -> (&'static str, &'static str) {
         | RefusalReason::Superseded
         | RefusalReason::ClientGone
         | RefusalReason::DeadlineExceeded
+        | RefusalReason::CredentialUnavailable
         | RefusalReason::Stalled => (
             "unsupported_operation",
             "the request could not be served at this time",

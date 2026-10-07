@@ -48,6 +48,31 @@ pub const SUBJECT_TOKEN_TYPE_KEY: &str = "subject_token_type";
 /// token, which is what busbar's own ambient credential is.
 pub const DEFAULT_SUBJECT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 
+/// A registration's LEASED OUTBOUND CREDENTIAL block: busbar's own credential for the member,
+/// presented on every request to it by the auth style its [`CREDENTIAL_PLACEMENT_KEY`] names
+/// (`BUSBAR-1.6.0.md` Part 3 section 4: "credentials are auth objects, never a host-minted header").
+/// Its keys are [`CREDENTIAL_SECRET_KEY`] (a secret reference), [`CREDENTIAL_PLACEMENT_KEY`] and
+/// [`CREDENTIAL_LEASE_TTL_KEY`]. The kernel resolves and binds it; a plane validates it and never
+/// resolves it.
+pub const UPSTREAM_CREDENTIAL_KEY: &str = "upstream_credential";
+
+/// Inside [`UPSTREAM_CREDENTIAL_KEY`]: the credential, a secret reference.
+pub const CREDENTIAL_SECRET_KEY: &str = "secret";
+
+/// Inside [`UPSTREAM_CREDENTIAL_KEY`]: where the credential is presented: [`PLACEMENT_BEARER`]
+/// (absent = it), or `{header: <name>}` ([`PLACEMENT_HEADER_KEY`]), the named header carrying the
+/// credential verbatim.
+pub const CREDENTIAL_PLACEMENT_KEY: &str = "placement";
+
+/// The [`CREDENTIAL_PLACEMENT_KEY`] word that presents `authorization: Bearer <credential>`.
+pub const PLACEMENT_BEARER: &str = "bearer";
+
+/// The [`CREDENTIAL_PLACEMENT_KEY`] object's key naming the header the credential is carried in.
+pub const PLACEMENT_HEADER_KEY: &str = "header";
+
+/// Inside [`UPSTREAM_CREDENTIAL_KEY`]: the lease, in milliseconds (greater than zero).
+pub const CREDENTIAL_LEASE_TTL_KEY: &str = "lease_ttl_ms";
+
 /// A registration's `aud:`: the RFC 8707 resource indicator its outbound token is audience-bound to.
 pub const AUDIENCE_KEY: &str = "aud";
 

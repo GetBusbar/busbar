@@ -504,6 +504,7 @@ fn rig(
                             AuthPoints::HEAD
                         },
                         passthrough: k == 1,
+                        per_request: None,
                     }),
                 },
             )

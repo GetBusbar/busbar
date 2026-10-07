@@ -346,12 +346,13 @@ fn resolve_upgrading(
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
     );
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let conns: std::sync::Arc<dyn busbar_contract::conn::PollConns> =
         std::sync::Arc::new(busbar_core_connector::Connector::new());
     let reach = super::DoorReach {
         providers: &providers,
-        secrets: &secrets,
+        secrets: std::sync::Arc::clone(&secrets),
         auths: std::sync::Arc::new(auths),
         conns,
         stream_ceiling_secs: 1,
@@ -734,10 +735,11 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(&table)
             as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
     );
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let reach = super::DoorReach {
         providers: &providers,
-        secrets: &secrets,
+        secrets: std::sync::Arc::clone(&secrets),
         auths: std::sync::Arc::new(auths),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,

@@ -2263,8 +2263,16 @@ fn fetch_card(
                         method: b"GET".to_vec(),
                         target: target.into_bytes(),
                         // No field of the plane's own: the engine's card fetch named only the
-                        // host its connection carries (the predev fence's bytes).
-                        fields: Vec::new(),
+                        // host its connection carries (the predev fence's bytes). It presents no
+                        // credential either: the agent's own credential rides its hops, never its
+                        // card fetch, so the fetch waives the member's binding (the host's field,
+                        // stripped before anything is encoded).
+                        fields: vec![(
+                            busbar_contract::abi::auth::NO_MEMBER_AUTH_FIELD
+                                .as_bytes()
+                                .to_vec(),
+                            b"1".to_vec(),
+                        )],
                         body: Vec::new(),
                         timeout_ms: crate::trust::CARD_FETCH_TIMEOUT_MS,
                     })

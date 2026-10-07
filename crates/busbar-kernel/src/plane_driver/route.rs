@@ -96,6 +96,10 @@ pub enum Pick {
         /// The words.
         text: String,
     },
+    /// The walk refuses the unit for `0` before any member was dialled: the member's credential,
+    /// re-resolved for this attempt, is unavailable (`ReasonCode::CredentialUnavailable`). The
+    /// plane renders the refusal in its own words.
+    Refused(ReasonCode),
 }
 
 /// One attempt's request, as the plane bound it for the far end.
@@ -872,6 +876,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     retry_after,
                 }) => return End::Exhausted(status, retry_after),
                 Ok(Pick::Vetoed { status, text }) => return End::Vetoed(status, text),
+                Ok(Pick::Refused(reason)) => return End::Failed(reason),
                 Err(end) => return end,
             };
             run.bufs.member.clear();
