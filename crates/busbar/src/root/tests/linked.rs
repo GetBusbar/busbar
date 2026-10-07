@@ -908,21 +908,29 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
 /// A LINKED DECLARES THAT STATES `needs` BOOTS (ARCHITECT ruling (b), 2026-10-07): a networked
 /// plugin's `declares.json` states `needs` for the conformance suite and the fleet render, and the
 /// root reads a linked export row's `DECLARES` through the one reader of a declares document, which
-/// checks and drops it. Over the real linked export doors, each row restated with `needs` reads to
-/// the same manifest section as without and links into the registry. RED ARM: a malformed `needs`
-/// refuses the rows, naming the plugin.
+/// checks and drops it. Over the real linked export rows, the webhook sink's restated with `needs`
+/// (as its own repo states it) reads to the same manifest section as without and links into the
+/// registry. RED ARM: a malformed `needs` refuses the rows, naming the plugin.
+///
+/// Compiled only where a networked export door is linked (`export-webhook`, the sink whose own
+/// repo states `needs`): a build without it has no row to restate, and runs no vacuous pass.
+#[cfg(feature = "export-webhook")]
 #[test]
 fn a_linked_export_declares_stating_needs_boots() {
+    const WEBHOOK: &str = "busbar-export-webhook";
     let doors = crate::LINKED.export_doors;
-    // A build with no default features links no export door: there is no row to restate, and the
-    // one reader's own arms (busbar-plugin-loader declares_reader_tests) still hold.
-    let Some(first) = doors.first() else {
-        return;
-    };
+    assert!(
+        doors.iter().any(|d| d.name == WEBHOOK),
+        "the webhook sink is linked under its feature"
+    );
+    // Every row as linked, the webhook's restated with `needs`.
     let restated = |needs: &str| -> Vec<crate::root::linked::LinkedDoorExport> {
         doors
             .iter()
             .map(|d| {
+                if d.name != WEBHOOK {
+                    return *d;
+                }
                 let mut doc: serde_json::Value =
                     serde_json::from_str(d.declares).expect("the linked row's declares is JSON");
                 doc["needs"] = serde_json::from_str(needs).expect("a needs value");
@@ -934,7 +942,7 @@ fn a_linked_export_declares_stating_needs_boots() {
             .collect()
     };
     let plain = linked_exports(doors).expect("the linked export rows");
-    let networked = linked_exports(&restated(r#"["http", "tcp"]"#))
+    let networked = linked_exports(&restated(r#"["http", "https"]"#))
         .expect("a linked declares stating `needs` reads");
     assert_eq!(
         networked
@@ -950,12 +958,12 @@ fn a_linked_export_declares_stating_needs_boots() {
     PluginRegistry::empty()
         .link(networked)
         .expect("the rows link: the boot proceeds");
-    // RED ARM: a malformed `needs` refuses the rows, by name.
+    // RED ARM: a malformed `needs` refuses the rows, naming the webhook sink.
     let Err(refused) = linked_exports(&restated(r#"["gopher"]"#)) else {
         panic!("a `needs` no framer serves must refuse the rows");
     };
     assert!(
-        refused.contains(first.name) && refused.contains("gopher"),
+        refused.contains(WEBHOOK) && refused.contains("gopher"),
         "{refused}"
     );
 }
