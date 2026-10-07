@@ -945,8 +945,8 @@ fn run_root_legs_gating(cx: &Ctx) -> i32 {
 }
 
 /// The module a lifted-out test file is MOUNTED as when its declaring module names it otherwise
-/// than the `<impl>::tests` convention: `crates/busbar/src/root/tests/serve_door.rs` reached by
-/// `#[path = "tests/serve_door.rs"] mod door_tests;` in `root/serve.rs` is `root::serve::door_tests`.
+/// than the `<impl>::tests` convention: `crates/busbar/src/root/tests/serve_tests.rs` reached by
+/// `#[path = "tests/serve_tests.rs"] mod door_tests;` in `root/serve.rs` is `root::serve::door_tests`.
 /// `None` when no sibling declares it under another name (the convention then applies).
 fn path_mounted(cx: &Ctx, file: &str) -> Option<String> {
     let (dir, stem) = file.strip_suffix(".rs")?.rsplit_once("/tests/")?;
@@ -1065,7 +1065,7 @@ fn run_root_legs(cx: &Ctx) -> i32 {
     let mut unknown: Vec<String> = Vec::new();
     let mut per_leg: BTreeMap<String, usize> = BTreeMap::new();
     for (leg, file, func) in &cells {
-        // A test body mounted under ANOTHER module name (`#[path = "tests/serve_door.rs"] mod
+        // A test body mounted under ANOTHER module name (`#[path = "tests/serve_tests.rs"] mod
         // door_tests;` in `serve.rs`) is that module: libtest spells it `root::serve::door_tests::f`.
         if let Some(module) = path_mounted(cx, file) {
             let path = format!("{module}::{func}");

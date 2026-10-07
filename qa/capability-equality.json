@@ -100,12 +100,12 @@
       "note": "the A2A plane's SERVED root leg: the inbound call driven through the real router and the kernel-loop rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_a2a::testkit::SERVED`) and requiring its `drive` to have run inside the loop"
     },
     "root-voice": {
-      "file": "crates/busbar/src/root/tests/serve_door.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "columns": [
         "streaming-client",
         "streaming-server"
       ],
-      "note": "the streaming plane's SERVED root leg since FLIP-STREAMING: the streaming door, linked and bound through the loader's one load, composed as production seals it (its egress over the connector, its DIRECT route to the catalog model streams.session.model names) and mounted on the data router, driven end to end by root/tests/serve_door.rs (carried by serve.rs through #[path]); the kernel-loop session rider no longer carries this plane"
+      "note": "the streaming plane's SERVED root leg since FLIP-STREAMING: the streaming door, linked and bound through the loader's one load, composed as production seals it (its egress over the connector, its DIRECT route to the catalog model streams.session.model names) and mounted on the data router, driven end to end by root/tests/serve_tests.rs (carried by serve.rs through #[path]); the kernel-loop session rider no longer carries this plane"
     },
     "root-admin": {
       "file": "crates/busbar/src/root/units_admin/tests/units_admin.rs",
@@ -1105,7 +1105,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential"
       }
     },
     {
@@ -1115,7 +1115,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_spent_key_is_refused_at_the_session_door_before_any_dial"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_spent_key_is_refused_at_the_session_door_before_any_dial"
       }
     },
     {
@@ -1205,7 +1205,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential"
       }
     },
     {
