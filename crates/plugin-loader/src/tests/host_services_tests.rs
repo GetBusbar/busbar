@@ -139,8 +139,31 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
-    /// Records `<counterparty>/<item>@<expected> <approve>`; answers serving. No counterparty
-    /// named: refused.
+    /// Records `<counterparty>/<item> <digest>`; answers a new sighting.
+    fn trust_sight_item(&self, c: &Caller, counterparty: &str, item: &str, digest: &str) -> Stored {
+        let arg = format!("{counterparty}/{item} {digest}");
+        self.saw(c, "trust.sight_item", arg.as_bytes());
+        Stored::ready(svc::TRUST_NEW)
+    }
+
+    /// Records `<counterparty>/<item>@<digest>`; answers that it serves.
+    fn trust_serves(
+        &self,
+        c: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        let arg = format!(
+            "{counterparty}/{}@{}",
+            item.unwrap_or("-"),
+            digest.unwrap_or("-")
+        );
+        self.saw(c, "trust.serves", arg.as_bytes());
+        Stored::ready(svc::DISTRUST_NONE)
+    }
+
+    /// Records `<counterparty>/<item>@<expected> <approve>`; answers serving.
     fn trust_decide(
         &self,
         c: &Caller,
@@ -148,10 +171,6 @@ impl HostServices for Provider {
         expected: Option<&str>,
         approve: bool,
     ) -> Stored {
-        // The ticketless sweep's zeroed `in` names no counterparty: refused, as an unserved slot.
-        if key.counterparty.is_empty() {
-            return Stored::refused(UNIMPLEMENTED);
-        }
         let arg = format!(
             "{}/{}@{} {approve}",
             key.counterparty,
@@ -551,6 +570,12 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), NO_VERIFY_KEY, "service {service}");
+        } else if matches!(
+            service,
+            op::TRUST_SIGHT_ITEM | op::TRUST_SERVES | op::TRUST_DECIDE
+        ) {
+            // Served, with no ticket: the zeroed `in` names empty texts, which reach the kernel.
+            assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
         } else {
             assert!(
                 matches!(
