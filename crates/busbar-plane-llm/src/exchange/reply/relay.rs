@@ -92,6 +92,9 @@ pub struct End {
     /// The far-end wire paths a translated stream dropped (design F3 "Drops"), each warned once:
     /// the host records one audit row per path.
     pub dropped: Vec<String>,
+    /// The translator gave up ([`Relay::translate_aborted`]): nothing of the answer bills, so
+    /// `usage` and `open_units` are empty and the end states its counts as zero.
+    pub withheld: bool,
 }
 
 /// How a relayed answer was cut: by the far end's transport, or by the stream's ceiling.
@@ -106,6 +109,9 @@ pub struct Cut {
     pub partial: bool,
     /// The usage the answer had incurred up to the cut.
     pub usage: Option<TokenUsage>,
+    /// The translator gave up before the cut ([`Relay::translate_aborted`]): nothing of the answer
+    /// bills, so `usage` is `None` and the cut states its counts as zero.
+    pub withheld: bool,
 }
 
 /// THE RELAY of one far-end success answer.
@@ -365,7 +371,7 @@ impl Relay {
             })
             == Some(crate::codec::ir::IrStopReason::Error);
         let mut open_billing: Option<Billing> = None;
-        let usage = if !self.meter {
+        let usage = if !self.meter || translate_aborted {
             None
         } else if let Some(t) = self.translate.as_ref() {
             open_billing = t.open_billing();
@@ -422,6 +428,7 @@ impl Relay {
                 .as_ref()
                 .map(|t| t.dropped())
                 .unwrap_or_default(),
+            withheld: translate_aborted,
         }
     }
 
@@ -429,8 +436,9 @@ impl Relay {
     /// expired.
     pub fn cut(&mut self, transport: bool) -> Cut {
         let had_first = self.first_byte;
+        let withheld = self.translate_aborted();
         if had_first && self.far_is_stream {
-            let usage = self.translate.as_ref().and_then(|t| t.usage());
+            let usage = self.streamed_usage();
             let bytes = match self.json_array.as_mut() {
                 Some(framer) => framer.finish_with_server_error(wire::MID_STREAM_GENERIC_DETAIL),
                 None => wire::mid_stream_error_bytes(
@@ -445,6 +453,7 @@ impl Relay {
                 reason: "mid-stream",
                 partial: true,
                 usage,
+                withheld,
             };
         }
         self.upstream_failed = had_first && transport;
@@ -457,7 +466,19 @@ impl Relay {
             },
             partial: had_first,
             usage: self.incurred_usage(),
+            withheld,
         }
+    }
+
+    /// THE TRANSLATOR GAVE UP on the far end's stream: busbar failed to produce the caller's answer,
+    /// which is not a cut, so nothing of it bills, however the answer then ends (at the far end's
+    /// end, on a cut, or by a caller who leaves). 1.5.5's rule: its stream end billed nothing for an
+    /// aborted translate (v1.5.5 `crates/busbar/src/proxy/response_body.rs:563-575`,
+    /// `billing_failed`) and neither did its drop arm (`:641-647`); ARCHITECT RULING U11 Q2
+    /// 2026-10-06.
+    #[must_use]
+    pub fn translate_aborted(&self) -> bool {
+        self.translate.as_ref().is_some_and(|t| t.aborted())
     }
 
     /// THE CALLER HAD A USABLE PART: a byte of the answer was relayed and nothing failed it (no
@@ -473,10 +494,14 @@ impl Relay {
     }
 
     /// The usage a stream's readers have read so far (cheap: nothing is scanned); `None` for a
-    /// relay that reads its usage only at the end.
+    /// relay that reads its usage only at the end, and once the translator gave up (nothing of the
+    /// answer bills: [`Self::translate_aborted`]).
     #[must_use]
     pub fn streamed_usage(&self) -> Option<TokenUsage> {
-        self.translate.as_ref().and_then(|t| t.usage())
+        self.translate
+            .as_ref()
+            .filter(|t| !t.aborted())
+            .and_then(|t| t.usage())
     }
 
     /// THE FLOOR A NON-STREAM SAME-DIALECT ANSWER HAS INCURRED SO FAR, as it relays: it was
@@ -499,7 +524,7 @@ impl Relay {
     #[must_use]
     pub fn incurred_usage(&self) -> Option<TokenUsage> {
         match self.translate.as_ref() {
-            Some(t) => t.usage(),
+            Some(_) => self.streamed_usage(),
             None if self.far_is_stream || self.nonstream_buf.is_empty() => None,
             None if self.upstream_failed => wire::reported_usage(self.ingress, &self.nonstream_buf),
             None => Some(wire::unrecovered_usage(self.ingress, &self.nonstream_buf)),

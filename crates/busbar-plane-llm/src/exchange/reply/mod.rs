@@ -138,6 +138,18 @@ impl Units {
             stated: false,
         }
     }
+
+    /// The units of an answer whose translator gave up: zero, STATED, so the end's report replaces
+    /// every count the answer reported before it (busbar failed to produce the answer, so nothing
+    /// of it bills: 1.5.5's rule, v1.5.5 `crates/busbar/src/proxy/response_body.rs:563-575` and
+    /// `:641-647`; ARCHITECT RULING U11 Q2 2026-10-06).
+    #[must_use]
+    pub fn withheld() -> Self {
+        Units {
+            stated: true,
+            ..Units::default()
+        }
+    }
 }
 
 /// One piece of the caller's answer.
@@ -369,7 +381,11 @@ impl Reply {
                 };
                 let head = head.take();
                 if !last {
-                    if let Some(u) = relay.streamed_usage() {
+                    if relay.translate_aborted() {
+                        // The translator gave up: nothing of the answer bills, and the zero is
+                        // stated so it replaces what the answer reported before.
+                        *units = Units::withheld();
+                    } else if let Some(u) = relay.streamed_usage() {
                         *units = Units::of(Some(&u), BTreeMap::new());
                     } else if let Some(floor) = relay.relayed_floor() {
                         *units = Units {
@@ -398,10 +414,15 @@ impl Reply {
                 let fault = end.stream_fault.map(Fault::Transient).or(end
                     .generation_failed
                     .then_some(Fault::Transient("upstream-generation-failed")));
-                // The end's report replaces a floor stated while relaying, even when it is zero.
-                let units = Units {
-                    stated: units.floor,
-                    ..Units::of(end.usage.as_ref(), end.open_units)
+                // The end's report replaces a floor stated while relaying, even when it is zero; an
+                // end whose translator gave up states zero over whatever streamed before.
+                let units = if end.withheld {
+                    Units::withheld()
+                } else {
+                    Units {
+                        stated: units.floor,
+                        ..Units::of(end.usage.as_ref(), end.open_units)
+                    }
                 };
                 self.state = State::Done;
                 Piece {
@@ -461,7 +482,13 @@ impl Reply {
                 Piece {
                     head,
                     bytes: Cow::Owned(cut.bytes.unwrap_or_default()),
-                    units,
+                    // An aborted translate bills nothing, a cut after it included (ARCHITECT
+                    // RULING U11 Q2): its explicit zero replaces every earlier report.
+                    units: if cut.withheld {
+                        Units::withheld()
+                    } else {
+                        units
+                    },
                     verdict: Verdict::Hard,
                     fault: Some(Fault::Transient(cut.reason)),
                     done: true,

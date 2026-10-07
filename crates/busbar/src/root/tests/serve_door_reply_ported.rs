@@ -294,3 +294,52 @@ async fn an_answer_over_the_translation_cap_keeps_the_budget_unit() {
         "our cap, not the far end's fault: the unit the success spent is kept"
     );
 }
+
+/// A reframed stream whose translator gives up (a far-end run past the largest frame the
+/// reframing holds, with no frame end) after its far end reported 600 in and 400 out bills NOTHING
+/// at its natural end: busbar failed to produce the answer, which is not a cut (ARCHITECT RULING
+/// U11 Q2 2026-10-06; 1.5.5's stream end, v1.5.5 `crates/busbar/src/proxy/response_body.rs:563-575`,
+/// `billing_failed`). Ports legacy
+/// `ingress_indistinguishability_tests.rs::test_streaming_translate_abort_trips_breaker_and_skips_billing`.
+/// The caller who leaves after such an abort (1.5.5's drop arm, `:641-647`) is pinned at the plane
+/// (`exchange_reply_ported.rs::a_caller_leaving_a_stream_whose_translator_gave_up_bills_nothing`):
+/// the caller sees nothing of the abort before the stream's end, so this rig cannot time its leaving
+/// after it deterministically.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reframed_stream_whose_translator_gives_up_bills_nothing_at_its_end() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-ported-translate-abort";
+    let _published = Withdrawn(instance);
+    let content = r#"data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}"#;
+    let usage = r#"data: {"choices":[],"usage":{"prompt_tokens":600,"completion_tokens":400}}"#;
+    let overrun = vec![b'x'; 16 * 1024 * 1024 + 16];
+    let far = far_end_scripted(Script {
+        head: "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+               transfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+            .to_string(),
+        pieces: vec![
+            (0, chunk(format!("{content}\n\n").as_bytes())),
+            (0, chunk(format!("{usage}\n\n").as_bytes())),
+            (0, chunk(&overrun)),
+        ],
+        finish: Some(b"0\r\n\r\n".to_vec()),
+    })
+    .await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, body) = anthropic(&rig, true).await;
+    assert_eq!(status, 200);
+    assert!(!body.is_empty(), "the stream drains to its end");
+    assert_eq!(far.served(), 1);
+    assert_eq!(
+        rig.tokens_after().await,
+        0,
+        "an aborted translate bills nothing, not the 1000 reported before the abort"
+    );
+}

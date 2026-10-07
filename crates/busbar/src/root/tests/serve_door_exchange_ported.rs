@@ -757,21 +757,30 @@ async fn every_credential_carrier_is_admitted_and_a_bad_one_reads_the_native_401
 
 // ── the whole-path allocation gate ──────────────────────────────────────────────────────────────
 
-/// COMMITTED BOUND, carried over unchanged from the legacy gate: the allocations of one warmed
-/// same-dialect request, end to end.
-const FORWARD_PASSTHROUGH_MAX_ALLOCS: u64 = 107;
-
-/// One warmed same-dialect request through the door, end to end, stays under the committed
-/// allocation bound. Measured as the legacy gate measured it: this test binary's global allocator
-/// is the kernel's per-thread allocation counter over jemalloc (`main.rs`, `cfg(test)` only), the
-/// runtime is one thread (so the far end and the egress run on the measured thread), the front
-/// door is open and no hook is bound (the legacy gate drove the engine with neither), and the
-/// minimum over four warmed requests is the measure.
+/// THE DOOR'S WHOLE-PATH ALLOCATION BOUND, A RATCHET: the 694 allocations measured on one warmed
+/// same-dialect request through the WHOLE door path (router, auth, money steps, plane driver, egress
+/// walk, connector, loopback far end, reply), minimum over four warmed requests on one thread. It
+/// may only go DOWN: when the measured number falls, lower this constant to it in the same commit;
+/// never raise it (a raise is the regression). The perf phase ("a zero-allocation hot path") owns
+/// cutting it (ARCHITECT RULING U11 Q5 2026-10-06).
 ///
-/// Ports legacy `crates/busbar-llm/src/engine/tests/alloc_gate_tests.rs::alloc_gate_openai_passthrough_forward`.
+/// NOT COMPARABLE WITH THE LEGACY GATE'S 87 (bound 107): that gate measured only the retired
+/// engine's forward (`forward_with_pool`: its walk, attempt and relay over an in-process mock), never
+/// the router, the auth or the money steps this bound spans.
+const DOOR_WHOLE_PATH_MAX_ALLOCS: u64 = 694;
+
+/// One warmed same-dialect request through the whole door path allocates no more than the ratchet
+/// [`DOOR_WHOLE_PATH_MAX_ALLOCS`]. Measured deterministically, as the legacy gate measured: this
+/// test binary's global allocator is the kernel's per-thread allocation counter over jemalloc
+/// (`main.rs`, `cfg(test)` only), the runtime is one thread (so the far end and the egress run on
+/// the measured thread), the front door is open and no hook is bound (the legacy gate drove the
+/// engine with neither), and the minimum over four warmed requests is the measure.
+///
+/// Ports legacy `crates/busbar-llm/src/engine/tests/alloc_gate_tests.rs::alloc_gate_openai_passthrough_forward`
+/// at the door's own scope (its bound is the door's measure, not the legacy 107).
 #[cfg(not(target_env = "msvc"))]
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "QUESTION: measured on the door, one warmed same-dialect request allocates 694 times (min of four, open door, no hook), over the legacy bound 107 the legacy engine met; the bound is not raised here"]
+#[ignore = "QUESTION: the ratchet 694 (ARCHITECT RULING U11 Q5) was measured on the fix-plane branch (041a50d611); this tree measures 703, deterministic, the +9 from the parallel merges after it (fix-edge +6, fix-bill +2, fix-door +1); the ratchet is never raised here"]
 async fn one_warmed_same_dialect_request_stays_under_the_allocation_bound() {
     use busbar_kernel::test_support::counting_alloc;
     let _one = ONE_PUBLISHER.lock().await;
@@ -809,9 +818,17 @@ async fn one_warmed_same_dialect_request_stays_under_the_allocation_bound() {
         assert_eq!(status, 200);
         min = min.min(allocations);
     }
-    println!("door same-dialect request: min allocations = {min}");
+    println!(
+        "door whole path, one warmed same-dialect request: min allocations = {min} \
+         (ratchet {DOOR_WHOLE_PATH_MAX_ALLOCS})"
+    );
     assert!(
-        min <= FORWARD_PASSTHROUGH_MAX_ALLOCS,
-        "one warmed request allocated {min} times, over the bound {FORWARD_PASSTHROUGH_MAX_ALLOCS}"
+        min <= DOOR_WHOLE_PATH_MAX_ALLOCS,
+        "THE DOOR'S WHOLE-PATH ALLOCATION RATCHET REGRESSED: one warmed same-dialect request through \
+         the whole door path (router, auth, money steps, plane driver, egress walk, connector, \
+         loopback far end, reply) allocated {min} times, over the ratchet \
+         {DOOR_WHOLE_PATH_MAX_ALLOCS}. The bound is a ratchet: it may only go down (lower it when \
+         the number falls); never raise it. Find the new per-request allocation and remove it. Not \
+         comparable with the legacy forward-only gate's 87/107."
     );
 }
