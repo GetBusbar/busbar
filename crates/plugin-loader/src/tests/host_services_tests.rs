@@ -615,10 +615,9 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             assert_eq!(error(&o), NO_VERIFY_KEY, "service {service}");
         } else if matches!(
             service,
-            op::TRUST_SIGHT_ITEM | op::TRUST_SERVES | op::TRUST_DECIDE | op::TRUST_STATE
+            op::TRUST_SIGHT_ITEM | op::TRUST_SERVES | op::TRUST_DECIDE
         ) {
-            // Served, with no ticket: the zeroed `in` names empty texts, which reach the kernel
-            // (trust.state's, the well-formed `in` above).
+            // Served, with no ticket: the zeroed `in` names empty texts, which reach the kernel.
             assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
         } else {
             assert!(
