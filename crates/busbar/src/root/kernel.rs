@@ -1647,53 +1647,10 @@ impl ArrivalDoor for AdmissionDoor {
     }
 }
 
-/// The store a node has before one is configured.
-///
-/// Every method answers that there is nothing there, which is what an unconfigured store IS. It is
-/// not the production default — that is the loader's ABI-2 adapter over the configured store, and
-/// the in-tree memory store when a config names none — it is what the composition holds until the
-/// configured one is built.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RefusingStore;
-
-impl busbar_contract::verb_store::Store for RefusingStore {
-    fn chain_break(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Err(busbar_contract::verb_store::StoreError::Failed)
-    }
-
-    fn store_restore(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Err(busbar_contract::verb_store::StoreError::Failed)
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Err(busbar_contract::verb_store::StoreError::Failed)
-    }
-
-    fn replay_new_verb(
-        &self,
-        _key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        Ok(None)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-}
+/// The node's store behind the published ABI, as the verbs unit reaches it: the loader's ABI-2 adapter
+/// over the CONFIGURED store (bound at boot, [`crate::root::durability::NodeBook::verb_store`]), or
+/// `None` on a node with no store, where each disaster-recovery verb answers as a store failure.
+pub type VerbStoreHandle = Option<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>;
 
 /// The long-lived objects the root owns, behind the one trait the loop reaches a unit through.
 ///
@@ -1743,8 +1700,9 @@ pub struct ProductionUnits {
     #[cfg(feature = "root-admin")]
     pub admin: crate::root::units_admin::AdminBinding,
     /// The store, behind the published ABI. The verbs unit's disaster-recovery subset and its
-    /// sealed idempotency cache both reach it, and both reach the same one.
-    pub store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+    /// sealed idempotency cache both reach it, and both reach the same one. `None` on a node with no
+    /// configured store ([`VerbStoreHandle`]).
+    pub store: VerbStoreHandle,
     /// The credential the kernel lends the verbs unit for the length of an execution.
     ///
     /// Minted once, at boot, from the node's one authority — the second token in the tree minted
@@ -1786,7 +1744,7 @@ impl ProductionUnits {
         breaker_policy: crate::root::adapters::BreakerPolicy,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
-        store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+        store: VerbStoreHandle,
     ) -> Self {
         ProductionUnits::new_sharing(
             kernel,
@@ -1815,7 +1773,7 @@ impl ProductionUnits {
         breaker_policy: crate::root::adapters::BreakerPolicy,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
-        store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+        store: VerbStoreHandle,
     ) -> Self {
         #[cfg_attr(not(feature = "root-admin"), allow(unused_mut))]
         let mut units = ProductionUnits {
@@ -1898,7 +1856,37 @@ impl ProductionUnits {
             write,
         )
         .expect("a memory-buffered journal cannot fail to open");
-        ProductionUnits::admin_only_sharing(dispatch, door, Arc::new(Mutex::new(durability)), read)
+        // An admin-only node over a book of its own has no configured store behind it.
+        ProductionUnits::admin_only_sharing(
+            dispatch,
+            door,
+            Arc::new(Mutex::new(durability)),
+            read,
+            None,
+        )
+    }
+
+    /// THE BOOTED NODE'S ADMIN UNITS: [`ProductionUnits::admin_only_sharing`] over the one book
+    /// boot opened, its legacy rows, and the store boot bound beside them (row 113, ruling (B)).
+    ///
+    /// The book carries the store for the same reason it carries the rows: they are halves of what
+    /// boot composed, and a caller that took the book but not its store would serve the three
+    /// disaster-recovery verbs over nothing — refused as a store failure on a node whose store is
+    /// right there. `None` is a node with no configured store.
+    #[cfg(feature = "root-admin")]
+    #[must_use]
+    pub fn admin_over_book(
+        dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
+        door: crate::root::units_admin::AdminDoorFn,
+        book: &crate::root::durability::NodeBook,
+    ) -> Self {
+        ProductionUnits::admin_only_sharing(
+            dispatch,
+            door,
+            Arc::clone(&book.durability),
+            Arc::clone(&book.rows) as Arc<dyn crate::root::units_admin::LegacyRowsRead>,
+            book.verb_store.clone(),
+        )
     }
 
     /// The same composition again, over a book the caller already opened.
@@ -1919,6 +1907,7 @@ impl ProductionUnits {
         door: crate::root::units_admin::AdminDoorFn,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
         read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
+        store: VerbStoreHandle,
     ) -> Self {
         let kernel = new_kernel();
         let mut units = ProductionUnits::new_sharing(
@@ -1928,7 +1917,7 @@ impl ProductionUnits {
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::ScopePolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch, door),
-            Arc::new(RefusingStore),
+            store,
         );
         // The views are bound after the units are assembled rather than through the constructor,
         // because what they read is the durability the constructor took ownership of — the handle
