@@ -613,6 +613,13 @@ impl<'a, T: AbiOut> Out<'a, T> {
         );
     }
 
+    /// Hold `owned` under this answer's lease (named in `head.lease`) until the host's `release`
+    /// of it. An answer whose only material is program memory ([`Out::list`], [`Out::text`]) still
+    /// names a lease where its kind's check requires one of every answer that names material.
+    pub fn keep<O: Send + Sync + 'static>(&mut self, leases: &Leases, owned: O) {
+        leases.keep(self.head(), owned);
+    }
+
     /// Set the list `ptr`/`len` name to `items`, which live for the program (NULL when empty).
     pub fn list<E: 'static>(
         &mut self,

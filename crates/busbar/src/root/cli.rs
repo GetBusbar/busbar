@@ -129,14 +129,24 @@ pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) ->
 /// plane door's, read off its tail's `cli_help` without binding it (a door states one `Flags:` block),
 /// in manifest order. A door whose tail cannot be read contributes nothing here; its boot refuses it.
 pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
+    // The doors' rows, read once and kept for the process (the linked doors are fixed at build),
+    // each lent out as a one-row slice: nothing is leaked to give them their `'static` life.
+    static DOOR_ROWS: std::sync::OnceLock<Vec<super::linked::CliHelpRow>> =
+        std::sync::OnceLock::new();
+    let door_rows = DOOR_ROWS.get_or_init(|| {
+        crate::LINKED
+            .plane_doors
+            .iter()
+            .filter_map(|door| {
+                match crate::root::loader::dispatch::kinds::plane::linked_cli_help(*door) {
+                    Ok(Some(text)) => Some(("flag", text)),
+                    _ => None,
+                }
+            })
+            .collect()
+    });
     let mut rows: Vec<&'static [super::linked::CliHelpRow]> = crate::LINKED.cli_help.to_vec();
-    for door in crate::LINKED.plane_doors {
-        if let Ok(Some(text)) = crate::root::loader::dispatch::kinds::plane::linked_cli_help(*door)
-        {
-            let row: &'static [super::linked::CliHelpRow] = vec![("flag", text)].leak();
-            rows.push(row);
-        }
-    }
+    rows.extend(door_rows.iter().map(std::slice::from_ref));
     rows
 }
 

@@ -183,7 +183,7 @@ fn carried_gate(app: &busbar_kernel::state::App) -> Option<Arc<busbar_kernel::tr
 ///    fronting no agents runs no delegation that could read a leaked entry.
 #[test]
 fn the_carried_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let key = agents_plane().key;
     let prior = build_once(resolved(AGENTS_YAML), None).expect("boot with an agents: block");
     // The plane's OWN verify gate accumulated per-subject coordination for an agent this deployment
@@ -230,7 +230,7 @@ fn the_carried_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
 /// RED before the merge: the body carried `error.type` and no `jsonrpc` member.
 #[tokio::test]
 async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
     let app = configured(TestApp::new(), &sections, None).build();
@@ -258,7 +258,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
 /// plane's grants nor its refusals, so `<mount>x` keeps the residual plane's answer.
 #[tokio::test]
 async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
     let app = configured(TestApp::new(), &sections, None).build();
@@ -292,7 +292,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
 /// `build` hook, and the router surface and the audience check come off that one slot object.
 #[test]
 fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gw.example.com"));
     let cfg = bootable(&sections);
     let configured: Vec<&'static PlaneDecl> = linked::planes()
@@ -356,7 +356,7 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
 /// configured no plane).
 #[test]
 fn plane_slot_is_none_when_the_plane_is_not_configured() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let cfg = resolved("");
     assert!(
         cfg.endpoint_resources.is_empty(),
@@ -405,7 +405,7 @@ const POOL: &str = "observe-residual-exactness-pool";
 /// everything, this goes to 2 and says so.
 #[tokio::test]
 async fn a_model_plane_request_is_counted_exactly_once() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // The linked roster registers the fallback plane (as the composition root does in production),
     // so the neutral residual-key derivation recognises it as the residual — otherwise the
     // model-plane boundary would not know this request rides the residual and would double-count it.
@@ -434,7 +434,7 @@ async fn a_model_plane_request_is_counted_exactly_once() {
     // The model plane's `busbar_requests_total` carries NO `plane` label (v1.5.4-identical); this
     // pool name is unique to this test, so it alone pins the delta.
     let labels = [("pool", POOL)];
-    let before = metric_sum(busbar_kernel::metrics::REQUESTS_TOTAL, &labels);
+    let before = metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
     // The upstream is a closed port, so this fails to forward — which is fine and deliberate. What
     // is under test is HOW MANY TIMES the request is counted, not what it returned.
     let _ = reqwest::Client::new()
@@ -446,7 +446,7 @@ async fn a_model_plane_request_is_counted_exactly_once() {
         .send()
         .await
         .unwrap();
-    let after = metric_sum(busbar_kernel::metrics::REQUESTS_TOTAL, &labels);
+    let after = metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
     server.abort();
 
     assert_eq!(
@@ -507,7 +507,7 @@ mod metrics_scrape {
     /// no plane.
     #[tokio::test]
     async fn mounted_plane_traffic_appears_on_a_real_metrics_scrape() {
-        busbar_kernel::metrics::init();
+        busbar_kernel::snapshot::init();
         linked::install();
         let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gateway.example.com"));
         let door_mount = jsonrpc_mount(door_plane(), &sections);
@@ -586,7 +586,7 @@ mod metrics_scrape {
         for plane in [door_plane().key, agents_plane().key] {
             let counters = series_for(
                 &exposition,
-                busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
+                busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
                 plane,
             );
             assert!(
@@ -594,17 +594,17 @@ mod metrics_scrape {
                 "no `{}` series for plane=\"{plane}\" after driving real traffic \
                  (door {door_status}, agents {agents_status}, model {model_status}). \
                  Exposition:\n{exposition}",
-                busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
+                busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
             );
             let durations = series_for(
                 &exposition,
-                busbar_kernel::metrics::PLANE_REQUEST_DURATION_SECONDS,
+                busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
                 plane,
             );
             assert!(
                 !durations.is_empty(),
                 "no `{}` series for plane=\"{plane}\" after driving real traffic. Exposition:\n{exposition}",
-                busbar_kernel::metrics::PLANE_REQUEST_DURATION_SECONDS,
+                busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
             );
             // The mounted planes' family carries exactly {plane, ingress_protocol, pool, outcome}.
             for line in &counters {
@@ -626,7 +626,7 @@ mod metrics_scrape {
         // (The recorder is process-global and shared across the whole test binary, so other tests'
         // model-plane series are present too; the positive claim is that a correctly-shaped one exists,
         // and the byte-identity guard below then holds for EVERY model-family line regardless of origin.)
-        let model_counters = lines_for(&exposition, busbar_kernel::metrics::REQUESTS_TOTAL);
+        let model_counters = lines_for(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
         assert!(
             model_counters.iter().any(|line| keys_of(line)
                 == vec![
@@ -636,23 +636,23 @@ mod metrics_scrape {
                 ]),
             "no v1.5.4-shaped `{}` series {{ingress_protocol,pool,outcome}} after driving model traffic \
              (model {model_status}). Exposition:\n{exposition}",
-            busbar_kernel::metrics::REQUESTS_TOTAL,
+            busbar_kernel::snapshot::REQUESTS_TOTAL,
         );
         assert!(
             !lines_for(
                 &exposition,
-                busbar_kernel::metrics::REQUEST_DURATION_SECONDS
+                busbar_kernel::snapshot::REQUEST_DURATION_SECONDS
             )
             .is_empty(),
             "no `{}` series after driving model traffic. Exposition:\n{exposition}",
-            busbar_kernel::metrics::REQUEST_DURATION_SECONDS,
+            busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
         );
         // BYTE-IDENTITY GUARD: the two model families never carry a `plane` label anywhere in the whole
         // exposition. This is the assertion that fails if the BI-2 regression (a `plane` label on these
         // pre-existing families) is ever reintroduced by any emission site.
         for family in [
-            busbar_kernel::metrics::REQUESTS_TOTAL,
-            busbar_kernel::metrics::REQUEST_DURATION_SECONDS,
+            busbar_kernel::snapshot::REQUESTS_TOTAL,
+            busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
         ] {
             for line in lines_for(&exposition, family) {
                 assert!(
@@ -686,7 +686,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::{GovState, MemoryStore};
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let door = door_plane();
 
     /// The host of the door plane's canonical URI in this test. The canonical URI is BOTH the

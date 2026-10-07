@@ -223,7 +223,7 @@ pub struct MoneyEgress {
 /// EVERY MONEY-EGRESS BOUNDARY IN THE TREE, at most one per file. Read this table and [`MONEY_INTAKE`]
 /// and you have read the gate's whole exempt surface.
 pub const MONEY_EGRESS: &[MoneyEgress] = &[MoneyEgress {
-    file: "crates/busbar-kernel/src/metrics/money.rs",
+    file: "crates/busbar-kernel/src/snapshot/money.rs",
     boundary: "set_gauge",
     why: "The `/metrics` money gauges (spend, budget-remaining, token counts): an `i64`/`u64` figure \
           widened to `i128`, then handed to the `metrics` facade, whose gauge stores and the \
@@ -393,7 +393,7 @@ const WAL_FLOOR: usize = 6;
 /// (`5fa320208`, R100) and was in no money scan set on either side of the move. MEASURED: zero
 /// `f64`/`f32` in it today.
 ///
-/// THE FOURTH ENTRY, ADDED 2026-09-23 (item 24): `metrics/money.rs` — THE SERVED MONEY GAUGES.
+/// THE FOURTH ENTRY, ADDED 2026-09-23 (item 24): `snapshot/money.rs` — THE SERVED MONEY GAUGES.
 /// `busbar_key_spend_cents`, `busbar_bucket_spend_cents` and `busbar_bucket_budget_remaining_cents`
 /// are money a customer scrapes, and they were published from `metrics.rs`, a file of routing
 /// weights and durations this list could not take whole (armed over it, it named fourteen floats,
@@ -408,7 +408,7 @@ const KERNEL_MONEY_FILES: &[&str] = &[
     "crates/busbar-kernel/src/billing.rs",
     "crates/busbar-kernel/src/cost.rs",
     "crates/busbar-kernel/src/rate_apply.rs",
-    "crates/busbar-kernel/src/metrics/money.rs",
+    "crates/busbar-kernel/src/snapshot/money.rs",
     "crates/busbar-kernel/src/plane_driver/money.rs",
 ];
 
@@ -2079,7 +2079,7 @@ impl Gate for NoFloatMoneyGate {
             )),
         }
 
-        // ── THE MONEY-EGRESS BOUNDARY (`metrics/money.rs` :: `set_gauge`, item 24) ─────────────
+        // ── THE MONEY-EGRESS BOUNDARY (`snapshot/money.rs` :: `set_gauge`, item 24) ─────────────
         //
         // Six claims, one case each: the file is scanned and a float outside the boundary goes red;
         // a SECOND conversion under another name goes red; the boundary's own body does not; the
@@ -2098,7 +2098,7 @@ impl Gate for NoFloatMoneyGate {
             Edit::Append(format!(
                 "\npub fn planted_spend(cents: i64) -> {float_ty} {{ cents as {float_ty} / 100.0 }}\n"
             )),
-            &[&float_ty, "metrics/money.rs"],
+            &[&float_ty, "snapshot/money.rs"],
         ));
 
         // 2. A SECOND BOUNDARY — the same conversion under another name — IS FLAGGED. One named
@@ -2112,7 +2112,7 @@ impl Gate for NoFloatMoneyGate {
             Edit::Append(format!(
                 "\npub(super) fn set_gauge_too(gauge: metrics::Gauge, value: i64) {{\n    gauge.set(value as {float_ty});\n}}\n"
             )),
-            &[&float_ty, "metrics/money.rs"],
+            &[&float_ty, "snapshot/money.rs"],
         ));
 
         // 3. A FLOAT INSIDE THE BOUNDARY'S OWN BODY STAYS GREEN — that is the one conversion the
@@ -2193,7 +2193,7 @@ impl Gate for NoFloatMoneyGate {
             "the money-egress file dropping out of the tree is refused",
             &[ROW_SCAN_FLOOR],
             ov,
-            &["metrics/money.rs"],
+            &["snapshot/money.rs"],
         ));
 
         // A FLOAT UNDER A `/tests/` DIRECTORY IS A FIXTURE'S NUMBER, not the money path's.

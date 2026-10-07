@@ -361,6 +361,10 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "the member's credential, presented by the auth plugin serving its style: {head}"
     );
     assert!(
+        !head.contains(token.expose_secret()),
+        "the caller's own credential never reaches the far end: {head}"
+    );
+    assert!(
         head.ends_with(r#"{"state":{"amount":7}}"#),
         "the caller's body: {head}"
     );
@@ -675,7 +679,7 @@ mod tools_door {
 
     /// The sum of every `/metrics` sample of `family` whose labels carry every `(key, value)`.
     fn scraped(family: &str, labels: &[(&str, &str)]) -> f64 {
-        busbar_kernel::metrics::render()
+        busbar_kernel::snapshot::render()
             .lines()
             .filter(|l| !l.starts_with('#') && l.starts_with(&format!("{family}{{")))
             .filter(|l| {
@@ -720,7 +724,7 @@ mod tools_door {
     /// healthy registration on the same door, its own cell, is untouched and still served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door() {
-        busbar_kernel::metrics::init();
+        busbar_kernel::snapshot::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-trip";
         let _published = Published(instance);
@@ -1443,7 +1447,7 @@ mod tools_door {
     /// that cross the trip threshold open the cell (one alone benches nothing, 1.5.5).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_client_fault_answer_is_relayed_and_never_penalizes_the_member() {
-        busbar_kernel::metrics::init();
+        busbar_kernel::snapshot::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-disposition";
         let _published = Published(instance);
@@ -1521,7 +1525,7 @@ mod tools_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane() {
         use crate::root::door_steps::tests::door_boundary;
-        busbar_kernel::metrics::init();
+        busbar_kernel::snapshot::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-metrics";
         let _published = Published(instance);
@@ -1559,7 +1563,7 @@ mod tools_door {
         let attempts = || scraped("busbar_upstream_attempts_total", &[("lane", cell.as_str())]);
         let requests = || {
             scraped(
-                busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
+                busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
                 &[("plane", row.key), ("outcome", "ok")],
             )
         };

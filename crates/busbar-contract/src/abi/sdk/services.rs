@@ -21,16 +21,16 @@ use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
-    check_records_list, check_session_emit, check_session_emit_in, check_sign, check_trust_decide,
-    check_trust_due, check_trust_serves, check_trust_sight, check_trust_sight_item,
-    check_trust_state, check_trust_verify, check_unit_nest, check_work_find, check_work_open,
-    check_work_resume, check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn,
-    EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn,
-    RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, SessionEmitIn, SignIn,
-    TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn,
-    TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT,
-    CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, TRUST_DECIDE_APPROVE,
-    TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE,
+    check_records_list, check_session_emit, check_session_emit_in, check_sign, check_snapshot_read,
+    check_trust_decide, check_trust_due, check_trust_serves, check_trust_sight,
+    check_trust_sight_item, check_trust_state, check_trust_verify, check_unit_nest,
+    check_work_find, check_work_open, check_work_resume, check_work_settle, op, ClockNowIn,
+    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn,
+    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
+    SessionEmitIn, SignIn, SnapshotReadIn, TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn,
+    TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn,
+    WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
+    TRUST_DECIDE_APPROVE, TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -998,6 +998,55 @@ impl Services {
         }))
     }
 
+    /// `snapshot.read`: THE HOST SNAPSHOT SERVICE — the host's metric families of `scope`
+    /// (`SNAPSHOT_SCOPE_WHOLE` | `SNAPSHOT_SCOPE_HOOKS`), laid out by the host in the caller's
+    /// preallocated `buf` (words, so it holds the layout's alignment) and read back here, every
+    /// pointer checked inside the bytes the host wrote. Ready: `Some` the families, in the host's
+    /// order; `None` = NOT READY (the host's recorder is not installed yet: answer "not ready,
+    /// retry"). Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when `buf` is short (re-call once with at least the bytes it names;
+    /// a ticketless re-call reads the snapshot again); otherwise as every service: unserved,
+    /// declined (REFUSED: this crossing was not granted the snapshot), or broken (a pointer outside
+    /// the layout, or text that is not UTF-8).
+    pub fn snapshot_read(
+        &self,
+        handle: CompletionHandle,
+        scope: u32,
+        buf: &mut [u64],
+    ) -> Result<Option<Vec<crate::export_calls::Family>>, ServiceError> {
+        let bytes = std::mem::size_of_val(buf);
+        let at = buf.as_mut_ptr().cast::<u8>();
+        let input = SnapshotReadIn {
+            head: head::<SnapshotReadIn>(op::SNAPSHOT_READ, handle),
+            scope,
+            _reserved: 0,
+            into: ServiceBufs {
+                buf: at,
+                cap: bytes,
+                spans: std::ptr::null_mut(),
+                spans_cap: 0,
+            },
+        };
+        let crossed = self.cross(
+            op::SNAPSHOT_READ,
+            |t| t.snapshot_read,
+            &input,
+            check_snapshot_read,
+        )?;
+        if let (Outcome::Failed, _, Filled::Written) = crossed {
+            return Ok(None);
+        }
+        let out = ready(crossed)?;
+        // SAFETY: `buf` is ours, `bytes` long; the check held `len` within it.
+        let laid = unsafe { std::slice::from_raw_parts(at.cast_const(), out.len as usize) };
+        snapshot::read(laid, out.value)
+            .map(Some)
+            .ok_or(ServiceError::Broken)
+    }
+
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
     /// outcome, the `out` and how it filled the caller's buffers.
     fn cross<I>(
@@ -1245,3 +1294,69 @@ fn blank_out() -> ServiceOut {
 #[cfg(test)]
 #[path = "tests/services_tests.rs"]
 mod tests;
+
+/// THE SNAPSHOT LAYOUT, READ BACK: the export kind's scrape layout the host wrote into the caller's
+/// own buffer (`snapshot.read`), lifted into owned families with every pointer checked to name a
+/// range of the bytes the host wrote.
+mod snapshot {
+    use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
+    use crate::abi::mechanism::call::AbiStr;
+    use crate::export_calls::{Family, Sample};
+
+    /// `n` records of `T` at `p`, when they lie inside `laid` (and `p` is aligned for `T`); NULL
+    /// with `n == 0` is the empty list.
+    fn list<T>(laid: &[u8], p: *const T, n: usize) -> Option<&[T]> {
+        if n == 0 {
+            return Some(&[]);
+        }
+        let start = (p as usize).checked_sub(laid.as_ptr() as usize)?;
+        let end = start.checked_add(n.checked_mul(std::mem::size_of::<T>())?)?;
+        if end > laid.len() || !(p as usize).is_multiple_of(std::mem::align_of::<T>()) {
+            return None;
+        }
+        // SAFETY: `n` records of `T`, aligned, inside the caller's own buffer, which the host
+        // wrote with exactly these records (a forged pointer fails the bounds above).
+        Some(unsafe { std::slice::from_raw_parts(p, n) })
+    }
+
+    /// The text `s` names inside `laid`; `Some(None)` for an absent (NULL) string.
+    fn text(laid: &[u8], s: AbiStr) -> Option<Option<String>> {
+        if s.ptr.is_null() {
+            return (s.len == 0).then_some(None);
+        }
+        let bytes = list(laid, s.ptr, s.len)?;
+        std::str::from_utf8(bytes).ok().map(|t| Some(t.to_owned()))
+    }
+
+    /// `n` families at the head of `laid`, read back; `None` when any pointer leaves the layout.
+    pub(super) fn read(laid: &[u8], n: u64) -> Option<Vec<Family>> {
+        let n = usize::try_from(n).ok()?;
+        let families = list(laid, laid.as_ptr().cast::<ScrapeFamily>(), n)?;
+        families
+            .iter()
+            .map(|f| {
+                let samples: &[ScrapeSample] = list(laid, f.samples, f.samples_len)?;
+                Some(Family {
+                    name: text(laid, f.name)??,
+                    help: text(laid, f.help)?,
+                    unit: text(laid, f.unit)?,
+                    kind: f.kind,
+                    samples: samples
+                        .iter()
+                        .map(|s| {
+                            let labels: &[ScrapeLabel] = list(laid, s.labels, s.labels_len)?;
+                            Some(Sample {
+                                name: text(laid, s.name)??,
+                                labels: labels
+                                    .iter()
+                                    .map(|l| Some((text(laid, l.key)??, text(laid, l.value)??)))
+                                    .collect::<Option<_>>()?,
+                                value: text(laid, s.value)??,
+                            })
+                        })
+                        .collect::<Option<_>>()?,
+                })
+            })
+            .collect()
+    }
+}

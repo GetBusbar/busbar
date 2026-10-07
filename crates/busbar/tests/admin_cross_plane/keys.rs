@@ -91,14 +91,14 @@ const fn c(
 /// cannot be left behind once its emission starts naming its condition, or its declaration is
 /// deleted). The list can only shrink.
 const COND_WITNESS_DEBT: &[(
-    busbar_kernel::admin::v1::contract::taxonomy::MethodTag,
+    busbar_core_admin::v1::contract::taxonomy::MethodTag,
     &str,
-    busbar_kernel::admin::v1::contract::taxonomy::ErrKind,
-    busbar_kernel::admin::v1::contract::taxonomy::Cond,
+    busbar_core_admin::v1::contract::taxonomy::ErrKind,
+    busbar_core_admin::v1::contract::taxonomy::Cond,
 )] = {
-    use busbar_kernel::admin::v1::contract::taxonomy::Cond::*;
-    use busbar_kernel::admin::v1::contract::taxonomy::ErrKind::*;
-    use busbar_kernel::admin::v1::contract::taxonomy::MethodTag::*;
+    use busbar_core_admin::v1::contract::taxonomy::Cond::*;
+    use busbar_core_admin::v1::contract::taxonomy::ErrKind::*;
+    use busbar_core_admin::v1::contract::taxonomy::MethodTag::*;
     &[
         (Delete, "/groups/{name}", Conflict, BaseDefined),
         (Delete, "/groups/{name}", Conflict, BoundKeys),
@@ -213,7 +213,7 @@ async fn spin_up(
 /// and metered into today's `/usage` bucket. Returns `(path, status, body)` for each read, and
 /// is the witness the declared-error audit drives for the three `unpriced_class` declarations.
 async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let card: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
@@ -325,7 +325,7 @@ async fn assert_unpriced_usage_read_is_named(prefix: &str) {
 #[tokio::test]
 async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     use http_body_util::BodyExt;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -410,7 +410,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
 /// first GET); the gzip client costs zero inflation, the identity client a per-request inflate.
 #[tokio::test]
 async fn test_admin_v1_openapi_gzip_negotiation() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -549,7 +549,7 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
 /// It also asserts the audit consequence: every one of these refusals writes a `rejected` row —
 /// a refused mint is an attempt to issue a credential, and it must leave a trace.
 async fn drive_key_cap_and_delegation_errors() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
@@ -726,7 +726,7 @@ async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
 /// onto "expected one of …" is a customer-visible change no ruling allows.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -984,7 +984,7 @@ async fn keys_error_surface_is_byte_stable() {
 /// out of the `#[tokio::test]` so the class-level over-claim test can RUN it (and collect its
 /// emissions) without depending on test ordering.
 async fn drive_keys_error_surface() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // A 65-character id (the cap is 64) and an id that cannot exist.
     const OVERLONG: &str = "vk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const MISSING: &str = "vk_0000000000000000";
@@ -1463,7 +1463,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_admin_error_surface() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // A syntactically valid but WRONG config-plane ETag — the stale guard, not the parser.
     const STALE: &str = "\"999999\"";
     const BAD_ETAG: &str = "not-an-etag";
@@ -2236,7 +2236,7 @@ async fn plugin_reload_reports_an_unrebuildable_disk_config() {
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_reload_errors() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // `pid` alone collides: this helper is called from TWO `#[tokio::test]`s in the same binary
     // (`plugin_reload_reports_an_unrebuildable_disk_config` and
     // `declared_error_set_is_exactly_what_the_handlers_emit`), which can run concurrently and would
@@ -2283,7 +2283,7 @@ async fn drive_plugin_reload_errors() {
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_rollback_errors() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // Same per-call collision as `drive_plugin_reload_errors` above (two callers, same pid) — see
     // that function's comment.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2417,7 +2417,7 @@ async fn drive_plugin_rollback_errors() {
 /// so `declared_error_set_is_exactly_what_the_handlers_emit` witnesses the emission through the v1
 /// router's recording layer without depending on test order.
 async fn drive_plugin_inspect_errors() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-inspect-witness-{}-{}",
@@ -2482,7 +2482,7 @@ async fn drive_plugin_inspect_errors() {
 /// machine set-comparison over every operation at once. There is no endpoint left to be next.
 #[tokio::test]
 async fn declared_error_set_is_exactly_what_the_handlers_emit() {
-    use busbar_kernel::admin::v1::contract::taxonomy::declared_errors;
+    use busbar_core_admin::v1::contract::taxonomy::declared_errors;
     // Drive every error path the declaration claims. (Other tests contribute to the same registry;
     // calling the drivers here makes the assertion independent of whether they ran.)
     drive_admin_error_surface().await;
@@ -2640,11 +2640,8 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
 /// is proven mounted with a documented status, and every router route proven documented
 /// (`test_admin_v1_openapi_paths_all_resolve`), so keying off it closes the loop: router → doc →
 /// this audit.
-fn documented_operations() -> Vec<(
-    String,
-    busbar_kernel::admin::v1::contract::taxonomy::MethodTag,
-)> {
-    use busbar_kernel::admin::v1::contract::taxonomy::MethodTag;
+fn documented_operations() -> Vec<(String, busbar_core_admin::v1::contract::taxonomy::MethodTag)> {
+    use busbar_core_admin::v1::contract::taxonomy::MethodTag;
     let doc: serde_json::Value =
         serde_json::from_str(&busbar_core_admin::test_support::openapi_json())
             .expect("the committed openapi.json parses");
@@ -2654,7 +2651,7 @@ fn documented_operations() -> Vec<(
     let mut ops = Vec::new();
     for (abs, item) in paths {
         let rel = abs
-            .strip_prefix(busbar_kernel::admin::v1::contract::ADMIN_PREFIX)
+            .strip_prefix(busbar_core_admin::v1::contract::ADMIN_PREFIX)
             .unwrap_or(abs);
         for key in item.as_object().into_iter().flatten().map(|(k, _)| k) {
             // `x-*` specification extensions share the path-item object with real operations.
@@ -2681,7 +2678,7 @@ fn documented_operations() -> Vec<(
 /// `declared_error_set_is_exactly_what_the_handlers_emit`.
 #[test]
 fn rate_limit_doc_table_matches_classifier() {
-    use busbar_kernel::admin::v1::contract::taxonomy::MethodTag;
+    use busbar_core_admin::v1::contract::taxonomy::MethodTag;
     // The classifier folds each registered plane's named-map section into the CONFIG class, so the
     // planes must be registered before it is asked — independent of which test ran first.
     crate::ensure_seam();
@@ -2697,7 +2694,7 @@ fn rate_limit_doc_table_matches_classifier() {
     let answered_by_loop = |rel: &str, method: MethodTag| {
         crate::admin_codec::verbs::resolve(
             &method.as_str().to_uppercase(),
-            &format!("{}{rel}", busbar_kernel::admin::v1::contract::ADMIN_PREFIX),
+            &format!("{}{rel}", busbar_core_admin::v1::contract::ADMIN_PREFIX),
         )
         .is_some_and(|row| loop_verbs.contains(row.verb))
     };
@@ -2966,7 +2963,7 @@ async fn named_map_app_opts(
     tokio::task::JoinHandle<()>,
 ) {
     linked_export_axis();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
     // Disk truth, read back before the paths move into the fixture: the plane sections below are
@@ -4165,7 +4162,7 @@ async fn drive_named_map_errors() {
     // field on `App`, so a fresh fixture is a fresh budget; raising the limit instead would have
     // made the test pass by weakening the thing it shares with production.
     for section in ["identity-providers", "export", "tools", "agents"] {
-        busbar_kernel::metrics::init();
+        busbar_kernel::snapshot::init();
         let store = Arc::new(MemoryStore::new());
         let gov = gov_with_signer(store, Some("admintok".to_string()));
         let app = crate::new_test_app().governance(gov).build();

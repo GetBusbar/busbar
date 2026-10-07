@@ -39,11 +39,12 @@ import tempfile
 LEDGER = "qa/capability-equality.json"
 STATES = {"proven", "missing", "not-applicable"}
 ROOT_STATES = {"proven", "none", "not-applicable"}
-# The five legs the composition root carries, and the one cargo invocation that turns them all on:
+# The six legs the composition root carries, and the one cargo invocation that turns them all on:
 # the admin leg's own feature, for the mcp, a2a and voice legs (the kernel-loop rider those planes are
-# served through) the feature that links the plane, and for the llm leg the feature that links the
-# plane riding the `node` axis, which compiles the root's node (`root/plane_node.rs`).
-ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm"
+# served through) and the decisions leg (its door, served end to end) the feature that links the
+# plane, and for the llm leg the feature that links the plane riding the `node` axis, which compiles
+# the root's node (`root/plane_node.rs`).
+ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,proto-llm"
 
 
 def load(path):
@@ -282,7 +283,7 @@ def libtest_path(file, fn):
     A test body may live in a `tests/` child directory rather than inline (structure-lint's
     <dir>/tests/<stem>.rs convention), declared back by `#[path = "tests/<file>"] mod <name>;`. The
     declaration is READ: the declaring file's module, then the `mod` name it declares the file under
-    (`root/tests/gauntlet_kernel.rs` is `root::gauntlet_kernel::tests`; `root/tests/serve_door.rs`,
+    (`root/tests/gauntlet_kernel.rs` is `root::gauntlet_kernel::tests`; `root/tests/serve_tests.rs`,
     declared by `serve.rs` as `mod door_tests`, is `root::serve::door_tests`), then any inline module
     the fn sits in. Where no declaration is found the path shape alone decides, as before: a SIBLING
     file's tests belong to `root::<stem>::tests`; a DIRECTORY module's own

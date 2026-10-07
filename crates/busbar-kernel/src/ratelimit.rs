@@ -97,7 +97,7 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
     // carved out below, before this prefix ever matches it.
     PathRule::Prefix("/config/"),
     // The admin auth chain itself — `PUT /admin-auth` (the remount moved it off `/auth`).
-    PathRule::Exact(crate::admin::v1::contract::PATH_ADMIN_AUTH),
+    PathRule::Exact(crate::admin::gate::PATH_ADMIN_AUTH),
     // A per-section overlay reset discards a whole section back to base config — a blast-radius
     // revert (rebuilds the App).
     PathRule::Prefix("/overlay/"),
@@ -117,10 +117,10 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
 /// `/config/`, and `/plugins/inspect` is a read-only archive preview that must not contend with
 /// EITHER the CONFIG or the shared CRUD budget — it gets its own [`MutationClass::PluginInspect`].
 pub fn classify_mutation(rel: &str) -> MutationClass {
-    if rel == crate::admin::v1::contract::PATH_CONFIG_VALIDATE {
+    if rel == crate::admin::gate::PATH_CONFIG_VALIDATE {
         return MutationClass::Crud;
     }
-    if rel == crate::admin::v1::contract::PATH_PLUGINS_INSPECT {
+    if rel == crate::admin::gate::PATH_PLUGINS_INSPECT {
         return MutationClass::PluginInspect;
     }
     // The GENERIC named-DEFINITION map writes (`/identity-providers`, `/export`, and any registered

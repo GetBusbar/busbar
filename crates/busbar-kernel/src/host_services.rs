@@ -2149,6 +2149,10 @@ impl HostServices for KernelServices {
         );
         Ran::Later
     }
+
+    fn snapshot_read(&self, _caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        crate::export::scrape::read(scope)
+    }
 }
 
 /// The refusal of `content.scan` / `hook.call` from a crossing that serves no unit in flight.

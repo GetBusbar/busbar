@@ -28,11 +28,6 @@
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
-//! - `plane_decisions` — the decisions plane's registry declaration. The one plane whose crate may
-//!   not write its own: a pure plane's manifest may name `busbar-contract` and nothing else, and a
-//!   `PlaneDecl` is a kernel type, so the root writes it. It declares identity only — no claim, no
-//!   audience, no runtime slot — which is what puts `decisions:` in the section fold without
-//!   mounting a door the plane has no unit path to answer on.
 //! - [`cli`] — the flag surface: everything busbar answers on the command line and exits,
 //!   plus the config/providers path scanners the serving half reads through the SAME rule.
 //!   It sits under the root because the binary crate's audit scopes are `src/root` and
@@ -93,8 +88,6 @@ pub mod linked;
 pub(crate) mod loader;
 pub mod migration;
 pub mod observe;
-#[cfg(feature = "plane-decisions")]
-pub mod plane_decisions;
 // The node a plane's units run through, compiled in every build: a door plane's units are driven
 // and posted on it whether the plane is compiled in or dropped in (ARCHITECT Q1).
 pub mod plane_node;

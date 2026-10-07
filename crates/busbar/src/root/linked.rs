@@ -248,14 +248,25 @@ pub fn linked_exports(
             former_names: Vec::new(),
         })
     };
-    doors
+    let mut rows = doors
         .iter()
         .map(|d| {
             manifest(d.name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
                 .map(busbar_kernel::preflight::answering_former_names)
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
+    // built-in exporters in), so the kernel's unknown-exporter refusal, which lists the linked rows
+    // in registration order, reads as 1.5.5's did. A row the table does not name follows, in place.
+    let order = crate::root::legacy::export_order();
+    rows.sort_by_key(|p| {
+        order
+            .iter()
+            .position(|m| *m == p.manifest.alias)
+            .unwrap_or(usize::MAX)
+    });
+    Ok(rows)
 }
 
 /// What the composition root wires for one of its own unit modules — the kernel-loop half of a plane
@@ -455,7 +466,7 @@ pub fn plane_rows(
     rows.extend(dropped_doors.iter().copied());
     // PER-AXIS (SEAM-L(s)): a door row owns the plane axis for its key; a legacy row of the same
     // key yields that axis alone and keeps every other axis it registers (its tables are its own).
-    let rows = doors_own_their_plane_keys(rows, &doors);
+    let rows = doors_own_their_plane_keys(rows, &doors)?;
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
@@ -467,16 +478,101 @@ pub fn plane_rows(
 /// which case the door serves the plane and the legacy row keeps only the axes the door does not
 /// register (its other tables: the CLI help, the one-shot runner, the protocols, the diagnostics),
 /// which this fold never touches. Order is kept.
-#[must_use]
+///
+/// The ENGINE is not the plane axis: a legacy row that is the fallback plane carries the routing
+/// tables the core's own readers walk (the `/metrics` lane gauges, `/v1/models`, the provider
+/// merge), so a door taking its key takes them over ([`with_the_engine_of`]) rather than leaving the
+/// node with none.
+///
+/// # Errors
+///
+/// A door taking an engine past the [`CARRIED`] table's last slot, named (see [`carry_into`]).
 pub fn doors_own_their_plane_keys(
     rows: Vec<&'static PlaneDecl>,
     doors: &[&'static PlaneDecl],
-) -> Vec<&'static PlaneDecl> {
-    rows.into_iter()
-        .filter(|row| {
-            doors.iter().any(|d| std::ptr::eq(*d, *row)) || !doors.iter().any(|d| d.key == row.key)
+) -> Result<Vec<&'static PlaneDecl>, String> {
+    doors_own_their_plane_keys_into(&CARRIED, rows, doors)
+}
+
+/// [`doors_own_their_plane_keys`], carrying engines into `table`.
+pub(crate) fn doors_own_their_plane_keys_into(
+    table: &'static [std::sync::OnceLock<PlaneDecl>],
+    rows: Vec<&'static PlaneDecl>,
+    doors: &[&'static PlaneDecl],
+) -> Result<Vec<&'static PlaneDecl>, String> {
+    let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
+    let legacy_of = |key: &str| rows.iter().copied().find(|r| r.key == key && !is_door(r));
+    let mut kept: Vec<&'static PlaneDecl> = rows
+        .iter()
+        .copied()
+        .filter(|row| is_door(row) || !doors.iter().any(|d| d.key == row.key))
+        .collect();
+    for row in &mut kept {
+        if let Some(legacy) = legacy_of(row.key).filter(|_| is_door(row)) {
+            if let Some(carried) = carry_into(table, row, legacy)? {
+                *row = carried;
+            }
+        }
+    }
+    Ok(kept)
+}
+
+/// The door rows a carried engine rides: one slot per door plane a process folds, the shape of table
+/// the kernel keeps its own folded rows in (`busbar_kernel::plane::door`), so a row lives as long as
+/// the process with no allocation leaked for it.
+static CARRIED: [std::sync::OnceLock<PlaneDecl>; busbar_kernel::plane::door::MAX_DOOR_PLANES] =
+    [const { std::sync::OnceLock::new() }; busbar_kernel::plane::door::MAX_DOOR_PLANES];
+
+/// THE DOOR ROW, CARRYING THE ENGINE ITS KEY'S LEGACY ROW HELD, kept in `table`: the fallback flag
+/// and the hooks the kernel builds and reads the fallback plane's routing tables through
+/// (`build_runtime`, `viewer`, `resolve_provider`, `on_swap`), each the legacy row's; every other
+/// word stays the door's. `None` when the legacy row holds none of them: the door's row stands as it
+/// is. Carrying the same key again answers the row the first carry built, as the kernel's fold
+/// answers a key it already folded.
+///
+/// # Errors
+///
+/// Every slot of `table` already holds another key's row: the engine has nowhere to ride, and the
+/// boot refuses rather than serve the door's key without the fallback plane's tables.
+fn carry_into(
+    table: &'static [std::sync::OnceLock<PlaneDecl>],
+    door: &PlaneDecl,
+    legacy: &PlaneDecl,
+) -> Result<Option<&'static PlaneDecl>, String> {
+    let holds_an_engine = legacy.fallback
+        || legacy.build_runtime.is_some()
+        || legacy.viewer.is_some()
+        || legacy.resolve_provider.is_some()
+        || legacy.on_swap.is_some();
+    if !holds_an_engine {
+        return Ok(None);
+    }
+    let carried = || PlaneDecl {
+        declaration: PlaneDeclaration {
+            fallback: legacy.fallback,
+            ..door.declaration
+        },
+        build_runtime: legacy.build_runtime,
+        viewer: legacy.viewer,
+        resolve_provider: legacy.resolve_provider,
+        on_swap: legacy.on_swap,
+        ..*door
+    };
+    table
+        .iter()
+        .find_map(|slot| match slot.get() {
+            Some(row) => (row.key == door.key).then_some(row),
+            None => Some(slot.get_or_init(carried)).filter(|row| row.key == door.key),
         })
-        .collect()
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "the plane door `{}` takes the engine its legacy row holds, and {} door planes \
+                 already carry one, the most one process carries",
+                door.key,
+                table.len()
+            )
+        })
 }
 
 /// TWO DOORS ON ONE AXIS: a plane key registered by two door rows (each `(row name, key)`) is a
@@ -1150,37 +1246,37 @@ pub(crate) fn logs() -> &'static crate::root::loader::dispatch::PluginLogConfig 
 /// the host's writes). The composition root is the one place that names it; the root's tests hold
 /// it to every `busbar_*` series constant the kernel's metric modules define, so it cannot drift.
 pub const HOST_SERIES: &[&str] = &[
-    busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
-    busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
-    busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL,
-    busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL,
-    busbar_kernel::metrics::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
-    busbar_kernel::metrics::JOURNAL_QUARANTINED_TOTAL,
-    busbar_kernel::metrics::REQUESTS_TOTAL,
-    busbar_kernel::metrics::BREAKER_TRIPS_TOTAL,
-    busbar_kernel::metrics::FAILOVERS_TOTAL,
-    busbar_kernel::metrics::REQUEST_DURATION_SECONDS,
-    busbar_kernel::metrics::TRANSLATIONS_TOTAL,
-    busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
-    busbar_kernel::metrics::PLANE_REQUEST_DURATION_SECONDS,
-    busbar_kernel::metrics::ADMISSION_DENIED_TOTAL,
-    busbar_kernel::metrics::METERING_PENDING_COALESCED_TOTAL,
-    busbar_kernel::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
-    busbar_kernel::metrics::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
-    busbar_kernel::metrics::KEY_SPEND_CENTS,
-    busbar_kernel::metrics::KEY_TOKENS_TOTAL,
-    busbar_kernel::metrics::BUCKET_TOKENS,
-    busbar_kernel::metrics::BUCKET_SPEND_CENTS,
-    busbar_kernel::metrics::BUCKET_BUDGET_REMAINING_CENTS,
-    busbar_kernel::metrics::LANE_STATE,
-    busbar_kernel::metrics::LANE_AVAILABLE,
-    busbar_kernel::metrics::LANE_RECOVERY_HINT_MS,
-    busbar_kernel::metrics::LANE_INFLIGHT,
-    busbar_kernel::metrics::LANE_AVAILABLE_PERMITS,
-    busbar_kernel::metrics::POOL_QUEUED,
+    busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
+    busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
+    busbar_kernel::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL,
+    busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
+    busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
+    busbar_kernel::snapshot::REQUESTS_TOTAL,
+    busbar_kernel::snapshot::BREAKER_TRIPS_TOTAL,
+    busbar_kernel::snapshot::FAILOVERS_TOTAL,
+    busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
+    busbar_kernel::snapshot::TRANSLATIONS_TOTAL,
+    busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
+    busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
+    busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL,
+    busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
+    busbar_kernel::snapshot::KEY_SPEND_CENTS,
+    busbar_kernel::snapshot::KEY_TOKENS_TOTAL,
+    busbar_kernel::snapshot::BUCKET_TOKENS,
+    busbar_kernel::snapshot::BUCKET_SPEND_CENTS,
+    busbar_kernel::snapshot::BUCKET_BUDGET_REMAINING_CENTS,
+    busbar_kernel::snapshot::LANE_STATE,
+    busbar_kernel::snapshot::LANE_AVAILABLE,
+    busbar_kernel::snapshot::LANE_RECOVERY_HINT_MS,
+    busbar_kernel::snapshot::LANE_INFLIGHT,
+    busbar_kernel::snapshot::LANE_AVAILABLE_PERMITS,
+    busbar_kernel::snapshot::POOL_QUEUED,
     busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
-    busbar_kernel::metrics::BILLING_TAP_DECODE_FAIL_TOTAL,
+    busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL,
     // `proxy_vocab`'s crate-private constant, spelled here as it renders.
     "busbar_tap_notifications_dropped_total",
 ];
@@ -1339,10 +1435,11 @@ pub fn register_ws_arrivals(linked: &Linked) {
 
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
 /// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
-/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host, the parse-time section
-/// list a cross-plane hook refusal reads, and the envelope a self-enveloping admin verb replies
-/// through. Each backing is a ZST unit struct, so it promotes to `'static`. The egress-trust host
-/// is installed by `run` once the configuration loads, over the destination guard.
+/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host and the parse-time section
+/// list a cross-plane hook refusal reads. The envelope a self-enveloping admin verb replies through
+/// is the admin crate's, bound by its `install()`. Each backing is a ZST unit struct, so it promotes
+/// to `'static`. The egress-trust host is installed by `run` once the configuration loads, over the
+/// destination guard.
 pub fn register_seams() {
     #[cfg(linked_egress)]
     {
@@ -1354,10 +1451,8 @@ pub fn register_seams() {
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::config_sections,
     );
-    #[cfg(linked_admin_envelope)]
-    busbar_kernel::admin_verbs::install_plane_admin_envelope(
-        &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
-    );
+    // `admin-envelope`: the self-enveloping plane-verb backing is the admin crate's own, bound by
+    // its `install()` (main.rs), which the composition root calls unconditionally.
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a

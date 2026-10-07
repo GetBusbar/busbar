@@ -2089,6 +2089,9 @@ mod both_ways {
         ) -> busbar_plugin_loader::dispatch::Ran {
             busbar_plugin_loader::dispatch::Ran::Now(Stored::refused(UNSERVED))
         }
+        fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
+            busbar_contract::services::Snapshot::Refused(UNSERVED)
+        }
     }
 
     use busbar_contract::services::{Caller, Stored, UNSERVED};

@@ -45,7 +45,7 @@
 //! Every plane now also runs through the composition root — `root-llm` (the node, behind
 //! `proto-llm`) / `root-admin` behind their features, `root-mcp` through the MCP plane's memory-ABI
 //! door on the kernel's plane driver (`root/serve.rs`, its cells in the `#[path]` test file
-//! `root/tests/serve_door.rs`, gated by `plane-mcp`), `root-a2a` / `root-voice` on the kernel-loop
+//! `root/tests/serve_tests.rs`, gated by `plane-mcp`), `root-a2a` / `root-voice` on the kernel-loop
 //! rider those planes are served through (`root/gauntlet_kernel.rs`, the voice leg on its session
 //! rider, gated by `plane-a2a` / `plane-streaming`, the features that link them). A capability proven where the plane crate serves it and
 //! unwitnessed where the root drives it is the same silent half-answer this file exists to refuse,
@@ -481,7 +481,7 @@ fn sibling_tests_file(file: &str) -> String {
 
 /// The files `file` (a repo-relative `.rs`) declares as modules through `#[path = "<rel>"]`, each
 /// resolved against `file`'s own directory as rustc resolves it: the test files a leg's module
-/// carries one file further down (`#[cfg(test)] #[path = "tests/serve_door.rs"] mod door_tests;`).
+/// carries one file further down (`#[cfg(test)] #[path = "tests/serve_tests.rs"] mod door_tests;`).
 /// Only a `#[path]` ATTRIBUTE counts: a line that merely mentions one in a comment declares nothing.
 fn path_declarations(root: &Path, file: &str) -> Vec<String> {
     let Ok(src) = std::fs::read_to_string(root.join(file)) else {
@@ -696,7 +696,7 @@ fn verify_root(
                 // rule puts a `foo.rs` body in `tests/foo_tests.rs` and leaves `foo.rs` holding the
                 // `#[path]` declaration, so the cells are still the leg's own — same module, one
                 // file further down; and a leg file may carry more than one such file
-                // (`serve.rs`'s `#[path = "tests/serve_door.rs"] mod door_tests;`), each read off
+                // (`serve.rs`'s `#[path = "tests/serve_tests.rs"] mod door_tests;`), each read off
                 // the leg file's own `#[path]` attributes. Those are accepted and nothing else is:
                 // evidence from a file the leg does not declare — a SIBLING leg's file, or any
                 // other — still fails, which is what this check is for.
@@ -1667,7 +1667,7 @@ fn selftest_root_evidence_that_vanished_or_came_from_another_leg_is_red() {
 }
 
 /// A leg's evidence may live in a test file the leg file DECLARES through `#[path]` (`serve.rs`'s
-/// `#[path = "tests/serve_door.rs"] mod door_tests;`), and only there: the same test in a file the
+/// `#[path = "tests/serve_tests.rs"] mod door_tests;`), and only there: the same test in a file the
 /// leg does not declare — or one merely NAMED in a comment of the leg file — is refused.
 #[test]
 fn selftest_root_evidence_in_a_path_declared_test_file_is_the_legs_and_no_other_is() {

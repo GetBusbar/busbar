@@ -2289,7 +2289,7 @@ pub fn build_with_cards(
             quarantine = ?q.kept,
             "{q}"
         );
-        metrics::counter!(busbar_kernel::metrics::JOURNAL_QUARANTINED_TOTAL).increment(1);
+        metrics::counter!(busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL).increment(1);
     }
 
     // THE BOOK IS REBUILT FROM THE CHAIN, not opened empty (item 128). An empty book here was the

@@ -1,29 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The ONE hook wire contract — REPLY side (shared by every out-of-process routing transport: HTTP
-//! webhook, Unix-socket binary). A policy hook returns this exact reply shape whatever the transport,
-//! so a hook graduates between transports without changing its logic. Versioned by shape, not a field,
-//! in v1: the schema is append-only.
-//!
-//! The REQUEST-side projection (`HookRequest`/`build`/the op constants/the reject clamp+sanitize) lives
-//! in the NEUTRAL substrate at [`busbar_kernel::hooks::wire`] so the LLM model plane names it
-//! without reaching back into core; it is RE-EXPORTED below so every core-internal
-//! `crate::hooks::wire::…` path (proxy_vocab, plugin, auth, admin, the tests) is unchanged. The
-//! reply-side normalizers + the settings-bag-carrying [`StatusReply`] stay HERE — inside the
-//! settings-leak-lint scan root that must keep watching any raw operator-settings bag.
+//! THE 1.5.5 HOOK WIRE, REPLY SIDE: what the HOST still reads of a hook's 1.5.5 JSON after the hook
+//! switch-over (the design: hooks are on the memory ABI; a hook's `decide`/`transform` reply
+//! crosses as the hook kind's fixed `out`, lowered from 1.5.5 JSON on the PLUGIN side by
+//! `abi::sdk::hook::lower_decide_reply` / `lower_transform_reply`, and read back by the kernel's host
+//! hook stage, `plane_driver::hooks::policy`). Moved here from the kernel's `hooks::wire` (P2 D4,
+//! ARCHITECT Q-D4-HOOKS 2026-10-04: the hook reply wire shapes live in the contract, beside the
+//! request side in [`super`]). What is here is the host's half of 1.5.5's reply contract, which the
+//! fixed `out` does not do for it: the reject-status clamp and message sanitiser, the rewrite parsed
+//! fail-closed, and the `status`/`describe` blobs (1.5.5 JSON, carried verbatim by the ABI) with the
+//! bounded hook-metrics shape they report. The settings-bag-carrying [`StatusReply`] stays inside the
+//! settings-leak-lint scan root.
 
-use super::{Candidate, RoutingDecision};
 use serde::Deserialize;
-
-// RE-EXPORT the substrate request-side contract so `crate::hooks::wire::{…}` resolves by-identity for
-// every historical core caller (proxy_vocab builds `HookRequest`; plugin.rs calls `build`; auth/admin
-// name `HookStageProjection`; the tests exercise `build`) and for the reject clamp/sanitize the
-// reply-side normalizers below share with the forward seam.
 
 /// The describe reply envelope, parsed liberally.
 #[derive(Debug, Default, Deserialize)]
 pub struct DescribeReply {
+    /// The hook's settings schema, as it described it.
     #[serde(default)]
     pub schema: Option<serde_json::Value>,
 }
@@ -80,11 +75,13 @@ pub struct HookMetric {
     /// Confidence interval for an estimated value (finite; `ci_low ≤ ci_high` or both dropped).
     #[serde(default)]
     pub ci_low: Option<f64>,
+    /// The interval's upper bound (see `ci_low`).
     #[serde(default)]
     pub ci_high: Option<f64>,
     /// Human display name (a UI falls back to `name`).
     #[serde(default)]
     pub help: Option<String>,
+    /// A short display label.
     #[serde(default)]
     pub label: Option<String>,
     /// Display unit token (`"ms"`, `"$"`, `"%"`, `"req/s"`, …) — max 16 chars, sanitized.
@@ -102,25 +99,28 @@ pub struct HookMetric {
 }
 
 /// The hook's `status` reply body (liberal: every field optional, unknown fields ignored),
-/// deserialized into the shared `busbar_contract::hooks::HookStatus` shape. `metrics` is the raw array of entry
+/// deserialized into the shared `crate::hooks::HookStatus` shape. `metrics` is the raw array of entry
 /// objects (validated downstream by [`parse_status_metrics`]).
 #[derive(Debug, Default, Deserialize)]
 pub struct StatusReply {
+    /// The settings version the hook says it is running.
     #[serde(default)]
     pub settings_version: Option<u64>,
+    /// The hook's echo of its resolved settings bag.
     #[serde(default)]
     // settings-leak-lint: allow — INBOUND wire reply the engine only consumes: the hook's echo of
     // the RESOLVED bag. It is never serialized to a reader (`hook_status` projects `settings_keys`
     // from it; `settings_drift_keys` compares key names), and this is the exact type whose leak
     // — historical #3 — the widened scan root exists to keep caught.
     pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The raw metric entries, validated by [`parse_status_metrics`].
     #[serde(default)]
     pub metrics: Option<Vec<serde_json::Value>>,
 }
 
-impl From<StatusReply> for busbar_contract::hooks::HookStatus {
+impl From<StatusReply> for crate::hooks::HookStatus {
     fn from(r: StatusReply) -> Self {
-        busbar_contract::hooks::HookStatus {
+        crate::hooks::HookStatus {
             settings_version: r.settings_version,
             settings: r.settings,
             metrics: r.metrics,
@@ -132,6 +132,7 @@ impl From<StatusReply> for busbar_contract::hooks::HookStatus {
 /// (per the unknown-op contract rule, `{}` = unsupported → busbar fails open).
 #[derive(Debug, Default, Deserialize)]
 pub struct StatusEnvelope {
+    /// The `status` member; absent = the hook does not speak it.
     #[serde(default)]
     pub status: Option<StatusReply>,
 }
@@ -144,6 +145,7 @@ pub const MAX_METRIC_LABELS: usize = 8;
 pub const MAX_METRIC_HELP_CHARS: usize = 200;
 /// Display-hint + label-value caps (same sanitize rule as help).
 pub const MAX_METRIC_LABEL_CHARS: usize = 64;
+/// Display-unit cap (chars).
 pub const MAX_METRIC_UNIT_CHARS: usize = 16;
 
 /// Validate a hook-reported metric NAME or LABEL KEY: `^[a-z][a-z0-9_]{0,63}$`. Anything else is
@@ -158,23 +160,9 @@ pub fn valid_metric_name(name: &str) -> bool {
 
 /// Char-boundary-safe sanitize + cap (`String::truncate` takes BYTES and panics off a
 /// char boundary; `.chars().take(n)` is panic-free and matches the documented "≤ N chars" rule).
-///
-/// When the sanitized value is longer than `n`, the LAST char of the kept prefix is replaced by
-/// an ellipsis marker (mirrors `config::migrate::one_line`'s truncation marker) so a hook's
-/// over-cap name/label/help/unit string is never mistaken for the complete, real value once it
-/// reaches an admin API reader or a Prometheus scrape — the truncation is observable in the
-/// value itself, not silent. Total length stays ≤ `n` chars.
-pub(crate) fn sanitize_cap(raw: &str, n: usize) -> String {
-    let sanitized = sanitize_reject_message(raw);
-    let chars: Vec<char> = sanitized.chars().collect();
-    if chars.len() > n {
-        let keep = n.saturating_sub(1);
-        let mut capped: String = chars[..keep].iter().collect();
-        capped.push('…');
-        capped
-    } else {
-        sanitized
-    }
+/// An over-cap value is cut at the cap with nothing added, as 1.5.5 cut it.
+pub fn sanitize_cap(raw: &str, n: usize) -> String {
+    sanitize_reject_message(raw).chars().take(n).collect()
 }
 
 /// Parse + validate the metrics ARRAY of a `status` reply FAIL-OPEN: a malformed entry (bad
@@ -263,49 +251,7 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
     out
 }
 
-/// The hook's reply. `order` is the ranked preference (candidate `idx` values, most-preferred
-/// first); an explicit `abstain: true` (or an absent/empty `order`) means "no opinion". Both fields
-/// are optional so an empty `{}` deserializes to Abstain. Unknown JSON fields are ignored, so a hook
-/// may attach extra diagnostics without breaking the contract.
-#[derive(Debug, Deserialize, Default)]
-pub struct HookResponse {
-    #[serde(default)]
-    pub order: Option<Vec<usize>>,
-    #[serde(default)]
-    pub abstain: bool,
-    /// REJECT the request outright: no upstream is dispatched, the caller gets a dialect-native
-    /// error. Takes precedence over `order`/`abstain` — a hook that says both meant reject. The
-    /// verb that makes a content-seeing hook (`policy.send_prompt`) a guardrail, not just a router.
-    ///
-    /// Deliberately an untyped `Value`, parsed best-effort by `normalize`: the verb is FAIL-CLOSED.
-    /// Once a hook says "reject", a malformed detail (a status of 70000, a numeric message) must
-    /// degrade to "reject with the defaults", never to "silently route the request" — a typed
-    /// struct here would abort the WHOLE reply parse on a bad field and coerce the decision to
-    /// `on_error`, routing a request the hook tried to stop. `{"reject": false}` (and JSON `null`,
-    /// which maps to absent) is the one explicit "not rejecting" shape; anything else present
-    /// rejects.
-    #[serde(default)]
-    pub reject: Option<serde_json::Value>,
-    /// RESTRICT the surviving candidate set to members carrying ANY of these tags
-    /// (`{"restrict": {"tags_any": [...]}}`). A compliance gate ("only BAA-covered lanes"). Untyped +
-    /// FAIL-CLOSED like `reject`: a malformed restrict must fall to the gate's `on_error`/`on_empty`,
-    /// never silently allow-all. Parsed by `parse_restrict`, folded into `RoutingDecision::Restrict`
-    /// by `normalize`, and re-applied on every downstream failover hop by
-    /// `proxy::select::enforce_restricts`.
-    #[serde(default)]
-    pub restrict: Option<serde_json::Value>,
-    /// REWRITE the request body (`{"rewrite": {"messages": [...], "tools": [...]}}`) — the
-    /// compression/redaction arm. Untyped + FAIL-CLOSED: a malformed/oversize rewrite must
-    /// proceed with the UNMODIFIED body, never a corrupted one. Requires the hook's `prompt: rw` grant.
-    /// Parsed by `parse_rewrite` and applied by the priority-ordered transform pass at the `parsed.rewrite` read below.
-    #[serde(default)]
-    pub rewrite: Option<serde_json::Value>,
-}
-
-/// A parsed, validated `rewrite` reply — part of the hook contract (`busbar-api`); re-exported so
-/// engine-internal paths are unchanged. FAIL-CLOSED: `parse_rewrite` (below) returns `None` for a
-/// malformed rewrite so the caller proceeds with the ORIGINAL body, never a corrupted one.
-pub use busbar_contract::hooks::RewriteReply;
+use crate::hooks::RewriteReply;
 
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
 /// "tools"?: [...]}` with a NON-EMPTY messages array; anything else yields `None` (proceed with the
@@ -323,90 +269,12 @@ pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     Some(RewriteReply { messages, tools })
 }
 
-/// Extract a reject's (status, message) fail-closed: status CLAMPED to client errors (anything
-/// else — absent, non-integer, 0, 200, 302, 500, 70000, -1 — becomes 403), message sanitized +
-/// capped. ONE extraction for both the decide path (`normalize`) and the transform path (a `rw`
-/// gate's reject) so the two can never diverge.
-pub fn parse_reject_detail(reject: &serde_json::Value) -> (u16, String) {
-    let status = reject
-        .get("status")
-        .and_then(|s| s.as_i64())
-        .and_then(|s| u16::try_from(s).ok())
-        .map(clamp_reject_status)
-        .unwrap_or(REJECT_STATUS_DEFAULT);
-    let message =
-        sanitize_reject_message(reject.get("message").and_then(|m| m.as_str()).unwrap_or(""));
-    (status, message)
-}
-
-/// Normalize a parsed reply on the TRANSFORM path: reject > rewrite > abstain. `restrict`/`order`
-/// are decide-path verbs and are ignored here (documented in the contract). Shared by both
-/// transports so they can never diverge.
-pub fn transform_outcome(parsed: HookResponse) -> busbar_contract::hooks::TransformOutcome {
-    use busbar_contract::hooks::TransformOutcome;
-    if let Some(reject) = &parsed.reject {
-        if *reject != serde_json::Value::Bool(false) {
-            let (status, message) = parse_reject_detail(reject);
-            return TransformOutcome::Reject { status, message };
-        }
-    }
-    match parsed.rewrite.as_ref().and_then(parse_rewrite) {
-        Some(rw) => TransformOutcome::Rewrite(rw),
-        None => TransformOutcome::Abstain,
-    }
-}
-
-/// Normalize a parsed hook reply into a decision: `reject` (clamped + sanitized) wins over
-/// everything; then explicit abstain / absent order → `Abstain`; otherwise the shared liberal
-/// normalizer (drop unknown idxs, dedup, empty → Abstain). One normalization for every transport.
-pub fn normalize(parsed: HookResponse, candidates: &[Candidate<'_>]) -> RoutingDecision {
-    // FAIL-CLOSED: any `reject` value except an explicit `false` is a rejection (see the field
-    // doc). Details are extracted best-effort; anything missing or out-of-shape falls back to the
-    // safe defaults rather than downgrading the verb.
-    if let Some(reject) = parsed.reject {
-        if reject != serde_json::Value::Bool(false) {
-            let (status, message) = parse_reject_detail(&reject);
-            return RoutingDecision::Reject { status, message };
-        }
-    }
-    // RESTRICT comes after reject (reject wins) and before order. FAIL-CLOSED like reject: any
-    // `restrict` value except an explicit `false` restricts; a malformed one (parse_restrict → None)
-    // yields an EMPTY tag set, which downstream resolves via the gate's `on_empty` — never allow-all.
-    if let Some(restrict) = parsed.restrict {
-        if restrict != serde_json::Value::Bool(false) {
-            let tags_any = parse_restrict(&restrict)
-                .map(|r| r.tags_any)
-                .unwrap_or_default();
-            return RoutingDecision::Restrict { tags_any };
-        }
-    }
-    if parsed.abstain {
-        return RoutingDecision::Abstain;
-    }
-    let Some(order) = parsed.order else {
-        return RoutingDecision::Abstain;
-    };
-    let valid: std::collections::HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
-    RoutingDecision::from_ranked(order, &valid)
-}
-
-#[cfg(test)]
-#[path = "tests/wire_tests.rs"]
-mod tests;
-
-// The request-side projection lives in the contract (`busbar_contract::hook_wire`), shared with the
-// SDK that rebuilds it from the fixed views; re-exported so every `crate::hooks::wire::…` path holds.
-pub use busbar_contract::hook_wire::{
-    build, parse_restrict, HookCandidate, HookContext, HookMessage, HookReqProjection, HookRequest,
-    HookStageProjection, HookUser, RestrictReply, OP_DECIDE, OP_NOTIFY, OP_TRANSFORM,
-};
-
 /// Reject-status clamp range + fallback: any status outside 400..=499 becomes 403.
 pub const REJECT_STATUS_DEFAULT: u16 = 403;
 
 /// Clamp a hook-supplied reject status to the client-error range: anything outside 400..=499
-/// becomes `REJECT_STATUS_DEFAULT` (403). Shared by `parse_reject_detail` (the transports' reply
-/// seam) and forward's policy-outcome seam (defense in depth for a `RoutingDecision::Reject`
+/// becomes `REJECT_STATUS_DEFAULT` (403). Shared by the hook reply read-back (`policy::reject_of`)
+/// and forward's policy-outcome seam (defense in depth for a `RoutingDecision::Reject`
 /// constructed directly by a policy impl), so no producer can mint a success/redirect/5xx.
 pub fn clamp_reject_status(status: u16) -> u16 {
     if (400..=499).contains(&status) {
@@ -425,17 +293,14 @@ pub const REJECT_MESSAGE_DEFAULT: &str = "Request rejected by the routing policy
 /// them as newlines: a record-splitting vector like CRLF), and the invisible direction/zero-width
 /// formatting chars (bidi overrides U+202A..=U+202E and isolates U+2066..=U+2069 can visually
 /// spoof a log line in a terminal; zero-widths U+200B..=U+200F and U+FEFF hide content). Cap the
-/// length; fall back to the canned default when nothing printable survives. When the sanitized
-/// message is longer than the cap, the last char of the kept prefix is replaced by an ellipsis
-/// marker so the caller who reads this back (the client error body AND the operator log line)
-/// can tell it was shortened, rather than reading a message that silently ends mid-word and
-/// looking complete.
+/// length (cut at the cap with nothing added, the 1.5.5 bytes); fall back to the canned default
+/// when nothing printable survives.
 ///
-/// Shared by `normalize` (the transports' reply path) and by `forward`'s seam mapping (defense in
+/// Shared by the hook reply read-back (`policy::reject_of`) and by `forward`'s seam mapping (defense in
 /// depth for a `RoutingDecision::Reject` constructed directly by a policy impl), so the "safe to
 /// log, safe for the client" guarantee holds for EVERY producer of a rejection.
 pub fn sanitize_reject_message(raw: &str) -> String {
-    let filtered: Vec<char> = raw
+    let message: String = raw
         .chars()
         .filter(|c| {
             !c.is_control()
@@ -449,15 +314,8 @@ pub fn sanitize_reject_message(raw: &str) -> String {
                         | '\u{FEFF}'
                 )
         })
+        .take(REJECT_MESSAGE_MAX_CHARS)
         .collect();
-    let message: String = if filtered.len() > REJECT_MESSAGE_MAX_CHARS {
-        let keep = REJECT_MESSAGE_MAX_CHARS.saturating_sub(1);
-        let mut capped: String = filtered[..keep].iter().collect();
-        capped.push('…');
-        capped
-    } else {
-        filtered.into_iter().collect()
-    };
     if message.trim().is_empty() {
         REJECT_MESSAGE_DEFAULT.to_string()
     } else {
