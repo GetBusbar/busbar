@@ -6856,6 +6856,61 @@ mod agent_door {
         );
     }
 
+    /// MONEY (this cell touches money: it reads the units' lines on the node's book). A RELAYED
+    /// gRPC CALL LEDGERS THE BYTES PREDEV LEDGERED, AND A RECORD-SERVED ANSWER LEDGERS NONE. Predev's
+    /// hop counted the request body it handed the transport and the response body it got back
+    /// (origin/predev `crates/busbar-a2a/src/a2a/relay.rs:1795-1802`, `HopBytes::add_sent` +
+    /// `add_received`), ledgered as their sum under the `bytes` class (`receive.rs:2478`
+    /// `ledger_hop_bytes(.., bytes.total())`). On the gRPC binding the request body was the
+    /// length-prefixed message (`relay.rs:1319-1341`), and no header (trailers included) was a
+    /// payload byte (`relay_billing.rs:13-24`). So the unit's line counts exactly the bytes the
+    /// agent read (the prefixed request) plus the prefixed answer it wrote. A `tasks/list` the plane
+    /// answers from its records opened no hop and ledgers no byte (predev ledgered bytes only for a
+    /// hop that left, `receive.rs:2470-2478`). RED before the fix: the line counted the bare message
+    /// and the trailers' field block.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_grpc_hop_ledgers_predevs_bytes_and_a_record_served_answer_none() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-grpc-billed";
+        let _published = Published(instance);
+        let answer = grpc_working_answer();
+        let mut agent = GrpcAgent::start(answer.clone()).await;
+        let s = served(instance, &agent.entry("planner"), false, None);
+        approve(&s, "planner").await;
+        let params = r#"{"message":{"messageId":"m-1","role":"ROLE_USER","parts":[{"text":"PLAN THE MIGRATION"}]}}"#;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "SendMessage", params, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, sent) = agent
+            .heard
+            .try_recv()
+            .unwrap_or_else(|_| panic!("the agent was not dialled over gRPC: {body}"));
+        let lines = agent_counts(&s, "planner");
+        assert_eq!(lines.len(), 1, "one line for the relayed unit: {lines:?}");
+        assert_eq!(
+            counted(&lines[0], surface("bytes_class")),
+            (sent.len() + answer.len()) as u64,
+            "the prefixed request the agent read plus the prefixed answer, no trailer: {lines:?}"
+        );
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "tasks/list", "{}", Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "answered from the records: {body}");
+        assert!(agent.heard.try_recv().is_err(), "the list never dialled");
+        let lines = agent_counts(&s, "planner");
+        assert_eq!(lines.len(), 2, "one more line, the list's: {lines:?}");
+        assert_eq!(
+            counted(&lines[1], surface("bytes_class")),
+            0,
+            "a record-served answer ledgers no byte: {lines:?}"
+        );
+    }
+
     /// A gRPC AGENT'S ERROR STATUS IS ITS ANSWER (`BUSBAR-1.6.0.md` l.394, l.747; the coordinator's
     /// ruling: the trailer status comes through the kernel): an agent that ends every call
     /// `NOT_FOUND` in its trailers is relayed to the caller as the A2A error that status binds
