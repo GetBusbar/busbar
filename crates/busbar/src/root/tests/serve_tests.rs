@@ -3512,4 +3512,465 @@ mod agent_door {
             "the extended card is busbar's, never relayed"
         );
     }
+
+    /// THE AGENT'S OWN CREDENTIAL THROUGH THE DOOR (`upstream_credential:`): busbar's credential
+    /// for a registration, bound by the composition, re-resolved on every hop and presented by the
+    /// auth kind's per-request call (the plane never holds it); the door's public and verification
+    /// card fetches waive it; a credential that stops resolving refuses each hop in the served
+    /// engine's words (`receive.rs`, the `mint_from` arm, and `originate`).
+    mod upstream_credential {
+        use super::*;
+
+        /// The far agent's answer to every relayed request: a task it is working on, under its own
+        /// id, so busbar holds the task live and learns the agent's id for it.
+        const WORKING: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"far-1","contextId":"far-c","status":{"state":"working"}}}"#;
+
+        /// AN AGENT THAT KEEPS EVERY REQUEST IT IS SENT, WHOLE — its card fetches included: it
+        /// serves its card signed at its origin's well-known path and answers anything else
+        /// `answer`.
+        struct Recorded {
+            port: u16,
+            issuer: ed25519_dalek::SigningKey,
+            log: Arc<std::sync::Mutex<Vec<String>>>,
+        }
+
+        impl Recorded {
+            async fn start(answer: &'static str) -> Self {
+                let issuer = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+                let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let held = Arc::new(std::sync::Mutex::new(serde_json::Value::Null));
+                let (served_card, signer, kept) =
+                    (Arc::clone(&held), issuer.clone(), Arc::clone(&log));
+                let (port, _heard) = far_end_over(
+                    Arc::new(move |request: &str| {
+                        kept.lock().expect("the log").push(request.to_string());
+                        if request.starts_with("GET ") {
+                            let doc = served_card.lock().map(|c| c.clone()).unwrap_or_default();
+                            return Some(FarReply::of(200, signed(&doc, &signer).to_string()));
+                        }
+                        Some(FarReply::of(200, answer.to_string()))
+                    }),
+                    None,
+                )
+                .await;
+                *held.lock().expect("the card") = card(port, "plans the work");
+                Self { port, issuer, log }
+            }
+
+            /// The `agents:` entry registering `planner` here, pinned by its signing key,
+            /// re-verified within `reverify_ttl`, stating `upstream_credential` when given.
+            fn entry(&self, reverify_ttl: &str, credential: Option<&str>) -> String {
+                let credential = credential
+                    .map(|c| format!(", upstream_credential: {c}"))
+                    .unwrap_or_default();
+                format!(
+                    "planner: {{url: 'http://127.0.0.1:{}/planner', allow_private: true, \
+                     reverify_ttl: '{reverify_ttl}', pin: {{mechanism: jws_issuer_key, key: \
+                     '{}'}}{credential}}}",
+                    self.port,
+                    key_info(&self.issuer)
+                )
+            }
+
+            /// Every request it was sent since it was last asked, in order.
+            fn take(&self) -> Vec<String> {
+                std::mem::take(&mut *self.log.lock().expect("the log"))
+            }
+        }
+
+        /// The `upstream_credential` block over the secret file `path`, presented at `placement`.
+        fn own(path: &std::path::Path, placement: &str) -> String {
+            format!(
+                "{{secret: {{file: '{}'}}, placement: {placement}, lease_ttl_ms: 60000}}",
+                path.display()
+            )
+        }
+
+        /// A secret file of this cell's own, holding `value`.
+        fn secret_file(name: &str, value: &str) -> std::path::PathBuf {
+            let path = std::env::temp_dir().join(format!(
+                "busbar-serve-agent-cred-{name}-{}",
+                std::process::id()
+            ));
+            std::fs::write(&path, value).expect("write the secret");
+            path
+        }
+
+        /// ROTATE the secret at `path` to `value` as a secret store does: written aside, renamed
+        /// over it.
+        fn rotate(path: &std::path::Path, value: &str) {
+            let aside = path.with_extension("rotating");
+            std::fs::write(&aside, value).expect("write the rotated secret");
+            std::fs::rename(&aside, path).expect("swap it in");
+        }
+
+        /// The value of head field `name` in the whole request `request` (case-insensitive).
+        fn header(request: &str, name: &str) -> Option<String> {
+            let head = request.split("\r\n\r\n").next()?;
+            head.lines().skip(1).find_map(|line| {
+                let (n, v) = line.split_once(':')?;
+                n.trim()
+                    .eq_ignore_ascii_case(name)
+                    .then(|| v.trim().to_string())
+            })
+        }
+
+        /// The card fetches (`GET`) and the other requests (`POST`) of `log`.
+        fn split(log: Vec<String>) -> (Vec<String>, Vec<String>) {
+            log.into_iter().partition(|r| r.starts_with("GET "))
+        }
+
+        /// Every card fetch in `gets` carries no credential at all.
+        fn no_credential_on(gets: &[String], at: &str) {
+            for get in gets {
+                assert_eq!(header(get, "authorization"), None, "{at}: {get}");
+                assert_eq!(header(get, "x-api-key"), None, "{at}: {get}");
+            }
+        }
+
+        /// The busbar task id a relayed answer names.
+        fn task_of(body: &str) -> String {
+            let doc: serde_json::Value = serde_json::from_str(body).expect("an answer");
+            doc["result"]["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no task in {body}"))
+                .to_string()
+        }
+
+        /// `placement: bearer`: the agent's relayed hop, its extended card read through the relay,
+        /// and busbar's own originated requests (the `ListTasks` refresh, the push-config mirror)
+        /// each carry `authorization: Bearer <secret>`; the door's card fetches — `connect`'s look
+        /// and verify-on-call's (`reverify_ttl: 0s`, so every hop re-fetches) — carry NONE (the
+        /// waiver: predev fetched cards with no credential).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_agents_own_bearer_rides_its_hops_and_never_its_card_fetches() {
+            if linked_door().is_none() {
+                return;
+            }
+            let _one = PUBLISHING.lock().await;
+            let instance = "serve-agent-cred-bearer";
+            let _published = Published(instance);
+            let path = secret_file("bearer", "vendor-token-1\n");
+            let agent = Recorded::start(WORKING).await;
+            let s = served(
+                instance,
+                &agent.entry("0s", Some(&own(&path, "bearer"))),
+                false,
+                None,
+            );
+            approve(&s, "planner").await;
+            let (gets, posts) = split(agent.take());
+            assert!(!gets.is_empty(), "connect fetched the card");
+            assert!(posts.is_empty(), "{posts:?}");
+            no_credential_on(&gets, "connect's card fetch");
+
+            let bearer = Some("Bearer vendor-token-1".to_string());
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let task = task_of(&body);
+            let (gets, posts) = split(agent.take());
+            assert!(!gets.is_empty(), "verify-on-call re-fetched the card");
+            no_credential_on(&gets, "verify-on-call's card fetch");
+            assert_eq!(posts.len(), 1, "{posts:?}");
+            assert_eq!(header(&posts[0], "authorization"), bearer, "{}", posts[0]);
+            assert!(
+                !posts[0].contains(&s.token),
+                "never the caller's token: {}",
+                posts[0]
+            );
+
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "GetExtendedAgentCard", "{}", Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (gets, posts) = split(agent.take());
+            no_credential_on(&gets, "verify-on-call's card fetch");
+            assert_eq!(posts.len(), 1, "the extended card, relayed: {posts:?}");
+            assert!(posts[0].contains("GetExtendedAgentCard"), "{}", posts[0]);
+            assert_eq!(header(&posts[0], "authorization"), bearer, "{}", posts[0]);
+
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "tasks/list", "{}", Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (_, posts) = split(agent.take());
+            assert!(
+                posts.iter().any(|p| p.contains("ListTasks")),
+                "busbar refreshed the agent's task list: {posts:?}"
+            );
+            for post in &posts {
+                assert_eq!(header(post, "authorization"), bearer, "{post}");
+            }
+
+            let set = format!(
+                r#"{{"taskId":"{task}","pushNotificationConfig":{{"url":"https://93.184.215.14/cb"}}}}"#
+            );
+            let (status, body) = answered(
+                &s.router,
+                rpc(
+                    "planner",
+                    "tasks/pushNotificationConfig/set",
+                    &set,
+                    Some(&s.token),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (_, posts) = split(agent.take());
+            assert!(
+                posts
+                    .iter()
+                    .any(|p| p.contains("CreateTaskPushNotificationConfig")),
+                "busbar mirrored its own callback onto the agent: {posts:?}"
+            );
+            for post in &posts {
+                assert_eq!(header(post, "authorization"), bearer, "{post}");
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// `placement: {header: X-API-Key}`: the relayed hop carries the secret verbatim in that
+        /// header and no `authorization`.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_named_header_placement_carries_the_secret_verbatim() {
+            if linked_door().is_none() {
+                return;
+            }
+            let _one = PUBLISHING.lock().await;
+            let instance = "serve-agent-cred-header";
+            let _published = Published(instance);
+            let path = secret_file("header", "abc123");
+            let agent = Recorded::start(WORKING).await;
+            let s = served(
+                instance,
+                &agent.entry("1h", Some(&own(&path, "{header: X-API-Key}"))),
+                false,
+                None,
+            );
+            approve(&s, "planner").await;
+            no_credential_on(&split(agent.take()).0, "connect's card fetch");
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (_, posts) = split(agent.take());
+            assert_eq!(posts.len(), 1, "{posts:?}");
+            assert_eq!(
+                header(&posts[0], "x-api-key").as_deref(),
+                Some("abc123"),
+                "{}",
+                posts[0]
+            );
+            assert_eq!(header(&posts[0], "authorization"), None, "{}", posts[0]);
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// R5 (coordinator ruling: as predev): an agent registered with NO `upstream_credential` is
+        /// dialled unauthenticated — no credential header on any request, card fetch or hop.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn an_agent_with_no_upstream_credential_is_dialled_with_none() {
+            if linked_door().is_none() {
+                return;
+            }
+            let _one = PUBLISHING.lock().await;
+            let instance = "serve-agent-cred-none";
+            let _published = Published(instance);
+            let agent = Recorded::start(WORKING).await;
+            let s = served(instance, &agent.entry("1h", None), false, None);
+            approve(&s, "planner").await;
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (gets, posts) = split(agent.take());
+            assert_eq!(posts.len(), 1, "{posts:?}");
+            no_credential_on(&gets, "a card fetch");
+            no_credential_on(&posts, "the relayed hop");
+        }
+
+        /// ROTATION: the secret's source changes between two hops; the very next hop presents the
+        /// new value (re-resolved per hop, as predev minted a lease per hop).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_rotated_secret_is_presented_on_the_very_next_hop() {
+            if linked_door().is_none() {
+                return;
+            }
+            let _one = PUBLISHING.lock().await;
+            let instance = "serve-agent-cred-rotate";
+            let _published = Published(instance);
+            let path = secret_file("rotate", "before-rotation");
+            let agent = Recorded::start(WORKING).await;
+            let s = served(
+                instance,
+                &agent.entry("1h", Some(&own(&path, "bearer"))),
+                false,
+                None,
+            );
+            approve(&s, "planner").await;
+            let _ = agent.take();
+            for value in ["before-rotation", "after-rotation"] {
+                rotate(&path, value);
+                let (status, body) = answered(
+                    &s.router,
+                    rpc("planner", "message/send", SEND, Some(&s.token)),
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                let (_, posts) = split(agent.take());
+                assert_eq!(posts.len(), 1, "{posts:?}");
+                assert_eq!(
+                    header(&posts[0], "authorization"),
+                    Some(format!("Bearer {value}")),
+                    "{}",
+                    posts[0]
+                );
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// A CREDENTIAL THAT STOPS RESOLVING (its secret file removed) refuses every hop, in the
+        /// served engine's bytes, and dials nothing:
+        ///
+        /// * a relayed task hop: `502`, `-32006` "the backend agent did not complete this task"
+        ///   naming the task (`fail_task`), and the task row is closed `failed`;
+        /// * the extended card read through the relay: `502`, `-32006` "the extended agent card
+        ///   could not be fetched", naming no task;
+        /// * busbar's own originated requests (the `ListTasks` refresh, the push-config mirror): no
+        ///   hop at all (`originate` returned none), the caller's own answer unchanged (`200`).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_vanished_secret_refuses_each_hop_in_the_engines_words() {
+            if linked_door().is_none() {
+                return;
+            }
+            let _one = PUBLISHING.lock().await;
+            let instance = "serve-agent-cred-vanished";
+            let _published = Published(instance);
+            let path = secret_file("vanished", "soon-gone");
+            let agent = Recorded::start(WORKING).await;
+            let s = served(
+                instance,
+                &agent.entry("1h", Some(&own(&path, "bearer"))),
+                false,
+                None,
+            );
+            approve(&s, "planner").await;
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "served while it resolves: {body}");
+            let live = task_of(&body);
+            std::fs::remove_file(&path).expect("the secret vanishes");
+            let _ = agent.take();
+
+            let info = serde_json::json!({
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "domain": "a2a-protocol.org",
+                "reason": "INVALID_AGENT_RESPONSE",
+            });
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+            let doc: serde_json::Value = serde_json::from_str(&body).expect("the envelope");
+            let failed = doc["error"]["data"][1]["resourceName"]
+                .as_str()
+                .unwrap_or_else(|| panic!("the refusal names its task: {body}"))
+                .to_string();
+            assert_eq!(
+                doc,
+                serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
+                    "code": -32006,
+                    "message": "the backend agent did not complete this task",
+                    "data": [info.clone(), {
+                        "@type": "type.googleapis.com/google.rpc.ResourceInfo",
+                        "resourceType": "a2a.busbar/task",
+                        "resourceName": failed,
+                    }],
+                } }),
+                "{body}"
+            );
+            let (status, body) = answered(
+                &s.router,
+                rpc(
+                    "planner",
+                    "tasks/get",
+                    &format!(r#"{{"id":"{failed}"}}"#),
+                    Some(&s.token),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let row: serde_json::Value = serde_json::from_str(&body).expect("the task");
+            assert_eq!(
+                row["result"]["status"]["state"], "failed",
+                "the task row is closed failed: {body}"
+            );
+
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "GetExtendedAgentCard", "{}", Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).expect("the envelope"),
+                serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
+                    "code": -32006,
+                    "message": "the extended agent card could not be fetched",
+                    "data": [info],
+                } }),
+                "{body}"
+            );
+
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "tasks/list", "{}", Some(&s.token)),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "the caller's own answer stands: {body}"
+            );
+            let set = format!(
+                r#"{{"taskId":"{live}","pushNotificationConfig":{{"url":"https://93.184.215.14/cb"}}}}"#
+            );
+            let (status, body) = answered(
+                &s.router,
+                rpc(
+                    "planner",
+                    "tasks/pushNotificationConfig/set",
+                    &set,
+                    Some(&s.token),
+                ),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "the caller's own answer stands: {body}"
+            );
+            assert_eq!(
+                agent.take(),
+                Vec::<String>::new(),
+                "no hop reached the agent"
+            );
+        }
+    }
 }

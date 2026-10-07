@@ -1548,6 +1548,24 @@ struct PerHop {
     held: Mutex<([u8; 32], u64)>,
 }
 
+/// A `PerHop` NAMES NO CREDENTIAL in a debug line: it holds the reference and a digest, never the
+/// value, and renders neither (a derived `Debug` over a reference to a literal or a digest would put
+/// the one in a log line and a guessing oracle for the other in it).
+impl std::fmt::Debug for PerHop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let handle = self
+            .held
+            .lock()
+            .map_or_else(|p| p.into_inner().1, |held| held.1);
+        f.debug_struct("PerHop")
+            .field("secret", &"<redacted; re-resolved per hop>")
+            .field("style", &self.style)
+            .field("settings", &self.settings)
+            .field("handle", &handle)
+            .finish_non_exhaustive()
+    }
+}
+
 impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
     fn handle_now(&self) -> Option<u64> {
         let value = busbar_contract::redacted::Redacted::new(
