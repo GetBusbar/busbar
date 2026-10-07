@@ -555,6 +555,11 @@ pub trait DriverSteps: Units {
     /// not retried on another member), told with [`Self::decoded`].
     fn route_flags(&self, _ctx: &UnitCtx, _flags: u8) {}
 
+    /// The COUNTERPARTY the unit's `arrive` stated among its trust facts (an entry of the plane's
+    /// section: the one the unit is addressed to), told with [`Self::decoded`]; never told for a
+    /// unit that states none. The steps' Approve may judge the caller's grant on it.
+    fn counterparty(&self, _ctx: &UnitCtx, _counterparty: &[u8]) {}
+
     /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
     /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
     fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
@@ -1202,6 +1207,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         if let (Some(op), Some(d)) = (op, decoded.as_ref()) {
             self.steps.decoded(ctx, op, d.route, d.pool.as_deref());
             self.steps.route_flags(ctx, d.route_flags);
+            if let Some(t) = d.trust.as_ref() {
+                self.steps.counterparty(ctx, &t.counterparty);
+            }
             self.steps.expected(ctx, &d.expected);
         }
         self.lock().decoded = decoded;

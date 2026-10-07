@@ -34,8 +34,9 @@ use busbar_contract::caps::{
 };
 use busbar_contract::records::VirtualKey;
 use busbar_contract::section::{
-    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, RESERVED_MODELS_KEY,
-    RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
+    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY,
+    POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
+    RESERVED_WORK_KEY,
 };
 use busbar_contract::MeterClassId;
 use busbar_kernel::config::groups::ExhaustionMode;
@@ -63,6 +64,8 @@ pub struct DoorPools {
     /// The pools whose members the plane admits each on its own grant (`member_granted`): the
     /// pool's name is no grant of its own.
     member_granted: std::collections::BTreeSet<String>,
+    /// Each pool's members' tiers, in member order (`0` where a member states none).
+    tiers: BTreeMap<String, Vec<u32>>,
 }
 
 /// A resolved route: its pool label (empty for a direct route) and its member entries.
@@ -99,7 +102,27 @@ impl DoorPools {
             .map(|pools| {
                 pools
                     .iter()
-                    .filter_map(|(name, pool)| Some((key(name)?, members(pool))))
+                    .filter_map(|(name, pool)| {
+                        Some((
+                            key(name)?,
+                            members(pool).into_iter().map(|(m, _)| m).collect(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tiers = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| {
+                        Some((
+                            key(name)?,
+                            members(pool).into_iter().map(|(_, t)| t).collect(),
+                        ))
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -139,6 +162,7 @@ impl DoorPools {
             pools,
             fallbacks,
             member_granted,
+            tiers,
         }
     }
 
@@ -172,6 +196,17 @@ impl DoorPools {
     #[must_use]
     pub fn pools(&self) -> &BTreeMap<String, Vec<String>> {
         &self.pools
+    }
+
+    /// The tier of `pool`'s member at `index` (the core-owned per-member `tier`), `0` where it
+    /// states none.
+    #[must_use]
+    pub fn tier(&self, pool: &str, index: usize) -> u32 {
+        self.tiers
+            .get(pool)
+            .and_then(|t| t.get(index))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// The pool `pool` spills into when its members are spent, where its section names one.
@@ -231,16 +266,62 @@ impl DoorPools {
     }
 }
 
-/// A pool's member entries: its `members` list, each an entry name or a member naming one.
-fn members(pool: &serde_yaml::Value) -> Vec<String> {
+impl DoorPools {
+    /// [`DoorPools::granted`], and for a POOL route over a pool whose members are each admitted on
+    /// their own grant: the caller's grant on the member the unit is ADDRESSED to, its stated trust
+    /// `counterparty`, where that names a member of the pool, before anything is charged (QP2,
+    /// coordinator 2026-10-07: the grant on the addressed member, judged before the charge as
+    /// predev's admission judged it). A counterparty that names no member of the pool leaves the
+    /// members to the plane, as before.
+    #[must_use]
+    pub fn granted_to(
+        &self,
+        kind: Option<&str>,
+        key: Option<&VirtualKey>,
+        (class, named): (u8, Option<&[u8]>),
+        counterparty: Option<&[u8]>,
+    ) -> bool {
+        if !self.granted(kind, key, class, named) {
+            return false;
+        }
+        let (Some(kind), Some(key)) = (kind, key) else {
+            return true;
+        };
+        let Some(pool) = named.and_then(|n| std::str::from_utf8(n).ok()) else {
+            return true;
+        };
+        if class != ROUTE_POOL || !self.member_granted.contains(pool) {
+            return true;
+        }
+        let member = counterparty
+            .and_then(|c| std::str::from_utf8(c).ok())
+            .filter(|c| {
+                self.pools
+                    .get(pool)
+                    .is_some_and(|m| m.iter().any(|m| m == c))
+            });
+        member.is_none_or(|member| key.scope_allowed(kind, member))
+    }
+}
+
+/// A pool's member entries: its `members` list, each an entry name or a member naming one, with the
+/// member's tier (`0` where it states none, or states one that is no unsigned integer).
+fn members(pool: &serde_yaml::Value) -> Vec<(String, u32)> {
     pool.get(POOL_MEMBERS_KEY)
         .and_then(serde_yaml::Value::as_sequence)
         .map(|list| {
             list.iter()
                 .filter_map(|m| {
-                    m.as_str()
-                        .or_else(|| m.get("name").and_then(serde_yaml::Value::as_str))
-                        .map(str::to_owned)
+                    let name = m.as_str().or_else(|| {
+                        m.get(POOL_MEMBER_NAME_KEY)
+                            .and_then(serde_yaml::Value::as_str)
+                    })?;
+                    let tier = m
+                        .get(POOL_MEMBER_TIER_KEY)
+                        .and_then(serde_yaml::Value::as_u64)
+                        .and_then(|t| u32::try_from(t).ok())
+                        .unwrap_or(0);
+                    Some((name.to_owned(), tier))
                 })
                 .collect()
         })
@@ -390,6 +471,8 @@ struct DoorUnit {
     recorded: Option<u64>,
     /// A `ROUTE_SCOPE` unit several entries reach: those entries, named in its refusal's words.
     reachable: Vec<String>,
+    /// The counterparty its `arrive` stated among its trust facts: the entry it is addressed to.
+    counterparty: Option<Vec<u8>>,
 }
 
 /// ONE UNIT'S KERNEL STEPS (see the module doc), lent to the plane driver for the unit's life.
@@ -628,6 +711,10 @@ impl DriverSteps for DoorSteps<'_> {
             .then(|| u.reachable.join(ROUTE_SCOPE_SEPARATOR).into_bytes())
     }
 
+    fn counterparty(&self, _ctx: &UnitCtx, counterparty: &[u8]) {
+        self.lock().counterparty = Some(counterparty.to_vec());
+    }
+
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
         let mut u = self.lock();
         u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
@@ -750,14 +837,15 @@ impl Units for DoorSteps<'_> {
         _destinations: &[VerifiedDestination],
     ) -> SeatVerdict<Approve> {
         let (class, named) = self.lock().named.clone().unwrap_or((ROUTE_POOL, None));
+        let counterparty = self.lock().counterparty.clone();
         // A unit routed by scope that no one entry reached names its candidates, not a route: the
         // grant was the resolution itself, and admission refuses it (no destination).
         if class == ROUTE_SCOPE
-            || self.pools.granted(
+            || self.pools.granted_to(
                 self.facts.scope_kind.as_deref(),
                 self.key.as_deref(),
-                class,
-                named.as_deref(),
+                (class, named.as_deref()),
+                counterparty.as_deref(),
             )
         {
             SeatVerdict::proceed(token, busbar_contract::ScopeFacts::default())
@@ -1062,12 +1150,15 @@ pub fn compose_egress(
     for (label, entries) in pools.pools() {
         let list = entries
             .iter()
-            .map(|e| {
-                members.get(e).cloned().ok_or_else(|| {
+            .enumerate()
+            .map(|(index, e)| {
+                let mut member = members.get(e).cloned().ok_or_else(|| {
                     format!("pool '{label}' names entry '{e}', which has no sealed route")
-                })
+                })?;
+                member.tier = pools.tier(label, index);
+                Ok(member)
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, String>>()?;
         let mut pool = Pool::new(label.clone(), list);
         if let Some(fallback) = pools.fallback(label) {
             pool.on_exhausted = OnExhausted::FallbackPool(fallback.to_string());

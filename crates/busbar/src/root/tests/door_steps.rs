@@ -133,6 +133,124 @@ fn the_grant_is_judged_over_the_named_pool_then_its_fallback() {
     );
 }
 
+/// A POOL OF NAMED DEFINITIONS, ITS MEMBERS EACH ON THEIR OWN GRANT (QP2, coordinator 2026-10-07):
+/// its route's grant is the caller's grant on the member the unit is ADDRESSED to (its stated trust
+/// counterparty), judged before anything is charged, as predev's admission judged it; a
+/// counterparty that names no member of the pool, or none stated, leaves the members to the plane.
+/// RED before the judge: every caller passes a member-granted pool route.
+#[test]
+fn a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to() {
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    let p = pools(
+        "a: {}\nb: {}\npools:\n  twins:\n    members: [{name: a, tier: 0}, {name: b, tier: 1}]\n\
+         \x20   member_granted: true",
+    );
+    let key = |scopes: &[&str]| VirtualKey {
+        allowed_scopes: Some(
+            scopes
+                .iter()
+                .map(|n| ScopeRef {
+                    kind: "seat".to_string(),
+                    value: (*n).to_string(),
+                })
+                .collect(),
+        ),
+        ..VirtualKey::default()
+    };
+    let granted = |k: &VirtualKey, counterparty: Option<&str>| {
+        p.granted_to(
+            Some("seat"),
+            Some(k),
+            (ROUTE_POOL, Some(b"twins".as_slice())),
+            counterparty.map(str::as_bytes),
+        )
+    };
+    assert!(
+        granted(&key(&["a"]), Some("a")),
+        "granted the member it addressed"
+    );
+    assert!(
+        !granted(&key(&["b"]), Some("a")),
+        "a twin's grant is not the addressed member's"
+    );
+    assert!(
+        !granted(&key(&[]), Some("b")),
+        "an empty grant reaches no member"
+    );
+    assert!(
+        granted(&key(&[]), None),
+        "no counterparty stated: the members are the plane's to judge"
+    );
+    assert!(
+        granted(&key(&[]), Some("elsewhere")),
+        "a counterparty outside the pool names no member of it"
+    );
+    assert!(
+        p.granted_to(
+            None,
+            Some(&key(&[])),
+            (ROUTE_POOL, Some(b"twins".as_slice())),
+            Some(b"a")
+        ),
+        "a plane with no scope kind scopes nothing"
+    );
+}
+
+/// THE MEMBER'S TIER (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b), R2-G
+/// l.4285): read off a member written `{name, tier}`, `0` for a bare name, for one with no tier, and
+/// for a tier that is no unsigned integer; a pool's entries are its members' names either way.
+#[test]
+fn a_pool_members_tier_is_read_off_its_member() {
+    let p = pools(
+        "a: {}\nb: {}\nc: {}\npools:\n  t:\n    members: [{name: b, tier: 2}, a, {name: c}]\n\
+         \x20 u:\n    members: [{name: a, tier: minus}]",
+    );
+    assert_eq!(
+        routed(&p, ROUTE_POOL, Some("t")),
+        owned("t", &["b", "a", "c"])
+    );
+    assert_eq!((p.tier("t", 0), p.tier("t", 1), p.tier("t", 2)), (2, 0, 0));
+    assert_eq!(p.tier("u", 0), 0);
+    assert_eq!(p.tier("absent", 0), 0);
+}
+
+/// A NAMED-DEFINITION SECTION'S POOLS, AS THE ROOT HANDS THEM: each member written `{name, tier}`,
+/// its tier its declared index (the pool is ORDERED, its first member the primary), so the walk
+/// takes the members in the order declared; the plane is handed each member's bare name (the tier
+/// is core-owned). RED before the tier: every member written bare, all at tier `0`, rotated.
+#[test]
+fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_names() {
+    let stated: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [(
+        "twins".to_string(),
+        busbar_kernel::failover::CandidatePoolCfg {
+            members: vec!["b".to_string(), "a".to_string()],
+            repeatable: vec!["read".to_string()],
+        },
+    )]
+    .into();
+    let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
+    crate::root::serve::pools_into(&mut section, &stated);
+    let p = DoorPools::of(&section);
+    assert_eq!(
+        routed(&p, ROUTE_POOL, Some("twins")),
+        owned("twins", &["b", "a"])
+    );
+    assert_eq!((p.tier("twins", 0), p.tier("twins", 1)), (0, 1));
+    let handed = crate::root::serve::plane_settings(&section);
+    let pool = &handed["pools"]["twins"];
+    assert_eq!(
+        pool["members"],
+        serde_yaml::from_str::<serde_yaml::Value>("[b, a]").expect("yaml"),
+        "the plane is handed bare names"
+    );
+    assert_eq!(
+        pool["repeatable"],
+        serde_yaml::from_str::<serde_yaml::Value>("[read]").expect("yaml")
+    );
+    assert_eq!(pool["member_granted"], serde_yaml::Value::Bool(true));
+    assert_eq!(handed["a"], section["a"], "every other key as written");
+}
+
 /// AN ANONYMOUS UNIT NEVER REACHES A BILLED PATH (ARCHITECT P3 (a)): with no key it is admitted only
 /// on an open line, and then as anonymous (a zero hold, no money); every other unkeyed unit is
 /// refused; a keyed unit is the only one admitted onto the book.
