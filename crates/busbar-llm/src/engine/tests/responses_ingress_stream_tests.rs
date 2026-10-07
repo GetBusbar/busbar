@@ -296,7 +296,7 @@ fn billed_m0() -> busbar_kernel::cost::CostModel {
 
 async fn run_case(egress: &str, shape: Upstream) {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let label = format!(
         "responses ingress -> {egress} egress ({})",
         match shape {

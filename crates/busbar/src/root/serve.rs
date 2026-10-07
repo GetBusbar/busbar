@@ -63,7 +63,9 @@ use busbar_kernel::plane_driver::{
     Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
 };
 #[cfg(linked_axis_node)]
-use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+use busbar_kernel::plane_routes::{
+    PlaneRefusalSpec, PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec,
+};
 
 /// The egress class `dest.judge` applies when a plugin names none: the deployment's own stance.
 pub const DEFAULT_EGRESS_CLASS: u32 = 0;
@@ -411,6 +413,13 @@ impl HostServices for LateServices {
         match self.served() {
             Ok(s) => s.hook_call(caller, unit, ask, later),
             Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        match self.served() {
+            Ok(s) => s.snapshot_read(caller, scope),
+            Err(r) => busbar_contract::services::Snapshot::Refused(r.error),
         }
     }
 }
@@ -1609,6 +1618,14 @@ pub fn data_routes(
     }
 }
 
+/// What the data router is built with for the door planes ([`data_mounts`]): their request routes,
+/// their session routes, and their request routes' unit-less refusals.
+pub type DataMounts = (
+    Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+);
+
 /// [`data_routes`], and the door planes' session routes beside them (ARCHITECT Q-L5B-SESSION-SERVE;
 /// TRANSITIONAL: deleted when INBOUND-LISTEN's accepted::Caller serves): what the data router is
 /// built with.
@@ -1625,15 +1642,9 @@ pub fn data_mounts(
         busbar_contract::abi::mechanism::route::RouteAuth,
     )],
     upgrades: &[&str],
-) -> Result<
-    (
-        Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-        Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-    ),
-    String,
-> {
+) -> Result<DataMounts, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
     #[cfg(linked_axis_node)]
     {
@@ -1644,7 +1655,11 @@ pub fn data_mounts(
             core,
             upgrades,
         )
-        .map(|m| (m.routes, m.sessions))
+        .and_then(|m| {
+            // THE ROUTES AND THEIR REFUSALS PAIR, or the boot is refused (ARCHITECT 2026-10-06).
+            busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
+            Ok((m.routes, m.sessions, m.refusals))
+        })
     }
     #[cfg(not(linked_axis_node))]
     {
@@ -1812,6 +1827,8 @@ pub struct DoorMounts {
     pub routes: Vec<PlaneRouteSpec>,
     /// The session routes.
     pub sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    /// The request routes' unit-less refusals (their `401`, worded by their plane).
+    pub refusals: Vec<PlaneRefusalSpec>,
 }
 
 #[cfg(linked_axis_node)]
@@ -1848,6 +1865,7 @@ pub fn door_mounts(
         return Ok(DoorMounts {
             routes: public,
             sessions: Vec::new(),
+            refusals: Vec::new(),
         });
     }
     let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
@@ -1979,6 +1997,7 @@ pub fn door_mounts(
             runtime,
         }));
     }
+    let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
     let mut requests = Vec::new();
     for mount in mounts {
@@ -1991,6 +2010,7 @@ pub fn door_mounts(
         if method != RouteMethod::Get {
             continue;
         }
+        session_mounts.push((path.clone(), RouteMethod::Get, auth, door));
         let routes = Arc::clone(&routes);
         let (plane, claim) = door;
         sessions.push(busbar_kernel::plane_routes::PlaneSessionSpec {
@@ -2012,6 +2032,41 @@ pub fn door_mounts(
             ),
         });
     }
+    // THE DOOR ROUTES' UNIT-LESS REFUSALS (ARCHITECT ruling 2026-10-05; spec Part 3 section 12,
+    // "Refusals"): each route that takes a credential, at its own path and method, words the `401`
+    // the kernel's auth decides there through its plane's `refusal`, in the claim's refusal dialect,
+    // for the request target. The decision stays the kernel's; no unit opens, nothing is charged.
+    // Keyed by the door route's own identity (`DoorRouteId`), request and session routes alike.
+    let refusals: Vec<PlaneRefusalSpec> = requests
+        .iter()
+        .chain(&session_mounts)
+        .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
+        .map(|(path, method, _, (plane, claim))| {
+            let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
+            PlaneRefusalSpec {
+                route: busbar_kernel::plane_routes::DoorRouteId {
+                    path: path.clone(),
+                    method: *method,
+                },
+                refuse: Arc::new(move |reason: ReasonCode, target: &str| {
+                    let served = &routes.served.planes[plane];
+                    let dialect = served
+                        .snapshot
+                        .claims
+                        .get(claim as usize)
+                        .map_or(0, |c| u32::from(c.refusal_dialect));
+                    let rendered =
+                        served
+                            .driver
+                            .refuse_unitless(reason, dialect, target.as_bytes());
+                    stated(
+                        (rendered.status, rendered.fields),
+                        Body::from(rendered.body),
+                    )
+                }),
+            }
+        })
+        .collect();
     let routes_of = requests
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
@@ -2061,6 +2116,7 @@ pub fn door_mounts(
     Ok(DoorMounts {
         routes: routes_of,
         sessions,
+        refusals,
     })
 }
 
@@ -3275,14 +3331,15 @@ mod tests;
 #[path = "tests/serve_planes.rs"]
 mod planes_tests;
 
-// The door test file: the decisions door's served route, and the capability cells of the door
-// serving the `pools` map under the fold switch.
+// The door test file: the decisions door's served route (the `root-decisions` leg's own cells,
+// qa/capability-equality.json), and the capability cells of the door serving the `pools` map under
+// the fold switch.
 #[cfg(all(
     test,
     linked_axis_node,
     any(feature = "plane-decisions", linked_fold_on_driver)
 ))]
-#[path = "tests/serve_door.rs"]
+#[path = "tests/serve_tests.rs"]
 mod door_tests;
 
 #[cfg(all(test, linked_axis_node))]

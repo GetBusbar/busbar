@@ -24,10 +24,10 @@
 //!   config re-interns the same label sets to the SAME slots, so counts accumulate monotonically
 //!   across generations.
 //! * **One aggregator** — [`flush_to_recorder`] runs at scrape time (called from
-//!   `metrics::render()`): it sums every thread's cells per slot and pushes the DELTA since the last
-//!   flush into the process-global `metrics-exporter-prometheus` recorder. The exposition is
-//!   rendered by the SAME recorder as before, so metric names, labels, HELP/TYPE lines, and
-//!   formatting are byte-identical to the pre-bank output. Histogram slots buffer raw samples
+//!   `metrics::snapshot()`): it sums every thread's cells per slot and pushes the DELTA since the
+//!   last flush into the process-global recorder (`metrics::source`). The snapshot is read from the
+//!   SAME recorder as before, so metric names, labels, HELP text and values are identical to the
+//!   pre-bank output. Histogram slots buffer raw samples
 //!   per thread and drain them into the recorder at flush, so the summary/quantile rendering is
 //!   unchanged too (samples are just delivered at scrape time instead of request time).
 //!
@@ -138,7 +138,7 @@ impl AppSlots {
         lane_model: impl Fn(usize) -> Option<&'a str>,
         plane: &'static str,
     ) -> AppSlots {
-        use crate::metrics::{
+        use crate::snapshot::{
             BREAKER_TRIPS_TOTAL, FAILOVERS_TOTAL, REQUESTS_TOTAL, REQUEST_DURATION_SECONDS,
             UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL,
         };
@@ -286,8 +286,8 @@ pub(crate) fn request_finished(
     // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
     // relying on that miss, and it targets the correct (plane-labelled) family.
     if !crate::plane::is_fallback(plane) {
-        crate::metrics::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
-        crate::metrics::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
+        crate::snapshot::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
+        crate::snapshot::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;
     }
     // Model plane: bank fast path, else the cached-handle helpers — byte-identical series either way.
@@ -295,11 +295,11 @@ pub(crate) fn request_finished(
     let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
     match (fam, outcome_idx) {
         (Some(fam), Some(oi)) if fam.requests[oi].is_valid() => fam.requests[oi].incr(),
-        _ => crate::metrics::incr_requests_total(ingress_protocol, pool, outcome),
+        _ => crate::snapshot::incr_requests_total(ingress_protocol, pool, outcome),
     }
     match fam {
         Some(fam) if fam.duration.is_valid() => fam.duration.record(seconds),
-        _ => crate::metrics::record_request_duration(ingress_protocol, pool, seconds),
+        _ => crate::snapshot::record_request_duration(ingress_protocol, pool, seconds),
     }
 }
 
@@ -409,7 +409,7 @@ pub fn failover(app: &App, pool_label: &str, reason: &'static str) {
 /// [`upstream_attempt_on`]).
 pub fn breaker_trip_on(pool_label: &str, lane_label: &str) {
     metrics::counter!(
-        crate::metrics::BREAKER_TRIPS_TOTAL,
+        crate::snapshot::BREAKER_TRIPS_TOTAL,
         "pool" => pool_label.to_owned(),
         "lane" => lane_label.to_owned()
     )
@@ -420,7 +420,7 @@ pub fn breaker_trip_on(pool_label: &str, lane_label: &str) {
 /// family on every plane.
 pub fn failover_on(pool_label: &str, reason: &'static str) {
     metrics::counter!(
-        crate::metrics::FAILOVERS_TOTAL,
+        crate::snapshot::FAILOVERS_TOTAL,
         "pool" => pool_label.to_owned(),
         "reason" => reason
     )
@@ -431,7 +431,8 @@ pub fn failover_on(pool_label: &str, reason: &'static str) {
 /// depth its walk keeps (a pool served through a plane's door; the engine's pools are read at
 /// scrape).
 pub fn pool_queued_on(pool_label: &str, depth: i64) {
-    metrics::gauge!(crate::metrics::POOL_QUEUED, "pool" => pool_label.to_owned()).set(depth as f64);
+    metrics::gauge!(crate::snapshot::POOL_QUEUED, "pool" => pool_label.to_owned())
+        .set(depth as f64);
 }
 
 /// `busbar_translations_total` for one cross-protocol hop. Both names come from the fixed protocol
@@ -449,7 +450,7 @@ pub fn translation(from: &str, to: &str) {
                         *f,
                         *t,
                         counter_slot(
-                            crate::metrics::TRANSLATIONS_TOTAL,
+                            crate::snapshot::TRANSLATIONS_TOTAL,
                             &[("from", f), ("to", t)],
                         ),
                     ));
@@ -464,7 +465,7 @@ pub fn translation(from: &str, to: &str) {
     {
         Some((_, _, slot)) => slot.incr(),
         None => metrics::counter!(
-            crate::metrics::TRANSLATIONS_TOTAL,
+            crate::snapshot::TRANSLATIONS_TOTAL,
             "from" => from.to_string(),
             "to" => to.to_string()
         )
@@ -533,7 +534,7 @@ pub fn outcome_of(status: u16) -> &'static str {
 // them into the process-global recorder. The bank names NO `App`: a slot is interned from a metric
 // name and a bounded label set, the per-thread storage is chunked `AtomicU64`/`Vec<f64>`, and the
 // flush talks only to the `metrics` facade — so it belongs beside the recorder install it feeds
-// (`crate::metrics`), not beside the `App`-shaped emit wrappers that call into it. Core's
+// (`crate::snapshot`), not beside the `App`-shaped emit wrappers that call into it. Core's
 // `crate::telemetry` re-exports every item below at its historical path, so every existing core call
 // site resolves unchanged and the exposition it produces is byte-identical.
 
@@ -657,7 +658,7 @@ impl HistogramSlot {
     /// drain it. See [`Self::record_inner`] for the gating rationale; this wrapper just supplies
     /// the live decision from `metrics::retaining()`.
     pub fn record(self, value: f64) {
-        self.record_inner(value, crate::metrics::retaining());
+        self.record_inner(value, crate::snapshot::retaining());
     }
 
     /// `retaining` is passed in explicitly (rather than read here) so this is testable without
@@ -902,7 +903,7 @@ fn mint_histogram(desc: &SlotDesc<metrics::Histogram>) -> metrics::Histogram {
 /// through the recorder handle directly. Pre-install the recorder is a no-op sink (matching the
 /// macro behavior in the same situation), so the samples are dropped rather than hoarded.
 fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
-    if !crate::metrics::recorder_installed() {
+    if !crate::snapshot::recorder_installed() {
         return;
     }
     let desc = {
@@ -977,15 +978,15 @@ pub mod drain_serial {
 }
 
 /// THE aggregator: sum every thread's cells per slot and push the delta since the last flush into
-/// the process-global Prometheus recorder. Called from `metrics::render()` so every scrape (and
-/// every test that reads the exposition) observes up-to-date bank totals. Deltas (not absolutes)
+/// the process-global recorder. Called from `metrics::snapshot()` so every scrape (and every test
+/// that reads the snapshot) observes up-to-date bank totals. Deltas (not absolutes)
 /// so banked series compose additively with anything the macro fallback paths emitted on the same
 /// series. No-op until the recorder is installed — a handle minted before install would bind to
 /// the no-op recorder forever (same contract as the handle cache in `metrics.rs`).
 pub fn flush_to_recorder() {
     #[cfg(any(test, feature = "test-support"))]
     let _serial = drain_serial::lock();
-    if !crate::metrics::recorder_installed() {
+    if !crate::snapshot::recorder_installed() {
         return;
     }
     let reg = registry();
