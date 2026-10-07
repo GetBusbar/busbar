@@ -22,8 +22,8 @@ use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 /// into an EXISTING meter class by what Google's protocol says the count is: prompt -> input,
 /// `cachedContentTokenCount` -> cache read (out of the prompt), `toolUsePromptTokenCount` -> input,
 /// candidates -> output, `thoughtsTokenCount` -> output. `totalTokenCount` is Google's sum, not a
-/// unit: it is never ledgered and nothing is derived from it. A total above the itemized parts is a
-/// residual gap the plane does NOT invent units for; `gemini_usage_identity_note` WARNs naming it.
+/// unit of its own and changes no itemized count. A total above the itemized parts is the open
+/// class `unitemized_tokens` (owner LEDGER-100); `gemini_usage_identity_note` WARNs naming it.
 /// The plane decides units only; the rate card prices what the ledger holds. The streaming
 /// frames, the buffered response and a truncated-body recovery all read this one table, so a
 /// truncated or streamed turn counts the same as a complete one.

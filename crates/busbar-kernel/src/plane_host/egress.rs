@@ -1127,6 +1127,13 @@ fn run_http_stream(
         // (its per-request `.timeout()` kept ticking through the body and failed the stream at
         // the instant — so does this).
         use http_body_util::BodyExt;
+        // Its connection's return to the pool, when that waits on the exchange's end: the body's
+        // end is reported only once the connection is back, so a hop opened after that end is lent
+        // it rather than dialling a second connection it never rides.
+        let mut returned = resp
+            .extensions()
+            .get::<busbar_kernel::egress::engine::ConnReturned>()
+            .cloned();
         let mut body = resp.into_body();
         loop {
             tokio::select! {
@@ -1161,6 +1168,9 @@ fn run_http_stream(
                         break;
                     }
                     None => {
+                        if let Some(returned) = returned.take() {
+                            let _ = tokio::time::timeout_at(deadline, returned.settled()).await;
+                        }
                         let _ = chunk_tx.send(ChunkMsg::End);
                         break;
                     }

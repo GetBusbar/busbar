@@ -54,9 +54,10 @@ mod program;
 pub mod registry;
 pub mod socket;
 pub mod stream;
-/// The TLS test kit (far ends, the recording TLS fixture server) for this crate's tests that need a
-/// real handshake: TLS stays in the connector, even in a test.
-#[cfg(test)]
+/// The TLS test kit (far ends, the recording TLS fixture server, a private test CA) for this crate's
+/// tests that need a real handshake, and (feature `test-support`) a plugin repo's conformance test:
+/// TLS stays in the connector, even in a test.
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tls;
 pub mod udp;

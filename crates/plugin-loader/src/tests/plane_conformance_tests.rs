@@ -94,6 +94,7 @@ fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -209,7 +210,7 @@ mod door {
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
-            conns: None,
+            conns: crate::dispatch::ConnTable::NoNeeds,
         }
     }
 

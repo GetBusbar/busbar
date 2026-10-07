@@ -60,7 +60,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 use crate::gates::{execute, prove_rows_red_at, Case, Expect, Gate, Report};
 use crate::ledger::{Row, Status, Verdict};
 use crate::scan::strip_comment_line;
@@ -616,7 +616,71 @@ fn noun_spans(orig: &[char], lower: &[char], noun: &Noun) -> Vec<(usize, usize)>
     out
 }
 
+/// THE NECESSARY CONDITION FOR ANY HIT, checked before the per-character matchers run.
+///
+/// Every match rule above finds an ASCII run in the line: [`word_ci`] finds the token in `lower`
+/// itself; [`camel_hit`] finds the token with its first letter capitalised in `orig`; the exact
+/// CamelCase needles and the section key are found in `orig` as written. Lowercasing maps an ASCII
+/// run to its ASCII-lowercase run in place, so each of those hits implies that `lower` contains the
+/// needle lowercased — which is this test. A text that fails it cannot hit; a text that passes it
+/// still goes through the exact rules, so the census counts the same lines it always counted, and
+/// it no longer pays a `Vec<char>` per token per line for the ~99% of lines that name no noun.
+///
+/// `lower` may be one line or several joined by `\n`: no needle spans a newline, so a needle is in
+/// the joined text exactly when it is in one of its lines. The census asks once per FILE first.
+fn may_hit(lower: &str, noun: &Noun) -> bool {
+    noun.tokens.iter().any(|t| lower.contains(t))
+        || noun
+            .camel
+            .iter()
+            .any(|c| lower.contains(c.to_ascii_lowercase().as_str()))
+        || noun
+            .section
+            .is_some_and(|k| lower.contains(format!("{k}:").as_str()))
+}
+
+/// [`may_hit`]'s precondition, held at compile time: every token is lowercase ASCII and every
+/// CamelCase needle and section key is ASCII, so lowercasing cannot move or resize the run a
+/// matcher finds.
+const fn ascii_needles(nouns: &[Noun]) -> bool {
+    let mut i = 0;
+    while i < nouns.len() {
+        let n = &nouns[i];
+        let mut j = 0;
+        while j < n.tokens.len() {
+            let b = n.tokens[j].as_bytes();
+            let mut k = 0;
+            while k < b.len() {
+                if !b[k].is_ascii() || b[k].is_ascii_uppercase() {
+                    return false;
+                }
+                k += 1;
+            }
+            j += 1;
+        }
+        let mut j = 0;
+        while j < n.camel.len() {
+            if !n.camel[j].is_ascii() {
+                return false;
+            }
+            j += 1;
+        }
+        if let Some(k) = n.section {
+            if !k.is_ascii() {
+                return false;
+            }
+        }
+        i += 1;
+    }
+    true
+}
+const _: () = assert!(ascii_needles(NOUNS));
+
 fn line_hits(orig: &str, lower: &str, noun: &Noun) -> bool {
+    may_hit(lower, noun) && line_hits_exact(orig, lower, noun)
+}
+
+fn line_hits_exact(orig: &str, lower: &str, noun: &Noun) -> bool {
     noun.tokens
         .iter()
         .any(|t| word_ci(lower, t) || camel_hit(orig, t))
@@ -698,75 +762,14 @@ fn census(cx: &Ctx) -> Result<Census, String> {
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(1))
         .map_err(|e| e.to_string())?;
+    let scanned: std::collections::BTreeSet<String> = files.iter().map(|f| f.rel_str()).collect();
     let mut leaks: Vec<Leak> = Vec::new();
     let mut pragmas: Vec<exempt::Pragma> = Vec::new();
-    let mut scanned: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for f in &files {
-        let rel = f.rel_str();
-        scanned.insert(rel.to_string());
-        let Some(krate) = crate_of(&rel) else {
-            continue;
-        };
-        // Strip comments once; keep (original, lowercased) for the two match rules.
-        let mut in_block = false;
-        let lines: Vec<(String, String)> = f
-            .text
-            .lines()
-            .map(|l| {
-                let s = strip_comment_line(l, &mut in_block);
-                let lower = s.to_lowercase();
-                (s, lower)
-            })
-            .collect();
-        let nouns = counted_nouns(krate, &rel);
-        // A dialect module's own wire-path table (ruling C5-Q1, on the #324 precedent).
-        let wire_words = dialect_wire_table_lines(cx, krate, &rel, &f.text);
-        // THE PRAGMAS, only where a marker is spelled: every other file is judged exactly as before.
-        let lexed = f
-            .text
-            .contains(exempt::MARKER)
-            .then(|| exempt::lex(&f.text));
-        let mut exempt_ids = std::collections::BTreeSet::new();
-        if let Some(fl) = &lexed {
-            let mut found = exempt::collect(&rel, fl);
-            let spans = |idx: usize| {
-                let (orig, lower) = fl.line(idx);
-                nouns
-                    .iter()
-                    .flat_map(|n| noun_spans(orig, lower, n))
-                    .collect::<Vec<_>>()
-            };
-            exempt::judge(cx, fl, &mut found, &spans);
-            exempt_ids = exempt::exempt_literals(&found);
-            pragmas.extend(found);
-        }
-        for noun in nouns {
-            let count = lines
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| !wire_words.contains(idx))
-                .filter(|(_, (orig, lower))| line_hits(orig, lower, noun))
-                .filter(|(idx, _)| match &lexed {
-                    Some(fl) if !exempt_ids.is_empty() && *idx < fl.lines() => {
-                        let (orig, lower) = fl.line(*idx);
-                        !exempt::line_exempt(fl, *idx, &noun_spans(orig, lower, noun), &exempt_ids)
-                    }
-                    _ => true,
-                })
-                .count();
-            if count == 0 {
-                continue;
-            }
-            let (category, wave) = categorize(krate, &rel);
-            leaks.push(Leak {
-                noun: noun.key,
-                kind: noun.kind,
-                file: rel.clone(),
-                count,
-                category,
-                wave,
-            });
-        }
+    // Each file is judged on its own bytes alone, so the files are judged in parallel and the
+    // findings merged back IN WALK ORDER: the pragma listing reads exactly as a serial scan's did.
+    for (file_leaks, file_pragmas) in crate::par::par_map(&files, |f| census_file(cx, f)) {
+        leaks.extend(file_leaks);
+        pragmas.extend(file_pragmas);
     }
     leaks.sort_by(|a, b| (a.noun, &a.file).cmp(&(b.noun, &b.file)));
     Ok(Census {
@@ -843,6 +846,87 @@ fn dialect_wire_table_lines(
         }
     }
     skipped
+}
+
+/// One file's census: the leaks it holds and the pragmas it spells (honoured or refused).
+fn census_file(cx: &Ctx, f: &SourceFile) -> (Vec<Leak>, Vec<exempt::Pragma>) {
+    let mut leaks: Vec<Leak> = Vec::new();
+    let rel = f.rel_str();
+    let Some(krate) = crate_of(&rel) else {
+        return (leaks, Vec::new());
+    };
+    // Strip comments once; keep (original, lowercased) for the two match rules.
+    let mut in_block = false;
+    let lines: Vec<(String, String)> = f
+        .text
+        .lines()
+        .map(|l| {
+            let s = strip_comment_line(l, &mut in_block);
+            let lower = s.to_lowercase();
+            (s, lower)
+        })
+        .collect();
+    let nouns = counted_nouns(krate, &rel);
+    // A dialect module's own wire-path table (ruling C5-Q1, on the #324 precedent).
+    let wire_words = dialect_wire_table_lines(cx, krate, &rel, &f.text);
+    // THE PRAGMAS, only where a marker is spelled: every other file is judged exactly as before.
+    let lexed = f
+        .text
+        .contains(exempt::MARKER)
+        .then(|| exempt::lex(&f.text));
+    let mut exempt_ids = std::collections::BTreeSet::new();
+    let mut pragmas = Vec::new();
+    if let Some(fl) = &lexed {
+        let mut found = exempt::collect(&rel, fl);
+        let spans = |idx: usize| {
+            let (orig, lower) = fl.line(idx);
+            nouns
+                .iter()
+                .flat_map(|n| noun_spans(orig, lower, n))
+                .collect::<Vec<_>>()
+        };
+        exempt::judge(cx, fl, &mut found, &spans);
+        exempt_ids = exempt::exempt_literals(&found);
+        pragmas = found;
+    }
+    // ONE TEST PER NOUN PER FILE before any line is matched: a noun none of whose needles is
+    // anywhere in the file's comment-stripped text cannot hit any of its lines.
+    let joined = lines
+        .iter()
+        .map(|(_, lower)| lower.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for noun in nouns {
+        if !may_hit(&joined, noun) {
+            continue;
+        }
+        let count = lines
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| !wire_words.contains(idx))
+            .filter(|(_, (orig, lower))| line_hits(orig, lower, noun))
+            .filter(|(idx, _)| match &lexed {
+                Some(fl) if !exempt_ids.is_empty() && *idx < fl.lines() => {
+                    let (orig, lower) = fl.line(*idx);
+                    !exempt::line_exempt(fl, *idx, &noun_spans(orig, lower, noun), &exempt_ids)
+                }
+                _ => true,
+            })
+            .count();
+        if count == 0 {
+            continue;
+        }
+        let (category, wave) = categorize(krate, &rel);
+        leaks.push(Leak {
+            noun: noun.key,
+            kind: noun.kind,
+            file: rel.clone(),
+            count,
+            category,
+            wave,
+        });
+    }
+    (leaks, pragmas)
 }
 
 /// One baseline `[[leak]]` row: its `(noun, file)` key and the `count` it recorded. A row with no

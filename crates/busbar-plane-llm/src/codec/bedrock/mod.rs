@@ -1855,8 +1855,9 @@ const BEDROCK_USAGE_IDENTITY: &str = "bedrock.usage";
 /// and 1h attribution and ledgered inside the one cache-write class. `totalTokens` is AWS's sum of
 /// the four (cache tokens included, see the writer's `converse_total_tokens`), never a unit: it is
 /// cross-checked against the ledgered classes and a gap is WARN-logged and carried as the usage
-/// identity note, never ledgered. The guardrail policy units ride `trace`, not `usage`: see
-/// [`warn_guardrail_units`].
+/// identity note, and the gap above the four is the open class `unitemized_tokens`
+/// (`IrUsage::to_token_usage`). The guardrail policy units ride `trace`, not `usage`: see
+/// [`guardrail_units`].
 fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
@@ -1886,101 +1887,67 @@ const GUARDRAIL_INPUT_ASSESSMENT: &str = "inputAssessment";
 const GUARDRAIL_OUTPUT_ASSESSMENTS: &str = "outputAssessments";
 const GUARDRAIL_INVOCATION_METRICS: &str = "invocationMetrics";
 
-/// Every count of a guardrail assessment's `invocationMetrics.usage` (the service model's
-/// `GuardrailUsage`), as AWS spells it: the policy units AWS bills per policy type, the free
-/// units it reports beside them, and the automated-reasoning policy count.
-const GUARDRAIL_USAGE_COUNTS: &[&str] = &[
-    "topicPolicyUnits",
-    "contentPolicyUnits",
-    "wordPolicyUnits",
-    "sensitiveInformationPolicyUnits",
-    "sensitiveInformationPolicyFreeUnits",
-    "contextualGroundingPolicyUnits",
-    "contentPolicyImageUnits",
-    "automatedReasoningPolicyUnits",
-    "automatedReasoningPolicies",
-];
-
-/// READ EVERY GUARDRAIL POLICY-UNIT COUNT A TURN REPORTS, AND SAY THAT NONE OF IT IS LEDGERED.
+/// READ EVERY GUARDRAIL POLICY-UNIT COUNT A TURN REPORTS, BY THE OPEN CLASS EACH IS LEDGERED UNDER.
 ///
 /// A Converse response (or the stream's `metadata` frame) that ran a guardrail carries
 /// `trace.guardrail.inputAssessment.<id>.invocationMetrics.usage` and
 /// `trace.guardrail.outputAssessments.<id>[].invocationMetrics.usage`: the policy units AWS bills
-/// for the guardrail SEPARATELY from the model's tokens, per policy type. They are not tokens, and
-/// no meter class this plane declares holds them (input, output, cache read and cache write are
-/// token classes), so folding them into one would price a policy unit at a token rate. They are
-/// therefore a residual: each count is summed per side over every guardrail and assessment, and
-/// one WARN names them all (`inputAssessment.<count>=n`, `outputAssessments.<count>=n`), so the
-/// gap between the ledger and AWS's invoice is visible rather than silent. A present count that is
-/// not a count is named `unreadable`. Nothing is ledgered; nothing is refused.
+/// for the guardrail SEPARATELY from the model's tokens, per policy type. They are not tokens, so
+/// each is its own open class ([`crate::codec::ir::open_class::GUARDRAIL_COUNT_CLASSES`]) and is
+/// never folded into a token class (owner LEDGER-100, 2026-10-03: every reported unit is a ledger
+/// line under its meter class, priced by the ratecard). Each count is summed over every guardrail
+/// and assessment on both sides; a zero sum is no hit on its class.
 ///
-/// The readable sums are RETURNED as the turn's residual units (MONEY LAW, owner 2026-10-02),
-/// keyed `guardrail.<side>.<count>`, for the reader to carry on the usage it reports: never
-/// billed, and the kernel's settle step writes the `usage.residual` audit row that names them.
-fn warn_guardrail_units(holder: &serde_json::Value) -> std::collections::BTreeMap<String, u64> {
-    let mut residual = std::collections::BTreeMap::new();
+/// A count that is PRESENT and not a count REFUSES (#42, the rule every billed count in this crate
+/// reads under): it cannot be ledgered, and a zero in its place is a bill that disagrees with AWS's
+/// invoice and says nothing. `null` is absence.
+///
+/// The assessment's other integers (`guardrailProcessingLatency`, `guardrailCoverage.*`) are a
+/// latency and the coverage the policy units are computed from, not units AWS bills; ledgering
+/// the coverage would count the policy units twice.
+fn guardrail_units(
+    holder: &serde_json::Value,
+) -> Result<std::collections::BTreeMap<String, u64>, IrError> {
+    let mut units = std::collections::BTreeMap::new();
     let Some(guardrail) = holder.get(TRACE).and_then(|t| t.get(GUARDRAIL)) else {
-        return residual;
+        return Ok(units);
     };
     let usage_of = |a: &serde_json::Value| {
         a.get(GUARDRAIL_INVOCATION_METRICS)
             .and_then(|m| m.get(keys::USAGE))
             .cloned()
     };
-    let input: Vec<serde_json::Value> = guardrail
+    let input = guardrail
         .get(GUARDRAIL_INPUT_ASSESSMENT)
         .and_then(|m| m.as_object())
         .into_iter()
         .flat_map(|m| m.values())
-        .filter_map(usage_of)
-        .collect();
-    let output: Vec<serde_json::Value> = guardrail
+        .filter_map(usage_of);
+    let output = guardrail
         .get(GUARDRAIL_OUTPUT_ASSESSMENTS)
         .and_then(|m| m.as_object())
         .into_iter()
         .flat_map(|m| m.values())
         .filter_map(|v| v.as_array())
         .flatten()
-        .filter_map(usage_of)
-        .collect();
-    let mut named: Vec<String> = Vec::new();
-    for (side, usages) in [
-        (GUARDRAIL_INPUT_ASSESSMENT, &input),
-        (GUARDRAIL_OUTPUT_ASSESSMENTS, &output),
-    ] {
-        for count in GUARDRAIL_USAGE_COUNTS {
-            let mut sum: Option<u64> = None;
-            let mut unreadable = false;
-            for u in usages {
-                match u.get(*count).filter(|v| !v.is_null()) {
-                    None => {}
-                    Some(v) => match crate::codec::usage_count::read_count_u64(v) {
-                        Some(n) => sum = Some(sum.unwrap_or(0).saturating_add(n)),
-                        None => unreadable = true,
-                    },
-                }
-            }
-            if unreadable {
-                named.push(format!("{side}.{count}=unreadable"));
-            } else if let Some(n) = sum {
-                named.push(format!("{side}.{count}={n}"));
-                if n > 0 {
-                    residual.insert(format!("{GUARDRAIL}.{side}.{count}"), n);
-                }
-            }
+        .filter_map(usage_of);
+    for usage in input.chain(output) {
+        for &(count, class) in crate::codec::ir::open_class::GUARDRAIL_COUNT_CLASSES {
+            let n =
+                crate::codec::usage_count::billed_count(&usage, count).map_err(|unreadable| {
+                    tracing::warn!(
+                        protocol = VENDOR_NAME,
+                        field = unreadable.field,
+                        spelling = %unreadable.spelling,
+                        "guardrail usage count is present but unreadable; refusing rather than \
+                         counting it as zero (#42)"
+                    );
+                    crate::codec::dialect::ir_parse_error()
+                })?;
+            crate::codec::ir::open_class::add(&mut units, class, n);
         }
     }
-    if named.is_empty() {
-        return residual;
-    }
-    let units = named.join(" ");
-    tracing::warn!(
-        protocol = VENDOR_NAME,
-        units = %units,
-        "bedrock guardrail policy units are billed by AWS separately from the model's tokens and \
-         land in no meter class this plane declares: they are not ledgered"
-    );
-    residual
+    Ok(units)
 }
 
 /// The tier that SERVED a Converse answer (`serviceTier.type`), in the IR's words: the usage

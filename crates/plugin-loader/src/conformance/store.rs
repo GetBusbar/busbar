@@ -38,8 +38,8 @@
 //!   (one crossing). The typed `heads` is leased the same way. The request-path reads
 //!   (`record_get`, `get_plane_record`, the lists into host buffers) write into the host's
 //!   buffers and hold none;
-//! * the `open` step is [`LoadedStore::open`]: the `open` crossing, plus `inputs.ready_crossings`
-//!   when the door states `ready` (the kernel awaits it inside `open`); [`super::ready_step`]
+//! * the `open` step is [`LoadedStore::open`]: the `open` crossing, plus one `ready` crossing when
+//!   the door states `ready` (the kernel awaits it inside `open`), first invocations both; [`super::ready_step`]
 //!   runs right after it, on the opened store's plugin (a door that states `ready` is awaited a
 //!   second time there; one that states none, 0);
 //! * the facts and the wrong-kind load make no crossing (0).
@@ -57,7 +57,7 @@ use busbar_contract::records::{
 };
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
-use super::{bind, crossings, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
+use super::{crossings, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::store::{Store, StoreFacts};
 use crate::dispatch::LoadError;
@@ -112,7 +112,7 @@ static MINT_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 
 /// The host's `op_id` allocator for one leg (`LoadedStore::open`'s mint): `node`'s half, counted
 /// from 1.
-fn leg_mint() -> OpId {
+pub(super) fn leg_mint() -> OpId {
     use std::sync::atomic::Ordering::Relaxed;
     OpId::from_parts(MINT_NODE.load(Relaxed), MINT_NEXT.fetch_add(1, Relaxed) + 1)
 }
@@ -176,12 +176,17 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
     }
 }
 
-fn secret(id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
+/// A credential of `kind` (Q-P4-7: the script writes, and looks up, the ONE kind the shipped store
+/// schemas hold, 1.5.5's, `abi::cold`'s `PutCredential` "today only" kind; a store whose schema
+/// constrains the kind refuses any other). The kind is the plugin's `conformance.json`
+/// `store.credential_kind`, never a word this crate spells (`c1-literals`: the loader names no auth
+/// style).
+pub(super) fn secret(kind: &str, id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
     CredentialSecret {
         meta: CredentialMeta {
             id: id.into(),
             key_id: key_id.into(),
-            kind: "generic".into(),
+            kind: kind.into(),
             slot: 0,
             public_id: public_id.into(),
             secret_form: SecretForm::Recoverable,
@@ -242,7 +247,9 @@ fn at<'v>(k: &'v serde_json::Value, path: &str) -> &'v serde_json::Value {
 }
 
 /// The store's inputs, read once.
-struct Inputs<'a> {
+pub(super) struct Inputs<'a> {
+    /// The credential kind the shipped store schemas hold (`store.credential_kind`, Q-P4-7).
+    pub(super) credential_kind: &'a str,
     node: u64,
     cap_bucket: &'a str,
     window_start: u64,
@@ -261,7 +268,7 @@ struct Inputs<'a> {
 }
 
 impl<'a> Inputs<'a> {
-    fn of(k: &'a serde_json::Value) -> Self {
+    pub(super) fn of(k: &'a serde_json::Value) -> Self {
         assert!(k.is_object(), "conformance.json has no `store` inputs");
         let s = |path: &str| -> &'a str {
             at(k, path)
@@ -274,6 +281,7 @@ impl<'a> Inputs<'a> {
                 .unwrap_or_else(|| panic!("conformance.json: store.{path} must be a number"))
         };
         let i = Self {
+            credential_kind: s("credential_kind"),
             node: n("node"),
             cap_bucket: s("caps.bucket"),
             window_start: n("caps.window_start"),
@@ -312,14 +320,14 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let i = Inputs::of(s.kind_inputs(ROOT));
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime");
 
     let d = dispatcher();
-    let p = load::<Store>(s, leg, bind(&d, ROOT)).expect("the store door loads");
+    let p = load::<Store>(s, leg, s.bind(&d, ROOT)).expect("the store door loads");
     // The instance's crossing gate, held across `open` (which takes the plugin by value).
     let held = p.clone();
     let mut r = Recorder::new(crossings(&held));
@@ -333,20 +341,16 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         )
     });
     r.line("refused as another kind", 0, || {
-        let refused = load::<Hook>(s, leg, bind(&d, "wrong-kind")).err();
+        let refused = load::<Hook>(s, leg, s.bind(&d, "wrong-kind")).err();
         let right = match leg {
             Leg::Linked => matches!(refused, Some(LoadError::WrongKind { .. })),
             Leg::Dropped => matches!(refused, Some(LoadError::ManifestKind { .. })),
         };
         format!("refused={right}")
     });
-    let open_pin = 1 + if p.has_ready() {
-        s.inputs["ready_crossings"].as_u64().unwrap_or_else(|| {
-            panic!("the door states `ready`: conformance.json must pin `ready_crossings`")
-        })
-    } else {
-        0
-    };
+    // ONE first invocation for `open`, and one for the `ready` the kernel awaits inside it; their
+    // resumes are reported (Q-P4-5).
+    let open_pin = 1 + u64::from(p.has_ready());
     let st = r.step("open", open_pin, || {
         // The bridge mints its writes' op ids from this leg's allocator, on this node's half.
         MINT_NODE.store(i.node, std::sync::atomic::Ordering::Relaxed);
@@ -414,13 +418,16 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // ── credentials ──
     r.line("put k1", 1, || ans(b.put_key(&key("k1", None))));
     r.line("cred c1", 1, || {
-        ans(b.put_credential(&secret("c1", "k1", "pub1")))
+        ans(b.put_credential(&secret(i.credential_kind, "c1", "k1", "pub1")))
     });
     r.line("cred c9 (live slot)", 1, || {
-        ans(b.put_credential(&secret("c9", "k1", "pub9")))
+        ans(b.put_credential(&secret(i.credential_kind, "c9", "k1", "pub9")))
     });
     r.line("key+cred k2", 1, || {
-        ans(b.put_key_with_credential(&key("k2", None), &secret("c2", "k2", "pub2")))
+        ans(b.put_key_with_credential(
+            &key("k2", None),
+            &secret(i.credential_kind, "c2", "k2", "pub2"),
+        ))
     });
     r.line("creds k1", LEASED, || {
         ans(b
@@ -429,12 +436,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     r.line("lookup pub2", LEASED, || {
         ans(b
-            .lookup_credential_secret("generic", "pub2")
+            .lookup_credential_secret(i.credential_kind, "pub2")
             .map(|c| c.map(|c| (c.meta.id, c.secret))))
     });
     r.line("lookup absent", 1, || {
         ans(b
-            .lookup_credential_secret("generic", "pub-absent")
+            .lookup_credential_secret(i.credential_kind, "pub-absent")
             .map(|c| c.map(|c| c.meta.id)))
     });
     r.line("revoke c1", 1, || ans(b.revoke_credential("c1", "rotated")));
