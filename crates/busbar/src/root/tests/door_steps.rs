@@ -1212,6 +1212,8 @@ pub(crate) mod tool_door {
         pub(crate) plane: crate::root::boot::DoorPlane,
         /// How far the kernel's monotonic clock (`clock.now`) reads ahead of the runtime's.
         pub(crate) clock: Arc<std::sync::atomic::AtomicU64>,
+        /// What a config apply refreshes the served door onto (`DoorApply::apply`).
+        pub(crate) live: Arc<crate::root::serve::DoorApply>,
     }
 
     impl Rig {
@@ -1241,6 +1243,31 @@ pub(crate) mod tool_door {
                 busbar_kernel::test_support::TestApp,
             ) -> busbar_kernel::test_support::TestApp,
         ) -> Self {
+            Self::try_with(
+                instance,
+                port,
+                allowed_pools,
+                block,
+                tools,
+                footing,
+                configure,
+            )
+            .unwrap_or_else(|e| panic!("the door plane composes: {e}"))
+        }
+
+        /// [`Self::with`], the composition's refusal answered rather than panicked on: what the
+        /// root's boot refuses with (`main.rs` dies on it), the operator's text.
+        pub(crate) fn try_with(
+            instance: &'static str,
+            port: u16,
+            allowed_pools: Option<Vec<String>>,
+            block: Option<serde_yaml::Value>,
+            tools: Option<serde_yaml::Value>,
+            footing: Footing<'_>,
+            configure: &dyn Fn(
+                busbar_kernel::test_support::TestApp,
+            ) -> busbar_kernel::test_support::TestApp,
+        ) -> Result<Self, String> {
             // THE CONNECTOR, over every linked transport door (the default distribution links the
             // http framer's door), its dials judged by a destination guard that admits loopback.
             let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
@@ -1409,8 +1436,7 @@ pub(crate) mod tool_door {
                 &plane_money,
                 Some(&egress),
                 Some(&stage),
-            )
-            .expect("the door plane composes");
+            )?;
             let _ = caller;
             let composed = &mut served.planes[0];
             assert!(
@@ -1418,6 +1444,7 @@ pub(crate) mod tool_door {
                 "its egress is sealed"
             );
             let money_steps = Arc::clone(&composed.money);
+            let live = Arc::clone(&composed.live);
             let plane_key = composed.facts.plane.clone();
             served.post = Some(Arc::clone(&post));
             let app = configure(
@@ -1450,7 +1477,7 @@ pub(crate) mod tool_door {
                 0,
                 false,
             );
-            Rig {
+            Ok(Rig {
                 router,
                 admin,
                 gov,
@@ -1466,7 +1493,8 @@ pub(crate) mod tool_door {
                 door_table,
                 plane,
                 clock,
-            }
+                live,
+            })
         }
 
         /// The key's admitted requests on the governance ledger.
@@ -1531,6 +1559,23 @@ pub(crate) mod tool_door {
             Some(tools),
             Footing::own(),
             configure,
+        )
+    }
+
+    /// [`rig_tools`], the composition's refusal answered: what the boot would refuse with.
+    pub(crate) fn try_rig_tools(
+        instance: &'static str,
+        port: u16,
+        tools: serde_yaml::Value,
+    ) -> Result<Rig, String> {
+        Rig::try_with(
+            instance,
+            port,
+            None,
+            None,
+            Some(tools),
+            Footing::own(),
+            &|app| app,
         )
     }
 
@@ -4615,7 +4660,7 @@ pub(crate) mod hook_parity {
 /// exchange — verify-on-call's tool list, the relayed call over the kernel's walk, the reply to its
 /// own request — on that one child, correlated by id.
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
-mod program_member {
+pub(crate) mod program_member {
     use axum::http::StatusCode;
 
     use super::tool_door::{rig_tools, send, tool_digest, tool_listing, CALL};
@@ -4624,7 +4669,7 @@ mod program_member {
     /// The server, as a shell script: it answers the handshake, its tool list (after a log line of
     /// its own) and each call (after a request of its own, `ping`, which it counts the answers to),
     /// each call answered with its process id and what it has seen so far.
-    fn script() -> String {
+    pub(crate) fn script() -> String {
         let listing = tool_listing().to_string().replace('\'', "'\\''");
         format!(
             "inits=0; lists=0; calls=0; pongs=0\n\

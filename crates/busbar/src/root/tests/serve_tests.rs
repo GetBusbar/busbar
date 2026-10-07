@@ -76,7 +76,7 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
 
 #[cfg(feature = "plane-decisions")]
 /// The decisions plane's one claim, with one model configured.
-const CLAIMED: &str = "/v1/systemone";
+pub(super) const CLAIMED: &str = "/v1/systemone";
 
 #[cfg(feature = "plane-decisions")]
 /// The provider's credential, as its file holds it.
@@ -93,7 +93,11 @@ const UNAVAILABLE: &str = r#"{"error":"unavailable"}"#;
 #[cfg(feature = "plane-decisions")]
 /// A POST of the caller's decision state to `path` on `router`, with `token` as its bearer or with
 /// none: the response.
-async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::response::Response {
+pub(super) async fn send(
+    router: &axum::Router,
+    path: &str,
+    token: Option<&str>,
+) -> axum::response::Response {
     use tower::ServiceExt as _;
     let mut req = axum::http::Request::builder().method("POST").uri(path);
     if let Some(token) = token {
@@ -112,7 +116,7 @@ async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::r
 #[cfg(feature = "plane-decisions")]
 /// A far end on loopback answering every request with [`ANSWER`]; what it was sent comes back on
 /// the channel, one request head per connection.
-async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+pub(super) async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     far_end_failing_first(0).await
 }
 
@@ -1870,10 +1874,13 @@ mod tools_door {
 
 #[cfg(feature = "plane-decisions")]
 /// What a served door's data router needs kept alive beside it.
-struct Serving {
-    router: axum::Router,
-    token: String,
-    _handle: Arc<busbar_kernel::state::AppHandle>,
+pub(super) struct Serving {
+    pub(super) router: axum::Router,
+    pub(super) token: String,
+    /// The kernel's swap handle: the generation a config apply refreshes the door onto.
+    pub(super) handle: Arc<busbar_kernel::state::AppHandle>,
+    /// What a config apply refreshes the served door onto (`DoorApply::apply`).
+    pub(super) live: Arc<super::DoorApply>,
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -1882,6 +1889,28 @@ struct Serving {
 /// model whose provider is the far end on `port`, a keyed caller): the composition reads the door
 /// plane's declared facts off `linked`.
 async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: u16) -> Serving {
+    let key_file = std::env::temp_dir().join(format!(
+        "busbar-serve-door-{instance}-{}",
+        std::process::id()
+    ));
+    std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
+    let api_key = format!("{{file: '{}'}}", key_file.display());
+    let serving = serve_keyed(linked, instance, port, &api_key)
+        .await
+        .unwrap_or_else(|e| panic!("the door plane composes, its egress sealed: {e}"));
+    let _ = std::fs::remove_file(&key_file);
+    serving
+}
+
+#[cfg(feature = "plane-decisions")]
+/// [`serve_over`], the one provider's credential the secret reference `api_key` (YAML), the
+/// composition's refusal answered rather than panicked on: what the root's boot dies on.
+pub(super) async fn serve_keyed(
+    linked: &crate::root::linked::Linked,
+    instance: &str,
+    port: u16,
+    api_key: &str,
+) -> Result<Serving, String> {
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()
@@ -1948,15 +1977,9 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
         ))
     };
 
-    let key_file = std::env::temp_dir().join(format!(
-        "busbar-serve-door-{instance}-{}",
-        std::process::id()
-    ));
-    std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
     let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
-        "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
+        "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {api_key}, error_map: {{}}}}",
         busbar_plane_decisions::config::PROTOCOL,
-        key_file.display()
     ))
     .expect("a provider entry");
     let providers = provider_routes(&std::collections::HashMap::from([(
@@ -1998,9 +2021,8 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         None,
-    )
-    .expect("the door plane composes, its egress sealed");
-    let _ = std::fs::remove_file(&key_file);
+    )?;
+    let live = Arc::clone(&served.planes[0].live);
     served.post = Some(Arc::clone(&post));
     let app = busbar_kernel::test_support::TestApp::new()
         .keys_chain()
@@ -2010,11 +2032,12 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
-    Serving {
+    Ok(Serving {
         router,
         token: token.expose_secret().to_string(),
-        _handle: handle,
-    }
+        handle,
+        live,
+    })
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -2038,7 +2061,7 @@ fn declaring(declares: &'static str) -> crate::root::linked::Linked {
 
 #[cfg(feature = "plane-decisions")]
 /// The decisions door's Statement name: the name the root finds its declared facts by.
-fn decisions_name() -> String {
+pub(super) fn decisions_name() -> String {
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     busbar_contract::abi::mechanism::rendering::read(&row.statement)
         .expect("its Statement reads")
