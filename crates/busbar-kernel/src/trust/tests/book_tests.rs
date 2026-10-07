@@ -76,18 +76,59 @@ fn the_first_sighting_with_no_declared_pin_is_new_until_approved() {
     );
 }
 
+/// A DECLARED FINGERPRINT IS INTENT, NOT AN APPROVAL (coordinator ruling 2026-10-07, OWNER
+/// 2026-09-28: the baseline is predev's behaviour). Ported from predev's plane cell
+/// `plane_tests.rs::a_declared_fingerprint_does_not_become_an_approval_at_boot`: an operator may
+/// write the fingerprint they intend to approve, but an approval is a statement about a document
+/// that was actually SEEN, so a registration lowered from config is PENDING until an operator
+/// approves it. The kernel's Approve refuses it (`NotApproved`) and the admin surface lists it NEW,
+/// whatever the config declared. RED was the declared fingerprint taken as the pin from the start,
+/// which `judge` answered `Ok` before any approval.
 #[test]
-fn a_declared_fingerprint_is_the_pin_from_the_start() {
-    let (b, _) = book(entry(Some("fp"), 0, 0));
+fn a_declared_fingerprint_does_not_become_an_approval_at_boot() {
+    let (b, i) = book(entry(Some("fp"), 0, 0));
+    let whole = TrustFacts {
+        counterparty: "cp",
+        item: None,
+        digest: None,
+    };
+    let state = |b: &TrustBook| {
+        b.rows()
+            .into_iter()
+            .find(|r| r.key() == "inst/cp")
+            .map(|r| r.state)
+    };
     assert_eq!(
-        b.sight("inst", "cp", "fp", 1),
-        Ok((Sight::Same, Effect::None))
+        b.judge(&i, &whole),
+        Err(Distrust::NotApproved),
+        "a registration lowered from config is pending, never approved"
     );
-    let (b, _) = book(entry(Some("fp"), 0, 0));
+    assert_eq!(state(&b), Some(KeyState::New), "listed pending");
+    b.sight("inst", "cp", "fp", 1).unwrap();
     assert_eq!(
-        b.sight("inst", "cp", "other", 1),
-        Ok((Sight::Drifted, Effect::Demote))
+        b.judge(&i, &whole),
+        Err(Distrust::NotApproved),
+        "a sighting of the declared fingerprint approves nothing either"
     );
+    let (_, kept) = b
+        .decide(&i, "cp", None, Ruling::Approve, Some("fp"))
+        .expect("a key");
+    assert_eq!(
+        b.judge(&i, &whole),
+        Ok(()),
+        "only the operator's approval admits it"
+    );
+    assert_eq!(state(&b), Some(KeyState::Same));
+    // The kept approval outlives a restart: replayed, the declared fingerprint is approved.
+    let (fresh, f) = book(entry(Some("fp"), 0, 0));
+    assert_eq!(fresh.judge(&f, &whole), Err(Distrust::NotApproved));
+    fresh.admit_decided(&f, [&kept]);
+    assert_eq!(fresh.judge(&f, &whole), Ok(()));
+    // A re-admit with the same declaration keeps the approval; a changed one is pending again.
+    b.admit(&i, [("cp".to_string(), entry(Some("fp"), 0, 0))], []);
+    assert_eq!(b.judge(&i, &whole), Ok(()));
+    b.admit(&i, [("cp".to_string(), entry(Some("fp2"), 0, 0))], []);
+    assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
 }
 
 #[test]
