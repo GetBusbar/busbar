@@ -4222,6 +4222,30 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
                 .extend(facts.door_kinds.iter().copied());
         }
     }
+    // A PLUGIN REPO IS ITS LOGIC CRATE AND ITS `-plugin` TWIN (spec §9, "Each plugin repo is a
+    // logic crate plus a plugin crate"; #31 topology; the R-FIX1 door per real plugin; ARCHITECT
+    // 2026-10-07). The census reads a pinned repo's logic crate, and the twin is where that repo
+    // EXPORTS its door (`export_door!`) and RUNS its battery (`tests/conformance.rs`). Those two
+    // facts are read off the twin onto the logic crate's entry; nothing else of the twin is, so the
+    // edge, closure and vocabulary rules still read the logic crate alone.
+    for (dir, sub, text) in pinned::twin_files(cx) {
+        if sub.starts_with("tests/") && sub.contains(CONFORMANCE_MARKER) && sub.ends_with(".rs") {
+            if let Some(live) = source_facts(&format!("{dir}/{sub}"), &dir, &text).live {
+                if live > 0 {
+                    idx.conformance.insert(dir.clone());
+                    idx.conformance_dead.remove(&dir);
+                } else if !idx.conformance.contains(&dir) {
+                    idx.conformance_dead.insert(dir.clone());
+                }
+            }
+        }
+        if (sub.starts_with("src/") || sub.starts_with("examples/"))
+            && sub.ends_with(".rs")
+            && (exports_door(&text) || links_door(&text))
+        {
+            idx.door_exports.insert(dir.clone());
+        }
+    }
     Ok(idx)
 }
 
@@ -9931,6 +9955,51 @@ impl Gate for KindIsolationGate {
             &[ROW_TESTKIT],
             ov,
             &["no-implementor", "busbar-store-subjectless", "Store"],
+        ));
+
+        // A PINNED REPO'S DOOR AND BATTERY ARE ITS `-plugin` TWIN'S (spec §9; ARCHITECT
+        // 2026-10-07). The real export-file twin exports the door and runs the published suite,
+        // so the logic crate reads green; each plant below takes one of those two facts away and
+        // the row says so, and a repo with no twin at all reads exactly as it did before twins
+        // were read.
+        let twin = pinned::twin_dir("busbar-export-file");
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{twin}/tests/conformance.rs"),
+            "#[test]\n#[ignore = \"not yet\"]\nfn the_suite() {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pinned repo whose twin's battery is all ignored is battery-ignored",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-export-file"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(format!("{twin}/src/lib.rs"), "pub fn nothing() {}\n");
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pinned repo whose twin exports no door has no implementor",
+            &[ROW_TESTKIT],
+            ov,
+            &["no-implementor", "busbar-export-file"],
+        ));
+        let mut ov = Overlay::new();
+        for f in pinned::twin_files(cx)
+            .into_iter()
+            .filter(|(dir, _, _)| dir == "crates/busbar-export-file")
+        {
+            ov.remove(format!("{twin}/{}", f.1));
+        }
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pinned repo with no twin carries neither the door nor the battery",
+            &[ROW_TESTKIT],
+            ov,
+            &["no-implementor", "busbar-export-file"],
         ));
 
         // ── THE THREE SHIP FINDINGS WITH NO CASE ─────────────────────────────────────────────────
