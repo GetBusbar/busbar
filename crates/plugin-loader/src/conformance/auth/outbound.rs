@@ -32,6 +32,23 @@
 //!   "refusal": "Refused" | "Failed" | "Pending" }
 //! ```
 //!
+//! An ON-DEMAND minting style (one exchanged per call, one token cell per scope, no refresh ahead of
+//! expiry, no retry: the RFC 8693 exchange 1.5.5 ran) states `"mint": "on_demand"` and differs:
+//!
+//! ```json
+//! { "mint": "on_demand",
+//!   "head": { ..., "extensions": { "scope": "<S>" } },   // the call's extensions blob
+//!   "second_scope": "<S2>",
+//!   "token_endpoint": [ <S's exchange>, <S2's exchange>, <S's exchange once expired> ],
+//!   "expires_in": <S's first token's lifetime, seconds>,
+//!   "second_scope_fields": [["name", "value"(, flags)], ...],
+//!   "expired_fields": [["name", "value"(, flags)], ...],
+//!   "refusal": "Failed" }
+//! ```
+//!
+//! (the third exchange's token must outlive the instant the suite calls S past its first token's
+//! expiry: `expires_in` + 1 second from now.)
+//!
 //! `token_endpoint` lists the exchanges in order (the N-th request answered by the N-th entry; the
 //! last answers every later one). `head.fields` are lent only to a style stating
 //! `STYLE_NEEDS_HEADERS`, and `head.body` only at `POINT_HEAD_BODY`; a style states exactly one
@@ -51,9 +68,21 @@
 //! after `close` 0 (the host refuses an op on a closed instance before any crossing). The inbound
 //! and login families the tail does not declare answer REFUSED.
 //!
+//! AN ON-DEMAND style (ARCHITECT ruling, the on-demand outbound script): `fields`(S) on a ticket
+//! before the first `tick` 1 → PENDING, and a second ticket's `fields`(S) while it waits 1 → PENDING,
+//! no exchange yet; `tick` → EXACTLY ONE exchange, and both waiting calls READY with the same token
+//! (`expect_fields`; 3 crossings: the tick, the two resumed calls — SINGLE-FLIGHT); ticket-less
+//! `fields`(S) ×2 still ONE exchange; `outbound_ready` 1; a `tick` before S's expiry makes NO
+//! exchange (nothing is refreshed ahead); `fields`(S2) on a ticket → PENDING, one `drive`, EXACTLY
+//! ONE new exchange (its own cell), READY with `second_scope_fields` (3 crossings); `fields`(S) on a
+//! ticket at an instant past S's token's expiry → PENDING, one `drive`, EXACTLY ONE new exchange,
+//! READY with `expired_fields` (3 crossings). Then the FAILING endpoint: `fields`(S) on a ticket
+//! answers the declared `refusal` after EXACTLY ONE attempt (NO RETRY: the endpoint's hit count is 1).
+//!
 //! THE RED ARMS ([`red_outbound_wrong_byte`], [`red_outbound_double_fetch`]): the real door
 //! restated with a `fields` that writes one wrong byte, and with an `open_outbound` that binds a
-//! second token cell (so its mint fetches the token twice), each fail this script.
+//! second token cell (so its mint fetches the token twice) and a `fields` that, waiting, arms a
+//! second on-demand cell too (so the waiting calls fetch twice), each fail this script.
 
 use std::collections::{HashMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -65,8 +94,11 @@ use busbar_contract::abi::auth::{
     IdentifyOut, NamedValue, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut,
     RequestFacts, VerifyIn, MODE_OWN, POINT_HEAD_BODY, STYLE_NEEDS_HEADERS,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{
+    AbiStr, Blob, DeadlineClass, Outcome, RawOutcome, Span, BLOB_OCTETS,
+};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -85,7 +117,8 @@ use super::super::{
 use super::{secret, stated, undeclared, Stated};
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{
-    load_dropped, load_linked, Bind, Dispatcher, Frame, LinkedRow, NoSink, Plugin,
+    load_dropped, load_linked, now_ns, Bind, Dispatcher, Frame, Lent, LinkedRow, NoSink, Plugin,
+    Reply,
 };
 
 /// The suite's tick clock at the first `tick` (any instant; the plugin's schedule is read back).
@@ -100,6 +133,7 @@ const FAILURE_BODY: &[u8] = b"conformance: the token endpoint is down";
 // ---- the inputs ----
 
 /// The request one `fields` call signs.
+#[derive(Clone)]
 struct Head {
     method: String,
     authority: String,
@@ -108,6 +142,40 @@ struct Head {
     timestamp: u64,
     fields: Vec<(String, String)>,
     body: Vec<u8>,
+    /// The call's extensions blob entries (`head.extensions`), in order.
+    extensions: Vec<(String, String)>,
+}
+
+impl Head {
+    /// This head with the extension `key` set to `value` (added when absent).
+    fn with_extension(&self, key: &str, value: &str) -> Self {
+        let mut h = self.clone();
+        match h.extensions.iter_mut().find(|(k, _)| k == key) {
+            Some(e) => value.clone_into(&mut e.1),
+            None => h.extensions.push((key.to_string(), value.to_string())),
+        }
+        h
+    }
+
+    /// This head at another request instant.
+    fn at(&self, timestamp: u64) -> Self {
+        let mut h = self.clone();
+        h.timestamp = timestamp;
+        h
+    }
+
+    /// The encoded extensions blob.
+    fn extensions_blob(&self) -> Vec<u8> {
+        if self.extensions.is_empty() {
+            return Vec::new();
+        }
+        let entries: Vec<(&str, &[u8])> = self
+            .extensions
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_bytes()))
+            .collect();
+        extensions::encode(&entries)
+    }
 }
 
 /// What one token request must be.
@@ -130,8 +198,18 @@ struct Exchange {
 struct Minting {
     exchanges: Vec<Exchange>,
     expires_in: u64,
+    /// Tick-driven: the refreshed token's fields. On demand: unused.
     refreshed: String,
     refusal: String,
+    /// `"mint": "on_demand"`: minted per call, one cell per scope.
+    on_demand: Option<OnDemand>,
+}
+
+/// An on-demand style's second scope and the fields its later exchanges write.
+struct OnDemand {
+    second_scope: String,
+    second: String,
+    expired: String,
 }
 
 /// One `auth.outbound` entry.
@@ -250,6 +328,22 @@ impl Style {
             }),
             fields: pairs(&h["fields"], "head.fields"),
             body: h["body"].as_str().unwrap_or("").as_bytes().to_vec(),
+            extensions: match &h["extensions"] {
+                serde_json::Value::Null => Vec::new(),
+                serde_json::Value::Object(m) => m
+                    .iter()
+                    .map(|(k, v)| (k.clone(), str_of(v, "head.extensions").to_string()))
+                    .collect(),
+                _ => panic!("conformance.json: style `{style}`'s head.extensions is an object"),
+            },
+        };
+        let on_demand = match v["mint"].as_str() {
+            None => false,
+            Some("on_demand") => true,
+            Some(other) => panic!(
+                "conformance.json: style `{style}` states mint `{other}`; the outbound script \
+                 knows a tick-driven style (no `mint`) and `on_demand`"
+            ),
         };
         let minting = match &v["token_endpoint"] {
             serde_json::Value::Null => None,
@@ -282,17 +376,38 @@ impl Style {
                         }
                     })
                     .collect();
+                let on_demand = on_demand.then(|| {
+                    assert!(
+                        a.len() >= 3,
+                        "conformance.json: on-demand style `{style}`'s token_endpoint scripts \
+                         three exchanges (S, the second scope, S once expired)"
+                    );
+                    OnDemand {
+                        second_scope: str_of(&v["second_scope"], "second_scope").to_string(),
+                        second: expected(&v["second_scope_fields"], "second_scope_fields"),
+                        expired: expected(&v["expired_fields"], "expired_fields"),
+                    }
+                });
                 Some(Minting {
                     exchanges,
                     expires_in: v["expires_in"].as_u64().unwrap_or_else(|| {
                         panic!("conformance.json: minting style `{style}` states `expires_in`")
                     }),
-                    refreshed: expected(&v["refreshed_fields"], "refreshed_fields"),
+                    refreshed: if on_demand.is_some() {
+                        String::new()
+                    } else {
+                        expected(&v["refreshed_fields"], "refreshed_fields")
+                    },
                     refusal: str_of(&v["refusal"], "refusal").to_string(),
+                    on_demand,
                 })
             }
             _ => panic!("conformance.json: style `{style}`'s token_endpoint is an array"),
         };
+        assert!(
+            !on_demand || minting.is_some(),
+            "conformance.json: on-demand style `{style}` scripts its token_endpoint"
+        );
         Style {
             credential: v["credential"].as_str().map(|c| c.as_bytes().to_vec()),
             settings: settings_of(&v["settings"]),
@@ -563,76 +678,248 @@ fn ready_fact(p: &Plugin<Auth>, handle: u64) -> String {
     format!("{} ready={}", called(&c), f.out.ready)
 }
 
+/// THE MEMORY ONE `fields` call lends the plugin: the host's field buffer and spans, the head's
+/// lines, its body and its extensions blob. Lent whole to a call on a ticket (the dispatcher keeps
+/// it alive until the op completes), so its pointers stay valid however the call ends.
+struct Lend {
+    buf: Vec<u8>,
+    spans: Vec<FieldSpan>,
+    names: Vec<Vec<u8>>,
+    values: Vec<Vec<u8>>,
+    lines: Vec<NamedValue>,
+    request: [Vec<u8>; 4],
+    body: Vec<u8>,
+    ext: Vec<u8>,
+}
+
+// SAFETY: the raw pointers in `lines` point into `names` and `values`, owned by the same `Lend`;
+// nothing mutates a `Lend` once its frame is built but the plugin's writes into `buf` and `spans`,
+// which the host reads only after the op completes.
+unsafe impl Send for Lend {}
+// SAFETY: as above.
+unsafe impl Sync for Lend {}
+
+impl Lend {
+    fn new(h: &Head) -> Box<Self> {
+        let blank = FieldSpan {
+            name: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 0 },
+            flags: 0,
+            _reserved: 0,
+        };
+        let mut l = Box::new(Self {
+            buf: vec![0_u8; auth::FIELDS_BUF_BYTES],
+            spans: vec![blank; auth::FIELDS_MAX as usize],
+            names: h
+                .fields
+                .iter()
+                .map(|(n, _)| n.as_bytes().to_vec())
+                .collect(),
+            values: h
+                .fields
+                .iter()
+                .map(|(_, v)| v.as_bytes().to_vec())
+                .collect(),
+            lines: Vec::new(),
+            request: [
+                h.method.as_bytes().to_vec(),
+                h.authority.as_bytes().to_vec(),
+                h.path.as_bytes().to_vec(),
+                h.query.as_deref().unwrap_or("").as_bytes().to_vec(),
+            ],
+            body: h.body.clone(),
+            ext: h.extensions_blob(),
+        });
+        l.lines = l
+            .names
+            .iter()
+            .zip(&l.values)
+            .map(|(n, v)| NamedValue {
+                name: abi_str(n),
+                value: Blob {
+                    ptr: v.as_ptr(),
+                    len: v.len(),
+                    fmt: BLOB_OCTETS,
+                    flags: 0,
+                },
+            })
+            .collect();
+        l
+    }
+
+    /// The `fields` input over this memory, at the style's one point.
+    fn input(&mut self, handle: u64, h: &Head, flags: u32, point: u32) -> FieldsIn {
+        let mut i: FieldsIn = input();
+        i.handle = handle;
+        i.mode = MODE_OWN;
+        i.point = point;
+        i.request = RequestFacts {
+            method: abi_str(&self.request[0]),
+            authority: abi_str(&self.request[1]),
+            canonical_path: abi_str(&self.request[2]),
+            query: if h.query.is_some() {
+                abi_str(&self.request[3])
+            } else {
+                NO_STR
+            },
+            timestamp: h.timestamp,
+        };
+        i.field_buf = self.buf.as_mut_ptr();
+        i.field_buf_cap = self.buf.len();
+        i.fields = self.spans.as_mut_ptr();
+        i.fields_cap = self.spans.len() as u32;
+        if flags & STYLE_NEEDS_HEADERS != 0 {
+            i.headers = self.lines.as_ptr();
+            i.headers_len = self.lines.len();
+        }
+        if point == POINT_HEAD_BODY {
+            i.body = Blob {
+                ptr: self.body.as_ptr(),
+                len: self.body.len(),
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            };
+        }
+        if !self.ext.is_empty() {
+            i.head.extensions = Blob {
+                ptr: self.ext.as_ptr(),
+                len: self.ext.len(),
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            };
+        }
+        i
+    }
+
+    /// The transcript's line for an answer: on READY exactly what was written.
+    fn answer(
+        &self,
+        outcome: Outcome,
+        error: Option<&[u8]>,
+        short: bool,
+        out: &FieldsOut,
+    ) -> String {
+        if outcome != Outcome::Ready {
+            let text = error.map(String::from_utf8_lossy).unwrap_or_default();
+            let short = if short { " short" } else { "" };
+            return format!("{outcome:?}{short} {text}");
+        }
+        let n = (out.fields_len as usize).min(self.spans.len());
+        format!(
+            "Ready fields=[{}]",
+            listing(self.spans[..n].iter().map(|s| (
+                at(&self.buf, s.name),
+                at(&self.buf, s.value),
+                s.flags
+            )))
+        )
+    }
+}
+
 /// ONE `fields` call ("sign"): ticket-less, at the style's one point, over `h`, the host's
 /// starting buffers. The answer, and on READY exactly what it wrote.
 fn sign(p: &Plugin<Auth>, handle: u64, h: &Head, flags: u32, point: u32) -> String {
-    let mut buf = vec![0_u8; auth::FIELDS_BUF_BYTES];
-    let blank = FieldSpan {
-        name: Span { offset: 0, len: 0 },
-        value: Span { offset: 0, len: 0 },
-        flags: 0,
-        _reserved: 0,
-    };
-    let mut spans = vec![blank; auth::FIELDS_MAX as usize];
-    let lines: Vec<NamedValue> = h
-        .fields
-        .iter()
-        .map(|(n, v)| NamedValue {
-            name: abi_str(n.as_bytes()),
-            value: Blob {
-                ptr: v.as_ptr(),
-                len: v.len(),
-                fmt: BLOB_OCTETS,
-                flags: 0,
-            },
-        })
-        .collect();
-    let mut f: Frame<FieldsIn, FieldsOut> = Frame::new(input(), output());
-    f.input.handle = handle;
-    f.input.mode = MODE_OWN;
-    f.input.point = point;
-    f.input.request = RequestFacts {
-        method: abi_str(h.method.as_bytes()),
-        authority: abi_str(h.authority.as_bytes()),
-        canonical_path: abi_str(h.path.as_bytes()),
-        query: h.query.as_deref().map_or(NO_STR, |q| abi_str(q.as_bytes())),
-        timestamp: h.timestamp,
-    };
-    f.input.field_buf = buf.as_mut_ptr();
-    f.input.field_buf_cap = buf.len();
-    f.input.fields = spans.as_mut_ptr();
-    f.input.fields_cap = spans.len() as u32;
-    if flags & STYLE_NEEDS_HEADERS != 0 {
-        f.input.headers = lines.as_ptr();
-        f.input.headers_len = lines.len();
-    }
-    if point == POINT_HEAD_BODY {
-        f.input.body = Blob {
-            ptr: h.body.as_ptr(),
-            len: h.body.len(),
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        };
-    }
+    let mut lend = Lend::new(h);
+    let mut f: Frame<FieldsIn, FieldsOut> =
+        Frame::new(lend.input(handle, h, flags, point), output());
     let c = p.call(slot::FIELDS, &mut f);
-    if c.outcome != Outcome::Ready {
-        let text = c
-            .error
-            .as_deref()
-            .map(String::from_utf8_lossy)
-            .unwrap_or_default();
-        let short = if c.recall.is_some() { " short" } else { "" };
-        return format!("{:?}{short} {text}", c.outcome);
+    lend.answer(c.outcome, c.error.as_deref(), c.recall.is_some(), &f.out)
+}
+
+/// ONE `fields` call ON A TICKET (as the host submits a call the plugin may make wait): minted on
+/// the dispatcher, its memory lent to the op. Its reply, and the memory to read the answer from.
+struct OnTicket {
+    reply: Reply<FieldsIn, FieldsOut>,
+    lend: Arc<Lend>,
+    /// The answer, when it came before the suite asked whether the call waits.
+    early: Option<String>,
+}
+
+/// How long a ticket's `fields` may wait before its deadline (well past every wait here).
+const FIELDS_DEADLINE: Duration = Duration::from_secs(60);
+
+fn submit_fields(
+    p: &Plugin<Auth>,
+    d: &Dispatcher,
+    handle: u64,
+    h: &Head,
+    flags: u32,
+    point: u32,
+) -> OnTicket {
+    let ticket = d.mint(0).expect("a request ticket is minted");
+    let mut lend = Lend::new(h);
+    let input = lend.input(handle, h, flags, point);
+    let lend: Arc<Lend> = Arc::from(lend);
+    let deadline =
+        now_ns().saturating_add(u64::try_from(FIELDS_DEADLINE.as_nanos()).unwrap_or(u64::MAX));
+    let reply = d.submit_lent(
+        p,
+        ticket,
+        slot::FIELDS,
+        Frame::new(input, output()),
+        DeadlineClass::Call,
+        deadline,
+        Arc::clone(&lend) as Lent,
+    );
+    OnTicket {
+        reply,
+        lend,
+        early: None,
     }
-    let n = (f.out.fields_len as usize).min(spans.len());
-    format!(
-        "Ready fields=[{}]",
-        listing(
-            spans[..n]
-                .iter()
-                .map(|s| (at(&buf, s.name), at(&buf, s.value), s.flags))
-        )
-    )
+}
+
+impl OnTicket {
+    /// Whether the call is still waiting (PENDING); an answer that already came is kept.
+    fn waiting(&mut self) -> bool {
+        match self.reply.wait(Duration::ZERO) {
+            None => true,
+            Some(done) => {
+                self.early = Some(self.read(&done));
+                false
+            }
+        }
+    }
+
+    fn read(&self, done: &crate::dispatch::Done<FieldsIn, FieldsOut>) -> String {
+        match done.frame.as_ref() {
+            Some(f) => self
+                .lend
+                .answer(done.outcome, done.error.as_deref(), done.short, &f.out),
+            None => format!("{:?} (no frame)", done.outcome),
+        }
+    }
+
+    /// The answer once the op completes (`no answer` past [`TICK_WAIT`]).
+    fn answered(self) -> String {
+        if let Some(a) = self.early {
+            return a;
+        }
+        match self.reply.wait(TICK_WAIT) {
+            None => {
+                // The op runs on; its memory stays with it.
+                self.reply.detach();
+                "no answer".to_string()
+            }
+            Some(done) => self.read(&done),
+        }
+    }
+}
+
+/// Wait until `counter` has advanced past `from` by `n` crossings (or [`TICK_WAIT`] passed).
+fn crossed(counter: &std::sync::atomic::AtomicU64, from: u64, n: u64) {
+    let until = std::time::Instant::now() + TICK_WAIT;
+    while counter.load(std::sync::atomic::Ordering::SeqCst) < from + n
+        && std::time::Instant::now() < until
+    {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The wall clock, epoch seconds.
+fn epoch_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The bytes `sp` names in the host's field buffer.
@@ -728,6 +1015,74 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
         let handle = r.step(&label("open_outbound"), 1, || open_outbound(&p, x));
         let signed = || sign(&p, handle, &x.head, flags, point);
         match (&x.minting, &endpoint) {
+            (Some(m), Some(e)) if m.on_demand.is_some() => {
+                let od = m.on_demand.as_ref().expect("on demand");
+                let counter = crossings(&p);
+                let driver = d
+                    .driver(&p, 0)
+                    .expect("the instance's driver ticket is minted");
+                // SINGLE-FLIGHT: two calls wait on S before anything drives the exchange.
+                let first = r.step(&label("fields on a ticket, before any exchange"), 1, || {
+                    let from = counter.load(std::sync::atomic::Ordering::SeqCst);
+                    let mut t = submit_fields(&p, &d, handle, &x.head, flags, point);
+                    crossed(counter, from, 1);
+                    let waits = if t.waiting() {
+                        "waiting"
+                    } else {
+                        "answered at once"
+                    };
+                    (format!("{waits} exchanges={}", e.count()), t)
+                });
+                let second = r.step(
+                    &label("fields on a second ticket, while the first waits"),
+                    1,
+                    || {
+                        let from = counter.load(std::sync::atomic::Ordering::SeqCst);
+                        let mut t = submit_fields(&p, &d, handle, &x.head, flags, point);
+                        crossed(counter, from, 1);
+                        let waits = if t.waiting() {
+                            "waiting"
+                        } else {
+                            "answered at once"
+                        };
+                        (format!("{waits} exchanges={}", e.count()), t)
+                    },
+                );
+                r.line(&label("tick: the exchange"), 3, || {
+                    let (line, _) = tick_driver(&p, &d, driver, T0);
+                    let a = first.answered();
+                    let b = second.answered();
+                    format!("{line} exchanges={} | {a} | {b}", e.count())
+                });
+                r.line(&label("fields #1"), 1, signed);
+                r.line(&label("fields #2"), 1, signed);
+                r.line(&label("exchanges across the two calls"), 0, || {
+                    e.report(&m.exchanges)
+                });
+                r.line(&label("outbound_ready"), 1, || ready_fact(&p, handle));
+                r.line(&label("tick before expiry"), 1, || {
+                    let at = T0.saturating_add(m.expires_in / 2 * NS);
+                    let (line, _) = tick_driver(&p, &d, driver, at);
+                    format!("{line} exchanges={}", e.count())
+                });
+                let s2 = x.head.with_extension(auth::EXT_SCOPE, &od.second_scope);
+                r.line(&label("fields on a ticket, the second scope"), 3, || {
+                    let a = submit_fields(&p, &d, handle, &s2, flags, point).answered();
+                    format!("{a} exchanges={}", e.count())
+                });
+                let expired = x.head.at(epoch_now().saturating_add(m.expires_in + 1));
+                r.line(
+                    &label("fields on a ticket, past the first token's expiry"),
+                    3,
+                    || {
+                        let a = submit_fields(&p, &d, handle, &expired, flags, point).answered();
+                        format!("{a} exchanges={}", e.count())
+                    },
+                );
+                r.line(&label("exchanges after expiry"), 0, || {
+                    e.report(&m.exchanges)
+                });
+            }
             (Some(m), Some(e)) => {
                 r.line(&label("fields before the first mint"), 1, signed);
                 let driver = d
@@ -781,7 +1136,43 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
         fold.extend(r.fold());
 
         // THE FAILING ENDPOINT, on an instance of its own: every exchange answers 500.
-        if x.minting.is_some() {
+        if x.minting.as_ref().is_some_and(|m| m.on_demand.is_some()) {
+            let failing = Arc::new(Endpoint::new(vec![(500, FAILURE_BODY.to_vec())]));
+            let d = dispatcher();
+            let q = load_leg(
+                s,
+                leg,
+                door,
+                &d,
+                "auth-outbound-failing",
+                Some(failing.clone() as Arc<dyn DeclaredConns>),
+            );
+            let mut rq = Recorder::new(crossings(&q));
+            rq.line(&label("failing endpoint: open"), 1, || {
+                called(&open_with(&q, &x.settings, &secrets))
+            });
+            ready_step(&mut rq, s, &q, &d);
+            let hq = rq.step(&label("failing endpoint: open_outbound"), 1, || {
+                open_outbound(&q, x)
+            });
+            let driver = d
+                .driver(&q, 0)
+                .expect("the instance's driver ticket is minted");
+            rq.line(&label("failing endpoint: tick"), 1, || {
+                let (line, _) = tick_driver(&q, &d, driver, T0);
+                format!("{line} exchanges={}", failing.count())
+            });
+            rq.line(&label("failing endpoint: fields"), 3, || {
+                submit_fields(&q, &d, hq, &x.head, flags, point).answered()
+            });
+            // NO RETRY: whatever the instance would do next on its own, it does not exchange again.
+            rq.line(&label("failing endpoint: attempts"), 0, || {
+                std::thread::sleep(Duration::from_millis(200));
+                format!("exchanges={}", failing.count())
+            });
+            rq.line(&label("failing endpoint: close"), 1, || called(&close(&q)));
+            fold.extend(rq.fold());
+        } else if x.minting.is_some() {
             let failing = Arc::new(Endpoint::new(vec![(500, FAILURE_BODY.to_vec())]));
             let d = dispatcher();
             let q = load_leg(
@@ -831,9 +1222,12 @@ fn contract(fold: &Fold, styles: &[Style]) {
     };
     for (i, x) in styles.iter().enumerate() {
         let l = |what: &str| format!("outbound {} #{i}: {what}", x.style);
+        let od = x.minting.as_ref().and_then(|m| m.on_demand.as_ref());
         // The exchange counts first: a door that fetched twice may also have written another
         // token, and the count is the finding.
-        if x.minting.is_some() {
+        if let (Some(m), Some(od)) = (&x.minting, od) {
+            on_demand_contract(fold, i, x, m, od);
+        } else if x.minting.is_some() {
             assert!(
                 at(&l("tick: the first mint")).ends_with(" exchanges=1"),
                 "{}: the first mint is exactly ONE token exchange: {}",
@@ -876,7 +1270,7 @@ fn contract(fold: &Fold, styles: &[Style]) {
             "a closed instance writes no fields: {}",
             at(&l("fields after close"))
         );
-        let Some(m) = &x.minting else {
+        let Some(m) = x.minting.as_ref().filter(|m| m.on_demand.is_none()) else {
             continue;
         };
         assert!(
@@ -937,6 +1331,106 @@ fn contract(fold: &Fold, styles: &[Style]) {
             st.answer
         );
     }
+}
+
+/// THE ON-DEMAND CONTRACT (ARCHITECT ruling): single-flight, a cell per scope, no refresh ahead,
+/// a re-mint on demand once expired, no retry. The exchange counts first.
+fn on_demand_contract(fold: &Fold, i: usize, x: &Style, m: &Minting, od: &OnDemand) {
+    let at = |label: &str| {
+        fold.iter()
+            .find(|s| s.label == label)
+            .map(|s| s.answer.clone())
+            .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
+    };
+    let l = |what: &str| format!("outbound {} #{i}: {what}", x.style);
+    let exchange = at(&l("tick: the exchange"));
+    assert!(
+        exchange.contains(" exchanges=1 |"),
+        "{}: exactly ONE token exchange for the calls waiting on one scope (single-flight): \
+         {exchange}",
+        l("tick: the exchange")
+    );
+    for what in [
+        "fields on a ticket, before any exchange",
+        "fields on a second ticket, while the first waits",
+    ] {
+        assert_eq!(
+            at(&l(what)),
+            "waiting exchanges=0",
+            "{}: a call on a ticket with no token waits (PENDING) for the exchange it arms, and \
+             nothing is exchanged before the instance is driven",
+            l(what)
+        );
+    }
+    assert_eq!(
+        at(&l("exchanges across the two calls")),
+        "exchanges=1 [ok]",
+        "{}: ONE token exchange across the waiting and the two later calls, its request as \
+         expect_request",
+        l("exchanges across the two calls")
+    );
+    assert!(
+        at(&l("tick before expiry")).ends_with(" exchanges=1"),
+        "{}: an on-demand token is never refreshed ahead of expiry, so exactly ONE exchange \
+         stands: {}",
+        l("tick before expiry"),
+        at(&l("tick before expiry"))
+    );
+    let second = at(&l("fields on a ticket, the second scope"));
+    assert!(
+        second.ends_with(" exchanges=2"),
+        "{}: a second scope is its own cell, exactly ONE new exchange: {second}",
+        l("fields on a ticket, the second scope")
+    );
+    let expired = at(&l("fields on a ticket, past the first token's expiry"));
+    assert!(
+        expired.ends_with(" exchanges=3"),
+        "{}: an expired token is exchanged again on demand, exactly ONE new exchange: {expired}",
+        l("fields on a ticket, past the first token's expiry")
+    );
+    assert_eq!(
+        at(&l("exchanges after expiry")),
+        "exchanges=3 [ok, ok, ok]",
+        "{}",
+        l("exchanges after expiry")
+    );
+    let waited = format!(" | {} | {}", x.expect, x.expect);
+    assert!(
+        exchange.ends_with(&waited),
+        "{}: both waiting calls write exactly expect_fields, the one token: {exchange}",
+        l("tick: the exchange")
+    );
+    assert_eq!(
+        second,
+        format!("{} exchanges=2", od.second),
+        "{}: the second scope's token is written (second_scope_fields)",
+        l("fields on a ticket, the second scope")
+    );
+    assert_eq!(
+        expired,
+        format!("{} exchanges=3", od.expired),
+        "{}: the re-minted token is written (expired_fields)",
+        l("fields on a ticket, past the first token's expiry")
+    );
+    assert!(
+        at(&l("failing endpoint: tick")).ends_with(" exchanges=0"),
+        "{}: nothing is exchanged before a call asks: {}",
+        l("failing endpoint: tick"),
+        at(&l("failing endpoint: tick"))
+    );
+    let refused = at(&l("failing endpoint: fields"));
+    assert!(
+        refused.starts_with(&format!("{} ", m.refusal)) || refused == m.refusal,
+        "{}: a failed exchange answers the declared refusal `{}`: {refused}",
+        l("failing endpoint: fields"),
+        m.refusal
+    );
+    assert_eq!(
+        at(&l("failing endpoint: attempts")),
+        "exchanges=1",
+        "{}: NO RETRY: a failed exchange is exactly ONE attempt",
+        l("failing endpoint: attempts")
+    );
 }
 
 // ---- the RED arms ----
@@ -1016,6 +1510,50 @@ extern "C" fn open_outbound_twice(
     answered
 }
 
+/// `fields`, and when it WAITS (an on-demand cell armed) the same call again under the scope one
+/// byte longer: a second cell armed for the same waiting request, so the waiting calls fetch twice.
+extern "C" fn fields_arming_twice(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> RawOutcome {
+    let Some(real) = real_ops().and_then(|o| o.fields) else {
+        return RawOutcome::of(Outcome::Fault);
+    };
+    let answered = real(instance, input, out);
+    if answered.outcome() == Outcome::Pending {
+        // SAFETY: the host hands `fields` a `FieldsIn`; its extensions blob is the host's for the
+        // call. The second call's `in` and `out` are this frame's own.
+        unsafe {
+            let mut again = *input.cast::<FieldsIn>();
+            let ext = again.head.extensions;
+            let blob = if ext.ptr.is_null() {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(ext.ptr, ext.len)
+            };
+            let mut scope = extensions::get(blob, auth::EXT_SCOPE)
+                .unwrap_or_default()
+                .to_vec();
+            scope.push(b' ');
+            let other = extensions::encode(&[(auth::EXT_SCOPE, &scope)]);
+            again.head.extensions = Blob {
+                ptr: other.as_ptr(),
+                len: other.len(),
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            };
+            let mut scratch: FieldsOut = output();
+            let _ = real(
+                instance,
+                std::ptr::addr_of!(again).cast(),
+                std::ptr::addr_of_mut!(scratch).cast(),
+            );
+        }
+    }
+    answered
+}
+
 /// The subject's door restated with its auth ops `edit`ed, served by `slot`.
 fn plant(s: &Subject, slot: &Restated, edit: impl FnOnce(&mut auth::Ops)) {
     let real = real_door(s);
@@ -1075,8 +1613,9 @@ pub fn red_outbound_wrong_byte(s: &Subject) {
 }
 
 /// **RED: a door that fetches the token twice fails the outbound script.** The real door restated
-/// with an `open_outbound` that binds a second token cell is driven linked; its mint makes two
-/// token exchanges where the script allows exactly one. A door whose styles mint nothing has no
+/// with an `open_outbound` that binds a second token cell, and a `fields` that arms a second
+/// on-demand cell whenever it waits, is driven linked; its mint makes two token exchanges where the
+/// script allows exactly one. A door whose styles mint nothing has no
 /// token to fetch twice.
 ///
 /// # Panics
@@ -1095,7 +1634,8 @@ pub fn red_outbound_double_fetch(s: &Subject) {
         return;
     }
     plant(s, &PLANT_FETCH, |o| {
-        o.open_outbound = Some(open_outbound_twice)
+        o.open_outbound = Some(open_outbound_twice);
+        o.fields = Some(fields_arming_twice);
     });
     let why = failed(|| {
         fold(s, Leg::Linked, plant_fetch_door, &st);
