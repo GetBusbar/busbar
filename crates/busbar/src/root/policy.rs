@@ -4,19 +4,11 @@
 //! The values the units take from configuration rather than from a `Default`, and the one place
 //! that is decided.
 //!
-//! ## Why a default is the wrong answer here, twice, for two different reasons
+//! ## Why a default is the wrong answer here
 //!
-//! Every value below has a perfectly sensible `Default` or a perfectly sensible empty case. None of
-//! them is safe to bind, and the failure modes point in different directions, which is why they
-//! share a file: one is a default that silently disputes every posting, and one is an emptiness
-//! that silently authorizes everything.
-//!
-//! **The metering policy.** Its default carries empty lane expansions. An expansion is what turns
-//! "this request went to pool `main`" into "this request went to one of `main`'s lanes", and with
-//! the map empty that test collapses from set membership to string equality. Every pooled request
-//! then reads as a lane mismatch: the posting is disputed, the cheaper reading wins, and the
-//! deployment's alarm fires per lane per window until it drains. Nothing about that looks like a
-//! configuration problem from the outside — it looks like the meter disagreeing with itself.
+//! Every value below has a perfectly sensible `Default` or a perfectly sensible empty case, and
+//! none of them is safe to bind: a transport built from its own default ignores the operator's
+//! limits, and an empty scope view authorizes everything.
 //!
 //! **The scope view.** Its natural empty case is a policy that says nothing about anything, and the
 //! scope unit is explicit that a pair the policy is silent about has NO required scope, which is a
@@ -34,108 +26,12 @@
 //! first, and a veto after it wins regardless of what it returned. That ordering belongs to the
 //! step, not to the policy it reads, so it is not a field of anything in this file.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use busbar_contract::transport::TransportSettings;
 use busbar_contract::{ClaimKey, OpClassId};
 use busbar_kernel::config::limits::LimitsResolved;
-use busbar_kernel_ledger::usage::MeterPolicy;
 use busbar_kernel_scope::{PolicyView, Scope};
-
-/// One pool, as the metering policy needs to know it: its name and the lanes it stands for.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PoolExpansion {
-    /// The pool's configured name — the name a request locates.
-    pub pool: String,
-    /// The lanes it expands to, in the pool's own declaration order.
-    pub lanes: Vec<String>,
-}
-
-/// One lane's comparable price, off the rate card.
-///
-/// Used for one thing only: choosing the cheaper entry when the three legs of a lane cross-check
-/// disagree. A lane with no entry sorts as cheapest, which is the conservative direction — an
-/// unpriced lane cannot be made to look expensive by omission.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LanePrice {
-    /// The lane.
-    pub lane: String,
-    /// Its comparable unit price.
-    pub price: u128,
-}
-
-/// What the root reads off the parsed rate cards to build the metering policy.
-///
-/// Named as a struct rather than passed as four arguments because the point of the type is the
-/// list: these are the values that must come from configuration, and a reader checking whether
-/// something was forgotten wants one place to look.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct MeterPolicyConfig {
-    /// Every configured pool and the lanes it expands to.
-    pub pools: Vec<PoolExpansion>,
-    /// Every priced lane.
-    pub prices: Vec<LanePrice>,
-    /// Per-class tightenings of the variance tolerance. A card may tighten and never loosen; an
-    /// entry that would loosen is ignored by the unit, so a card cannot widen its own tolerance by
-    /// declaring one.
-    pub class_tolerances_bp: BTreeMap<String, u32>,
-    /// The general variance tolerance, where the deployment set one.
-    pub variance_tolerance_bp: Option<u32>,
-    /// The one-sided sanity bound for a located class, where the deployment set one.
-    pub locator_floor_ratio: Option<u64>,
-}
-
-/// The metering policy the usage unit is handed.
-///
-/// A newtype rather than the unit's own struct passed around bare, so that "this came from
-/// configuration" is visible in the type of every function that takes one. The only way to make one
-/// is [`build`], and [`build`] takes the configuration.
-#[derive(Debug, Clone)]
-pub struct MeterPolicyHandle(MeterPolicy);
-
-impl MeterPolicyHandle {
-    /// The policy, as the usage unit reads it.
-    #[must_use]
-    pub fn policy(&self) -> &MeterPolicy {
-        &self.0
-    }
-}
-
-/// Build the metering policy from the parsed rate cards.
-///
-/// The two fields that matter are filled from configuration and are the reason this function
-/// exists: `lane_expansions` and `lane_prices`. The two tolerances fall back to the unit's own
-/// figures, which is correct — those ARE the design's numbers, and a deployment that sets neither
-/// is asking for them. Empty expansions are not, which is the difference.
-#[must_use]
-pub fn build(cfg: &MeterPolicyConfig) -> MeterPolicyHandle {
-    let mut lane_expansions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for pool in &cfg.pools {
-        lane_expansions
-            .entry(pool.pool.clone())
-            .or_default()
-            .extend(pool.lanes.iter().cloned());
-    }
-
-    let lane_prices = cfg
-        .prices
-        .iter()
-        .map(|p| (p.lane.clone(), p.price))
-        .collect();
-
-    let defaults = MeterPolicy::default();
-    MeterPolicyHandle(MeterPolicy {
-        variance_tolerance_bp: cfg
-            .variance_tolerance_bp
-            .unwrap_or(defaults.variance_tolerance_bp),
-        class_tolerance_bp: cfg.class_tolerances_bp.clone(),
-        locator_floor_ratio: cfg
-            .locator_floor_ratio
-            .unwrap_or(defaults.locator_floor_ratio),
-        lane_expansions,
-        lane_prices,
-    })
-}
 
 /// The settings every linked transport is built from, taken off the deployment's resolved limits
 /// rather than from a `Default`.

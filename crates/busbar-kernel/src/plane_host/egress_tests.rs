@@ -683,6 +683,56 @@ fn a_repeat_hop_reuses_the_pooled_connection_instead_of_redialing() {
     });
 }
 
+/// STEP-6 REUSE when the connection's return LAGS its body's end — the order a loaded host gives
+/// [`a_repeat_hop_reuses_the_pooled_connection_instead_of_redialing`] by chance (its CI red: a
+/// second connection carrying 0 requests): the first hop's connection goes back to the pool only
+/// once hyper's dispatcher finishes the exchange, on a task of its own, and here that task is held
+/// back 300 ms past the body's end. The body's end is reported to the plane only once the
+/// connection is back, so the repeat hop is lent it every time instead of parking for a fresh dial
+/// the returning connection then serves (leaving the dial's connection idle and unused).
+#[test]
+fn a_repeat_hop_reuses_the_connection_whose_return_lags_its_body() {
+    use busbar_kernel::egress::fixtures::{spawn_http, CannedResponse};
+    let fixture = spawn_http(CannedResponse::ok("warm"), 8);
+    *crate::egress::engine::RETURN_DELAY_FOR_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        fixture.addr.to_string(),
+        std::time::Duration::from_millis(300),
+    ));
+    let url = format!("http://{}/hop", fixture.addr);
+    let desc = http_desc(url.as_bytes());
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        for round in 1..=2 {
+            let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+            let class = host_authored_open(host, &desc, &mut out);
+            assert_eq!(class, StatusClass::Ok, "open {round} must succeed");
+            // SAFETY: Ok ⇒ the out-param is initialized.
+            let open = unsafe { out.assume_init() };
+            assert_eq!(
+                drain(vt, host, open.id),
+                b"warm",
+                "round {round} streams the body"
+            );
+            assert_eq!((vt.egress_close.unwrap())(host, open.id), StatusClass::Ok);
+        }
+        let records = fixture.records();
+        assert_eq!(
+            records.len(),
+            1,
+            "both hops must ride ONE connection — the repeat hop redialed: {records:?}"
+        );
+        assert_eq!(
+            records[0].requests, 2,
+            "the one connection served both requests"
+        );
+    });
+    *crate::egress::engine::RETURN_DELAY_FOR_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
 /// FFI-F1 (SSRF pin bypass): a plane-supplied PINNED address gets NO trust — it is judged by the SAME
 /// host-side address rule as a resolved one BEFORE connecting. A pinned cloud-metadata address is
 /// refused EVEN under a fully permissive host scope (metadata is the guard, not a policy a scope can
