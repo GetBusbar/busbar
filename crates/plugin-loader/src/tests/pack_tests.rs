@@ -1112,8 +1112,11 @@ fn the_ref_resolver_caps_its_own_depth() {
 /// both (RED); the version it states packs (GREEN).
 #[test]
 fn pack_refuses_a_version_the_statement_does_not_state() {
-    let stated = crate::dispatch::rendering_of(crate::dispatch_test_plugin::busbar_plugin_door)
-        .expect("the door renders its Statement");
+    // A plugin's Statement, rendered as its door renders it.
+    let st = busbar_contract::abi::sdk::door::statement("pack-version-witness", "1.5.0", 1);
+    // SAFETY: `st` is a well-formed Statement of 'static strings and empty lists.
+    let stated =
+        unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }.expect("it renders");
     let r = busbar_contract::abi::mechanism::rendering::read(&stated).expect("it reads back");
     super::statement_version_is(&stated, &r.version).expect("its own version packs");
     assert_eq!(
