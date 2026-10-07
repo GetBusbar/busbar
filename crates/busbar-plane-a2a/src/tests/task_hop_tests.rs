@@ -1082,3 +1082,80 @@ fn a_refused_write_is_an_error_the_first_time_and_debug_after() {
         "error on the first refusal of a kind, debug on the rest"
     );
 }
+
+/// THE ENGINE'S ANSWER SHOULD THE STORE REFUSE THE OPENING'S WRITES (the kernel then ends the unit
+/// `durability_unavailable`, and the door's `refusal` renders this in place of the kernel's words),
+/// stated by the opening that staged them, echoing the request id: a fresh task's is predev's `503`
+/// `-32603` "the task could not be recorded" (`busbar-a2a` `receive.rs:2032-2049`); a resumed
+/// task's its `409` `-32002` "this task cannot be resumed", with the `TASK_NOT_CANCELABLE`
+/// `ErrorInfo` every A2A-defined code carries (`receive.rs:1985-2001`, `rpcerror.rs:305-318`); an
+/// addressed task's is none, because predev sent the hop whether or not the callback it carried was
+/// recorded (`receive.rs:2080-2096`).
+#[test]
+fn an_opening_states_the_engines_answer_should_the_store_refuse_its_writes() {
+    let unrecorded = |opened: Opened| match opened {
+        Opened::Hop { unrecorded, .. } => unrecorded,
+        Opened::Refused(reply) => panic!("refused: {reply:?}"),
+    };
+    let mut desk = desk();
+    let fresh = unrecorded(opened(
+        &mut desk,
+        &send(json!({ "message": { "messageId": "m" } })),
+        ALICE,
+    ))
+    .expect("a fresh task's opening states its answer");
+    assert_eq!(fresh.status, 503);
+    assert_eq!(
+        fresh.envelope(),
+        json!({ "jsonrpc": "2.0", "id": 7,
+            "error": { "code": -32603, "message": "the task could not be recorded" } })
+    );
+
+    let mut desk = desk();
+    let mut out = Vec::new();
+    let at = Step {
+        caller: ALICE,
+        request_id: "r",
+        now: 150,
+    };
+    tasks::dispatch(&mut desk.book, &at, "t1", MEMBER, &mut out).unwrap();
+    for state in [TaskState::Working, TaskState::InputRequired] {
+        desk.book.apply(&out);
+        out.clear();
+        tasks::transition(&mut desk.book, &at, "t1", state, &mut out).unwrap();
+    }
+    desk.book.apply(&out);
+    let resumed = unrecorded(opened(
+        &mut desk,
+        &send(json!({ "message": { "contextId": "ctx-1" } })),
+        ALICE,
+    ))
+    .expect("a resumed task's opening states its answer");
+    assert_eq!(resumed.status, 409);
+    assert_eq!(
+        resumed.envelope(),
+        json!({ "jsonrpc": "2.0", "id": 7, "error": {
+            "code": -32002,
+            "message": "this task cannot be resumed",
+            "data": [{
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "domain": "a2a-protocol.org",
+                "reason": "TASK_NOT_CANCELABLE",
+            }],
+        } })
+    );
+
+    let mut desk = desk();
+    let addressed = unrecorded(opened(
+        &mut desk,
+        &send(json!({
+            "id": "t1",
+            "configuration": { "pushNotificationConfig": { "url": "https://hook.example/t1" } },
+        })),
+        ALICE,
+    ));
+    assert_eq!(
+        addressed, None,
+        "the engine sent an addressed task's hop whether or not its callback was recorded"
+    );
+}

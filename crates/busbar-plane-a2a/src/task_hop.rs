@@ -52,6 +52,11 @@ const STATUS_BAD_REQUEST: u32 = 400;
 const STATUS_UNAVAILABLE: u32 = 503;
 /// The status an interrupted task that cannot resume answers with.
 const STATUS_CONFLICT: u32 = 409;
+/// The engine's words for a task it could not record (`busbar-a2a` `receive.rs:2032-2049`).
+pub const TASK_UNRECORDED: &str = "the task could not be recorded";
+/// The engine's words for an interrupted task it could not move back to `working`
+/// (`busbar-a2a` `receive.rs:1985-2001`).
+pub const TASK_UNRESUMED: &str = "this task cannot be resumed";
 
 /// The host's reach opening a task needs beyond the records and the destination judge: the
 /// kernel's random bytes.
@@ -101,23 +106,35 @@ pub enum Opened {
         instead: Option<Vec<u8>>,
         /// The push callback the request carried inline, registered on the task.
         callback: Option<Callback>,
+        /// THE CALLER'S ANSWER IF THE STORE REFUSES THE OPENING'S RECORD WRITES (the kernel ends the
+        /// unit `durability_unavailable` and the door's `refusal` renders it): the engine's answer
+        /// for the write it made before the hop. A fresh task: `503`, `-32603`
+        /// ([`TASK_UNRECORDED`]); a resumed one: `409`, `-32002` ([`TASK_UNRESUMED`]). `None` for an
+        /// addressed task, whose hop the engine sent whether or not its callback was recorded
+        /// (`busbar-a2a` `receive.rs:2080-2096`).
+        unrecorded: Option<Refusal>,
     },
     /// The hop does not go ahead: the caller's whole answer.
     Refused(Reply),
 }
 
-/// The answer a refused opening gives, in the engine's `rpcerror::body` words.
-fn refused(status: u32, rpc_id: &Value, code: i64, message: &str) -> Opened {
-    let refusal = Refusal {
+/// The refusal an opening gives, echoing `rpc_id`.
+fn refusal(status: u32, rpc_id: &Value, code: i64, message: &str) -> Refusal {
+    Refusal {
         status,
         id: Some(rpc_id.clone()),
         code,
         message: message.to_string(),
-    };
+    }
+}
+
+/// The answer a refused opening gives, in the engine's `rpcerror::body` words.
+fn refused(status: u32, rpc_id: &Value, code: i64, message: &str) -> Opened {
+    let answer = refusal(status, rpc_id, code, message);
     Opened::Refused(Reply {
         status,
         content_type: JSON_MEDIA_TYPE,
-        body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
+        body: serde_json::to_vec(&answer.envelope()).unwrap_or_default(),
     })
 }
 
@@ -185,7 +202,7 @@ pub fn open(
         ),
         _ => None,
     };
-    let task = match (addressed, resumed) {
+    let (task, unrecorded) = match (addressed, resumed) {
         (Some(row), _) => {
             if let Some(url) = url {
                 let at = Step {
@@ -199,12 +216,13 @@ pub fn open(
                     return Err(Halt::Pending);
                 }
             }
-            TaskHop {
+            let task = TaskHop {
                 task_id: row.task_id,
                 context_id: row.context_id,
                 addressed: true,
                 skill: None,
-            }
+            };
+            (task, None)
         }
         (None, Some(row)) => {
             let at = Step {
@@ -227,17 +245,24 @@ pub fn open(
                         STATUS_CONFLICT,
                         rpc_id,
                         CODE_TASK_NOT_CANCELABLE,
-                        "this task cannot be resumed",
+                        TASK_UNRESUMED,
                     ))
                 }
                 Ok(_) => {}
             }
-            TaskHop {
+            let task = TaskHop {
                 task_id: row.task_id,
                 context_id: row.context_id,
                 addressed: false,
                 skill: None,
-            }
+            };
+            let unresumed = refusal(
+                STATUS_CONFLICT,
+                rpc_id,
+                CODE_TASK_NOT_CANCELABLE,
+                TASK_UNRESUMED,
+            );
+            (task, Some(unresumed))
         }
         (None, None) => {
             let mut random = [0u8; MINT_BYTES];
@@ -272,17 +297,19 @@ pub fn open(
                         STATUS_UNAVAILABLE,
                         rpc_id,
                         CODE_INTERNAL,
-                        "the task could not be recorded",
+                        TASK_UNRECORDED,
                     ))
                 }
                 Ok(_) => {}
             }
-            TaskHop {
+            let task = TaskHop {
                 task_id,
                 context_id,
                 addressed: false,
                 skill: None,
-            }
+            };
+            let unrecorded = refusal(STATUS_UNAVAILABLE, rpc_id, CODE_INTERNAL, TASK_UNRECORDED);
+            (task, Some(unrecorded))
         }
     };
     let instead = translated(reach, req, backends)?;
@@ -290,6 +317,7 @@ pub fn open(
         task,
         instead,
         callback,
+        unrecorded,
     })
 }
 

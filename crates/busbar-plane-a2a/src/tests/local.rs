@@ -734,3 +734,49 @@ fn malformed_urls_are_refused() {
             .is_none());
     }
 }
+
+/// THE ENGINE'S ANSWER SHOULD THE STORE REFUSE A PUSH-CONFIG VERB'S OWN WRITE (the kernel then ends
+/// the unit `durability_unavailable`, and the door's `refusal` renders this in place of the kernel's
+/// words): predev's internal error, `500` (`rpcerror.rs:296`) with `-32603` and no `data`, echoing
+/// the request id. A registration the store would not take: "the push notification config could
+/// not be recorded" (`busbar-a2a` `local.rs:592-607`); a removal: "the push notification config
+/// could not be deleted; retry the delete" (`local.rs:729-745`). Every other local verb's answer the
+/// engine never made depend on a write: none.
+#[test]
+fn a_push_config_write_the_store_refuses_answers_the_engines_internal_error() {
+    let id = json!(7);
+    for (verb, message) in [
+        (
+            LocalVerb::CreatePushConfig(Dialect::V10),
+            "the push notification config could not be recorded",
+        ),
+        (
+            LocalVerb::CreatePushConfig(Dialect::V03),
+            "the push notification config could not be recorded",
+        ),
+        (
+            LocalVerb::DeletePushConfig(Dialect::V10),
+            "the push notification config could not be deleted; retry the delete",
+        ),
+        (
+            LocalVerb::DeletePushConfig(Dialect::V03),
+            "the push notification config could not be deleted; retry the delete",
+        ),
+    ] {
+        let refusal = unrecorded(verb, &id).unwrap_or_else(|| panic!("{verb:?} states none"));
+        assert_eq!(refusal.status, 500, "{verb:?}");
+        assert_eq!(
+            refusal.envelope(),
+            json!({ "jsonrpc": "2.0", "id": 7, "error": { "code": -32603, "message": message } }),
+            "{verb:?}"
+        );
+    }
+    for verb in [
+        LocalVerb::ListTasks,
+        LocalVerb::GetPushConfig(Dialect::V10),
+        LocalVerb::ListPushConfigs(Dialect::V03),
+        LocalVerb::Subscribe,
+    ] {
+        assert_eq!(unrecorded(verb, &id), None, "{verb:?}");
+    }
+}

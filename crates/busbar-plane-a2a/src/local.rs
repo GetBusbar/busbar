@@ -111,9 +111,9 @@ fn ok(rpc_id: &Value, result: Value) -> Answer {
     }
 }
 
-/// A JSON-RPC error at the status A2A section 5.4 binds to its code.
-fn err(rpc_id: &Value, code: i64, message: impl Into<String>) -> Answer {
-    let refusal = Refusal {
+/// A JSON-RPC error under the caller's id, at the status A2A section 5.4 binds to its code.
+fn refusal(rpc_id: &Value, code: i64, message: impl Into<String>) -> Refusal {
+    Refusal {
         status: match code {
             TASK_NOT_FOUND => 404,
             UNSUPPORTED_OPERATION | INVALID_PARAMS => 400,
@@ -122,11 +122,40 @@ fn err(rpc_id: &Value, code: i64, message: impl Into<String>) -> Answer {
         id: Some(rpc_id.clone()),
         code,
         message: message.into(),
-    };
-    Answer {
-        status: refusal.status,
-        body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
     }
+}
+
+/// [`refusal`], as the verb's answer.
+fn err(rpc_id: &Value, code: i64, message: impl Into<String>) -> Answer {
+    let refused = refusal(rpc_id, code, message);
+    Answer {
+        status: refused.status,
+        body: serde_json::to_vec(&refused.envelope()).unwrap_or_default(),
+    }
+}
+
+/// The engine's words when the store would not take a push config's registration
+/// (`busbar-a2a` `local.rs:592-607`).
+pub const CONFIG_UNRECORDED: &str = "the push notification config could not be recorded";
+
+/// The engine's words when the store would not take a push config's removal: the config stays and
+/// the caller retries (`busbar-a2a` `local.rs:729-745`).
+pub const CONFIG_UNDELETED: &str =
+    "the push notification config could not be deleted; retry the delete";
+
+/// THE ANSWER WHEN THE STORE REFUSES VERB `verb`'S OWN RECORD WRITE (the kernel ends its unit
+/// `durability_unavailable`, and the door's `refusal` renders this): the engine's internal error,
+/// `500` with `-32603`, echoing `rpc_id`, for the push config it could not register
+/// ([`CONFIG_UNRECORDED`]) or remove ([`CONFIG_UNDELETED`]). `None` for a verb whose answer the
+/// engine never made depend on a write.
+#[must_use]
+pub fn unrecorded(verb: LocalVerb, rpc_id: &Value) -> Option<Refusal> {
+    let message = match verb {
+        LocalVerb::CreatePushConfig(_) => CONFIG_UNRECORDED,
+        LocalVerb::DeletePushConfig(_) => CONFIG_UNDELETED,
+        _ => return None,
+    };
+    Some(refusal(rpc_id, INTERNAL, message))
 }
 
 /// The answer when the task store could not be reached: JSON-RPC's internal error.
