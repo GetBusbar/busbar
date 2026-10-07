@@ -17,7 +17,9 @@
 //!   `records.claim`), binds the handle (`work.resume`, principal-checked), asks its caller the
 //!   task's own rounds (`task_ask_caller`, answered through `tasks/update`), sends the call to the
 //!   member its walk picked, and settles the handle with the task's terminal state (`work.settle`).
-//!   A settle the handle refuses means `tasks/cancel` got there first.
+//!   A settle the handle refuses means `tasks/cancel` got there first. PARKED ON ITS CALLER (its
+//!   own round unanswered), it ends with the handle live; the `tasks/update` that answers the round,
+//!   on whichever node, nests the resume ([`Retry::Asked`]).
 //! * AN UPSTREAM'S ASK, RELAYED (Law 11: busbar answers nothing on the caller's behalf; ARCHITECT
 //!   Q6): when the member answers the continuation's call with an `input_required` result, the task
 //!   parks `input_required` with the upstream's `inputRequests` verbatim, under busbar's sealed
@@ -26,10 +28,14 @@
 //!   key is answered the update nests a NEW continuation ([`continuation_asked`], the retry): it
 //!   presents the state, which is opened, matched and spent once, binds the handle and sends the
 //!   call back to the SAME member with the caller's answers and the upstream's own state.
-//! * `tasks/get` is `work.find` plus what the instance holds of the task (or, when it holds none,
-//!   the result written in the plane's records); `tasks/update` delivers input and wakes the
-//!   continuation; `tasks/cancel` settles the handle `cancelled`, which the continuation observes
-//!   on its next step.
+//! * THE TASK STORE IS HOST RECORDS (THE DESIGN §2, the mcp bullet): `tasks/get` is `work.find`
+//!   plus the task's live state, or its result, in the plane's records — the same answer on every
+//!   node and across a restart; `tasks/update` delivers input, writes the state it leaves, and nests
+//!   the run that continues; `tasks/cancel` settles the handle `cancelled`, which a running
+//!   continuation observes when it settles.
+//! * A SETTLE THAT DOES NOT LAND is owed: its task is held unsettled and the next create's sweep
+//!   settles it again, until it lands. The same sweep settles the live tasks of its caller a process
+//!   that is gone left behind ([`tasks::Lease`]), so they never exhaust the bound of live work (§1).
 
 use std::task::Poll;
 
@@ -60,12 +66,19 @@ pub(super) enum TaskUnit {
     Verb(Verb),
 }
 
-/// The caller's answer to a relayed ask, as the retry continuation carries it: busbar's sealed state
-/// and the caller's `inputResponses`.
+/// What a continuation that is not the task's first run carries.
 #[derive(Clone)]
-pub(super) struct Retry {
-    state: String,
-    responses: Value,
+pub(super) enum Retry {
+    /// The caller's answer to a relayed ask: busbar's sealed state and the caller's
+    /// `inputResponses`.
+    Relayed {
+        /// Busbar's sealed state.
+        state: String,
+        /// The caller's answers.
+        responses: Value,
+    },
+    /// The round of the task's own asks it was parked on, answered: the run resumes there.
+    Asked(usize),
 }
 
 impl TaskUnit {
@@ -88,7 +101,6 @@ impl TaskUnit {
             local: false,
             handle: 0,
             round: 0,
-            parked: None,
             end: None,
             at: None,
             answered: false,
@@ -99,7 +111,8 @@ impl TaskUnit {
 
 /// The creating unit's progress: the handle numbers its host calls were issued under (a call that
 /// pends is re-issued under its first number), the handle it opened, and whether the continuation
-/// was nested.
+/// was nested; this caller's index rows read, the tasks left behind it settles, and the records the
+/// settles leave to strike.
 #[derive(Default)]
 pub(super) struct Create {
     open: Option<u32>,
@@ -108,6 +121,18 @@ pub(super) struct Create {
     nested: bool,
     swept: bool,
     at: Option<u64>,
+    index: Listing,
+    indexed: bool,
+    left: Vec<Left>,
+    struck: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+/// A task left behind, being settled: its reference, the handle number its find was issued under,
+/// and whether it is done.
+pub(super) struct Left {
+    reference: String,
+    find: Option<u32>,
+    done: bool,
 }
 
 /// A verb's progress.
@@ -115,11 +140,19 @@ pub(super) struct Create {
 pub(super) struct Verb {
     find: Option<u32>,
     settle: Option<u32>,
-    list: Option<u32>,
-    after: Option<Vec<u8>>,
-    read: Vec<u8>,
-    listed: bool,
+    result: Listing,
+    live: Listing,
     at: Option<u64>,
+}
+
+/// A listing of the task kind's records under a prefix, page by page: the handle number the page in
+/// flight was issued under, where the next page starts, the records read, and whether it is done.
+#[derive(Default)]
+pub(super) struct Listing {
+    page: Option<u32>,
+    after: Option<Vec<u8>>,
+    rows: Vec<(Vec<u8>, Vec<u8>)>,
+    done: bool,
 }
 
 /// A continuation.
@@ -142,9 +175,8 @@ pub(super) struct Run {
     /// It holds the instance's own half of the one-time run.
     local: bool,
     handle: u64,
-    /// The task ask round it is on, and the round it parked the task on.
+    /// The task ask round it is on.
     round: usize,
-    parked: Option<usize>,
     /// The terminal state it settles, and when it reached it.
     end: Option<End>,
     at: Option<u64>,
@@ -159,7 +191,7 @@ pub(super) struct Run {
 enum Phase {
     /// Finding, claiming and binding its handle.
     Bind,
-    /// Asking its caller the task's own rounds.
+    /// Asking its caller the task's own rounds: parked, it ends.
     Ask,
     /// Sending the call.
     Call,
@@ -292,19 +324,20 @@ pub(super) type RunArrival = (String, Value, Vec<u8>, Option<Retry>);
 
 /// THE CONTINUATION'S ARRIVAL on the task-run claim: its reference, the call it runs, and that call
 /// as the `tools/call` body the one dispatch decides (its head fields mirrored from it), and — the
-/// retry of a relayed ask — `relay: {requestState, inputResponses}`. `None` for a body that is not
-/// one.
+/// retry of a relayed ask — `relay: {requestState, inputResponses}`, or — the resume of an answered
+/// round of the task's own asks — `resume: <round>`. `None` for a body that is not one.
 pub(super) fn run_arrival(body: &[u8]) -> Option<RunArrival> {
     let value: Value = serde_json::from_slice(body).ok()?;
     let reference = value.get("taskId")?.as_str()?.to_string();
     let params = value.get("params")?.clone();
     params.get("name")?.as_str()?;
-    let retry = match value.get("relay") {
-        None => None,
-        Some(relay) => Some(Retry {
+    let retry = match (value.get("relay"), value.get("resume")) {
+        (None, None) => None,
+        (Some(relay), _) => Some(Retry::Relayed {
             state: relay.get("requestState")?.as_str()?.to_string(),
             responses: relay.get("inputResponses")?.clone(),
         }),
+        (None, Some(round)) => Some(Retry::Asked(usize::try_from(round.as_u64()?).ok()?)),
     };
     let call = json!({
         "jsonrpc": "2.0",
@@ -364,10 +397,164 @@ fn invalid(id: &Value, message: &str) -> Refusal {
     }
 }
 
-/// Wake the continuation `task` runs on, where one waits.
-fn wake(plane: &McpDoor, task: &Task) {
-    if let (Some(wake), Some((_, ticket))) = (plane.wake, task.runner) {
-        wake.wake(ticket);
+/// SETTLE handle `work` with `row`, on a fresh handle of `ticket`: whether it LANDED (settled now, or
+/// settled first by another unit). One that pends or fails is owed ([`owe`]): its task is held
+/// unsettled and the next create's sweep settles it again, until it lands.
+fn settled(services: Services, ticket: Ticket, issued: &mut u32, work: u64, row: &[u8]) -> bool {
+    use busbar_contract::abi::sdk::services::ServiceError;
+    let mut fresh = None;
+    let h = handle(ticket, issued, &mut fresh);
+    matches!(
+        services.work_settle(h, work, row),
+        Poll::Ready(Ok(()) | Err(ServiceError::Declined(AbiOutcome::Refused)))
+    )
+}
+
+/// A settle of `task` that did not land, OWED: the instance holds the task unsettled, for the next
+/// create's sweep.
+fn owe(plane: &McpDoor, task: &Task) {
+    plane.tasks.with_all(|m| {
+        m.entry(task.id.clone())
+            .or_insert_with(|| task.clone())
+            .unsettled = true;
+    });
+}
+
+/// THE TASK'S LIVE STATE AS ITS RECORDS (THE DESIGN §2: the task store is host records): its live
+/// chunks, any this instance wrote past them struck, and — `until` given — its caller's index row,
+/// its run's lease `until` (`0`: no run holds it).
+fn live_records(plane: &McpDoor, task: &Task, until: Option<u64>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut out = tasks::live_parts(&task.id, &task.live());
+    let wrote = u32::try_from(out.len()).unwrap_or(u32::MAX);
+    let before = plane.tasks.with(&task.id, |t| {
+        t.map_or(0, |t| std::mem::replace(&mut t.live_chunks, wrote))
+    });
+    out.extend((wrote..before).map(|n| (tasks::live_key(&task.id, n), Vec::new())));
+    if let Some(until) = until {
+        let lease = tasks::Lease {
+            until_ms: until,
+            updated_ms: task.stamps().1,
+        };
+        out.push((task.index_key(), lease.bytes()));
+    }
+    out
+}
+
+/// THE RECORDS A SETTLED TASK LEAVES, struck: its live chunks and its caller's index row.
+fn struck_records(task: &Task) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut out: Vec<(Vec<u8>, Vec<u8>)> = (0..task.live_chunks.max(tasks::LIVE_STRIKES))
+        .map(|n| (tasks::live_key(&task.id, n), Vec::new()))
+        .collect();
+    out.push((task.index_key(), Vec::new()));
+    out
+}
+
+/// `records` of the task kind ride the unit's pending write.
+fn ride(unit: &mut CallUnit, records: Vec<(Vec<u8>, Vec<u8>)>) {
+    if let Some(p) = unit.pending.as_mut() {
+        p.records
+            .extend(records.into_iter().map(|(k, v)| (RECORD_TASK, k, v)));
+    }
+}
+
+/// THE TASK KIND'S RECORDS under `prefix`, read page by page into `l.rows` in key order (one page
+/// only when `once`). `Ready(false)`: the host could not list them.
+fn list(
+    services: Services,
+    ticket: Ticket,
+    issued: &mut u32,
+    prefix: &[u8],
+    once: bool,
+    l: &mut Listing,
+) -> Poll<bool> {
+    use busbar_contract::abi::sdk::services::ServiceError;
+    while !l.done {
+        let h = handle(ticket, issued, &mut l.page);
+        let mut sizes = (64 * 1024, PAGE as usize);
+        let mut page: Option<(usize, Option<Vec<u8>>)> = None;
+        for _ in 0..2 {
+            let mut buf = vec![0u8; sizes.0];
+            let mut spans = vec![blank(); sizes.1];
+            match services.records_list(
+                h,
+                crate::door::KIND_TASK,
+                prefix,
+                l.after.as_deref(),
+                PAGE,
+                (&mut buf, &mut spans),
+            ) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(records)) => {
+                    let mut n = 0;
+                    for (key, value) in records.records() {
+                        l.rows.push((key.to_vec(), value.to_vec()));
+                        n += 1;
+                    }
+                    page = Some((n, records.last_key().map(<[u8]>::to_vec)));
+                    break;
+                }
+                Poll::Ready(Err(ServiceError::Short { bytes, items })) => {
+                    sizes = (
+                        usize::try_from(bytes).unwrap_or(usize::MAX).max(sizes.0),
+                        usize::try_from(items).unwrap_or(usize::MAX).max(sizes.1),
+                    );
+                }
+                Poll::Ready(Err(_)) => return Poll::Ready(false),
+            }
+        }
+        let Some((n, last)) = page else {
+            return Poll::Ready(false);
+        };
+        l.page = None;
+        if once || n < PAGE as usize || last.is_none() {
+            l.done = true;
+        } else {
+            l.after = last;
+        }
+    }
+    Poll::Ready(true)
+}
+
+/// A TASK LEFT BEHIND, settled `cancelled`: found (scoped to this caller), its own row cancelled and
+/// settled. The records its settle leaves to strike; none while it is owed.
+fn settle_left(
+    plane: &McpDoor,
+    services: Services,
+    ticket: Ticket,
+    issued: &mut u32,
+    principal: &str,
+    left: &mut Left,
+    now: u64,
+) -> Poll<Vec<(Vec<u8>, Vec<u8>)>> {
+    if left.done {
+        return Poll::Ready(Vec::new());
+    }
+    let h = handle(ticket, issued, &mut left.find);
+    let (mut buf, mut spans) = ([0u8; WORK_BYTES], [blank(); 1]);
+    let found = match services.work_find(h, &left.reference, &mut buf, &mut spans) {
+        Poll::Pending => return Poll::Pending,
+        Poll::Ready(found) => found,
+    };
+    left.done = true;
+    let mut task = match found {
+        Ok(Some(f)) if f.state == WORK_LIVE => match WorkRow::read(f.record) {
+            Some(row) => Task::from_row(&left.reference, principal, f.handle, &row, None),
+            None => return Poll::Ready(Vec::new()),
+        },
+        // Settled, or past its retention: only its records are left.
+        Ok(_) => {
+            let gone = Task::new(&left.reference, principal, 0, "", now);
+            return Poll::Ready(struck_records(&gone));
+        }
+        // The host could not say: the next create reads it again.
+        Err(_) => return Poll::Ready(Vec::new()),
+    };
+    task.cancel(now);
+    if settled(services, ticket, issued, task.handle, &task.row()) {
+        Poll::Ready(struck_records(&task))
+    } else {
+        owe(plane, &task);
+        Poll::Ready(Vec::new())
     }
 }
 
@@ -442,7 +629,8 @@ fn creating(
     };
     // THE SWEEP, as the served engine ran it, on a create: abandoned tasks cancelled (their
     // continuations woken to see it), expired ones dropped. A task that reached its terminal state
-    // in hand with its handle unsettled is settled now; its answer is not waited on.
+    // in hand with its handle unsettled is settled now; one whose settle does not land is owed
+    // again, until it lands.
     if !st.swept {
         st.swept = true;
         let swept = plane.tasks.with_all(|m| tasks::sweep(m, now));
@@ -450,15 +638,72 @@ fn creating(
             swept.wake.iter().for_each(|t| wake.wake(*t));
         }
         for (work, task) in &swept.settle {
-            let mut fresh = None;
-            let h = handle(ticket, &mut unit.issued, &mut fresh);
-            let _unheard = services.work_settle(h, *work, &task.row());
+            if settled(services, ticket, &mut unit.issued, *work, &task.row()) {
+                st.struck.extend(struck_records(task));
+            } else {
+                owe(plane, task);
+            }
         }
         plane.strikes.with_all(|m| {
             for (id, chunks) in swept.strike {
                 m.insert(id, chunks);
             }
         });
+    }
+    // THE TASKS LEFT BEHIND (§1: admission bounds live work; nothing evicts it): this caller's live
+    // tasks no unit here runs whose run's lease lapsed — the process running it is gone — or
+    // that nothing moved past the abandonment ceiling, read from the plane's records and settled
+    // `cancelled` before the handle is opened, so the handles an earlier process left never exhaust
+    // `work.open`. From a submit, never a read or a timer.
+    if !st.indexed {
+        let prefix = tasks::index_prefix(principal);
+        if list(
+            services,
+            ticket,
+            &mut unit.issued,
+            &prefix,
+            true,
+            &mut st.index,
+        )
+        .is_pending()
+        {
+            return Step::Pending;
+        }
+        st.indexed = true;
+        for (key, value) in std::mem::take(&mut st.index.rows) {
+            let Some(id) = key
+                .strip_prefix(prefix.as_slice())
+                .and_then(|k| std::str::from_utf8(k).ok())
+            else {
+                continue;
+            };
+            let left = tasks::Lease::read(&value).is_some_and(|l| l.left_behind(now));
+            let running = plane
+                .tasks
+                .get(&id.to_string())
+                .is_some_and(|t| t.runner.is_some() || t.unsettled);
+            if left && !running {
+                st.left.push(Left {
+                    reference: id.to_string(),
+                    find: None,
+                    done: false,
+                });
+            }
+        }
+    }
+    for left in &mut st.left {
+        match settle_left(
+            plane,
+            services,
+            ticket,
+            &mut unit.issued,
+            principal,
+            left,
+            now,
+        ) {
+            Poll::Pending => return Step::Pending,
+            Poll::Ready(struck) => st.struck.extend(struck),
+        }
     }
     if st.opened.is_none() {
         let row = WorkRow {
@@ -486,10 +731,14 @@ fn creating(
                 );
                 st.opened = Some((opened.handle, reference));
             }
-            Poll::Ready(Err(_)) => return unavailable(
-                unit,
-                "the deployment holds as many live tasks as it keeps, or keeps no store for them",
-            ),
+            Poll::Ready(Err(_)) => {
+                let step = unavailable(
+                    unit,
+                    "the deployment holds as many live tasks as it keeps, or keeps no store for them",
+                );
+                ride(unit, std::mem::take(&mut st.struck));
+                return step;
+            }
         }
     }
     let Some((work, reference)) = st.opened.clone() else {
@@ -516,7 +765,7 @@ fn creating(
                 ..
             })) => st.nested = true,
             // The host runs no continuation for it (no nesting, too deep, too many at once): the
-            // task is settled failed, not waited on, and the call refused.
+            // task is settled failed — owed until the settle lands — and the call refused.
             Poll::Ready(Err(_)) => {
                 if let Some(mut task) = plane.tasks.remove(&reference) {
                     task.fail(
@@ -524,11 +773,13 @@ fn creating(
                         "the host ran no continuation for this task".to_string(),
                         now,
                     );
-                    let mut fresh = None;
-                    let h = handle(ticket, &mut unit.issued, &mut fresh);
-                    let _unheard = services.work_settle(h, work, &task.row());
+                    if !settled(services, ticket, &mut unit.issued, work, &task.row()) {
+                        owe(plane, &task);
+                    }
                 }
-                return unavailable(unit, "the host runs no continuation for it");
+                let step = unavailable(unit, "the host runs no continuation for it");
+                ride(unit, std::mem::take(&mut st.struck));
+                return step;
             }
         }
     }
@@ -571,7 +822,18 @@ fn creating(
         ts,
     );
     pending.records.extend(strikes);
+    // ITS INDEX ROW, the run's lease taken: the continuation is nested at once.
+    let lease = tasks::Lease {
+        until_ms: now.saturating_add(tasks::RUN_LEASE_MS),
+        updated_ms: now,
+    };
+    pending.records.push((
+        RECORD_TASK,
+        tasks::index_key(principal, &reference),
+        lease.bytes(),
+    ));
     unit.pending = Some(pending);
+    ride(unit, std::mem::take(&mut st.struck));
     Step::Write
 }
 
@@ -595,8 +857,8 @@ pub(super) fn begin(plane: &McpDoor, ticket: Ticket, principal: &str, unit: &mut
     advance(plane, ticket, principal, unit)
 }
 
-/// A continuation called again part way through a phase that waits on the host or its caller (a
-/// pend's wake, a delivered answer, a cancel): the phase goes on. `None` for any other unit.
+/// A continuation called again part way through a phase that waits on the host (a pend's wake): the
+/// phase goes on. `None` for any other unit.
 pub(super) fn resume(
     plane: &McpDoor,
     ticket: Ticket,
@@ -605,7 +867,7 @@ pub(super) fn resume(
 ) -> Option<Step> {
     match unit.task.as_ref() {
         Some(TaskUnit::Run(run))
-            if run.begun && matches!(run.phase, Phase::Bind | Phase::Ask | Phase::Settle) => {}
+            if run.begun && matches!(run.phase, Phase::Bind | Phase::Settle) => {}
         _ => return None,
     }
     Some(advance(plane, ticket, principal, unit))
@@ -710,17 +972,24 @@ fn asking(
         .unwrap_or_default();
     let now = task_clock_ms(services, ticket, &mut unit.issued);
     let params = run.params.clone();
-    let gone = plane.tasks.with(&run.reference, |t| match t {
+    let parked = plane.tasks.with(&run.reference, |t| match t {
         Some(t) if !t.status().is_terminal() => {
             t.park_relay(&requests, state, params, now);
             t.runner = None;
-            None
+            Ok(t.clone())
         }
-        Some(t) => Some(t.status()),
-        None => Some(Status::Cancelled),
+        Some(t) => Err(t.status()),
+        None => Err(Status::Cancelled),
     });
-    // THE CONTINUATION ENDS with the handle live: the caller's answer runs the next one.
-    reply(unit, run, gone.unwrap_or(Status::InputRequired), Vec::new())
+    // THE CONTINUATION ENDS with the handle live, its live state in the plane's records: the
+    // caller's answer, on whichever node, runs the next one.
+    match parked {
+        Ok(task) => {
+            let records = live_records(plane, &task, Some(0));
+            reply(unit, run, Status::InputRequired, records)
+        }
+        Err(status) => reply(unit, run, status, Vec::new()),
+    }
 }
 
 /// What a task's relayed-ask state is bound to: the principal, the tool (`name`, as published) and,
@@ -826,7 +1095,7 @@ fn relayed_leg(
     principal: &str,
     unit: &mut CallUnit,
     run: &Run,
-    retry: &Retry,
+    state: &str,
 ) -> Poll<Option<crate::ask::UpstreamLeg>> {
     let held = plane.tasks.get(&run.reference);
     let Some(task) = held.filter(|t| t.owned_by(principal) && !t.status().is_terminal()) else {
@@ -850,12 +1119,8 @@ fn relayed_leg(
         pending: false,
     };
     let now = seal.now();
-    let opened = crate::ask::open_relayed(
-        &retry.state,
-        relay_bind(principal, name, now),
-        &digest,
-        &mut seal,
-    );
+    let opened =
+        crate::ask::open_relayed(state, relay_bind(principal, name, now), &digest, &mut seal);
     if seal.pending {
         return Poll::Pending;
     }
@@ -913,29 +1178,48 @@ fn running(
                 // THE RUN, TAKEN ONCE: the instance's own half, then the host's one-time claim. The
                 // retry of a relayed ask is taken by its state instead, spent once.
                 if !run.local {
-                    if let Some(retry) = run.retry.clone() {
-                        match relayed_leg(plane, services, ticket, principal, unit, run, &retry) {
-                            Poll::Pending => return Step::Pending,
-                            Poll::Ready(Some(leg)) => run.leg = Some(leg),
-                            Poll::Ready(None) => return not_run(unit, run),
-                        }
-                    } else {
-                        let took = plane.tasks.with(&run.reference, |t| match t {
-                            Some(t) if !t.started && t.owned_by(principal) => {
-                                t.started = true;
-                                true
+                    match run.retry.clone() {
+                        Some(Retry::Relayed { state, .. }) => {
+                            match relayed_leg(plane, services, ticket, principal, unit, run, &state)
+                            {
+                                Poll::Pending => return Step::Pending,
+                                Poll::Ready(Some(leg)) => run.leg = Some(leg),
+                                Poll::Ready(None) => return not_run(unit, run),
                             }
-                            _ => false,
-                        });
-                        if !took {
-                            return not_run(unit, run);
+                        }
+                        // THE RESUME of an answered round of the task's own asks: the update that
+                        // answered it nested it once, and the host's one-time claim of that round
+                        // takes it; it asks from that round on.
+                        Some(Retry::Asked(round)) => {
+                            let working = plane.tasks.get(&run.reference).is_some_and(|t| {
+                                t.owned_by(principal) && t.status() == Status::Working
+                            });
+                            if !working {
+                                return not_run(unit, run);
+                            }
+                            run.round = round;
+                        }
+                        None => {
+                            let took = plane.tasks.with(&run.reference, |t| match t {
+                                Some(t) if !t.started && t.owned_by(principal) => {
+                                    t.started = true;
+                                    true
+                                }
+                                _ => false,
+                            });
+                            if !took {
+                                return not_run(unit, run);
+                            }
                         }
                     }
                     run.local = true;
                 }
                 if run.leg.is_none() {
                     let h = handle(ticket, &mut unit.issued, &mut run.claim);
-                    let key = format!("task-run:{}", run.reference);
+                    let key = match run.retry {
+                        Some(Retry::Asked(round)) => format!("task-run:{}/{round}", run.reference),
+                        _ => format!("task-run:{}", run.reference),
+                    };
                     match services.records_claim(
                         h,
                         crate::door::KIND_APPROVAL,
@@ -985,11 +1269,10 @@ fn running(
                 while let Some(asks) = rounds.get(run.round) {
                     enum Then {
                         Next,
-                        Wait,
+                        Park(Box<Task>),
                         Gone(Status),
                     }
-                    let parked = run.parked == Some(run.round);
-                    let runner = (unit.key, ticket);
+                    let asked = (run.round, run.params.clone());
                     let then = plane.tasks.with(&run.reference, |t| {
                         let Some(t) = t else {
                             return Then::Gone(Status::Cancelled);
@@ -997,26 +1280,24 @@ fn running(
                         if t.status().is_terminal() {
                             return Then::Gone(t.status());
                         }
-                        if !parked {
-                            t.park(asks.clone(), now);
-                        }
+                        t.park(asks.clone(), now);
                         if t.answered() {
-                            Then::Next
-                        } else {
-                            t.runner = Some(runner);
-                            Then::Wait
+                            return Then::Next;
                         }
+                        t.asked = Some(asked);
+                        t.runner = None;
+                        Then::Park(Box::new(t.clone()))
                     });
                     match then {
                         Then::Gone(status) => return reply(unit, run, status, Vec::new()),
-                        Then::Wait => {
-                            run.parked = Some(run.round);
-                            return Step::Wait(0);
+                        // PARKED ON ITS CALLER: the continuation ends with the handle live and the
+                        // task's live state in the plane's records; the `tasks/update` that answers
+                        // the round, on whichever node, nests the resume.
+                        Then::Park(task) => {
+                            let records = live_records(plane, &task, Some(0));
+                            return reply(unit, run, Status::InputRequired, records);
                         }
-                        Then::Next => {
-                            run.round += 1;
-                            run.parked = None;
-                        }
+                        Then::Next => run.round += 1,
                     }
                 }
                 plane.tasks.with(&run.reference, |t| {
@@ -1042,6 +1323,24 @@ fn running(
                     .map(|t| t.answers().clone())
                     .unwrap_or_default();
                 match call(&held, unit, run, &answers) {
+                    // THE RUN'S LEASE, renewed as its call goes out: the task's live state and its
+                    // index row ride the request.
+                    Ok(Step::Write) => {
+                        if let Some(task) = plane.tasks.get(&run.reference) {
+                            let timeout = unit
+                                .member
+                                .as_ref()
+                                .and_then(|m| held.section.servers.get(m))
+                                .map_or(0, crate::tools_config::McpServerDefCfg::timeout_ms);
+                            let now = task_clock_ms(services, ticket, &mut unit.issued);
+                            let until = now
+                                .saturating_add(timeout)
+                                .saturating_add(tasks::RUN_LEASE_MS);
+                            let records = live_records(plane, &task, Some(until));
+                            ride(unit, records);
+                        }
+                        return Step::Write;
+                    }
                     Ok(step) => return step,
                     Err(end) => {
                         run.end = Some(end);
@@ -1076,8 +1375,8 @@ fn running(
                     Poll::Ready(Ok(())) => Some(true),
                     // The handle was settled first: `tasks/cancel` won.
                     Poll::Ready(Err(ServiceError::Declined(AbiOutcome::Refused))) => Some(false),
-                    // The host could not say: the instance's word stands, and the handle is settled
-                    // by the next create's sweep.
+                    // The host could not say: the instance's word stands, and the settle is owed to
+                    // the next create's sweep.
                     Poll::Ready(Err(_)) => None,
                 };
                 let reference = run.reference.clone();
@@ -1103,7 +1402,14 @@ fn running(
                         }
                     }
                 });
-                return reply(unit, run, status, chunks);
+                // A settle that landed leaves the task's live state and index row to strike.
+                let mut records = chunks;
+                if won.is_some() {
+                    if let Some(task) = plane.tasks.get(&reference) {
+                        records.extend(struck_records(&task));
+                    }
+                }
+                return reply(unit, run, status, records);
             }
         }
     }
@@ -1168,8 +1474,8 @@ fn call(
     // THE RETRY: the caller's answers and the upstream's own state, verbatim, on the next round.
     let relay = run.leg.as_ref().map(|leg| {
         let mut continuation = Map::new();
-        if let Some(retry) = &run.retry {
-            continuation.insert("inputResponses".into(), retry.responses.clone());
+        if let Some(Retry::Relayed { responses, .. }) = &run.retry {
+            continuation.insert("inputResponses".into(), responses.clone());
         }
         if let Some(state) = &leg.state {
             continuation.insert("requestState".into(), state.clone());
@@ -1210,27 +1516,20 @@ fn call(
 
 // ── the verbs ─────────────────────────────────────────────────────────────────────────────────
 
-/// THE RETRY OF A RELAYED ASK, nested by the `tasks/update` that answered its last key: the task's
-/// call, busbar's sealed state and the caller's answers, on the task-run claim (under the updating
-/// caller's principal, the task's own). A host that runs no continuation for it fails the task.
-fn retry_relayed(
+/// THE RUN THAT CONTINUES A TASK, nested by the `tasks/update` that answered it (under the updating
+/// caller's principal, the task's own) on the task-run claim: `body` names the task, its call and
+/// what continues it. The records the update leaves: the task's live state, its run's lease taken;
+/// a host that runs no continuation for it fails the task, its settle owed until it lands.
+fn nest_run(
     plane: &McpDoor,
     services: Services,
     ticket: Ticket,
     unit: &mut CallUnit,
     task: &Task,
-    park: tasks::RelayPark,
+    body: &Value,
     at: u64,
-) {
-    let body = serde_json::to_vec(&json!({
-        "taskId": task.id,
-        "params": park.params,
-        "relay": {
-            "requestState": park.state,
-            "inputResponses": Value::Object(park.responses),
-        },
-    }))
-    .unwrap_or_default();
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let body = serde_json::to_vec(body).unwrap_or_default();
     let mut fresh = None;
     let h = handle(ticket, &mut unit.issued, &mut fresh);
     let mut buf = vec![0u8; 1024];
@@ -1243,10 +1542,12 @@ fn retry_relayed(
         &mut buf,
         &mut spans,
     ) {
-        // The retry runs: its answer is its own, and nobody waits for it here.
+        // The run continues: its answer is its own, and nobody waits for it here.
         Poll::Pending
         | Poll::Ready(Ok(_))
-        | Poll::Ready(Err(busbar_contract::abi::sdk::services::ServiceError::Short { .. })) => {}
+        | Poll::Ready(Err(busbar_contract::abi::sdk::services::ServiceError::Short { .. })) => {
+            live_records(plane, task, Some(at.saturating_add(tasks::RUN_LEASE_MS)))
+        }
         Poll::Ready(Err(_)) => {
             let failed = plane.tasks.with(&task.id, |t| {
                 t.and_then(|t| {
@@ -1258,10 +1559,15 @@ fn retry_relayed(
                     .then(|| t.clone())
                 })
             });
-            if let Some(t) = failed {
-                let mut fresh = None;
-                let h = handle(ticket, &mut unit.issued, &mut fresh);
-                let _unheard = services.work_settle(h, t.handle, &t.row());
+            match failed {
+                Some(t) if settled(services, ticket, &mut unit.issued, t.handle, &t.row()) => {
+                    struck_records(&t)
+                }
+                Some(t) => {
+                    owe(plane, &t);
+                    Vec::new()
+                }
+                None => Vec::new(),
             }
         }
     }
@@ -1365,33 +1671,68 @@ fn verbing(
             .cloned()
             .unwrap_or_default();
         let delivered = plane.tasks.with(&task.id, |t| {
-            t.map(|t| (t.deliver(&responses, at), t.take_relay(), t.clone()))
+            t.map(|t| {
+                let was = t.status();
+                let took = t.deliver(&responses, at);
+                let park = t.take_relay();
+                let resume = if took
+                    && park.is_none()
+                    && was == Status::InputRequired
+                    && t.status() == Status::Working
+                {
+                    t.asked.take()
+                } else {
+                    None
+                };
+                (took, park, resume, t.clone())
+            })
         });
-        return match delivered {
-            // THE CALLER'S ANSWER TO THE UPSTREAM'S ASK continues the task as a NEW unit: the retry,
-            // nested on the task-run claim, back to the member that asked.
-            Some((true, Some(park), t)) => {
-                retry_relayed(plane, services, ticket, unit, &t, park, at);
-                ack(unit)
-            }
-            Some((false, _, _)) => refuse(
-                unit,
-                &invalid(
-                    id,
-                    &format!(
-                        "this task already holds {} answer keys, the most one task retains. \
-                         `inputResponses` may still update any of its existing keys, but adding a \
-                         new one past that ceiling is refused.",
-                        tasks::MAX_TASK_ANSWERS
+        let (park, resume, t) = match delivered {
+            Some((false, ..)) => {
+                return refuse(
+                    unit,
+                    &invalid(
+                        id,
+                        &format!(
+                            "this task already holds {} answer keys, the most one task retains. \
+                             `inputResponses` may still update any of its existing keys, but \
+                             adding a new one past that ceiling is refused.",
+                            tasks::MAX_TASK_ANSWERS
+                        ),
                     ),
-                ),
-            ),
-            Some((true, None, t)) => {
-                wake(plane, &t);
-                ack(unit)
+                )
             }
-            None => ack(unit),
+            Some((true, park, resume, t)) => (park, resume, t),
+            None => return ack(unit),
         };
+        let records = if t.status().is_terminal() {
+            // A terminal task takes no input: nothing moved.
+            Vec::new()
+        } else if let Some(park) = park {
+            // THE CALLER'S ANSWER TO THE UPSTREAM'S ASK continues the task as a NEW unit: the
+            // retry, back to the member that asked.
+            let body = json!({
+                "taskId": t.id,
+                "params": park.params,
+                "relay": {
+                    "requestState": park.state,
+                    "inputResponses": Value::Object(park.responses),
+                },
+            });
+            nest_run(plane, services, ticket, unit, &t, &body, at)
+        } else if let Some((round, call)) = resume {
+            // THE ROUND OF ITS OWN ASKS, ANSWERED: the run resumes there, as a NEW unit.
+            let body = json!({ "taskId": t.id, "params": call, "resume": round });
+            nest_run(plane, services, ticket, unit, &t, &body, at)
+        } else if t.status() == Status::InputRequired {
+            live_records(plane, &t, Some(0))
+        } else {
+            // A run holds it: its state is written, its lease left as the run took it.
+            live_records(plane, &t, None)
+        };
+        let step = ack(unit);
+        ride(unit, records);
+        return step;
     }
     // `tasks/cancel`: idempotent on a settled task, and audited either way (the served engine's
     // `mcp_task.cancel` row on every cancel of a task the caller holds).
@@ -1408,34 +1749,35 @@ fn verbing(
     let mut cancelled = task.clone();
     cancelled.cancel(at);
     let h = handle(ticket, &mut unit.issued, &mut st.settle);
-    let settled = match services.work_settle(h, task.handle, &cancelled.row()) {
+    let landed = match services.work_settle(h, task.handle, &cancelled.row()) {
         Poll::Pending => return Step::Pending,
         Poll::Ready(Ok(())) => Some(true),
         // The continuation settled it first: its terminal state stands.
         Poll::Ready(Err(ServiceError::Declined(AbiOutcome::Refused))) => Some(false),
+        // Owed to the next create's sweep, until it lands.
         Poll::Ready(Err(_)) => None,
     };
-    if settled != Some(false) {
-        let moved = plane.tasks.with(&task.id, |t| {
-            t.and_then(|t| {
-                t.cancel(at).then(|| {
-                    t.unsettled = settled.is_none();
-                    t.clone()
-                })
-            })
+    if landed != Some(false) {
+        plane.tasks.with(&task.id, |t| {
+            if let Some(t) = t {
+                if t.cancel(at) {
+                    t.unsettled = landed.is_none();
+                }
+            }
         });
-        if let Some(t) = moved {
-            wake(plane, &t);
-        }
     }
-    cancel_ack(unit)
+    let step = cancel_ack(unit);
+    if landed == Some(true) {
+        ride(unit, struck_records(&cancelled));
+    }
+    step
 }
 
-/// The task `task_id` names FOR THIS CALLER: `work.find` (scoped to the instance and the principal;
-/// every denial alike), then what the instance holds of it, else — for a settled handle — its row
-/// and the result written in the plane's records. A live handle the instance holds nothing of has
-/// no continuation in this process: unknown, as the served engine answered every task after a
-/// restart.
+/// The task `task_id` names FOR THIS CALLER, from the host's rows (THE DESIGN §2: the task store is
+/// host records): `work.find` (scoped to the instance and the principal; every denial alike); a
+/// live handle's live state in the plane's records; a settled one's row and the result written
+/// there (or the result this instance holds, when it holds one the records could not). The
+/// instance's own halves of the task are kept beside what the host says.
 fn resolve(
     plane: &McpDoor,
     services: Services,
@@ -1445,84 +1787,85 @@ fn resolve(
     task_id: &str,
     st: &mut Verb,
 ) -> Resolved {
-    use busbar_contract::abi::sdk::services::ServiceError;
     let h = handle(ticket, &mut unit.issued, &mut st.find);
     let (mut buf, mut spans) = ([0u8; WORK_BYTES], [blank(); 1]);
-    let found = match services.work_find(h, task_id, &mut buf, &mut spans) {
+    let (state, work, row) = match services.work_find(h, task_id, &mut buf, &mut spans) {
         Poll::Pending => return Resolved::Pending,
-        Poll::Ready(Ok(Some(found))) => found,
+        Poll::Ready(Ok(Some(found))) => (found.state, found.handle, WorkRow::read(found.record)),
         Poll::Ready(_) => return Resolved::Unknown,
     };
-    if let Some(task) = plane.tasks.get(&task_id.to_string()) {
-        return if task.owned_by(principal) {
-            Resolved::Task(Box::new(task))
-        } else {
-            Resolved::Unknown
-        };
-    }
-    if found.state == WORK_LIVE {
+    let held = plane.tasks.get(&task_id.to_string());
+    if held.as_ref().is_some_and(|t| !t.owned_by(principal)) {
         return Resolved::Unknown;
     }
-    let Some(row) = WorkRow::read(found.record) else {
-        return Resolved::Unknown;
-    };
-    let terminal = match row.status {
-        Status::Completed | Status::Failed => {
-            // THE RESULT, read back from its chunks, page by page.
-            while !st.listed {
-                let prefix = tasks::chunk_prefix(task_id);
-                let h = handle(ticket, &mut unit.issued, &mut st.list);
-                let mut sizes = (64 * 1024, PAGE as usize);
-                let mut page: Option<(usize, Option<Vec<u8>>)> = None;
-                for _ in 0..2 {
-                    let mut buf = vec![0u8; sizes.0];
-                    let mut spans = vec![blank(); sizes.1];
-                    match services.records_list(
-                        h,
-                        crate::door::KIND_TASK,
-                        &prefix,
-                        st.after.as_deref(),
-                        PAGE,
-                        (&mut buf, &mut spans),
-                    ) {
-                        Poll::Pending => return Resolved::Pending,
-                        Poll::Ready(Ok(records)) => {
-                            let mut n = 0;
-                            for (_, value) in records.records() {
-                                st.read.extend_from_slice(value);
-                                n += 1;
-                            }
-                            page = Some((n, records.last_key().map(<[u8]>::to_vec)));
-                            break;
-                        }
-                        Poll::Ready(Err(ServiceError::Short { bytes, items })) => {
-                            sizes = (
-                                usize::try_from(bytes).unwrap_or(usize::MAX).max(sizes.0),
-                                usize::try_from(items).unwrap_or(usize::MAX).max(sizes.1),
-                            );
-                        }
-                        Poll::Ready(Err(_)) => return Resolved::Unknown,
-                    }
-                }
-                let Some((n, last)) = page else {
-                    return Resolved::Unknown;
-                };
-                st.list = None;
-                if n < PAGE as usize || last.is_none() {
-                    st.listed = true;
-                } else {
-                    st.after = last;
-                }
-            }
-            match tasks::read_chunks(std::iter::once(st.read.as_slice())) {
-                Some(terminal) => Some(terminal),
-                None => return Resolved::Unknown,
-            }
+    if state != WORK_LIVE {
+        if let Some(task) = held.as_ref().filter(|t| t.status().is_terminal()) {
+            return Resolved::Task(Box::new(task.clone()));
         }
-        _ => None,
+    }
+    // A host that lists none of the plane's records: what the instance holds answers.
+    let unlisted =
+        |held: Option<Task>| held.map_or(Resolved::Unknown, |t| Resolved::Task(Box::new(t)));
+    let Some(row) = row else {
+        return Resolved::Unknown;
     };
-    let task = Task::from_row(task_id, principal, found.handle, &row, terminal.as_ref());
-    plane.tasks.insert(task_id.to_string(), task.clone());
+    let mut task = if state == WORK_LIVE {
+        // ITS LIVE STATE, read back from its chunks.
+        let prefix = tasks::live_prefix(task_id);
+        match list(
+            services,
+            ticket,
+            &mut unit.issued,
+            &prefix,
+            false,
+            &mut st.live,
+        ) {
+            Poll::Pending => return Resolved::Pending,
+            Poll::Ready(false) => return unlisted(held),
+            Poll::Ready(true) => {}
+        }
+        let mut task = Task::from_row(task_id, principal, work, &row, None);
+        let bytes: Vec<u8> = st.live.rows.iter().flat_map(|(_, v)| v.clone()).collect();
+        if let Some(live) = tasks::read_live(&bytes) {
+            task.take_live(&live);
+        }
+        task
+    } else {
+        let terminal = match row.status {
+            Status::Completed | Status::Failed => {
+                // THE RESULT, read back from its chunks.
+                let prefix = tasks::chunk_prefix(task_id);
+                match list(
+                    services,
+                    ticket,
+                    &mut unit.issued,
+                    &prefix,
+                    false,
+                    &mut st.result,
+                ) {
+                    Poll::Pending => return Resolved::Pending,
+                    Poll::Ready(false) => return unlisted(held),
+                    Poll::Ready(true) => {}
+                }
+                match tasks::read_chunks(st.result.rows.iter().map(|(_, v)| v.as_slice())) {
+                    Some(terminal) => Some(terminal),
+                    None => return Resolved::Unknown,
+                }
+            }
+            _ => None,
+        };
+        Task::from_row(task_id, principal, work, &row, terminal.as_ref())
+    };
+    let host = task.clone();
+    plane.tasks.with_all(|m| match m.get_mut(task_id) {
+        Some(t) => {
+            t.hosted(host);
+            task = t.clone();
+        }
+        None => {
+            m.insert(task_id.to_string(), host);
+        }
+    });
     Resolved::Task(Box::new(task))
 }
 
