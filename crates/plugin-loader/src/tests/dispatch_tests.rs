@@ -2027,3 +2027,36 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
         Err(LoadError::KindTail(_))
     ));
 }
+
+// ── THE WORKERS' RUNTIME ─────────────────────────────────────────────────────────────────────────
+
+/// RED: the runtime the workers run their crossings inside is INSTALLED, never captured: a
+/// dispatcher built, and first submitted to, inside a runtime nobody drives (the control runtime,
+/// whose thread then waits synchronously on the op) does not bind its workers to that runtime; the
+/// one the host installs does, and a second install is ignored.
+#[test]
+fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_until_one_is_installed(
+) {
+    let control = one_thread();
+    let d = {
+        let _inside = control.enter();
+        let d = Dispatcher::new(config());
+        let (p, _sink) = opened(&d);
+        assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Ready);
+        d
+    };
+    assert!(
+        d.installed_runtime().is_none(),
+        "the workers were bound to the submitter's runtime"
+    );
+    let io = one_thread();
+    assert!(
+        d.install_runtime(io.handle().clone()),
+        "the first install holds"
+    );
+    assert!(
+        !d.install_runtime(control.handle().clone()),
+        "a second install is ignored"
+    );
+    assert!(d.installed_runtime().is_some());
+}
