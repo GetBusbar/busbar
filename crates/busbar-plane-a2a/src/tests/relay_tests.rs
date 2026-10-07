@@ -821,6 +821,7 @@ fn every_hop_refusal_carries_its_own_stable_code() {
         HopRefusal::Uncorrelated,
         HopRefusal::NotServing,
         HopRefusal::EndpointRefused,
+        HopRefusal::Transport,
     ];
     // Exhaustive by construction: a new arm fails to compile here until it is listed above.
     for arm in arms {
@@ -831,7 +832,8 @@ fn every_hop_refusal_carries_its_own_stable_code() {
             | HopRefusal::BackendError
             | HopRefusal::Uncorrelated
             | HopRefusal::NotServing
-            | HopRefusal::EndpointRefused => {}
+            | HopRefusal::EndpointRefused
+            | HopRefusal::Transport => {}
         }
     }
     let mut seen: Vec<&'static str> = Vec::new();

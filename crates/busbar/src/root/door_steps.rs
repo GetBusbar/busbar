@@ -12,7 +12,7 @@
 //! | authenticate | the auth gate's verdict (the unit's principal); a unit with no key on a claim that takes a credential is refused (ARCHITECT P3 (a)) |
 //! | verify | the route the plane's `arrive` named, resolved against its section ([`DoorPools`], ARCHITECT Q-SW6/Q-FL3), a `ROUTE_SCOPE` unit to the one entry the principal's grant reaches among the plane's candidates (Q-DEL-A2A-SELECT, -SCOPE-TRUST); each member sealed under its (plane key, entry) |
 //! | approve | the caller's grant of the plane's scope kind over the route as named, then its fallback pool |
-//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
+//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged, unless the plane counts it as an admitted call (`ROUTE_COUNTED`): then a keyed one is charged on the plane's pool as below; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
 //! | meter | the plane's last far-end-reported counts, as the unit's usage lines (an estimate never bills) |
 //! | audit | the record's facts: the decoded operation class and how the unit finished |
 //!
@@ -367,6 +367,8 @@ struct DoorUnit {
     expected: Vec<UnitCount>,
     /// Its operation is performed at most once (`ROUTE_ONCE`).
     once: bool,
+    /// The plane answers it itself as an admitted call (`ROUTE_COUNTED`): a keyed one is charged.
+    counted: bool,
     routed: Option<Routed>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<AdmitGrant>,
@@ -616,7 +618,9 @@ impl DriverSteps for DoorSteps<'_> {
     }
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
-        self.lock().once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        let mut u = self.lock();
+        u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        u.counted = flags & busbar_contract::abi::plane::ROUTE_COUNTED != 0;
     }
 }
 
@@ -762,12 +766,17 @@ impl Units for DoorSteps<'_> {
     ) -> SeatVerdict<Admit> {
         // A UNIT THE PLANE ANSWERS ITSELF (ROUTE_LOCAL, ARCHITECT Q-L3B-LOCAL): admitted with no
         // route walk; only far-end-reported units bill (§7), so it holds and charges nothing, and
-        // is audited as every unit is.
-        let local = self
-            .lock()
-            .named
-            .as_ref()
-            .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+        // is audited as every unit is — unless the plane answers it AS AN ADMITTED CALL
+        // (ROUTE_COUNTED): then a keyed one passes the one check-then-charge on the plane's pool,
+        // counting its request (R2, 1.5.5's rule), and keeps only the fee units the plane reports.
+        let (local, counted) = {
+            let u = self.lock();
+            let local = u
+                .named
+                .as_ref()
+                .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+            (local, local && u.counted)
+        };
         // A UNIT ROUTED BY SCOPE that no one entry reached (Q-DEL-A2A-SELECT): refused before
         // anything is charged, as 1.5.5 chose the agent before its admission.
         let unrouted_scope = self
@@ -783,7 +792,7 @@ impl Units for DoorSteps<'_> {
             Admission::Refused => {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-            Admission::Keyed if !local => {
+            Admission::Keyed if !local || counted => {
                 if let Some(key) = self.key.clone() {
                     if let Err(refusal) = self.charge(ctx, &key) {
                         return SeatVerdict::refuse(token, refusal);
@@ -1002,9 +1011,11 @@ pub fn compose_egress(
         }
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
-        members.insert(entry.clone(), Member::new(destination, name.clone(), 1));
+        members.insert(entry.clone(), Member::new(destination, name, 1));
         sealed.insert(destination, route);
-        names.push((destination, name));
+        // The counters' lane label is the member's configured name: the entry itself, as the
+        // operator wrote it in the plane's section ([`WalkTelemetry`]'s rule).
+        names.push((destination, entry.clone()));
     }
     let mut built: HashMap<String, Pool> = HashMap::new();
     for (label, entries) in pools.pools() {

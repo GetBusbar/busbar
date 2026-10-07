@@ -2177,11 +2177,9 @@ mod agent_door {
             (sent + ANSWER.len()) as u64,
             "the request body sent and the response body read: {lines:?}"
         );
-        assert_eq!(
-            counted(&lines[0], busbar_contract::plane::PER_REQUEST),
-            1,
-            "the fee unit, once: {lines:?}"
-        );
+        // The fee unit rides the line as its billable count (`UnitCounts::fee_count`, priced as
+        // the card's fee line): a fee unit is no usage class (`report_of`).
+        assert_eq!(lines[0].fee_count, 1, "the fee unit, once: {lines:?}");
     }
 
     /// The root cells `billed-bytes` and the agent fee unit, refused before the socket: every hop
@@ -2225,11 +2223,7 @@ mod agent_door {
                 counted(c, surface("bytes_class")) > failing.len() as u64,
                 "its request and the agent's refusal: {c:?}"
             );
-            assert_eq!(
-                counted(c, busbar_contract::plane::PER_REQUEST),
-                1,
-                "a hop that left keeps its fee: {c:?}"
-            );
+            assert_eq!(c.fee_count, 1, "a hop that left keeps its fee: {c:?}");
         }
         let before = left.len();
         while agent.heard.try_recv().is_ok() {}
@@ -2246,11 +2240,7 @@ mod agent_door {
                 0,
                 "a unit refused before the socket counts no bytes: {c:?}"
             );
-            assert_eq!(
-                counted(c, busbar_contract::plane::PER_REQUEST),
-                0,
-                "and keeps no fee: {c:?}"
-            );
+            assert_eq!(c.fee_count, 0, "and keeps no fee: {c:?}");
         }
         assert!(!agent.relayed(), "the fast-failed unit never dialled");
     }
@@ -4467,9 +4457,11 @@ mod agent_door {
             let body = axum::body::to_bytes(response.into_body(), 1 << 16)
                 .await
                 .expect("body");
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains("breaker_open"), "{line}: {body}");
             assert!(
-                String::from_utf8_lossy(&body).contains("breaker_open"),
-                "{line}"
+                body.contains("agent `planner`"),
+                "{line}: the refusal names the agent the unit was routed to: {body}"
             );
         }
         assert!(!agent.relayed(), "a tripped agent is never dialled");
@@ -4959,6 +4951,15 @@ mod agent_door {
         agent.streams();
         let s = served(instance, &agent.entry("planner", "1h"), false, None);
         approve(&s, "planner").await;
+        // THE AGENT'S CARD IS FRESHLY VERIFIED, as the engine's cell held it (its registration
+        // approved over a cached card, no look due): one stream is served while the agent is up,
+        // so the call below meets no look and its HOP is what fails.
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/stream", STREAM, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "served while it is up: {body}");
         agent.go_down();
         let (status, body) = answered(
             &s.router,
@@ -4966,6 +4967,10 @@ mod agent_door {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert!(
+            body.contains(surface("task_resource_type")),
+            "the hop's task is named, failed as the engine's `fail_task` failed it: {body}"
+        );
         assert!(
             !body.contains("127.0.0.1"),
             "the refusal named the backend endpoint: {body}"
