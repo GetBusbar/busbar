@@ -159,10 +159,10 @@ fn test_sse_data_splits_on_bare_cr() {
     );
 }
 
-/// A minimal warn capture: every WARN event's fields, rendered, behind one lock. The door holds no
-/// subscriber dependency, so the capture is the `tracing` trait implemented by hand.
-#[derive(Clone, Default)]
-struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+/// A minimal warn capture: every WARN event's fields, rendered, sent down a channel. The door
+/// holds no subscriber dependency, so the capture is the `tracing` trait implemented by hand, and
+/// holds no lock or cell (the plane keeps no interior state).
+struct WarnCapture(std::sync::mpsc::Sender<String>);
 
 struct Render<'a>(&'a mut String);
 
@@ -185,7 +185,7 @@ impl tracing::Subscriber for WarnCapture {
     fn event(&self, event: &tracing::Event<'_>) {
         let mut line = String::new();
         event.record(&mut Render(&mut line));
-        self.0.lock().expect("capture").push(line);
+        let _ = self.0.send(line);
     }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
@@ -198,8 +198,8 @@ impl tracing::Subscriber for WarnCapture {
 /// dispatcher can make the FIRST emission through this scoped subscriber invisible.
 #[test]
 fn test_non_utf8_frame_drop_carries_diag_code() {
-    let cap = WarnCapture::default();
-    let out = tracing::subscriber::with_default(cap.clone(), || {
+    let (sent, heard) = std::sync::mpsc::channel();
+    let out = tracing::subscriber::with_default(WarnCapture(sent), || {
         let mut r = SseReader::default();
         let first = r.feed(b"data: \xff\xfe\n\n");
         let _ = r.feed(b"data: \xff\xfe\n\n");
@@ -210,7 +210,7 @@ fn test_non_utf8_frame_drop_carries_diag_code() {
         "a non-UTF-8 frame is still dropped, not relayed"
     );
     let banner = PLANE_SSE_FRAME_NOT_UTF8.banner().to_string();
-    let seen = cap.0.lock().expect("capture").clone();
+    let seen: Vec<String> = heard.try_iter().collect();
     assert!(
         seen.iter().any(|line| line.contains(&banner)),
         "the dropped-frame warning must carry diag={banner}; captured: {seen:?}"
