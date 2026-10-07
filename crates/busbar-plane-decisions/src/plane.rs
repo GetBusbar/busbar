@@ -5,6 +5,7 @@
 //! not a price. Nothing in this file opens a connection, reads a file, reads a clock other than the
 //! one the context hands it, or keeps a byte across a call.
 
+use busbar_contract::abi::plane::{class_of_refusal, RefusalClass};
 use busbar_contract::bounded::{FactValue, Facts, Ir, ScratchBytes};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};
@@ -98,61 +99,35 @@ impl DecisionPlane {
 /// message. THE MATCH IS TOTAL — no `_` arm — so a reason with no home here is a compile error,
 /// never a silent collapse to an internal fault.
 fn refusal_render(reason: RefusalReason) -> (&'static str, &'static str) {
-    match reason {
-        RefusalReason::BodyTooLarge => ("invalid_request", "the request is too large"),
-        RefusalReason::DecodeFailed => ("invalid_request", "the request could not be read"),
-        RefusalReason::SchemeNotDeclared
-        | RefusalReason::CredentialRejected
-        | RefusalReason::SessionUnbound
-        | RefusalReason::CredentialBudget => (
+    // A class-to-wire table over the one classification (`busbar_contract::abi::plane::
+    // RefusalClass`; the P-item "refusal-reason collapse"): which family a reason belongs to is
+    // decided once, there.
+    match class_of_refusal(reason) {
+        RefusalClass::TooLarge => ("invalid_request", "the request is too large"),
+        RefusalClass::Unreadable => ("invalid_request", "the request could not be read"),
+        RefusalClass::Unauthenticated => (
             "invalid_request",
             "the request did not carry usable authority",
         ),
-        RefusalReason::ScopeMissing
-        | RefusalReason::Vetoed
-        | RefusalReason::Revoked
-        | RefusalReason::PoolNotPermitted => (
+        RefusalClass::Forbidden => (
             "unsupported_operation",
             "the caller may not perform this operation",
         ),
-        RefusalReason::NoDestination => (
+        RefusalClass::NotFound => (
             "invalid_params",
             "no decision provider is reachable for this request",
         ),
-        RefusalReason::InFlightCap
-        | RefusalReason::CursorBudget
-        | RefusalReason::SessionBudget
-        | RefusalReason::OpenSlotBusy
-        | RefusalReason::OverBudget
-        | RefusalReason::GroupFrozen
-        | RefusalReason::Unpriced
-        | RefusalReason::OverdraftCeiling
-        | RefusalReason::StaleSlice
-        | RefusalReason::TierMismatch
-        | RefusalReason::SpillBudget
-        | RefusalReason::ScratchExhausted
-        | RefusalReason::RateLimited
-        | RefusalReason::ChallengeExhausted
-        | RefusalReason::NoRate
-        | RefusalReason::Replayed
-        | RefusalReason::InFlight
-        | RefusalReason::DestinationBudgetExhausted
-        | RefusalReason::BreakerOpen
-        | RefusalReason::DestinationUnreachable
-        | RefusalReason::Drain
-        | RefusalReason::Superseded
-        | RefusalReason::ClientGone
-        | RefusalReason::DeadlineExceeded
-        | RefusalReason::Stalled => (
+        RefusalClass::Rejected
+        | RefusalClass::Throttled
+        | RefusalClass::Busy
+        | RefusalClass::QuotaExhausted
+        | RefusalClass::Unreachable
+        | RefusalClass::Unavailable
+        | RefusalClass::Timeout => (
             "unsupported_operation",
             "the request could not be served at this time",
         ),
-        RefusalReason::DurabilityUnavailable
-        | RefusalReason::MeterDisputed
-        | RefusalReason::HandoffMismatch
-        | RefusalReason::PlanePanic
-        | RefusalReason::TaskLost
-        | RefusalReason::SecretPlaceholder => {
+        RefusalClass::PlaneFault | RefusalClass::NodeFault => {
             ("internal", "the request could not be served at this time")
         }
     }

@@ -108,6 +108,16 @@ macro_rules! reasons {
                 }
             }
         }
+
+        // The same join read the other way, so a plane handed a `RefusalReason` can reach the one
+        // classification (`abi::plane::RefusalCode::class`) without a reason match of its own.
+        impl From<crate::unit::RefusalReason> for ReasonCode {
+            fn from(reason: crate::unit::RefusalReason) -> Self {
+                match reason {
+                    $(crate::unit::RefusalReason::$refusal => ReasonCode::$name,)*
+                }
+            }
+        }
     };
 }
 

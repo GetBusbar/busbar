@@ -12,6 +12,7 @@
 //! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
 //! handed back an empty table because the arena could not allocate one; it can, and this does.
 
+use busbar_contract::abi::plane::{class_of_refusal, RefusalClass};
 use busbar_contract::bounded::{BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
@@ -363,78 +364,50 @@ fn bool_literal(raw: &[u8]) -> Option<bool> {
 /// TEXT, which the composition root must compare against the battery's recorded answers on the day
 /// it switches this plane on. That is stated here rather than left for someone to discover.
 fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
-    // THE MATCH IS TOTAL — there is no `_` arm. Before this, only nine of the 42 reasons were mapped
-    // and the rest collapsed to `CODE_INTERNAL`, so a rate limit, an open breaker, a drain or a spent
-    // budget reached the caller as "this node broke" — a node fault a client retries the wrong way.
-    // This protocol has its own code for a policy refusal (`CODE_REFUSED`), so a busbar admission /
-    // rate / budget refusal is a policy refusal and says so; only a genuine node fault is internal,
-    // and each is listed explicitly so a new reason is a compile error, never a silent collapse.
-    match reason {
-        RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
-        RefusalReason::DecodeFailed => (
+    // A class-to-wire table over the one classification (`busbar_contract::abi::plane::
+    // RefusalClass`; the P-item "refusal-reason collapse"). Which family a reason belongs to is
+    // decided once, there; this plane says only how each family reads on its wire. The match has no
+    // `_` arm. Before the exhaustive form only nine reasons were mapped and the rest collapsed to
+    // `CODE_INTERNAL`, so a rate limit, an open breaker, a drain or a spent budget reached the caller
+    // as "this node broke". This protocol has its own code for a policy refusal (`CODE_REFUSED`), so
+    // a busbar admission / rate / budget refusal is a policy refusal and says so; only a genuine node
+    // fault is internal.
+    match class_of_refusal(reason) {
+        RefusalClass::TooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
+        RefusalClass::Unreadable => (
             jsonrpc::CODE_INVALID_REQUEST,
             "the request could not be read",
         ),
-        RefusalReason::SchemeNotDeclared
-        | RefusalReason::CredentialRejected
-        | RefusalReason::SessionUnbound
-        | RefusalReason::CredentialBudget => (
+        RefusalClass::Unauthenticated => (
             jsonrpc::CODE_INVALID_REQUEST,
             "the request did not carry usable authority",
         ),
         // The caller is known and may not do this. This protocol has its own code for a policy
         // refusal, and it is outside the range the specification reserves for itself.
-        RefusalReason::ScopeMissing
-        | RefusalReason::Vetoed
-        | RefusalReason::Revoked
-        | RefusalReason::PoolNotPermitted => (
+        RefusalClass::Forbidden => (
             jsonrpc::CODE_REFUSED,
             "the caller may not perform this operation",
         ),
         // There is nowhere for it to go, or the way there is shut, which this protocol names
         // specifically.
-        RefusalReason::NoDestination
-        | RefusalReason::DestinationUnreachable
-        | RefusalReason::BreakerOpen
-        | RefusalReason::DestinationBudgetExhausted => (
+        RefusalClass::NotFound | RefusalClass::Unreachable => (
             jsonrpc::CODE_UPSTREAM_UNAVAILABLE,
             "no server is reachable for this request",
         ),
         // Every busbar-specific admission / capacity / rate / budget / drain refusal. A policy said
         // no; the caller is told that and nothing about the money, the buckets or the store.
-        RefusalReason::InFlightCap
-        | RefusalReason::CursorBudget
-        | RefusalReason::SessionBudget
-        | RefusalReason::OpenSlotBusy
-        | RefusalReason::OverBudget
-        | RefusalReason::GroupFrozen
-        | RefusalReason::Unpriced
-        | RefusalReason::OverdraftCeiling
-        | RefusalReason::StaleSlice
-        | RefusalReason::TierMismatch
-        | RefusalReason::SpillBudget
-        | RefusalReason::ScratchExhausted
-        | RefusalReason::RateLimited
-        | RefusalReason::ChallengeExhausted
-        | RefusalReason::NoRate
-        | RefusalReason::Replayed
-        | RefusalReason::InFlight
-        | RefusalReason::Drain
-        | RefusalReason::Superseded
-        | RefusalReason::ClientGone
-        | RefusalReason::DeadlineExceeded
-        | RefusalReason::Stalled => (
+        RefusalClass::Rejected
+        | RefusalClass::Throttled
+        | RefusalClass::Busy
+        | RefusalClass::QuotaExhausted
+        | RefusalClass::Unavailable
+        | RefusalClass::Timeout => (
             jsonrpc::CODE_REFUSED,
             "the request could not be served at this time",
         ),
-        // A genuine node-internal fault — this node did break, and the caller is owed that fact and
+        // A genuine node-internal fault -- this node did break, and the caller is owed that fact and
         // not a false policy refusal.
-        RefusalReason::DurabilityUnavailable
-        | RefusalReason::MeterDisputed
-        | RefusalReason::HandoffMismatch
-        | RefusalReason::PlanePanic
-        | RefusalReason::TaskLost
-        | RefusalReason::SecretPlaceholder => (
+        RefusalClass::PlaneFault | RefusalClass::NodeFault => (
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
         ),

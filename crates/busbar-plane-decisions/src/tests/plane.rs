@@ -273,3 +273,36 @@ fn the_provider_is_the_declared_and_written_session_fact() {
     assert_eq!(ingress_provider_fact(DecisionPlane::new(TWO)), None);
     assert_eq!(ingress_provider_fact(DecisionPlane::EMPTY), None);
 }
+
+/// P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, "All P-item behaviours match 1.5.5"; drive
+/// log P1/P2 (the same defect on this plane), commit 470351a480; TODO L-ENG9). 1.5.5's one surface gave every limit reason its own
+/// status and kind and answered none of them as an internal error (v1.5.5
+/// `crates/busbar/src/ingress/mod.rs:237-305`). On this plane: a reason renders as the internal
+/// code exactly when its class is a node fault, and every reason of one class renders the same
+/// answer, so the reason-to-family decision is the one classification's
+/// (`busbar_contract::abi::plane::RefusalCode::class`) and never this plane's own.
+#[test]
+fn p_item_refusal_reason_collapse_only_a_node_fault_is_internal_and_one_class_one_answer() {
+    use busbar_contract::abi::plane::{reason_of, RefusalClass, RefusalCode};
+    let mut answers: Vec<(RefusalClass, (&'static str, &'static str))> = Vec::new();
+    for code in RefusalCode::ALL {
+        // Two codes are the kernel's own money verdicts and never reach a plane (`reason_of`).
+        let Some(reason) = reason_of(code.code()) else {
+            continue;
+        };
+        let class = code.class();
+        let answer = refusal_render(busbar_contract::unit::RefusalReason::from(reason));
+        assert_eq!(
+            answer.0 == "internal",
+            class.is_node_fault(),
+            "{code:?} (class {class:?}) renders {answer:?}"
+        );
+        match answers.iter().find(|(c, _)| *c == class) {
+            Some((_, first)) => assert_eq!(
+                *first, answer,
+                "{code:?} answers differently from the rest of {class:?}"
+            ),
+            None => answers.push((class, answer)),
+        }
+    }
+}
