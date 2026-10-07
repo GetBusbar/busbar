@@ -90,7 +90,7 @@ impl TestDoor {
                 },
                 composes_over: composes_over.to_vec(),
                 status_rows: Vec::new(),
-                streams: Vec::new(),
+                duplex: Vec::new(),
             },
             knobs,
             framings: Mutex::new(HashMap::new()),

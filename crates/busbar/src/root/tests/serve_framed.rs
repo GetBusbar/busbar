@@ -157,9 +157,9 @@ impl busbar_core_connector::framer::FramerDoor for Uncrossed {
     }
 }
 
-/// A door answering `lp`, its claim rows stating a stream on each claim in `streams`.
+/// A door answering `lp`, its claim rows stating a stream on each claim in `duplex`.
 fn lp_door(
-    streams: Vec<&'static str>,
+    duplex: Vec<&'static str>,
 ) -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
     std::sync::Arc::new(Uncrossed(busbar_core_connector::framer::DoorFacts {
         name: "lp".into(),
@@ -167,7 +167,7 @@ fn lp_door(
         role: busbar_contract::abi::transport::ROLE_FRAMER,
         composes_over: Vec::new(),
         status_rows: Vec::new(),
-        streams,
+        duplex,
     }))
 }
 

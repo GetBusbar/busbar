@@ -157,7 +157,7 @@ fn open_stated(
                 role: stated.role,
                 composes_over: stated.composes_over,
                 status_rows: stated.status_rows,
-                streams: stated
+                duplex: stated
                     .upgrades
                     .iter()
                     .chain(&stated.sessions)
