@@ -1011,11 +1011,9 @@ pub fn compose_egress(
         }
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
-        members.insert(entry.clone(), Member::new(destination, name, 1));
+        members.insert(entry.clone(), Member::new(destination, name.clone(), 1));
         sealed.insert(destination, route);
-        // The counters' lane label is the member's configured name: the entry itself, as the
-        // operator wrote it in the plane's section ([`WalkTelemetry`]'s rule).
-        names.push((destination, entry.clone()));
+        names.push((destination, name));
     }
     let mut built: HashMap<String, Pool> = HashMap::new();
     for (label, entries) in pools.pools() {
