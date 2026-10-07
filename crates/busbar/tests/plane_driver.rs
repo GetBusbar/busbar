@@ -146,6 +146,7 @@ fn load_open(
                 ptr: std::ptr::null(),
                 len: 0,
             },
+            owned: NO_BLOB,
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -206,7 +207,8 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
                 len: 0,
             },
             route: 0,
-            _route_reserved: [0; 7],
+            route_flags: 0,
+            _route_reserved: [0; 6],
         },
     );
     assert_eq!(
@@ -376,7 +378,8 @@ fn zero_arrive_out() -> ArriveOut {
             len: 0,
         },
         route: 0,
-        _route_reserved: [0; 7],
+        route_flags: 0,
+        _route_reserved: [0; 6],
     }
 }
 
@@ -742,6 +745,13 @@ fn zero_piece_out() -> OnPieceOut {
         arena_needed: 0,
         verb: span,
         target: span,
+        need: 0,
+        _need_reserved: 0,
+        lane: span,
+        final_status: 0,
+        _final_reserved: 0,
+        final_message: span,
+        final_details: span,
     }
 }
 
@@ -777,6 +787,7 @@ fn serve_table(
         calls: Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1)),
         caps: BufferCaps::default(),
         routes,
+        records: None,
     };
     (plugin, table)
 }
@@ -828,6 +839,9 @@ fn rows(resource: &str) -> Vec<String> {
 #[test]
 fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     use busbar_kernel::plane_driver::serve::{publish, serve, withdraw, Unserved};
+    let _one = PUBLISHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for way in ways() {
         let item = format!("{way:?}").to_lowercase();
         let act = format!("/items/{item}/act");
@@ -905,6 +919,63 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     }
 }
 
+/// The process's one table of published instances: one test publishes at a time.
+static PUBLISHED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// RED (SEAM-4o): a PUBLIC route the published snapshot states (`ROUTE_PUBLIC`) is served on the
+/// public serve path by the plane's own `serve`, to a caller that presents no busbar credential:
+/// the plane sees the request's own head fields with every credential field struck, and answers
+/// with its own status and body. The admin route is not public (`404` there), an unknown path is
+/// `404`, and a withdrawn instance serves nothing. RED before: the kernel filtered public routes
+/// out of every table, so nothing served them.
+#[test]
+fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
+    use busbar_kernel::plane_driver::serve::{answer_public, publish, withdraw};
+    let _one = PUBLISHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for way in ways() {
+        let item = format!("{way:?}").to_lowercase();
+        let (_plugin, table) = serve_table(way, "the-public-instance");
+        publish(table, &[]).expect("the instance publishes");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer someone".parse().unwrap());
+        headers.insert("cookie", "session=secret".parse().unwrap());
+        headers.insert("x-trace", "t-1".parse().unwrap());
+        let call = |method: &str, path: &str| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime");
+            rt.block_on(async {
+                let resp =
+                    answer_public(method, path, path, &headers, axum::body::Bytes::from("go"))
+                        .await;
+                let status = resp.status().as_u16();
+                let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .expect("a body");
+                (status, String::from_utf8_lossy(&body).into_owned())
+            })
+        };
+        let hook = format!("/items/{item}/hook");
+        assert_eq!(
+            call("POST", &hook),
+            (200, format!("public {hook} fields=x-trace")),
+            "{way:?}: served by the plane, no credential crossed"
+        );
+        assert_eq!(call("GET", &hook).0, 404, "{way:?}: another verb");
+        assert_eq!(
+            call("POST", &format!("/items/{item}/act")).0,
+            404,
+            "{way:?}: the admin route is not public"
+        );
+        assert_eq!(call("POST", "/nowhere").0, 404, "{way:?}");
+        withdraw("the-public-instance");
+        assert_eq!(call("POST", &hook).0, 404, "{way:?}: withdrawn");
+    }
+}
+
 // ── duplex sessions (K6) ─────────────────────────────────────────────────────────────────────────
 
 /// One line of a session caller's script.
@@ -976,12 +1047,25 @@ async fn session(
     caller: &Scripted,
     key: u64,
 ) -> Result<(), busbar_contract::caps::ReasonCode> {
+    session_on(&r.driver, far, caller, cases::arrival("/call", b""), key).await
+}
+
+/// [`session`] on any plane's `driver`, for `arrival`, over any far end and caller.
+async fn session_on<F, C>(
+    driver: &PlaneDriver,
+    far: &F,
+    caller: &C,
+    arrival: busbar_kernel::plane_driver::Arrival,
+    key: u64,
+) -> Result<(), busbar_contract::caps::ReasonCode>
+where
+    F: busbar_kernel::plane_driver::FarEnd,
+    C: busbar_kernel::plane_driver::SessionCaller,
+{
     use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
     use busbar_kernel::teller::{open_unit, AccrualMeter, Kernel, Run, SessionOpen};
     let steps = common::TestUnits::passing();
-    let units = r
-        .driver
-        .unit(&steps, far, caller, cases::arrival("/call", b""), 0);
+    let units = driver.unit(&steps, far, caller, arrival, 0);
     let kernel = Kernel::new();
     let (gauge, canary, leases, meter) = (
         ConcurrencyGauge::new(),
@@ -1121,6 +1205,105 @@ async fn a_turn_leg_walks_inside_the_destination_set_sealed_at_the_open() {
             s[plane::Sessions::Tickets as usize],
             2,
             "{way:?}: one ticket per side"
+        );
+    }
+}
+
+/// THE SESSION'S FAR END IS HELD (ARCHITECT Q-L5-FAR (A); THE DESIGN "every turn leg under the
+/// session's ONE admission inside the destination set sealed at open"), both ways: the first turn
+/// dials the far end once, inside the sealed set; its socket stays open, and the second caller
+/// frame is WRITTEN INTO THAT SOCKET while it is open, never a second dial. The far end's frames
+/// reach the caller as they arrive, interleaved with the caller's (its greeting before any answer,
+/// each answer after its frame), and the session ends with its caller although the far end never
+/// hangs up. RED before: the first turn's walk read until the socket closed, so frame two queued
+/// behind it forever and the caller never heard its answer.
+#[tokio::test]
+async fn a_held_far_end_takes_every_turn_while_its_socket_stays_open() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), cases::Book::default());
+        let far = cases::Far::held(&["outsider", SEALED]);
+        let caller = Scripted::new([
+            Line::Send(b"far:one"),
+            Line::Hear("far-said:re:one"),
+            Line::Send(b"far:two"),
+            Line::Hear("far-said:re:two"),
+        ]);
+        let ended = tokio::time::timeout(Duration::from_secs(5), session(&r, &far, &caller, 36))
+            .await
+            .expect("frame two reached the held far end and its answer reached the caller");
+        assert_eq!(ended, Ok(()), "{way:?}");
+        assert_eq!(
+            caller.heard(),
+            "far-said:hellofar-said:re:onefar-said:re:two",
+            "{way:?}: the far end's frames as they arrived"
+        );
+        let sent = far.sent();
+        assert_eq!(sent.len(), 1, "{way:?}: ONE dial for the session");
+        assert_eq!(sent[0].member, SEALED, "{way:?}: inside the sealed set");
+        assert_eq!(sent[0].body, b"one", "{way:?}: the dial carries frame one");
+        assert_eq!(
+            far.written(),
+            vec![(b"two".to_vec(), true)],
+            "{way:?}: frame two went into the open socket"
+        );
+        assert_eq!(
+            r.sessions()[plane::Sessions::Tickets as usize],
+            2,
+            "{way:?}: one ticket per side"
+        );
+        assert_eq!(
+            r.book
+                .sessions_ended
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{way:?}: one cleanup"
+        );
+        assert_eq!(
+            r.stats()[cases::stat::CANCELS],
+            0,
+            "{way:?}: nothing cancelled"
+        );
+    }
+}
+
+/// THE FAR END HANGING UP ENDS THE SESSION, both ways: the held far end answers the caller's
+/// `bye` and closes its socket; the far side ends on its own, and the caller's side, though its
+/// caller still holds it open, ends with the caller's last piece, so the plane settles the session
+/// once and nothing is cancelled. RED without the far side's end reaching the caller side: the
+/// session stayed open for as long as its caller did.
+#[tokio::test]
+async fn a_far_end_that_hangs_up_ends_the_session_with_its_caller() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), cases::Book::default());
+        let far = cases::Far::held(&[SEALED]);
+        let caller = Scripted::new([
+            Line::Send(b"far:one"),
+            Line::Hear("far-said:re:one"),
+            Line::Send(b"far:bye"),
+            Line::Hold,
+        ]);
+        let ended = tokio::time::timeout(Duration::from_secs(5), session(&r, &far, &caller, 37))
+            .await
+            .expect("the far end's hang-up ended the session");
+        assert_eq!(ended, Ok(()), "{way:?}");
+        assert!(
+            caller.heard().contains("far-said:re:bye"),
+            "{way:?}: {}",
+            caller.heard()
+        );
+        assert_eq!(far.sent().len(), 1, "{way:?}");
+        assert_eq!(far.written(), vec![(b"bye".to_vec(), true)], "{way:?}");
+        assert_eq!(
+            r.book
+                .sessions_ended
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{way:?}: one cleanup"
+        );
+        assert_eq!(
+            r.stats()[cases::stat::CANCELS],
+            0,
+            "{way:?}: nothing cancelled"
         );
     }
 }

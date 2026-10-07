@@ -83,7 +83,13 @@
       "`INVALID:` row, the class the structural ABI check files a refused version under). The ABI",
       "check runs BEFORE trust, so a refused row carries no signature verdict and this probe proves",
       "no key: the release key's presence is the `release_pubkey` row's, until a first-party plugin",
-      "built against the 1.6.0 SDK is published and this probe returns to `ready` on it."
+      "built against the 1.6.0 SDK is published and this probe returns to `ready` on it. THE RELEASE",
+      "THAT RE-ARMS IT: busbar-store-sqlite's first release built against the 1.6.0 SDK (store ABI 4),",
+      "signed in its release workflow by the real private half; then `tag` moves to it, the",
+      "plugin_asset names follow, and `expect_status` returns to `ready` with `expect_signature:",
+      "first-party`. Only a real-key signature proves the SHIPPED binary embeds the real key; the",
+      "signing-gate check in qa/pipeline-checks.json proves the verifier on a 1.6.0-SDK plugin with an",
+      "ephemeral key, which a shipped binary correctly refuses."
     ],
     "repo": "GetBusbar/busbar-store-sqlite",
     "tag": "v1.0.4",
