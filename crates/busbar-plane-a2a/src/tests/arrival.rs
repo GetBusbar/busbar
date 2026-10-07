@@ -468,3 +468,41 @@ fn a_request_method_with_no_id_is_a_notification_and_gets_no_response_body() {
         "a notification is acknowledged, not answered"
     );
 }
+
+/// A tripped agent rejects a fresh submission on each line with 503 and `-32004`, naming the agent
+/// and the seconds to wait, before any dial. The JSON-RPC line answers the error envelope, the
+/// HTTP+JSON line the AIP-193 document, and the gRPC line the status the framed refusal maps 503 to.
+/// PARTIAL PORT: predev also answered a `rejected` task with an id to poll; HEAD refuses before any
+/// task row exists, so that half is dropped. The `Retry-After` field is asserted in the root cell
+/// `a_tripped_agent_refuses_a_fresh_submission_with_503_and_retry_after`.
+/// Ported from busbar-a2a a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding,
+/// ::a_tripped_agent_rejects_fresh_submissions_on_the_httpjson_binding and
+/// ::a_tripped_agent_rejects_fresh_submissions_on_the_grpc_binding.
+#[test]
+fn a_tripped_agent_rejects_fresh_submissions_on_every_binding() {
+    let refusal = breaker_refusal("planner", Some(serde_json::json!(1)), 30);
+    let rpc = render(Dialect::JsonRpc, &refusal, true);
+    assert_eq!(rpc.status, 503);
+    let doc: serde_json::Value = serde_json::from_slice(&rpc.body).unwrap();
+    assert_eq!(doc["error"]["code"], -32004);
+    assert!(doc["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Retry after 30s"));
+    assert!(doc.get("result").is_none());
+
+    let rest = render(Dialect::RestJson, &refusal, true);
+    assert_eq!(rest.status, 503);
+    let doc: serde_json::Value = serde_json::from_slice(&rest.body).unwrap();
+    assert_eq!(doc["error"]["code"], 503);
+    assert!(doc["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("breaker_open"));
+
+    let framed = render(Dialect::Framed, &refusal, true);
+    assert_eq!(framed.status, 503);
+    let reply = crate::framed::refusal(&framed.body, framed.status);
+    assert_eq!(reply.code, crate::framed::refusal(&rpc.body, 503).code);
+    assert!(String::from_utf8_lossy(&reply.body).contains("breaker_open"));
+}

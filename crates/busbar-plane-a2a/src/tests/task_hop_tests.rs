@@ -557,7 +557,6 @@ fn every_spelling_of_the_callback_is_found_so_every_spelling_is_guarded() {
 /// unchanged, never re-serialized (and the pair would not occupy a slot).
 /// Ported from busbar-a2a a2a/tests/idmap_tests.rs::a_degenerate_pair_is_not_recorded (same-id half).
 #[test]
-#[ignore = "A2A-FLIP regression: the door records a far-end id equal to busbar's own (plane_door keep) and re-serializes the request; predev recorded no same-id pair"]
 fn a_far_end_id_equal_to_busbars_needs_no_translation() {
     let mut desk = desk();
     let same = |id: &str| (id == "t1").then(|| "t1".to_string());

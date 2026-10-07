@@ -3623,6 +3623,78 @@ mod agent_door {
         assert_eq!(admitted(&s), 0, "nothing charged");
     }
 
+    /// A tripped agent refuses a fresh submission with `503` and a `Retry-After` of at least one
+    /// second, on the JSON-RPC line and on the HTTP+JSON line, and never dials.
+    /// PARTIAL PORT: predev also answered a `rejected` task with an id to poll; HEAD refuses before
+    /// any task row exists, so that half is dropped.
+    /// Ported from busbar-a2a a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding
+    /// and ::a_tripped_agent_rejects_fresh_submissions_on_the_httpjson_binding.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_agent_refuses_a_fresh_submission_with_503_and_retry_after() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        use tower::ServiceExt as _;
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-breaker-503";
+        let _published = Published(instance);
+        let mut agent = Agent::start(503, r#"{"error":"down"}"#).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let mut tripped = false;
+        for _ in 0..32 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            if body.contains("breaker_open") {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(tripped, "the breaker opened within 32 failing calls");
+        agent.relayed();
+        let rest = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("{}/message:send", mount()))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", s.token))
+            .body(axum::body::Body::from(format!(
+                r#"{{"message":{}}}"#,
+                &SEND[11..SEND.len() - 1]
+            )))
+            .expect("a request");
+        for (line, req) in [
+            (
+                "JSON-RPC",
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            ),
+            ("HTTP+JSON", rest),
+        ] {
+            let response = s.router.clone().oneshot(req).await.expect("answers");
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{line}");
+            let wait: u64 = response
+                .headers()
+                .get("retry-after")
+                .unwrap_or_else(|| panic!("{line}: no Retry-After"))
+                .to_str()
+                .expect("text")
+                .parse()
+                .expect("seconds");
+            assert!(wait >= 1, "{line}: Retry-After {wait}");
+            let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+                .await
+                .expect("body");
+            assert!(
+                String::from_utf8_lossy(&body).contains("breaker_open"),
+                "{line}"
+            );
+        }
+        assert!(!agent.relayed(), "a tripped agent is never dialled");
+    }
+
     /// THE EXTENDED CARD IS METERED: busbar answers it out of its own state, and it is still one
     /// admitted request on the presenting key, with no token accrual (a verb answered locally
     /// selects no upstream and relays no frame, so no per-request token fee can land on it).
