@@ -37,9 +37,7 @@ busbar-mcp	tokio::net
 # workspace feature unification, and the door opens no socket (it frames the host's bytes through
 # hyper_io!). Same precedent as the http and ws doors. ARCHITECT ruling GRPC-DOOR Q2 2026-10-01.
 busbar-transport-grpc	socket2
-busbar-transport-http	hyper-util
 busbar-transport-http	socket2
-busbar-transport-http	tokio (net)
 busbar-transport-ws	socket2
 busbar-voice	hyper-util
 busbar-voice	reqwest
