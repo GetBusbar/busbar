@@ -135,7 +135,9 @@ fn a_fresh_request_mints_busbars_id_and_opens_the_task_dispatched_to_the_agent()
     assert_eq!(genesis.kind, "task.submitted");
     assert_eq!(dispatch.kind, "task.delegated");
     assert_eq!(dispatch.prev_hash, genesis.hash);
-    assert_eq!(dispatch.request_id, MINTED);
+    // The event's `request_id` join key is not on the chain: the host keeps a chained record's own
+    // bytes, every one of them digested, and the join key stays out of the digest (ARCHITECT
+    // ruling B1).
 }
 
 #[test]
@@ -403,8 +405,8 @@ fn an_inline_callback_on_an_addressed_task_is_registered_without_an_event() {
     let after = get(&mut desk.book, ALICE, "t1", 300).unwrap().unwrap();
     assert_eq!(after.row.push_callback, "https://hook.example/t1");
     assert_eq!(
-        (after.next_seq, &after.tail_hash),
-        (before.next_seq, &before.tail_hash)
+        after.next_seq, before.next_seq,
+        "no event was chained: the chain's position is kept"
     );
 }
 

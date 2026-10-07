@@ -431,6 +431,38 @@ pub fn merge_list(
         .collect()
 }
 
+/// The decimal digits of a chained record's sequence in its listed key ([`chain_key`]).
+pub const CHAIN_SEQ_DIGITS: usize = 20;
+
+/// THE LISTED KEY of record `seq` of the chain `scope`, of a record kind its plane declares chained
+/// (`abi::plane::RecordChain`): the scope, `/`, then the sequence in [`CHAIN_SEQ_DIGITS`]
+/// zero-padded decimal digits, so key order within a chain is sequence order.
+#[must_use]
+pub fn chain_key(scope: &[u8], seq: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(scope.len() + 1 + CHAIN_SEQ_DIGITS);
+    key.extend_from_slice(scope);
+    key.push(b'/');
+    key.extend_from_slice(format!("{seq:020}").as_bytes());
+    key
+}
+
+/// The chain and the sequence a listed key of a chained record kind names ([`chain_key`]); `None`
+/// for a key that names no record (a chain's break is announced by a span keyed by the bare scope).
+#[must_use]
+pub fn chain_key_parts(key: &[u8]) -> Option<(&[u8], u64)> {
+    let cut = key.len().checked_sub(CHAIN_SEQ_DIGITS + 1)?;
+    let (scope, rest) = key.split_at(cut);
+    if scope.is_empty() || rest.first() != Some(&b'/') {
+        return None;
+    }
+    let digits = &rest[1..];
+    if !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let seq = std::str::from_utf8(digits).ok()?.parse().ok()?;
+    Some((scope, seq))
+}
+
 #[cfg(test)]
 #[path = "tests/services_tests.rs"]
 mod tests;

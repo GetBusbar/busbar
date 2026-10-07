@@ -952,6 +952,21 @@ pub struct RouteCost {
 /// verifies the chain, so a chain written before this ABI still verifies. A record kind no entry
 /// names is not chained. This framing is the plane's record chains' only: the kernel's own audit
 /// chain is the one fixed record.
+///
+/// ON A CHAINED KIND:
+/// * A [`RECORD_PUT`] APPENDS: its `key` is the chain's SCOPE (UTF-8, never empty, never ending in
+///   what a listed key ends in) and its `value` the record's own fields, already in the framing
+///   (pipe-separated: each field after a `|`, the first included). The host is the chain's
+///   authority: it takes the scope's next sequence and its tail's digest, frames the prelude, seals
+///   the record and keeps it once the store took it. A put of an EMPTY value drops the whole chain
+///   (the tombstone of each record), and its next append starts again at sequence `1`.
+/// * `records.list` answers each record as `(chain_key(scope, seq), the plane's own bytes)`
+///   (`crate::services::chain_key`), every chain VERIFIED first: a chain that does not verify is
+///   announced by one more span, keyed by the bare scope (it sorts ahead of the chain's records),
+///   whose value is the break in words; its records are still answered (a detection never
+///   deletes). An append is read back once the store took it, never from the write queue.
+/// * `records.get` is refused: a chain is read whole, through `records.list`.
+/// * `records.claim` is the kind's as any other's: its claims never touch the chain.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RecordChain {

@@ -66,6 +66,9 @@ pub const RECORD_KINDS: &[&str] = &[KIND_TASK, KIND_TASK_EVENT];
 /// write names its kind by its index here.
 pub const HELD_KINDS: &[&str] = &[KIND_TASK, KIND_TASK_EVENT, KIND_PUSH_CONFIG, KIND_CARD];
 
+/// The task-event kind's index in [`HELD_KINDS`]: the kind the door declares chained.
+pub const TASK_EVENT_INDEX: u32 = 1;
+
 /// The task rows: one per governed exchange this node is tracking.
 pub const SCHEMA_TASK: RecordSchemaId = RecordSchemaId::new(KIND_TASK);
 

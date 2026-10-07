@@ -5,14 +5,19 @@
 
 use super::*;
 
-/// The first caller of each second runs the sweep, and no other caller of that second does.
+/// The first caller of each second runs the sweep, and no other caller of that second does; the
+/// instance's very first caller runs its restore too, and no other one does.
 #[test]
 fn the_sweep_runs_once_a_second() {
     let swept = Keyed::new();
-    assert!(claim_sweep(&swept, 10));
-    assert!(!claim_sweep(&swept, 10));
-    assert!(!claim_sweep(&swept, 9), "time read late never sweeps again");
-    assert!(claim_sweep(&swept, 11));
+    assert_eq!(claim_sweep(&swept, 10), (true, true), "the first restores");
+    assert_eq!(claim_sweep(&swept, 10), (false, false));
+    assert_eq!(
+        claim_sweep(&swept, 9),
+        (false, false),
+        "time read late never sweeps again"
+    );
+    assert_eq!(claim_sweep(&swept, 11), (false, true));
 }
 
 /// A record write names its kind by its index in the tail's record kinds.

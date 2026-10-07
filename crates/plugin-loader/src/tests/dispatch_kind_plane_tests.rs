@@ -875,3 +875,73 @@ fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
     let refused = bind(familyless, fee).expect_err("a class with no family refuses the load");
     assert!(refused.contains("billable_class.family"), "{refused}");
 }
+
+/// RED: the tail's chained record kinds are judged at bind (the host frames and verifies each in
+/// its declared framing, `BUSBAR-1.6.0.md` Part 3 §5). A chain naming a known framing over a
+/// declared kind binds and is the instance's; an unknown framing, a kind past the list, or a kind
+/// named twice refuses the load.
+#[test]
+fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{
+        PlaneTail, RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_PIPE_SEPARATED, INGRESS_REQUEST_RESPONSE,
+    };
+    fn s(text: &'static str) -> AbiStr {
+        AbiStr {
+            ptr: text.as_ptr(),
+            len: text.len(),
+        }
+    }
+    let kinds: &'static [AbiStr] = Box::leak(Box::new([s("task"), s("task_event")]));
+    let bind = |chains: &'static [RecordChain]| {
+        let mut tail: PlaneTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<PlaneTail>() as u32,
+            _reserved: 0,
+        };
+        tail.ingress = INGRESS_REQUEST_RESPONSE;
+        tail.record_kinds = kinds.as_ptr();
+        tail.record_kinds_len = kinds.len();
+        tail.record_chains = chains.as_ptr();
+        tail.record_chains_len = chains.len();
+        let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+        let sections: &'static [Section] = Box::leak(Box::new([Section {
+            name: s("door"),
+            flags: SECTION_DECLARING,
+            _reserved: 0,
+        }]));
+        let mut st: Statement = z();
+        st.kind_tail = &tail.head;
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
+        Plane::context(&st)
+    };
+    let chain = |kind: u32, framing: u32| RecordChain {
+        kind,
+        framing,
+        flags: CHAIN_DIGESTS_SCOPE,
+        _reserved: 0,
+    };
+    let good: &'static [RecordChain] = Box::leak(Box::new([chain(1, CHAIN_PIPE_SEPARATED)]));
+    let facts = bind(good)
+        .expect("a valid chain binds")
+        .expect("a plane has a context")
+        .downcast::<PlaneFacts>()
+        .expect("the plane's facts");
+    assert_eq!(facts.declared.record_chains.len(), 1);
+    assert_eq!(facts.declared.record_chains[0].kind, 1);
+    let unknown: &'static [RecordChain] = Box::leak(Box::new([chain(1, 9)]));
+    let refused = bind(unknown).expect_err("an unknown framing refuses the load");
+    assert!(refused.contains("record_chain.framing"), "{refused}");
+    let past: &'static [RecordChain] = Box::leak(Box::new([chain(2, CHAIN_PIPE_SEPARATED)]));
+    let refused = bind(past).expect_err("a kind past the list refuses the load");
+    assert!(refused.contains("record_chain.kind"), "{refused}");
+    let twice: &'static [RecordChain] = Box::leak(Box::new([
+        chain(1, CHAIN_PIPE_SEPARATED),
+        chain(1, CHAIN_PIPE_SEPARATED),
+    ]));
+    let refused = bind(twice).expect_err("a kind named twice refuses the load");
+    assert!(refused.contains("record_chain.kind_twice"), "{refused}");
+}
