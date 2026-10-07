@@ -116,6 +116,9 @@ pub struct Unit {
     pub framed: Option<crate::framed::Rpc>,
     /// The refresh generation it arrived under: the held cards it reads are that generation's.
     pub generation: u64,
+    /// `project` refused a committed rewrite it could not read back: `refusal` answers the unit
+    /// predev's internal error ([`unreadable_rewrite`]).
+    pub unreadable_rewrite: bool,
 }
 
 /// One unit's unary hop, and the answer it is part way through writing.
@@ -857,6 +860,7 @@ slot!(
                     envelope,
                     framed,
                     generation,
+                    unreadable_rewrite: false,
                 },
             );
             return Outcome::Ready;
@@ -909,6 +913,7 @@ slot!(
             envelope,
             framed,
             generation,
+            unreadable_rewrite: false,
         };
         keep(&plane.units, MAX_UNITS, given.unit, unit);
         Outcome::Ready
@@ -974,6 +979,7 @@ fn arrive_card(
             envelope: None,
             framed: None,
             generation,
+            unreadable_rewrite: false,
         },
     );
     Outcome::Ready
@@ -1881,7 +1887,25 @@ slot!(
             })
         })
         .flatten();
-        let rendered = if let Some(refusal) = &tripped {
+        // A unit `project` refused for a committed rewrite it could not read back: predev's
+        // conformant internal error, echoing the request id.
+        let unreadable = instance
+            .get()
+            .and_then(|plane| {
+                plane.units.with(&given.unit, |u| {
+                    let u = u.filter(|u| u.unreadable_rewrite)?;
+                    let id = match &u.disposition {
+                        Disposition::Request { id, .. } | Disposition::Unlisted { id, .. } => {
+                            (!id.is_null()).then(|| id.clone())
+                        }
+                        _ => None,
+                    };
+                    Some(unreadable_rewrite(id))
+                })
+            });
+        let rendered = if let Some(refusal) = &unreadable {
+            arrival::render(dialect, refusal, true)
+        } else if let Some(refusal) = &tripped {
             arrival::render(dialect, refusal, true)
         } else if let Some(refusal) = &untrusted {
             arrival::render(dialect, refusal, true)
@@ -1963,7 +1987,9 @@ slot!(
                 RefusalCode::BreakerOpen,
             ]
             .iter()
-            .any(|c| c.code() == given.reason);
+            .any(|c| c.code() == given.reason)
+            // predev audited an unreadable rewrite's refusal `rejected`, as a hook's own.
+            || unreadable.is_some();
         let audited = after_admission
             .then(|| {
                 instance.get().and_then(|plane| {
@@ -2479,8 +2505,13 @@ fn verify_on_call(
         return Poll::Ready(false);
     };
     // SERVING is the kernel's verdict on the agent's key, and not a suspension of the plane's.
+    // A CARD THE LAST LOOK COULD NOT REACH OR VERIFY FAILS THE HOP CLOSED (ARCHITECT 2026-10-07,
+    // predev baseline: `receive::verify_agent_on_call` recorded `Error`, which its hop gate refused):
+    // the hop is refused here without asking `trust.serves`, and the kernel's last verdict, which
+    // the look's `trust.unreachable` kept, is left untouched.
     let serves = |standing: &crate::trust::Standing| {
         standing.suspension.is_none()
+            && !matches!(standing.sighting, crate::trust::Sighting::Failed(_))
             && verdict(plane, member) == busbar_contract::abi::host::service::DISTRUST_NONE
     };
     // A UNIT WAITING ON ANOTHER'S LOOK takes its verdict, never a look of its own — unless that
@@ -2866,15 +2897,25 @@ pub fn session_of(envelope: &[u8]) -> Option<String> {
 /// `messages` entry's `content` (an object verbatim, or a JSON string that parses to an object) or,
 /// for an entry with no `role`, the entry itself; the LAST entry that yields an object wins.
 ///
-/// `None` = not applied (no usable object, or a reply that is not JSON): the unit proceeds with the
-/// request it had, as a rewrite that cannot be applied left the served engine's submission as it
-/// came.
-#[must_use]
-pub fn rewritten_params(rewrite: &[u8]) -> Option<serde_json::Value> {
+/// `Ok(None)` = not applied: a reply whose entries yield no object leaves the request as it came,
+/// as the served engine's invoke contract left a submission's params untouched.
+///
+/// # Errors
+///
+/// A COMMITTED REWRITE BUSBAR CANNOT READ BACK (bytes that are not JSON, or a reply that is not the
+/// stage's `{"messages": [...]}`): the reason. The unit is REFUSED on it, never relayed with the
+/// params the hook said it had replaced (predev `receive::committed_params` and its apply site: a
+/// redaction hook that reported its rewrite applied is never silently undone).
+pub fn rewritten_params(rewrite: &[u8]) -> Result<Option<serde_json::Value>, String> {
     use serde_json::Value;
-    let reply: Value = serde_json::from_slice(rewrite).ok()?;
+    let reply: Value =
+        serde_json::from_slice(rewrite).map_err(|e| format!("the output is not JSON: {e}"))?;
+    let messages = reply
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "the output is JSON but names no `messages` list".to_string())?;
     let mut params: Option<Value> = None;
-    for message in reply.get("messages")?.as_array()? {
+    for message in messages {
         let candidate = match message.get("content") {
             Some(content) => content,
             None if message.get("role").is_none() => message,
@@ -2891,7 +2932,28 @@ pub fn rewritten_params(rewrite: &[u8]) -> Option<serde_json::Value> {
             params = resolved;
         }
     }
-    params
+    Ok(params)
+}
+
+/// The sentence a committed rewrite busbar cannot read back is refused with (predev's, verbatim).
+pub const UNREADABLE_REWRITE: &str = "a rewrite hook attached to this agent committed a rewrite \
+     that busbar could not read back. The submission is refused rather than relayed with the \
+     params the hook said it had replaced.";
+
+/// The status a committed rewrite busbar cannot read back is refused with: A2A section 5.4's
+/// `InternalError` row.
+pub const UNREADABLE_REWRITE_STATUS: u32 = 500;
+
+/// THE REFUSAL OF A COMMITTED REWRITE BUSBAR CANNOT READ BACK, as predev answered it: a conformant
+/// A2A internal error (`-32603` at `500`, one row of section 5.4) echoing the request id `id`.
+#[must_use]
+pub fn unreadable_rewrite(id: Option<serde_json::Value>) -> arrival::Refusal {
+    arrival::Refusal {
+        status: UNREADABLE_REWRITE_STATUS,
+        id,
+        code: crate::jsonrpc::CODE_INTERNAL,
+        message: UNREADABLE_REWRITE.to_string(),
+    }
 }
 
 /// THE ENVELOPE `envelope` WITH ITS `params` REPLACED by `params`, re-serialized (the served
@@ -2981,16 +3043,39 @@ slot!(
             }
         };
         let rewrite = input.field(|i| &i.rewrite).bytes();
-        let applied = (!rewrite.is_empty())
-            .then(|| rewritten_params(rewrite))
-            .flatten()
-            .and_then(|params| {
-                let kept = match line {
-                    Line::Target => target_body(route, &params),
-                    _ => None,
-                };
-                with_params(&envelope, params).map(|(value, bytes)| (value, bytes, kept))
-            });
+        let read = if rewrite.is_empty() {
+            Ok(None)
+        } else {
+            rewritten_params(rewrite)
+        };
+        // A COMMITTED REWRITE BUSBAR CANNOT READ BACK, OR WRITE BACK, REFUSES THE UNIT (predev's
+        // apply site): it is never relayed with the params the hook said it had replaced. The
+        // unit is marked, and `refusal` answers it predev's internal error.
+        let applied = match read.and_then(|params| {
+            params
+                .map(|params| {
+                    let kept = match line {
+                        Line::Target => target_body(route, &params),
+                        _ => None,
+                    };
+                    with_params(&envelope, params)
+                        .map(|(value, bytes)| (value, bytes, kept))
+                        .ok_or_else(|| "the request is no envelope to write it into".to_string())
+                })
+                .transpose()
+        }) {
+            Ok(applied) => applied,
+            Err(_) => {
+                if let Some(plane) = instance.get() {
+                    plane.units.with(&input.get().unit, |u| {
+                        if let Some(u) = u {
+                            u.unreadable_rewrite = true;
+                        }
+                    });
+                }
+                return Outcome::Refused;
+            }
+        };
         let (envelope, rewritten) = match applied {
             Some((value, bytes, kept)) => {
                 if let Some(plane) = instance.get() {

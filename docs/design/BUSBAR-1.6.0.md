@@ -4992,6 +4992,16 @@ Other rulings:
 ### 2026-10-04 — OWNER RULING Q137: the TLS listener offers ALPN `h2, http/1.1`
 - OWNER (Q137, "offers h2 on the TLS listener. yes why not?"): a `tls:` listener offers ALPN `h2, http/1.1` (1.5.5: `http/1.1` alone), a signed customer-visible change; a client offering only `http/1.1`, or no ALPN, is served byte-identically to 1.5.5, and an ALPN-`h2` connection that does not open with the connection preface is closed with no bytes (RFC 9113 §3.4), in the connector. Parity binding PB-69 cites it.
 
+### 2026-10-07 — ARCHITECT ruling (A2A-FLIP R4): an unreachable agent card, by path
+- 2026-10-07 ARCHITECT (A2A-FLIP R4): trust.sight UNREACHABLE on the background reverify keeps the
+  last verdict (ARCHITECT 2026-10-06); the call-path verify of a hop fails closed (ARCHITECT
+  2026-10-07, predev baseline). The background reverify (the tick, a `trust.due` refetch) reports
+  `trust.unreachable` (#499 `TRUST_UNREACHABLE`): the kernel's last verdict answers and nothing is
+  recorded. Verify-on-call, where the caller's hop needs a verdict now, refuses the hop itself (the
+  hop gate's demoted refusal, predev's `receive::verify_agent_on_call` + `still_delegable` bytes)
+  without asking `trust.serves` for it; it may still report `trust.unreachable` for the record, and
+  the kernel's last verdict stays untouched.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 
