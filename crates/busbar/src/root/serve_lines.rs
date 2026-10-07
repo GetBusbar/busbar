@@ -70,6 +70,8 @@ async fn session(
     credential: Option<&str>,
 ) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
     let env = env_credential(plane);
+    // The setting a refusal points the operator at: the plane's canonical resource, by its key.
+    let canonical_uri = format!("{plane}.canonical_uri");
     let Some(resource) = audience else {
         return Err(format!(
             "this deployment's `{plane}:` block states no canonical resource, so a stdio session \
@@ -86,14 +88,14 @@ async fn session(
                 return Err(format!(
                     "the credential in {env} carries an audience that does not identify this \
                      resource. Request a token whose `resource` (RFC 8707) is this deployment's \
-                     `{plane}.canonical_uri`."
+                     `{canonical_uri}`."
                 ));
             }
             Binding::Opaque => {
                 return Err(format!(
                     "the credential in {env} carries no readable audience, so it cannot be shown \
                      to have been issued for this resource. A busbar-signed key or a JWT access \
-                     token bound to `{plane}.canonical_uri` is required."
+                     token bound to `{canonical_uri}` is required."
                 ));
             }
         }
@@ -121,7 +123,7 @@ async fn session(
             format!(
                 "this deployment's `auth.chain` is configured, so an unauthenticated stdio session \
                  is refused exactly as an unauthenticated POST is. Set {env} to a credential the \
-                 chain admits (audience-bound to `{plane}.canonical_uri`)."
+                 chain admits (audience-bound to `{canonical_uri}`)."
             )
         } else {
             format!("the credential in {env} was refused by the auth chain.")
