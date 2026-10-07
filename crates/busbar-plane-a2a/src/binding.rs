@@ -7,8 +7,9 @@
 //! `framing_for`, `HttpJsonFraming`, `refusal_client::bounded_word`), byte for byte.
 //!
 //! The card says HOW, the operator's `url:` says WHERE: a binding's own URL on the card is never
-//! dialled. gRPC is not speakable until the gRPC door lands (GRPC-DOOR #140), so a card that lists
-//! it first is reached on the first binding it lists that the plane frames.
+//! dialled. All three of A2A's bindings are spoken (spec line 2026-09-30: "JSON-RPC/REST/gRPC are
+//! its lines"): gRPC is dialled over the door's own gRPC need, at the operator's origin, its request
+//! the rpc's message ([`crate::framed::request_message`]).
 
 use serde_json::{json, Map, Value};
 
@@ -29,6 +30,9 @@ pub enum Binding {
     JsonRpc,
     /// HTTP+JSON (A2A section 11.3): the operation's request line, its params as the body.
     HttpJson,
+    /// gRPC: the rpc's path under the service, its params as the rpc's request message, carried
+    /// over the grpc transport ([`crate::door::NEED_GRPC`]).
+    Grpc,
 }
 
 impl Binding {
@@ -38,17 +42,19 @@ impl Binding {
         match self {
             Binding::JsonRpc => BINDING_JSONRPC,
             Binding::HttpJson => BINDING_HTTP_JSON,
+            Binding::Grpc => BINDING_GRPC,
         }
     }
 }
 
-/// THE LOOKUP: the binding a card word names, if the plane frames it. TRANSITIONAL: gRPC
-/// ([`BINDING_GRPC`]) is framed once the gRPC door lands (GRPC-DOOR #140).
+/// THE LOOKUP: the binding a card word names, if the plane frames it (the engine's
+/// `relay::framing_for`): an unknown word is `None`, and the hop is refused naming it.
 #[must_use]
 pub fn speakable(word: &str) -> Option<Binding> {
     match word.trim().to_ascii_uppercase().as_str() {
         BINDING_JSONRPC => Some(Binding::JsonRpc),
         BINDING_HTTP_JSON => Some(Binding::HttpJson),
+        BINDING_GRPC => Some(Binding::Grpc),
         _ => None,
     }
 }

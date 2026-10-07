@@ -335,7 +335,8 @@ fn the_statement_declares_its_open_web_need_and_its_agent_member_need() {
     use busbar_contract::abi::mechanism::check::check_needs;
     let st = &crate::plane_door::STATEMENT;
     assert!(!st.needs.is_null());
-    assert_eq!((st.needs_len, NEEDS.len()), (2, 2));
+    // The open web, the agents over http, the agents over grpc.
+    assert_eq!((st.needs_len, NEEDS.len()), (3, 3));
     // The relayed calls' need: each registered agent reached at its own `url`, as an upstream.
     let agent = NEEDS[NEED_AGENT as usize];
     assert_eq!(
@@ -550,4 +551,28 @@ fn the_owed_book_is_bounded_and_counts_what_it_drops() {
     let first = d.take_owed("principal", None);
     assert_eq!(first.len(), MAX_OWED);
     assert_eq!(first[0].task_id, "t1", "t0 was the one dropped");
+}
+
+/// `the_callback_mac_is_compared_in_constant_time` (the engine's source-shape guard, ported): the
+/// presented MAC on the push callback is compared through the tree's one constant-time primitive,
+/// and no variable-time compare of it sits beside that one. A presence-only check would pass a fix
+/// that added the helper next to a leftover fast-path `==`.
+#[test]
+fn the_callback_mac_is_compared_in_constant_time() {
+    let source = include_str!("../push.rs");
+    let body = source
+        .split_once("pub fn verified(")
+        .expect("`verified` is the function that compares a presented token")
+        .1
+        .split_once("\n}\n")
+        .expect("the function ends")
+        .0;
+    assert!(
+        body.contains("busbar_contract::constant_time_eq"),
+        "the presented MAC is no longer compared through the constant-time primitive: {body}"
+    );
+    assert!(
+        !body.contains("presented ==") && !body.contains("== presented"),
+        "a variable-time compare of the presented MAC sits beside the constant-time one: {body}"
+    );
 }

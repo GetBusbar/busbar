@@ -673,6 +673,34 @@ mod both_ways {
         assert_eq!(script(&dropped(&d)), linked, "the dropped-in door");
     }
 
+    /// THE gRPC NEED, AS THE DOOR STATES IT (spec line 2026-09-30, the a2a door's third need): the
+    /// agents reached over grpc are the same member route as over http (each at its own `url`, an
+    /// upstream, its client identity the same anchors), only the transport differs. Read off the
+    /// door's own rendered Statement. RED: the door stated two needs and no grpc transport.
+    #[test]
+    fn the_door_states_its_agents_over_http_and_over_grpc_alike() {
+        let rendered = rendering_of(plane_door::door).expect("the door renders its Statement");
+        let read =
+            busbar_contract::abi::mechanism::rendering::read(&rendered).expect("it reads back");
+        let needs = read.needs;
+        assert_eq!(needs.len(), 3);
+        let (http, grpc) = (
+            &needs[door::NEED_AGENT as usize],
+            &needs[door::NEED_GRPC as usize],
+        );
+        assert_eq!(http.transport, "http");
+        assert_eq!(grpc.transport, busbar_plane_a2a::claims::FRAMED_TRANSPORT);
+        assert_eq!(grpc.transport, "grpc");
+        assert_eq!(
+            (grpc.direction, grpc.egress_class, grpc.auth.as_str()),
+            (http.direction, http.egress_class, http.auth.as_str())
+        );
+        assert_eq!(grpc.target_from, door::MEMBER_TARGET);
+        assert_eq!(grpc.target_from, http.target_from);
+        assert_eq!(grpc.trust_from, door::CLIENT_IDENTITY_FROM);
+        assert_eq!(grpc.trust_from, http.trust_from);
+    }
+
     /// The linked transcript says what the plane's own functions say the door answers.
     #[test]
     fn the_door_answers_what_the_plane_says() {

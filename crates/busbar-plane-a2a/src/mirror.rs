@@ -137,6 +137,28 @@ pub fn request(
     })
 }
 
+/// THE ANSWER TO ONE ORIGINATED REQUEST, as the readers below read it: its status and body as the
+/// far end answered them, except on the gRPC binding, where a call that ended `OK` (the exchange
+/// completed) carries the rpc's response message, transcoded to the JSON-RPC envelope it is
+/// (`200`, under [`ORIGINATED_RPC_ID`]); `None` for a gRPC answer that carries no message to read.
+#[must_use]
+pub fn answered(
+    binding: Binding,
+    method: &str,
+    status: u16,
+    body: Vec<u8>,
+) -> Option<(u16, Vec<u8>)> {
+    if binding != Binding::Grpc {
+        return Some((status, body));
+    }
+    let rpc = crate::framed::Rpc::of_method(method)?;
+    let (len, _) = crate::framed::take_message(&body).ok()??;
+    let message = &body[crate::framed::MESSAGE_PREFIX..crate::framed::MESSAGE_PREFIX + len];
+    let result = crate::framed::response_result(rpc, message).ok()?;
+    let envelope = json!({ "jsonrpc": "2.0", "id": ORIGINATED_RPC_ID, "result": result });
+    Some((200, serde_json::to_vec(&envelope).ok()?))
+}
+
 /// Whether a read's answer leaves busbar's registration drifted (gone at the agent): an answer that
 /// is not a JSON-RPC `result` naming [`config_id`] (a refusal, an error, nothing) has drifted.
 #[must_use]
@@ -150,7 +172,8 @@ pub fn drifted(binding: Binding, answered: Option<(u16, &[u8])>, config_id: &str
     let id = Value::String(ORIGINATED_RPC_ID.into());
     let envelope = match binding {
         Binding::HttpJson => crate::binding::rewrap(body, &id).ok(),
-        Binding::JsonRpc => Some(body.to_vec()),
+        // A gRPC answer was transcoded to its JSON-RPC envelope as it arrived ([`answered`]).
+        Binding::JsonRpc | Binding::Grpc => Some(body.to_vec()),
     };
     let result = envelope
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -276,7 +299,8 @@ pub fn listed_states(
     let id = Value::String(ORIGINATED_RPC_ID.into());
     let envelope = match binding {
         Binding::HttpJson => crate::binding::rewrap(body, &id).ok(),
-        Binding::JsonRpc => Some(body.to_vec()),
+        // A gRPC answer was transcoded to its JSON-RPC envelope as it arrived ([`answered`]).
+        Binding::JsonRpc | Binding::Grpc => Some(body.to_vec()),
     };
     let Some(result) = envelope
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -306,3 +330,7 @@ pub fn listed_states(
 #[cfg(test)]
 #[path = "tests/mirror_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/mirror_legs_tests.rs"]
+mod legs_tests;

@@ -71,6 +71,9 @@ pub const STATUS_OK: u32 = 200;
 /// `InvalidAgentResponse`, the code every refused hop carries.
 pub const CODE_INVALID_AGENT_RESPONSE: i64 = -32006;
 
+/// JSON-RPC's own internal error: a gRPC far end's error status that names no A2A code.
+const CODE_INTERNAL_ERROR: i64 = -32603;
+
 /// Who pushed a piece.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum From<'a> {
@@ -317,7 +320,8 @@ pub fn reading_of(status: u32, body: &[u8], id: &Value, binding: Binding) -> Opt
     }
     if (200..300).contains(&status) {
         let answer = match binding {
-            Binding::JsonRpc => read_answer(status, body, id),
+            // A gRPC answer is read once transcoded to the JSON-RPC envelope it is.
+            Binding::JsonRpc | Binding::Grpc => read_answer(status, body, id),
             // A 2xx body that is not JSON cannot be framed: the engine recorded nothing for it.
             Binding::HttpJson => read_rest_answer(status, body, id)?,
         };
@@ -364,6 +368,16 @@ pub struct Relay {
     events: Option<Events>,
     /// The reading of the far end's answer, once the answer says enough to read ([`Reading`]).
     reading: Option<Reading>,
+    /// On the gRPC binding: what the far end's messages and trailers have said so far.
+    grpc: GrpcRead,
+}
+
+/// HOW FAR A gRPC FAR END'S ANSWER HAS BEEN READ: the length-prefixed bytes of an answer in events
+/// not yet a whole message, and how the call ended, once its trailers said.
+#[derive(Debug, Clone, Default)]
+struct GrpcRead {
+    pending: Vec<u8>,
+    ended: Option<crate::framed::Ended>,
 }
 
 /// How far a hop that expects events has read its far end's answer.
@@ -446,7 +460,14 @@ impl Relay {
             params: Value::Null,
             events: None,
             reading: None,
+            grpc: GrpcRead::default(),
         }
+    }
+
+    /// The binding the hop's attempts speak.
+    #[must_use]
+    pub const fn binding(&self) -> Binding {
+        self.binding
     }
 
     /// The reading of the far end's answer, once: on the piece that holds the whole answer, or on
@@ -619,6 +640,31 @@ impl Relay {
                 }
                 Err(_) => self.unframable(),
             },
+            // THE gRPC BINDING (the engine's `GrpcFraming`): the rpc's own path under the service,
+            // the params written as its request message; the grpc transport frames it.
+            Binding::Grpc => {
+                let framed = crate::framed::Rpc::of_method(&self.method).and_then(|rpc| {
+                    crate::framed::request_message(rpc, &self.params)
+                        .ok()
+                        .map(|body| (rpc, body))
+                });
+                match framed {
+                    Some((rpc, body)) => {
+                        self.instead = Some(body);
+                        let media = crate::framed::DIAL_CONTENT_TYPE.to_string();
+                        Answer::Attempt(Attempt {
+                            verb: VERB,
+                            target: rpc.target(),
+                            fields: vec![
+                                (H_CONTENT_TYPE, media.clone()),
+                                (H_ACCEPT, media),
+                                version,
+                            ],
+                        })
+                    }
+                    None => self.unframable(),
+                }
+            }
         }
     }
 
@@ -689,6 +735,7 @@ impl Relay {
                 self.received = 0;
                 self.instead_sent = false;
                 self.reading = None;
+                self.grpc = GrpcRead::default();
                 match url {
                     Some(url) => self.attempt(url),
                     None => Answer::Refused,
@@ -715,6 +762,9 @@ impl Relay {
     }
 
     fn far_end_piece(&mut self, piece: Piece<'_>) -> Answer {
+        if self.binding == Binding::Grpc {
+            return self.grpc_piece(&piece);
+        }
         if let Some(status) = piece.status {
             self.status = Some(status);
         }
@@ -847,11 +897,145 @@ impl Relay {
         self.part(body, true)
     }
 
+    /// THE TRAILERS of the far end's answer (a field block after its body, `PIECE_FIELDS`), with
+    /// the status the host reports beside them (`status`): on the gRPC binding they say how the
+    /// call ended ([`crate::framed::ended`]); any other binding ignores them. Only `last` is acted
+    /// on, as the end of the answer.
+    pub fn on_far_fields(&mut self, bytes: &[u8], status: Option<u32>, last: bool) -> Answer {
+        if self.answered {
+            return Answer::Nothing;
+        }
+        self.received = self.received.saturating_add(bytes.len() as u64);
+        if self.binding == Binding::Grpc {
+            if let Some(ended) = crate::framed::ended(bytes, status) {
+                self.grpc.ended = Some(ended);
+            }
+        }
+        if !last {
+            return Answer::Nothing;
+        }
+        self.far_end_piece(Piece {
+            from: From::FarEnd,
+            bytes: &[],
+            status: None,
+            last: true,
+        })
+    }
+
+    /// ONE PIECE OF A gRPC FAR END'S ANSWER (the grpc transport's: its head, with no status of its
+    /// own; each message length-prefixed; then the trailers, [`Self::on_far_fields`]). A unary
+    /// answer is kept whole and read at its end ([`Self::grpc_envelope`]); an answer in events has
+    /// each whole message read as the `StreamResponse` it is and answered as the JSON-RPC event it
+    /// re-frames to (the engine's `GrpcFrameReader`), through the one event reader.
+    fn grpc_piece(&mut self, piece: &Piece<'_>) -> Answer {
+        if let Some(status) = piece.status {
+            self.status = Some(status);
+        }
+        self.received = self.received.saturating_add(piece.bytes.len() as u64);
+        if self.events.is_some() {
+            let framed = self.grpc_events(piece.bytes);
+            if self.grpc.pending.len() > MAX_REPLY_BYTES {
+                return self.events_refused(HopRefusal::BodyTooLarge, Vec::new());
+            }
+            let as_events = Piece {
+                from: From::FarEnd,
+                bytes: &framed,
+                status: None,
+                last: piece.last,
+            };
+            if let Some(answer) = self.events_piece(&as_events) {
+                return answer;
+            }
+        } else {
+            self.keep(piece.bytes);
+        }
+        if !piece.last {
+            return Answer::Nothing;
+        }
+        let Some(status) = self.status else {
+            return Answer::Refused;
+        };
+        self.whole(status)
+    }
+
+    /// The whole messages `bytes` completes, each as one event-stream frame carrying the JSON-RPC
+    /// response its `StreamResponse` is. A message that does not read is stepped over; a compressed
+    /// one stops the reading (where the next message starts is no longer known).
+    fn grpc_events(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.grpc.pending.extend_from_slice(bytes);
+        let Some(rpc) = crate::framed::Rpc::of_method(&self.method) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut cursor = 0;
+        while let Ok(Some((len, took))) = crate::framed::take_message(&self.grpc.pending[cursor..])
+        {
+            let start = cursor + crate::framed::MESSAGE_PREFIX;
+            cursor += took;
+            let Ok(result) =
+                crate::framed::response_result(rpc, &self.grpc.pending[start..start + len])
+            else {
+                continue;
+            };
+            let envelope = json!({ "jsonrpc": "2.0", "id": self.id, "result": result });
+            out.extend_from_slice(format!("data: {envelope}\n\n").as_bytes());
+        }
+        self.grpc.pending.drain(..cursor);
+        out
+    }
+
+    /// A gRPC far end's whole answer, as the JSON-RPC envelope the one reader reads: a call that
+    /// ended with an error status is that error (its A2A code, where its reason or its status
+    /// names one); else its one message is the rpc's `result`. `None` when the answer carries no
+    /// message to read and no error status (the engine's `Unframable`). A reply over the ceiling is
+    /// handed on as it is, for the reader to refuse.
+    fn grpc_envelope(&self) -> Option<Vec<u8>> {
+        if self.far.len() > MAX_REPLY_BYTES {
+            return Some(self.far.clone());
+        }
+        if let Some(ended) = self.grpc.ended.as_ref().filter(|e| !e.ok()) {
+            // A status no A2A code is bound to reads as JSON-RPC's own internal error, as a
+            // JSON-RPC agent's internal error reads.
+            let code = ended.a2a_code().unwrap_or(CODE_INTERNAL_ERROR);
+            let envelope = json!({
+                "jsonrpc": "2.0",
+                "id": self.id,
+                "error": { "code": code, "message": format!("grpc-status {}", ended.code) },
+            });
+            return serde_json::to_vec(&envelope).ok();
+        }
+        let rpc = crate::framed::Rpc::of_method(&self.method)?;
+        let (len, _) = crate::framed::take_message(&self.far).ok()??;
+        let message = &self.far[crate::framed::MESSAGE_PREFIX..crate::framed::MESSAGE_PREFIX + len];
+        let result = crate::framed::response_result(rpc, message).ok()?;
+        serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": self.id, "result": result })).ok()
+    }
+
     /// The caller's answer to a far end's whole answer at `status`, read as one document.
     fn whole(&mut self, status: u32) -> Answer {
+        let status = if self.binding == Binding::Grpc {
+            match self.grpc_envelope() {
+                Some(envelope) => {
+                    self.far = envelope;
+                    STATUS_OK
+                }
+                None => {
+                    self.reading = None;
+                    return self.unframable();
+                }
+            }
+        } else {
+            status
+        };
         self.reading = reading_of(status, &self.far, &self.id, self.binding);
+        if let Some(ended) = self.grpc.ended.as_ref().filter(|e| !e.ok()) {
+            // UNAUTHENTICATED and PERMISSION_DENIED refuse busbar itself, as a 401/403 does.
+            if matches!(ended.code, 7 | 16) {
+                self.reading = Some(Reading::Hard);
+            }
+        }
         let answer = match self.binding {
-            Binding::JsonRpc => read_answer(status, &self.far, &self.id),
+            Binding::JsonRpc | Binding::Grpc => read_answer(status, &self.far, &self.id),
             Binding::HttpJson => match read_rest_answer(status, &self.far, &self.id) {
                 Some(answer) => answer,
                 None => return self.unframable(),
@@ -938,3 +1122,7 @@ fn task_refusal(code: Option<i64>, task: &TaskHop, id: &Value) -> (Reply, bool) 
 #[cfg(test)]
 #[path = "tests/relay_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/relay_grpc_tests.rs"]
+mod grpc_tests;
