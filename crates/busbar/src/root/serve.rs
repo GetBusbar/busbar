@@ -1027,7 +1027,14 @@ pub(crate) fn compose_planes_over(
             (served_facts.section, section),
         )
         .map_err(|e| format!("{instance}: {e}"))?
-        .with_records(Arc::clone(&kernel), caller.clone());
+        .with_records(Arc::clone(&kernel), caller.clone())
+        // What a reported count's class names, for the response-stage signals.
+        .with_billable_classes(
+            served_facts
+                .billable_classes
+                .iter()
+                .map(|c| (*c).to_string()),
+        );
         // THE HOOK STAGE IN THE PLANE'S OWN ORDER (spec Part 3 section 12 "Hooks": the hook stages
         // run at the head of the route leg, in the hook order 1.5.5 used for that plane): a plane
         // whose tail states the gate-first order has its entries' gates and rewrites bound, filed
@@ -2841,6 +2848,12 @@ impl FarEnd for DoorFar<'_, '_> {
 
     fn failure(&self, token: &Pass<Route>) -> Option<&'static str> {
         self.far().and_then(|far| far.failure(token))
+    }
+
+    fn judged(&self, token: &Pass<Route>, fault: u8, billed: bool, done: bool) {
+        if let Some(far) = self.far() {
+            far.judged(token, fault, billed, done);
+        }
     }
 
     fn candidates(&self, token: &Pass<Route>) -> Option<busbar_kernel::plane_driver::Candidates> {

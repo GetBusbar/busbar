@@ -549,7 +549,6 @@ async fn response_tap_payload(declared: bool) -> Value {
 ///
 /// Ports legacy `unit/tests/route.rs::completion_tap_carries_response_tokens_out_when_declared`.
 #[tokio::test]
-#[ignore = "DIVERGENCE: the driver's response stage tap is handed an empty signal bag, so a declared response_tokens_out never reaches the payload (kernel plane_driver/hooks.rs response_tap)"]
 async fn the_response_tap_carries_response_tokens_out_when_declared() {
     let declared = response_tap_payload(true).await;
     assert_eq!(declared["stage"]["at"], "response");

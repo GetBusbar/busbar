@@ -225,7 +225,6 @@ const EMPTY_CHOICES: &str = r#"{"id":"chatcmpl-EMPTY","object":"chat.completion"
 /// `ingress_indistinguishability_tests.rs::test_untranslatable_2xx_refunds_budget_and_trips_breaker`
 /// (the door has one walk, so this cell is also the fallback-pool twin's).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: the walk keeps the budget unit of an untranslatable 2xx (the far end completed cleanly; the plane's transient fault does not refund it), where 1.5.5 refunded it"]
 async fn an_untranslatable_success_refunds_the_budget_unit_and_benches_the_member() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-ported-untranslatable";
@@ -265,7 +264,6 @@ async fn an_untranslatable_success_refunds_the_budget_unit_and_benches_the_membe
 /// 500, but the far end served: the member's budget unit is kept, not refunded. Ports legacy
 /// `ingress_indistinguishability_tests.rs::test_truncated_body_does_not_refund_budget`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: the walk refunds the budget unit of an over-cap answer (the plane ends it before the far end's last byte, read as a buffered answer cut), where 1.5.5 kept it"]
 async fn an_answer_over_the_translation_cap_keeps_the_budget_unit() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-ported-over-cap";
