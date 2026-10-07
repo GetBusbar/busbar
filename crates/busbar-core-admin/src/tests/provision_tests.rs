@@ -13,6 +13,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::json;
 
+use busbar_kernel::audit_ring;
 use busbar_kernel::governance::{GovState, MemoryStore};
 use busbar_kernel::state::AppHandle;
 
@@ -194,15 +195,15 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     // AND IT IS RECORDED — at COMMIT time, so a mint that fails afterwards cannot erase the fact
     // that the config changed.
     assert!(
-        busbar_kernel::audit_ring::AUDIT
+        audit_ring::AUDIT
             .list_filtered(
                 0,
-                busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
+                audit_ring::MAX_AUDIT_ENTRIES,
                 Some("group.provision"),
                 Some(PROVISION_FAIL_RESOURCE)
             )
             .iter()
-            .any(|e| e.outcome == busbar_kernel::audit_ring::OUTCOME_APPLIED),
+            .any(|e| e.outcome == audit_ring::OUTCOME_APPLIED),
         "the committed provision is in the audit trail"
     );
     let versions = live.versions().list(0, crate::v1::contract::LIST_LIMIT_MAX);
@@ -230,10 +231,10 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     // before the second read. Latent: nothing in this suite currently drives that many concurrent
     // audit writes. Accepted rather than bracketed by seq, which would narrow the window but not
     // defeat eviction.
-    let audit_rows_before = busbar_kernel::audit_ring::AUDIT
+    let audit_rows_before = audit_ring::AUDIT
         .list_filtered(
             0,
-            busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
+            audit_ring::MAX_AUDIT_ENTRIES,
             Some("group.provision"),
             Some(PROVISION_FAIL_RESOURCE),
         )
@@ -241,10 +242,10 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let status = mint_with_parent(&handle, "k", PROVISION_FAIL_GROUP, "team").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
-        busbar_kernel::audit_ring::AUDIT
+        audit_ring::AUDIT
             .list_filtered(
                 0,
-                busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
+                audit_ring::MAX_AUDIT_ENTRIES,
                 Some("group.provision"),
                 Some(PROVISION_FAIL_RESOURCE)
             )
@@ -260,17 +261,15 @@ const CEILING_ACTOR: &str = "test:ceiling-audit";
 
 /// `key.create`/rejected rows written by [`CEILING_ACTOR`] — this test's refusals and no others.
 fn ceiling_refusal_rows() -> usize {
-    busbar_kernel::audit_ring::AUDIT
+    audit_ring::AUDIT
         .list_filtered(
             0,
-            busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
+            audit_ring::MAX_AUDIT_ENTRIES,
             Some("key.create"),
             Some(crate::keys::KEY_RESOURCE_NONE),
         )
         .iter()
-        .filter(|e| {
-            e.outcome == busbar_kernel::audit_ring::OUTCOME_REJECTED && e.principal == CEILING_ACTOR
-        })
+        .filter(|e| e.outcome == audit_ring::OUTCOME_REJECTED && e.principal == CEILING_ACTOR)
         .count()
 }
 

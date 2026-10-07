@@ -181,10 +181,55 @@ pub struct Bind {
     /// let _ = busbar_plugin_loader::dispatch::Bind { instance: "a".into(), max_inflight_cap: 1, sink };
     /// ```
     pub dispatcher: super::worker::Adopter,
-    /// The host's ONE connection table. An instance whose Statement declares a need is declared on
-    /// it at bind (each need under its Statement index) and handed the connector slots
+    /// The host's ONE connection table, or why the bind has none, stated at every call site
+    /// ([`ConnTable`]). An instance whose Statement declares a need is declared on the table at bind
+    /// (each need under its Statement index) and handed the connector slots
     /// ([`super::conn_services::CONN_SLOTS`]); any other instance is handed none.
-    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    pub conns: ConnTable,
+}
+
+/// THE BIND'S CONNECTION TABLE (Q-P4-3): the host's table, or, explicitly, why there is none. A
+/// door that declares a need and is bound to serve with no table is REFUSED at bind, naming the
+/// plugin ([`LoadError::NoConnectionTable`]); only a probe binds it with none.
+#[derive(Clone)]
+pub enum ConnTable {
+    /// The host's one connection table: a need the Statement declares is declared on it.
+    Host(Arc<dyn busbar_contract::conn::DeclaredConns>),
+    /// A PROBE or CHECK bind: the instance is only validated or read for its facts, never opened to
+    /// serve, so a need it declares is not declared and it is handed no table (nothing is opened to
+    /// the network while a configuration is judged). Not refused.
+    Probe,
+    /// A bind to SERVE with no connection table: the door must declare no need. One that declares
+    /// a need is refused ([`LoadError::NoConnectionTable`]).
+    NoNeeds,
+}
+
+impl ConnTable {
+    /// A SERVING bind over the table an axis holds: [`ConnTable::Host`] when it holds one, else
+    /// [`ConnTable::NoNeeds`] (an axis handed no table serves only doors that declare no need).
+    #[must_use]
+    pub fn serving(table: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>) -> Self {
+        table.map_or(Self::NoNeeds, Self::Host)
+    }
+
+    /// The table, when the bind has one.
+    #[must_use]
+    pub fn table(&self) -> Option<&Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        match self {
+            Self::Host(t) => Some(t),
+            Self::Probe | Self::NoNeeds => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ConnTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Host(_) => "Host",
+            Self::Probe => "Probe",
+            Self::NoNeeds => "NoNeeds",
+        })
+    }
 }
 
 impl std::fmt::Debug for Bind {
@@ -192,6 +237,7 @@ impl std::fmt::Debug for Bind {
         f.debug_struct("Bind")
             .field("instance", &self.instance)
             .field("max_inflight_cap", &self.max_inflight_cap)
+            .field("conns", &self.conns)
             .finish_non_exhaustive()
     }
 }
@@ -318,8 +364,13 @@ pub(crate) struct Instance {
     /// crosses (and kept once it closed). `close` enters only when nothing else is crossing, and
     /// nothing enters while it is set, so no crossing ever meets a freed instance.
     gate: AtomicU32,
-    /// Crossings actually made (the witness of "without a crossing").
+    /// Crossings actually made (the witness of "without a crossing"), RESUMES included.
     pub(crate) crossings: AtomicU64,
+    /// Of [`Instance::crossings`], the RESUME re-invocations ([`FLAG_RESUME`]: the same op
+    /// re-entered on its ticket after it answered PENDING; THE DESIGN §11.2, A.3 "Resume"). An
+    /// op's FIRST invocations are `crossings - resumes`: "one op = one crossing", however often
+    /// the op pends.
+    pub(crate) resumes: AtomicU64,
     /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
     pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
     next_call: AtomicU64,
@@ -683,11 +734,15 @@ impl Instance {
             return Crossed::host(Outcome::Fault);
         }
         // SAFETY: the caller's contract.
-        let (ticket, instance) = unsafe {
+        let (ticket, instance, resumed) = unsafe {
             let head = &mut *input;
             head.op = s;
             head.host = self.ctx();
-            (head.ticket, self.ptr.load(Ordering::Acquire))
+            (
+                head.ticket,
+                self.ptr.load(Ordering::Acquire),
+                head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0,
+            )
         };
         // A `validate`, of every kind, is lent a reason buffer for its crossing alone (it never
         // pends): it names what it wrote in `head.error`, read below while the buffer lives.
@@ -741,6 +796,9 @@ impl Instance {
             _ => self.slots[s as usize],
         };
         self.crossings.fetch_add(1, Ordering::Relaxed);
+        if resumed {
+            self.resumes.fetch_add(1, Ordering::Relaxed);
+        }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
         // The unit this crossing serves, for the host services it calls.
@@ -1144,7 +1202,15 @@ impl<K: Kind> Plugin<K> {
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
-                (Some(table), n) if n > 0 => {
+                (ConnTable::NoNeeds, n) if n > 0 => {
+                    return Err(LoadError::NoConnectionTable {
+                        plugin: str_bytes(st.name)
+                            .map(|n| String::from_utf8_lossy(n).into_owned())
+                            .unwrap_or_default(),
+                        needs: n,
+                    });
+                }
+                (ConnTable::Host(table), n) if n > 0 => {
                     // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a
                     // count; the rendering reads the Statement's `'static` lists.
                     let needs = unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }
@@ -1222,6 +1288,7 @@ impl<K: Kind> Plugin<K> {
                 closed: AtomicBool::new(false),
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),
+                resumes: AtomicU64::new(0),
                 calls: Mutex::new(Vec::new()),
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
