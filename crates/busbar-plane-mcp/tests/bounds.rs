@@ -298,3 +298,41 @@ fn a_caller_at_its_subscription_quota_is_refused_and_evicts_no_other_caller() {
         "caller B's stream still has its frame to write"
     );
 }
+
+/// A `tools/list` of `unit` arrives: its outcome and the status the plane refused it with.
+fn arrival(p: &Plugin<Plane>, unit: u64) -> (Outcome, u32) {
+    let route = door::ROUTES
+        .iter()
+        .position(|r| r.verb == "POST" && r.target == "/mcp")
+        .expect("the door routes it");
+    let mut a: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
+    (a.input.head, a.out.head) = (in_head(), out_head());
+    a.input.unit = unit;
+    a.input.claim = u32::try_from(route).expect("a small table");
+    (a.input.method, a.input.target) = (text(b"POST"), text(b"/mcp"));
+    a.input.body = octets(TOOLS_LIST);
+    (a.input.fields, a.input.fields_len) = (LIST_FIELDS.as_ptr(), LIST_FIELDS.len());
+    let outcome = p.call(slot::ARRIVE, &mut a).outcome;
+    (outcome, a.out.refusal_status)
+}
+
+/// A full unit table refuses the next arrival (429) and never evicts: the first unit is still held
+/// and still answers.
+#[test]
+fn a_full_unit_table_refuses_the_next_arrival_and_evicts_nothing() {
+    let d = Dispatcher::new(DispatchConfig::default());
+    let p = started(&d);
+    for unit in 1..=4096 {
+        assert_eq!(arrival(&p, unit).0, Outcome::Ready, "unit {unit}");
+    }
+    assert_eq!(
+        arrival(&p, 4097),
+        (Outcome::Refused, 429),
+        "the arrival past the cap"
+    );
+    assert_eq!(
+        piece(&p, 1, FROM_CALLER),
+        Outcome::Ready,
+        "the first unit was evicted to make room"
+    );
+}
