@@ -754,7 +754,7 @@ fn bind(label: &str, sink: Arc<Tape>, d: &Dispatcher) -> Bind {
         max_inflight_cap: 64,
         sink,
         dispatcher: d.adopter(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::Probe,
     }
 }
 

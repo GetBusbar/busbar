@@ -552,7 +552,6 @@ dependencies = [
  "busbar-contract",
  "busbar-export-prometheus",
  "busbar-kernel",
- "busbar-kernel-ledger",
  "busbar-llm",
  "busbar-mcp",
  "flate2",

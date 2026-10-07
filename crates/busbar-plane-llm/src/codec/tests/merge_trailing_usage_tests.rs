@@ -107,6 +107,7 @@ fn trailing_detail_merge_is_exhaustive_over_every_bucket() {
         cache_creation_1h_input_tokens: Some(3),
         search_units: Some(4),
         web_search_requests: Some(5),
+        web_fetch_requests: Some(16),
         service_tier: Some("priority".to_string()),
         input_audio_tokens: Some(6),
         output_audio_tokens: Some(7),
@@ -132,12 +133,15 @@ fn trailing_detail_merge_is_exhaustive_over_every_bucket() {
             },
             ..Default::default()
         }),
-        // Bedrock's guardrail residuals ride the stream's trailing `metadata` frame only; a fold
-        // that dropped them would leave the streamed turn with no unbilled audit row.
-        residual_units: std::collections::BTreeMap::from([(
-            "guardrail.inputAssessment.topicPolicyUnits".to_string(),
+        // Bedrock's guardrail policy units ride the stream's trailing `metadata` frame only, under
+        // their open classes (LEDGER-100); a fold that dropped them would bill the streamed turn
+        // less than its buffered twin.
+        open_units: std::collections::BTreeMap::from([(
+            crate::codec::ir::open_class::GUARDRAIL_TOPIC_POLICY_UNITS_CLASS.to_string(),
             14,
         )]),
+        // A residual (a count a reader could not class) rides the same way, for its audit row.
+        residual_units: std::collections::BTreeMap::from([("unclassed.count".to_string(), 17)]),
     };
     let mut acc = usage(0, 0, None, None);
     let mut trailing = usage(50, 20, None, None);
@@ -157,4 +161,38 @@ fn trailing_detail_merge_is_exhaustive_over_every_bucket() {
         acc.detail, full,
         "an empty trailing detail must clobber no bucket"
     );
+}
+
+/// A STALE STATED-TOTAL GAP IS NEVER BILLED (LEDGER-100 makes the gap the billed open class
+/// `unitemized_tokens`, REV-334 note 5). A Gemini stream restates its counters on every
+/// usage-bearing chunk: an early chunk whose total ran ahead of its itemized counts carries a gap
+/// note, and a following chunk whose counters reconcile carries none. The fold keeps the LAST chunk's
+/// check, so the turn bills no remainder its final total does not state. A chunk with no counters
+/// checked nothing and keeps the note.
+#[test]
+fn a_following_reconciled_frame_clears_an_earlier_gap() {
+    let gap = crate::codec::ir::UsageIdentityNote {
+        reported_total: 40,
+        summed_total: 30,
+        unaccounted: 10,
+        identity: "gemini.usageMetadata",
+    };
+    let mut acc = usage(20, 10, None, None);
+    acc.detail.usage_identity_note = Some(gap.clone());
+    // A counter-less chunk keeps the note.
+    merge_trailing_usage(&mut acc, &usage(0, 0, None, None));
+    assert_eq!(acc.detail.usage_identity_note, Some(gap));
+    assert_eq!(
+        acc.to_token_usage()
+            .open_units
+            .get(crate::codec::ir::open_class::UNITEMIZED_TOKENS_CLASS),
+        Some(&10)
+    );
+    // The final chunk restates the counters and they reconcile: no gap, no remainder billed.
+    merge_trailing_usage(&mut acc, &usage(20, 20, None, None));
+    assert_eq!(acc.detail.usage_identity_note, None);
+    assert!(!acc
+        .to_token_usage()
+        .open_units
+        .contains_key(crate::codec::ir::open_class::UNITEMIZED_TOKENS_CLASS));
 }

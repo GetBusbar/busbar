@@ -529,7 +529,8 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
             crate::root::loader::dispatch::DispatchConfig::default(),
         )),
         logs: crate::root::boot::plugin_logs().clone(),
-        conns: None,
+        // The build's ephemeral store declares no need: it serves with no connection table.
+        conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
         mint: busbar_kernel::door::op_id,
     };
     let opened = axis
