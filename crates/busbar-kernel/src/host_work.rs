@@ -183,6 +183,9 @@ pub struct Work {
     pub record: Vec<u8>,
     /// The unit it was last resumed by.
     pub bound: Option<u64>,
+    /// The unit that opened it, in this process; `None` for a handle read from the store (no
+    /// unit outlives the process that admitted it). Not part of the row.
+    pub opened_by: Option<u64>,
 }
 
 impl Work {
@@ -254,6 +257,7 @@ impl Work {
             settled_ms,
             record: record.to_vec(),
             bound: None,
+            opened_by: None,
         })
     }
 }

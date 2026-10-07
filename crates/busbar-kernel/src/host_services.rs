@@ -1961,6 +1961,7 @@ impl HostServices for KernelServices {
                 settled_ms: 0,
                 record,
                 bound: None,
+                opened_by: unit,
             };
             let Some(row) = work.row() else {
                 return Stored::refused(work_refusal::TOO_LONG);
@@ -2032,7 +2033,14 @@ impl HostServices for KernelServices {
         })
     }
 
-    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran {
+    fn work_settle(
+        &self,
+        caller: &Caller,
+        _unit: Option<u64>,
+        handle: u64,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
         let (_, records, pool) = match self.work_scope(caller) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),

@@ -1314,11 +1314,13 @@ extern "C" fn work_settle(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             if check_work_record(&i.record).is_err() {
                 return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
             }
+            // The unit this crossing serves: the kernel judges the settle against it.
+            let unit = serving_unit();
             let provider = Arc::clone(&served.provider);
             // SAFETY: no buffer is named.
             unsafe {
                 pended(&served, &route, &head, None, |later| {
-                    provider.work_settle(&caller, i.handle, &record, later)
+                    provider.work_settle(&caller, unit, i.handle, &record, later)
                 })
             }
         },

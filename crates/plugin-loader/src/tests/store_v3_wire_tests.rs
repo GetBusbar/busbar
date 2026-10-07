@@ -623,6 +623,7 @@ impl busbar_contract::services::HostServices for ClockOnly {
     fn work_settle(
         &self,
         _: &busbar_contract::services::Caller,
+        _: Option<u64>,
         _: u64,
         _: &[u8],
         _: busbar_contract::services::Later,

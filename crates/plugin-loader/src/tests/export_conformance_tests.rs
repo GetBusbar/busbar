@@ -339,7 +339,7 @@ impl HostServices for DiskHost {
         Ran::Now(Stored::refused("no work book here"))
     }
 
-    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Later) -> Ran {
+    fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
         Ran::Now(Stored::refused("no work book here"))
     }
 
