@@ -97,7 +97,7 @@ pub use identity::{
 };
 pub use legacy::{
     opening_balances, LegacyHead, LegacyMigrationSource, LegacyPosting, LegacyRows,
-    LegacyWriteError, OpeningBalance, RecordingRows,
+    LegacyWriteError, OpeningBalance, RecordingRows, SummedRows,
 };
 pub use migration::{
     migrate, opening_totals, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
