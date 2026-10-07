@@ -1090,14 +1090,6 @@ drain   = "none: the same granted class as busbar -> busbar-kernel's test edge. 
 #   drain — the line that deletes it.
 
 [[face]]
-crate = "busbar-a2a"
-face = "Transport"
-count = "1"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — a legacy 1.5.x crate is not a transport; the retirement is what ends this."
-why = "the retiring a2a engine carries its own transport implementation, from before the plane/transport split existed. One implementation, in shipped source."
-drain = "finish the a2a drain and delete busbar-a2a; the row goes with the crate."
-
-[[face]]
 crate = "busbar"
 face = "Transport"
 count = "1"
@@ -1110,16 +1102,8 @@ crate = "busbar-plugin-loader"
 face = "Transport"
 count = "1"
 cite = "BUSBAR-1.6.0.md THE DESIGN, §2 — the loader is part of the trusted base and is NOT a kind. Bridging a plugin's face across the ABI is what a loader does; it is the one crate whose job is to be on both sides."
-why = "the loader implements the transport face (transport_adapter.rs `WireTransport`) to hand a dynamically loaded transport plugin to the kernel. One implementation, in shipped source. Re-described against the tree: the store bridge no longer implements a `Store` face (its adapters implement the record/slice/verb store traits), and the transport bridge is the one entry face the loader implements today."
+why = "the loader implements the transport face (transport_adapter.rs `WireTransport`) to hand a dynamically loaded transport plugin to the kernel. One implementation, in shipped source. Its store bridge (store_v3.rs `impl RecordStore for LoadedStore`) is the store face, granted to plugin-tooling in the gate's code (FACE_GRANTS, Part 2 #33), so it carries no row."
 drain = "none while the loader is outside the kind system. The drain is the ruling that gives the trusted base a kind of its own; until then this row holds the number, so a SECOND face appearing in the loader is a landing that has to say why."
-
-[[face]]
-crate = "busbar"
-face = "Store"
-count = "2"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 gives the composition root a REGISTRY to assemble from; assembling a store is not implementing one."
-why = "the root implements the store face twice in its own assembly rather than composing a store plugin that does. Two implementations, in shipped source."
-drain = "move both implementations into a store-kind crate and have the root REGISTER it. The root names every kind by design and implements none of them."
 
 # ── THE DIALECT COLUMN ───────────────────────────────────────────────────────────────────────────
 #
