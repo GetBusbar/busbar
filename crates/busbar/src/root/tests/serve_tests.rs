@@ -5634,6 +5634,12 @@ mod agent_door {
 
     impl GrpcAgent {
         async fn start(answer: Vec<u8>) -> Self {
+            Self::ending(answer, "0").await
+        }
+
+        /// The agent, each rpc answered `answer` (no message when empty) and its trailers stating
+        /// `grpc-status: <status>`.
+        async fn ending(answer: Vec<u8>, status: &'static str) -> Self {
             use http_body_util::BodyExt as _;
             type Frames = Vec<Result<http_body::Frame<bytes::Bytes>, std::convert::Infallible>>;
             let issuer = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
@@ -5678,17 +5684,16 @@ mod agent_door {
                                         let mut trailers = http::HeaderMap::new();
                                         trailers.insert(
                                             "grpc-status",
-                                            http::HeaderValue::from_static("0"),
+                                            http::HeaderValue::from_static(status),
                                         );
-                                        (
-                                            "application/grpc",
-                                            vec![
-                                                Ok(http_body::Frame::data(bytes::Bytes::from(
-                                                    answer,
-                                                ))),
-                                                Ok(http_body::Frame::trailers(trailers)),
-                                            ],
-                                        )
+                                        let mut frames: Frames = Vec::new();
+                                        if !answer.is_empty() {
+                                            frames.push(Ok(http_body::Frame::data(
+                                                bytes::Bytes::from(answer),
+                                            )));
+                                        }
+                                        frames.push(Ok(http_body::Frame::trailers(trailers)));
+                                        ("application/grpc", frames)
                                     };
                                     hyper::Response::builder()
                                         .status(200)
@@ -5772,6 +5777,50 @@ mod agent_door {
             doc["result"]["task"]["id"], "far-task",
             "the answer leaves under busbar's task identity: {body}"
         );
+    }
+
+    /// A gRPC AGENT'S ERROR STATUS IS ITS ANSWER (`BUSBAR-1.6.0.md` l.394, l.747; the coordinator's
+    /// ruling: the trailer status comes through the kernel): an agent that ends every call
+    /// `NOT_FOUND` in its trailers is relayed to the caller as the A2A error that status binds
+    /// (TaskNotFound, `-32001`), dialled once per call and never failed over, and records no
+    /// transient against the agent: six in a row, past the trip's five outcomes, never open its
+    /// cell. RED: the error end reached the plane as a connection fault (no status, a cut), the
+    /// caller was answered a reply busbar could not read, and each cut was a transient on the
+    /// agent's breaker until it opened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_grpc_agents_error_status_is_relayed_as_its_a2a_error_and_never_trips_it() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-grpc-status";
+        let _published = Published(instance);
+        let mut agent = GrpcAgent::ending(Vec::new(), "5").await;
+        let s = served(instance, &agent.entry("planner"), false, None);
+        approve(&s, "planner").await;
+        let params = r#"{"message":{"messageId":"m-1","role":"ROLE_USER","parts":[{"text":"PLAN THE MIGRATION"}]}}"#;
+        for call in 0..6 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner", "SendMessage", params, Some(&s.token)),
+            )
+            .await;
+            assert!(
+                !body.contains("breaker_open"),
+                "call {call}: NOT_FOUND is no fault of the agent's: {body}"
+            );
+            let doc: serde_json::Value = serde_json::from_str(&body)
+                .unwrap_or_else(|_| panic!("call {call}: an answer: {body}"));
+            assert_eq!(
+                doc["error"]["code"], -32001,
+                "call {call}: NOT_FOUND is TaskNotFound: {body}"
+            );
+            let mut dials = 0;
+            while agent.heard.try_recv().is_ok() {
+                dials += 1;
+            }
+            assert_eq!(
+                dials, 1,
+                "call {call}: dialled once, never failed over: {body}"
+            );
+        }
     }
 
     /// The far agent's own id for the task the port cells open.

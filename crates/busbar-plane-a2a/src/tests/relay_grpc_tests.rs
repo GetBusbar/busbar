@@ -422,3 +422,70 @@ fn a_grpc_attempt_rides_the_doors_grpc_need() {
     assert_eq!(attempt_need(Binding::JsonRpc), 0);
     assert_eq!(attempt_need(Binding::HttpJson), 0);
 }
+
+/// THE CALL'S END AS THE KERNEL HANDS IT ON (`BUSBAR-1.6.0.md` l.394, l.747): a call that ends
+/// with an error status reaches the plane as its trailers, the answer's LAST piece, with the status
+/// the transport read off them beside them. The caller is answered the A2A error the status binds,
+/// and the breaker is handed the destination ANSWERING (the engine's `classify_hop`: a well-formed
+/// backend error is a success to the breaker, never a transient); UNAUTHENTICATED refuses busbar
+/// itself, as a 401 does. Trailers handed on with NO status state no code, whatever their details
+/// carry (RED: the details' own `google.rpc.Status` code was read as the call's status).
+#[test]
+fn a_status_handed_on_with_the_last_trailers_ends_the_call() {
+    use crate::framed::{Code, ErrorInfo, Status, DETAILS_FIELD};
+    use base64::Engine as _;
+    use busbar_contract::abi::transport::fields::{LINE_END, SEPARATOR};
+    let asked =
+        json!({ "jsonrpc": "2.0", "id": 7, "method": "GetTask", "params": { "id": BACKEND } });
+    let hop = || {
+        let (mut r, _, _) = dialled(&asked, None, false);
+        r.for_task(TaskHop {
+            task_id: "busbar-t".into(),
+            context_id: "busbar-c".into(),
+            addressed: true,
+            skill: None,
+        });
+        assert_eq!(r.on_piece(far(Some(0), &[], false)), Answer::Nothing);
+        r
+    };
+    let answered = |a: Answer| match a {
+        Answer::ToCaller(reply) => reply,
+        other => panic!("the last trailers answer the caller: {other:?}"),
+    };
+    // NOT_FOUND: TaskNotFound, the destination answering.
+    let mut r = hop();
+    let reply = answered(r.on_far_fields(&[], Some(Code::NotFound as u32), true));
+    assert_eq!(body(&reply)["error"]["code"], -32001, "{:?}", body(&reply));
+    assert_eq!(reply.status, 404);
+    assert_eq!(r.take_reading(), Some(Reading::Healthy));
+    // UNAUTHENTICATED: busbar itself refused.
+    let mut r = hop();
+    let _ = answered(r.on_far_fields(&[], Some(Code::Unauthenticated as u32), true));
+    assert_eq!(r.take_reading(), Some(Reading::Hard));
+    // Details naming NOT_FOUND, handed on with no status: no code is read off them.
+    let details = Status::with_error_info(
+        Code::NotFound,
+        "no such task",
+        ErrorInfo {
+            reason: "TASK_NOT_FOUND".into(),
+            domain: crate::ERROR_INFO_DOMAIN.into(),
+            metadata: std::collections::BTreeMap::new(),
+        },
+    );
+    let mut block = DETAILS_FIELD.as_bytes().to_vec();
+    block.extend_from_slice(SEPARATOR);
+    block.extend_from_slice(
+        base64::engine::general_purpose::STANDARD_NO_PAD
+            .encode(details.details())
+            .as_bytes(),
+    );
+    block.extend_from_slice(LINE_END);
+    let mut r = hop();
+    let reply = answered(r.on_far_fields(&block, None, true));
+    assert_ne!(
+        body(&reply)["error"]["code"],
+        -32001,
+        "the details state no status: {:?}",
+        body(&reply)
+    );
+}
