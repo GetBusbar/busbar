@@ -23,7 +23,7 @@
 //!   a tree that shrank; only this catches one crate quietly leaving the scan while 700 other files
 //!   keep the total comfortably above the floor.
 
-use crate::ctx::{Ctx, SourceFile, WalkSpec};
+use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 
 /// The aggregate floor — A RATCHET. Measured at 725 non-test `.rs` files under `crates/` on the
 /// 1.6.0 integration tree; set below that with room for a genuine consolidation, and raised when
@@ -135,4 +135,25 @@ pub fn source_population(cx: &Ctx) -> Result<Population, String> {
         crates,
         drained,
     })
+}
+
+/// THE SELFTEST PLANT FOR THE FLOOR'S POSITION: the live population with exactly ONE file removed
+/// (from a crate that keeps at least one other, so no crate drains). A floor that sits AT the
+/// measured count refuses this; a floor set a margin below the count passes it, which is the defect
+/// the plant exists to catch. `Err` when the population cannot be read or holds no removable file.
+pub fn one_file_short(cx: &Ctx) -> Result<Overlay, String> {
+    let pop = source_population(cx)?;
+    let crate_of = |rel: &str| rel.split('/').nth(1).unwrap_or_default().to_string();
+    let victim = pop.files.iter().rev().find(|f| {
+        let c = crate_of(&f.rel_str());
+        pop.files
+            .iter()
+            .filter(|g| crate_of(&g.rel_str()) == c)
+            .count()
+            > 1
+    });
+    let victim = victim.ok_or_else(|| "no crate holds a second file to remove".to_string())?;
+    let mut ov = Overlay::new();
+    ov.remove(&victim.rel);
+    Ok(ov)
 }
