@@ -288,10 +288,12 @@ pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) ->
     }
 }
 
-// `tests` (the `/stats`/`/v1/models` topology suite) MOVED to `tests/endpoints_cross_plane.rs` (the
-// "fix the 38" pass after the A6/HostCtx dev-dependency-cycle cleanup): every test in it builds real
+// `tests` (the `/stats`/`/v1/models` topology suite) MOVED to the composition root's
+// `crates/busbar/tests/endpoints_cross_plane.rs` (the "fix the 38" pass after the A6/HostCtx
+// dev-dependency-cycle cleanup, then Q128's kind-isolation move): every test in it builds real
 // lanes/pools, which only materialize through the REAL `busbar_llm` plane's `build_runtime`/`viewer`
-// — an integration-test target, never this `#[cfg(test)]` unit module. See that file's header.
+// — an integration-test target where a plane may be linked, never this `#[cfg(test)]` unit module.
+// See that file's header.
 
 #[cfg(test)]
 #[path = "tests/endpoints_doc_tests.rs"]

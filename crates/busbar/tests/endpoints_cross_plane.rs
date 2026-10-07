@@ -15,6 +15,11 @@
 //! `endpoints::{stats, list_models, list_models_v1beta}` were widened from `pub(crate)` to `pub` for
 //! exactly this move — nothing about the tests themselves changed; they still drive the real handler
 //! functions directly, not a shim or a real HTTP round trip.
+//!
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
+//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
+//! build.rs): every cell reads lane/pool topology through the fallback plane's runtime view, which
+//! only a real plane builds, and the composition root is where a plane may be linked.
 
 mod linked;
 

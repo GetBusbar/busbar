@@ -770,6 +770,16 @@ drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this ro
 
 [[dep]]
 from    = "busbar-kernel"
+to      = "busbar-kernel"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md — #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). The crate names ITSELF, so this edge crosses no kind boundary and links nothing new."
+why     = "busbar-kernel names busbar-kernel: declared dev in the test graph (dev-dependencies, default-features off, features test-support), 1 declaration(s) at this commit. Q128 (audit HIGH on the kernel's test-linked build.rs): the plane dev-dependencies that turned this crate's own `test-support` on for its integration tests are gone with the cross-plane cells, which moved to the composition root; the crate now turns it on itself, as busbar-transport-stdio does. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this row holds is the NUMBER."
+
+[[dep]]
+from    = "busbar-kernel"
 to      = "busbar-kernel-audit"
 half    = "test"
 count   = "1"
@@ -898,26 +908,6 @@ cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crate
 why     = "busbar-core-oauth2 names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-core-oauth2 back would be an ungranted class."
 
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-a2a"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-kernel names busbar-a2a: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-a2a dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-llm"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-kernel names busbar-llm: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-llm dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-llm"

@@ -123,48 +123,18 @@ fn seam_mount(
 /// admin surface through the seam, which is unregistered until the composition root (production) or
 /// this helper (tests) installs it — so every moved test that wants the admin routes builds through
 /// here instead of naming `busbar_kernel::build_router` directly.
-/// Install the process-wide test environment exactly once: every LINKED plane's test seams
-/// (protocols/codecs, plane runtimes, ingress hooks), then the admin mount seam. busbar-core's own
-/// unit-test binary auto-registers these from its `cfg(test)` builtins, but a test-support CONSUMER
-/// (this crate) has `cfg(test)` false for its busbar-core dependency, so it must install them
-/// explicitly. It names no plane crate: `build.rs` emits `TEST_LINKED` (each linked dev-dependency's
-/// `testkit::TEST_SEAM` entry, listed as data in Cargo.toml's `[package.metadata.busbar]
-/// test-linked`); this registers each into the kernel's test-seam registry and runs every registered
-/// install. All are idempotent (first-wins), so calling this from every router builder is safe.
+/// Install the process-wide test environment exactly once: the admin mount seam. This crate's tests
+/// link no plane and no auth plugin (busbar-core-admin is core: it names zero plane types, its tests
+/// included); the admin tests that need a real plane or the operator credential's linked row live in
+/// the composition root (`crates/busbar/tests/admin_cross_plane/`), which links both.
 ///
 /// A `#[cfg(test)]` MODULE, not a bare `#[cfg(test)] fn`: this body is test-binary-only code, and the
 /// module is the form `plane-purity` reads as test scope.
 #[cfg(test)]
 mod test_seams {
-    include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
-    include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
-
     pub(crate) fn ensure_seam() {
-        use busbar_kernel::test_support::seam::{register_test_plane_seam, test_plane_seams};
         static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
-        SEAM_ONCE.call_once(|| {
-            // The operator credential's test registry row, before anything resolves the auth axis.
-            // This binary links the operator plugin the composition root links and pins the root's
-            // bytes, so it hands in the root's words as the root does (crates/busbar's legacy
-            // table, `root::auth_bindings::OPERATOR_AUTH_MODULE`; ARCHITECT 2026-09-30,
-            // KERNEL-AUTH-ZERO Q2).
-            for_each_operator_auth_row!(install_operator_row);
-            fn install_operator_row(door: busbar_kernel::test_support::AuthDoor) {
-                const ROOT_WORDS: busbar_kernel::test_support::OperatorWords =
-                    busbar_kernel::test_support::OperatorWords {
-                        provider: "admin-tokens",
-                        principal_id: "admin",
-                    };
-                busbar_kernel::test_support::install_operator_auth_row_as(ROOT_WORDS, door);
-            }
-            for entry in TEST_LINKED {
-                register_test_plane_seam(entry);
-            }
-            for seam in test_plane_seams() {
-                (seam.install)();
-            }
-            super::install();
-        });
+        SEAM_ONCE.call_once(super::install);
     }
 }
 #[cfg(test)]

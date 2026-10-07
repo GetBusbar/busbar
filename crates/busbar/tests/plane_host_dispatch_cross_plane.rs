@@ -10,6 +10,11 @@
 //! the REAL wired fn through the PUBLIC `PlaneHostVtable::entitlement_check` field
 //! `with_dispatch_scope` hands back — the same seam a real plane calls through. Every OTHER test in
 //! `dispatch_tests.rs` names no real plane's scope-kind vocabulary and stays there.
+//!
+//! MOVED HERE from `crates/busbar-kernel/tests/` (kind-isolation, ARCHITECT: core names zero plane
+//! types, its tests included; the a2a flip's analogue of P3 DEL-MCP's 02bcf8300d): the cell needs a
+//! plane scope kind beyond `pool`, and every plane declaring one is now served through its door,
+//! which the composition root links and the kernel does not.
 
 mod linked;
 
