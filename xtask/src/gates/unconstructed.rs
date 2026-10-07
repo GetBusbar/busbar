@@ -127,6 +127,14 @@ pub const MIN_REASON: usize = 40;
 /// A `construct` needle shorter than this cannot be narrow enough to mean anything. `.f(` is three.
 const MIN_NEEDLE: usize = 4;
 
+/// THE DECLARATION FLOOR: the `[[capability]]` rows live in [`DECLARATIONS`] on predev 5e672d125d,
+/// measured 2026-10-07 (`ledger-dual-write`, `audit-chain-signing`; the third `[[capability]]` in
+/// the file is inside THE ROW SHAPE comment and declares nothing). Fewer reds
+/// [`ROW_SCAN_FLOOR`]: a struck row is a construction guard that stopped running, and a file
+/// with none used to read `0 capability declaration(s)` and pass. Lowered only in the reviewed
+/// diff that strikes a row.
+pub const DECLARATION_FLOOR: usize = 2;
+
 const GATE: &str = "unconstructed";
 const CLEAN: &str = "clean";
 const DID_NOT_RUN: &str = "DID NOT RUN";
@@ -656,20 +664,41 @@ impl Gate for UnconstructedGate {
             }
         }
 
-        let mut rows = vec![Row::pass(
-            ROW_SCAN_FLOOR,
-            "the declarations parsed, every construct needle is call-shaped, and every scope was \
-             walked",
-            format!(
-                "{CLEAN} — {} capability declaration(s) in {DECLARATIONS}, {} scope root(s), {} \
-                 file(s) scanned, {} implementation file(s) read; every `construct` needle ends in \
-                 `(` so no `use`, doc comment or type alias can satisfy a row",
-                caps.len(),
-                roots.len(),
-                total,
-                built_text.len()
-            ),
-        )];
+        let measured = format!(
+            "{} capability declaration(s) in {DECLARATIONS} (floor {DECLARATION_FLOOR}), {} scope \
+             root(s), {} file(s) scanned, {} implementation file(s) read",
+            caps.len(),
+            roots.len(),
+            total,
+            built_text.len()
+        );
+        // THE DECLARATION FLOOR. The rows ARE the denominator, so a struck row is a guard that
+        // stopped running — and without this check a file with fewer rows, or none, read as a
+        // smaller clean.
+        let mut rows = vec![if caps.len() < DECLARATION_FLOOR {
+            Row::fail(
+                ROW_SCAN_FLOOR,
+                "fewer capabilities are declared than the reviewed floor",
+                format!(
+                    "{measured}: {} is below the declaration floor of {DECLARATION_FLOOR}. A \
+                     declaration struck from {DECLARATIONS} is a construction guard that no longer \
+                     runs, and the file reads exactly as clean without it. Restore the row, or \
+                     lower DECLARATION_FLOOR in xtask/src/gates/unconstructed.rs in the same \
+                     reviewed diff that strikes it",
+                    caps.len()
+                ),
+            )
+        } else {
+            Row::pass(
+                ROW_SCAN_FLOOR,
+                "the declarations parsed, every construct needle is call-shaped, and every scope \
+                 was walked",
+                format!(
+                    "{CLEAN} — {measured}; every `construct` needle ends in `(` so no `use`, doc \
+                     comment or type alias can satisfy a row"
+                ),
+            )
+        }];
 
         let mut stale: Vec<String> = Vec::new();
         let mut dead: Vec<String> = Vec::new();
