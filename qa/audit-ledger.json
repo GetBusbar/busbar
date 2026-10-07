@@ -331,16 +331,37 @@
    "paths": [
     "crates/busbar-core-admin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "12e27975d47b2bbf58d6dd657da185781976886acd12b1fac4134e0ef72bb1b9",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 5,
+    "LOW": 4,
+    "NIT": 1
+   },
+   "report": "Shipped code names a hook plugin instance, installs static seams beyond the two R6 allows, and registers the admin surface as a plane-kind plugin. The usage reads compute their own money figures from metering rows. The walked verbs' mutation limiter is rebuilt per request so never refuses, key minting runs a duplicate idempotency implementation, and two reads block or go quadratic on async workers. Read fully except CI-only OpenAPI builders, sampled.",
+   "auditor": "opus-ledger-core-admin-src",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-admin/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-core-admin-src",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "12e27975d47b2bbf58d6dd657da185781976886acd12b1fac4134e0ef72bb1b9",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 5,
+      "LOW": 4,
+      "NIT": 1
+     },
+     "report": "Shipped code names a hook plugin instance, installs static seams beyond the two R6 allows, and registers the admin surface as a plane-kind plugin. The usage reads compute their own money figures from metering rows. The walked verbs' mutation limiter is rebuilt per request so never refuses, key minting runs a duplicate idempotency implementation, and two reads block or go quadratic on async workers. Read fully except CI-only OpenAPI builders, sampled."
+    }
    ]
   },
   {
@@ -350,14 +371,17 @@
     "crates/busbar-core-admin/build.rs"
    ],
    "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1
+    "HIGH": 1,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 1
    },
-   "report": "Generates a table that installs three plane crates and an auth plugin into a neutral cleanliness crate's unit tests, with the names held in manifest metadata so no source names them; neutral-crate tests are to use kind-neutral doubles. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "The build script still turns manifest metadata into a generated table that links two plane crates and an operator-auth plugin into this cleanliness crate's unit tests, and the manifest still names those plugins (plus an export plugin) as dev-dependencies, as metadata, and through instance-named features. The source stays \"clean\" only because the names live in the manifest; the crate's tests do not use kind-neutral doubles. The generator is also copied, not shared, despite its doc claiming the composition root uses it. Read fully.",
+   "auditor": "opus-ledger-core-admin-build",
    "fixed_at": null,
    "rounds": [
     {
@@ -370,6 +394,20 @@
       "HIGH": 1
      },
      "report": "Generates a table that installs three plane crates and an auth plugin into a neutral cleanliness crate's unit tests, with the names held in manifest metadata so no source names them; neutral-crate tests are to use kind-neutral doubles. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-core-admin-build",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "The build script still turns manifest metadata into a generated table that links two plane crates and an operator-auth plugin into this cleanliness crate's unit tests, and the manifest still names those plugins (plus an export plugin) as dev-dependencies, as metadata, and through instance-named features. The source stays \"clean\" only because the names live in the manifest; the crate's tests do not use kind-neutral doubles. The generator is also copied, not shared, despite its doc claiming the composition root uses it. Read fully."
     }
    ]
   },
@@ -379,16 +417,37 @@
    "paths": [
     "crates/busbar-core-connector/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "978ec5e2c49768ecb98bd22aa2dbe08a575710d658c8291b5a3adabd18298c7b",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 7,
+    "LOW": 4,
+    "NIT": 1
+   },
+   "report": "The connector pools dialled connections under a key that omits the trust they were secured with, so a pinned or client-certificate connection can be lent to another need or instance, and a destination's sealed trust is held per authority, so a second registration at the same host overwrites or erases the first's pin and identity. A mid-stream TLS upgrade hands plaintext buffered before the handshake to the caller as if it were protected. Receive buffers, idle pooled sockets and resolver threads are unbounded. The datagram security engine has no production construction site. Read fully except two datagram helper files and the test kit, sampled.",
+   "auditor": "opus-ledger-core-connector",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-connector/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-core-connector",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "978ec5e2c49768ecb98bd22aa2dbe08a575710d658c8291b5a3adabd18298c7b",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 7,
+      "LOW": 4,
+      "NIT": 1
+     },
+     "report": "The connector pools dialled connections under a key that omits the trust they were secured with, so a pinned or client-certificate connection can be lent to another need or instance, and a destination's sealed trust is held per authority, so a second registration at the same host overwrites or erases the first's pin and identity. A mid-stream TLS upgrade hands plaintext buffered before the handshake to the caller as if it were protected. Receive buffers, idle pooled sockets and resolver threads are unbounded. The datagram security engine has no production construction site. Read fully except two datagram helper files and the test kit, sampled."
+    }
    ]
   },
   {
@@ -636,16 +695,37 @@
    "paths": [
     "crates/busbar-kernel-egress/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "528014c28e66dc05cf2a0617da4086616ddaf72ecff59227f35c9a190c11f287",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1,
+    "LOW": 5,
+    "NIT": 0
+   },
+   "report": "The egress crate still ships a second network guard, re-exported as the kernel's network guard and used by dial paths that bypass the connector's one destination judge: a duplex WebSocket dial resolves, pins and opens its own TCP socket, and plane fetches judge themselves, all under a per-caller policy with no egress class, allowlist or private-address setting. The crate's verify-step trust unit never runs; a diverged copy in the kernel decides instead. A pinned-arity reroute, query-parameter auth, a second weighted selector and most walk terminals have no production construction. Read fully except parts of the guard and ordering modules, sampled.",
+   "auditor": "opus-ledger-kernel-egress",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-egress/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-kernel-egress",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "528014c28e66dc05cf2a0617da4086616ddaf72ecff59227f35c9a190c11f287",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 5,
+      "NIT": 0
+     },
+     "report": "The egress crate still ships a second network guard, re-exported as the kernel's network guard and used by dial paths that bypass the connector's one destination judge: a duplex WebSocket dial resolves, pins and opens its own TCP socket, and plane fetches judge themselves, all under a per-caller policy with no egress class, allowlist or private-address setting. The crate's verify-step trust unit never runs; a diverged copy in the kernel decides instead. A pinned-arity reroute, query-parameter auth, a second weighted selector and most walk terminals have no production construction. Read fully except parts of the guard and ordering modules, sampled."
+    }
    ]
   },
   {
@@ -654,16 +734,37 @@
    "paths": [
     "crates/busbar-kernel-identity/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "1528828c7b7d22b4d7e88ea22a806008ef554061a8b60b4eace4fd5aa8c7db05",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 4,
+    "LOW": 4,
+    "NIT": 0
+   },
+   "report": "The identity crate still carries and runs protocol-specific auth inside the kernel: inbound SigV4 verification and outbound bearer, api-key and SigV4 presentation, while the header-style auth plugin is linked by default, so two implementations of those styles ship together. Its own inbound chain, unit, challenge, admin grants and browser exchange never run in production; the kernel runs a second chain. It ships a verified-credential cache the design removed from the kernel (never constructed), signs SigV4 over a fixed POST with no query, and leaves derived signing keys unzeroised. Read fully.",
+   "auditor": "opus-ledger-kernel-identity",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-identity/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-kernel-identity",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "1528828c7b7d22b4d7e88ea22a806008ef554061a8b60b4eace4fd5aa8c7db05",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 4,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The identity crate still carries and runs protocol-specific auth inside the kernel: inbound SigV4 verification and outbound bearer, api-key and SigV4 presentation, while the header-style auth plugin is linked by default, so two implementations of those styles ship together. Its own inbound chain, unit, challenge, admin grants and browser exchange never run in production; the kernel runs a second chain. It ships a verified-credential cache the design removed from the kernel (never constructed), signs SigV4 over a fixed POST with no query, and leaves derived signing keys unzeroised. Read fully."
+    }
    ]
   },
   {
@@ -841,16 +942,37 @@
    "paths": [
     "crates/busbar-plane-a2a/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "a6ba6f748846e5b99cecdc87ae32cc1e3aa04654aea2ecc05f17edb57ffd9dcf",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 8,
+    "LOW": 3,
+    "NIT": 1
+   },
+   "report": "The agent-to-agent plane has no memory-ABI door: the shipped binary reaches it only by Rust linkage through the engine crate, which imports its task machine, records, canonicaliser, breaker and diagnostics; its own decode, route and meter methods never run. If wired, they meter response bytes only, decode a cancel as a read, cannot read the claimed gRPC binding, refuse multi-agent task reads, drop the version header and allocate per request. The canonicaliser mis-prints large integers; an inert breaker sits in the plane. Read fully except the diagnostics catalogue prose, sampled.",
+   "auditor": "opus-ledger-plane-a2a",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-a2a/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-plane-a2a",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "a6ba6f748846e5b99cecdc87ae32cc1e3aa04654aea2ecc05f17edb57ffd9dcf",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 8,
+      "LOW": 3,
+      "NIT": 1
+     },
+     "report": "The agent-to-agent plane has no memory-ABI door: the shipped binary reaches it only by Rust linkage through the engine crate, which imports its task machine, records, canonicaliser, breaker and diagnostics; its own decode, route and meter methods never run. If wired, they meter response bytes only, decode a cancel as a read, cannot read the claimed gRPC binding, refuse multi-agent task reads, drop the version header and allocate per request. The canonicaliser mis-prints large integers; an inert breaker sits in the plane. Read fully except the diagnostics catalogue prose, sampled."
+    }
    ]
   },
   {
@@ -916,16 +1038,37 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "4ee885476c0406c837b55c88a5299e876b46dc467e5534ef0218cd5cdf23b751",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 6,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 2
+   },
+   "report": "The served MCP plane speaks only the stateless 2026 revision: session revisions and the legacy event stream are refused in both directions, and the session table built for them is never constructed. It rewrites tool results with a built-in tag stripper, withholds results whose structured output fails a schema check, and judges argument hosts itself instead of asking the host. A stdio server's ask can reach the wrong caller, live task state lives only in process memory, and several buffers and maps grow without a bound. Read fully except five vocabulary files and one never-constructed file, sampled.",
+   "auditor": "opus-ledger-plane-mcp",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-plane-mcp",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "4ee885476c0406c837b55c88a5299e876b46dc467e5534ef0218cd5cdf23b751",
+     "counts": {
+      "HIGH": 6,
+      "MEDIUM": 11,
+      "LOW": 8,
+      "NIT": 2
+     },
+     "report": "The served MCP plane speaks only the stateless 2026 revision: session revisions and the legacy event stream are refused in both directions, and the session table built for them is never constructed. It rewrites tool results with a built-in tag stripper, withholds results whose structured output fails a schema check, and judges argument hosts itself instead of asking the host. A stdio server's ask can reach the wrong caller, live task state lives only in process memory, and several buffers and maps grow without a bound. Read fully except five vocabulary files and one never-constructed file, sampled."
+    }
    ]
   },
   {
@@ -934,16 +1077,37 @@
    "paths": [
     "crates/busbar-plane-streaming/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "7b845c53df03ad726ab9dcf8f3f263fa46e7942c64b3fa2297eb514fcc3524cf",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 9,
+    "MEDIUM": 3,
+    "LOW": 3,
+    "NIT": 1
+   },
+   "report": "The streaming plane has no ABI door; an older plane crate drives it as a library. Its sample tool executor answers the model's tool calls, which never reach the caller. On a barge-in it cancels and truncates upstream itself. Same-dialect sessions are rebuilt from a narrow model, losing unmodelled events and fields. It claims five dialects and no WebRTC, keys sessions by the raw principal, receives the provider key, sends no error frame on a budget cut, and under-counts Gemini audio seconds. Read fully except the Gemini config mapping, sampled.",
+   "auditor": "opus-ledger-plane-streaming",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-streaming/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-plane-streaming",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "7b845c53df03ad726ab9dcf8f3f263fa46e7942c64b3fa2297eb514fcc3524cf",
+     "counts": {
+      "HIGH": 9,
+      "MEDIUM": 3,
+      "LOW": 3,
+      "NIT": 1
+     },
+     "report": "The streaming plane has no ABI door; an older plane crate drives it as a library. Its sample tool executor answers the model's tool calls, which never reach the caller. On a barge-in it cancels and truncates upstream itself. Same-dialect sessions are rebuilt from a narrow model, losing unmodelled events and fields. It claims five dialects and no WebRTC, keys sessions by the raw principal, receives the provider key, sends no error frame on a budget cut, and under-counts Gemini audio seconds. Read fully except the Gemini config mapping, sampled."
+    }
    ]
   },
   {
@@ -988,16 +1152,37 @@
    "paths": [
     "crates/plugin-loader/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "6a543c56becce4587e35024e184ee21bf52cb944b670fca67daebe4b82411580",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 9,
+    "MEDIUM": 9,
+    "LOW": 8,
+    "NIT": 0
+   },
+   "report": "The loader loads plugins whose configuration is absent: every door plane is bound and every transport, auth row and statement-less plane image is opened, while the computed selection is never applied. The abolished JSON auth lane and the retired transport declaration lane still load and serve, the latter through the loader's own connection stack outside the connector. The crate does not deny unsafe code. Store ledger operations are answered from node memory instead of the store's own slots. Auth plugin code runs under a process-wide lock, plugin lengths become slices unchecked, and plugin log lines are written synchronously on the dispatch worker. Read in two parts, mostly fully.",
+   "auditor": "opus-ledger-loader-src",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-loader/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-loader-src",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "6a543c56becce4587e35024e184ee21bf52cb944b670fca67daebe4b82411580",
+     "counts": {
+      "HIGH": 9,
+      "MEDIUM": 9,
+      "LOW": 8,
+      "NIT": 0
+     },
+     "report": "The loader loads plugins whose configuration is absent: every door plane is bound and every transport, auth row and statement-less plane image is opened, while the computed selection is never applied. The abolished JSON auth lane and the retired transport declaration lane still load and serve, the latter through the loader's own connection stack outside the connector. The crate does not deny unsafe code. Store ledger operations are answered from node memory instead of the store's own slots. Auth plugin code runs under a process-wide lock, plugin lengths become slices unchecked, and plugin log lines are written synchronously on the dispatch worker. Read in two parts, mostly fully."
+    }
    ]
   },
   {
@@ -1006,16 +1191,18 @@
    "paths": [
     "crates/plugin-loader/build.rs"
    ],
-   "tree_hash": "452cdc8a0bc789215c25334611c4c22c75711fe19d9196774ef68c240cf78252",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
+   "tree_hash": "9b425597aea6f7d8c8aab6125bbe77af5db0c7c6a07b2ca8b721dd7b8569f14a",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "LOW": 1
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 3,
+    "NIT": 1
    },
-   "report": "Generates the loader's both-ways fixture tables on three ABI lanes (cold entry, HOT declaration, memory door), so the loader's conformance proofs still exercise lanes retired in favour of one memory ABI; it also exports fixture crate names into every compile for a test-support harness. Read fully.",
-   "auditor": "opus-q128-architecture",
+   "report": "The build script turns the manifest's both-ways rows into test-only fixture tables. It still sorts rows by the retired lane taxonomy: an always-empty table typed on the abolished cold entry, and a \"HOT\" table holding memory-ABI kinds. The conformance tests no longer drive those lanes. It also exports a per-kind environment variable into every compile of the crate, release included, that nothing reads, and writes per-kind include files no target includes. Read fully.",
+   "auditor": "opus-ledger-loader-build",
    "fixed_at": null,
    "rounds": [
     {
@@ -1029,6 +1216,20 @@
       "LOW": 1
      },
      "report": "Generates the loader's both-ways fixture tables on three ABI lanes (cold entry, HOT declaration, memory door), so the loader's conformance proofs still exercise lanes retired in favour of one memory ABI; it also exports fixture crate names into every compile for a test-support harness. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-loader-build",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "9b425597aea6f7d8c8aab6125bbe77af5db0c7c6a07b2ca8b721dd7b8569f14a",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 3,
+      "NIT": 1
+     },
+     "report": "The build script turns the manifest's both-ways rows into test-only fixture tables. It still sorts rows by the retired lane taxonomy: an always-empty table typed on the abolished cold entry, and a \"HOT\" table holding memory-ABI kinds. The conformance tests no longer drive those lanes. It also exports a per-kind environment variable into every compile of the crate, release included, that nothing reads, and writes per-kind include files no target includes. Read fully."
     }
    ]
   },
@@ -1038,16 +1239,37 @@
    "paths": [
     "crates/store-memory/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 3,
+    "LOW": 4,
+    "NIT": 0
+   },
+   "report": "draft",
+   "auditor": "opus-ledger-store-memory",
    "fixed_at": null,
    "exclude": [
     "crates/store-memory/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-store-memory",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 3,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "draft"
+    }
    ]
   },
   {
