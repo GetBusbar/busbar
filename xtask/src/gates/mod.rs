@@ -805,6 +805,9 @@ pub struct Budget {
 /// It is deliberately TIGHTER than the three it replaces. Three times a measurement that was itself
 /// three times stale is how `construction` came to sit at 93 per cent of a budget its own note said
 /// it used a third of.
+///
+/// The slack was calibrated serially, and an over-budget reading under contention is re-taken
+/// serially before it counts ([`budget_verdict`]).
 pub const BUDGET_SLACK: f64 = 1.6;
 
 // THE SLACK IS CHECKED WHERE IT IS WRITTEN, at compile time, because it is a constant and a
@@ -1010,7 +1013,8 @@ fn work_unit_here() -> std::time::Duration {
     ruler_once()
 }
 
-fn selftest_budget(gate: &str) -> f64 {
+/// The budget of `gate`'s self-test, in work units: its entry's, else the default.
+pub fn selftest_budget(gate: &str) -> f64 {
     SELFTEST_BUDGETS
         .iter()
         .find(|b| b.gate == gate)
@@ -2074,19 +2078,95 @@ pub fn execute_strict(gate: &dyn Gate, cx: &Ctx) -> Verdict {
 /// PASS by construction, so they are held to being exercised rather than to going red, and a
 /// declaration that no longer names an owed row is itself refused.
 pub fn verify_report(gate: &dyn Gate, report: &Report<'_>) -> Result<(), Vec<String>> {
+    let reading = budget_verdict(selftest_budget(gate.name()), report.units(), 1, || {
+        report.units()
+    });
+    verify_report_with(gate, report, &reading)
+}
+
+/// THE BUDGET'S VERDICT ON ONE BATTERY, AND AN OVER-BUDGET CONTENDED READING RE-TAKEN SERIALLY
+/// (ARCHITECT 2026-10-07). The budget is measured serially ([`BUDGET_SLACK`]); a battery taken
+/// across the cores that comes in over it is taken once more at `--jobs 1`, and the SERIAL reading
+/// is the verdict — the same rule the harness applies to a red case. Over at `--jobs 1` too, it is
+/// red; there is no third try.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BudgetVerdict {
+    /// The battery's budget, in work units.
+    pub budget: f64,
+    /// What it spent as taken, at `jobs`.
+    pub contended: f64,
+    /// The jobs it was taken at.
+    pub jobs: usize,
+    /// The serial re-take's reading, when the contended one was over budget at more than one job.
+    pub serial: Option<f64>,
+}
+
+impl BudgetVerdict {
+    /// The reading that is the verdict: the serial re-take's when there was one.
+    #[must_use]
+    pub fn spent(&self) -> f64 {
+        self.serial.unwrap_or(self.contended)
+    }
+
+    /// Whether the battery is over its budget.
+    #[must_use]
+    pub fn over(&self) -> bool {
+        self.spent() > self.budget
+    }
+
+    /// `contended X → serial Y` when the battery was re-taken.
+    #[must_use]
+    pub fn retake_line(&self) -> Option<String> {
+        self.serial.map(|y| {
+            format!(
+                "contended {:.0} → serial {y:.0} work units (budget {:.0}; --jobs {} re-taken at --jobs 1)",
+                self.contended, self.budget, self.jobs
+            )
+        })
+    }
+}
+
+/// [`BudgetVerdict`] of a battery that spent `contended` units at `jobs` against `budget`;
+/// `serial` re-takes it at `--jobs 1` and is called only when the contended reading is over and
+/// `jobs` is more than one.
+pub fn budget_verdict(
+    budget: f64,
+    contended: f64,
+    jobs: usize,
+    serial: impl FnOnce() -> f64,
+) -> BudgetVerdict {
+    let retake = contended > budget && jobs > 1;
+    BudgetVerdict {
+        budget,
+        contended,
+        jobs,
+        serial: retake.then(serial),
+    }
+}
+
+/// [`verify_report`] with the budget judged by `reading` ([`budget_verdict`]).
+pub fn verify_report_with(
+    gate: &dyn Gate,
+    report: &Report<'_>,
+    reading: &BudgetVerdict,
+) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
 
     // THE BUDGET. See [`SELFTEST_BUDGETS`]: an unmeasured selftest is one that grows until the
     // runner kills it, and a killed job is neither green nor red.
-    let budget = selftest_budget(gate.name());
-    let spent = report.units();
-    if spent > budget {
+    let budget = reading.budget;
+    let spent = reading.spent();
+    if reading.over() {
         let slowest = report
             .slowest()
             .map(|(n, t)| format!(" Slowest case: `{n}`, {:.1}s.", t.as_secs_f64()))
             .unwrap_or_default();
+        let retaken = reading
+            .retake_line()
+            .map(|l| format!(" Re-taken serially and still over: {l}."))
+            .unwrap_or_default();
         errs.push(format!(
-            "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (one unit is {:.1}ms on this box right now, so {:.0}s of wall clock here). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}",
+            "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (one unit is {:.1}ms on this box right now, so {:.0}s of wall clock here). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}{retaken}",
             gate.name(),
             report.unit().as_secs_f64() * 1000.0,
             report.total().as_secs_f64()
@@ -3741,6 +3821,10 @@ mod parallel_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/budget_retake_tests.rs"]
+mod budget_retake_tests;
 
 #[cfg(test)]
 mod posture_tests {

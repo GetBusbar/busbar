@@ -875,7 +875,41 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
         };
         println!("  {got:<7} {}", case.name);
     }
-    match gates::verify_report(gate, &report) {
+    // THE BUDGET, AND AN OVER-BUDGET BATTERY RE-TAKEN SERIALLY BEFORE IT COUNTS (ARCHITECT
+    // 2026-10-07): the budget is measured at --jobs 1, so a battery taken across the cores that
+    // comes in over it is taken once more at --jobs 1 and that reading is the verdict.
+    let reading = gates::budget_verdict(
+        gates::selftest_budget(gate.name()),
+        report.units(),
+        jobs,
+        || {
+            println!(
+                "  ...over budget at --jobs {jobs} ({:.0} work units): re-taking the battery at \
+                 --jobs 1 to read it as the budget was measured",
+                report.units()
+            );
+            gates::set_selftest_jobs(1);
+            let started = std::time::Instant::now();
+            let watchdog = gates::Watchdog::arm(
+                gate.name(),
+                gate.owed(),
+                gates::selftest_ceiling_from_env(gate.name()),
+            );
+            let serial = gate.selftest(cx);
+            let _ = serial.cases();
+            drop(watchdog);
+            gates::set_selftest_jobs(jobs);
+            println!(
+                "  ...the serial re-take took {:.1}s",
+                started.elapsed().as_secs_f64()
+            );
+            serial.units()
+        },
+    );
+    if let Some(line) = reading.retake_line() {
+        println!("  budget: {line}");
+    }
+    match gates::verify_report_with(gate, &report, &reading) {
         Ok(()) => {
             let slowest = report
                 .slowest()
