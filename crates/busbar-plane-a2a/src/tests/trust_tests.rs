@@ -647,25 +647,19 @@ fn a_refused_hop_of_a_transport_pinned_registration_reads_as_the_pin_s_refusal()
 /// rule by the kernel's own `book_tests`.
 #[test]
 fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
-    // A path that silently stopped resolving would be this guard quietly covering nothing: a file
-    // that moved moves the ratchet, it does not drop the path.
-    let read = |rel: &str| -> String {
-        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "the cadence ratchet cannot read `{rel}`: {e}. If the file moved, MOVE THE \
-                     RATCHET — do not drop the path."
-                )
-            })
-    };
+    // The sources are compiled in (the plane performs no input or output): a file that moved
+    // fails to build here, so the ratchet moves with it rather than quietly covering nothing.
     let code = |s: &str| -> String {
         s.lines()
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n")
     };
-    for rel in ["src/a2a/config.rs", "src/trust.rs"] {
-        let src = code(&read(rel));
+    for (rel, src) in [
+        ("a2a/config.rs", include_str!("../a2a/config.rs")),
+        ("trust.rs", include_str!("../trust.rs")),
+    ] {
+        let src = code(src);
         for banned in [
             "detection_backoff",
             "detection_grace",
