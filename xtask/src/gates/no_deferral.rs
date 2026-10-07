@@ -602,7 +602,13 @@ fn row_discovery_floor(found: Option<usize>, why: Option<&str>) -> Row {
         None => Row::pass(
             ROW_DISCOVERY_FLOOR,
             "discovery found a scan set worth drawing a verdict from",
-            format!("at or above the floor of {DISCOVERY_FLOOR} shipped source file(s)"),
+            match found {
+                Some(n) => format!(
+                    "{n} shipped source file(s) discovered, at or above the floor of \
+                     {DISCOVERY_FLOOR}"
+                ),
+                None => format!("at or above the floor of {DISCOVERY_FLOOR} shipped source file(s)"),
+            },
         ),
         Some(why) => Row::fail(
             ROW_DISCOVERY_FLOOR,
