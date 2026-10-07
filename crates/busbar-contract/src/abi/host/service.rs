@@ -660,22 +660,69 @@ pub const CONTENT_BLOCK: u64 = 1;
 
 // ── hook ──────────────────────────────────────────────────────────────────────────────────────
 
-/// [`op::HOOK_CALL`]'s `in`: run a hook stage for an in-session sub-operation, over the hook kind's
-/// own [`RequestView`](crate::abi::hook::RequestView). `value` = the stage's decision, as the hook
-/// kind numbers it; the bytes and spans are its reply.
+/// [`op::HOOK_CALL`]'s `in` (THE DESIGN, host services; ARCHITECT H2 ruling: op 17): run the calling
+/// unit's hook stage for an in-session sub-operation, over the hook kind's own
+/// [`PromptView`](crate::abi::hook::PromptView). The hooks that run are the ones the CALLING UNIT
+/// binds (its kernel-recorded plane and pool, never a field of the view), at the configuration
+/// generation the unit was bound under, a resumed chain included. The host refuses an `in` that
+/// breaks [`check_hook_call_in`]. `value`:
+///
+/// * [`HOOK_GATE`]: `0` = every gate passed; `400..=599` = a gate stopped it, that status, the
+///   bytes its words;
+/// * [`HOOK_REWRITE`], the chain from hook `from`: `0` = no hook from there on rewrote it;
+///   `1 + i` = hook `i` rewrote it, the bytes the rewrite (`{"messages", "tools"}`, the document
+///   `project`'s `rewrite` takes) — the plugin applies it and resumes with `from = 1 + i`;
+///   `400..=599` = a hook stopped it, that status, the bytes its words.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HookCallIn {
     /// The head.
     pub head: ServiceHead,
-    /// The stage, as the hook kind numbers it.
+    /// [`HOOK_GATE`] | [`HOOK_REWRITE`].
     pub stage: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The view.
-    pub view: *const crate::abi::hook::RequestView,
+    /// Where the rewrite chain resumes: the `value` the last call answered (`0` = its start), at
+    /// most [`HOOK_FROM_MAX`]; `0` for a gate.
+    pub from: u32,
+    /// The view of the sub-operation's prompt.
+    pub prompt: *const crate::abi::hook::PromptView,
     /// Where the reply goes.
     pub into: ServiceBufs,
+}
+
+/// `hook.call` stage: the calling unit's decision gates.
+pub const HOOK_GATE: u32 = 0;
+/// `hook.call` stage: the calling unit's rewrite chain.
+pub const HOOK_REWRITE: u32 = 1;
+/// The furthest a rewrite chain resumes (`HookCallIn::from`), and the most hooks one chain runs.
+pub const HOOK_FROM_MAX: u32 = 255;
+/// The least status a stopping hook answers `hook.call` with.
+pub const HOOK_STOP_MIN: u64 = 400;
+/// The greatest status a stopping hook answers `hook.call` with.
+pub const HOOK_STOP_MAX: u64 = 599;
+
+/// A `hook.call` `in`, before any hook runs: a known stage, a chain resumed no further than
+/// [`HOOK_FROM_MAX`], a gate never resumed, and a prompt view. The host REFUSES an `in` that breaks
+/// this, a distinct message per arm.
+///
+/// # Errors
+///
+/// [`Rule::UnknownCode`] for a stage that is neither; [`Rule::OverMax`] for `from` past
+/// [`HOOK_FROM_MAX`]; [`Rule::Contradiction`] for a gate with a `from`; [`Rule::Missing`] for a NULL
+/// prompt.
+pub fn check_hook_call_in(i: &HookCallIn) -> Result<(), Fault> {
+    if i.stage != HOOK_GATE && i.stage != HOOK_REWRITE {
+        return Err(fault(Rule::UnknownCode, "hook_call.stage"));
+    }
+    if i.from > HOOK_FROM_MAX {
+        return Err(fault(Rule::OverMax, "hook_call.from"));
+    }
+    if i.stage == HOOK_GATE && i.from != 0 {
+        return Err(fault(Rule::Contradiction, "hook_call.from"));
+    }
+    if i.prompt.is_null() {
+        return Err(fault(Rule::Missing, "hook_call.prompt"));
+    }
+    Ok(())
 }
 
 // ── snapshot ──────────────────────────────────────────────────────────────────────────────────
@@ -1373,13 +1420,28 @@ pub fn check_content_scan(
     )
 }
 
-/// `hook.call`'s answer.
+/// `hook.call`'s answer: the common rules, and on READY `0`, a stopping status
+/// ([`HOOK_STOP_MIN`]`..=`[`HOOK_STOP_MAX`]), or, for [`HOOK_REWRITE`] only, the `1 + i` of a
+/// rewriting hook within [`HOOK_FROM_MAX`].
 ///
 /// # Errors
 ///
 /// The rule the answer breaks.
 pub fn check_hook_call(i: &HookCallIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, into(op::HOOK_CALL, i.into, ANY))
+    let filled = answer(
+        ret,
+        &i.head,
+        out,
+        into(op::HOOK_CALL, i.into, (0, HOOK_STOP_MAX)),
+    )?;
+    // READY answers `0`, a stopping status, or (a rewrite chain only) `1 + i` within the cap.
+    if ret.outcome() == Outcome::Ready && out.value != 0 && out.value < HOOK_STOP_MIN {
+        let resumable = i.stage == HOOK_REWRITE && out.value <= u64::from(HOOK_FROM_MAX);
+        if !resumable {
+            return Err(fault(Rule::UnknownCode, "hook_call.out.value"));
+        }
+    }
+    Ok(filled)
 }
 
 /// `need.admit`'s answer: never pends; READY (`value` 0) = admitted, REFUSED = not, with the

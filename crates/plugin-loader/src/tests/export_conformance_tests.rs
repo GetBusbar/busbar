@@ -347,6 +347,28 @@ impl HostServices for DiskHost {
         Ran::Now(Stored::refused("no work book here"))
     }
 
+    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::refused("no verify cache here"))
+    }
+
+    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+        Stored::refused("no verify cache here")
+    }
+
+    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::refused("no hook stage here"))
+    }
+
+    fn hook_call(
+        &self,
+        _: &Caller,
+        _: Option<u64>,
+        _: busbar_contract::services::HookAsk,
+        _: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused("no hook stage here"))
+    }
+
     fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
         busbar_contract::services::Snapshot::Refused(NO_SERVICE)
     }

@@ -33,6 +33,12 @@
 //!   demotion record.
 //! * `trust.verify` — a document's detached signatures judged against the root key the caller's
 //!   declared pin names ([`signed`]); the verdict and the refused name, never a fallback.
+//! * `verify.lookup` / `verify.store` — the caller's own verify cache with single-flight
+//!   leadership ([`crate::host_verify`]): hit, lead or follow; a lapsed lead passes on at the tick.
+//! * `content.scan` / `hook.call` — the hook stage the unit the crossing serves bound
+//!   ([`crate::host_units::UnitHookStage`]): its plane's and pool's gates and rewrite chain, at the
+//!   generation it was bound under; never anything the caller names. They run only when the plane
+//!   calls them: nothing here acts on carried content on its own (Law 11).
 //!
 //! EVERY CALLER-SCOPED SERVICE ANSWERS FROM WHAT [`KernelServices::admit`] REGISTERED for the
 //! caller's instance: its record kinds, its signing declaration and its trust entries. Every
@@ -58,7 +64,8 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
-    merge_list, Caller, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
+    Stored,
 };
 
 /// The refusal of a record write past the write queue's bound.
@@ -67,6 +74,7 @@ pub const QUEUE_FULL: &str = "the record write queue is full";
 use crate::host_records::{
     record_key, Acked, Owed as WriteOwed, PendingRecords, RecordRows, Write, WriteBehind,
 };
+use crate::host_units::StageAnswer;
 use crate::host_work::{
     owner_of, parse_reference, reference_text, refusal as work_refusal, work_key, Owner, Work,
     WorkBook, WorkBounds, WORK_SCHEMA,
@@ -552,6 +560,8 @@ pub struct KernelServices {
     nested: Arc<crate::pump::NestedPool>,
     /// The bounded disk lane `disk.append` runs on (THE DESIGN §11.11 R4).
     disk: crate::host_disk::DiskLane,
+    /// The verify cache behind `verify.*`.
+    verify: crate::host_verify::VerifyBook,
 }
 
 /// The durable demotion record, and the instance its unprefixed rows belong to.
@@ -603,6 +613,7 @@ impl KernelServices {
                 NEST_DEPTH_MAX as usize + 1,
             )),
             disk: crate::host_disk::DiskLane::default(),
+            verify: crate::host_verify::VerifyBook::default(),
         }
     }
 
@@ -1023,7 +1034,14 @@ impl KernelServices {
         loop {
             at.tick().await;
             self.flush_tick();
+            self.verify_tick();
         }
+    }
+
+    /// The verify cache's tick, run beside [`Self::flush_tick`]: every lead that lapsed passes to
+    /// its first follower, so a leader that never stores wedges nobody past one interval.
+    pub fn verify_tick(&self) {
+        self.verify.expire((self.wall_ms)());
     }
 
     /// GRACEFUL SHUTDOWN: flush every queued record write before the store closes, waiting up to
@@ -1701,8 +1719,109 @@ impl HostServices for KernelServices {
         )
     }
 
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        if self.facts(caller).is_none() {
+            return Ran::Now(Stored::refused(NOT_ADMITTED));
+        }
+        self.verify
+            .lookup(&caller.instance, key, (self.wall_ms)(), later)
+    }
+
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        if self.facts(caller).is_none() {
+            return Stored::refused(NOT_ADMITTED);
+        }
+        self.verify
+            .store(&caller.instance, key, entry, ttl_ms, (self.wall_ms)())
+    }
+
+    fn content_scan(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        content: &[u8],
+        later: Later,
+    ) -> Ran {
+        let stage = match self.stage_of(caller, unit) {
+            Ok(stage) => stage,
+            Err(refused) => return Ran::Now(refused),
+        };
+        stage.scan(
+            content.to_vec(),
+            Box::new(move |answer| {
+                later(match answer {
+                    StageAnswer::Pass => Stored::ready(svc::CONTENT_PASS),
+                    StageAnswer::Stop { .. } => Stored::ready(svc::CONTENT_BLOCK),
+                    // A gate never rewrites; a stage that could not run blocks nothing silently.
+                    StageAnswer::Rewrote { .. } => failed(STAGE_ANSWERED_AMISS),
+                    StageAnswer::Failed(why) => failed(why),
+                });
+            }),
+        );
+        Ran::Later
+    }
+
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        let stage = match self.stage_of(caller, unit) {
+            Ok(stage) => stage,
+            Err(refused) => return Ran::Now(refused),
+        };
+        stage.call(
+            ask,
+            Box::new(move |answer| {
+                later(match answer {
+                    StageAnswer::Pass => Stored::ready(0),
+                    StageAnswer::Rewrote { index, rewrite } => Stored {
+                        bytes: rewrite,
+                        ..Stored::ready(1 + u64::from(index))
+                    },
+                    StageAnswer::Stop { status, words } => Stored {
+                        bytes: words.into_bytes(),
+                        ..Stored::ready(u64::from(status))
+                    },
+                    StageAnswer::Failed(why) => failed(why),
+                });
+            }),
+        );
+        Ran::Later
+    }
+
     fn snapshot_read(&self, _caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
         crate::export::scrape::read(scope)
+    }
+}
+
+/// The refusal of `content.scan` / `hook.call` from a crossing that serves no unit in flight.
+pub const STAGE_NO_UNIT: &str = "the crossing serves no unit in flight";
+/// The refusal of `content.scan` / `hook.call` before the unit's route leg stated its hook stage.
+pub const STAGE_NOT_BOUND: &str = "the unit's hook stage is not bound yet";
+/// The refusal of `content.scan` / `hook.call` for a unit another instance runs.
+pub const STAGE_NOT_YOURS: &str = "the unit runs on another instance";
+/// The FAILED answer of a stage that answered outside its service's shape.
+pub const STAGE_ANSWERED_AMISS: &str = "the hook stage answered outside the service's shape";
+
+impl KernelServices {
+    /// The hook stage of `unit` for `caller`: the unit in flight, its route leg's stage stated, and
+    /// run on the caller's own instance; or the refusal.
+    fn stage_of(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+    ) -> Result<Arc<dyn crate::host_units::UnitHookStage>, Stored> {
+        if self.facts(caller).is_none() {
+            return Err(Stored::refused(NOT_ADMITTED));
+        }
+        let Some(unit) = unit.filter(|u| self.units.get(*u).is_some()) else {
+            return Err(Stored::refused(STAGE_NO_UNIT));
+        };
+        let stage = self
+            .units
+            .stage(unit)
+            .ok_or_else(|| Stored::refused(STAGE_NOT_BOUND))?;
+        if stage.instance() != &*caller.instance {
+            return Err(Stored::refused(STAGE_NOT_YOURS));
+        }
+        Ok(stage)
     }
 }
 
@@ -1781,3 +1900,7 @@ mod trust_verify_tests;
 #[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
+
+#[cfg(test)]
+#[path = "tests/host_stage_tests.rs"]
+mod host_stage_tests;
