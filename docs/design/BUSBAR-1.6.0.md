@@ -3203,6 +3203,9 @@ once and `plane-rigs`, `perf-build-gate` and `shadow-oracle` download that artif
 never got the same treatment. The other ~15 compiling jobs each prove a genuinely distinct
 feature/profile closure — collapsing those would silently drop coverage, so they are **not** waste.
 
+### Verification runs once per input (OWNER-LOCKED 2026-10-06)
+A verification step runs at most once per input key: hash(step id, toolchain, engine RELEASE_REF, the source of exactly the packages and fixtures the step reads). A passed key is reused by every later run — pull request, merge group, base — and the report names the reused key. A pull request into predev runs one runner: build, clippy, and the tests of the crates it changes plus their reverse dependencies; the merge group runs the rung's full plan. The oracle is never reused across a changed binary. Every CI run and Latchkey job is audited for waste the hour it ends. (Measured basis: 2026-10-06, $131/day CI, PR runs 59%, predev enter_pr == enter.)
+
 ## Promotion — measured 2026-09-21, and mostly NOT blocked
 
 The four defects previously listed here were audited against the live repo. **Two were real and are
@@ -3297,9 +3300,12 @@ branches live on GitHub so CI runs the pipeline).
    record: the full plan (every gate, every build/test step, the money oracle forced, conformance
    produced at judge time and judged absolutely per #68) on the queue's merge commit, judged "no worse
    than base" against the base the queue built it on; its report becomes the base of the commit it
-   lands. The PULL-REQUEST run is the fast pre-check a PR must pass to enter the queue: the gates and
-   `build:check`, `build:clippy`, `build:dlopen-cdylibs`, `test:workspace`, with no oracle and no
-   conformance (ARCHITECT ruling 2026-10-02, the hop split). Neither may add a red. A local Latchkey
+   lands. The PULL-REQUEST run is the pre-check a PR must pass to enter the queue: the merge group's
+   gates and build/test steps, each test and build step over the crates the PR changes plus their
+   reverse dependencies (a row the diff does not reach is reported skipped, "not affected"), on the
+   PR merged onto the base tip, with no oracle and no conformance; on ONE runner when that is
+   estimated within 20 minutes, else as the merge group's shard matrix ("Verification runs once per
+   input", OWNER-LOCKED 2026-10-06). Neither may add a red. A local Latchkey
    run is for iteration only.
 4. A `$` (money-touching) change is its own PR, never bundled with anything else.
 5. On merge the branch is deleted (OWNER 2026-10-01, BRANCH LIFETIME: "as soon as merged into
