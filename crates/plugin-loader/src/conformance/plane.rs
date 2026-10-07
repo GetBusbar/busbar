@@ -61,8 +61,8 @@
 //! (a large payload stated small). A session step's `want` names its outcome (required) and any of:
 //! `to_far_end`, `done`, `more`, `status`, `verb`, `target`, `need`, `emitted` (exact),
 //! `emitted_has` (substrings), `fields` (`[["<name>", "<value>"], ...]`, exact), `units`
-//! (`[[<class>, <amount>], ...]`, reported, exact), `route` (`{ "class", "entry" }`), `streams`
-//! (what `drive` names), `body_has` (substrings of the projected body) and `rewritten`.
+//! (`[[<class>, <amount>], ...]`, reported, exact), `route` (`{ "class", "entry" }`), `ready`
+//! (the stream ids `drive` names), `body_has` (substrings of the projected body) and `rewritten`.
 //!
 //! THE PINS. Every step is ONE ticket-less crossing (`Plugin::call`), but:
 //! * `ready` ([`super::ready_step`]): 0 when the door states none;
@@ -695,14 +695,14 @@ impl Session {
     }
 }
 
-/// `drive`: the streams of the sessions with output of their own.
+/// `drive`: the stream ids of the sessions with output of their own.
 fn drive(p: &Plugin<Plane>) -> String {
     let mut sessions = [0_u64; CAP];
     let mut f: Frame<PlaneDriveIn, PlaneDriveOut> = Frame::new(input(), output());
     (f.input.sessions_buf, f.input.sessions_cap) = (sessions.as_mut_ptr(), sessions.len());
     let c = p.call(life::DRIVE, &mut f);
     format!(
-        "{} streams={:?}",
+        "{} ready={:?}",
         called(&c),
         &sessions[..(f.out.sessions_written as usize).min(CAP)]
     )
@@ -1350,7 +1350,7 @@ const WANTS: &[&str] = &[
     "fields",
     "units",
     "route",
-    "streams",
+    "ready",
     "body_has",
     "rewritten",
 ];
@@ -1419,14 +1419,14 @@ fn judge(label: &str, line: &str, want: &Value, short: Option<&str>) {
                 );
                 assert!(line.ends_with(&route), "{label}: wants{route}: {line}");
             }
-            "streams" => {
-                let streams: Vec<u64> = v
+            "ready" => {
+                let ready: Vec<u64> = v
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .map(|s| num(s, "sessions[].steps[].want.streams[]"))
+                    .map(|s| num(s, "sessions[].steps[].want.ready[]"))
                     .collect();
-                let want = format!("streams={streams:?}");
+                let want = format!("ready={ready:?}");
                 assert!(line.ends_with(&want), "{label}: wants {want}: {line}");
             }
             _ => has(&format!(" {key}={} ", scalar(v)), key),

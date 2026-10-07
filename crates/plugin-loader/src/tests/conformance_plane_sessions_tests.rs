@@ -28,10 +28,10 @@ const SESSIONS: &str = r#"[
       "want": { "outcome": "Ready", "route": { "class": "pool", "entry": "" } } },
     { "label": "uplink", "piece": { "from": "caller", "bytes": "hello" },
       "want": { "outcome": "Ready", "emitted": "", "to_far_end": false, "units": [] } },
-    { "label": "drive", "drive": true, "want": { "outcome": "Ready", "streams": [40] } },
+    { "label": "drive", "drive": true, "want": { "outcome": "Ready", "ready": [40] } },
     { "label": "collect", "piece": { "from": "kernel" },
       "want": { "outcome": "Ready", "emitted": "ping", "done": false } },
-    { "label": "drive again", "drive": true, "want": { "outcome": "Ready", "streams": [] } },
+    { "label": "drive again", "drive": true, "want": { "outcome": "Ready", "ready": [] } },
     { "label": "answer head",
       "piece": { "from": "far_end", "status": 200, "fields": [["x-up", "1"]], "bytes": "abc" },
       "want": { "outcome": "Ready", "emitted": "abc", "status": 200, "done": false,
@@ -184,14 +184,14 @@ fn wanting(label: &str, edit: impl Fn(&mut Value)) -> Value {
 }
 
 /// RED: a step that answers otherwise than its want states fails the contract, naming the step:
-/// another count, another outcome, another stream, another body.
+/// another count, another outcome, another ready stream, another body.
 #[test]
 fn red_a_session_step_answering_otherwise_than_wanted_is_refused() {
     let f = fold(&subject(), Leg::Linked);
     for (label, key, v) in [
         ("live answer head", "units", serde_json::json!([[0, 4]])),
         ("live uplink", "outcome", serde_json::json!("Refused")),
-        ("live drive", "streams", serde_json::json!([41])),
+        ("live drive", "ready", serde_json::json!([41])),
         ("live project", "body_has", serde_json::json!(["bye"])),
         ("request attempt", "verb", serde_json::json!("GET")),
         (
