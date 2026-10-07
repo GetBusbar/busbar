@@ -304,6 +304,11 @@ impl DialJudge for OneJudge {
             self.dest.judge_reaching(dest, class, pended)
         })
     }
+
+    /// The guard's name arm, the one every dial's judgement opens with ([`DestJudge::judge_name`]).
+    fn judge_static(&self, dest: &str, class: u32) -> Option<Verdict> {
+        self.dest.judge_name(dest, class, false).err()
+    }
 }
 
 /// A loopback-allowed pin on one of the node's own ports, refused (`DEST_INTERNAL`); any other
