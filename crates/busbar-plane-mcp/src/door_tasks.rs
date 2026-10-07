@@ -684,25 +684,23 @@ fn asking(
             spent: &plane.spent,
             pending: false,
         };
-        seal.now().and_then(|now| {
-            crate::ask::relay_state_for(
-                relay_bind(principal, &name, now),
-                digest,
-                leg,
-                tasks::TASK_RELAY_TTL_SECS,
-                &mut seal,
-            )
-        })
+        let bind = |now| relay_bind(principal, &name, now);
+        crate::tool_door::seal_relayed(
+            &mut seal,
+            server,
+            bind,
+            digest,
+            leg,
+            tasks::TASK_RELAY_TTL_SECS,
+        )
     };
-    let Some(state) = sealed else {
-        run.end = Some(End::Failed(
-            crate::call::AskRefusal::NoSealer {
-                server: server.to_string(),
-            }
-            .to_string(),
-        ));
-        run.phase = Phase::Settle;
-        return running(plane, ticket, principal, unit, run);
+    let state = match sealed {
+        Ok(state) => state,
+        Err(refusal) => {
+            run.end = Some(End::Failed(refusal.to_string()));
+            run.phase = Phase::Settle;
+            return running(plane, ticket, principal, unit, run);
+        }
     };
     let requests = result
         .get("inputRequests")

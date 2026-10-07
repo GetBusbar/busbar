@@ -263,3 +263,53 @@ fn a_relayed_state_is_refused_when_the_clock_fails() {
         assert!(matches!(d, AskDecision::Refuse(_)), "refused, got {d:?}");
     }
 }
+
+/// A relayed state's seal under the failing clock: the refusal and the words the caller reads.
+fn relayed_under_failed_clock(ttl_secs: u64) -> busbar_plane_mcp::call::AskRefusal {
+    let spent = Keyed::new();
+    let leg = UpstreamLeg {
+        member: "fs".into(),
+        state: None,
+        round: 1,
+        child: None,
+    };
+    let bind = |now| ask::Bind {
+        principal: "k",
+        method: codec::METHOD_TOOLS_CALL,
+        capability: "fs_read_file",
+        generation: 1,
+        now,
+        roots_epoch: 0,
+    };
+    with_seal(&FAILS, &spent, |seal| {
+        busbar_plane_mcp::tool_door::seal_relayed(seal, "fs", bind, "d", leg, ttl_secs)
+    })
+    .expect_err("a state is never sealed at a time that was not read")
+}
+
+/// A relayed ask (the request's window) whose host clock fails is refused as `ask_unavailable`, in
+/// words naming the clock.
+#[test]
+fn a_relayed_ask_under_a_failed_clock_is_refused_naming_the_clock() {
+    let refusal = relayed_under_failed_clock(ask::DEFAULT_TTL_SECS);
+    assert_eq!(refusal.audit_reason(), "ask_unavailable");
+    assert!(
+        refusal
+            .to_string()
+            .contains(busbar_plane_mcp::tool_door::CLOCK_UNAVAILABLE),
+        "{refusal}"
+    );
+}
+
+/// A task parked on its caller's answer (the task relay's window) refuses the same way.
+#[test]
+fn a_task_relay_under_a_failed_clock_is_refused_naming_the_clock() {
+    let refusal = relayed_under_failed_clock(busbar_plane_mcp::tool_tasks::TASK_RELAY_TTL_SECS);
+    assert_eq!(refusal.audit_reason(), "ask_unavailable");
+    assert!(
+        refusal
+            .to_string()
+            .contains(busbar_plane_mcp::tool_door::CLOCK_UNAVAILABLE),
+        "{refusal}"
+    );
+}

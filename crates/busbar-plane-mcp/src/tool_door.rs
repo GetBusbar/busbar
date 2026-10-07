@@ -2213,10 +2213,7 @@ fn relay_ask(
         spent: &plane.spent,
         pending: false,
     };
-    let Some(now) = seal.now() else {
-        return refused(child, no_sealer);
-    };
-    let bind = crate::ask::Bind {
+    let bind = |now| crate::ask::Bind {
         principal,
         method: crate::codec::METHOD_TOOLS_CALL,
         capability: &relay.admitted.entry.namespaced,
@@ -2224,14 +2221,48 @@ fn relay_ask(
         now,
         roots_epoch: 0,
     };
-    match crate::ask::relay_state(bind, &relay.admitted.sent_digest, leg, &mut seal) {
-        Some(state) => Relayed::Answer(Settled::Answer {
+    let digest = &relay.admitted.sent_digest;
+    match seal_relayed(
+        &mut seal,
+        &server,
+        bind,
+        digest,
+        leg,
+        crate::ask::DEFAULT_TTL_SECS,
+    ) {
+        Ok(state) => Relayed::Answer(Settled::Answer {
             status: 200,
             body: crate::ask::relayed_result(&relay.admitted.id, &result, &state),
             line: crate::call::relayed_line(&relay.admitted.entry),
         }),
-        None => refused(child, no_sealer),
+        Err(refusal) => refused(child, refusal),
     }
+}
+
+/// Why a relayed state is refused when the host's clock cannot be read.
+pub const CLOCK_UNAVAILABLE: &str = "the host's clock could not be read, so the window of the \
+     state the caller answers under can be neither stamped nor checked";
+
+/// A RELAYED ASK'S STATE, sealed at the host's clock (one home for a relayed ask and a task parked
+/// on its caller's answer): `bind` is made from the time read, and the state stands `ttl_secs`.
+///
+/// # Errors
+///
+/// The refusal for a state that cannot be sealed: no clock reading, or no signature.
+#[doc(hidden)]
+pub fn seal_relayed<'b>(
+    seal: &mut DoorSeal<'_>,
+    server: &str,
+    bind: impl FnOnce(u64) -> crate::ask::Bind<'b>,
+    digest: &str,
+    leg: crate::ask::UpstreamLeg,
+    ttl_secs: u64,
+) -> Result<String, crate::call::AskRefusal> {
+    let no_sealer = || crate::call::AskRefusal::NoSealer {
+        server: server.to_string(),
+    };
+    let now = seal.now().ok_or_else(no_sealer)?;
+    crate::ask::relay_state_for(bind(now), digest, leg, ttl_secs, seal).ok_or_else(no_sealer)
 }
 
 /// THE SWEEP of relayed asks' work handles, run as another is opened: each one whose state lapsed
