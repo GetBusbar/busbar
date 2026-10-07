@@ -404,9 +404,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("usage after purge", LEASED, || ans(b.get_usage(ub, w)));
 
     // ── metering: add_metering, list_metering, purge_metering_before ──
-    r.line("meter p 3", 1, || ans(b.add_metering(&meter("a", "p", 3))));
-    r.line("meter p 4", 1, || ans(b.add_metering(&meter("a", "p", 4))));
-    r.line("meter q 1", 1, || ans(b.add_metering(&meter("a", "q", 1))));
+    // Metering names a key the script has PUT (the grouped key, still live): a store whose metering
+    // rows reference its keys (a metering -> keys foreign key) holds them.
+    r.line("meter p 3", 1, || {
+        ans(b.add_metering(&meter(i.grouped, "p", 3)))
+    });
+    r.line("meter p 4", 1, || {
+        ans(b.add_metering(&meter(i.grouped, "p", 4)))
+    });
+    r.line("meter q 1", 1, || {
+        ans(b.add_metering(&meter(i.grouped, "q", 1)))
+    });
     r.line("metering", LEASED, || {
         ans(b.list_metering(86_400).map(|mut v| {
             v.sort_by(|x, y| x.provider.cmp(&y.provider));
@@ -634,7 +642,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("metering batch", 1, || {
         ans(block(
             &rt,
-            st.add_metering_batch(op(9), &[meter("z", "p", 1)]),
+            st.add_metering_batch(op(9), &[meter(i.grouped, "p", 1)]),
         ))
     });
     r.line("audit batch fork", 1, || {
