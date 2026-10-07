@@ -241,6 +241,12 @@ impl Hop {
         }
     }
 
+    /// Whether the hop's answer is a stream of events (the engine's streaming hop).
+    #[must_use]
+    pub fn streams(&self) -> bool {
+        self.relay.expects_events()
+    }
+
     /// A hop about a task whose answer may be events (the engine's event-stream hop): `envelope`
     /// opens it at the first ATTEMPT; a `subscribe` answers busbar's own refusal first.
     #[must_use]
@@ -1002,6 +1008,13 @@ slot!(
         // unit admitted here: a refusal about an entry states no route flags (abi/plane "A refused
         // arrival").
         out.once();
+        // A STREAMED ANSWER (`message/stream`, `tasks/resubscribe`, their v1.0 names and an unlisted
+        // method named as a stream; predev `receive.rs` `reads_as_stream`): the kernel bounds it by
+        // the tail's stream ceiling, from the moment its route is known (ARCHITECT ruling
+        // 2026-10-07, STREAM-CEILING; predev's 600 s relay ceiling and stalled-consumer release).
+        if hop.as_ref().is_some_and(Hop::streams) {
+            out.stream();
+        }
         let unit = Unit {
             disposition,
             agent,

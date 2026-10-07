@@ -566,6 +566,12 @@ impl Relay {
         self.events = Some(Events::default());
     }
 
+    /// Whether the hop's answer may be a stream of events ([`Self::expect_events`]).
+    #[must_use]
+    pub const fn expects_events(&self) -> bool {
+        self.events.is_some()
+    }
+
     /// The `accept` an attempt declares.
     fn accept(&self) -> &'static str {
         if self.events.is_some() {

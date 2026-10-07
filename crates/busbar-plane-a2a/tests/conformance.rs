@@ -242,6 +242,11 @@ mod both_ways {
     const REST_SEND: &[u8] = br#"{"message":{"role":"ROLE_USER","messageId":"m2","contextId":"ctx-9","parts":[{"text":"hi"}]}}"#;
     /// A method the vocabulary does not list.
     const UNLISTED: &[u8] = br#"{"jsonrpc":"2.0","id":2,"method":"vendor/Thing"}"#;
+    /// A message streamed on the JSON-RPC line.
+    const STREAM: &[u8] = br#"{"jsonrpc":"2.0","id":3,"method":"message/stream","params":{"message":{"role":"user","messageId":"m3","parts":[{"text":"hi"}]}}}"#;
+    /// A resubscribe to a task on the JSON-RPC line.
+    const RESUBSCRIBE: &[u8] =
+        br#"{"jsonrpc":"2.0","id":4,"method":"tasks/resubscribe","params":{"id":"t-1"}}"#;
     /// A redacting hook's rewrite, in the hook stage's `{"messages", "tools"}` reply.
     const REWRITE: &[u8] = br#"{"messages":[{"role":"user","content":"{\"message\":{\"role\":\"user\",\"messageId\":\"m1\",\"parts\":[{\"text\":\"[redacted]\"}]}}"}],"tools":null}"#;
     /// A rewrite with no usable params object: not applied.
@@ -311,7 +316,7 @@ mod both_ways {
         (
             format!(
                 "arrive {unit} {verb} {target} {:?} op={} dialect={} principal={} refusal={} \
-                 status={} route={} {}",
+                 status={} route={} flags={} {}",
                 c.outcome,
                 a.out.op_class,
                 a.out.dialect,
@@ -319,6 +324,7 @@ mod both_ways {
                 a.out.refusal,
                 a.out.refusal_status,
                 a.out.route,
+                a.out.route_flags,
                 String::from_utf8_lossy(&words)
             ),
             words,
@@ -580,6 +586,10 @@ mod both_ways {
             DIALECT_FRAMED,
             b"this key is over its budget",
         ));
+        // A STREAMED ANSWER states `ROUTE_STREAM` beside `ROUTE_ONCE` (ARCHITECT ruling 2026-10-07,
+        // STREAM-CEILING): a message streamed, and a resubscribe to a task, on the plane's own endpoint.
+        t.push(arrive(p, 11, document, MOUNT_PATH, STREAM, &[]).0);
+        t.push(arrive(p, 12, document, MOUNT_PATH, RESUBSCRIBE, &[]).0);
 
         // THE HOOK VIEW.
         t.push(project(p, 2, agent, &agent_target, SEND, None));
@@ -725,6 +735,26 @@ mod both_ways {
             "{}",
             t[3]
         );
+        // THE STREAM CEILING'S STATEMENT (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a relayed
+        // one-reply message states `ROUTE_ONCE` alone; a streamed one, and a resubscribe, state
+        // `ROUTE_STREAM` beside it, so the kernel stamps the tail's 600 s ceiling on the unit.
+        let once = u32::from(busbar_contract::abi::plane::ROUTE_ONCE);
+        let streamed = u32::from(
+            busbar_contract::abi::plane::ROUTE_ONCE | busbar_contract::abi::plane::ROUTE_STREAM,
+        );
+        assert!(
+            line(&t, "arrive 1 ").contains(&format!(" flags={once} ")),
+            "{}",
+            line(&t, "arrive 1 ")
+        );
+        for unit in ["arrive 11 ", "arrive 12 "] {
+            let l = line(&t, unit);
+            assert!(
+                l.contains(&format!("{:?}", Outcome::Ready))
+                    && l.contains(&format!(" flags={streamed} ")),
+                "{l}"
+            );
+        }
         assert!(
             line(&t, "arrive 7 ").contains(&format!("{:?}", Outcome::Refused)),
             "a media type the line does not read is refused: {}",

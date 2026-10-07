@@ -416,7 +416,17 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     // attempt under its binding, relay.rs:1705), the same vocabulary as the dialects.
     metric_lanes: DIALECTS.as_ptr(),
     metric_lanes_len: DIALECTS.len(),
+    // THE STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a streamed relay ran at
+    // most `RELAY_STREAM_TIMEOUT` (predev transport.rs:94-98), and a caller that stopped reading
+    // released it there (receive.rs `send_or_expire`, :2829-2850, :3000-3012).
+    stream_ceiling_secs: STREAM_CEILING_SECS,
 };
+
+/// How long a unit whose answer streams may run (predev `RELAY_STREAM_TIMEOUT`, 600 s,
+/// transport.rs:94-98): the plane's stated stream ceiling, which the kernel stamps as the unit's
+/// deadline once its route is known, so it bounds the whole stream and a caller that stops reading
+/// it alike.
+pub const STREAM_CEILING_SECS: u64 = 600;
 
 /// One path the plane answers on: the verb, the target, the transport claim it arrives over, and
 /// whether the route admits a caller with no credential at all.

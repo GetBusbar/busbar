@@ -112,6 +112,39 @@ fn a_request_whose_answer_is_events_gets_an_events_hop() {
     );
 }
 
+/// THE STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING): every hop whose answer is
+/// events states `ROUTE_STREAM` at arrive (`Hop::streams`) — `message/stream`, `tasks/resubscribe`,
+/// their v1.0 names and an unlisted method named as a stream, predev's `reads_as_stream` — and the
+/// tail states predev's 600 s relay ceiling (`RELAY_STREAM_TIMEOUT`, transport.rs:94-98), which the
+/// kernel stamps as such a unit's deadline. A one-reply hop does not stream. RED: the tail stated
+/// no ceiling and no arrival stated a stream, so a stalled caller held its unit forever.
+#[test]
+fn a_streamed_hop_states_a_stream_and_the_tail_predevs_600_second_ceiling() {
+    assert_eq!(crate::door::TAIL.stream_ceiling_secs, 600);
+    assert_eq!(crate::door::STREAM_CEILING_SECS, 600);
+    for method in [
+        "message/stream",
+        "tasks/resubscribe",
+        "SendStreamingMessage",
+        "SubscribeToTask",
+    ] {
+        let hop = hop_of(&request(method), false, Some(envelope(method))).expect(method);
+        assert!(hop.streams(), "{method}: its answer streams");
+    }
+    let unlisted = Disposition::Unlisted {
+        method: "vendor/stream".into(),
+        id: json!(7),
+        version: "1.0",
+    };
+    let hop = hop_of(&unlisted, false, Some(envelope("vendor/stream"))).expect("relayed");
+    assert!(hop.streams(), "an unlisted method named as a stream");
+    for method in ["message/send", "tasks/get", "tasks/cancel"] {
+        if let Some(hop) = hop_of(&request(method), false, Some(envelope(method))) {
+            assert!(!hop.streams(), "{method}: one reply");
+        }
+    }
+}
+
 /// The hook projection is the engine gate's: the method as the tool and `params` verbatim as the
 /// arguments (`null` when absent); a body that is no JSON object projects nothing.
 #[test]
