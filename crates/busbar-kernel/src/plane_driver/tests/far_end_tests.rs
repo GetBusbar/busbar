@@ -1873,3 +1873,190 @@ async fn a_502_head_with_no_reading_settled_unread_records_by_the_table() {
         )]
     );
 }
+
+// ── a binding re-resolved per request (`auth_calls::PerRequestHandle`) and the host's waiver ────
+
+/// A binding whose credential is re-resolved per request: it answers the scripted handles in turn
+/// (`None`: the credential is unavailable), counting how often it is asked.
+struct Resolving {
+    answers: Mutex<VecDeque<Option<u64>>>,
+    asked: AtomicU64,
+}
+
+impl busbar_contract::auth_calls::PerRequestHandle for Resolving {
+    fn handle_now(&self) -> Option<u64> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        self.answers.lock().unwrap().pop_front().flatten()
+    }
+}
+
+/// An auth binding presenting the handle it is asked on (`authorization: Bearer h<handle>`), so
+/// the wire shows which opened credential a request carried.
+#[derive(Default)]
+struct ByHandle {
+    calls: AtomicU64,
+}
+
+impl OutboundAuth for ByHandle {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn fields_now(&self, handle: u64, _: &FieldsRequest) -> Option<Fields> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Some(Fields::Ready(vec![AuthField {
+            name: b"authorization".to_vec(),
+            value: format!("Bearer h{handle}").into_bytes().into(),
+            sensitive: true,
+        }]))
+    }
+    fn fields(&self, h: u64, r: FieldsRequest, _: u64) -> Box<dyn Fielding> {
+        Box::new(Done(self.fields_now(h, &r).unwrap_or(Fields::Failed)))
+    }
+}
+
+/// The rig's member `m0` bound per request over `answers`, presented by [`ByHandle`].
+fn resolving(r: &mut Rig, answers: &[Option<u64>]) -> (Arc<Resolving>, Arc<ByHandle>) {
+    let per = Arc::new(Resolving {
+        answers: Mutex::new(answers.iter().copied().collect()),
+        asked: AtomicU64::new(0),
+    });
+    let auth = Arc::new(ByHandle::default());
+    r.egress
+        .routes
+        .get_mut(&DestinationId::new(1))
+        .expect("m0's route")
+        .auth = Some(AuthBinding {
+        auth: Arc::clone(&auth) as Arc<dyn OutboundAuth>,
+        handle: 1,
+        style_flags: 0,
+        points: AuthPoints::HEAD,
+        passthrough: false,
+        per_request: Some(
+            Arc::clone(&per) as Arc<dyn busbar_contract::auth_calls::PerRequestHandle>
+        ),
+    });
+    (per, auth)
+}
+
+/// The `authorization` each open carried, in order (`None`: none).
+fn authorizations(r: &Rig) -> Vec<Option<Vec<u8>>> {
+    r.table
+        .opened
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, head, _, _)| {
+            head.iter()
+                .find(|(n, _)| n == "authorization")
+                .map(|(_, v)| v.clone())
+        })
+        .collect()
+}
+
+/// RE-RESOLVED ON EVERY REQUEST: each attempt asks the binding for its handle NOW and presents the
+/// credential that handle was opened with, never the one the generation was sealed with — a
+/// credential rotated between two units is presented by the second.
+#[tokio::test]
+async fn each_attempt_presents_the_handle_its_credential_resolves_to_now() {
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let (per, auth) = resolving(&mut r, &[Some(7), Some(8)]);
+    let t = token();
+    for _ in 0..2 {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        authorizations(&r),
+        vec![Some(b"Bearer h7".to_vec()), Some(b"Bearer h8".to_vec())],
+        "each request carried the handle resolved for it, not the sealed one (h1)"
+    );
+    assert_eq!(
+        per.asked.load(Ordering::SeqCst),
+        2,
+        "asked once per request"
+    );
+    assert_eq!(auth.calls.load(Ordering::SeqCst), 2);
+}
+
+/// A CREDENTIAL THAT NO LONGER RESOLVES REFUSES THE UNIT `credential_unavailable` before anything is
+/// dialled: no connection opened, no auth call made, nothing recorded against the member (it is not
+/// the destination's fault), and the walk's next pick is the refusal, never another member.
+#[tokio::test]
+async fn an_unavailable_credential_refuses_the_unit_before_the_dial() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"ok"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let (per, auth) = resolving(&mut r, &[None]);
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { ref name, .. } if name == "m0"));
+    assert!(!far.send(&t, request()).await, "nothing was sent");
+    assert_eq!(
+        far.member(&t, 2).await,
+        Pick::Refused(busbar_contract::caps::ReasonCode::CredentialUnavailable),
+        "the unit is refused, not failed over"
+    );
+    assert!(r.table.opened.lock().unwrap().is_empty(), "nothing dialled");
+    assert_eq!(auth.calls.load(Ordering::SeqCst), 0, "nothing presented");
+    assert_eq!(per.asked.load(Ordering::SeqCst), 1);
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "nothing recorded against the member"
+    );
+}
+
+/// THE WAIVER (`abi::auth::NO_MEMBER_AUTH_FIELD`): a request carrying it is opened with NO member
+/// auth — the binding is not asked for a handle and makes no call, so it is dialled even while the
+/// credential is unavailable — and the field is the host's: it never reaches the wire. RED arm: the
+/// same request without it carries the member's credential.
+#[tokio::test]
+async fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_wire() {
+    use busbar_contract::abi::auth::NO_MEMBER_AUTH_FIELD;
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let (per, auth) = resolving(&mut r, &[Some(5)]);
+    let t = token();
+    for waived in [true, false] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        if waived {
+            req.fields
+                .push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()));
+        }
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        authorizations(&r),
+        vec![None, Some(b"Bearer h5".to_vec())],
+        "the waived request presented nothing; the other its member's credential"
+    );
+    assert_eq!(
+        per.asked.load(Ordering::SeqCst),
+        1,
+        "only the unwaived asked"
+    );
+    assert_eq!(auth.calls.load(Ordering::SeqCst), 1);
+    for (_, head, _, _) in r.table.opened.lock().unwrap().iter() {
+        assert!(
+            head.iter()
+                .all(|(n, _)| !n.eq_ignore_ascii_case(NO_MEMBER_AUTH_FIELD)),
+            "the host's field never reaches the wire: {head:?}"
+        );
+    }
+}

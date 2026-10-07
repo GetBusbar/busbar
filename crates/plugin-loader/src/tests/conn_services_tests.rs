@@ -762,6 +762,8 @@ struct Scripted {
     facts: Mutex<Option<ConnFacts>>,
     /// Every read fails with this, the table naming this cause.
     failing: Option<(ConnError, ConnCause)>,
+    /// The member binding every request is authenticated with (`auth_of`); `None` = none.
+    member_auth: Option<busbar_contract::conn::ConnAuth>,
 }
 
 /// One upgrade call as it reached the table: the stream, the name offered, the trust reference.
@@ -814,6 +816,15 @@ impl DeclaredConns for Scripted {
 
     fn cause(&self, _: InstanceId, _: ConnId) -> Option<ConnCause> {
         self.failing.as_ref().map(|(_, c)| c.clone())
+    }
+
+    fn auth_of(
+        &self,
+        _: InstanceId,
+        _: NeedId,
+        _: &str,
+    ) -> Option<busbar_contract::conn::ConnAuth> {
+        self.member_auth.clone()
     }
 }
 
@@ -1703,5 +1714,166 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
         table.named.lock().unwrap().as_slice(),
         &["inside".to_owned(), String::new()],
         "the named registration, then none"
+    );
+}
+
+// ── a member binding re-resolved per request, and the plugin's waiver of it ─────────────────────
+
+/// A binding whose credential is re-resolved per request: the scripted handles in turn (`None`:
+/// the credential is unavailable), counting how often it is asked.
+struct Resolving {
+    answers: Mutex<std::collections::VecDeque<Option<u64>>>,
+    asked: std::sync::atomic::AtomicU64,
+}
+
+impl busbar_contract::auth_calls::PerRequestHandle for Resolving {
+    fn handle_now(&self) -> Option<u64> {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.answers.lock().unwrap().pop_front().flatten()
+    }
+}
+
+/// An auth binding presenting the handle it is asked on (`authorization: Bearer h<handle>`).
+#[derive(Default)]
+struct ByHandle {
+    calls: std::sync::atomic::AtomicU64,
+}
+
+impl busbar_contract::auth_calls::OutboundAuth for ByHandle {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn fields_now(
+        &self,
+        handle: u64,
+        _: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(busbar_contract::auth_calls::Fields::Ready(vec![
+            busbar_contract::auth_calls::AuthField {
+                name: b"authorization".to_vec(),
+                value: format!("Bearer h{handle}").into_bytes().into(),
+                sensitive: true,
+            },
+        ]))
+    }
+    fn fields(
+        &self,
+        _: u64,
+        _: busbar_contract::auth_calls::FieldsRequest,
+        _: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        unreachable!("a header binding answers on the spot")
+    }
+}
+
+/// A framed table whose member binding is re-resolved per request over `answers`.
+fn resolving_table(answers: &[Option<u64>]) -> (Arc<Scripted>, Arc<Resolving>, Arc<ByHandle>) {
+    let per = Arc::new(Resolving {
+        answers: Mutex::new(answers.iter().copied().collect()),
+        asked: std::sync::atomic::AtomicU64::new(0),
+    });
+    let auth = Arc::new(ByHandle::default());
+    let table = Arc::new(Scripted {
+        framed: true,
+        member_auth: Some(busbar_contract::conn::ConnAuth {
+            auth: Arc::clone(&auth) as Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+            handle: 1,
+            style_flags: 0,
+            points: busbar_contract::abi::auth::AuthPoints::HEAD,
+            passthrough: false,
+            lender: None,
+            per_request: Some(
+                Arc::clone(&per) as Arc<dyn busbar_contract::auth_calls::PerRequestHandle>
+            ),
+        }),
+        ..Scripted::default()
+    });
+    (table, per, auth)
+}
+
+/// `PATCH /v1/x` carrying the host's waiver field before its own `a: 1`.
+const WAIVED_HEAD: &[u8] = b"PATCH/v1/xbusbar-no-member-auth: 1\r\na: 1\r\n";
+
+/// One whole request on a fresh stream (`seq` onwards): its head `head` laid out over `bytes`, then
+/// its end.
+fn whole_request(p: &Plugin<TestKind>, seq: u32, head: &RequestPiece, bytes: &[u8]) {
+    let stream = opened_stream(p, seq).value;
+    assert!(ready(&request(p, seq + 1, stream, head, bytes)));
+    assert!(ready(&request(
+        p,
+        seq + 2,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
+}
+
+/// THE PLUGIN'S OWN REQUESTS TO A MEMBER carry the member's binding re-resolved for each one (the
+/// handle its credential resolves to NOW), and THE WAIVER (`abi::auth::NO_MEMBER_AUTH_FIELD`) opens
+/// a request with NO member auth — the binding is not asked and makes no call — and is the host's:
+/// it never reaches the table. RED arm: the same request without it carries the credential.
+#[test]
+fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_table() {
+    let (table, per, auth) = resolving_table(&[Some(4), Some(6)]);
+    let p = bound_over(&table);
+    let waived = RequestPiece {
+        fields: span(10, WAIVED_HEAD.len() - 10),
+        ..head_piece()
+    };
+    whole_request(&p, 0, &waived, WAIVED_HEAD);
+    whole_request(&p, 3, &head_piece(), HEAD_BYTES);
+    whole_request(&p, 6, &head_piece(), HEAD_BYTES);
+    let fields: Vec<Vec<(String, Vec<u8>)>> = table
+        .opened
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|o| o.4.clone())
+        .collect();
+    assert_eq!(
+        fields,
+        vec![
+            vec![("a".to_owned(), b"1".to_vec())],
+            vec![
+                ("authorization".to_owned(), b"Bearer h4".to_vec()),
+                ("a".to_owned(), b"1".to_vec())
+            ],
+            vec![
+                ("authorization".to_owned(), b"Bearer h6".to_vec()),
+                ("a".to_owned(), b"1".to_vec())
+            ],
+        ],
+        "the waived request presented nothing and its waiver never reached the table; each \
+         other request the handle its credential resolved to for it"
+    );
+    assert_eq!(per.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(auth.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// A MEMBER CREDENTIAL THAT NO LONGER RESOLVES refuses the plugin's own request to it: nothing is
+/// opened, nothing presented, and the reply is the refused ack.
+#[test]
+fn a_request_whose_member_credential_no_longer_resolves_is_refused_and_opens_nothing() {
+    let (table, per, auth) = resolving_table(&[None]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
+    assert!(ready(&request(
+        &p,
+        2,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
+    let mut buf = [0_u8; 8];
+    let (o, _) = read_reply(&p, 3, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+    assert!(table.opened.lock().unwrap().is_empty(), "nothing opened");
+    assert_eq!(per.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        auth.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing presented"
     );
 }
