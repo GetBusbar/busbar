@@ -2176,12 +2176,12 @@ impl busbar_kernel::plane_driver::FarEnd for CredentialGone {
         async move { pick }
     }
 
-    fn send<'a>(
-        &'a self,
-        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    async fn send(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
         _: busbar_kernel::plane_driver::OutboundRequest,
-    ) -> impl Future<Output = bool> + Send + 'a {
-        async { false }
+    ) -> bool {
+        false
     }
 
     async fn next(
@@ -2191,12 +2191,12 @@ impl busbar_kernel::plane_driver::FarEnd for CredentialGone {
         None
     }
 
-    fn write<'a>(
-        &'a self,
-        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    async fn write(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
         _: busbar_kernel::plane_driver::OutboundRequest,
-    ) -> impl Future<Output = bool> + Send + 'a {
-        async { false }
+    ) -> bool {
+        false
     }
 }
 
@@ -2241,7 +2241,7 @@ async fn drive_gone(
 /// is refused exactly as today.
 #[tokio::test]
 async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_takes_it() {
-    use busbar_contract::caps::{Outcome as Unit, ReasonCode};
+    use busbar_contract::caps::{Outcome as Unit, ReasonCode, StepName};
     let code = busbar_contract::abi::plane::reason_code(ReasonCode::CredentialUnavailable);
     for takes in [true, false] {
         let s = records();
@@ -2260,8 +2260,12 @@ async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_ta
             .unit(&steps, &far, &caller, cases::arrival("/x", b"x"), 0);
         let outcome = drive_gone(&units).await;
         assert!(
-            matches!(outcome, Unit::Refused(_, ReasonCode::CredentialUnavailable)),
-            "takes={takes}: {outcome:?}"
+            matches!(
+                outcome,
+                Unit::Failed(StepName::Route, ReasonCode::CredentialUnavailable)
+            ),
+            "takes={takes}: the unit ends as a credential refusal does without the bit: \
+             {outcome:?}"
         );
         let rendered = units.take_rendered().expect("the refusal is rendered");
         let body = String::from_utf8_lossy(&rendered.body).into_owned();
