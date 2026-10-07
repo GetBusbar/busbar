@@ -655,8 +655,7 @@ pub fn dealt_section(settings: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 /// present (LAW 7). Its trust verbs stay stated, and answer every name `404`: none is registered.
 #[must_use]
 pub fn snapshot_spec(public_url: Option<&str>, fronts: bool) -> SnapshotSpec {
-    let _ = fronts;
-    let admitted = public_url.and_then(|p| {
+    let admitted = public_url.filter(|_| fronts).and_then(|p| {
         Some((
             crate::a2a::public::absolute(p, crate::MOUNT_PATH)?,
             crate::a2a::public::absolute(p, crate::METADATA_PATH)?,
@@ -674,6 +673,9 @@ pub fn snapshot_spec(public_url: Option<&str>, fronts: bool) -> SnapshotSpec {
             .iter()
             .zip(ADMIN_VERBS)
             .zip(ADMIN_AUDIT_VERBS)
+            .filter(|((r, _), _)| {
+                fronts || r.flags & busbar_contract::abi::plane::ROUTE_PUBLIC == 0
+            })
             .map(|((r, (verb, target)), audit)| {
                 AdminRouteSpec::new(verb, target, r.flags).audited(audit)
             })
