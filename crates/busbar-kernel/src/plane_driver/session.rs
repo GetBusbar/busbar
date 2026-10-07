@@ -214,6 +214,8 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         if priced {
             d.money.session_opened(ctx)?;
         }
+        // The session's in-session hook stage (`hook.call`, `content.scan`), from the open.
+        self.state_stage(token);
         let stream = ctx.key.get();
         let told = Arc::new(Notify::new());
         d.lock_sessions().insert(stream, told.clone());
