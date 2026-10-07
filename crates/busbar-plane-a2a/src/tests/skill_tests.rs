@@ -114,3 +114,95 @@ fn an_agent_with_no_held_card_is_refused_by_the_catalogue_s_name() {
     assert_eq!(refusal(&Unfit::NoCachedCard).message, "NoCachedCard");
     assert_eq!(refusal(&Unfit::NoCachedCard).status, 403);
 }
+
+// ── the engine's catalogue fitness cells (`busbar-a2a` `catalogue_tests.rs`), on the fit ─────────
+
+/// A card with `skills` and `capabilities`, its default modes JSON both ways.
+fn a_card(skills: Value, capabilities: Value) -> Value {
+    json!({
+        "protocolVersion": "0.3.0",
+        "name": "agent",
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "capabilities": capabilities,
+        "skills": skills,
+    })
+}
+
+/// The planner streams and takes no push; the researcher takes push and does not stream.
+fn planner() -> Value {
+    a_card(
+        json!([{ "id": "plan", "name": "Plan" }, { "id": "summarize", "name": "Summarize" }]),
+        json!({ "streaming": true, "pushNotifications": false }),
+    )
+}
+
+fn researcher() -> Value {
+    a_card(
+        json!([{ "id": "research", "name": "Research" }]),
+        json!({ "streaming": false, "pushNotifications": true }),
+    )
+}
+
+/// A protocol capability the task requires and the card does not declare excludes the agent, on
+/// each of the two capabilities; a card that declares it fits.
+#[test]
+fn a_required_protocol_capability_the_card_does_not_declare_excludes_the_agent() {
+    let streams = TaskShape {
+        requires_stream: true,
+        ..Default::default()
+    };
+    assert_eq!(fit(&planner(), &streams), Ok(None), "it declares streaming");
+    assert_eq!(
+        fit(&researcher(), &streams),
+        Err(Unfit::CapabilityNotDeclared("streaming"))
+    );
+    let push = TaskShape {
+        requires_push_notifications: true,
+        ..Default::default()
+    };
+    assert_eq!(fit(&researcher(), &push), Ok(None), "it declares push");
+    assert_eq!(
+        fit(&planner(), &push),
+        Err(Unfit::CapabilityNotDeclared("pushNotifications"))
+    );
+}
+
+/// The caller must be able to send what the agent accepts AND read what it produces: an input-mode
+/// mismatch and an output-mode mismatch each exclude it, and modes compatible both ways fit.
+#[test]
+fn modes_must_be_compatible_in_both_directions() {
+    let sends_audio = TaskShape {
+        input_modes: vec!["audio/wav".to_string()],
+        ..Default::default()
+    };
+    assert_eq!(fit(&planner(), &sends_audio), Err(Unfit::ModesIncompatible));
+    let wants_pdf = TaskShape {
+        output_modes: vec!["application/pdf".to_string()],
+        ..Default::default()
+    };
+    assert_eq!(fit(&planner(), &wants_pdf), Err(Unfit::ModesIncompatible));
+    let json_both_ways = TaskShape {
+        input_modes: vec!["application/json".to_string()],
+        output_modes: vec!["application/json".to_string()],
+        ..Default::default()
+    };
+    assert_eq!(fit(&planner(), &json_both_ways), Ok(None));
+}
+
+/// CONTENT-BLINDNESS BY CONSTRUCTION: the shape the fit reads holds typed metadata only. An
+/// exhaustive destructure with no `..`, so a field for prose cannot arrive without this failing to
+/// compile.
+#[test]
+fn the_task_shape_carries_no_channel_for_prose() {
+    let TaskShape {
+        skill,
+        requires_stream,
+        requires_push_notifications,
+        input_modes,
+        output_modes,
+    } = TaskShape::default();
+    assert!(skill.is_none());
+    assert!(!requires_stream && !requires_push_notifications);
+    assert!(input_modes.is_empty() && output_modes.is_empty());
+}

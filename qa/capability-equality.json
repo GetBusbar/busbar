@@ -180,7 +180,7 @@
       "capability": "breaker-trip",
       "plane": "a2a-server",
       "state": "not-applicable",
-      "reason": "inbound role; no upstream availability to record. The anomaly breaker (a2a/anomaly.rs) is behaviour trust, not availability, and must not be conflated with the core breaker.",
+      "reason": "inbound role; no upstream availability to record.",
       "root": {
         "state": "not-applicable",
         "leg": "root-a2a"

@@ -15,7 +15,7 @@
 use std::task::Poll;
 
 use busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
-use busbar_contract::abi::host::service::ItemSpan;
+use busbar_contract::abi::host::service::{ItemSpan, DEST_REFUSE_PRIVATE};
 use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
@@ -361,10 +361,13 @@ impl Reach for Via<'_> {
             key: absent,
             value: absent,
         }; JUDGED_ADDRESSES];
-        match services.dest_judge(
+        // Private reach refused whatever the deployment's private-address setting (the engine's
+        // callback guard had no knob that admitted one); the allow-list stands.
+        match services.dest_judge_as(
             handle,
             dest,
             EGRESS_OPEN_WEB,
+            DEST_REFUSE_PRIVATE,
             Some((&mut bytes[..], &mut spans[..])),
         ) {
             Poll::Pending => Err(Halt::Pending),
@@ -385,6 +388,12 @@ fn claim_sweep(swept: &Keyed<(), u64>, now: u64) -> bool {
     })
 }
 
+/// The answer a NOTIFICATION gets: received, never answered (JSON-RPC 2.0 section 4.1: the server
+/// MUST NOT reply), so `202` and no body at all, as the engine's `jsonrpc::accepted` answered it.
+pub(crate) const fn notice_answer() -> (u32, &'static [u8]) {
+    (crate::arrival::STATUS_ACCEPTED, b"")
+}
+
 /// The local verb a unit arrived as.
 fn verb_of(disposition: &Disposition) -> Option<LocalVerb> {
     match disposition {
@@ -401,6 +410,30 @@ pub fn on_piece(
     mut out: Out<'_, OnPieceOut>,
 ) -> Option<Outcome> {
     let unit = input.get().unit;
+    // A NOTIFICATION, acknowledged on the caller's piece: `202` and no body, nothing moved, no
+    // fee kept and no audit row (the engine answered it before anything was admitted).
+    if plane.units.with(&unit, |u| {
+        u.is_some_and(|u| matches!(u.disposition, Disposition::Notice { .. }))
+    }) {
+        if input.get().from != FROM_CALLER {
+            return Some(Outcome::Ready);
+        }
+        let (status, body) = notice_answer();
+        let head = Head {
+            fields: &[],
+            length: true,
+            message: false,
+        };
+        return Some(window_core(
+            plane,
+            unit,
+            &input,
+            &mut out,
+            (status, body),
+            &[],
+            Some(head),
+        ));
+    }
     let (verb, rest, composed, framed, addressed, section, generation, version, held) =
         plane.units.with(&unit, |u| {
             let u = u?;
@@ -563,6 +596,8 @@ pub fn on_piece(
         Ok(None) => return Some(Outcome::Refused),
         Ok(Some(answer)) => answer,
     };
+    // A DELETED CONFIG TAKES ITS WEBHOOK CREDENTIAL WITH IT out of plane memory.
+    crate::push_door::forget_deleted(&plane.deliveries, caller, &writes);
     plane.units.with(&unit, |u| {
         if let Some(u) = u {
             u.pass.served = served;

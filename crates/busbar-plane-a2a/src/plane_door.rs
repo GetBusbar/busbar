@@ -839,13 +839,9 @@ slot!(
         // that would serve it as its candidates, which the kernel intersects with the caller's
         // grant.
         let section = plane.generations.current();
-        // BUSBAR'S EXTENDED CARD, on the plane's own endpoint: the caller named no agent, so the
-        // verb asks busbar about itself and the plane answers it (the engine's
-        // `route::extended_agent_card`), before any agent is selected.
-        if agent.is_none()
-            && matches!(&disposition, Disposition::Request { row, .. }
-                if row.op == crate::ops::OP_AGENT_CARD)
-        {
+        // BUSBAR'S EXTENDED CARD and A NOTIFICATION, the plane's own to answer before any agent
+        // is selected ([`answered_here`]).
+        if answered_here(&disposition, agent.is_some()) {
             out.local();
             keep(
                 &plane.units,
@@ -919,6 +915,18 @@ slot!(
         Outcome::Ready
     }
 );
+
+/// WHETHER THE PLANE ANSWERS AN ARRIVAL ITSELF, before any agent is selected: busbar's EXTENDED
+/// card on the plane's own endpoint (the caller named no agent, so the verb asks busbar about itself;
+/// the engine's `route::extended_agent_card`), and a NOTIFICATION wherever it arrived (received,
+/// never answered and never relayed: the engine answered it `202` with no body and moved nothing).
+pub(crate) fn answered_here(disposition: &Disposition, addressed: bool) -> bool {
+    match disposition {
+        Disposition::Request { row, .. } => !addressed && row.op == crate::ops::OP_AGENT_CARD,
+        Disposition::Notice { .. } => true,
+        _ => false,
+    }
+}
 
 /// AN ARRIVAL ON THE OPEN LINE: a read of a card busbar serves ([`crate::served_card`]), kept with
 /// the generation it arrived under. Busbar's own card (the well-known path) is unauthenticated and
@@ -2558,8 +2566,6 @@ fn verify_on_call(
     if let Some(card) = looked.card {
         plane.cards.hold(member, generation, card);
     }
-    // The breaker is evaluated on the same pass, as the engine's re-verification did.
-    standing.apply_anomaly_breaker();
     let serving = serves(&standing);
     plane.trust.insert(key.clone(), standing);
     // THE FLIGHT LANDS: every unit that waited on it is woken to take its verdict.

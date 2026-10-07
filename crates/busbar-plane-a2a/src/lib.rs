@@ -43,7 +43,6 @@
 /// their in-crate paths are the ones every caller already spells.
 pub mod a2a {
     pub mod agent_card;
-    pub mod anomaly;
     pub mod canonical;
     pub mod card;
     pub mod config;

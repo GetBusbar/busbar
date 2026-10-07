@@ -1879,6 +1879,32 @@ mod agent_door {
         assert_eq!(admitted(&s), 0, "nothing was charged");
     }
 
+    /// A NOTIFICATION over the agent door (a JSON-RPC message with no `id`): acknowledged `202`
+    /// with no body at all, and never relayed, as the served engine answered it
+    /// (`jsonrpc::accepted`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_notification_is_acknowledged_202_with_no_body_and_dials_nothing() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-notified";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("notified", "1h"), false, None);
+        approve(&s, "notified").await;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("{}/agents/notified", mount()))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", s.token))
+            .body(axum::body::Body::from(format!(
+                r#"{{"jsonrpc":"2.0","method":"message/send","params":{SEND}}}"#
+            )))
+            .expect("a request");
+        let (status, body) = answered(&s.router, req).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert!(body.is_empty(), "a notification is never answered: {body}");
+        assert!(!agent.relayed(), "nothing was relayed");
+    }
+
     /// SELECT, ONE REACHES (ARCHITECT Q-DEL-A2A-SELECT): an unaddressed unit on the plane's own
     /// endpoint is routed by the caller's scope to the one agent its grant reaches, as 1.5.5 chose
     /// it, and relayed to that agent's own path.
@@ -1999,6 +2025,37 @@ mod agent_door {
         assert_eq!(admitted(&s), 0, "nothing charged");
     }
 
+    /// The caller's key must be LIVE for busbar to spend its hop on the caller's behalf (predev's
+    /// `creds::authorise_egress`, `KeyNotLive`): a key deleted after it was served is refused at
+    /// the door's next unit, and the agent is never dialled for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_unit_from_a_key_that_is_no_longer_live_never_dials() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-key-gone";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the live key is served: {body}");
+        assert!(agent.relayed(), "the live key's unit dialled");
+        let _ = s.gov.delete_key(&s.key.id);
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert!(
+            status.is_client_error(),
+            "a key that is not live is refused: {status} {body}"
+        );
+        assert!(!agent.relayed(), "and the agent is never dialled for it");
+    }
+
     /// The root cell `disposition × a2a-client`: a relayed unit to an approved agent that has gone
     /// down (its verification still fresh, so the hop is sent) ends inside its unit — the caller
     /// answered in the plane's own envelope, not left hanging.
@@ -2073,6 +2130,175 @@ mod agent_door {
             "a tripped agent fast-fails: {body}"
         );
         assert!(!agent.relayed(), "the fast-failed unit never dialled");
+    }
+
+    /// The node's book lines whose counts name agent `agent`'s lane, in book order.
+    fn agent_counts(s: &Served, agent: &str) -> Vec<crate::root::durability::UnitCounts> {
+        let resource = format!("{}:{agent}", surface("resource_kind"));
+        s.book
+            .lock()
+            .expect("unpoisoned")
+            .read_back()
+            .into_iter()
+            .filter_map(|l| l.counts)
+            .filter(|c| c.lane.ends_with(resource.as_str()))
+            .collect()
+    }
+
+    /// The count a line carries under `class`, `0` when it carries none.
+    fn counted(counts: &crate::root::durability::UnitCounts, class: &str) -> u64 {
+        counts.classes.get(class).copied().unwrap_or(0)
+    }
+
+    /// The root cells `billed-bytes × a2a-client` and the agent fee unit: a served hop's one line
+    /// counts the request body it sent and the response body it read, both ways, under the plane's
+    /// bytes class, and the plane's per-request fee unit exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_hop_ledgers_the_bodies_it_moved_and_its_fee_unit_once() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-billed-bytes";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let heard = agent.heard.recv().await.expect("the far agent was dialled");
+        let sent = heard.split_once("\r\n\r\n").map_or(0, |(_, b)| b.len());
+        assert!(sent > 0, "the hop carried a body: {heard}");
+        let lines = agent_counts(&s, "planner");
+        assert_eq!(lines.len(), 1, "one line for the unit: {lines:?}");
+        assert_eq!(
+            counted(&lines[0], surface("bytes_class")),
+            (sent + ANSWER.len()) as u64,
+            "the request body sent and the response body read: {lines:?}"
+        );
+        assert_eq!(
+            counted(&lines[0], busbar_contract::plane::PER_REQUEST),
+            1,
+            "the fee unit, once: {lines:?}"
+        );
+    }
+
+    /// The root cells `billed-bytes` and the agent fee unit, refused before the socket: every hop
+    /// that LEFT for a failing agent counts the bodies it moved (its request and the agent's
+    /// refusal) and keeps its fee; once the breaker is open, a unit refused before it dials counts
+    /// no bytes and keeps no fee.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_hop_refused_before_the_socket_counts_no_bytes_and_keeps_no_fee() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-refused-unbilled";
+        let _published = Published(instance);
+        let failing = r#"{"error":"down"}"#;
+        let mut agent = Agent::start(503, failing).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let mut tripped = false;
+        for _ in 0..32 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            if body.contains("breaker_open") {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(tripped, "the breaker opened within 32 failing calls");
+        let left = agent_counts(&s, "planner");
+        assert!(!left.is_empty(), "the hops that left were ledgered");
+        let dialled: Vec<_> = left
+            .iter()
+            .filter(|c| counted(c, surface("bytes_class")) > 0)
+            .collect();
+        assert!(
+            !dialled.is_empty(),
+            "a hop that left counts its bodies: {left:?}"
+        );
+        for c in &dialled {
+            assert!(
+                counted(c, surface("bytes_class")) > failing.len() as u64,
+                "its request and the agent's refusal: {c:?}"
+            );
+            assert_eq!(
+                counted(c, busbar_contract::plane::PER_REQUEST),
+                1,
+                "a hop that left keeps its fee: {c:?}"
+            );
+        }
+        let before = left.len();
+        while agent.heard.try_recv().is_ok() {}
+        let (_, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert!(body.contains("breaker_open"), "fast-failed: {body}");
+        let after = agent_counts(&s, "planner");
+        for c in after.iter().skip(before) {
+            assert_eq!(
+                counted(c, surface("bytes_class")),
+                0,
+                "a unit refused before the socket counts no bytes: {c:?}"
+            );
+            assert_eq!(
+                counted(c, busbar_contract::plane::PER_REQUEST),
+                0,
+                "and keeps no fee: {c:?}"
+            );
+        }
+        assert!(!agent.relayed(), "the fast-failed unit never dialled");
+    }
+
+    /// The agent section's fees: `per_request` is the unit the plane counts, so it validates, and
+    /// `per_session` (a unit the plane never counts, so it would charge nothing) is refused naming
+    /// the counted list, by the kernel's one rule over the door's declared fee units.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_sections_per_request_fee_validates_and_per_session_is_refused() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-fees";
+        let _published = Published(instance);
+        let agent = Agent::start(200, ANSWER).await;
+        // Composing the door registers its folded declaration, as boot installs it.
+        let _s = served(instance, &agent.entry("planner", "1h"), false, None);
+        let with_fees = |per_request: i64, per_session: i64| {
+            let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
+                busbar_kernel::config::SecretRef::none(),
+            );
+            cfg.plane_fees = [(
+                surface("plane_key").to_string(),
+                busbar_kernel_ledger::cost::PlaneFees {
+                    per_request,
+                    per_session,
+                },
+            )]
+            .into_iter()
+            .collect();
+            busbar_kernel::config_validate::validate(&cfg)
+                .err()
+                .unwrap_or_default()
+        };
+        let refusal = format!(
+            "{}.fees.{} is not counted by this plane (counted: {}); remove it",
+            surface("section"),
+            busbar_contract::plane::PER_SESSION,
+            busbar_contract::plane::PER_REQUEST
+        );
+        assert!(
+            with_fees(0, 40).contains(&refusal),
+            "per_session is refused: {:?}",
+            with_fees(0, 40)
+        );
+        assert!(
+            !with_fees(2, 0).iter().any(|e| e.contains(".fees.")),
+            "a counted fee validates: {:?}",
+            with_fees(2, 0)
+        );
     }
 
     /// RED (ARCHITECT breaker ruling, the plane's reading): an agent that answers each unit with an
