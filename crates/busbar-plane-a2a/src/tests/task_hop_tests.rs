@@ -847,3 +847,65 @@ fn a_streamed_artifact_advances_the_durable_resume_cursor() {
         "the terminal event lands on the task"
     );
 }
+
+// ── a hop that left and heard nothing back: its task end, racing another writer of the task ───
+
+/// End `task`, whose hop left and heard nothing back, failed, as the door ends it: over the
+/// records its opening `wrote`.
+fn ended_after_no_answer(d: &mut Desk, task: &TaskHop, wrote: &[Write]) -> Vec<Write> {
+    let _ = &d;
+    fail_unhosted(task, wrote, ALICE, 300).0
+}
+
+/// A HOP THAT LEFT AND HEARD NOTHING BACK ENDS THE TASK IT OPENED WITHOUT LOSING ANOTHER WRITER'S
+/// CHANGE (the engine's `refuse_hop` on `RelayRefusal::Transport`, origin/predev
+/// `crates/busbar-a2a/src/a2a/receive.rs:3325` and its `fail_task` arm `:3463-3471`, then
+/// `end_task` `:3485-3500`: `TASKS.transition` under the task's own lock,
+/// `crates/busbar-kernel/src/plane/handle_engine.rs:711-736`). Another unit moves the task the hop
+/// minted between its opening and the end; the end is chained after that move: the other writer's
+/// event stands, the failure is the next one, and the task as held is failed with the chain's tail
+/// on the failure.
+#[test]
+fn a_hop_that_heard_nothing_back_ends_its_task_keeping_a_concurrent_writers_change() {
+    let mut d = desk();
+    let (fresh, wrote) = opened_writing(&mut d, &send(json!({})));
+    let Opened::Hop { task, .. } = fresh else {
+        panic!("refused");
+    };
+    let id = task.task_id.clone();
+    let next = get(&mut d.book, ALICE, &id, 300).unwrap().unwrap().next_seq;
+
+    // ANOTHER UNIT moves the task while the hop's end is made: it wins the next sequence.
+    let mut theirs = Vec::new();
+    let other = Step {
+        caller: ALICE,
+        request_id: "another-unit",
+        now: 300,
+    };
+    crate::tasks::transition(&mut d.book, &other, &id, TaskState::Working, &mut theirs)
+        .unwrap()
+        .expect("it moved");
+    d.book.apply(&theirs);
+    let their_event = d
+        .book
+        .value(KIND_TASK_EVENT, &event_key(ALICE, &id, next))
+        .cloned()
+        .expect("their event");
+
+    let ours = ended_after_no_answer(&mut d, &task, &wrote);
+    d.book.apply(&ours);
+
+    assert_eq!(
+        d.book
+            .value(KIND_TASK_EVENT, &event_key(ALICE, &id, next))
+            .cloned(),
+        Some(their_event),
+        "the other writer's event stands"
+    );
+    let failed = event(&d, &id, next + 1);
+    assert_eq!(failed.state, "failed", "the failure is the next event");
+    let held = get(&mut d.book, ALICE, &id, 300).unwrap().unwrap();
+    assert_eq!(held.row.state, "failed");
+    assert_eq!(held.next_seq, next + 2);
+    assert_eq!(held.tail_hash, failed.hash);
+}
