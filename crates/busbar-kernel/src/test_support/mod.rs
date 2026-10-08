@@ -1845,6 +1845,12 @@ impl TestApp {
                 global_default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
                 reasoning_budgets: [1024, 4096, 8192, 16384],
                 default_failover: Some(default_failover),
+                // The test build's auth axis: the kind-neutral outbound double
+                // (`test_support::outbound_auth`), so a lane's credential binds without naming a
+                // plugin.
+                auths: Some(busbar_kernel::plane_host::AuthReach(
+                    crate::test_support::outbound_auth::axis(),
+                )),
             };
             // A fallback plane that contributes no runtime of its own (a door plane) is read through
             // the kernel's own tables above.
@@ -2044,7 +2050,6 @@ impl TestApp {
             plane_sections: self.plane_sections,
             spent_token_ledger: Default::default(),
             demotion_record: Default::default(),
-            credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),
             config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
@@ -2294,6 +2299,8 @@ pub mod tokens;
 
 /// The export axis a test binary's configurations resolve against (K9b).
 pub mod export_axis;
+/// The kind-neutral outbound auth double a test build binds lane credentials on.
+pub mod outbound_auth;
 /// The stand-in secret axis a test build installs in place of the root's.
 pub mod secrets;
 pub use secrets::SecretsStandIn;
@@ -2373,16 +2380,6 @@ pub fn install_operator_auth_row(door: AuthDoor) {
 pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
-
-/// The SigV4 helpers a test signs an inbound request with, named once here because the
-/// `busbar_kernel::sigv4` re-export path is gone (D3).
-pub mod sigv4 {
-    pub use busbar_contract::redacted::sha256_hex;
-    pub use busbar_kernel_identity::{
-        egress_auth::sigv4::{format_amz_time, uri_encode_path},
-        ingress_sigv4::{sign_v4, CLOCK_SKEW_SECS, X_AMZ_CONTENT_SHA256, X_AMZ_DATE},
-    };
-}
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
 /// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.

@@ -173,6 +173,35 @@ pub fn run(cx: &Ctx) -> i32 {
         proven: musts_red,
     });
 
+    // ── `--musts` RED: the MUST set has a floor derived from the planes the build ships. The same
+    //    all-pass manifest is DENIED once the registry leaves a shipped plane (decisions) with no
+    //    suite: deleting a plane's suite block cannot shrink the requirement into a green.
+    let registry = cx
+        .read(crate::gates::conformance_sync::render::REGISTRY_PATH)
+        .unwrap_or_default();
+    let mut ov = Overlay::new();
+    ov.set(
+        DEFAULT_MANIFEST_PATH,
+        serde_json::to_string_pretty(&all_pass).unwrap(),
+    );
+    ov.set(
+        crate::gates::conformance_sync::render::REGISTRY_PATH,
+        registry.replace("plane = \"decisions\"\n", ""),
+    );
+    let floor_rows = check_musts(&cx.with_overlay(ov), DEFAULT_MANIFEST_PATH, SHA);
+    let floor_red = registry.contains("plane = \"decisions\"\n")
+        && floor_rows.len() == 1
+        && floor_rows[0].id == "conformance-check:registry"
+        && floor_rows[0].status == Status::Fail
+        && floor_rows[0].detail.contains("decisions");
+    if !floor_red {
+        eprintln!("  NOT PROVEN: --musts plane-floor RED: rows = {floor_rows:?}");
+    }
+    cases.push(Case {
+        name: "--musts denies when a shipped plane has no registered suite (RED, derived floor)",
+        proven: floor_red,
+    });
+
     let mut failed = Vec::new();
     for c in &cases {
         println!(

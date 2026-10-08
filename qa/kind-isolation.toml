@@ -574,12 +574,22 @@ drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis
 
 [[dep]]
 from    = "busbar"
+to      = "busbar-auth-sigv4"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §6 step 3 and §11.11 R3 — the composition root links the auth plugin that serves a style; P2 D1 (the auth split) deletes the kernel's own copies of every outbound style and its inbound SigV4, so the default distribution links the plugins that now serve them."
+why     = "busbar names busbar-auth-sigv4: declared optional (feature `auth-sigv4`, default-on) in the shipped graph, 1 declaration(s) at this commit — the sigv4 auth plugin: a bedrock provider's credential signs through it outbound, and busbar's own SigV4 keys are verified through its `verify` over `records.secret` inbound. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
 to      = "busbar-auth-oauth"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 / §6 step 3 — the composition root is the one thing that names all three axes; the auth plugin that serves a door plane's outbound style is linked on the `auths` axis (ARCHITECT Q-L1-AUTH (A) 2026-10-03); Part 3 §12 \"The switch\" (the llm fold's development-only `llm-on-driver` carries it)."
-why     = "busbar names busbar-auth-oauth: declared optional (feature `auth-oauth`, carried by the llm fold's `llm-on-driver` switch, not in `default`) in the shipped graph, 1 declaration(s) at this commit — the root compiles in the auth plugin serving the token styles (jwt-bearer, oauth-client-credentials) that a door-served llm member's egress binds its style through (door_steps `OutboundAuths`). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §6 step 3 and §11.11 R3 — the composition root links the auth plugin that serves a style; P2 D1 (the auth split) deletes the kernel's own copies of every outbound style and its inbound SigV4, so the default distribution links the plugins that now serve them."
+why     = "busbar names busbar-auth-oauth: declared optional (feature `auth-oauth`, default-on) in the shipped graph, 1 declaration(s) at this commit — the oauth auth plugin (jwt-bearer, oauth-client-credentials) a provider's minted credential binds through. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
 drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

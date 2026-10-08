@@ -880,14 +880,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // their money posted onto the process's one node, each member's egress sealed over the
     // deployment's providers, the auth plugins that serve its style (the build's own rows, then
     // the plugins directory's) and the one connector their needs were declared on.
-    let door_auths = std::sync::Arc::new(root::door_steps::OutboundAuths::new(
-        root::dispatch::dispatcher(),
-        LINKED.auths,
-        root::boot::dropped_registry(),
-        root::loader::dispatch::ConnTable::Host(
-            Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>
-        ),
-    ));
+    let door_auths = root::door_steps::process_auths();
     // The kernel's own App (its lane store, its telemetry bank), through its swap handle once it exists (a config apply
     // rebuilds the store), the boot App's until then.
     let door_live_handle: std::sync::Arc<
