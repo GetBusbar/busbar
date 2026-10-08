@@ -281,6 +281,20 @@ pub trait AuthCalls: Send + Sync {
     /// The tail's facts (`abi::auth::FACT_*`).
     fn facts(&self) -> u32;
 
+    /// With [`crate::abi::auth::FACT_READS_CREDENTIALS`]: the host-held credential kinds `verify`
+    /// reads through `records.secret`, as the tail names them (opaque words to the kernel); none
+    /// otherwise.
+    fn credential_kinds(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The inbound carriers `verify` reads (field line names, lower-case), as the Statement's
+    /// carrier word marks name them: where the plugin's credential sits. The host names no
+    /// credential line itself (THE DESIGN, "Auth points and guest lists").
+    fn carriers(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// `verify` ON THE SPOT: one ticket-less crossing on the caller's thread, bounded by the
     /// dispatcher's watchdog (THE DESIGN, section 12: a crossing that cannot wait needs no ticket). A
     /// plugin whose `verify` must wait on I/O answers REFUSED there (`abi::auth`), and this answers
@@ -355,6 +369,67 @@ pub trait AuthAxis: Send + Sync {
         label: &str,
         settings: &serde_json::Value,
     ) -> Result<Arc<dyn AuthCalls>, String>;
+
+    /// The config keys of the auth rows whose Statement states
+    /// [`FACT_READS_CREDENTIALS`](crate::abi::auth::FACT_READS_CREDENTIALS): the verifiers of the
+    /// host-held credentials (core's `keys` verifies the credential such a style yields, THE
+    /// DESIGN, "Auth points and guest lists"), linked rows first. None by default.
+    fn credential_readers(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// THE AUTH PLUGIN SERVING THE OUTBOUND `style` for a binding under `settings` (THE DESIGN
+    /// section 6 step 3: the auth plugin that serves the style opens the binding), its instance
+    /// opened for its outbound styles; `None` when no row this build reaches states the style.
+    ///
+    /// # Errors
+    /// The serving plugin would not open for its outbound styles.
+    fn serving(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Option<OutboundServing>, String> {
+        let _ = (style, settings);
+        Ok(None)
+    }
+
+    /// CHECK, NEVER DIAL (the `--validate` dry run): bind `credential` under `settings` on a fresh
+    /// instance of the auth plugin serving `style`, one granted no need, and answer the refusals it
+    /// names for the credential itself (its `credential:` lines, their text), in its own words.
+    /// Empty when it accepts the credential, or when no plugin this build reaches serves the style.
+    ///
+    /// # Errors
+    /// The serving plugin would not open for its outbound styles.
+    fn check_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        let _ = (style, credential, settings);
+        Ok(Vec::new())
+    }
+}
+
+/// ONE AUTH PLUGIN SERVING AN OUTBOUND STYLE ([`AuthAxis::serving`]): its instance, and the style
+/// as its tail states it.
+#[derive(Clone)]
+pub struct OutboundServing {
+    /// The instance, opened for its outbound styles.
+    pub auth: Arc<dyn OutboundAuth>,
+    /// The style's `abi::auth::StyleDecl::flags`.
+    pub flags: u32,
+    /// The style's `abi::auth::StyleDecl::points` (an `AuthPoints` bit set).
+    pub points: u32,
+}
+
+impl std::fmt::Debug for OutboundServing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutboundServing")
+            .field("flags", &self.flags)
+            .field("points", &self.points)
+            .finish_non_exhaustive()
+    }
 }
 
 // THE OUTBOUND HALF (open_outbound/fields) ─────────────────────────────────────────────────────
@@ -514,4 +589,12 @@ pub trait OutboundAuth: Send + Sync {
     /// Submit `fields` on a dispatcher worker; its answer is a future, so no thread is parked.
     /// `deadline_ns` (the dispatcher's clock; `0` = the op's own class) bounds a PENDING answer.
     fn fields(&self, handle: u64, request: FieldsRequest, deadline_ns: u64) -> Box<dyn Fielding>;
+
+    /// `outbound_ready`: whether `fields` would answer with a credential now (`false` before a
+    /// minting style's first mint, or expired with a failed refresh). The health prober reads it.
+    /// ON THE SPOT, ticket-less. Default: ready.
+    fn ready(&self, handle: u64) -> bool {
+        let _ = handle;
+        true
+    }
 }

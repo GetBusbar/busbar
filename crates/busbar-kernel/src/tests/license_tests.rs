@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The crate-wide license-header meta-test (it scans this crate's whole `src`). It lived beside the
+//! deleted `egress_auth` module; it is the crate's, not auth's.
+
 use std::path::Path;
 
 /// Every first-party `.rs` file that declares an SPDX license MUST declare `Apache-2.0`.

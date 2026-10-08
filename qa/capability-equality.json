@@ -22,7 +22,7 @@
     "The capability list is the one-of-each modules in core -- each a mechanism that exists",
     "exactly once and that every plane is owed:",
     "breaker.rs, failover/, hooks/, audit/, governance/, metrics.rs, trust/, net_guard.rs,",
-    "egress_auth/, catalogue.rs, and the disposition pipeline (proto/ Stage 1 -> breaker::classify).",
+    "bound_credential.rs (a lane credential bound on its style's auth plugin), catalogue.rs, and the disposition pipeline (proto/ Stage 1 -> breaker::classify).",
     "",
     "CHANGING THIS FILE: close a cell by flipping it to `proven` WITH the test that proves it, in",
     "the SAME commit as the test. Regressing a proven cell (its test vanishes or is renamed) is RED.",
@@ -851,7 +851,7 @@
       "capability": "egress-auth",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/auth_style_tests.rs::test_api_key_auth_sends_api_key_header",
+      "test": "crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::anthropic_egress_carries_exactly_the_declared_headers",
       "root": {
         "state": "none",
         "leg": "root-llm",
