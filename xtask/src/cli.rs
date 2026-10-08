@@ -27,6 +27,7 @@ usage:
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
   cargo xtask selftest [<name>] [--jobs N]
+  cargo xtask selftest [<name>] --declare --format=json
   cargo xtask denylist [--selftest] [--format=tsv]
   cargo xtask loc [--ref <rev>] [--format json|table] [--per-file] [--ceiling CRATES=N]
   cargo xtask loc --selftest
@@ -260,7 +261,7 @@ const GATE_FLAGS: &[&str] = &[
 /// `--flag=value` forms `cargo xtask gate` knows.
 const GATE_VALUED: &[&str] = &["--jobs=", "--require-version=", "--root-flag="];
 /// The flags `cargo xtask selftest` knows (`--jobs N` is handled as a pair).
-const SELFTEST_FLAGS: &[&str] = &[];
+const SELFTEST_FLAGS: &[&str] = &["--declare", "--format=json"];
 const SELFTEST_VALUED: &[&str] = &["--jobs="];
 /// The flags the pre-registry `cargo xtask denylist` spelling knows.
 const DENYLIST_FLAGS: &[&str] = &["--selftest", "--format=tsv"];
@@ -981,6 +982,14 @@ fn selftest_cmd(args: &[String]) -> i32 {
             ),
         );
     }
+    let declare = args.iter().any(|a| a == "--declare");
+    if declare != args.iter().any(|a| a == "--format=json") {
+        return refuse_args(
+            "selftest",
+            "`--declare` and `--format=json` go together: the declaration is JSON, and a \
+             selftest run prints its report",
+        );
+    }
     if let Some(n) = jobs_arg(args) {
         gates::set_selftest_jobs(n);
     }
@@ -988,6 +997,9 @@ fn selftest_cmd(args: &[String]) -> i32 {
         Ok(cx) => cx,
         Err(code) => return code,
     };
+    if declare {
+        return declare_selftests(words.first().copied(), &cx);
+    }
 
     if let Some(name) = words.first().copied() {
         let Some(reg) = gates::find(name) else {
@@ -1018,6 +1030,42 @@ fn selftest_cmd(args: &[String]) -> i32 {
         );
         1
     }
+}
+
+/// `cargo xtask selftest [<name>] --declare --format=json`: every selftest case's STATIC
+/// declaration — its name, the rows it covers, the strings its red must name, every path its plant
+/// touches — as one JSON line, with NO gate run ([`crate::declare`]). busbar-release's preflight
+/// walk-around resolves it against `cargo metadata` before any shard builds, so a case planting
+/// into a departed crate is red in seconds rather than one selftest shard in.
+fn declare_selftests(name: Option<&str>, cx: &Ctx) -> i32 {
+    let regs: Vec<&gates::Registration> = match name {
+        Some(n) => match gates::find(n) {
+            Some(reg) => vec![reg],
+            None => {
+                eprintln!("xtask selftest: no registered gate `{n}`");
+                eprintln!("registered gates: {}", gates::names().join(", "));
+                return 2;
+            }
+        },
+        None => gates::REGISTRY.iter().collect(),
+    };
+    let cx = cx.clone().declaring();
+    let mut out = Vec::new();
+    for reg in regs {
+        let gate = (reg.build)();
+        let report = gate.selftest(&cx);
+        // Taking the cases is what records them; a declaring context takes them without a run.
+        let _ = report.cases();
+        drop(report);
+        let cases: Vec<serde_json::Value> = cx
+            .take_declared()
+            .iter()
+            .map(|d| d.to_json(&gate.unresolved_naming(&cx, &d.expected_naming)))
+            .collect();
+        out.push(serde_json::json!({ "gate": reg.name, "cases": cases }));
+    }
+    println!("{}", serde_json::json!({ "gates": out }));
+    0
 }
 
 fn denylist_cmd(args: &[String]) -> i32 {
@@ -1071,6 +1119,10 @@ mod tests {
         assert_eq!(run(&["gate", "--all", "--frobnicate"]), 2);
         assert_eq!(run(&["selftest", "segregation", "--frobnicate"]), 2);
         assert_eq!(run(&["selftest", "segregation", "construction"]), 2);
+        // The declaration is JSON and only JSON; neither half means anything alone.
+        assert_eq!(run(&["selftest", "--declare"]), 2);
+        assert_eq!(run(&["selftest", "--format=json"]), 2);
+        assert_eq!(run(&["selftest", "--declare", "--format=tsv"]), 2);
         assert_eq!(run(&["denylist", "--frobnicate"]), 2);
         assert_eq!(run(&["denylist", "extra"]), 2);
         // `--execute` is a KNOWN flag, but only the hot-path gates have the arm it selects.
