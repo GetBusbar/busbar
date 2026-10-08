@@ -1034,34 +1034,6 @@ fn handed_settings(section: &serde_yaml::Value) -> Result<Vec<u8>, String> {
     }
     serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))
 }
-    }
-}
-
-/// A config apply's section for the door plane serving `key`: the section as written, with the
-/// generation's unified pools injected exactly as boot injects them ([`with_pools`]).
-fn applied_section(
-    key: &str,
-    written: &serde_yaml::Value,
-    pools: &DoorPoolsByKey,
-) -> serde_yaml::Value {
-    let mut section = written.clone();
-    inject_pools(key, &mut section, pools);
-    section
-}
-
-/// THE SETTINGS A DOOR PLANE IS HANDED for its section: the section as JSON with the core-owned
-/// `work:` bounds struck (the kernel reads them; the plane never sees them). The one rule `open`
-/// and a config apply's refresh both apply (audit root-R1 leftover C1).
-fn plane_settings(section: &serde_yaml::Value) -> Result<Vec<u8>, String> {
-    if section.is_null() {
-        return Ok(Vec::new());
-    }
-    let mut section = section.clone();
-    if let Some(map) = section.as_mapping_mut() {
-        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
-    }
-    serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))
-}
 
 /// `stated`, a named-definition section's unified pools, written into `section` at its reserved
 /// `pools` key (a section that is no mapping, or a set of none, is left as it is). Each member is
