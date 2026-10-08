@@ -10,7 +10,10 @@ use std::path::Path;
 
 /// Every `.rs` file under `dir`.
 fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-    for entry in std::fs::read_dir(dir).expect("a source directory").flatten() {
+    for entry in std::fs::read_dir(dir)
+        .expect("a source directory")
+        .flatten()
+    {
         let path = entry.path();
         if path.is_dir() {
             sources(&path, out);
