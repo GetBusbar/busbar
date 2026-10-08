@@ -549,10 +549,14 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     // metering fold, which no production path constructed and the spec does not want (the plane
     // reports, the kernel writes: `BUSBAR-1.6.0.md` §7). Their code went nowhere, so there is no new
     // home to add; the floor is the measured count after the deletion.
+    //
+    // 21 -> 20 for another DELETION (q128-kernel-ledger, Q128 audit findings 2 and 3):
+    // `usage/series.rs` held only the never-constructed `usage::MeterCounts`; the kernel's
+    // governance `MeterCounts` is the one home. Nothing moved, so the floor is the measured count.
     CountRoot {
         area: "the money book",
         homes: &["crates/busbar-kernel-ledger/src"],
-        floor: 21,
+        floor: 20,
     },
     CountRoot {
         area: "the contract",
