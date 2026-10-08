@@ -36,16 +36,6 @@ item = "ranking (hooks-ranking)"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel-identity/src/egress_auth/sigv4/mod.rs"
-item = "sigv4"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel-identity/src/ingress_sigv4.rs"
-item = "sigv4"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel-scope/src/lib.rs"
 item = "openapi"
 
@@ -58,11 +48,6 @@ item = "openapi"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/audit_ring.rs"
 item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/auth/mod.rs"
-item = "sigv4"
 
 [[finding]]
 rule = "c1-literals:literal"
