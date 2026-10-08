@@ -1534,7 +1534,10 @@ if [ -f qa/audit-ledger.json ]; then
   # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
-  step "audit ledger rules (xtask audit + audit_cmd tests)" filtered_cargo_test 24 cargo test -p xtask --lib audit
+  # 29 = the 24 audit/audit_cmd rule tests + the five pinned-scope tests (xtask/src/audit_pinned/
+  # pinned_tests.rs: a moved pin reads stale, a byte-identical pin carries the record, an
+  # unproducible pin is RED naming it, a twin / non-plugin git dep is not mounted, the tree wins).
+  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 29 cargo test -p xtask --lib audit
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"
