@@ -47,11 +47,11 @@
 
 use busbar_contract::abi::hook::SignalEntry;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, OutHead, Span, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn, RefreshIn};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut,
-    PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
-    RefusalOut, ServeIn, ServeOut, UnitCount, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
+    PlaneOpenIn, PlaneOpenOut, PlaneRefreshIn, PlaneRefreshOut, ProjectIn, ProjectOut, RecordWrite,
+    RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
     FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED, REFUSAL_GATE,
     UNITS_REPORTED,
 };
@@ -543,8 +543,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         format!("{} disposition={}", called(&c), f.out.cancel.disposition)
     });
     let refresh = |what: &[u8]| {
-        let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(input(), output());
-        (f.input.generation, f.input.settings) = (2, json(what));
+        let mut f: Frame<PlaneRefreshIn, PlaneRefreshOut> = Frame::new(input(), output());
+        (f.input.refresh.generation, f.input.refresh.settings) = (2, json(what));
         let (c, snap) = p.refresh(&mut f);
         format!("{} {}", called(&c), snapshot(snap.as_ref()))
     };

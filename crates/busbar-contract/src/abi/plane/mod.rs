@@ -1235,6 +1235,30 @@ pub struct PlaneOpenIn {
     /// as written; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it writes none (ARCHITECT
     /// Q-L3B-AUD: a plane reads its own sections and states its claims from them). A tail addition.
     pub owned: Blob,
+    /// THE POOL AFFINITY PROJECTION ([`PlaneRefreshIn::pool_affinity`]'s, at the first
+    /// generation). A tail addition.
+    pub pool_affinity: Blob,
+}
+
+/// The member of a pool's entry in the pool affinity projection ([`PlaneOpenIn::pool_affinity`],
+/// [`PlaneRefreshIn::pool_affinity`]) naming the request header its sessions are read from.
+pub const POOL_AFFINITY_HEADER_NAME: &str = "header_name";
+
+/// The plane's `refresh` `in`: the lifecycle's, plus the kernel's pool affinity projection.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneRefreshIn {
+    /// The lifecycle `in`.
+    pub refresh: RefreshIn,
+    /// THE POOL AFFINITY PROJECTION (the design's config part, ARCHITECT P1b 2026-10-07):
+    /// `affinity` is a reserved core-owned sub-key, read by the kernel and stripped from the
+    /// settings before they cross, so the kernel hands the plane, BESIDE its settings and never
+    /// inside them, the resolved affinity directive of each pool its settings state, as one JSON
+    /// object keyed by pool name: `{"<pool>": {"header_name": "<header>"}}`
+    /// ([`POOL_AFFINITY_HEADER_NAME`]). A pool absent here states no header (the plane's default);
+    /// [`crate::abi::mechanism::call::BLOB_ABSENT`] when no pool states one. The plane still reads
+    /// the session key itself, off the header this names.
+    pub pool_affinity: Blob,
 }
 
 /// The plane's `open` `out`: the lifecycle's, plus the first generation's snapshot.
@@ -1899,6 +1923,7 @@ pub struct ProjectOut {
 //
 // SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
 unsafe impl super::sdk::door::AbiIn for PlaneOpenIn {}
+unsafe impl super::sdk::door::AbiIn for PlaneRefreshIn {}
 unsafe impl super::sdk::door::AbiIn for PlaneDriveIn {}
 unsafe impl super::sdk::door::AbiIn for PlaneCancelIn {}
 unsafe impl super::sdk::door::AbiIn for ArriveIn {}
@@ -1929,7 +1954,8 @@ super::sdk::door::slot_structs!(Ops {
 
 /// The plane's LIFECYCLE `in`/`out` ([`KindOps::Lifecycle`](super::sdk::door::KindOps::Lifecycle)):
 /// the lifecycle's own, except `open` ([`PlaneOpenIn`], [`PlaneOpenOut`]) and `refresh`
-/// ([`PlaneRefreshOut`]), which carry the generation snapshot, and `drive` ([`PlaneDriveIn`],
+/// ([`PlaneRefreshIn`], [`PlaneRefreshOut`]), which carry the pool affinity projection and the
+/// generation snapshot, and `drive` ([`PlaneDriveIn`],
 /// [`PlaneDriveOut`]), which names the ready sessions.
 ///
 /// A plane plugin wiring a slot to another op's structs does not compile, a kind op:
@@ -1946,7 +1972,7 @@ super::sdk::door::slot_structs!(Ops {
 /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, PlaneOpenIn, PlaneOpenOut);
-/// # ready!(Rf, RefreshIn, PlaneRefreshOut);
+/// # ready!(Rf, PlaneRefreshIn, PlaneRefreshOut);
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut);
 /// # ready!(Dr, PlaneDriveIn, PlaneDriveOut);
 /// # ready!(Cn, PlaneCancelIn, PlaneCancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
@@ -1978,7 +2004,7 @@ super::sdk::door::slot_structs!(Ops {
 /// #     impl Slot for $n { type In = $i; type Out = $o;
 /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
-/// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, PlaneRefreshOut);
+/// # ready!(V, ValidateIn, OutHead); ready!(Rf, PlaneRefreshIn, PlaneRefreshOut);
 /// ready!(Op_, OpenIn, OpenOut); // the lifecycle's `open`, no snapshot: refused
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut);
 /// # ready!(Dr, PlaneDriveIn, PlaneDriveOut);
@@ -2006,7 +2032,7 @@ pub struct PlaneLifecycle;
 super::sdk::door::slot_structs!(PlaneLifecycle {
     life::VALIDATE => ValidateIn, OutHead;
     life::OPEN => PlaneOpenIn, PlaneOpenOut;
-    life::REFRESH => RefreshIn, PlaneRefreshOut;
+    life::REFRESH => PlaneRefreshIn, PlaneRefreshOut;
     life::RETIRE => GenIn, OutHead;
     life::TICK => TickIn, TickOut;
     life::DRIVE => PlaneDriveIn, PlaneDriveOut;

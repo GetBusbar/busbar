@@ -586,14 +586,16 @@ impl DoorApply {
         generation: u64,
         secrets: &dyn busbar_contract::secret::SecretResolve,
     ) -> Result<DoorLive, String> {
+        let (settings, affinity) = crossed(&self.served_facts, section, &BTreeMap::new())?;
         let settings = if section.is_null() {
             Vec::new()
         } else {
-            serde_json::to_vec(section).map_err(|e| format!("its section: {e}"))?
+            serde_json::to_vec(&settings).map_err(|e| format!("its section: {e}"))?
         };
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
             &settings,
+            &affinity,
             generation,
         )?;
         let pools = DoorPools::of(section);
@@ -688,8 +690,13 @@ impl DoorAppliers {
                 continue;
             };
             let name = p.plugin.name();
-            let settings = match serde_json::to_vec(&settings_of(facts, section, sections)) {
-                Ok(settings) => settings,
+            let crossing = crossed(facts, section, sections).and_then(|(settings, affinity)| {
+                serde_json::to_vec(&settings)
+                    .map(|settings| (settings, affinity))
+                    .map_err(|e| e.to_string())
+            });
+            let (settings, affinity) = match crossing {
+                Ok(crossing) => crossing,
                 Err(e) => {
                     tracing::error!(plane = name, error = %e, "door plane's new configuration is not JSON; it keeps serving the previous one");
                     continue;
@@ -699,7 +706,7 @@ impl DoorAppliers {
             let now = p.current();
             let next = now.generation + 1;
             if let Err(e) = crate::root::loader::dispatch::kinds::plane::refresh_door(
-                &p.plugin, &settings, next,
+                &p.plugin, &settings, &affinity, next,
             ) {
                 tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
                 continue;
@@ -1067,20 +1074,24 @@ pub(crate) fn compose_planes_over(
         // A MODEL-SERVING PLANE in the previous release's layout is handed the `pools` map and each
         // section it reads beside it, keyed; its walk is the uniform model-serving section over its
         // `pools:` and the top-level `models:` (#49).
-        let settings = settings_of(&served_facts, section, sections);
+        let (settings, affinity) =
+            crossed(&served_facts, section, sections).map_err(|e| format!("{instance}: {e}"))?;
         let walked = walked_section(&served_facts, section, sections);
-        // The plane's other owned sections this document writes, as written, by section name: it
-        // reads them beside its settings (ARCHITECT Q-L3B-AUD). Names come from its Statement.
+        // The plane's other owned sections this document writes, by section name, each through the
+        // deal's one strip: it reads them beside its settings (ARCHITECT Q-L3B-AUD). Names come
+        // from its Statement.
         let owned: serde_json::Map<String, serde_json::Value> = served_facts
             .owns
             .iter()
             .filter_map(|name| {
                 let value = serde_json::to_value(sections.get(name)?).ok()?;
+                let value =
+                    busbar_kernel::config_validate::deal::strip(name, value, &mut Vec::new());
                 Some(((*name).to_string(), value))
             })
             .collect();
-        let snapshot =
-            open(plugin, &settings, public_url, &owned).map_err(|e| format!("{instance}: {e}"))?;
+        let snapshot = open(plugin, &settings, public_url, &owned, &affinity)
+            .map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
@@ -1426,27 +1437,43 @@ fn arm_probes(
     let _ = (driver, served_facts, live, egress, schedule);
 }
 
-/// THE SETTINGS A DOOR PLANE OPENS WITH (spec Part 1 §4: one validated JSON object `{section:
-/// value}`): a plane that declares the kernel-owned `pools` map (the previous release's top-level
-/// model-serving layout) is handed it and each section it reads beside it (`SECTION_CONSUMED`)
-/// that this deployment writes, keyed; a plane that declares a section of its own is handed that
-/// section, as its door reads it.
-fn settings_of(
+/// THE SETTINGS A DOOR PLANE IS HANDED at `open` and `refresh` (spec Part 1 config, :561-570: one
+/// validated JSON object `{section: value}`, reserved keys stripped; P1b), and beside them its pool
+/// affinity projection (`busbar_contract::abi::plane::PlaneRefreshIn::pool_affinity`; empty when no
+/// pool names a header). Every section crosses through the deal's one strip
+/// ([`busbar_kernel::config_validate::deal::strip`]): a plane that declares a section of its own is
+/// handed that section; a plane that declares the kernel-owned `pools` map (the previous release's
+/// top-level model-serving layout) is handed it and each section it reads beside it
+/// (`SECTION_CONSUMED`) that this deployment writes, keyed. The affinity is read off the declaring
+/// section's pools ([`busbar_kernel::config_validate::deal::crossing`]).
+fn crossed(
     facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     section: &serde_yaml::Value,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
-) -> serde_yaml::Value {
+) -> Result<(serde_json::Value, Vec<u8>), String> {
+    use busbar_kernel::config_validate::deal;
+    let json =
+        |v: &serde_yaml::Value| serde_json::to_value(v).map_err(|e| format!("its section: {e}"));
+    let (own, affinity) = deal::crossing(facts.section, json(section)?);
+    let affinity = if affinity.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(&affinity).map_err(|e| format!("its pool affinity: {e}"))?
+    };
     if facts.section != busbar_contract::section::RESERVED_POOLS_KEY {
-        return section.clone();
+        return Ok((own, affinity));
     }
-    let mut keyed = serde_yaml::Mapping::new();
-    keyed.insert(facts.section.into(), section.clone());
+    let mut keyed = serde_json::Map::new();
+    keyed.insert(facts.section.to_string(), own);
     for name in &facts.consumed {
         if let Some(value) = sections.get(name) {
-            keyed.insert((*name).into(), value.clone());
+            keyed.insert(
+                (*name).to_string(),
+                deal::strip(name, json(value)?, &mut Vec::new()),
+            );
         }
     }
-    serde_yaml::Value::Mapping(keyed)
+    Ok((serde_json::Value::Object(keyed), affinity))
 }
 
 /// THE SECTION A DOOR PLANE'S WALK IS SEALED OVER: its declaring section, or, for a plane that
@@ -1474,20 +1501,17 @@ fn walked_section(
     }
 }
 
-/// `open` the plane, generation 1, its settings `section` as JSON, the deployment's `public_url`
-/// (absent = none stated) and its `owned` sections; the snapshot it published.
+/// `open` the plane, generation 1, its `settings` as they cross ([`crossed`]), the deployment's
+/// `public_url` (absent = none stated), its `owned` sections (each through the deal's one strip) and
+/// its `pool_affinity` projection (empty = none); the snapshot it published.
 fn open(
     plugin: &DoorPlane,
-    section: &serde_yaml::Value,
+    settings: &serde_json::Value,
     public_url: Option<&str>,
     owned: &serde_json::Map<String, serde_json::Value>,
+    pool_affinity: &[u8],
 ) -> Result<OwnedSnapshot, String> {
-    // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
-    let mut section = section.clone();
-    if let Some(map) = section.as_mapping_mut() {
-        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
-    }
-    let settings = serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))?;
+    let settings = serde_json::to_vec(settings).map_err(|e| format!("its section: {e}"))?;
     let owned = if owned.is_empty() {
         Vec::new()
     } else {
@@ -1529,6 +1553,20 @@ fn open(
                 },
                 len: owned.len(),
                 fmt: if owned.is_empty() {
+                    busbar_contract::abi::mechanism::call::BLOB_ABSENT
+                } else {
+                    BLOB_JSON
+                },
+                flags: 0,
+            },
+            pool_affinity: Blob {
+                ptr: if pool_affinity.is_empty() {
+                    std::ptr::null()
+                } else {
+                    pool_affinity.as_ptr()
+                },
+                len: pool_affinity.len(),
+                fmt: if pool_affinity.is_empty() {
                     busbar_contract::abi::mechanism::call::BLOB_ABSENT
                 } else {
                     BLOB_JSON

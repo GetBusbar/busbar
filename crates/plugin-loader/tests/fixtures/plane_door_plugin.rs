@@ -24,16 +24,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use busbar_contract::abi::hook::signal;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement, SECTION_DECLARING};
-use busbar_contract::abi::mechanism::lifecycle::{
-    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::{GenIn, ReleaseIn, TickIn, TickOut, ValidateIn};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
-    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, PIECE_LAST, PRINCIPAL_NONE, RECORD_PUT, SHAPE_PIECEWISE,
-    UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_OK,
+    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshIn, PlaneRefreshOut, PlaneSnapshot,
+    PlaneTail, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, PIECE_LAST, PRINCIPAL_NONE, RECORD_PUT,
+    SHAPE_PIECEWISE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_OK,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -192,7 +190,7 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
 
 slot!(
     Refresh,
-    RefreshIn,
+    PlaneRefreshIn,
     PlaneRefreshOut,
     |instance, input, out| {
         let Some(p) = instance.get() else {
@@ -201,7 +199,7 @@ slot!(
         out.publish(
             |o| &o.snapshot,
             &p.snapshots,
-            input.generation,
+            input.refresh.generation,
             &Plane::spec(true),
         );
         Outcome::Ready

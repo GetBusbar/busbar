@@ -50,9 +50,9 @@ use busbar_contract::abi::plane::check::{
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
-    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
-    PlaneTail, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, RefusalStatus, ServeIn,
-    ServeOut, TrustKey,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshIn, PlaneRefreshOut,
+    PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut,
+    RefusalStatus, ServeIn, ServeOut, TrustKey,
 };
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::InstanceDecl;
@@ -75,6 +75,7 @@ pub struct Plane;
 // are host buffers, host-borrowed inputs, or the plugin's generation snapshot, valid until
 // `retire` of its generation.
 unsafe impl InFrame for PlaneOpenIn {}
+unsafe impl InFrame for PlaneRefreshIn {}
 unsafe impl InFrame for PlaneDriveIn {}
 unsafe impl InFrame for plane::PlaneCancelIn {}
 unsafe impl InFrame for ArriveIn {}
@@ -575,8 +576,9 @@ struct Probe {
 }
 
 /// OPEN `plugin` at generation 1 over `settings` (JSON; empty = absent), its `owned` sections (one
-/// JSON object keyed by section name; empty = none) and `public_url`, as the composition root opens
-/// a door plane: the first generation's snapshot, or why it did not open.
+/// JSON object keyed by section name; empty = none), its `pool_affinity` projection
+/// ([`PlaneRefreshIn::pool_affinity`]; empty = none) and `public_url`, as the composition root
+/// opens a door plane: the first generation's snapshot, or why it did not open.
 ///
 /// # Errors
 ///
@@ -585,6 +587,7 @@ pub fn open_door(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
     owned: &[u8],
+    pool_affinity: &[u8],
     public_url: Option<&str>,
 ) -> Result<OwnedSnapshot, String> {
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
@@ -628,6 +631,7 @@ pub fn open_door(
                 len: url.len(),
             },
             owned: blob(owned),
+            pool_affinity: blob(pool_affinity),
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -650,8 +654,9 @@ pub fn open_door(
     })
 }
 
-/// REFRESH `plugin` onto `next` over `settings` (JSON; empty = absent), as a config apply refreshes
-/// a served door plane: the new generation's snapshot, or why it did not refresh. The previous
+/// REFRESH `plugin` onto `next` over `settings` (JSON; empty = absent) and its `pool_affinity`
+/// projection ([`PlaneRefreshIn::pool_affinity`]; empty = none), as a config apply refreshes a
+/// served door plane: the new generation's snapshot, or why it did not refresh. The previous
 /// generation stays live for units still running on it; retire it with [`retire_door`].
 ///
 /// # Errors
@@ -660,31 +665,37 @@ pub fn open_door(
 pub fn refresh_door(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
+    pool_affinity: &[u8],
     next: u64,
 ) -> Result<OwnedSnapshot, String> {
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
-    let blob = if settings.is_empty() {
-        Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        }
-    } else {
-        Blob {
-            ptr: settings.as_ptr(),
-            len: settings.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
+    let blob = |bytes: &[u8]| {
+        if bytes.is_empty() {
+            Blob {
+                ptr: std::ptr::null(),
+                len: 0,
+                fmt: BLOB_ABSENT,
+                flags: 0,
+            }
+        } else {
+            Blob {
+                ptr: bytes.as_ptr(),
+                len: bytes.len(),
+                fmt: BLOB_JSON,
+                flags: 0,
+            }
         }
     };
     let mut frame = Frame::new(
-        RefreshIn {
-            head: in_head(),
-            generation: next,
-            settings: blob,
-            secrets: std::ptr::null(),
-            secrets_len: 0,
+        PlaneRefreshIn {
+            refresh: RefreshIn {
+                head: in_head(),
+                generation: next,
+                settings: blob(settings),
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            pool_affinity: blob(pool_affinity),
         },
         PlaneRefreshOut {
             head: out_head(),
@@ -788,6 +799,14 @@ fn facing(
                         flags: 0,
                     }
                 },
+                // The probe faces the world: it states claims and an audience and never routes a
+                // session, so it is handed no pool affinity.
+                pool_affinity: Blob {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                    fmt: BLOB_ABSENT,
+                    flags: 0,
+                },
             },
             PlaneOpenOut {
                 open: OpenOut {
@@ -807,12 +826,20 @@ fn facing(
     } else {
         let next = *current + 1;
         let mut frame = Frame::new(
-            RefreshIn {
-                head: in_head(),
-                generation: next,
-                settings: blob,
-                secrets: std::ptr::null(),
-                secrets_len: 0,
+            PlaneRefreshIn {
+                refresh: RefreshIn {
+                    head: in_head(),
+                    generation: next,
+                    settings: blob,
+                    secrets: std::ptr::null(),
+                    secrets_len: 0,
+                },
+                pool_affinity: Blob {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                    fmt: BLOB_ABSENT,
+                    flags: 0,
+                },
             },
             PlaneRefreshOut {
                 head: out_head(),
@@ -1482,7 +1509,7 @@ impl crate::dispatch::Plugin<Plane> {
     /// `refresh`, and the new generation's snapshot copied as [`Self::open`] copies it.
     pub fn refresh(
         &self,
-        frame: &mut crate::dispatch::Frame<RefreshIn, PlaneRefreshOut>,
+        frame: &mut crate::dispatch::Frame<PlaneRefreshIn, PlaneRefreshOut>,
     ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
         let called = self.call(life::REFRESH, frame);
         let copy = (called.outcome == Outcome::Ready)

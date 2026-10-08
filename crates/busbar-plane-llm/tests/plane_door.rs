@@ -306,16 +306,17 @@ fn an_arrival_routes_over_its_model_a_pool_first_then_a_direct_entry() {
 
 /// THE STICKY-ROUTING KEY (ARCHITECT Q1 ArriveOut, 2026-10-05), as 1.5.5 derived it: the pool's
 /// `affinity.header_name` (else `x-session-id`), matched case-blind, wins over chat's non-empty body
-/// `system`; a header value that is not text is no key; neither is no affinity.
+/// `system`; a header value that is not text is no key; neither is no affinity. The header is the
+/// kernel's pool affinity projection's, beside the settings (P1b: `affinity` is reserved).
 #[test]
 fn the_sticky_key_is_the_pools_header_else_the_chat_bodys_system() {
     use busbar_plane_llm::plane_door::affinity_key;
     let shaping = read_settings(
         br#"{"providers":{"ant":{"protocol":"anthropic","base_url":"https://anthropic.example"}},
         "models":{"claude":{"provider":"ant"}},
-        "pools":{"p":{"members":["claude"]},
-                 "u":{"members":["claude"],"affinity":{"mode":"session","header_name":"x-user-id"}}}}"#,
+        "pools":{"p":{"members":["claude"]},"u":{"members":["claude"]}}}"#,
     )
+    .and_then(|s| s.with_affinity(br#"{"u":{"header_name":"x-user-id"}}"#))
     .expect("a well-formed generation reads");
     assert_eq!(shaping.affinity_header("p"), "x-session-id");
     assert_eq!(shaping.affinity_header("u"), "x-user-id");
@@ -343,4 +344,21 @@ fn the_sticky_key_is_the_pools_header_else_the_chat_bodys_system() {
     let plain = serde_json::json!({"model": "p", "system": "", "messages": []});
     assert_eq!(affinity_key("x-session-id", &[], chat, Some(&plain)), None);
     assert_eq!(affinity_key("x-session-id", &[], None, Some(&body)), None);
+}
+
+/// P1b: a pool's `affinity` is a reserved core-owned sub-key. Written in the settings (where the
+/// kernel's strip never lets it cross) it names nothing; only the kernel's projection does.
+#[test]
+fn a_pools_affinity_in_the_settings_names_no_header() {
+    let shaping = read_settings(
+        br#"{"providers":{"ant":{"protocol":"anthropic","base_url":"https://anthropic.example"}},
+        "models":{"claude":{"provider":"ant"}},
+        "pools":{"u":{"members":["claude"],"affinity":{"mode":"session","header_name":"x-user-id"}}}}"#,
+    )
+    .expect("a well-formed generation reads");
+    assert_eq!(shaping.affinity_header("u"), "x-session-id");
+    let projected = shaping
+        .with_affinity(br#"{"u":{"header_name":"x-user-id"}}"#)
+        .expect("the projection reads");
+    assert_eq!(projected.affinity_header("u"), "x-user-id");
 }

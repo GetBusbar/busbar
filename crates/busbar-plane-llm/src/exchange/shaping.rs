@@ -136,8 +136,10 @@ pub struct Shaping {
     pub lanes: BTreeMap<String, Lane>,
     /// Every pool's members, in the pool's order, by pool name.
     pub pools: BTreeMap<String, Vec<Member>>,
-    /// The session-affinity header a pool's `affinity.header_name` names, by pool name; a pool that
-    /// names none reads [`DEFAULT_AFFINITY_HEADER`].
+    /// The session-affinity header each pool's affinity names, by pool name, as the kernel's pool
+    /// affinity projection hands it ([`Shaping::with_affinity`]; `affinity` is a reserved
+    /// core-owned sub-key, never in the settings); a pool that names none reads
+    /// [`DEFAULT_AFFINITY_HEADER`].
     pub affinity_headers: BTreeMap<String, String>,
     /// The global output-token default.
     pub default_max_tokens: u32,
@@ -355,6 +357,34 @@ impl Shaping {
             .map_or(DEFAULT_AFFINITY_HEADER, String::as_str)
     }
 
+    /// THE POOL AFFINITY the kernel projects beside the settings
+    /// (`busbar_contract::abi::plane::PlaneRefreshIn::pool_affinity`): `{"<pool>": {"header_name":
+    /// "<header>"}}`; an empty projection names no header for any pool.
+    ///
+    /// # Errors
+    ///
+    /// The projection is not that object.
+    pub fn with_affinity(mut self, projection: &[u8]) -> Result<Self, String> {
+        use busbar_contract::abi::plane::POOL_AFFINITY_HEADER_NAME;
+        if projection.is_empty() {
+            return Ok(self);
+        }
+        let value: Value = serde_json::from_slice(projection)
+            .map_err(|e| format!("the pool affinity does not read: {e}"))?;
+        let Value::Object(pools) = value else {
+            return Err("the pool affinity is not an object".to_string());
+        };
+        for (pool, directive) in pools {
+            if let Some(h) = directive
+                .get(POOL_AFFINITY_HEADER_NAME)
+                .and_then(Value::as_str)
+            {
+                self.affinity_headers.insert(pool, h.to_string());
+            }
+        }
+        Ok(self)
+    }
+
     /// READ THE TABLES from the settings object.
     ///
     /// # Errors
@@ -369,7 +399,6 @@ impl Shaping {
             section(settings, sections::MODELS)?.unwrap_or_default();
         let limits: Option<LimitsCfg> = section(settings, sections::LIMITS)?;
         let mut pools: BTreeMap<String, Vec<Member>> = BTreeMap::new();
-        let mut affinity_headers: BTreeMap<String, String> = BTreeMap::new();
         let mut context: HashMap<String, Option<usize>> = HashMap::new();
         if let Some(Value::Object(sec)) = settings.get(sections::POOLS) {
             for (name, pool) in sec {
@@ -399,12 +428,6 @@ impl Shaping {
                     members.push(m);
                 }
                 pools.insert(name.clone(), members);
-                if let Some(h) = pool
-                    .pointer("/affinity/header_name")
-                    .and_then(Value::as_str)
-                {
-                    affinity_headers.insert(name.clone(), h.to_string());
-                }
             }
         }
         let mut lanes = BTreeMap::new();
@@ -466,7 +489,7 @@ impl Shaping {
         Ok(Shaping {
             lanes,
             pools,
-            affinity_headers,
+            affinity_headers: BTreeMap::new(),
             default_max_tokens: limits
                 .as_ref()
                 .and_then(|l| l.default_max_tokens)

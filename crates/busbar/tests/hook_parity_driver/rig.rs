@@ -550,6 +550,12 @@ fn door(dispatcher: &Dispatcher, settings: &[u8]) -> Plugin<Plane> {
                 fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
                 flags: 0,
             },
+            pool_affinity: Blob {
+                ptr: std::ptr::null(),
+                len: 0,
+                fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
+                flags: 0,
+            },
         },
         PlaneOpenOut {
             open: OpenOut {

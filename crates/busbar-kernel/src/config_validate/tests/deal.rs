@@ -375,3 +375,36 @@ fn the_reserved_name_sentence_is_1_5_5s() {
          (the core-owned `breaker:` setting). Rename the tool."
     );
 }
+
+/// THE POOL AFFINITY PROJECTION (ARCHITECT P1b 2026-10-07): the kernel reads each pool's reserved
+/// `affinity` off what the strip took, the root `pools:` section's and a declared verb's alike,
+/// and projects the header it names; a pool whose affinity names none, and an `affinity` anywhere
+/// but a pool's own level, project nothing. The section that crosses carries no `affinity`.
+#[test]
+fn the_pool_affinity_projection_is_read_off_the_strip() {
+    let root = json!({
+        "hooks": ["h"],
+        "u": {"members": ["m"], "affinity": {"mode": "session", "header_name": "x-user-id"}},
+        "d": {"members": ["m"], "affinity": {"mode": "session"}},
+        "p": {"members": [{"model": "m", "affinity": {"header_name": "x-member"}}]},
+    });
+    let (crossed, affinity) = crossing("pools", root);
+    assert_eq!(
+        serde_json::Value::Object(affinity),
+        json!({"u": {"header_name": "x-user-id"}})
+    );
+    assert!(!crossed.to_string().contains("affinity"), "{crossed}");
+
+    let declared = json!({
+        "reg": {"url": "http://x.invalid", "affinity": {"header_name": "x-reg"}},
+        "affinity": {"header_name": "x-section"},
+        "pools": {"t": {"members": ["reg"], "affinity": {"header_name": "x-tool"}}},
+    });
+    let (crossed, affinity) = crossing("tools", declared);
+    assert_eq!(
+        serde_json::Value::Object(affinity),
+        json!({"t": {"header_name": "x-tool"}})
+    );
+    assert!(!crossed.to_string().contains("affinity"), "{crossed}");
+    assert!(crossed.get("pools").is_none(), "{crossed}");
+}

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
+    slot as life, GenIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
@@ -330,9 +330,9 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
         c.outcome, x.out.cancel.disposition
     ));
 
-    let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
-    (f.input.head, f.out.head) = (in_head(), out_head());
-    (f.input.generation, f.input.settings) = (2, octets(SETTINGS_2));
+    let mut f: Frame<plane::PlaneRefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
+    (f.input.refresh.head, f.out.head) = (in_head(), out_head());
+    (f.input.refresh.generation, f.input.refresh.settings) = (2, octets(SETTINGS_2));
     let (c, snapshot) = p.refresh(&mut f);
     t.push(format!("refresh {:?} {snapshot:?}", c.outcome));
 
