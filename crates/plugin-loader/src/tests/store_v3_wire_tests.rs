@@ -531,6 +531,37 @@ fn a_rejected_first_host_is_closed_and_the_op_lands_on_the_next() {
     );
 }
 
+struct Who;
+
+impl Hooks for Who {
+    fn list_denylist(_: &MemoryStore, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+        busbar_contract::abi::sdk::store::wire::drive(cx, |w| {
+            Box::pin(async move { w.os_user().await.map(|u| vec![u]).map_err(|e| failed(&e)) })
+        })
+    }
+}
+
+mod who {
+    busbar_contract::store_door!(
+        crate::store_v3::wrap::Wrapped<super::Who>,
+        "wire-store",
+        "0",
+        64,
+        needs: super::TCP
+    );
+}
+
+/// RED (ARCHITECT 2026-10-07, FLEET-SANSIO): a store whose configuration names no user presents the
+/// OS user (1.5.5 parity). The wire reads it off the host's IDENTITY service, with no connection.
+#[test]
+fn a_store_reads_the_os_user_off_the_hosts_identity_service() {
+    let want = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_default();
+    let s = open_over(who::door, plain);
+    assert_eq!(ping_of(&s).expect("the identity answers"), vec![want]);
+}
+
 // ── TLS ─────────────────────────────────────────────────────────────────────────────────────────
 
 wire_store!(OverTls, over_tls, max: 1, timeout: 0, tls: Tls::Verified, retry: false);

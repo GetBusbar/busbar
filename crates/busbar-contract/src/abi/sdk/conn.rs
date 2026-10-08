@@ -19,8 +19,8 @@
 use std::task::Poll;
 
 use crate::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, FactsIn, IoIn, ReplyIn, ReplyPiece, RequestIn,
-    RequestPiece, StreamFacts, StreamIn, UpgradeIn,
+    service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
 };
 use crate::abi::host::service::{
     op, ClockNowIn, ClockReading, DiskAppendIn, DiskWritten, HostSlots, NeedAdmitIn, ServiceFn,
@@ -63,6 +63,19 @@ impl std::error::Error for ConnFailure {}
 
 /// A connector service's answer.
 pub type Answer<T> = Poll<Result<T, ConnFailure>>;
+
+/// THE PROCESS IDENTITY, owned, as [`Connector::identity`] read it off the host: who the process
+/// is to a far end that asks (a database login that names no user takes the OS user, as 1.5.5's
+/// driver did).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessId {
+    /// The process id.
+    pub pid: u64,
+    /// The OS user the process runs as; empty = the host could not name one.
+    pub os_user: String,
+    /// The program name.
+    pub program: String,
+}
 
 /// A STREAM'S FACTS, owned, as [`Connector::facts`] read them off the host connector: never key or
 /// certificate material.
@@ -206,6 +219,7 @@ macro_rules! service_in {
 service_in!(
     EstablishIn,
     FactsIn,
+    IdentityIn,
     StreamIn,
     IoIn,
     UpgradeIn,
@@ -509,6 +523,31 @@ impl Connector<'_> {
                 })
             })
         })
+    }
+
+    /// THE PROCESS IDENTITY (`service::IDENTITY`): the pid, OS user and program the host presents
+    /// for this process. Never pends; needs no stream, but the call is made on the op's ticket
+    /// like every connector service.
+    pub fn identity(&mut self) -> Answer<ProcessId> {
+        let mut slot = ProcessIdentity {
+            size: 0,
+            _reserved: 0,
+            pid: 0,
+            os_user: absent(),
+            program: absent(),
+        };
+        let input = IdentityIn {
+            head: blank_head(),
+            identity: std::ptr::from_mut(&mut slot),
+        };
+        self.call(service::IDENTITY, |s| s.identity, input)
+            .map(|r| {
+                r.map(|_| ProcessId {
+                    pid: slot.pid,
+                    os_user: host_text(slot.os_user),
+                    program: host_text(slot.program),
+                })
+            })
     }
 
     /// Close `stream`.
