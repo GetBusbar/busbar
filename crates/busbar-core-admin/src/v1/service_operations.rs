@@ -1551,8 +1551,16 @@ impl AdminService {
             // EACH LEDGERED CLASS, ITS COUNT AND ITS COST: the class alone on the row's lane (no
             // tokens, no requests), priced by the same one function at the same instant, so a
             // class's cost is the share of `row_spend` it is and never a second pricing of its own.
+            // A pools-plane row itemizes none: its open classes are already in `row_spend`, and its
+            // view keeps 1.5.5's shape (`row_carries_classes`).
             let none = UsageBreakdown::default();
-            for (class, count) in classes {
+            let unitemized = std::collections::BTreeMap::new();
+            let itemized = if row_carries_classes(&r.provider) {
+                classes
+            } else {
+                &unitemized
+            };
+            for (class, count) in itemized {
                 let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
                 let class_cost = match view.as_ref() {
                     Some(v) => match v.card_at(at) {

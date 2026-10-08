@@ -4081,6 +4081,59 @@ mod plane_fees_on_admin_usage {
         );
     }
 
+    /// A POOLS ROW'S OPEN CLASS IS PRICED, NEVER ITEMIZED: the rerank's `search_units` stay in
+    /// `spend_micros` (610 over the model rows and on the total, as above), and no model row, key row
+    /// or total carries a `classes` key — 1.5.5's usage shape, which the signed LEDGER-SIMPLE entry
+    /// pins byte for byte on `usage.gemini|stream-grounded|no-tool-use-count` (its open class there
+    /// is `unitemized_tokens`). Only a non-pools plane's row itemizes its declared classes.
+    #[tokio::test]
+    async fn a_pools_open_class_is_priced_but_never_itemized_on_the_usage_read() {
+        let calls = [
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+        ];
+        let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &calls).await;
+        assert_eq!(view.total.spend_micros, 610 * MICROS_PER_MINOR);
+        assert_eq!(
+            view.by_model
+                .iter()
+                .map(|r| r.usage.spend_micros)
+                .sum::<i64>(),
+            610 * MICROS_PER_MINOR,
+            "the model rows still price the open class"
+        );
+        let mut wires = vec![(
+            "total".to_string(),
+            serde_json::to_value(&view.total).expect("the total serializes"),
+        )];
+        for r in &view.by_model {
+            wires.push((
+                format!("model row {}/{}", r.model, r.upstream),
+                serde_json::to_value(r).expect("the row serializes"),
+            ));
+        }
+        for r in &view.by_key {
+            wires.push((
+                format!("key row {}", r.id),
+                serde_json::to_value(r).expect("the key row serializes"),
+            ));
+        }
+        assert!(
+            wires.len() >= 3,
+            "a total, a model row and a key row: {wires:?}"
+        );
+        for (what, wire) in wires {
+            assert!(
+                wire.get("classes").is_none(),
+                "a pools {what} keeps 1.5.5's usage shape: {wire}"
+            );
+        }
+    }
+
     /// (c) Pools-only token traffic is unchanged: the tokens ride the row's token columns, the fee
     /// the flat `per_request_fee:`, and nothing is counted twice — 2 calls of 1,000,000 input and
     /// 500,000 output at 1 / 2 micro-units: 4,000,000 micro-units + 2 × 5 = 410 on both books, the

@@ -198,7 +198,6 @@ pub mod audit;
 /// admin HTTP API. Runs on the append-only chain mechanism in [`audit`] above.
 pub mod audit_ring;
 pub mod auth;
-pub mod auth_cache;
 pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.
@@ -223,8 +222,9 @@ pub use busbar_kernel_wal::durable;
 // `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than
 // any one plane. Always compiled, like `net_guard`, because the host owns every outbound byte
 // whether or not a plane needing the seam is built. See the module header.
+/// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
+pub mod bound_credential;
 pub mod egress;
-pub mod egress_auth;
 /// THE EGRESS GRANT GATE: may busbar spend its own outbound credential on a subject for this
 /// caller? Authorization, so it lives in `busbar-kernel-scope` (Part 2 #36); re-exported here for
 /// the planes that already reach the kernel.
@@ -362,6 +362,9 @@ pub mod trust;
 #[path = "tests/alarm_silence_tests.rs"]
 mod alarm_silence_tests;
 pub mod appbuild;
+#[cfg(test)]
+#[path = "tests/license_tests.rs"]
+mod license_header_tests;
 // `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
 // with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
 pub mod preflight;
