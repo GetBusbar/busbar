@@ -3312,7 +3312,7 @@ struct bb_hconn_StreamIn {
     uint64_t stream;
 };
 
-/* [`service::READ`]'s and [`service::WRITE`]'s `in`. The buffer is the plugin's and stays valid */
+/* [`service::READ`]'s and [`service::WRITE`]'s `in`. The buffer is the plugin's, lent for the */
 struct bb_hconn_IoIn {
     bb_hsvc_ServiceHead head;
     uint64_t stream;

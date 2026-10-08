@@ -427,8 +427,8 @@ impl Connector<'_> {
             .map(|r| r.map(|o| o.value))
     }
 
-    /// Write `bytes` to `stream`: how many the host took. `bytes` must stay where they are until
-    /// the write completes (on a PENDING answer, keep them parked).
+    /// Write `bytes` to `stream`: how many the host took. The host reads `bytes` during this call
+    /// only (`IoIn`); after a PENDING answer the RESUME lends them again.
     pub fn write(&mut self, stream: u64, bytes: &[u8]) -> Answer<usize> {
         let input = IoIn {
             head: blank_head(),
@@ -440,8 +440,8 @@ impl Connector<'_> {
             .map(|r| r.map(|o| o.len as usize))
     }
 
-    /// Read from `stream` into `buf`: how many bytes; `0` = the end. `buf` must stay where it is
-    /// until the read completes (on a PENDING answer, keep it parked).
+    /// Read from `stream` into `buf`: how many bytes; `0` = the end. The host writes `buf` during
+    /// this call only (`IoIn`); after a PENDING answer the RESUME lends it again.
     pub fn read(&mut self, stream: u64, buf: &mut [u8]) -> Answer<usize> {
         let input = IoIn {
             head: blank_head(),
