@@ -55,16 +55,16 @@
     }
   ],
   "counts": {
-    "total": 2508,
+    "total": 2518,
     "by_plane": {
       "a2a": 468,
-      "core": 979,
+      "core": 989,
       "llm": 149,
       "mcp": 912
     },
     "by_family": {
       "a2a": 469,
-      "admin.ops": 323,
+      "admin.ops": 329,
       "admin.plugins": 7,
       "auth.lifecycle": 3,
       "billing": 15,
@@ -90,9 +90,9 @@
       "llm.wire": 142,
       "mcp": 913,
       "money.reserved-tier": 2,
-      "neutrality": 18,
+      "neutrality": 21,
       "ops.raw": 1,
-      "ops.scrape": 15,
+      "ops.scrape": 16,
       "plugins": 14,
       "plugins.abi": 1,
       "queue": 2,
@@ -8052,6 +8052,38 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|GetTrust|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/trust",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Read-only new verb, never dual-controlled. Bound in 1.6.0 (ARCHITECT 2026-10-06): lists every trust key of the kernel's trust book (`<instance>/<counterparty>[/"
+    },
+    {
+      "id": "admin.ops|GetTrust|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/trust",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
       "id": "admin.ops|GetUsage|no-usage-after-mutation",
       "plane": "core",
       "family": "admin.ops",
@@ -10892,6 +10924,70 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/tools/{name}/connect",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostTrustApprove|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/trust/approve",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Not irreducible. Bound in 1.6.0 (ARCHITECT 2026-10-06): approves one trust key at what it was last sighted at (body `{\"key\": \"<instance>/<counterparty>[/<item>]"
+    },
+    {
+      "id": "admin.ops|PostTrustApprove|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/trust/approve",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostTrustRevoke|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/trust/revoke",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Not irreducible. Bound in 1.6.0 (ARCHITECT 2026-10-06): revokes one trust key (body `{\"key\": \"<instance>/<counterparty>[/<item>]\"}`), idempotent, audited; an un"
+    },
+    {
+      "id": "admin.ops|PostTrustRevoke|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/trust/revoke",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -35166,6 +35262,22 @@
       }
     },
     {
+      "id": "neutrality|routes|decisions-shaped-404",
+      "plane": "core",
+      "family": "neutrality",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/systemone",
+        "headers": {},
+        "body": "{\"decision\":\"oracle\",\"input\":{}}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "no decisions: block is configured: the decisions plane's evaluate path is unmounted"
+    },
+    {
       "id": "neutrality|routes|healthz",
       "plane": "core",
       "family": "neutrality",
@@ -35196,6 +35308,22 @@
         "listener": "data"
       },
       "why": "no mcp: block is configured: the MCP plane's own mount path falls through to the ordinary path-inferred 404 like any other unmatched path"
+    },
+    {
+      "id": "neutrality|routes|oauth-as-shaped-404",
+      "plane": "core",
+      "family": "neutrality",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/.well-known/oauth-authorization-server",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "no oauth authorization server is configured: its well-known metadata path is unmounted"
     },
     {
       "id": "neutrality|routes|stats",
@@ -35244,6 +35372,27 @@
         "listener": "data"
       },
       "why": "no streams: block is configured: the voice plane's realtime-shaped path is unmounted"
+    },
+    {
+      "id": "neutrality|routes|ws-shaped-404",
+      "plane": "core",
+      "family": "neutrality",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/realtime",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "no streams: block is configured: a websocket upgrade on the realtime path is not taken over by the ws transport and gets the ordinary 404"
     },
     {
       "id": "neutrality|stats-idle-zero",
@@ -35543,6 +35692,17 @@
       "why": "data-plane key auth refused"
     },
     {
+      "id": "ops.scrape|reload|sink-removed",
+      "plane": "core",
+      "family": "ops.scrape",
+      "driver": "script",
+      "script": {
+        "name": "scrape-after-reload.sh"
+      },
+      "outcome": "ok",
+      "why": "ACROSS A RELOAD the two data-listener scrape routes answer as 1.5.5's did (ARCHITECT 2026-10-05, Q-U2-4 follow-up): boot with the prometheus exporter, scrape /metrics and /metrics/hooks with a key (both 200), rewrite config.yaml without the exporter and POST /api/v1/admin/config/reload, scrape again: /metrics (the exporter's plugin route) follows the configuration and 404s, /metrics/hooks (a core route mounted with the recorder at boot) keeps answering 200. Status and content type per scrape; the bodies carry live counters and are not compared. Recorded from the published 1.5.5 binary."
+    },
+    {
       "id": "ops.scrape|stats|key",
       "plane": "core",
       "family": "ops.scrape",
@@ -35681,7 +35841,7 @@
       "why": "x-api-key is NOT a rung for /v1/models"
     },
     {
-      "id": "plugins.abi|json-contract|store-sqlite",
+      "id": "plugins.abi|json-contract|store-sqlite@1.5-line",
       "plane": "core",
       "family": "plugins.abi",
       "driver": "capture",
@@ -35767,6 +35927,7 @@
         "plugins": [
           "store-sqlite"
         ],
+        "plugins_line": "1.5",
         "boot": {
           "expect": "exit",
           "secs": 15

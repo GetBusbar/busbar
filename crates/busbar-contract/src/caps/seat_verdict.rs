@@ -44,7 +44,7 @@
 //!         | StaleSlice | DurabilityUnavailable | TierMismatch | Replayed | InFlight
 //!         | DestinationBudgetExhausted | BreakerOpen | DestinationUnreachable | MeterDisputed
 //!         | HandoffMismatch | PlanePanic | TaskLost | Stalled | SecretPlaceholder | Drain
-//!         | Superseded | ClientGone | DeadlineExceeded => false,
+//!         | Superseded | ClientGone | DeadlineExceeded | Untrusted => false,
 //!     }
 //! }
 //! assert!(is_the_callers_money(ReasonCode::OverBudget));
@@ -105,6 +105,16 @@ macro_rules! reasons {
             fn from(code: ReasonCode) -> Self {
                 match code {
                     $(ReasonCode::$name => crate::unit::RefusalReason::$refusal,)*
+                }
+            }
+        }
+
+        // The same join read the other way, so a plane handed a `RefusalReason` can reach the one
+        // classification (`abi::plane::RefusalCode::class`) without a reason match of its own.
+        impl From<crate::unit::RefusalReason> for ReasonCode {
+            fn from(reason: crate::unit::RefusalReason) -> Self {
+                match reason {
+                    $(crate::unit::RefusalReason::$refusal => ReasonCode::$name,)*
                 }
             }
         }
@@ -204,6 +214,10 @@ reasons! {
     ClientGone => "client_gone", ClientGone,
     /// The unit ran past its maximum duration.
     DeadlineExceeded => "deadline_exceeded", DeadlineExceeded,
+    /// The kernel's Approve step judged the trust facts the plane stated and does not trust the
+    /// counterparty or capability the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
+    /// Approve step; a plane only states facts).
+    Untrusted => "untrusted", Untrusted,
 }
 
 impl std::fmt::Display for ReasonCode {

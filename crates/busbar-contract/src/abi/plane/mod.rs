@@ -684,6 +684,8 @@ pub enum RefusalCode {
     ClientGone = 40,
     /// `DeadlineExceeded`.
     DeadlineExceeded = 41,
+    /// `Untrusted`.
+    Untrusted = 42,
 }
 
 impl RefusalCode {
@@ -731,6 +733,7 @@ impl RefusalCode {
         RefusalCode::Superseded,
         RefusalCode::ClientGone,
         RefusalCode::DeadlineExceeded,
+        RefusalCode::Untrusted,
     ];
 
     /// The number on the wire.
@@ -806,6 +809,7 @@ pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
         ReasonCode::Superseded => RefusalCode::Superseded,
         ReasonCode::ClientGone => RefusalCode::ClientGone,
         ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
+        ReasonCode::Untrusted => RefusalCode::Untrusted,
     }
 }
 
@@ -860,7 +864,166 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::Superseded => ReasonCode::Superseded,
         RefusalCode::ClientGone => ReasonCode::ClientGone,
         RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
+        RefusalCode::Untrusted => ReasonCode::Untrusted,
     })
+}
+
+// ── the one refusal classification ───────────────────────────────────────────────────────────────
+
+/// THE ONE REFUSAL CLASSIFICATION: which family of answer a refusal reason gets, whatever the
+/// plane. This is the P-item "refusal-reason collapse" (spec DONE item 2; TODO L-ENG9).
+///
+/// A refusal reason is the kernel's own word, and a client never sees it. A client sees the plane's
+/// rendering of it. Before this table there were eight hand-copied reason matches, and they
+/// disagreed: the kernel's default status, three renderers in one plane, one in each of four
+/// others, and the admin surface's. One of them still ended in a catch-all that answered a rate
+/// limit, a spent budget or a frozen group as "internal", which tells a caller the node broke when
+/// it was a policy refusal, so the caller retries the wrong thing. 1.5.5 never did that: on its one
+/// plane each limit reason has its own status and kind (v1.5.5 `crates/busbar/src/ingress/mod.rs:
+/// 237-305`: rate 429 `rate_limit_error`, budget 429 `insufficient_quota`, frozen group 403
+/// `permission_error`), and none becomes a 500.
+///
+/// So the reason-to-class grouping lives ONCE, here, and a plane holds only a class-to-wire table:
+/// its own codes and words. The grouping follows the one plane 1.5.5 shipped (owner correction
+/// 2026-09-28): each class has one kernel default status, and that default plus that plane's stated
+/// per-reason rows reproduce every status it answered, byte for byte, against the 1.5.5 golden
+/// cells.
+///
+/// The match in [`RefusalCode::class`] has no `_` arm, so a code added without a class does not
+/// compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefusalClass {
+    /// The plane could not read the request.
+    Unreadable,
+    /// The request was readable, and this node will not take it as asked: an unbillable name, a
+    /// replayed or superseded idempotency key.
+    Rejected,
+    /// No usable authority: no credential, a revoked one, or an exchange that never produced one.
+    Unauthenticated,
+    /// The caller is known and may not do this.
+    Forbidden,
+    /// The request, or what it needs held, is larger than the node allows.
+    TooLarge,
+    /// The caller is over its arrival rate.
+    Throttled,
+    /// The node's in-flight table, or the idempotency key's unit, is busy.
+    Busy,
+    /// A money cap in the caller's chain has no headroom.
+    QuotaExhausted,
+    /// There is nowhere for the request to go.
+    NotFound,
+    /// A destination exists, and the way to it is shut: unreachable, breaker open, or its budget
+    /// spent.
+    Unreachable,
+    /// The node cannot take the unit now: capacity, drain, journal, or the client left.
+    Unavailable,
+    /// The unit ran out of time.
+    Timeout,
+    /// A plane call panicked.
+    PlaneFault,
+    /// The node got something wrong and says so without saying what.
+    NodeFault,
+}
+
+impl RefusalClass {
+    /// Every class.
+    pub const ALL: &'static [RefusalClass] = &[
+        RefusalClass::Unreadable,
+        RefusalClass::Rejected,
+        RefusalClass::Unauthenticated,
+        RefusalClass::Forbidden,
+        RefusalClass::TooLarge,
+        RefusalClass::Throttled,
+        RefusalClass::Busy,
+        RefusalClass::QuotaExhausted,
+        RefusalClass::NotFound,
+        RefusalClass::Unreachable,
+        RefusalClass::Unavailable,
+        RefusalClass::Timeout,
+        RefusalClass::PlaneFault,
+        RefusalClass::NodeFault,
+    ];
+
+    /// Whether the class is a fault of this node, the one family a plane may render as its
+    /// internal error. Every other class is a refusal the caller is owed by name.
+    #[must_use]
+    pub const fn is_node_fault(self) -> bool {
+        matches!(self, RefusalClass::PlaneFault | RefusalClass::NodeFault)
+    }
+}
+
+impl RefusalCode {
+    /// THE class of this code: the one reason-to-class match in the tree.
+    #[must_use]
+    pub const fn class(self) -> RefusalClass {
+        use RefusalClass as C;
+        match self {
+            RefusalCode::DecodeFailed => C::Unreadable,
+            RefusalCode::NoRate
+            | RefusalCode::Unpriced
+            | RefusalCode::Replayed
+            | RefusalCode::Superseded => C::Rejected,
+            RefusalCode::Unauthenticated
+            | RefusalCode::Revoked
+            | RefusalCode::SessionUnbound
+            | RefusalCode::SchemeNotDeclared
+            | RefusalCode::ChallengeExhausted => C::Unauthenticated,
+            RefusalCode::ScopeDenied
+            | RefusalCode::PoolNotPermitted
+            | RefusalCode::HookVeto
+            | RefusalCode::GroupFrozen
+            | RefusalCode::Untrusted => C::Forbidden,
+            RefusalCode::BodyTooLarge
+            | RefusalCode::CursorBudget
+            | RefusalCode::CredentialBudget => C::TooLarge,
+            RefusalCode::RateLimited => C::Throttled,
+            RefusalCode::InFlightCap | RefusalCode::InFlight => C::Busy,
+            RefusalCode::OverBudget => C::QuotaExhausted,
+            RefusalCode::NoDestination => C::NotFound,
+            RefusalCode::DestinationUnreachable
+            | RefusalCode::BreakerOpen
+            | RefusalCode::DestinationBudgetExhausted => C::Unreachable,
+            RefusalCode::SessionBudget
+            | RefusalCode::SpillBudget
+            | RefusalCode::ScratchExhausted
+            | RefusalCode::OpenSlotBusy
+            | RefusalCode::OverdraftCeiling
+            | RefusalCode::StaleSlice
+            | RefusalCode::DurabilityUnavailable
+            | RefusalCode::TierMismatch
+            | RefusalCode::Drain
+            | RefusalCode::ClientGone => C::Unavailable,
+            RefusalCode::Stalled | RefusalCode::DeadlineExceeded => C::Timeout,
+            RefusalCode::PlanePanic => C::PlaneFault,
+            RefusalCode::MeterDisputed
+            | RefusalCode::HandoffMismatch
+            | RefusalCode::TaskLost
+            | RefusalCode::SecretPlaceholder => C::NodeFault,
+        }
+    }
+}
+
+/// The class of a kernel refusal reason ([`RefusalCode::class`] of its wire code).
+#[must_use]
+pub const fn class_of(reason: ReasonCode) -> RefusalClass {
+    wire_code(reason).class()
+}
+
+/// The class of a refusal as a plane is handed it ([`RefusalCode::class`] of its wire code).
+#[must_use]
+pub fn class_of_refusal(reason: crate::unit::RefusalReason) -> RefusalClass {
+    class_of(ReasonCode::from(reason))
+}
+
+/// The class of a reason by its spelling on the journal and the wire (`ReasonCode::as_str`), for
+/// every reason a plane can be handed ([`reason_of`]); `None` for any other word, the kernel's own
+/// two money verdicts included.
+#[must_use]
+pub fn class_of_word(word: &str) -> Option<RefusalClass> {
+    RefusalCode::ALL
+        .iter()
+        .find(|c| reason_of(c.code()).is_some_and(|r| r.as_str() == word))
+        .map(|c| c.class())
 }
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
@@ -954,6 +1117,14 @@ pub const TRUST_RECOVERY_BACKOFF: u32 = 3;
 /// registration's trust anchors beside its pin, and the connector's one guard honours it on every
 /// connection the need opens to that destination. It carries no default and no mechanisms.
 pub const TRUST_PRIVATE_REACH: u32 = 4;
+/// [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to
+/// an object whose field [`TrustKey::default`] names holds the digest the operator approved the
+/// item at (`{<item>: {<field>: "<digest>"}}`). The kernel seeds the counterparty's approved items
+/// from it at every admit (an edit is the operator's re-approval); an item written with a blank or
+/// absent digest is allowed but approved at none, and is served at none. The core-admin trust verbs
+/// approve and revoke on top of it. It carries no mechanisms and no flags; its `default` is
+/// required.
+pub const TRUST_ITEM_APPROVALS: u32 = 5;
 /// [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`.
 pub const PIN_FINGERPRINT: u32 = 1;
 /// [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key
@@ -1006,11 +1177,12 @@ pub struct TrustKey {
     /// The key, as written inside one registration.
     pub key: AbiStr,
     /// [`TRUST_PIN`] | [`TRUST_REVERIFY_TTL`] | [`TRUST_RECOVERY_BACKOFF`] |
-    /// [`TRUST_PRIVATE_REACH`].
+    /// [`TRUST_PRIVATE_REACH`] | [`TRUST_ITEM_APPROVALS`].
     pub role: u32,
     /// [`PIN_FINGERPRINT`] on a pin; `0` otherwise.
     pub flags: u32,
-    /// A duration key's value when a registration writes none; absent = zero. A pin has none.
+    /// A duration key's value when a registration writes none; absent = zero. A pin has none. On a
+    /// [`TRUST_ITEM_APPROVALS`] key: the field of each item's object holding its approved digest.
     pub default: AbiStr,
     /// A pin's mechanisms; empty for a duration key.
     pub mechanisms: *const PinMechanism,
@@ -1417,6 +1589,21 @@ pub struct ArriveOut {
     /// key, with no plane or protocol knowledge. Absent (NULL, `0`) = no affinity, and absent on
     /// every other outcome. Plane memory, valid until the instance's next call. A tail addition.
     pub affinity: AbiStr,
+    /// On READY: THE TRUST FACTS the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
+    /// Approve step, and a plane states facts and judges none): the COUNTERPARTY, a name among the
+    /// trust entries the plane's section declares (its trust keys). The kernel's Approve judges it
+    /// against its trust book (declared, sighted, not quarantined) and refuses the unit
+    /// [`RefusalCode::Untrusted`] otherwise. Absent = the unit rests on no counterparty, and nothing
+    /// is judged; absent on every other outcome. Plane memory, valid until the instance's next
+    /// call. A tail addition.
+    pub trust_counterparty: AbiStr,
+    /// With `trust_counterparty`: the ITEM the unit uses there (a tool, a skill: the plane's own
+    /// per-item trust key), opaque to the kernel; the kernel requires it sighted and approved at
+    /// `trust_digest`. Absent = the counterparty as a whole.
+    pub trust_item: AbiStr,
+    /// With `trust_item`: the DIGEST the item is offered at now, as the plane observed it,
+    /// opaque to the kernel. Absent = the item's last sighting (`trust.sight_item`) stands.
+    pub trust_digest: AbiStr,
 }
 
 /// `on_piece`'s `in`.
@@ -1616,6 +1803,13 @@ pub struct RefusalIn {
     /// With [`REFUSAL_GATE`]: the name of the hook that vetoed the unit, opaque bytes; absent on
     /// every other refusal. A tail addition.
     pub hook: AbiStr,
+    /// With [`RefusalCode::Untrusted`]: why the kernel's Approve did not trust the unit's stated
+    /// facts (`abi::host::service::DISTRUST_*`, the one trust vocabulary, `trust.serves`'s too),
+    /// so the plane renders the words its dialect has for each (an unknown item as not found, a
+    /// known one ungranted as refused); `0` on every other refusal. A tail addition.
+    pub trust: u32,
+    /// Alignment padding.
+    pub _trust_reserved: u32,
 }
 
 /// `refusal`'s `out`.

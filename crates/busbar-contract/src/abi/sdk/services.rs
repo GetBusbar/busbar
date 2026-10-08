@@ -17,17 +17,24 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::task::Poll;
 
+use crate::abi::hook::{MessageView, PromptView};
 use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
-    check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
-    check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
-    check_records_list, check_sign, check_snapshot_read, check_trust_due, check_trust_sight,
-    check_trust_verify, check_unit_nest, check_work_find, check_work_open, check_work_resume,
-    check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots,
-    ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn,
-    ServiceHead, ServiceOut, SignIn, SnapshotReadIn, TrustDueIn, TrustSightIn, TrustVerifyIn,
-    UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON,
-    DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
+    check_clock_now, check_content_scan, check_dest_judge, check_entitlement_check,
+    check_hook_call, check_hook_call_in, check_random_fill, check_random_fill_in,
+    check_records_claim, check_records_claim_in, check_records_get, check_records_list,
+    check_session_emit, check_session_emit_in, check_sign, check_snapshot_read, check_trust_decide,
+    check_trust_due, check_trust_serves, check_trust_sight, check_trust_sight_item,
+    check_trust_state, check_trust_verify, check_unit_nest, check_verify_lookup,
+    check_verify_store, check_work_find, check_work_open, check_work_resume, check_work_settle, op,
+    ClockNowIn, ClockReading, ContentScanIn, DestJudgeIn, EntitlementCheckIn, HookCallIn,
+    HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs,
+    ServiceFn, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn, TrustDecideIn,
+    TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn,
+    UnitNestIn, VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn,
+    ABSENT, CLAIM_WON, CONTENT_BLOCK, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN,
+    TRUST_DECIDE_APPROVE, TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW,
+    VERIFY_HIT, VERIFY_LEAD,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -162,6 +169,48 @@ impl<'b> Records<'b> {
     #[must_use]
     pub fn last_key(&self) -> Option<&'b [u8]> {
         present(self.bytes, self.spans.last()?.key)
+    }
+}
+
+/// `trust.state`'s answer: the counterparty's `KEY_*` state, and its items, in item order.
+#[derive(Debug, Clone, Copy)]
+pub struct TrustItems<'b> {
+    /// The counterparty's `KEY_*` state.
+    pub state: u64,
+    bytes: &'b [u8],
+    spans: &'b [ItemSpan],
+}
+
+/// One item of [`TrustItems`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustItem<'b> {
+    /// The item.
+    pub item: &'b str,
+    /// Its state word: `new`, `same`, `drifted`, `quarantined` or `approved`.
+    pub state: &'b str,
+    /// The digest it is approved at; `None` = none.
+    pub approved: Option<&'b str>,
+    /// The digest it was last sighted at; `None` = never.
+    pub seen: Option<&'b str>,
+}
+
+impl<'b> TrustItems<'b> {
+    /// The items, in item order.
+    pub fn items(&self) -> impl Iterator<Item = TrustItem<'b>> + 'b {
+        let bytes = self.bytes;
+        self.spans.iter().filter_map(move |s| {
+            let item = name(bytes, s)?;
+            let value = std::str::from_utf8(present(bytes, s.value)?).ok()?;
+            let mut parts = value.splitn(3, '\0');
+            let (state, approved, seen) = (parts.next()?, parts.next()?, parts.next()?);
+            let some = |s: &'b str| (!s.is_empty()).then_some(s);
+            Some(TrustItem {
+                item,
+                state,
+                approved: some(approved),
+                seen: some(seen),
+            })
+        })
     }
 }
 
@@ -309,6 +358,43 @@ impl Services {
         }
     }
 
+    /// `session.emit`: write `bytes`, unsolicited, on the open carrier session `session` (the number
+    /// its arrivals' [`CARRIER_SESSION_FIELD`](crate::abi::host::service::CARRIER_SESSION_FIELD)
+    /// named), outside any unit. Unbilled and audited by the host as a session event. An empty
+    /// write or session `0` is REFUSED here, before the host is called. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: the host serves no `session.emit`, it refused the write (the session is not
+    /// open, or not this instance's), or the host broke its rules.
+    pub fn session_emit(
+        &self,
+        handle: CompletionHandle,
+        session: u64,
+        bytes: &[u8],
+    ) -> Result<(), ServiceError> {
+        let input = SessionEmitIn {
+            head: head::<SessionEmitIn>(op::SESSION_EMIT, handle),
+            session,
+            bytes: blob(bytes, BLOB_OCTETS),
+        };
+        if check_session_emit_in(&input).is_err() {
+            return Err(ServiceError::Declined(Outcome::Refused));
+        }
+        match self
+            .cross(
+                op::SESSION_EMIT,
+                |t| t.session_emit,
+                &input,
+                check_session_emit,
+            )?
+            .0
+        {
+            Outcome::Ready => Ok(()),
+            other => Err(ServiceError::Declined(other)),
+        }
+    }
+
     /// `dest.judge`: the host's ONE destination judge over `dest` (a URL or `host:port` named
     /// inside content) under egress class `egress_class` (`0` = the host's default), without
     /// dialing. Ready: the `DEST_*` verdict, `DEST_ALLOWED` = admissible. A refusal the name decides
@@ -371,10 +457,33 @@ impl Services {
         counterparty: &str,
         catalogue_hash: &str,
     ) -> Pend<u64> {
+        self.sighting(handle, counterparty, catalogue_hash, TRUST_REACHED)
+    }
+
+    /// `trust.sight` with [`TRUST_UNREACHABLE`]: the plane could NOT reach `counterparty` to look.
+    /// Ready: the KERNEL's last `TRUST_*` verdict, nothing changed; the plane fails its call as an
+    /// upstream failure. Never drifts, never clears, never quarantines.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::trust_sight`].
+    pub fn trust_unreachable(&self, handle: CompletionHandle, counterparty: &str) -> Pend<u64> {
+        self.sighting(handle, counterparty, "", TRUST_UNREACHABLE)
+    }
+
+    fn sighting(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        catalogue_hash: &str,
+        outcome: u32,
+    ) -> Pend<u64> {
         let input = TrustSightIn {
             head: head::<TrustSightIn>(op::TRUST_SIGHT, handle),
             counterparty: text(counterparty),
             catalogue_hash: text(catalogue_hash),
+            outcome,
+            _outcome_reserved: 0,
         };
         verdict(self.cross(
             op::TRUST_SIGHT,
@@ -382,6 +491,142 @@ impl Services {
             &input,
             check_trust_sight,
         ))
+    }
+
+    /// `trust.sight_item`: report the digest ONE ITEM of `counterparty` is offered at now (the
+    /// plane's live re-fetch); the KERNEL records it. Ready: a `TRUST_*` sighting verdict. Never
+    /// pends.
+    ///
+    /// # Errors
+    ///
+    /// As every service: unserved, declined, or broken.
+    pub fn trust_sight_item(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Result<u64, ServiceError> {
+        let input = TrustSightItemIn {
+            head: head::<TrustSightItemIn>(op::TRUST_SIGHT_ITEM, handle),
+            counterparty: text(counterparty),
+            item: text(item),
+            digest: text(digest),
+        };
+        let crossed = self.cross(
+            op::TRUST_SIGHT_ITEM,
+            |t| t.trust_sight_item,
+            &input,
+            check_trust_sight_item,
+        )?;
+        Ok(ready(crossed)?.value)
+    }
+
+    /// `trust.serves`: THE KERNEL'S APPROVE as a query, for a route leg after its live re-fetch:
+    /// whether `counterparty` serves `item` (`None` = as a whole) at `digest` (`None` = its last
+    /// sighting). Ready: `DISTRUST_NONE`, or the `DISTRUST_*` that refuses it (an unknown item
+    /// apart from a known one ungranted). Never pends.
+    ///
+    /// # Errors
+    ///
+    /// As every service: unserved, declined, or broken.
+    pub fn trust_serves(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Result<u64, ServiceError> {
+        let input = TrustServesIn {
+            head: head::<TrustServesIn>(op::TRUST_SERVES, handle),
+            counterparty: text(counterparty),
+            item: text(item.unwrap_or("")),
+            digest: text(digest.unwrap_or("")),
+        };
+        let crossed = self.cross(
+            op::TRUST_SERVES,
+            |t| t.trust_serves,
+            &input,
+            check_trust_serves,
+        )?;
+        Ok(ready(crossed)?.value)
+    }
+
+    /// `trust.decide`: THE OPERATOR'S DECISION about one of this instance's trust keys
+    /// (`counterparty`, or `item` there), made through the plane's own administrative verb: the
+    /// same durable decision the core-admin `POST /api/v1/admin/trust/approve` and `/revoke` make.
+    /// An approval approves what the caller saw: `expected` (the catalogue hash or item digest),
+    /// when stated, must be the key's current sighting. Ready: the `TRUST_DECIDED_*` verdict after
+    /// it, or the `UNDECIDED_*` that refused it. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// As every service: unserved, declined, or broken.
+    pub fn trust_decide(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        item: Option<&str>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Result<u64, ServiceError> {
+        let input = TrustDecideIn {
+            head: head::<TrustDecideIn>(op::TRUST_DECIDE, handle),
+            counterparty: text(counterparty),
+            item: text(item.unwrap_or("")),
+            expected: text(expected.unwrap_or("")),
+            decision: if approve {
+                TRUST_DECIDE_APPROVE
+            } else {
+                TRUST_DECIDE_REVOKE
+            },
+            _reserved: 0,
+        };
+        let crossed = self.cross(
+            op::TRUST_DECIDE,
+            |t| t.trust_decide,
+            &input,
+            check_trust_decide,
+        )?;
+        Ok(ready(crossed)?.value)
+    }
+
+    /// `trust.state`: the KERNEL'S TRUST STATE of `counterparty` and its items, as the core-admin
+    /// `GET /api/v1/admin/trust` lists them, for the plane's own administrative views; written into
+    /// the caller's preallocated `buf` and `spans`. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when the buffers are short (re-call once, same handle); otherwise
+    /// as every service: unserved, declined (an undeclared counterparty), or broken.
+    pub fn trust_state<'b>(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Result<TrustItems<'b>, ServiceError> {
+        let input = TrustStateIn {
+            head: head::<TrustStateIn>(op::TRUST_STATE, handle),
+            counterparty: text(counterparty),
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(
+            op::TRUST_STATE,
+            |t| t.trust_state,
+            &input,
+            check_trust_state,
+        )?;
+        let out = ready(crossed)?;
+        let items = TrustItems {
+            state: out.value,
+            bytes: &buf[..out.len as usize],
+            spans: &spans[..out.items as usize],
+        };
+        if items.items().count() != items.spans.len() {
+            return Err(ServiceError::Broken);
+        }
+        Ok(items)
     }
 
     /// `trust.due`: the counterparties the kernel's `tick` marked for re-verification, written
@@ -757,6 +1002,169 @@ impl Services {
         }))
     }
 
+    /// `verify.lookup`: the instance's own entry under `key` in the host-side verify cache,
+    /// single-flight. Ready: a hit or a followed leader's entry, a view into the caller's
+    /// preallocated `buf`, or [`Verified::Lead`] (this caller fetches, then [`Self::verify_store`]s).
+    /// A follower pends until its leader stores, so callable only from a ticketed op; a short
+    /// `buf` is [`ServiceError::Short`] (re-call once, same handle).
+    pub fn verify_lookup<'b>(
+        &self,
+        handle: CompletionHandle,
+        key: &[u8],
+        buf: &'b mut [u8],
+    ) -> Pend<Verified<'b>> {
+        let mut span = [ItemSpan {
+            key: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 0 },
+        }];
+        let input = VerifyLookupIn {
+            head: head::<VerifyLookupIn>(op::VERIFY_LOOKUP, handle),
+            key: raw(key),
+            into: bufs(buf, &mut span),
+        };
+        let crossed = self.cross(
+            op::VERIFY_LOOKUP,
+            |t| t.verify_lookup,
+            &input,
+            check_verify_lookup,
+        );
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let buf: &'b [u8] = buf;
+        Poll::Ready(crossed.and_then(ready).and_then(|out| {
+            if out.value == VERIFY_LEAD {
+                return Ok(Verified::Lead);
+            }
+            // A hit or a follow carries the entry in span `0`.
+            let entry = span
+                .get(..out.items as usize)
+                .and_then(<[ItemSpan]>::first)
+                .and_then(|s| present(&buf[..out.len as usize], s.value))
+                .ok_or(ServiceError::Broken)?;
+            match out.value {
+                VERIFY_HIT => Ok(Verified::Hit(entry)),
+                VERIFY_FOLLOW => Ok(Verified::Follow(entry)),
+                _ => Err(ServiceError::Broken),
+            }
+        }))
+    }
+
+    /// `verify.store`: store the `entry` this caller fetched under `key` for `ttl_ms` (`0` = the
+    /// host's default), releasing every caller that followed its lead. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: the host serves no `verify.store`, declined it, or broke its rules.
+    pub fn verify_store(
+        &self,
+        handle: CompletionHandle,
+        key: &[u8],
+        entry: &[u8],
+        ttl_ms: u64,
+    ) -> Result<(), ServiceError> {
+        let input = VerifyStoreIn {
+            head: head::<VerifyStoreIn>(op::VERIFY_STORE, handle),
+            key: raw(key),
+            entry: blob(entry, BLOB_OCTETS),
+            ttl_ms,
+        };
+        match self
+            .cross(
+                op::VERIFY_STORE,
+                |t| t.verify_store,
+                &input,
+                check_verify_store,
+            )?
+            .0
+        {
+            Outcome::Ready => Ok(()),
+            other => Err(ServiceError::Declined(other)),
+        }
+    }
+
+    /// `content.scan`: pass a piece of in-session `content` through the gates the unit the op
+    /// serves binds. Ready: whether it passed, and the content as a gate rewrote it, when one did
+    /// (a view into the caller's `buf`). May pend, so callable only from a ticketed op.
+    pub fn content_scan<'b>(
+        &self,
+        handle: CompletionHandle,
+        content: &[u8],
+        buf: &'b mut [u8],
+    ) -> Pend<Scanned<'b>> {
+        let input = ContentScanIn {
+            head: head::<ContentScanIn>(op::CONTENT_SCAN, handle),
+            content: blob(content, BLOB_OCTETS),
+            into: bufs(buf, &mut []),
+        };
+        let crossed = self.cross(
+            op::CONTENT_SCAN,
+            |t| t.content_scan,
+            &input,
+            check_content_scan,
+        );
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let buf: &'b [u8] = buf;
+        Poll::Ready(crossed.and_then(ready).map(|out| Scanned {
+            passed: out.value != CONTENT_BLOCK,
+            rewritten: (out.len > 0).then(|| &buf[..out.len as usize]),
+        }))
+    }
+
+    /// `hook.call`: run the hook stage the unit the op serves binds — `stage` `HOOK_GATE` or
+    /// `HOOK_REWRITE`, a rewrite chain resumed at `from` (`0`, or the last [`Hooked::Rewrote`]'s
+    /// `resume`) — over the prompt `system` and `messages`. Ready: [`Hooked`], its bytes a view into
+    /// the caller's `buf`. An `in` that breaks `check_hook_call_in` is REFUSED here, before the host
+    /// is called. May pend, so callable only from a ticketed op.
+    pub fn hook_call<'b>(
+        &self,
+        handle: CompletionHandle,
+        (stage, from): (u32, u32),
+        system: Option<&str>,
+        messages: &[MessageView],
+        buf: &'b mut [u8],
+    ) -> Pend<Hooked<'b>> {
+        let prompt = PromptView {
+            system: system.map_or(NO_TEXT, text),
+            message_count: messages.len() as u64,
+            body: Blob::ABSENT,
+            messages: messages.as_ptr(),
+            messages_len: messages.len(),
+        };
+        let input = HookCallIn {
+            head: head::<HookCallIn>(op::HOOK_CALL, handle),
+            stage,
+            from,
+            prompt: &prompt,
+            into: bufs(buf, &mut []),
+        };
+        if check_hook_call_in(&input).is_err() {
+            return Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)));
+        }
+        let crossed = self.cross(op::HOOK_CALL, |t| t.hook_call, &input, check_hook_call);
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let buf: &'b [u8] = buf;
+        Poll::Ready(crossed.and_then(ready).map(|out| {
+            let bytes = &buf[..out.len as usize];
+            match out.value {
+                0 => Hooked::Pass,
+                // `check_hook_call` held a stop within the band and a resume within the cap.
+                v if v >= HOOK_STOP_MIN => Hooked::Stop {
+                    status: u16::try_from(v).unwrap_or(u16::MAX),
+                    words: bytes,
+                },
+                v => Hooked::Rewrote {
+                    resume: u32::try_from(v).unwrap_or(u32::MAX),
+                    rewrite: bytes,
+                },
+            }
+        }))
+    }
+
     /// `snapshot.read`: THE HOST SNAPSHOT SERVICE — the host's metric families of `scope`
     /// (`SNAPSHOT_SCOPE_WHOLE` | `SNAPSHOT_SCOPE_HOOKS`), laid out by the host in the caller's
     /// preallocated `buf` (words, so it holds the layout's alignment) and read back here, every
@@ -894,6 +1302,47 @@ const fn blob(b: &[u8], fmt: u32) -> Blob {
         fmt,
         flags: 0,
     }
+}
+
+/// What `verify.lookup` answered: the entry, a view into the caller's buffer, or the lead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verified<'b> {
+    /// A cached entry.
+    Hit(&'b [u8]),
+    /// This caller leads: it fetches, then stores.
+    Lead,
+    /// The entry the leader this caller followed stored.
+    Follow(&'b [u8]),
+}
+
+/// What `content.scan` answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scanned<'b> {
+    /// The content passed the gate.
+    pub passed: bool,
+    /// The content as a gate rewrote it, when one did.
+    pub rewritten: Option<&'b [u8]>,
+}
+
+/// What `hook.call` answered, its bytes views into the caller's buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hooked<'b> {
+    /// Every gate passed, or no hook from `from` on rewrote it.
+    Pass,
+    /// A hook rewrote it: apply `rewrite` (`{"messages", "tools"}`) and resume at `resume`.
+    Rewrote {
+        /// The `from` the next call resumes at.
+        resume: u32,
+        /// The rewrite.
+        rewrite: &'b [u8],
+    },
+    /// A hook stopped it, with its status and words.
+    Stop {
+        /// The status, `400..=599`.
+        status: u16,
+        /// The words.
+        words: &'b [u8],
+    },
 }
 
 /// What `unit.nest` answered: the child's status, body and head fields, views into the caller's

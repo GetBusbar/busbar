@@ -5,17 +5,16 @@
 //! asks for. The interesting reading is in the codec crate; the interesting decisions are in the
 //! units. What is here is the wiring, and it is meant to stay boring enough to check by eye.
 
-use busbar_contract::bounded::{
-    BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span, MAX_RESPONSE_PTRS,
-};
+use busbar_contract::abi::plane::{class_of_refusal, RefusalClass};
+use busbar_contract::bounded::{FactValue, Facts, Ir, ScratchBytes, MAX_RESPONSE_PTRS};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};
 use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId, SchemeAlt, SchemeKey};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Response, UnitDraft};
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, Unit, UnitEnd, UsageLocator,
+    UsageLocators,
 };
 use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, TransportEnvelope};
 
@@ -168,53 +167,25 @@ fn finish_of(stop: Option<IrStopReason>) -> FinishClass {
 /// The status and kind token one refusal reason wears on the wire.
 ///
 /// The reason code itself never reaches a client: what reaches a client is this dialect's own
-/// rendering of the pair below, written by the dialect's own error writer.
+/// rendering of the pair below, written by the dialect's own error writer. A class-to-wire table
+/// over the one classification (`busbar_contract::abi::plane::RefusalClass`): which family a reason
+/// belongs to is decided once, there, and not here.
 fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {
-    match reason {
-        RefusalReason::CredentialRejected
-        | RefusalReason::SessionUnbound
-        | RefusalReason::SchemeNotDeclared => (401, KIND_AUTHENTICATION),
-        RefusalReason::Revoked | RefusalReason::ScopeMissing | RefusalReason::Vetoed => {
-            (403, KIND_PERMISSION)
+    match class_of_refusal(reason) {
+        RefusalClass::Unauthenticated => (401, KIND_AUTHENTICATION),
+        RefusalClass::Forbidden => (403, KIND_PERMISSION),
+        RefusalClass::TooLarge => (413, KIND_REQUEST_TOO_LARGE),
+        RefusalClass::Throttled | RefusalClass::Busy | RefusalClass::QuotaExhausted => {
+            (429, KIND_RATE_LIMIT)
         }
-        RefusalReason::BodyTooLarge
-        | RefusalReason::CursorBudget
-        | RefusalReason::CredentialBudget => (413, KIND_REQUEST_TOO_LARGE),
-        RefusalReason::InFlightCap
-        | RefusalReason::SessionBudget
-        | RefusalReason::OpenSlotBusy
-        | RefusalReason::OverBudget
-        | RefusalReason::GroupFrozen
-        | RefusalReason::OverdraftCeiling => (429, KIND_RATE_LIMIT),
-        RefusalReason::NoDestination | RefusalReason::Unpriced => (400, KIND_INVALID_REQUEST),
-        RefusalReason::DurabilityUnavailable
-        | RefusalReason::StaleSlice
-        | RefusalReason::TierMismatch => (503, KIND_OVERLOADED),
-        // The reasons the kernel could always raise and this dialect had no rendering for. Each
-        // joins the family it belongs to rather than acquiring a status of its own: a client learns
-        // the shape of the refusal, never which of the node's ceilings it met.
-        RefusalReason::ChallengeExhausted => (401, KIND_AUTHENTICATION),
-        RefusalReason::PoolNotPermitted => (403, KIND_PERMISSION),
-        RefusalReason::RateLimited | RefusalReason::InFlight => (429, KIND_RATE_LIMIT),
-        RefusalReason::DecodeFailed
-        | RefusalReason::NoRate
-        | RefusalReason::Replayed
-        | RefusalReason::Superseded => (400, KIND_INVALID_REQUEST),
-        RefusalReason::SpillBudget
-        | RefusalReason::ScratchExhausted
-        | RefusalReason::DestinationBudgetExhausted
-        | RefusalReason::BreakerOpen
-        | RefusalReason::DestinationUnreachable
-        | RefusalReason::Stalled
-        | RefusalReason::Drain
-        | RefusalReason::ClientGone
-        | RefusalReason::DeadlineExceeded => (503, KIND_OVERLOADED),
+        RefusalClass::Unreadable | RefusalClass::Rejected | RefusalClass::NotFound => {
+            (400, KIND_INVALID_REQUEST)
+        }
+        RefusalClass::Unreachable | RefusalClass::Unavailable | RefusalClass::Timeout => {
+            (503, KIND_OVERLOADED)
+        }
         // Node-side faults: the node got something wrong, and says so without saying what.
-        RefusalReason::MeterDisputed
-        | RefusalReason::HandoffMismatch
-        | RefusalReason::PlanePanic
-        | RefusalReason::TaskLost
-        | RefusalReason::SecretPlaceholder => (500, KIND_API_ERROR),
+        RefusalClass::PlaneFault | RefusalClass::NodeFault => (500, KIND_API_ERROR),
     }
 }
 
@@ -911,54 +882,6 @@ impl Plane for LlmPlane {
             None => DestinationFacts::KernelVerb {
                 verb: "unconfigured",
             },
-        }
-    }
-
-    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        let mut facts = ScopeFacts::default();
-        let _ = facts.resources.push(ResourceLocator {
-            kind: "operation",
-            name: u.op().as_str(),
-        });
-        facts
-    }
-
-    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        let Some(d) = unit_dialect(u) else {
-            return AdmitFacts::default();
-        };
-        let body = u.body().body();
-        // Which bytes are the priced input: the conversation the client sent, not the controls
-        // around it. A dialect whose container the scanner does not reach prices the whole body,
-        // which is the conservative reading.
-        // Read off the table the decode step resolved, never scanned a second time here: the
-        // whole point of the unit carrying its spans is that the answer is already in it.
-        let input_span = u
-            .body()
-            .pointers()
-            .find(|(ptr, _)| *ptr == d.input_pointer)
-            .map(|(_, span)| span)
-            .unwrap_or(Span {
-                start: 0,
-                end: body.len(),
-            });
-        AdmitFacts {
-            // The dialect's own table says where the model IS: a body pointer for the four that
-            // carry it in the body, a path segment for the two that carry it in the request target.
-            lane_locator: Some(d.model_location),
-            // Every place this dialect accepts the ceiling, in the dialect table's own order. The
-            // kernel takes the first that resolves, so a dialect with two spellings reads whichever
-            // the client actually sent.
-            max_response_ptrs: {
-                let mut ptrs = BoundedVec::new();
-                for ptr in d.max_response_pointers {
-                    let _ = ptrs.push(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
-                        ptr,
-                    )));
-                }
-                ptrs
-            },
-            input_span: Some(input_span),
         }
     }
 

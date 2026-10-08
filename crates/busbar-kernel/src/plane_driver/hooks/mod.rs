@@ -1059,6 +1059,24 @@ fn narrow(keep: &mut HashSet<usize>, facts: &[CandidateFacts], tags_any: &[Strin
 
 // ── the stage, on the unit ──────────────────────────────────────────────────────────────────────
 
+/// A COMMITTED REWRITE AS IT CROSSES TO THE PLANE (`ProjectIn::rewrite`, and the in-session
+/// stage's answer): the hook's reply as `{"messages": [...], "tools": [...]}`, for the plane to
+/// apply in its own dialect. These bytes are never empty, so a committed rewrite never crosses as
+/// the absent blob ([`blob`] reads empty bytes as "no rewrite"); a reply naming no messages crosses
+/// as one, and the plane applies it as nothing, as 1.5.5 did
+/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines).
+fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "messages": rw.messages,
+        "tools": rw.tools,
+    }))
+    .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[path = "tests/rewrite_crossing_tests.rs"]
+mod rewrite_crossing_tests;
+
 /// The buffers one `project` crossing lends.
 struct ProjectBufs {
     signals: Vec<SignalEntry>,
@@ -1204,9 +1222,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     }
 
     /// THE UNIT'S IN-SESSION HOOK STAGE, stated on the kernel's unit records as its route leg
-    /// starts ([`SessionStage`]): the instance, the pool the walk routes it over (never one the
-    /// plane names), its verified principal and dialect, and this generation's binder. A health
-    /// probe states none (the kernel's own unit; no hook screens it).
+    /// starts ([`SessionStage`]): the instance, the pool the kernel routes it over
+    /// ([`FarEnd::pool`], else the walk's; never one the plane names), its verified principal and
+    /// dialect, and the binder, which binds the hooks of the live generation when the stage is
+    /// first used. A health probe states none (the kernel's own unit; no hook screens it).
     pub(crate) fn state_stage(&self, token: &Pass<Route>) {
         if self.arrival.claim == CLAIM_PROBE {
             return;
@@ -1223,21 +1242,28 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 st.decoded.as_ref().map_or(0, |x| x.dialect),
             )
         };
-        let (pool, dialect) = match &d.hooks {
+        let (scope, dialect) = match &d.hooks {
             Some(binder) => (
-                self.far
-                    .candidates(token)
-                    .map(|c| c.pool)
-                    .unwrap_or_default(),
+                self.far.scope(token).unwrap_or_else(|| {
+                    let pool = self
+                        .far
+                        .candidates(token)
+                        .map(|c| c.pool)
+                        .unwrap_or_default();
+                    super::RoutedScope {
+                        container: pool.clone(),
+                        pool,
+                    }
+                }),
                 binder.dialect(dialect),
             ),
-            None => (String::new(), String::new()),
+            None => (super::RoutedScope::default(), String::new()),
         };
         let stage = SessionStage::new(
             Arc::clone(&d.label),
             runtime,
             d.hooks.clone(),
-            (pool, principal, dialect),
+            (scope, principal, dialect),
         );
         let _held = d.services.units().staged(unit, Arc::new(stage));
     }
@@ -1303,11 +1329,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             drop(req);
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
-                    let bytes = serde_json::to_vec(&serde_json::json!({
-                        "messages": rw.messages,
-                        "tools": rw.tools,
-                    }))
-                    .unwrap_or_default();
+                    let bytes = rewrite_bytes(&rw);
                     match self.project(Some(&bytes)) {
                         Ok(next) => {
                             if let Some(body) = &next.rewritten {
@@ -1755,7 +1777,10 @@ pub struct SessionStage {
     instance: Arc<str>,
     runtime: tokio::runtime::Handle,
     binder: Option<Arc<dyn HookBinder>>,
+    /// The label the unit's hooks are scoped by: its pool (routed order), or its entry (gate-first).
     pool: String,
+    /// The container a gate-first plane's hooks are bound for.
+    container: String,
     principal: Option<String>,
     dialect: String,
     bound: std::sync::OnceLock<Option<UnitHooks>>,
@@ -1767,6 +1792,32 @@ impl std::fmt::Debug for SessionStage {
             .field("instance", &self.instance)
             .field("pool", &self.pool)
             .finish_non_exhaustive()
+    }
+}
+
+/// A gate-first unit's hooks, as the in-session stage runs them: its entry's gates and rewrite
+/// chain, its caller's key; no tap and no route policy (the gate-first order has none), and a hook
+/// handed the prompt leaves the kernel's own access amendment.
+fn gated_unit(g: GatedHooks) -> UnitHooks {
+    UnitHooks {
+        request_id: g.request_id,
+        rewrites: g.rewrites,
+        gates: g.gates,
+        policy: None,
+        taps: StageTaps::default(),
+        key: g.key.map(|k| CallerKey {
+            id: k.id.clone(),
+            name: k.name.clone(),
+        }),
+        rate_headroom: None,
+        budget: Vec::new(),
+        requested: crate::hooks::RequestedSignals::default(),
+        groups: Arc::new(|_: &[String]| true),
+        reads: Arc::new(
+            |hook: &str, principal: Option<&str>, dialect: &str, identity: bool| {
+                crate::audit::amend::hook_read(hook, principal, dialect, identity);
+            },
+        ),
     }
 }
 
@@ -1790,35 +1841,48 @@ impl Drop for OwedStage {
 }
 
 impl SessionStage {
-    /// The stage of a unit of instance `instance`, routed over `pool` for `principal`, its hooks
-    /// bound by `binder` (none = no hook binds), run on `runtime`.
+    /// The stage of a unit of instance `instance`, routed over `scope` for `principal`, its hooks
+    /// bound by `binder` (none = no hook binds) in the binder's order, run on `runtime`.
     #[must_use]
     pub fn new(
         instance: Arc<str>,
         runtime: tokio::runtime::Handle,
         binder: Option<Arc<dyn HookBinder>>,
-        (pool, principal, dialect): (String, Option<String>, String),
+        (scope, principal, dialect): (super::RoutedScope, Option<String>, String),
     ) -> Self {
+        let gated = binder
+            .as_ref()
+            .is_some_and(|b| b.order() == HookOrder::Gated);
         Self {
             instance,
             runtime,
             binder,
-            pool,
+            pool: if gated {
+                scope.container.clone()
+            } else {
+                scope.pool
+            },
+            container: scope.container,
             principal,
             dialect,
             bound: std::sync::OnceLock::new(),
         }
     }
 
-    /// The unit's hooks, bound once.
+    /// The unit's hooks, bound once, in the binder's order: a gate-first plane's are the gates and
+    /// rewrites attached to the unit's entry, as its request stage binds them.
     fn hooks(&self) -> Option<&UnitHooks> {
         self.bound
             .get_or_init(|| {
-                self.binder.as_ref().and_then(|b| {
-                    b.bind(&Bind {
-                        pool: &self.pool,
-                        principal: self.principal.as_deref(),
-                    })
+                let b = self.binder.as_ref()?;
+                if b.order() == HookOrder::Gated {
+                    return b
+                        .bind_gated(&self.container, self.principal.as_deref())
+                        .map(gated_unit);
+                }
+                b.bind(&Bind {
+                    pool: &self.pool,
+                    principal: self.principal.as_deref(),
                 })
             })
             .as_ref()
@@ -1950,11 +2014,7 @@ impl SessionStage {
                 TransformOutcome::Rewrite(rw) => {
                     return StageAnswer::Rewrote {
                         index: u32::try_from(i).unwrap_or(u32::MAX),
-                        rewrite: serde_json::to_vec(&serde_json::json!({
-                            "messages": rw.messages,
-                            "tools": rw.tools,
-                        }))
-                        .unwrap_or_default(),
+                        rewrite: rewrite_bytes(&rw),
                     };
                 }
                 TransformOutcome::Reject { status, message } => {
