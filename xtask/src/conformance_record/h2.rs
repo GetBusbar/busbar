@@ -1,11 +1,16 @@
 //! THE h2 RIG — HTTP/2 (RFC 9113 / RFC 7541) by `h2spec`, the upstream conformance tool, against a
 //! busbar built from this checkout.
 //!
-//! WHICH LISTENER. busbar's inbound TLS listener advertises `http/1.1` alone over ALPN
-//! (`busbar-core-connector/src/tls/mod.rs`, pinned by its own test), so HTTP/2 reaches busbar as
-//! cleartext prior-knowledge h2c on the plain listener, which the shared
-//! `hyper_util::server::conn::auto` builder serves (`busbar-kernel/src/tls.rs`). That is the
-//! listener h2spec is pointed at. If busbar ever advertises `h2` over TLS, the TLS leg joins here.
+//! WHICH LISTENER: the `tls:` listener, over ALPN `h2`. That is the listener busbar advertises
+//! HTTP/2 on (`busbar-core-connector/src/tls/mod.rs` `ALPN_OFFER` = `h2, http/1.1`, OWNER RULING
+//! Q137 2026-10-04), and on it an ALPN-`h2` connection that does not open with the connection
+//! preface is closed with no bytes (RFC 9113 §3.4). h2spec runs with `-t -k` (TLS, the throwaway
+//! CA's leaf not verified) against a leaf minted per run ([`subject::mint_pki`]).
+//!
+//! The cleartext listener is NOT h2spec's subject (ARCHITECT Q2 ruling 2026-10-07): its
+//! prior-knowledge h2c keeps 1.5.5's bytes, including the owner-locked HTTP/1.1 `400` for a request
+//! line that is not a preface (h2spec 3.5/2), and those bytes are judged by the oracle against the
+//! 1.5.5 golden, not by this rig.
 //!
 //! THE JUDGEMENT. h2spec's own JUnit report, read case by case: a pass is every case run and
 //! passed. A failed or errored case is red, and so is a SKIPPED one — a skipped case is a
@@ -183,18 +188,28 @@ impl Runner {
                 return decide_h2(&run);
             }
         };
+        let pki = match subject::mint_pki(&dir, &["localhost", "127.0.0.1"]) {
+            Ok(p) => p,
+            Err(e) => return Outcome::not_run(e),
+        };
         let ports = match subject::free_ports(2) {
             Ok(p) => p,
             Err(e) => return Outcome::not_run(e),
         };
+        let config = format!(
+            "{}tls:\n  cert: {{ file: {} }}\n  key: {{ file: {} }}\n",
+            subject::base_config(&format!("127.0.0.1:{}", ports[0]), ports[1]),
+            pki.cert.display(),
+            pki.key.display()
+        );
         let booted = match subject::boot(
             &bin,
             &dir.join("subject"),
-            &subject::base_config(&format!("127.0.0.1:{}", ports[0]), ports[1]),
+            &config,
             subject::NO_PROVIDERS,
             &[],
-            &format!("http://127.0.0.1:{}/stats", ports[0]),
-            &[],
+            &format!("https://127.0.0.1:{}/stats", ports[0]),
+            &["-k"],
         ) {
             Ok(b) => b,
             Err(e) => {
@@ -204,10 +219,13 @@ impl Runner {
             }
         };
         let port = ports[0].to_string();
-        // `-P /stats`: a path the plain subject answers with a body, so the flow-control cases have
-        // DATA to window. `-o 5`: h2spec's per-case timeout.
+        // `-t -k`: TLS with ALPN `h2`, the per-run leaf not verified. `-P /stats`: a path the
+        // subject answers with a body, so the flow-control cases have DATA to window. `-o 5`:
+        // h2spec's per-case timeout.
         let args = |out: &str| -> Vec<String> {
             [
+                "-t",
+                "-k",
                 "-h",
                 "127.0.0.1",
                 "-p",

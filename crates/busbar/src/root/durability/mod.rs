@@ -94,6 +94,7 @@ use std::path::PathBuf;
 use crate::root::kernel::PinnedHistory;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, PostingFlags, StepName};
+use busbar_contract::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditRecord, KeyError,
 };
@@ -102,7 +103,6 @@ use busbar_kernel_ledger::checkpoint::{
 };
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, SummedRows};
-use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_ledger::settle::{Figures, Ledger, Settlement};
 use busbar_kernel_ledger::totals::{
     BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
@@ -2130,6 +2130,11 @@ pub struct NodeBook {
     /// The previous release's rows, as the dual write fills them. The write half is inside the
     /// ledger; this is the same value, kept so a view has somewhere to read them from.
     pub rows: std::sync::Arc<SummedRows>,
+    /// The configured store, behind the published ABI, as the admin verbs unit reaches it: the SAME
+    /// loader adapter boot shipped this book's batches through (`StoreAdapter::verb_store`), so the
+    /// disaster-recovery verbs land on the store the book is shipped to. `None` on a node with no
+    /// configured store (row 113, ruling (B)).
+    pub verb_store: crate::root::kernel::VerbStoreHandle,
 }
 
 /// Open the one book a process settles onto.
@@ -2170,6 +2175,8 @@ pub fn node_book_over(history: HistorySource) -> NodeBook {
     NodeBook {
         durability: std::sync::Arc::new(std::sync::Mutex::new(durability)),
         rows,
+        // No store: this constructor is the no-store fallback (see [`node_book`]).
+        verb_store: None,
     }
 }
 

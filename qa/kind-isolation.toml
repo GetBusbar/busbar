@@ -574,6 +574,26 @@ drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis
 
 [[dep]]
 from    = "busbar"
+to      = "busbar-auth-sigv4"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §6 step 3 and §11.11 R3 — the composition root links the auth plugin that serves a style; P2 D1 (the auth split) deletes the kernel's own copies of every outbound style and its inbound SigV4, so the default distribution links the plugins that now serve them."
+why     = "busbar names busbar-auth-sigv4: declared optional (feature `auth-sigv4`, default-on) in the shipped graph, 1 declaration(s) at this commit — the sigv4 auth plugin: a bedrock provider's credential signs through it outbound, and busbar's own SigV4 keys are verified through its `verify` over `records.secret` inbound. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-auth-oauth"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §6 step 3 and §11.11 R3 — the composition root links the auth plugin that serves a style; P2 D1 (the auth split) deletes the kernel's own copies of every outbound style and its inbound SigV4, so the default distribution links the plugins that now serve them."
+why     = "busbar names busbar-auth-oauth: declared optional (feature `auth-oauth`, default-on) in the shipped graph, 1 declaration(s) at this commit — the oauth auth plugin (jwt-bearer, oauth-client-credentials) a provider's minted credential binds through. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
@@ -994,13 +1014,9 @@ cite = "BUSBAR-1.6.0.md THE DESIGN, §2 — the loader is part of the trusted ba
 why = "the loader implements the transport face (transport_adapter.rs `WireTransport`) to hand a dynamically loaded transport plugin to the kernel. One implementation, in shipped source. Re-described against the tree: the store bridge no longer implements a `Store` face (its adapters implement the record/slice/verb store traits), and the transport bridge is the one entry face the loader implements today."
 drain = "none while the loader is outside the kind system. The drain is the ruling that gives the trusted base a kind of its own; until then this row holds the number, so a SECOND face appearing in the loader is a landing that has to say why."
 
-[[face]]
-crate = "busbar"
-face = "Store"
-count = "2"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 gives the composition root a REGISTRY to assemble from; assembling a store is not implementing one."
-why = "the root implements the store face twice in its own assembly rather than composing a store plugin that does. Two implementations, in shipped source."
-drain = "move both implementations into a store-kind crate and have the root REGISTER it. The root names every kind by design and implements none of them."
+# STRUCK (row 113, ruling (B)): `busbar` × Store. The root's two implementations — the refusing
+# stand-in and the forwarding newtype — are deleted; the root binds the loader's adapter over the
+# configured store (`StoreAdapter::verb_store`) and implements no store face.
 
 # ── THE DIALECT COLUMN ───────────────────────────────────────────────────────────────────────────
 #
@@ -1182,16 +1198,6 @@ verdict = "tcb"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 — the loader/plugin tooling is the TRUSTED COMPUTING BASE; it names contract directly and the kind rules do not rule on its edges (ARCHITECTURE_TCB plugin-tooling -> contract)."
 why     = "busbar-plugin-loader names busbar-contract: declared shipped, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "none while busbar-plugin-loader is the loader TCB; the row records the edge so a NEW plugin-tooling -> contract coupling is visible on the landing that adds it."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-kernel-ledger"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 — the loader/plugin tooling is the TRUSTED COMPUTING BASE; it names kernel directly and the kind rules do not rule on its edges (ARCHITECTURE_TCB plugin-tooling -> kernel)."
-why     = "busbar-plugin-loader names busbar-kernel-ledger: declared shipped, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while busbar-plugin-loader is the loader TCB; the row records the edge so a NEW plugin-tooling -> kernel coupling is visible on the landing that adds it."
 
 [[dep]]
 from    = "busbar-plugin-loader"

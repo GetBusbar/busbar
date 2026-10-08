@@ -1463,10 +1463,11 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     handle.abort();
 }
 
-/// The credential cache end-to-end: an external-module identify is CACHED (the second
-/// request is served from the cache — observable via the flush count), `POST
-/// /api/v1/admin/auth/cache/flush` drops it (full scope; read-only principals get 403), and the
-/// built-in operator token is NEVER cached (flush finds nothing after operator calls).
+/// The cache flush end-to-end: `POST /api/v1/admin/auth/cache/flush` is a full-scope mutation
+/// (read-only principals get 403), and it answers the count the auth plugins report dropping when
+/// they `refresh` (THE DESIGN 11.11 R3): the kernel caches no verdict, so after two reads by an
+/// external module's principal, a module that caches nothing inside itself (the in-process
+/// stand-in) reports nothing to drop.
 #[tokio::test]
 async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     busbar_kernel::snapshot::init();
@@ -1511,8 +1512,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 403, "flush is a full-scope mutation");
 
-    // Operator flushes the module partition: exactly ONE entry (the cached viewers identify;
-    // operator-token authentications are never cached).
+    // Operator flushes the module: the kernel holds nothing, and the stand-in caches nothing.
     let r = client
         .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
         .header("x-admin-token", "admintok")
@@ -1523,13 +1523,9 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
-    // TWO entries in the module's partition: the viewers Identify, plus the PASS the module
-    // returned for the operator token (Pass IS cached, short-TTL —; only the built-in
-    // admin-tokens module's own verdicts are exempt). The flushing request's own Pass was
-    // inserted by its chain run before the handler flushed.
     assert_eq!(
-        body["flushed"], 2,
-        "the viewers Identify + the operator credential's cached Pass"
+        body["flushed"], 0,
+        "the kernel caches no verdict; the stand-in module caches none inside itself"
     );
 
     // Flush-all with an empty body: nothing left.
@@ -1540,12 +1536,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
         .await
         .unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    // Exactly ONE: this very request's chain run re-cached a Pass for the operator credential
-    // under the external module before the handler flushed. Nothing else survived.
-    assert_eq!(
-        body["flushed"], 1,
-        "only this request's own cached Pass remained"
-    );
+    assert_eq!(body["flushed"], 0, "nothing is cached kernel-side");
 
     // Malformed body: invalid_request.
     let r = client
@@ -11702,4 +11693,19 @@ fn free_open_units() -> serde_json::Value {
         .map(|c| (c.to_string(), serde_json::json!(0)))
         .collect::<serde_json::Map<_, _>>()
         .into()
+}
+
+/// `build.auth_modules` (and the `plugins?type=auth` catalog behind it) lists the INBOUND auth-chain
+/// modules only, by their linked alias, as 1.5.5 did: an inbound row is listed under its key. The
+/// outbound-only half (a linked row that declares no inbound capability is NOT listed) is proven in
+/// the composition root over the rows the shipped build links
+/// (`crates/busbar/src/root/tests/linked_auth.rs`), where the outbound plugin is a dependency.
+#[test]
+fn auth_modules_list_inbound_rows_only() {
+    let inbound: busbar_kernel::preflight::LinkedAuth =
+        ("admin-tokens", busbar_auth_admin_tokens_plugin::door::door);
+    assert_eq!(
+        busbar_kernel::preflight::inbound_auth_names(&[inbound]),
+        vec!["admin-tokens"]
+    );
 }
