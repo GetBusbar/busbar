@@ -42,7 +42,6 @@ pub mod cli;
 pub mod conformance_check;
 pub mod conformance_record;
 pub mod ctx;
-pub mod declare;
 pub mod denylist;
 pub mod dialect;
 pub mod ere;

@@ -1098,14 +1098,6 @@ pub trait Gate: Sync {
     /// run to report them BY NAME.
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a>;
 
-    /// `cargo xtask selftest --declare`: which of a case's expected NEEDLES (the strings an
-    /// `Expect::Red` must name) this gate's own live vocabulary no longer produces on this tree.
-    /// Only the gate derives its vocabulary, so the release engine's walk-around takes its word;
-    /// a gate that has not taught itself to answer names none.
-    fn unresolved_naming(&self, _cx: &Ctx, _naming: &[String]) -> Vec<String> {
-        Vec::new()
-    }
-
     /// The planted trees `cargo xtask gate <name> --parity` drives BOTH implementations over.
     ///
     /// A parity run that compares only the real tree compares one green against another green, and
@@ -2355,31 +2347,6 @@ fn narrowed_got(verdict: &Verdict, covers: &[&str]) -> Expect {
     Expect::Red { naming: evidence }
 }
 
-/// `cargo xtask selftest --declare` ([`crate::declare`]): record the case's STATIC declaration —
-/// what it plants, what it expects — and hand back a case that ran nothing (its `got` is its
-/// `expected`). Reached only through a declaring [`Ctx`], never on a run that proves anything.
-fn declared(
-    cx: &Ctx,
-    name: String,
-    covers: Vec<String>,
-    expected: Expect,
-    overlay: Option<&crate::ctx::Overlay>,
-) -> Case {
-    let naming = match &expected {
-        Expect::Red { naming } => naming.clone(),
-        _ => Vec::new(),
-    };
-    cx.declare(crate::declare::Declared::new(
-        cx, &name, &covers, &naming, overlay,
-    ));
-    Case {
-        name,
-        covers,
-        got: expected.clone(),
-        expected,
-    }
-}
-
 /// A PROOF IS A TRANSITION, NOT A COLOUR. Plant an overlay, run the gate THROUGH `execute` TWICE —
 /// once clean, once planted — and require the covered rows to go GREEN -> RED naming every string
 /// in `naming`. The only way a gate's selftest touches its gate.
@@ -2424,9 +2391,6 @@ pub fn prove_red<'a>(
     CasePlan::new(move || {
         let expected = Expect::Red { naming };
         let overlay = plant.build();
-        if cx.is_declaring() {
-            return declared(&cx, name, covers, expected, Some(&overlay));
-        }
         let ids = refs(&covers);
 
         // THE THREE MEASUREMENTS, IN THE ORDER THEY COST. The plant is read against the tree for
@@ -2501,9 +2465,6 @@ pub fn prove_red_by_configuration<'a>(
     let cx = cx.clone();
     CasePlan::new(move || {
         let expected = Expect::Red { naming };
-        if cx.is_declaring() {
-            return declared(&cx, name, covers, expected, None);
-        }
         let ids = refs(&covers);
         let scored = narrowed_got(&execute(planted, &cx), &ids);
 
@@ -2682,9 +2643,6 @@ pub fn prove_rows_green<'a>(
     let cx = cx.clone();
     CasePlan::new(move || {
         let overlay = plant.build();
-        if cx.is_declaring() {
-            return declared(&cx, name, covers, Expect::Green, Some(&overlay));
-        }
         // A GREEN PROOF OVER A PLANT THAT CHANGED NOTHING IS A CLAIM ABOUT THE UNPLANTED TREE. The
         // red arm has refused that since `inert_plant` was written; the green arm is the proof
         // that a gate does NOT fire on a legitimate shape, and it needs the same door shut.
@@ -2760,11 +2718,7 @@ pub fn prove_rows_red_at<'a>(
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let fixture_abs = cx.abs(fixture_rel);
     let scratch = cx.scratch().to_path_buf();
-    let declaring = cx.is_declaring().then(|| cx.clone());
     CasePlan::new(move || {
-        if let Some(cx) = &declaring {
-            return declared(cx, name, covers, expected, None);
-        }
         let Ok(fixture_cx) = Ctx::at(fixture_abs, scratch) else {
             return Case {
                 name,
@@ -2796,9 +2750,6 @@ pub fn prove_green<'a>(
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let cx = cx.clone();
     CasePlan::new(move || {
-        if cx.is_declaring() {
-            return declared(&cx, name, covers, Expect::Green, None);
-        }
         let verdict = execute(gate, &cx);
         Case {
             name,
@@ -3441,58 +3392,6 @@ mod falsification_tests {
 
     fn took(plan: CasePlan<'_>) -> Case {
         plan.take()
-    }
-
-    /// `selftest --declare`: a DECLARING context records the case — its plant paths, the crate it
-    /// plants, the needles it expects — and runs NO gate. Proven on the stuck row, which every run
-    /// of the gate scores IMPOSSIBLE: the case coming back RED-as-expected is the case not having
-    /// been run. An ordinary context records nothing.
-    #[test]
-    fn a_declaring_context_records_the_case_and_runs_no_gate() {
-        let cx = Ctx::workspace().expect("the workspace opens").declaring();
-        let gate = ProbeGate;
-        let mut ov = Overlay::new();
-        ov.set("crates/zz-planted/Cargo.toml", "[package]\n");
-        ov.set(PROBE_MARKER, "planted\n");
-        let case = took(prove_red(
-            &cx,
-            &gate,
-            "declared, never run",
-            &[PROBE_STUCK],
-            ov,
-            &["standing-red"],
-        ));
-        assert_eq!(case.got, case.expected, "a declared case runs nothing");
-        let declared = cx.take_declared();
-        assert_eq!(declared.len(), 1, "{declared:?}");
-        assert_eq!(declared[0].name, "declared, never run");
-        assert_eq!(declared[0].expected_naming, vec!["standing-red"]);
-        assert_eq!(
-            declared[0].plant_paths,
-            vec!["crates/zz-planted/Cargo.toml", PROBE_MARKER]
-        );
-        assert_eq!(declared[0].planted_crates, vec!["crates/zz-planted"]);
-        assert!(cx.take_declared().is_empty(), "taking drains the record");
-
-        let plain = Ctx::workspace().expect("the workspace opens");
-        let ran = took(prove_red(
-            &plain,
-            &gate,
-            "run",
-            &[PROBE_STUCK],
-            {
-                let mut ov = Overlay::new();
-                ov.set(PROBE_MARKER, "planted\n");
-                ov
-            },
-            &["standing-red"],
-        ));
-        assert!(
-            matches!(ran.got, Expect::Impossible { .. }),
-            "{:?}",
-            ran.got
-        );
-        assert!(plain.take_declared().is_empty());
     }
 
     /// OUTCOME ONE: a genuine plant on a green row IS a proof. GREEN -> RED, naming the offender.
