@@ -268,63 +268,6 @@ pub trait CallerFacts: Send + Sync {
     }
 }
 
-/// THE PRODUCTION CALLER FACTS: what the hooks may know of a verified caller, read where 1.5.5's
-/// hook seam read it (v1.5.5 `crates/busbar/src/proxy/hooks.rs`): the caller's governance key
-/// (looked up by the principal the kernel verified, its id), its `groups:` membership walked against
-/// the generation's group registry (`EngineHost::caller_in_hook_groups`, self + ancestors), and its
-/// rate headroom and budget chain over the governance state and card the generation pins
-/// (`EngineHost::rate_headroom` / `budget_state`, pure observations).
-pub struct EngineCaller {
-    /// The current generation's engine host, read per call (a config apply replaces it).
-    pub host: HostSource,
-    /// The principal's governance key, by its id (`GovState::lookup_by_sub`).
-    pub keys: KeyLookup,
-}
-
-/// The CURRENT generation's engine host, read where it is needed: a config apply replaces the
-/// generation (its hook registry, its group tree, its card), and a unit bound after the apply binds
-/// the new one, as 1.5.5's request read the snapshot it arrived on.
-pub type HostSource = Arc<dyn Fn() -> Arc<dyn crate::plane_host::EngineHost> + Send + Sync>;
-
-/// A governance key lookup by principal id.
-pub type KeyLookup =
-    Arc<dyn Fn(&str) -> Option<Arc<busbar_contract::records::VirtualKey>> + Send + Sync>;
-
-impl EngineCaller {
-    fn key_of(&self, principal: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
-        (self.keys)(principal)
-    }
-}
-
-impl CallerFacts for EngineCaller {
-    fn key(&self, principal: &str) -> Option<CallerKey> {
-        self.key_of(principal).map(|k| CallerKey {
-            id: k.id.clone(),
-            name: k.name.clone(),
-        })
-    }
-
-    fn in_groups(&self, principal: Option<&str>, groups: &[String]) -> bool {
-        let key = principal.and_then(|p| self.key_of(p));
-        (self.host)().caller_in_hook_groups(key.as_ref().and_then(|k| k.group.as_deref()), groups)
-    }
-
-    fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64> {
-        let key = self.key_of(principal)?;
-        let host = (self.host)();
-        let pin = host.meter_pin()?;
-        host.rate_headroom(&pin, &key, Some(pool), crate::store::now())
-    }
-
-    fn budget(&self, principal: &str) -> Vec<BudgetBucketState> {
-        let host = (self.host)();
-        match (self.key_of(principal), host.meter_pin()) {
-            (Some(key), Some(pin)) => host.budget_state(&pin, &key, crate::store::now()),
-            _ => Vec::new(),
-        }
-    }
-}
-
 /// The hooks one unit binds, before the caller's facts: `None` when no hook of any stage is bound.
 struct Parts {
     rewrites: RewriteChain,
@@ -467,8 +410,8 @@ impl HookBinder for BoundHooks {
 /// declared signals and its one request-id counter), with what `caller` knows of a verified
 /// principal.
 pub struct HostHooks {
-    /// The current generation's engine host, read once per bound unit.
-    pub host: HostSource,
+    /// The generation's engine host.
+    pub host: Arc<dyn crate::plane_host::EngineHost>,
     /// What the hooks may know of a verified caller.
     pub caller: Arc<dyn CallerFacts>,
     /// The plane's dialects, in its tail's order.
@@ -484,8 +427,7 @@ impl HookBinder for HostHooks {
     }
 
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
-        let host = (self.host)();
-        let h = &*host;
+        let h = &*self.host;
         let parts = Parts::of(
             (h.rewrite_hooks(), h.global_gates()),
             (h.pool_rewrites(bind.pool), h.pool_gates(bind.pool)),
@@ -502,15 +444,14 @@ impl HookBinder for HostHooks {
     }
 
     fn denied(&self, dialect: u32, status: u16) {
-        let host = (self.host)();
-        let taps = host.tap_hooks_response();
+        let taps = self.host.tap_hooks_response();
         if taps.is_empty() {
             return;
         }
         denied_taps(
             &*self.caller,
             taps,
-            host.next_request_id(),
+            self.host.next_request_id(),
             &self.dialects,
             (dialect, status),
         );
@@ -1303,9 +1244,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     }
 
     /// THE UNIT'S IN-SESSION HOOK STAGE, stated on the kernel's unit records as its route leg
-    /// starts ([`SessionStage`]): the instance, the pool the walk routes it over (never one the
-    /// plane names), its verified principal and dialect, and this generation's binder. A health
-    /// probe states none (the kernel's own unit; no hook screens it).
+    /// starts ([`SessionStage`]): the instance, the pool the kernel routes it over
+    /// ([`FarEnd::pool`], else the walk's; never one the plane names), its verified principal and
+    /// dialect, and the binder, which binds the hooks of the live generation when the stage is
+    /// first used. A health probe states none (the kernel's own unit; no hook screens it).
     pub(crate) fn state_stage(&self, token: &Pass<Route>) {
         if self.arrival.claim == CLAIM_PROBE {
             return;
@@ -1330,21 +1272,28 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             )
         };
         let dialect = arrived_in;
-        let (pool, dialect) = match &d.hooks {
+        let (scope, dialect) = match &d.hooks {
             Some(binder) => (
-                self.far
-                    .candidates(token)
-                    .map(|c| c.pool)
-                    .unwrap_or_default(),
+                self.far.scope(token).unwrap_or_else(|| {
+                    let pool = self
+                        .far
+                        .candidates(token)
+                        .map(|c| c.pool)
+                        .unwrap_or_default();
+                    super::RoutedScope {
+                        container: pool.clone(),
+                        pool,
+                    }
+                }),
                 binder.dialect(dialect),
             ),
-            None => (String::new(), String::new()),
+            None => (super::RoutedScope::default(), String::new()),
         };
         let stage = SessionStage::new(
             Arc::clone(&d.label),
             runtime,
             d.hooks.clone(),
-            (pool, principal, dialect),
+            (scope, principal, dialect),
             arrived_in,
         );
         let _held = d.services.units().staged(unit, Arc::new(stage));
@@ -1874,7 +1823,10 @@ pub struct SessionStage {
     instance: Arc<str>,
     runtime: tokio::runtime::Handle,
     binder: Option<Arc<dyn HookBinder>>,
+    /// The label the unit's hooks are scoped by: its pool (routed order), or its entry (gate-first).
     pool: String,
+    /// The container a gate-first plane's hooks are bound for.
+    container: String,
     principal: Option<String>,
     dialect: String,
     /// The dialect the unit arrived in, as the index into the plane's dialects (what its hooks
@@ -1889,6 +1841,34 @@ impl std::fmt::Debug for SessionStage {
             .field("instance", &self.instance)
             .field("pool", &self.pool)
             .finish_non_exhaustive()
+    }
+}
+
+/// A gate-first unit's hooks, as the in-session stage runs them: its entry's gates and rewrite
+/// chain, its caller's key; no tap and no route policy (the gate-first order has none), and a hook
+/// handed the prompt leaves the kernel's own access amendment; `dialect` is the name of the dialect
+/// the unit arrived in.
+fn gated_unit(g: GatedHooks, dialect: String) -> UnitHooks {
+    UnitHooks {
+        request_id: g.request_id,
+        rewrites: g.rewrites,
+        gates: g.gates,
+        policy: None,
+        taps: StageTaps::default(),
+        key: g.key.map(|k| CallerKey {
+            id: k.id.clone(),
+            name: k.name.clone(),
+        }),
+        rate_headroom: None,
+        budget: Vec::new(),
+        requested: crate::hooks::RequestedSignals::default(),
+        groups: Arc::new(|_: &[String]| true),
+        reads: Arc::new(
+            |hook: &str, principal: Option<&str>, dialect: &str, identity: bool| {
+                crate::audit::amend::hook_read(hook, principal, dialect, identity);
+            },
+        ),
+        dialect,
     }
 }
 
@@ -1912,23 +1892,32 @@ impl Drop for OwedStage {
 }
 
 impl SessionStage {
-    /// The stage of a unit of instance `instance`, routed over `pool` for `principal`, its hooks
-    /// bound by `binder` (none = no hook binds), run on `runtime`; the unit arrived in dialect
-    /// `arrived_in` (the index into the plane's dialects; its name is `dialect`), and its hooks bind
-    /// there. There is no default dialect: a stage is stated only for a unit its plane decoded.
+    /// The stage of a unit of instance `instance`, routed over `scope` for `principal`, its hooks
+    /// bound by `binder` (none = no hook binds) in the binder's order, run on `runtime`; the unit
+    /// arrived in dialect `arrived_in` (the index into the plane's dialects; its name is
+    /// `dialect`), and its hooks bind there. There is no default dialect: a stage is stated only for
+    /// a unit its plane decoded.
     #[must_use]
     pub fn new(
         instance: Arc<str>,
         runtime: tokio::runtime::Handle,
         binder: Option<Arc<dyn HookBinder>>,
-        (pool, principal, dialect): (String, Option<String>, String),
+        (scope, principal, dialect): (super::RoutedScope, Option<String>, String),
         arrived_in: u32,
     ) -> Self {
+        let gated = binder
+            .as_ref()
+            .is_some_and(|b| b.order() == HookOrder::Gated);
         Self {
             instance,
             runtime,
             binder,
-            pool,
+            pool: if gated {
+                scope.container.clone()
+            } else {
+                scope.pool
+            },
+            container: scope.container,
             principal,
             dialect,
             arrived_in,
@@ -1936,16 +1925,21 @@ impl SessionStage {
         }
     }
 
-    /// The unit's hooks, bound once.
+    /// The unit's hooks, bound once, in the binder's order: a gate-first plane's are the gates and
+    /// rewrites attached to the unit's entry, as its request stage binds them.
     fn hooks(&self) -> Option<&UnitHooks> {
         self.bound
             .get_or_init(|| {
-                self.binder.as_ref().and_then(|b| {
-                    b.bind(&Bind {
-                        pool: &self.pool,
-                        principal: self.principal.as_deref(),
-                        dialect: self.arrived_in,
-                    })
+                let b = self.binder.as_ref()?;
+                if b.order() == HookOrder::Gated {
+                    return b
+                        .bind_gated(&self.container, self.principal.as_deref())
+                        .map(|g| gated_unit(g, self.dialect.clone()));
+                }
+                b.bind(&Bind {
+                    pool: &self.pool,
+                    principal: self.principal.as_deref(),
+                    dialect: self.arrived_in,
                 })
             })
             .as_ref()

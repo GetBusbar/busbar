@@ -130,6 +130,34 @@ async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
 async fn far_end_failing_first(
     failures: usize,
 ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    far_end_answering(Arc::new(move |n| {
+        if n < failures {
+            Answer::Says("503 Service Unavailable", UNAVAILABLE)
+        } else {
+            Answer::Says("200 OK", ANSWER)
+        }
+    }))
+    .await
+}
+
+#[cfg(feature = "plane-decisions")]
+/// How the far end answers one connection.
+#[derive(Debug, Clone, Copy)]
+enum Answer {
+    /// A status line and a JSON body.
+    Says(&'static str, &'static str),
+    /// Nothing: the request is read and the connection held open, unanswered.
+    Holds,
+}
+
+#[cfg(feature = "plane-decisions")]
+/// How the far end answers its `n`th connection (from zero).
+type Script = Arc<dyn Fn(usize) -> Answer + Send + Sync>;
+
+#[cfg(feature = "plane-decisions")]
+/// A far end on loopback answering its `n`th connection as `script` says; what it was sent comes
+/// back on the channel, one request head per connection, before it answers.
+async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("a loopback port");
@@ -138,7 +166,7 @@ async fn far_end_failing_first(
     tokio::spawn(async move {
         let mut accepted = 0usize;
         while let Ok((mut socket, _)) = listener.accept().await {
-            let failing = accepted < failures;
+            let answer = script(accepted);
             accepted += 1;
             let sent = sent.clone();
             tokio::spawn(async move {
@@ -170,10 +198,13 @@ async fn far_end_failing_first(
                         }
                     }
                 }
-                let (line, body) = if failing {
-                    ("503 Service Unavailable", UNAVAILABLE)
-                } else {
-                    ("200 OK", ANSWER)
+                let (line, body) = match answer {
+                    Answer::Says(line, body) => (line, body),
+                    Answer::Holds => {
+                        // Held past any bound a test waits for; the socket closes with the task.
+                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                        return;
+                    }
                 };
                 let reply = format!(
                     "HTTP/1.1 {line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
@@ -2182,11 +2213,94 @@ mod tools_door {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// What a served door's data router needs kept alive beside it.
+/// What a served door's data router needs kept alive beside it, and what a test reads back off
+/// the composition it served through.
 struct Serving {
     router: axum::Router,
     token: String,
     _handle: Arc<busbar_kernel::state::AppHandle>,
+    /// The door plane's egress as the composition sealed it: its members' breaker cells.
+    egress: Arc<busbar_kernel::plane_driver::Egress>,
+    /// The plane's key, which its lanes are named under.
+    plane: String,
+    /// The node's book: the journal, the ledger and the audit chain its units seal onto.
+    book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+    /// The governance book the caller's key is charged on, and that key.
+    gov: Arc<GovState>,
+    key: String,
+    /// The app the data router serves (its cost model prices the key's usage).
+    app: Arc<busbar_kernel::state::App>,
+}
+
+#[cfg(feature = "plane-decisions")]
+impl Serving {
+    /// The one model's lane, `(plane key, m)`: its member's name, and on a direct route the pool
+    /// its breaker cell is keyed under.
+    fn lane(&self) -> String {
+        format!("{}{PLANE_LANE_SEP}m", self.plane)
+    }
+
+    /// Whether the model's member's breaker cell would take a request now (the walk's own filter).
+    fn ready(&self) -> bool {
+        self.egress.breaker.ready(
+            &self.lane(),
+            MEMBER,
+            self.egress.clock.now_secs(),
+            &busbar_kernel::test_support::tokens::pass(),
+        )
+    }
+
+    /// The seconds of cooldown the member's breaker cell has left; zero for a closed cell.
+    fn cooldown(&self) -> u64 {
+        self.egress.breaker.cooldown_remaining(
+            &self.lane(),
+            MEMBER,
+            self.egress.clock.now_secs(),
+            &busbar_kernel::test_support::tokens::pass(),
+        )
+    }
+
+    /// The real `/metrics` scrape on the data router, as the keyed caller.
+    async fn scrape(&self) -> String {
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .header("authorization", format!("Bearer {}", self.token))
+            .body(axum::body::Body::empty())
+            .expect("a request");
+        let response = self
+            .router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::OK, "the scrape is served");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 22)
+            .await
+            .expect("the exposition");
+        String::from_utf8(body.to_vec()).expect("the exposition is UTF-8")
+    }
+
+    /// The audit records sealed on the node's book, oldest first.
+    fn audit_records(&self) -> Vec<busbar_kernel_audit::AuditRecord> {
+        self.book.lock().expect("unpoisoned").audit_records.clone()
+    }
+}
+
+#[cfg(feature = "plane-decisions")]
+/// The model's one member: the first (and only) entry its egress seals.
+const MEMBER: busbar_contract::DestinationId = busbar_contract::DestinationId::new(0);
+
+#[cfg(feature = "plane-decisions")]
+/// The sum of `family`'s series on `exposition` whose `lane` label is `lane`.
+fn counted(exposition: &str, family: &str, lane: &str) -> f64 {
+    let lane = format!("lane=\"{lane}\"");
+    exposition
+        .lines()
+        .filter(|l| l.starts_with(&format!("{family}{{")) && l.contains(&lane))
+        .filter_map(|l| l.rsplit_once(' ')?.1.parse::<f64>().ok())
+        .sum()
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -2195,6 +2309,32 @@ struct Serving {
 /// model whose provider is the far end on `port`, a keyed caller): the composition reads the door
 /// plane's declared facts off `linked`.
 async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: u16) -> Serving {
+    serve_limited(linked, instance, port, Vec::new()).await
+}
+
+#[cfg(feature = "plane-decisions")]
+/// [`serve_over`], its caller's key bound to a group that states `limits`.
+async fn serve_limited(
+    linked: &crate::root::linked::Linked,
+    instance: &str,
+    port: u16,
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+) -> Serving {
+    serve_governed(linked, instance, port, limits, 0).await
+}
+
+#[cfg(feature = "plane-decisions")]
+/// [`serve_limited`], the plane stating its own per-request fee (its section's reserved
+/// `fees.per_request`, #47), in minor units.
+async fn serve_governed(
+    linked: &crate::root::linked::Linked,
+    instance: &str,
+    port: u16,
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+    fee: i64,
+) -> Serving {
+    // The scrape sink's `/metrics` is mounted on a test app built with the recorder installed.
+    busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()
@@ -2236,18 +2376,46 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
             .expect("governance"),
     );
-    let (_key, token) = gov
+    let group = format!("decider-{instance}");
+    let groups = if limits.is_empty() {
+        BTreeMap::new()
+    } else {
+        BTreeMap::from([(
+            group.clone(),
+            busbar_kernel::config::GroupCfg {
+                limits,
+                ..Default::default()
+            },
+        )])
+    };
+    let cost = if groups.is_empty() {
+        CostModel::flat(1)
+    } else {
+        CostModel::resolve_parts(None, 1, &groups)
+    };
+    let cost = if fee == 0 {
+        cost
+    } else {
+        cost.with_plane_fees(&busbar_kernel::config::PlaneFeesMap::from([(
+            plane.name().to_string(),
+            busbar_kernel_ledger::cost::PlaneFees {
+                per_request: fee,
+                per_session: 0,
+            },
+        )]))
+    };
+    let (key, token) = gov
         .mint_signed(
             NewKeySpec {
                 name: "decider".to_string(),
+                group: (!groups.is_empty()).then(|| group.clone()),
                 ..Default::default()
             },
             4_000_000_000,
             1_700_000_000,
         )
         .expect("mint");
-    gov.hydrate_budgets(&CostModel::flat(1), 0)
-        .expect("hydrate");
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
     let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
     node.bind_book(Arc::clone(&book.durability));
@@ -2316,18 +2484,33 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
     served.post = Some(Arc::clone(&post));
+    let composed = &served.planes[0];
+    let egress = composed
+        .live
+        .current()
+        .egress
+        .clone()
+        .expect("the composition sealed its egress");
+    let plane = composed.facts.plane.clone();
     let app = busbar_kernel::test_support::TestApp::new()
         .keys_chain()
         .governance(Arc::clone(&gov))
-        .cost(CostModel::flat(1))
+        .groups_tree(groups)
+        .cost(cost)
         .build();
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, handle) =
-        busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
+        busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
     Serving {
         router,
         token: token.expose_secret().to_string(),
         _handle: handle,
+        egress,
+        plane,
+        book: Arc::clone(&book.durability),
+        gov,
+        key: key.id.to_string(),
+        app,
     }
 }
 
@@ -2464,7 +2647,8 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
 // (`super::hook_seat_tests::rig`), and reads the capability where the kernel keeps it.
 #[cfg(linked_fold_on_driver)]
 use super::hook_seat_tests::{
-    chunk, far_end_answering, far_end_scripted, rig, RigOpts, Script, REWRITTEN,
+    chunk, far_end_answering as seat_far_end, far_end_scripted, rig, RigOpts, Script as SeatScript,
+    REWRITTEN,
 };
 #[cfg(linked_fold_on_driver)]
 use super::planes_tests::{Published as Withdrawn, PUBLISHING as ONE_PUBLISHER};
@@ -2490,8 +2674,8 @@ async fn the_pools_door_trips_a_failing_members_breaker_cell() {
     let instance = "serve-door-breaker-trip";
     let _published = Withdrawn(instance);
     let (down, twin) = (
-        far_end_answering(503, OVERLOADED).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
+        seat_far_end(503, OVERLOADED).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
     );
     let rig = rig(
         instance,
@@ -2521,8 +2705,8 @@ async fn the_pools_door_refuses_a_tripped_member_before_dispatch() {
     let instance = "serve-door-breaker-fastfail";
     let _published = Withdrawn(instance);
     let (down, twin) = (
-        far_end_answering(503, OVERLOADED).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
+        seat_far_end(503, OVERLOADED).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
     );
     let rig = rig(
         instance,
@@ -2557,8 +2741,8 @@ async fn the_pools_door_reroutes_to_the_twin_before_the_first_byte() {
     let instance = "serve-door-failover";
     let _published = Withdrawn(instance);
     let (down, twin) = (
-        far_end_answering(503, OVERLOADED).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
+        seat_far_end(503, OVERLOADED).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
     );
     let rig = rig(
         instance,
@@ -2588,8 +2772,8 @@ async fn the_pools_door_classifies_a_refused_request_as_the_callers_fault() {
     let instance = "serve-door-disposition";
     let _published = Withdrawn(instance);
     let (refusing, twin) = (
-        far_end_answering(400, MALFORMED).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
+        seat_far_end(400, MALFORMED).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
     );
     let rig = rig(
         instance,
@@ -2620,7 +2804,7 @@ async fn the_pools_door_injects_the_members_credential_not_the_callers() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-egress-auth";
     let _published = Withdrawn(instance);
-    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
         RigOpts {
@@ -2645,7 +2829,7 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-metrics";
     let _published = Withdrawn(instance);
-    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
         RigOpts {
@@ -2674,7 +2858,7 @@ async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-budget";
     let _published = Withdrawn(instance);
-    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
         RigOpts {
@@ -2707,7 +2891,7 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-audit";
     let _published = Withdrawn(instance);
-    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
         RigOpts {
@@ -2728,7 +2912,7 @@ async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-gate";
     let _published = Withdrawn(instance);
-    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
         RigOpts {
@@ -2750,7 +2934,7 @@ async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-tap";
     let _published = Withdrawn(instance);
-    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
         RigOpts {
@@ -2778,8 +2962,8 @@ async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches()
     let instance = "serve-door-catalogue";
     let _published = Withdrawn(instance);
     let (a, b) = (
-        far_end_answering(200, SERVED_BY_TWIN).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
     );
     let rig = rig(
         instance,
@@ -2822,7 +3006,7 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-dropped-controls";
     let _published = Withdrawn(instance);
-    let far = far_end_answering(200, ANTHROPIC_ANSWER).await;
+    let far = seat_far_end(200, ANTHROPIC_ANSWER).await;
     let rig = rig(
         instance,
         RigOpts {
@@ -2891,8 +3075,8 @@ async fn the_pools_doors_hooks_see_each_candidates_standing() {
     let instance = "serve-door-signals";
     let _published = Withdrawn(instance);
     let (a, b) = (
-        far_end_answering(200, SERVED_BY_TWIN).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
     );
     let rig = rig(
         instance,
@@ -2959,8 +3143,8 @@ fn frame(data: &str) -> Vec<u8> {
 
 /// A stream that pauses `pause_ms` after its first frame, then ends cleanly.
 #[cfg(linked_fold_on_driver)]
-fn stream_pausing(pause_ms: u64) -> Script {
-    Script {
+fn stream_pausing(pause_ms: u64) -> SeatScript {
+    SeatScript {
         head: STREAM_HEAD.to_string(),
         pieces: vec![
             (0, frame(FRAMES[0])),
@@ -3057,7 +3241,7 @@ async fn the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_by
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-stream-cut";
     let _published = Withdrawn(instance);
-    let far = far_end_scripted(Script {
+    let far = far_end_scripted(SeatScript {
         head: STREAM_HEAD.to_string(),
         pieces: vec![(0, frame(FRAMES[0])), (50, frame(FRAMES[1]))],
         finish: None,
@@ -3091,7 +3275,7 @@ async fn the_pools_door_refunds_the_budget_unit_of_a_buffered_answer_cut() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-buffered-cut";
     let _published = Withdrawn(instance);
-    let far = far_end_scripted(Script {
+    let far = far_end_scripted(SeatScript {
         head: format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
              connection: close\r\n\r\n",
@@ -3121,8 +3305,8 @@ const WHOLE: &str = r#"{"id":"chatcmpl-9","object":"chat.completion","created":0
 /// A far end that answers [`WHOLE`] under its full length but writes only `prefix` of it, then
 /// holds the connection `hold_ms` and closes (a cut).
 #[cfg(linked_fold_on_driver)]
-fn whole_cut_after(prefix: usize, hold_ms: u64) -> Script {
-    Script {
+fn whole_cut_after(prefix: usize, hold_ms: u64) -> SeatScript {
+    SeatScript {
         head: format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
              connection: close\r\n\r\n",
@@ -3239,9 +3423,9 @@ async fn the_pools_door_pins_a_session_to_one_member() {
     let instance = "serve-door-affinity";
     let _published = Withdrawn(instance);
     let fars = [
-        far_end_answering(200, SERVED_BY_TWIN).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
     ];
     let rig = rig(
         instance,
@@ -3310,9 +3494,9 @@ async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
     let instance = "serve-door-affinity-header";
     let _published = Withdrawn(instance);
     let fars = [
-        far_end_answering(200, SERVED_BY_TWIN).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
-        far_end_answering(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
     ];
     let rig = rig(
         instance,
@@ -3355,4 +3539,500 @@ async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
         moved >= 2,
         "the default header is not this pool's key: {before:?} -> {after:?}"
     );
+}
+
+// ── the core capabilities on the decisions plane (qa/capability-equality.json) ─────────────────
+//
+// The decisions plane is served only through its door on the kernel's plane driver, so each cell
+// below is the plane's proof and the `root-decisions` leg's at once: every unit is a keyed
+// caller's request on the data router, crossing the composition production seals.
+
+#[cfg(feature = "plane-decisions")]
+/// How many failing calls a breaker cell is given to open before the run calls it stuck.
+const MAX_FAILURES: usize = 8;
+
+#[cfg(feature = "plane-decisions")]
+/// A caller fault, as the far end words it.
+const CALLER_FAULT: &str = r#"{"error":"the state names no amount"}"#;
+
+#[cfg(feature = "plane-decisions")]
+/// Call the door until the model's member's breaker cell opens, its far end failing every call:
+/// the number of failures the cell recorded first. Every one reached the far end and was not
+/// served.
+async fn trip(
+    serving: &Serving,
+    heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+) -> usize {
+    for n in 1..=MAX_FAILURES {
+        let (status, reached) = call_once(serving, heard).await;
+        assert_ne!(status, StatusCode::OK, "failure {n} is not served");
+        assert!(reached.is_some(), "failure {n} reached the far end");
+        if serving.cooldown() > 0 {
+            return n;
+        }
+    }
+    panic!("{MAX_FAILURES} failures in a row never opened the member's breaker cell");
+}
+
+#[cfg(feature = "plane-decisions")]
+/// BREAKER-TRIP: a decisions provider that keeps failing records each failure into its member's
+/// ONE breaker cell (the egress walk's, keyed by the model's pool and member) until the cell OPENS:
+/// it then takes no request and carries a cooldown, and the trip is counted once on the scrape
+/// under the model's lane. The door states no bench below the trip threshold, so the failures below
+/// it open nothing and the run reaches the threshold itself. RED: a breaker port that records no
+/// failure leaves the cell closed through every failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_decisions_provider_records_into_its_breaker_cell_until_the_cell_opens() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-breaker-trip";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end_failing_first(MAX_FAILURES).await;
+    let serving = serve_over(&declaring(STATES_NO_BENCH), instance, port).await;
+    assert!(serving.ready(), "the member's cell starts closed");
+    let trips = counted(
+        &serving.scrape().await,
+        busbar_kernel::snapshot::BREAKER_TRIPS_TOTAL,
+        &serving.lane(),
+    );
+
+    let failures = trip(&serving, &mut heard).await;
+    assert!(
+        failures > 1,
+        "the cell recorded failures below its threshold before it opened, not one: {failures}"
+    );
+    assert!(!serving.ready(), "the opened cell takes no request");
+    assert_eq!(
+        counted(
+            &serving.scrape().await,
+            busbar_kernel::snapshot::BREAKER_TRIPS_TOTAL,
+            &serving.lane(),
+        ),
+        trips + 1.0,
+        "one fresh trip, counted under the model's lane"
+    );
+}
+
+#[cfg(feature = "plane-decisions")]
+/// BREAKER-FASTFAIL: once the member's breaker cell has opened, the next unit is refused BEFORE its
+/// dial and at once: the far end, which now holds every connection open unanswered, is never
+/// dialled, and the refusal comes back in well under a second rather than after the walk's
+/// budget. RED: a breaker port that admits an open cell dials the far end, which holds the unit
+/// past the bound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tripped_decisions_provider_is_refused_before_the_dial_at_once() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-breaker-fastfail";
+    let _published = Published(instance);
+    let holding = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let held = Arc::clone(&holding);
+    let (port, mut heard) = far_end_answering(Arc::new(move |_| {
+        if held.load(std::sync::atomic::Ordering::SeqCst) {
+            Answer::Holds
+        } else {
+            Answer::Says("503 Service Unavailable", UNAVAILABLE)
+        }
+    }))
+    .await;
+    let serving = serve_over(&declaring(STATES_NO_BENCH), instance, port).await;
+    trip(&serving, &mut heard).await;
+
+    // From here a dialled far end never answers: only the breaker can answer the next unit.
+    holding.store(true, std::sync::atomic::Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        send(&serving.router, CLAIMED, Some(&serving.token)),
+    )
+    .await
+    .expect("the tripped member's unit is answered, not held at its far end");
+    let took = started.elapsed();
+    assert_ne!(response.status(), StatusCode::OK, "the unit is refused");
+    assert!(
+        heard.try_recv().is_err(),
+        "the refused unit never reached the far end"
+    );
+    assert!(
+        took < std::time::Duration::from_secs(1),
+        "refused before the dial, in milliseconds: {took:?}"
+    );
+}
+
+#[cfg(feature = "plane-decisions")]
+/// DISPOSITION: the decisions provider's answers are normalized and classified before the plane
+/// sees them. A caller fault (400) is relayed to the caller as the far end said it, records nothing
+/// against the member and counts no upstream failure, so the next call reaches it again; a
+/// transient failure (503) is the member's: it is counted under the model's lane, benches the
+/// member, and is failed over rather than relayed, so the caller is answered by the walk's
+/// terminal, never with the far end's own bytes. RED: a classifier that reads every status as
+/// transient fails the caller fault over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decisions_providers_answers_are_classified_before_the_plane_relays_them() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-disposition";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end_answering(Arc::new(|n| match n {
+        0 | 1 => Answer::Says("400 Bad Request", CALLER_FAULT),
+        2 => Answer::Says("503 Service Unavailable", UNAVAILABLE),
+        _ => Answer::Says("200 OK", ANSWER),
+    }))
+    .await;
+    // The shipped table: the door states no breaker fact, so the default bench holds.
+    let serving = serve_over(&crate::LINKED, instance, port).await;
+    let failures = || async {
+        counted(
+            &serving.scrape().await,
+            busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
+            &serving.lane(),
+        )
+    };
+    let before = failures().await;
+
+    for n in 1..=2 {
+        let response = send(&serving.router, CLAIMED, Some(&serving.token)).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "caller fault {n} is relayed with the far end's status"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("the body");
+        assert_eq!(
+            &body[..],
+            CALLER_FAULT.as_bytes(),
+            "caller fault {n} is relayed as the far end said it"
+        );
+        assert!(
+            heard.try_recv().is_ok(),
+            "caller fault {n} reached the far end"
+        );
+        assert!(serving.ready(), "a caller fault benches nothing ({n})");
+    }
+    assert_eq!(
+        failures().await,
+        before,
+        "a caller fault is not the destination's: no upstream failure is counted"
+    );
+
+    let response = send(&serving.router, CLAIMED, Some(&serving.token)).await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+        .await
+        .expect("the body");
+    assert!(
+        heard.try_recv().is_ok(),
+        "the transient failure reached the far end"
+    );
+    assert!(
+        status.is_server_error(),
+        "the walk's terminal answers the transient failure: {status}"
+    );
+    assert_ne!(
+        &body[..],
+        UNAVAILABLE.as_bytes(),
+        "a transient failure is failed over, never relayed"
+    );
+    assert!(!serving.ready(), "the transient failure benches the member");
+    assert_eq!(
+        failures().await,
+        before + 1.0,
+        "the transient failure is counted once under the model's lane"
+    );
+}
+
+#[cfg(feature = "plane-decisions")]
+/// AUDIT-CHAIN: every decisions unit, served or refused, seals ONE record on the node's audit
+/// chain under the plane's operation class, the second linked to the first, and the chain walks clean;
+/// a record altered after its seal (the served unit re-told as refused) breaks the walk. The
+/// refusal is the kernel's own, inside the loop: the caller's group allows one request an hour.
+/// RED: a loop whose audit door's pass is never handed back to the node seals nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-audit-chain";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let one_an_hour = busbar_kernel::config::groups::LimitCfg {
+        metric: busbar_kernel::config::groups::LimitMetric::Requests,
+        amount: 1,
+        per: Some(busbar_kernel::config::groups::LimitWindow::Hour),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    };
+    let serving = serve_limited(&crate::LINKED, instance, port, vec![one_an_hour]).await;
+    // Each answer read to its end, as a caller that stays reads it: a caller gone before its last
+    // byte is a unit that ended for that reason, and its record says so.
+    let call = || async {
+        let response = send(&serving.router, CLAIMED, Some(&serving.token)).await;
+        let status = response.status();
+        let _ = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("the body");
+        status
+    };
+
+    assert_eq!(call().await, StatusCode::OK, "the first unit is served");
+    assert!(heard.try_recv().is_ok(), "and dispatched");
+    assert_ne!(
+        call().await,
+        StatusCode::OK,
+        "the second is refused by the limit"
+    );
+    assert!(heard.try_recv().is_err(), "before its dial");
+
+    let records = serving.audit_records();
+    assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+    let (served, refused) = (&records[0], &records[1]);
+    for record in &records {
+        assert_eq!(
+            record.what.op_class.as_str(),
+            busbar_plane_decisions::driven::tail::OP_CLASSES[0].as_str(),
+            "sealed under the plane's operation class: {record:?}"
+        );
+    }
+    assert_eq!(
+        served.outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed
+    );
+    assert!(
+        matches!(
+            refused.outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(_, ReasonCode::RateLimited)
+        ),
+        "the refusal is chained as one: {:?}",
+        refused.outcome
+    );
+    assert_eq!(refused.seq, served.seq + 1, "contiguous");
+    assert_eq!(
+        refused.prev_hash, served.hash,
+        "linked to the record before"
+    );
+    assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
+    assert!(
+        serving
+            .book
+            .lock()
+            .expect("unpoisoned")
+            .retained_audit_findings()
+            .is_empty(),
+        "the node's own verify finds nothing"
+    );
+
+    let mut forged = records.clone();
+    forged[0].outcome.unit_end = refused.outcome.unit_end;
+    assert!(
+        busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
+        "a record altered after its seal breaks the chain"
+    );
+}
+
+#[cfg(feature = "plane-decisions")]
+/// METRICS: a served decisions unit's upstream leg appears on the real `/metrics` scrape under the
+/// plane's own lane (`<plane key><sep><model>`), as its pool and its lane, once per attempt. RED: an
+/// egress whose telemetry counts no attempt leaves the scrape where it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_served_decisions_unit_counts_its_upstream_attempt_under_the_planes_lane() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-metrics";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_over(&crate::LINKED, instance, port).await;
+    let lane = serving.lane();
+    assert!(lane.starts_with(&serving.plane), "{lane}");
+    let before = counted(
+        &serving.scrape().await,
+        busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+        &lane,
+    );
+
+    let (status, reached) = call_once(&serving, &mut heard).await;
+    assert_eq!(status, StatusCode::OK, "served");
+    assert!(reached.is_some(), "dispatched");
+
+    let exposition = serving.scrape().await;
+    assert_eq!(
+        counted(
+            &exposition,
+            busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+            &lane
+        ),
+        before + 1.0,
+        "one attempt, counted under the plane's lane:\n{exposition}"
+    );
+    let pool = format!("pool=\"{lane}\"");
+    assert!(
+        exposition.lines().any(|l| l.starts_with(&format!(
+            "{}{{",
+            busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL
+        )) && l.contains(&pool)),
+        "its pool label is the plane's too:\n{exposition}"
+    );
+}
+
+#[cfg(feature = "plane-decisions")]
+/// EGRESS-AUTH: the decisions provider is handed the credential the egress mechanism planned for
+/// its style (the dialect's default, `bearer`), presented once, and nothing the caller sent as a
+/// credential: not its bearer, not a key it put in a header of its own. RED: an egress walk that
+/// drops the auth binding's fields sends the provider no credential.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decisions_provider_is_handed_the_planned_credential_and_never_the_callers() {
+    use tower::ServiceExt as _;
+    const CALLER_SECRET: &str = "caller-own-provider-key";
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-egress-auth";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_over(&crate::LINKED, instance, port).await;
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(CLAIMED)
+        .header("authorization", format!("Bearer {}", serving.token))
+        .header("api-key", CALLER_SECRET)
+        .header("x-api-key", CALLER_SECRET)
+        .body(axum::body::Body::from(r#"{"state":{"amount":7}}"#))
+        .expect("a request");
+    let response = serving
+        .router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("the router answers");
+    assert_eq!(response.status(), StatusCode::OK, "served");
+
+    let head = heard.recv().await.expect("the far end was dialled");
+    let presented: Vec<&str> = head
+        .lines()
+        .filter(|l| {
+            l.split_once(':')
+                .is_some_and(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        })
+        .collect();
+    assert_eq!(presented.len(), 1, "one credential is presented: {head}");
+    assert!(
+        presented[0].eq_ignore_ascii_case(&format!("authorization: Bearer {CREDENTIAL}")),
+        "the planned credential, in its style: {head}"
+    );
+    assert!(
+        !head.contains(&serving.token),
+        "the caller's bearer never reaches the provider: {head}"
+    );
+    assert!(
+        !head.contains(CALLER_SECRET),
+        "nor a key the caller sent: {head}"
+    );
+}
+
+#[cfg(feature = "plane-decisions")]
+/// A budget limit of `amount` minor units per `per`, on the caller's group.
+fn budget_of(
+    amount: u64,
+    per: busbar_kernel::config::groups::LimitWindow,
+) -> busbar_kernel::config::groups::LimitCfg {
+    busbar_kernel::config::groups::LimitCfg {
+        metric: busbar_kernel::config::groups::LimitMetric::Budget,
+        amount,
+        per: Some(per),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    }
+}
+
+#[cfg(feature = "plane-decisions")]
+/// One call to the door, its answer read to its end: the status, the `Retry-After` it named, and
+/// whether the far end heard it.
+async fn call_through(
+    serving: &Serving,
+    heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+) -> (StatusCode, Option<String>, bool) {
+    let response = send(&serving.router, CLAIMED, Some(&serving.token)).await;
+    let status = response.status();
+    let wait = response
+        .headers()
+        .get("retry-after")
+        .map(|v| v.to_str().expect("a header value").to_string());
+    let _ = axum::body::to_bytes(response.into_body(), 1 << 16)
+        .await
+        .expect("the body");
+    (status, wait, heard.try_recv().is_ok())
+}
+
+#[cfg(feature = "plane-decisions")]
+/// GOVERNANCE-BUDGET: a decisions unit's spend (the plane's own per-request fee, its section's
+/// `fees.per_request`) is charged to the presenting key, and the key's group BUDGET refuses the unit
+/// past it before its dial, 429, naming in `Retry-After` the seconds until the budget's window rolls,
+/// as the llm plane names them (1.5.5's governance refusal). A window that never rolls (`per:
+/// total`) names no wait. RED: a driver that drops the governance refusal's wait, or a decisions
+/// renderer that does not render it, answers the refusal with no `Retry-After`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
+    use busbar_kernel::config::groups::LimitWindow;
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-budget";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_governed(
+        &crate::LINKED,
+        instance,
+        port,
+        vec![budget_of(1, LimitWindow::Hour)],
+        1,
+    )
+    .await;
+
+    let (status, wait, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "within its budget the unit is served"
+    );
+    assert!(reached, "and dispatched");
+    assert_eq!(wait, None, "a served unit names no wait");
+    let usage = serving
+        .gov
+        .usage_for(&serving.app.cost, &serving.key, busbar_kernel::store::now())
+        .expect("a read")
+        .expect("the key exists");
+    assert_eq!(usage.requests, 1, "its spend is the presenting key's");
+
+    let (status, wait, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "past its budget the unit is refused"
+    );
+    assert!(!reached, "before its dial");
+    let secs: u64 = wait
+        .expect("the refusal names its wait")
+        .parse()
+        .expect("whole seconds");
+    assert!(
+        (1..=3600).contains(&secs),
+        "the seconds until the hour's window rolls: {secs}"
+    );
+    drop(serving);
+
+    // A budget whose window never rolls names no wait, as 1.5.5 named none.
+    let instance = "serve-door-budget-total";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_governed(
+        &crate::LINKED,
+        instance,
+        port,
+        vec![budget_of(1, LimitWindow::Total)],
+        1,
+    )
+    .await;
+    assert_eq!(call_through(&serving, &mut heard).await.0, StatusCode::OK);
+    let (status, wait, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(!reached);
+    assert_eq!(wait, None, "a total never rolls: no wait is named");
 }

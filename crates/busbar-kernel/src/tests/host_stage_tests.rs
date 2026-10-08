@@ -20,8 +20,8 @@ use crate::config::PolicyOnError;
 use crate::hooks::ResolvedPolicy;
 use crate::host_units::UnitRecord;
 use crate::plane_driver::{
-    Bind, BoundHooks, CallerFacts, CallerKey, HookBinder, SessionStage, UnitHooks, CONTENT_ROLE,
-    GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS,
+    Bind, BoundHooks, CallerFacts, CallerKey, GatedHooks, HookBinder, HookOrder, RoutedScope,
+    SessionStage, UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS,
 };
 
 fn caller(instance: &str) -> Caller {
@@ -263,6 +263,20 @@ fn hooks(
 
 /// Unit `unit` in flight on `instance`, its stage over `pool` bound by `binder`.
 fn staged(s: &KernelServices, unit: u64, instance: &str, pool: &str, binder: Arc<dyn HookBinder>) {
+    let scope = RoutedScope {
+        pool: pool.to_string(),
+        container: pool.to_string(),
+    };
+    staged_over(s, (unit, instance), scope, binder);
+}
+
+/// Unit `unit` in flight on `instance`, its stage over the route `scope` bound by `binder`.
+fn staged_over(
+    s: &KernelServices,
+    (unit, instance): (u64, &str),
+    scope: RoutedScope,
+    binder: Arc<dyn HookBinder>,
+) {
     s.units().admitted(
         unit,
         UnitRecord {
@@ -274,7 +288,7 @@ fn staged(s: &KernelServices, unit: u64, instance: &str, pool: &str, binder: Arc
         Arc::from(instance),
         tokio::runtime::Handle::current(),
         Some(binder),
-        (pool.to_string(), None, "d0".to_string()),
+        (scope, None, "d0".to_string()),
         0,
     );
     assert!(s.units().staged(unit, Arc::new(stage)));
@@ -544,7 +558,7 @@ async fn the_stage_refuses_every_unit_it_does_not_hold() {
         Arc::from("other"),
         tokio::runtime::Handle::current(),
         None,
-        (String::new(), None, String::new()),
+        (RoutedScope::default(), None, String::new()),
         0,
     );
     assert!(!s.units().staged(3, Arc::new(late)));
@@ -567,7 +581,7 @@ async fn a_unit_no_hook_binds_passes_unchanged() {
             Arc::from("inst"),
             tokio::runtime::Handle::current(),
             None,
-            (String::new(), None, String::new()),
+            (RoutedScope::default(), None, String::new()),
             0,
         ))
     ));
@@ -621,7 +635,14 @@ async fn a_session_on_a_later_dialect_binds_its_hooks_in_that_dialect() {
         Arc::from("inst"),
         tokio::runtime::Handle::current(),
         Some(Arc::clone(&binder) as Arc<dyn HookBinder>),
-        ("pool-z".to_string(), None, "d2".to_string()),
+        (
+            RoutedScope {
+                pool: "pool-z".to_string(),
+                container: "pool-z".to_string(),
+            },
+            None,
+            "d2".to_string(),
+        ),
         2,
     );
     assert!(s.units().staged(4, Arc::new(stage)));
@@ -634,5 +655,82 @@ async fn a_session_on_a_later_dialect_binds_its_hooks_in_that_dialect() {
         *binder.seen.lock().unwrap(),
         vec![2],
         "bound in the dialect it arrived in"
+    );
+}
+
+/// A gate-first binder: `screen` is attached to the entry `srv-a` only; the routed order binds a
+/// gate that blocks everything, so a stage that bound the wrong order would block both units.
+struct EntryGates {
+    screen: Arc<Screen>,
+    routed: BoundHooks,
+}
+
+impl HookBinder for EntryGates {
+    fn order(&self) -> HookOrder {
+        HookOrder::Gated
+    }
+
+    fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
+        self.routed.bind(bind)
+    }
+
+    fn bind_gated(&self, container: &str, _: Option<&str>) -> Option<GatedHooks> {
+        (container == "srv-a").then(|| GatedHooks {
+            request_id: 9,
+            gates: vec![gate(self.screen.clone(), PolicyOnError::Weighted)],
+            rewrites: Vec::new(),
+            key: None,
+            scan: None,
+        })
+    }
+}
+
+/// RED: a gate-first plane's unit runs its in-session content through the hooks attached to the
+/// entry its route resolved (its container), as its request stage does; another entry's unit
+/// passes, and the routed order's hooks are never bound.
+#[tokio::test]
+async fn a_gate_first_units_stage_is_its_entrys_hooks() {
+    let s = services(&Arc::new(AtomicU64::new(0)));
+    let screen = Screen::new("entry-gate", "");
+    let everything = Screen::new("routed-gate", "");
+    let binder: Arc<dyn HookBinder> = Arc::new(EntryGates {
+        screen: screen.clone(),
+        routed: hooks(
+            vec![gate(everything.clone(), PolicyOnError::Weighted)],
+            vec![],
+            None,
+        ),
+    });
+    for (unit, container) in [(1, "srv-a"), (2, "srv-b")] {
+        let scope = RoutedScope {
+            pool: format!("lane-{container}"),
+            container: container.to_string(),
+        };
+        staged_over(&s, (unit, "inst"), scope, Arc::clone(&binder));
+    }
+    let blocked = scan(&s, Some(1), b"the secret").await;
+    assert_eq!(
+        (blocked.outcome, blocked.value),
+        (Outcome::Ready, svc::CONTENT_BLOCK)
+    );
+    assert_eq!(
+        call(&s, Some(1), ask(svc::HOOK_GATE, 0, "a secret"))
+            .await
+            .value,
+        451
+    );
+    let other = scan(&s, Some(2), b"the secret").await;
+    assert_eq!(
+        (other.outcome, other.value),
+        (Outcome::Ready, svc::CONTENT_PASS)
+    );
+    assert_eq!(
+        *screen.pools.lock().unwrap(),
+        vec!["srv-a".to_string(), "srv-a".to_string()],
+        "the entry's gate is asked over its container"
+    );
+    assert!(
+        everything.pools.lock().unwrap().is_empty(),
+        "a gate-first stage never binds the routed order"
     );
 }

@@ -71,8 +71,9 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
-    REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION,
+    class_of, reason_code, ArriveIn, ArriveOut, OutField, RefusalClass, RefusalIn, RefusalOut,
+    RefusalStatus, UnitCount, REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
+    ROUTE_LOCAL, ROUTE_SESSION,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -91,16 +92,15 @@ pub use far_end::{
     ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
-    Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, EngineCaller,
-    GroupScope, HookBinder, HookRead, HostHooks, HostSource, Projection, Restrict, RewriteChain,
-    SessionStage, StageTaps, UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS,
-    STAGE_GONE,
+    Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
+    HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, SessionStage, StageTaps,
+    UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
-pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, SessionCaller};
+pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, SessionCaller};
 
 use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
@@ -182,31 +182,37 @@ impl DriverConfig {
     }
 }
 
-/// Whether `reason` refuses a unit at authentication.
+/// Whether `reason` refuses a unit at authentication: its class is
+/// [`RefusalClass::Unauthenticated`] (the one classification, `busbar_contract::abi::plane`).
 fn is_authentication(reason: ReasonCode) -> bool {
-    matches!(
-        reason,
-        ReasonCode::Unauthenticated
-            | ReasonCode::Revoked
-            | ReasonCode::SchemeNotDeclared
-            | ReasonCode::SessionUnbound
-    )
+    class_of(reason) == RefusalClass::Unauthenticated
 }
 
 /// The status the kernel hands `refusal` for a reason, when the deployment states no other.
+///
+/// A class-to-status table over the one classification ([`class_of`]); the kernel holds no reason
+/// match of its own. A plane whose dialect answers a reason differently states a row for it
+/// ([`DriverConfig::refusal_statuses`]), which is how a plane keeps every status 1.5.5 answered.
 pub fn refusal_status(reason: ReasonCode) -> u32 {
-    match reason {
-        ReasonCode::DecodeFailed | ReasonCode::SchemeNotDeclared => 400,
-        ReasonCode::Unauthenticated | ReasonCode::Revoked | ReasonCode::SessionUnbound => 401,
-        ReasonCode::ScopeDenied
-        | ReasonCode::PoolNotPermitted
-        | ReasonCode::HookVeto
-        | ReasonCode::Untrusted => 403,
-        ReasonCode::BodyTooLarge => 413,
-        ReasonCode::RateLimited | ReasonCode::OverBudget | ReasonCode::GroupFrozen => 429,
-        ReasonCode::DestinationUnreachable | ReasonCode::PlanePanic => 502,
-        ReasonCode::DeadlineExceeded | ReasonCode::Stalled => 504,
-        _ => 503,
+    class_status(class_of(reason))
+}
+
+/// The kernel's default status for one refusal class.
+pub const fn class_status(class: RefusalClass) -> u32 {
+    match class {
+        RefusalClass::Unreadable => 400,
+        RefusalClass::Unauthenticated => 401,
+        RefusalClass::Forbidden => 403,
+        RefusalClass::TooLarge => 413,
+        RefusalClass::Throttled | RefusalClass::QuotaExhausted => 429,
+        RefusalClass::PlaneFault => 502,
+        RefusalClass::Timeout => 504,
+        RefusalClass::Rejected
+        | RefusalClass::Busy
+        | RefusalClass::NotFound
+        | RefusalClass::Unreachable
+        | RefusalClass::Unavailable
+        | RefusalClass::NodeFault => 503,
     }
 }
 
