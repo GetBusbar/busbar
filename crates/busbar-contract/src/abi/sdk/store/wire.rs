@@ -156,7 +156,7 @@ impl Wire {
     /// CLOSE the op's connection now: it is never kept, and its unread input and unsent output go.
     /// The op keeps its claim on the kept set, so its next [`Wire::connect`] establishes a new
     /// connection, to any target: a store tries its endpoint list in order, "open; on reject close
-    /// and try the next" (THE DESIGN §5). No connection: nothing to close.
+    /// and try the next" (the design, the store plugin section on endpoint lists). No connection: nothing to close.
     pub async fn close(&self) {
         let _ = self.ask(Ask::Close).await;
     }
