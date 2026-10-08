@@ -2129,7 +2129,7 @@
       "kind": "breaking",
       "changelog": "1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).",
       "by": "owner (Matthew Jackson), spec section 11.8 (owner-locked \"No legacy loading\") + ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:111)",
-      "cells": "^plugins\\.abi\\|json-contract\\|store-sqlite$",
+      "cells": "^plugins\\.abi\\|json-contract\\|store-sqlite@1\\.5-line$",
       "expected_cells": 1,
       "classes": [
         "body"
@@ -2139,20 +2139,20 @@
         "all": [
           {
             "not": {
-              "cell": "plugins.abi|json-contract|store-sqlite",
+              "cell": "plugins.abi|json-contract|store-sqlite@1.5-line",
               "pointer": "/exit",
               "equals": null
             }
           },
           {
             "not": {
-              "cell": "plugins.abi|json-contract|store-sqlite",
+              "cell": "plugins.abi|json-contract|store-sqlite@1.5-line",
               "pointer": "/exit",
               "equals": 0
             }
           },
           {
-            "cell": "plugins.abi|json-contract|store-sqlite",
+            "cell": "plugins.abi|json-contract|store-sqlite@1.5-line",
             "body_contains": "rebuild"
           }
         ]
