@@ -1240,16 +1240,6 @@ why     = "busbar names busbar-store-memory: declared normal in the shipped grap
 drain   = "none: BUSBAR-1.6.0.md grants this class (roster def 1). What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-store-memory"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). ARCHITECT 2026-09-25 (K5 residue, decisions.md): \"the export precedent's admission applies to every kind's fixture\"; the fixture is the crate plugin-loader's own [package.metadata.busbar.both-ways] names for `store` — since DOOR-STORE (R-FIX1/R-FIX2; owner FIXTURES ruling \"store: store-memory + store-*\") the REAL default store with its dropped-in door, replacing busbar-store-example-plugin on this ONE edge (a move, not a second edge). `plugin-tooling -> store` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
-why     = "busbar-plugin-loader names busbar-store-memory: declared dev in the test graph so the store conformance tests can link the COMPILED-IN `store` proof (its rlib: `linked::STORE`, `BUSBAR_COLD_ENTRY`) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `store` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
-
-[[dep]]
 from    = "busbar-core-admin"
 to      = "busbar-contract"
 half    = "shipped"
@@ -1574,66 +1564,6 @@ verdict = "not-allowed"
 cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
 why     = "busbar-core-admin names busbar-export-prometheus: declared dev in the test graph so the named-map tests resolve `module: prometheus` against the scrape sink LINKED into the test binary, as the composition root links it into the shipped one. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "moves with the plugin-specific tests under BUSBAR-CI-PLUGIN-AGNOSTIC (owner 2026-10-03): the named-map tests resolve the export axis through a contract-only row, and the dev-dependency is deleted."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-export-otlp"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED) and #11 (ARCHITECT ruling EXP2-PROOF 2026-10-03: the spec's working proof of the plugin model): the export kind's both-ways proofs are the REAL sinks, each LINKED by its logic crate's door and DROPPED IN as its -plugin cdylib (`export_axis_tests`, `export_conformance_tests`). `plugin-tooling -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the proof orders, it does not grant a class. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-plugin-loader names busbar-export-otlp: declared dev in the test graph so the export proofs link the sink's COMPILED-IN door and compare it against the same repo's DROPPED-IN cdylib, at the rev the composition root links. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while #2 (OWNER-LOCKED) names the real sinks as the export kind's both-ways proof: deleting it deletes that proof. The row holds the number, so a second declaration is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-export-prometheus"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED) and #11 (ARCHITECT ruling EXP2-PROOF 2026-10-03: the spec's working proof of the plugin model): the export kind's both-ways proofs are the REAL sinks, each LINKED by its logic crate's door and DROPPED IN as its -plugin cdylib (`export_axis_tests`, `export_conformance_tests`). `plugin-tooling -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the proof orders, it does not grant a class. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-plugin-loader names busbar-export-prometheus: declared dev in the test graph so the export proofs link the sink's COMPILED-IN door and compare it against the same repo's DROPPED-IN cdylib, at the rev the composition root links. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while #2 (OWNER-LOCKED) names the real sinks as the export kind's both-ways proof: deleting it deletes that proof. The row holds the number, so a second declaration is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-export-file"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED) and #11 (ARCHITECT ruling EXP2-PROOF 2026-10-03: the spec's working proof of the plugin model): the export kind's both-ways proofs are the REAL sinks, each LINKED by its logic crate's door and DROPPED IN as its -plugin cdylib (`export_axis_tests`, `export_conformance_tests`). `plugin-tooling -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the proof orders, it does not grant a class. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-plugin-loader names busbar-export-file: declared dev in the test graph so the #11 test (`export_conformance_tests`) links the request-log file sink's COMPILED-IN door and compares it against the same repo's DROPPED-IN cdylib, at the rev the composition root links. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while #2 (OWNER-LOCKED) names the real sinks as the export kind's both-ways proof: deleting it deletes that proof. The row holds the number, so a second declaration is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-export-webhook"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED) and #11 (ARCHITECT ruling EXP2-PROOF 2026-10-03: the spec's working proof of the plugin model): the export kind's both-ways proofs are the REAL sinks, each LINKED by its logic crate's door and DROPPED IN as its -plugin cdylib (`export_axis_tests`, `export_conformance_tests`). `plugin-tooling -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the proof orders, it does not grant a class. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-plugin-loader names busbar-export-webhook: declared dev in the test graph so the #11 test (`export_conformance_tests`) links the request-log webhook sink's COMPILED-IN door and compares it against the same repo's DROPPED-IN cdylib, at the rev the composition root links. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while #2 (OWNER-LOCKED) names the real sinks as the export kind's both-ways proof: deleting it deletes that proof. The row holds the number, so a second declaration is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-secret-env"
-half    = "test"
-count   = "1"
-verdict = "tcb"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"`loader` and `abi` are TCB crates, not kinds\" (ARCHITECTURE_TCB plugin-tooling -> secret); the secret kind's both-ways witness is the REAL env source ([package.metadata.busbar.both-ways] secret, owner FIXTURES ruling). It is not the cold-kind witness exemption because files beside `secret_door_conformance_tests` name it (`secret_calls_tests`, `observe_tests`, `conformance/mod.rs`). ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-plugin-loader names busbar-secret-env: declared dev in the test graph so the secret door proofs link the source's COMPILED-IN door and drive it against the same repo's DROPPED-IN cdylib through the one dispatcher. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while the loader is outside the kind system (BUSBAR-1.6.0.md THE DESIGN, §2) and #2 names the real source as the secret kind's witness. The row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-transport-tcp"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #3 (OWNER-LOCKED: a transport is swappable, compiled in OR dropped in) and #2: the transport kind's both-ways fixture is the REAL tcp door ([package.metadata.busbar.both-ways] transport = busbar-transport-tcp-plugin); this is its LOGIC crate, the linked half `transport_door_conformance_tests` drives against the plugin's cdylib (the `-plugin` crate's rlib is never named). `plugin-tooling -> transport` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-plugin-loader names busbar-transport-tcp: declared dev in the test graph (same pin as the -plugin twin, no door symbol) for the linked half of the transport both-ways proof. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while #3 (OWNER-LOCKED) names the real tcp door as the transport kind's both-ways proof: deleting it deletes the linked half of that proof. The row holds the number."
 
 [[dep]]
 from    = "busbar"
