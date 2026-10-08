@@ -43,7 +43,7 @@ use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
     ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, StatusRow,
-    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_FRAMER,
+    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_CARRIER,
     SIDE_ACCEPT_STREAM, STATUS_OTHER, STATUS_SUCCESS, UNIT0_FIRST_BYTES, YIELD_ENDED, YIELD_MORE,
 };
 use busbar_contract::transport::registry::facts as tfacts;
@@ -106,7 +106,9 @@ const TAIL: TransportTail = TransportTail {
         size: std::mem::size_of::<TransportTail>() as u32,
         _reserved: 0,
     },
-    role: ROLE_FRAMER,
+    // A byte stream carried as itself: the CARRIER role, as the tcp twin states it (ARCHITECT ruling
+    // Q128 U7: the role is stated, never derived from composes_over).
+    role: ROLE_CARRIER,
     framing: FRAMING_STREAM,
     facts: 0,
     handshake_max_steps: 0,
