@@ -2837,12 +2837,19 @@ fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
 /// signed with two keys.
 #[test]
 fn a_first_boot_that_lost_the_keyset_claim_takes_the_winners_key() {
-    use store_identity::{KEYSET_CLAIM, KEYSET_SCHEMA, MINT_CLAIM_KIND};
+    use store_identity::{keyset_claim, KEYSET_SCHEMA, MINT_CLAIM_KIND};
     let slots = crate::root::store_double::RecordSlots::new();
     let winners = "a".repeat(64);
     let mine = "b".repeat(64);
-    // The other boot won the claim and keeps its key a moment later.
-    assert!(slots.redeem(MINT_CLAIM_KIND, KEYSET_CLAIM, u64::MAX, 0));
+    // The other boot won this period's claim (and the next one's, so the test never straddles a
+    // period boundary) and keeps its key a moment later.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+    for at in [now, now + store_identity::MINT_CLAIM_SECS] {
+        assert!(slots.redeem(MINT_CLAIM_KIND, &keyset_claim(at), u64::MAX, 0));
+    }
     let writer = {
         let slots = slots.clone();
         let winners = winners.clone();
@@ -2868,27 +2875,31 @@ fn a_first_boot_that_lost_the_keyset_claim_takes_the_winners_key() {
 /// second key; once the claim lapses, a later boot claims it and mints.
 #[test]
 fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
-    use store_identity::{KEYSET_CLAIM, MINT_CLAIM_KIND};
+    use store_identity::{keyset_claim, MINT_CLAIM_KIND, MINT_CLAIM_SECS};
     let slots = crate::root::store_double::RecordSlots::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after the epoch")
-        .as_secs();
-    // A winner that died before it kept anything: its claim stands until `now + 2`, so the boot below
-    // (well inside that second) finds it standing whatever second boundary it crosses.
-    assert!(slots.redeem(MINT_CLAIM_KIND, KEYSET_CLAIM, now + 2, now));
+    let secs = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+    };
+    // Start at the beginning of a period, so the refused boot below runs well inside it.
+    let start = secs();
+    while secs() / MINT_CLAIM_SECS == start / MINT_CLAIM_SECS {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let now = secs();
+    // A winner that died before it kept anything: this period's claim is redeemed, nothing kept.
+    assert!(slots.redeem(MINT_CLAIM_KIND, &keyset_claim(now), u64::MAX, now));
     let mine = "c".repeat(64);
     let refused = keep_keyset(slots.calls().as_ref(), &mine).expect_err("no second key");
     assert!(refused.contains("claim"), "{refused}");
     assert_eq!(stored_keyset(slots.calls().as_ref()).expect("read"), None);
-    // The claim lapses; the next boot claims it and mints.
-    while std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after the epoch")
-        .as_secs()
-        < now + 2
-    {
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    // Retried in the same period, the boot still refuses: its losing redemption bought nothing.
+    keep_keyset(slots.calls().as_ref(), &mine).expect_err("still no second key");
+    // The period ends; the next boot claims the next period's token and mints.
+    while secs() / MINT_CLAIM_SECS == now / MINT_CLAIM_SECS {
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert_eq!(
         keep_keyset(slots.calls().as_ref(), &mine).expect("minted"),
@@ -2906,7 +2917,13 @@ fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
 fn a_first_boot_that_lost_the_host_claim_takes_the_winners_node_id() {
     use store_identity::{host_claim, MINT_CLAIM_KIND, NODE_SCHEMA};
     let slots = crate::root::store_double::RecordSlots::new();
-    assert!(slots.redeem(MINT_CLAIM_KIND, &host_claim("host-r"), u64::MAX, 0));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+    for at in [now, now + store_identity::MINT_CLAIM_SECS] {
+        assert!(slots.redeem(MINT_CLAIM_KIND, &host_claim("host-r", at), u64::MAX, 0));
+    }
     let writer = {
         let slots = slots.clone();
         std::thread::spawn(move || {
