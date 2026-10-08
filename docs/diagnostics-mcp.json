@@ -76,12 +76,12 @@
     "number": 7065,
     "class": "plane",
     "slug": "mcp-output-schema-violation",
-    "title": "MCP upstream structuredContent violates the published outputSchema",
+    "title": "MCP upstream structuredContent violated the published outputSchema — RETIRED",
     "severity": "benign_recurring",
-    "summary": "An upstream MCP tool returned `structuredContent` that does not validate against the tool's own published `outputSchema`, so the result is refused. This is an upstream contract violation that can recur per request, so it is logged at debug to avoid spam.",
-    "action": "If a specific tool trips this repeatedly, report the schema mismatch to that MCP server's operator. No local action is needed.",
+    "summary": "RETIRED. An upstream MCP tool's `structuredContent` that did not validate against the tool's published `outputSchema` was once refused and replaced by busbar's own tool error. 1.6.0 removed that check: busbar relays an upstream's tool result unchanged (THE DESIGN Law 11), and the caller judges it against the published schema.",
+    "action": "Nothing emits this code.",
     "since": "1.6.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-7066",
