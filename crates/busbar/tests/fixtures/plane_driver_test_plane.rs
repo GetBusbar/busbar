@@ -11,8 +11,9 @@
 //! on `/call/local` answers its caller itself (an echo of the body); a unit on `/call/nest:<target>`
 //! runs `POST <target>` as a NESTED unit through the host's `unit.nest` and answers its caller
 //! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it); a unit on
-//! `/call/services` passes its body through the host's `content.scan`, `hook.call` (a gate, then a
-//! rewrite) and `verify.lookup` (keyed by the body), and answers `<op>=<value>` (or
+//! `/call/services` (or `/call/services-pool:<pool>`, routed over that pool) passes its body
+//! through the host's `content.scan`, `hook.call` (a gate, then a rewrite) and `verify.lookup`
+//! (keyed by the body; a lead stores `fetched`), and answers `<op>=<value>` (or
 //! `<op>!<reason>`) for each, space-separated. Its far-end
 //! answer echoes the far end's bytes, in pieces of at most `reply_cap` (`more = 1` for the rest),
 //! with cumulative far-end-reported units = the bytes emitted so far.
@@ -48,8 +49,8 @@ use busbar_contract::abi::host::conn::connector::{
 };
 use busbar_contract::abi::host::service::{
     op as service_op, ClockNowIn, ClockReading, ContentScanIn, HookCallIn, HostSlots, ItemSpan,
-    ServiceBufs, ServiceFn, ServiceHead, ServiceOut, UnitNestIn, VerifyLookupIn, HOOK_GATE,
-    HOOK_REWRITE,
+    ServiceBufs, ServiceFn, ServiceHead, ServiceOut, UnitNestIn, VerifyLookupIn, VerifyStoreIn,
+    HOOK_GATE, HOOK_REWRITE,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT, FLAG_RESUME,
@@ -66,13 +67,13 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     AdminRoute, ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops,
     OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail,
-    RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED, AUDIT_NONE,
-    AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN,
-    EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
-    FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL,
-    REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, UNITS_ESTIMATED,
-    UNITS_REPORTED, VERDICT_RETRY,
+    ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED,
+    AUDIT_NONE, AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT,
+    CLAIM_OPEN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER,
+    FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE,
+    SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
@@ -372,7 +373,7 @@ static OPS: Shared<Ops> = Shared(Ops {
     serve: Some(serve),
     hydrate: Some(ready),
     start: Some(ready),
-    project: Some(refused),
+    project: Some(project),
 });
 
 static DOOR: Shared<Door> = Shared(Door {
@@ -548,8 +549,19 @@ extern "C" fn ready(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOu
     unsafe { say(out, Outcome::Ready) }
 }
 
-extern "C" fn refused(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
-    unsafe { say(out, Outcome::Refused) }
+/// `project`: an empty view (no pool, no dialect, no prompt turn, nothing rewritten), so a unit a
+/// hook binds is read and its hooks see the shape only.
+extern "C" fn project(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
+    unsafe {
+        let o = &mut *out.cast::<ProjectOut>();
+        let absent = Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        };
+        o.body = absent;
+        o.rewritten = absent;
+        say(out, Outcome::Ready)
+    }
 }
 
 extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
@@ -766,6 +778,16 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 me.tick_every_ms.store(ms, Ordering::SeqCst);
                 vec![estimate(0, ms)]
             }
+            t if t.starts_with(b"/call/services-pool:") => {
+                // The in-session services on a unit routed over the pool the target names.
+                let name: &'static [u8] = Box::leak(t[20..].to_vec().into_boxed_slice());
+                o.route = ROUTE_POOL;
+                o.pool = AbiStr {
+                    ptr: name.as_ptr(),
+                    len: name.len(),
+                };
+                vec![estimate(0, i.body.len as u64)]
+            }
             t if t == b"/call/local" || t == b"/call/services" || t.starts_with(b"/call/nest:") => {
                 // A local answer, or a nesting unit: each routes directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
@@ -925,7 +947,7 @@ extern "C" fn on_piece(
                     }
                     return say(out, Outcome::Ready);
                 }
-                if head.as_slice() == b"/call/services" {
+                if head.starts_with(b"/call/services") {
                     // The in-session services, each on the unit's own ticket under its own handle;
                     // one that pends pends this crossing, and the resumed crossing re-issues every
                     // handle and reads what each stored.
@@ -1246,6 +1268,33 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
                 };
                 said.push(format!("{name}!{}", String::from_utf8_lossy(why)));
             }
+        }
+    }
+    // A LEAD fetches and stores (here: the bytes `fetched`), so the next unit's lookup is a hit.
+    if said.last().map(String::as_str) == Some("verify=2") {
+        if let Some(store) = table.verify_store {
+            let entry = b"fetched";
+            let call = VerifyStoreIn {
+                head: head(
+                    service_op::VERIFY_STORE,
+                    std::mem::size_of::<VerifyStoreIn>(),
+                    4,
+                ),
+                key: AbiStr {
+                    ptr: body.as_ptr(),
+                    len: body.len(),
+                },
+                entry: Blob {
+                    ptr: entry.as_ptr(),
+                    len: entry.len(),
+                    fmt: 0,
+                    flags: 0,
+                },
+                ttl_ms: 0,
+            };
+            let mut answer = std::mem::zeroed::<ServiceOut>();
+            me.count(Stat::HostCalls);
+            let _ = store(me.ctx, (&call as *const VerifyStoreIn).cast(), &mut answer);
         }
     }
     (!pending).then(|| said.join(" ").into_bytes())
