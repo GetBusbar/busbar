@@ -15,7 +15,8 @@
 //! Non-`RESULT` lines (`NOTE:` / `SUBITEM`) are ignored by the runner and used to record documented
 //! sub-item gaps that must stay HONESTLY PENDING rather than be dressed as a green.
 
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_host::{BreakerHost, DispatchScope, EngineHost};
+use busbar_kernel::store::PlaneBreakers;
 use busbar_plane_streaming::session::TurnCounters;
 use busbar_voice::ir::usage::IrDuplexUsage;
 use busbar_voice::ir::{
@@ -1893,23 +1894,21 @@ fn probe_gemini_live_route() -> (&'static str, String) {
 /// a fresh kernel breaker store (every cell Closed, so the one dial below is admitted) that the
 /// kernel's breaker functions drive. Not a plane-private breaker implementation — it lives only in
 /// this dev-only conformance binary.
-struct FreshBreakerHost(std::sync::Arc<busbar_kernel::store::PlaneBreakers>);
+struct FreshBreakerHost(std::sync::Arc<PlaneBreakers>);
 
 impl Default for FreshBreakerHost {
     fn default() -> Self {
-        FreshBreakerHost(std::sync::Arc::new(
-            busbar_kernel::store::PlaneBreakers::provisioned(),
-        ))
+        FreshBreakerHost(std::sync::Arc::new(PlaneBreakers::provisioned()))
     }
 }
 
-impl busbar_kernel::plane_host::BreakerHost for FreshBreakerHost {
-    fn breaker_store(&self) -> &std::sync::Arc<busbar_kernel::store::PlaneBreakers> {
+impl BreakerHost for FreshBreakerHost {
+    fn breaker_store(&self) -> &std::sync::Arc<PlaneBreakers> {
         &self.0
     }
     fn breaker_settle(
         &self,
-        scope: &busbar_kernel::plane_host::DispatchScope,
+        scope: &DispatchScope,
         admission: busbar_contract::abi::hot::AdmissionId,
         signal: &busbar_contract::abi::hot::Signal,
     ) -> busbar_contract::abi::hot::StatusClass {

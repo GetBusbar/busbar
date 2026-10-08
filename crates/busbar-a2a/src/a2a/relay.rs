@@ -92,7 +92,9 @@ use std::net::IpAddr;
 use super::creds::{Lease, LeaseError};
 use super::fetch::{FetchPolicy, FetchRefusal, HttpResponse, Resolver};
 use super::task::TaskState;
-use busbar_kernel::{breaker::normalize_raw_error, net_guard::PinnedTarget};
+use busbar_kernel::{
+    breaker::normalize_raw_error, net_guard::PinnedTarget, plane_host::breaker as host_breaker,
+};
 
 /// The HTTP round trip the relay makes, as a seam.
 ///
@@ -1493,7 +1495,7 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 /// owns this hop's probe, the classified outcome is settled through it over `settle` — the same arena
 /// the walk-admit registered into. Without a shared scope (originate / unit tests that admit directly)
 /// the classified outcome records IN PLACE against the local probe. The disposition is byte-identical
-/// either way: [`busbar_kernel::plane_host::breaker::failure_signal`] is the inverse of the host's `classify`,
+/// either way: [`host_breaker::failure_signal`] is the inverse of the host's `classify`,
 /// so a settle folds through the SAME `record_signal` the in-place call runs.
 ///
 /// CLASSIFICATION stays here — where the refusal's transport/status structure still exists (Stage 1) —
@@ -1523,18 +1525,10 @@ fn record_hop_outcome(
     match (call.host, call.host_scope) {
         (Some(host), Some(scope)) if !settle.is_none() => match outcome {
             HopOutcome::Success => {
-                host.breaker_settle(
-                    scope,
-                    settle,
-                    &busbar_kernel::plane_host::breaker::success_signal(),
-                );
+                host.breaker_settle(scope, settle, &host_breaker::success_signal());
             }
             HopOutcome::Failure(cs) => {
-                host.breaker_settle(
-                    scope,
-                    settle,
-                    &busbar_kernel::plane_host::breaker::failure_signal(&cs),
-                );
+                host.breaker_settle(scope, settle, &host_breaker::failure_signal(&cs));
             }
             // Not an upstream health signal: leave the probe UNSETTLED so the shared scope's drop
             // releases it — the "record nothing" disposition, held to the scope's lifetime.
@@ -1544,15 +1538,10 @@ fn record_hop_outcome(
         // against the cell through the host seam.
         (Some(host), _) => match outcome {
             HopOutcome::Success => {
-                busbar_kernel::plane_host::breaker::record_success(host, &target.key, target.lane);
+                host_breaker::record_success(host, &target.key, target.lane);
             }
             HopOutcome::Failure(cs) => {
-                busbar_kernel::plane_host::breaker::record_signal(
-                    host,
-                    &target.key,
-                    target.lane,
-                    &cs,
-                );
+                host_breaker::record_signal(host, &target.key, target.lane, &cs);
             }
             HopOutcome::Nothing => {}
         },
@@ -1660,17 +1649,12 @@ fn prepare<'a>(
                     retry_after_secs: 1,
                 });
             };
-            match busbar_kernel::plane_host::breaker::admit(
-                host,
-                scope,
-                target.key.as_bytes(),
-                target.lane as u32,
-            ) {
+            match host_breaker::admit(host, scope, target.key.as_bytes(), target.lane as u32) {
                 Ok(id) => *admit_id = id,
                 Err(_) => {
                     return Err(RelayRefusal::BreakerOpen {
                         agent_id: call.agent_id.to_string(),
-                        retry_after_secs: busbar_kernel::plane_host::breaker::retry_after_secs(
+                        retry_after_secs: host_breaker::retry_after_secs(
                             host,
                             &target.key,
                             target.lane,

@@ -24,7 +24,7 @@ use crate::diagnostics::{
     A2A_EXTENDED_CARD_BUILD_FAILED, A2A_PIN_REFUSAL_UNRECORDED, A2A_POOL_NOT_INTERCHANGEABLE,
 };
 use axum::response::{IntoResponse as _, Response};
-use busbar_kernel::{diag_debug, diag_error, diag_warn};
+use busbar_kernel::{diag_debug, diag_error, diag_warn, plane_host::breaker as host_breaker};
 use std::sync::Arc;
 
 /// One `agent_pools:` member as the walk sees it — this plane's whole cost of inheriting the
@@ -187,12 +187,7 @@ pub(super) fn select_member(
                 &mut order,
                 &mut passed_over,
                 &mut |_position, member: &AgentCandidate| {
-                    busbar_kernel::plane_host::breaker::admit(
-                        engine_host,
-                        scope,
-                        pool_key.as_bytes(),
-                        member.lane as u32,
-                    )
+                    host_breaker::admit(engine_host, scope, pool_key.as_bytes(), member.lane as u32)
                 },
             ) {
                 Ok(adm) => {
@@ -228,11 +223,7 @@ pub(super) fn select_member(
                             let retry_after_secs = candidates
                                 .iter()
                                 .map(|c| {
-                                    busbar_kernel::plane_host::breaker::retry_after_secs(
-                                        engine_host,
-                                        &pool_key,
-                                        c.lane,
-                                    )
+                                    host_breaker::retry_after_secs(engine_host, &pool_key, c.lane)
                                 })
                                 .min()
                                 .unwrap_or(1);

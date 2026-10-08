@@ -47,7 +47,10 @@ use crate::diagnostics::{
     A2A_RELAYED_STREAM_REFUSED, A2A_RELAYED_SUBMISSION_FAILED, A2A_RELAY_THREAD_INCOMPLETE,
     A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
 };
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_host::{
+    admission_gates_attached, admission_gates_decide, admission_tap_attached, admission_transform,
+    EngineHost,
+};
 use busbar_kernel::{diag_debug, diag_error, diag_warn, store::agent_key};
 
 /// The audit action every inbound call on this plane records under.
@@ -1306,7 +1309,7 @@ async fn admitted(
     // EVERY VERB, not only `message/send`. A gate an operator attached to an agent is a statement
     // about that agent, and a plane that fired it for submissions but not for the task verbs would
     // be a plane where the control's scope depends on which method a caller happened to use.
-    if busbar_kernel::plane_host::admission_gates_attached(
+    if admission_gates_attached(
         &*engine_host,
         crate::PLANE_DECLARATION.key,
         &admitted.dispatch.agent_id,
@@ -1341,7 +1344,7 @@ async fn admitted(
         // The host seam drives the ASYNC gate on a fresh runtime, so it MUST run on a BLOCKING thread
         // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
         let outcome = tokio::task::spawn_blocking(move || {
-            busbar_kernel::plane_host::admission_gates_decide(
+            admission_gates_decide(
                 &*host2,
                 crate::PLANE_DECLARATION.key,
                 &agent,
@@ -1415,7 +1418,7 @@ async fn admitted(
     // gate already screened them); only the RELAYED body carries the rewrite, which is the payload the
     // upstream tool receives.
     let mut rewritten_params: Option<serde_json::Value> = None;
-    if busbar_kernel::plane_host::admission_tap_attached(
+    if admission_tap_attached(
         &*engine_host,
         crate::PLANE_DECLARATION.key,
         &admitted.dispatch.agent_id,
@@ -1433,7 +1436,7 @@ async fn admitted(
         let agent = admitted.dispatch.agent_id.clone();
         let host2 = Arc::clone(&engine_host);
         let verdict = tokio::task::spawn_blocking(move || {
-            busbar_kernel::plane_host::admission_transform(
+            admission_transform(
                 &*host2,
                 crate::PLANE_DECLARATION.key,
                 &agent,

@@ -54,7 +54,10 @@ use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::observe::Counted;
 use busbar_kernel::plane::registry::{BuildCtx, PlaneBootCtx};
 use busbar_kernel::plane::PlaneAdmission;
-use busbar_kernel::plane_host::{EngineHost, GateOutcome, TransformVerdict};
+use busbar_kernel::plane_host::{
+    admission_gates_attached, admission_gates_decide, admission_tap_attached, admission_transform,
+    EngineHost, GateOutcome, TransformVerdict,
+};
 use busbar_kernel::plane_host::{GauntletPlane, GauntletRequest};
 use busbar_kernel::plane_routes::PlaneRouteSpec;
 use busbar_kernel::{door::UnitKeyMint, net_guard::GuardPolicy};
@@ -886,11 +889,7 @@ async fn hook_gate(
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<(), Box<axum::response::Response>> {
-    if !busbar_kernel::plane_host::admission_gates_attached(
-        &**host,
-        crate::PLANE_DECLARATION.key,
-        GATE_CONTAINER,
-    ) {
+    if !admission_gates_attached(&**host, crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
         return Ok(());
     }
     // Serialized ONCE for the seam (only past the presence check). The host re-selects the gate set by
@@ -901,7 +900,7 @@ async fn hook_gate(
     let sid = session_id.to_string();
     let host = Arc::clone(host);
     let outcome = tokio::task::spawn_blocking(move || {
-        busbar_kernel::plane_host::admission_gates_decide(
+        admission_gates_decide(
             &*host,
             crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
@@ -1001,11 +1000,7 @@ async fn hook_tap(
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<Option<SessionConfig>, Box<axum::response::Response>> {
-    if !busbar_kernel::plane_host::admission_tap_attached(
-        &**host,
-        crate::PLANE_DECLARATION.key,
-        GATE_CONTAINER,
-    ) {
+    if !admission_tap_attached(&**host, crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
         return Ok(None);
     }
     let args_json = serde_json::to_vec(cfg).unwrap_or_default();
@@ -1013,7 +1008,7 @@ async fn hook_tap(
     // shadowing it, because the refusal below audits through the SAME host after the join.
     let hook_host = Arc::clone(host);
     let verdict = tokio::task::spawn_blocking(move || {
-        busbar_kernel::plane_host::admission_transform(
+        admission_transform(
             &*hook_host,
             crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
