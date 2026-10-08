@@ -1275,6 +1275,69 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
     }
 }
 
+/// P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, "All P-item behaviours match 1.5.5"; TODO
+/// L-ENG9). This plane's refusal table ended in `_ => "internal"`, so a spent budget, a frozen
+/// group, a replayed key, a superseded unit or a deadline told the caller the node had broken.
+/// 1.5.5's one surface answered none of its limit reasons as an internal error (v1.5.5
+/// `crates/busbar/src/ingress/mod.rs:237-305`). Pinned through the plane's own `encode_refusal`
+/// bytes: a refusal reads `internal` exactly when its class is a node fault, and every reason of
+/// one class reads the same, so the family is the one classification's
+/// (`busbar_contract::abi::plane::RefusalCode::class`) and never this plane's own.
+#[test]
+fn p_item_refusal_reason_collapse_only_a_node_fault_is_internal_and_one_class_one_answer() {
+    use busbar_contract::abi::plane::{reason_of, RefusalClass, RefusalCode};
+    use busbar_contract::unit::{Refusal, RefusalReason, Step};
+
+    let plane = openai_plane();
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut answers: Vec<(RefusalClass, (String, String))> = Vec::new();
+    for code in RefusalCode::ALL {
+        // Two codes are the kernel's own money verdicts and never reach a plane (`reason_of`).
+        let Some(reason) = reason_of(code.code()) else {
+            continue;
+        };
+        let class = code.class();
+        let refusal = Refusal {
+            step: Step::Decode,
+            reason: RefusalReason::from(reason),
+            retry_after_secs: None,
+            stream: None,
+            correlates: None,
+        };
+        let bytes = plane
+            .encode_refusal(&refusal, None, None, &c)
+            .expect("a refusal renders");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(bytes.as_slice()).expect("the refusal is this dialect's JSON");
+        let answer = (
+            parsed["error"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            parsed["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+        assert_eq!(
+            answer.0 == "internal",
+            class.is_node_fault(),
+            "{code:?} (class {class:?}) renders {answer:?}"
+        );
+        match answers.iter().find(|(c, _)| *c == class) {
+            Some((_, first)) => assert_eq!(
+                *first, answer,
+                "{code:?} answers differently from the rest of {class:?}"
+            ),
+            None => answers.push((class, answer)),
+        }
+    }
+}
+
 /// A barge-in on an OPEN turn opens the turn that takes over.
 ///
 /// The scheduler reads the interrupt fact off an open and nowhere else — that is the one dispatch

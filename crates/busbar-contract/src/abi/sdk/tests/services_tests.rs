@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::*;
 use crate::abi::host::service::{
-    ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, MAX_RANDOM_FILL, NOT_ENTITLED,
-    SERVICES, TRUST_NEW, TRUST_SAME,
+    ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, HOOK_GATE, HOOK_REWRITE,
+    MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES, TRUST_NEW, TRUST_SAME,
 };
 use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::ticket::Ticket;
@@ -1220,6 +1220,204 @@ fn the_nest_wrapper_reads_the_childs_status_body_and_fields() {
         nested.fields().collect::<Vec<_>>(),
         vec![(b"a".as_slice(), b"b".as_slice())]
     );
+}
+
+// ── verify, content, hook ─────────────────────────────────────────────────────────────────────
+
+/// A verify cache: key `hit` is cached (`cached`), key `follow` follows (`led`), any other leads.
+extern "C" fn caches(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `VerifyLookupIn` naming its live key and buffers, and a live `out`.
+    unsafe {
+        let i = input.cast::<VerifyLookupIn>().read_unaligned();
+        let key = std::slice::from_raw_parts(i.key.ptr, i.key.len);
+        let (value, entry): (u64, &[u8]) = match key {
+            b"hit" => (VERIFY_HIT, b"cached"),
+            b"follow" => (VERIFY_FOLLOW, b"led"),
+            _ => (VERIFY_LEAD, b""),
+        };
+        if !entry.is_empty() {
+            std::ptr::copy_nonoverlapping(entry.as_ptr(), i.into.buf, entry.len());
+            i.into.spans.write(ItemSpan {
+                key: Span {
+                    offset: SPAN_ABSENT,
+                    len: 0,
+                },
+                value: Span {
+                    offset: 0,
+                    len: entry.len() as u32,
+                },
+            });
+        }
+        answer(
+            out,
+            Outcome::Ready,
+            value,
+            entry.len() as u64,
+            u64::from(!entry.is_empty()),
+        )
+    }
+}
+
+extern "C" fn stores(_ctx: HostCtx, _input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    answer(out, Outcome::Ready, 0, 0, 0)
+}
+
+#[test]
+fn verify_lookup_reads_a_hit_a_follow_or_the_lead_and_store_is_answered() {
+    let t = HostSlots {
+        verify_lookup: Some(caches),
+        verify_store: Some(stores),
+        ..table(None)
+    };
+    let s = services(&t);
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.verify_lookup(ticketed(0), b"hit", &mut buf),
+        Poll::Ready(Ok(Verified::Hit(b"cached")))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.verify_lookup(ticketed(1), b"follow", &mut buf),
+        Poll::Ready(Ok(Verified::Follow(b"led")))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.verify_lookup(ticketed(2), b"other", &mut buf),
+        Poll::Ready(Ok(Verified::Lead))
+    );
+    assert_eq!(s.verify_store(handle(), b"other", b"v", 0), Ok(()));
+    // RED: a host serving neither.
+    let none = table(None);
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        services(&none).verify_lookup(ticketed(3), b"hit", &mut buf),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+    assert_eq!(
+        services(&none).verify_store(handle(), b"k", b"v", 0),
+        Err(ServiceError::Unserved)
+    );
+}
+
+/// A gate that blocks content starting `bad` and passes the rest.
+extern "C" fn scans(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `ContentScanIn` naming its live content, and a live `out`.
+    unsafe {
+        let i = input.cast::<ContentScanIn>().read_unaligned();
+        let content = std::slice::from_raw_parts(i.content.ptr, i.content.len);
+        let block = u64::from(content.starts_with(b"bad"));
+        answer(out, Outcome::Ready, block, 0, 0)
+    }
+}
+
+#[test]
+fn content_scan_answers_pass_or_block_and_pends_on_a_ticket() {
+    let t = HostSlots {
+        content_scan: Some(scans),
+        ..table(None)
+    };
+    let s = services(&t);
+    let mut buf = [0u8; 4];
+    assert_eq!(
+        s.content_scan(ticketed(0), b"fine", &mut buf),
+        Poll::Ready(Ok(Scanned {
+            passed: true,
+            rewritten: None
+        }))
+    );
+    let mut buf = [0u8; 4];
+    assert_eq!(
+        s.content_scan(ticketed(1), b"bad", &mut buf),
+        Poll::Ready(Ok(Scanned {
+            passed: false,
+            rewritten: None
+        }))
+    );
+    let p = HostSlots {
+        content_scan: Some(pends),
+        ..table(None)
+    };
+    let mut buf = [0u8; 4];
+    assert_eq!(
+        services(&p).content_scan(ticketed(2), b"x", &mut buf),
+        Poll::Pending
+    );
+}
+
+/// A hook stage: a gate stops `stop` with 451 `no`; a rewrite from `0` rewrites to `rw` (resume 1),
+/// from `1` passes.
+extern "C" fn hooks(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `HookCallIn` naming its live prompt and buffer, and a live `out`.
+    unsafe {
+        let i = input.cast::<HookCallIn>().read_unaligned();
+        let p = i.prompt.read_unaligned();
+        let first = p.messages.read_unaligned();
+        let text = std::slice::from_raw_parts(first.text.ptr, first.text.len);
+        let (value, bytes): (u64, &[u8]) = match (i.stage, i.from, text) {
+            (HOOK_GATE, _, b"stop") => (451, b"no"),
+            (HOOK_REWRITE, 0, _) => (1, b"rw"),
+            _ => (0, b""),
+        };
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), i.into.buf, bytes.len());
+        answer(out, Outcome::Ready, value, bytes.len() as u64, 0)
+    }
+}
+
+#[test]
+fn hook_call_reads_pass_rewrite_or_stop_and_refuses_a_bad_in_before_the_host() {
+    use crate::abi::host::service::HOOK_FROM_MAX;
+    let t = HostSlots {
+        hook_call: Some(hooks),
+        ..table(None)
+    };
+    let s = services(&t);
+    let msg = |text: &'static str| {
+        [MessageView {
+            role: raw(b"user"),
+            text: raw(text.as_bytes()),
+        }]
+    };
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.hook_call(ticketed(0), (HOOK_GATE, 0), None, &msg("stop"), &mut buf),
+        Poll::Ready(Ok(Hooked::Stop {
+            status: 451,
+            words: b"no"
+        }))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.hook_call(
+            ticketed(1),
+            (HOOK_GATE, 0),
+            Some("sys"),
+            &msg("ok"),
+            &mut buf
+        ),
+        Poll::Ready(Ok(Hooked::Pass))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.hook_call(ticketed(2), (HOOK_REWRITE, 0), None, &msg("x"), &mut buf),
+        Poll::Ready(Ok(Hooked::Rewrote {
+            resume: 1,
+            rewrite: b"rw"
+        }))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.hook_call(ticketed(3), (HOOK_REWRITE, 1), None, &msg("rw"), &mut buf),
+        Poll::Ready(Ok(Hooked::Pass))
+    );
+    // RED: a resumed gate and a chain past the cap never reach the host.
+    let none = table(None);
+    for stage_from in [(HOOK_GATE, 1), (HOOK_REWRITE, HOOK_FROM_MAX + 1), (9, 0)] {
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            services(&none).hook_call(ticketed(4), stage_from, None, &msg("x"), &mut buf),
+            Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)))
+        );
+    }
 }
 
 // ── sign ─────────────────────────────────────────────────────────────────────────────────────────
