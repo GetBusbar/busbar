@@ -70,13 +70,16 @@ pub fn protected_resource_metadata_path(mount_path: &str) -> String {
     format!("{PROTECTED_RESOURCE_WELL_KNOWN}{mount_path}")
 }
 
-/// The single MCP protocol revision busbar implements.
+/// THE STATELESS REVISION: the one the plane's dispatch is written against, and the one busbar
+/// speaks to an upstream first.
 ///
-/// ONE revision, deliberately. The conformance suite runs each scenario per revision and one run
-/// does not cover another, so supporting two revisions is two test legs and two wire formats, not a
-/// compatibility shim. `2025-11-25` and earlier are stateful: they have an `initialize` handshake,
-/// protocol sessions and a GET stream, all of which this revision deleted, and building them means
-/// building session machinery this release can otherwise skip entirely.
+/// It is not the only revision served. The session revisions (`2025-11-25`, `2025-06-18`) and the
+/// `2024-11-05` event stream are served too, in both directions, by revision negotiation and never
+/// by configuration (THE DESIGN section 2, the mcp bullet): a session request is RAISED into this
+/// revision's shape before the one dispatch and its answer LOWERED after it
+/// ([`crate::adapt`]), and the revisions and their negotiation are [`crate::revision`]'s. Every
+/// request of this revision is answered on the stateless path exactly as it was before sessions
+/// existed.
 ///
 /// It lives on the CODEC side of the split because it is protocol vocabulary — the plane's envelope
 /// layer (`busbar_mcp::mcp::envelope`) re-exports it under its historical path, and the conformance

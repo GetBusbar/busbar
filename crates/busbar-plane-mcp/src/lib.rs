@@ -61,14 +61,12 @@ pub mod identity;
 pub mod jsonrpc;
 /// The line carrier's meanings: one JSON-RPC message per line, each its own unit.
 pub mod line;
-pub mod outputschema;
 pub mod tool_arrival;
 pub mod tool_claims;
 pub mod tool_door;
 pub mod tool_facts;
 pub mod tool_meta;
 pub mod tool_ops;
-pub mod tool_plane;
 /// The `transport: stdio` servers: one long-lived child per server, its messages correlated by id.
 pub mod tool_program;
 pub mod tool_scope;
@@ -112,57 +110,19 @@ pub mod trust;
 /// called" start to differ.
 pub const PLANE_KEY: &str = "mcp";
 
-use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
-
-/// One registered server this plane may name.
-///
-/// Every string is borrowed for the life of the program, because a plane's declarations are read at
-/// registration and sealed. Configured names reach here through the seam that says so:
-/// [`busbar_contract::ids::Registration`]. The composition root builds one at boot, interns every
-/// config-derived key through it exactly once, and hands over names that outlive it — so nothing
-/// after registration can vary them, and the memory the names occupy is a fixed term rather than
-/// one that grows with traffic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Server {
-    /// The name the operator gave this server, and the resource the scope unit judges.
-    pub id: &'static str,
-    /// The priced lane this server is reached on.
-    pub lane: LaneId,
-    /// The host to dial, or the empty string for a server this node launches itself.
-    pub host: &'static str,
-    /// Which of the three transports the hop is made over.
-    pub transport: &'static str,
-}
 
 /// The MCP plane.
 ///
-/// The one field is a borrowed, immutable list. There is no cell here, no lock and no atomic: the
-/// purity test asserts that by walking the type, not by trusting this sentence.
+/// It carries no field: it is the type the plane's declarations (`PlaneMeta`) and its identity
+/// (`Plugin`) hang on, and the served door reads those. There is no cell here, no lock and no
+/// atomic: the purity test asserts that by walking the source, not by trusting this sentence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct McpPlane {
-    servers: &'static [Server],
-}
+pub struct McpPlane;
 
 impl McpPlane {
-    /// A plane with a registered server set.
-    #[must_use]
-    pub const fn new(servers: &'static [Server]) -> Self {
-        Self { servers }
-    }
-
-    /// A plane with nothing registered.
-    ///
-    /// It answers every question the loop asks, and its answer to "where does this go" is a
-    /// destination the trust unit refuses. That is the honest answer for a plane with no server —
-    /// not a panic, and not a fabricated host.
-    pub const EMPTY: Self = Self::new(&[]);
-
-    /// The registered servers, in declaration order.
-    #[must_use]
-    pub const fn servers(&self) -> &'static [Server] {
-        self.servers
-    }
+    /// The plane. Nothing varies per instance, so there is one value of it.
+    pub const EMPTY: Self = Self;
 }
 
 impl Default for McpPlane {

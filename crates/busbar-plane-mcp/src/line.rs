@@ -10,21 +10,26 @@
 //! - THE MIRRORED FIELDS a header block would carry are SYNTHESISED FROM THE BODY
 //!   ([`crate::codec::mirrored`]): nothing the body does not state is stated, so a body defect stays a
 //!   body defect.
-//! - THE STDIO-ERA VERBS (`initialize`, `ping`, `logging/setLevel`, `resources/subscribe` and
-//!   `resources/unsubscribe`) are answered here ([`era`]): each is meaningful only where a
-//!   persistent connection exists, and none reaches the dispatch, the catalogue or an upstream.
+//! - THE STDIO-ERA VERBS (`initialize`, `ping`) are answered here ([`era`]), and none reaches the
+//!   dispatch, the catalogue or an upstream. `logging/setLevel`, `resources/subscribe` and
+//!   `resources/unsubscribe` are REFUSED (`-32601`) and not advertised: this revision keeps no
+//!   per-session floor or watch set, and nothing on the plane announces a resource's change to
+//!   deliver (a watch is `subscriptions/listen`'s; the 1.6.0 design, mcp bullet, keeps `subscribe` for
+//!   the old revisions, on their sessions).
 //! - BUSBAR'S OWN ASKS are LIVE REQUESTS on the line ([`LiveAsk`]): an `input_required` answer is
 //!   issued as one request per ask, in order, each spelled `busbar:<n>`; the caller's answers become
 //!   `inputResponses`, and the RETRY is the unit of the caller's last answer, through the whole
 //!   door (its own admission; the seal, the round charge and the epoch checks run as they do when
 //!   an HTTP caller retries itself). An UPSTREAM's ask, relayed (Law 11), is livened the same way.
+//!   A live ask unanswered for [`ASK_TIMEOUT_NS`] is dropped and the caller handed the result
+//!   itself; a request is livened at most [`MAX_LIVE_ASK_ROUNDS`] times.
 //! - A SUBSCRIPTION is answered with its acknowledgement and kept on the session: what changes, a
 //!   keepalive and its end are emitted on the session, until the carrier ends.
 
 use serde_json::{json, Map, Value};
 
 use crate::codec::PROTOCOL_VERSION;
-use crate::framing::META_LOGGING_LEVEL;
+use crate::revision::Revision;
 
 /// The prefix of the id busbar spells its own requests on the line in.
 pub const ASK_ID_PREFIX: &str = "busbar:";
@@ -37,34 +42,8 @@ pub const ASK_TIMEOUT_NS: u64 = 30 * 1_000_000_000;
 /// composition that never converges (the per-capability `max_caller_ask_rounds` still applies).
 pub const MAX_LIVE_ASK_ROUNDS: u32 = 8;
 
-/// The ceiling on one caller's retained resource subscriptions (the set is written by the caller
-/// and re-read on every generation move).
-pub const MAX_RESOURCE_SUBS: usize = 256;
-
-/// The ceiling on one retained subscription uri, in bytes.
-pub const MAX_RESOURCE_SUB_URI_BYTES: usize = 2048;
-
-/// The JSON-RPC code for invalid params.
-const INVALID_PARAMS: i64 = -32602;
-
-/// `value` with the caller's session logging floor (`logging/setLevel`) in its `_meta`, when the
-/// request names no level of its own: the session default into the per-request slot.
-#[must_use]
-pub fn with_level(mut value: Value, level: Option<&str>) -> Value {
-    let Some(level) = level else {
-        return value;
-    };
-    if let Some(meta) = value
-        .get_mut("params")
-        .and_then(|p| p.get_mut("_meta"))
-        .and_then(Value::as_object_mut)
-    {
-        if !meta.contains_key(META_LOGGING_LEVEL) {
-            meta.insert(META_LOGGING_LEVEL.to_string(), Value::from(level));
-        }
-    }
-    value
-}
+/// The JSON-RPC code for a method this carrier does not carry.
+const METHOD_NOT_FOUND: i64 = -32601;
 
 /// One success envelope.
 #[must_use]
@@ -72,34 +51,25 @@ pub fn result(id: &Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
 
-/// One invalid-params envelope.
-fn invalid(id: &Value, message: &str) -> Value {
+/// One method-not-found envelope.
+fn unsupported(id: &Value, message: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
-        "error": { "code": INVALID_PARAMS, "message": message },
+        "error": { "code": METHOD_NOT_FOUND, "message": message },
     })
 }
 
-/// The `initialize` answer: the dual-era negotiation the revision scopes to stdio. busbar
-/// implements ONE revision and says so; no session is created because the revision has none.
+/// The `initialize` answer to a client that names no session revision: the stateless revision,
+/// which needs no handshake and says so.
 #[must_use]
 pub fn initialize_result(id: &Value) -> Value {
     result(
         id,
         json!({
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {
-                "tools": { "listChanged": true },
-                "prompts": { "listChanged": true },
-                "resources": { "listChanged": true, "subscribe": true },
-                "completions": {},
-                "logging": {},
-            },
-            "serverInfo": {
-                "name": "busbar",
-                "version": crate::tool_door::VERSION,
-            },
+            "capabilities": capabilities(),
+            "serverInfo": server_info(),
             "instructions": format!(
                 "This server speaks MCP revision {PROTOCOL_VERSION}: no handshake is required, \
                  and every request states its protocol version and client capabilities in \
@@ -109,17 +79,57 @@ pub fn initialize_result(id: &Value) -> Value {
     )
 }
 
+/// The `initialize` answer to a client that asked for a SESSION revision this plane carries: that
+/// revision, by negotiation (THE DESIGN section 2, the mcp bullet; [`crate::revision::accept_offered`]).
+/// The carrier session then speaks it: each following line is raised into the stateless shape and its
+/// answer lowered ([`crate::adapt`]).
+#[must_use]
+pub fn session_initialize_result(id: &Value, revision: Revision) -> Value {
+    result(
+        id,
+        json!({
+            "protocolVersion": revision.wire(),
+            "capabilities": capabilities(),
+            "serverInfo": server_info(),
+        }),
+    )
+}
+
+/// The capabilities the line carrier declares, in every revision it speaks: no `subscribe` and no
+/// `logging`, which the carrier refuses (`-32601`, [`era`]).
+fn capabilities() -> Value {
+    json!({
+        "tools": { "listChanged": true },
+        "prompts": { "listChanged": true },
+        "resources": { "listChanged": true },
+        "completions": {},
+    })
+}
+
+/// The server's name and version.
+fn server_info() -> Value {
+    json!({
+        "name": "busbar",
+        "version": crate::tool_door::VERSION,
+    })
+}
+
+/// The session revision an `initialize` asks for, when this plane carries it.
+fn requested_revision(value: &Value) -> Option<Revision> {
+    value
+        .pointer("/params/protocolVersion")
+        .and_then(Value::as_str)
+        .and_then(crate::revision::accept_offered)
+}
+
 /// What a stdio-era verb came to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Era {
     /// Answered here, whole.
     Answer(Value),
-    /// `logging/setLevel`: the caller's floor, and its answer.
-    Level(String, Value),
-    /// `resources/subscribe`: the uri, and its answer once retained.
-    Subscribe(String),
-    /// `resources/unsubscribe`: the uri, and its answer.
-    Unsubscribe(String, Value),
+    /// `initialize` asking for a session revision: the revision the carrier session now speaks,
+    /// and the answer.
+    Opened(Revision, Value),
     /// Not a stdio-era verb: the one dispatch's.
     Dispatch,
 }
@@ -134,54 +144,24 @@ pub fn era(value: &Value) -> Era {
     ) else {
         return Era::Dispatch;
     };
-    let param = |name: &str| {
-        value
-            .get("params")
-            .and_then(|p| p.get(name))
-            .and_then(Value::as_str)
-    };
     match method {
-        crate::adapt::METHOD_INITIALIZE => Era::Answer(initialize_result(id)),
-        crate::adapt::METHOD_PING => Era::Answer(result(id, json!({}))),
-        "logging/setLevel" => match param("level") {
-            Some(level) => Era::Level(level.to_string(), result(id, json!({}))),
-            None => Era::Answer(invalid(
-                id,
-                "`params.level` is required: the RFC 5424 severity this session's \
-                 `notifications/message` records are filtered at.",
-            )),
+        crate::adapt::METHOD_INITIALIZE => match requested_revision(value) {
+            Some(revision) => Era::Opened(revision, session_initialize_result(id, revision)),
+            None => Era::Answer(initialize_result(id)),
         },
-        "resources/subscribe" | "resources/unsubscribe" => {
-            let Some(uri) = param("uri") else {
-                return Era::Answer(invalid(
-                    id,
-                    "`params.uri` is required: the resource to watch (or stop watching).",
-                ));
-            };
-            if method == "resources/unsubscribe" {
-                return Era::Unsubscribe(uri.to_string(), result(id, json!({})));
-            }
-            if uri.len() > MAX_RESOURCE_SUB_URI_BYTES {
-                return Era::Answer(invalid(
-                    id,
-                    "`params.uri` is longer than this session retains: a subscription uri is held \
-                     for the session and re-read on every catalogue move, so it is bounded.",
-                ));
-            }
-            Era::Subscribe(uri.to_string())
-        }
+        crate::adapt::METHOD_PING => Era::Answer(result(id, json!({}))),
+        "logging/setLevel" => Era::Answer(unsupported(
+            id,
+            "this revision has no `logging/setLevel`: there is no session to remember a floor in. A \
+             request states its floor in `params._meta`.",
+        )),
+        "resources/subscribe" | "resources/unsubscribe" => Era::Answer(unsupported(
+            id,
+            "this revision has no `resources/subscribe`: open `subscriptions/listen` with \
+             `notifications.resourceSubscriptions` instead.",
+        )),
         _ => Era::Dispatch,
     }
-}
-
-/// The refusal of a subscription past the ceiling.
-#[must_use]
-pub fn subscriptions_full(id: &Value) -> Value {
-    invalid(
-        id,
-        "this session already holds as many resource subscriptions as it will watch: unsubscribe \
-         from one before subscribing to another.",
-    )
 }
 
 /// What a line that is not a request is, when it answers one of busbar's own.
@@ -245,6 +225,12 @@ pub fn id_key(id: &Value) -> String {
         Value::String(s) => format!("s:{s}"),
         other => format!("n:{other}"),
     }
+}
+
+/// Whether a request already livened `round` times may be livened again.
+#[must_use]
+pub fn may_liven(round: u32) -> bool {
+    round < MAX_LIVE_ASK_ROUNDS
 }
 
 /// Where a live ask stands.
@@ -331,6 +317,17 @@ impl LiveAsk {
             deadline_ns: 0,
             stand: AskStand::Waiting,
         })
+    }
+
+    /// Starts the clock on the ask in flight: it lapses [`ASK_TIMEOUT_NS`] after `now_ns`.
+    pub fn arm(&mut self, now_ns: u64) {
+        self.deadline_ns = now_ns.saturating_add(ASK_TIMEOUT_NS);
+    }
+
+    /// Whether the ask in flight went unanswered past its deadline at `now_ns`.
+    #[must_use]
+    pub fn lapsed(&self, now_ns: u64) -> bool {
+        self.deadline_ns != 0 && now_ns >= self.deadline_ns
     }
 
     /// The next ask as the request line busbar writes, under ask number `n`; `None` once every ask
