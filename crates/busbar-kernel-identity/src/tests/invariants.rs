@@ -8,8 +8,7 @@
 //! walks over the chain shapes the configuration can produce, so a change that keeps the sampled
 //! case working and breaks a neighbouring one has nowhere to land.
 
-use super::{entry, test_digest, Canned, OneKey};
-use crate::cache::CredentialCache;
+use super::{entry, Canned, OneKey};
 use crate::chain::{AuthChain, ChainEntry, ChainVerdict, RevocationView};
 use crate::module::{AuthModule, AuthOutcome};
 use crate::principal::Principal;
@@ -93,7 +92,7 @@ fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
                     token: TOKEN,
                     aud: None,
                 };
-                let verdict = c.run_chain_cached(Some(TOKEN), None, Some(&keys), 1000, None);
+                let verdict = c.run_chain_with(Some(TOKEN), Some(&keys), 1000, None);
                 assert_eq!(
                     verdict,
                     ChainVerdict::Denied,
@@ -103,38 +102,6 @@ fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
             }
         }
     }
-}
-
-/// A `Reject` is never cached, so it can never later be served as anything — and a cached `Pass`
-/// from an earlier run never masks a `Reject` the module gives now.
-///
-/// This is the deny path's instant-revocation property stated from the other side: an invalid
-/// credential re-runs its module every single time, so the moment the module changes its mind the
-/// chain does too. A cached `Pass` sitting in front of the rejecting module would be the one way a
-/// refusal could be skipped without any module ever being asked.
-#[test]
-fn a_rejection_is_re_asked_every_time_and_no_cached_pass_can_stand_in_for_it() {
-    let cache = CredentialCache::new(test_digest);
-    let rejecting = Canned::cacheable("m", AuthOutcome::Reject);
-    let calls = rejecting.calls.clone();
-    let c = AuthChain::new(vec![entry("m", Box::new(rejecting))], false);
-
-    for i in 1..=5 {
-        assert_eq!(
-            c.run_chain_cached(Some("bad"), Some(&cache), None, 1000, None),
-            ChainVerdict::Denied
-        );
-        assert_eq!(
-            calls.load(std::sync::atomic::Ordering::Relaxed),
-            i,
-            "a rejection is never cached, so the module is asked every time"
-        );
-    }
-    assert!(
-        cache.get("m", "bad", 1000).is_none(),
-        "no row exists for a rejected credential"
-    );
-    assert!(cache.is_empty());
 }
 
 /// A chain that only ever passes ends DENIED, never open.
@@ -155,7 +122,7 @@ fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
         let c = AuthChain::new(chain, false);
         assert!(!c.is_open(), "len={len}");
         assert_eq!(
-            c.run_chain_cached(Some("cred"), None, None, 1000, None),
+            c.run_chain_with(Some("cred"), None, 1000, None),
             ChainVerdict::Denied,
             "len={len}: every module said 'not mine', which is not an admission"
         );
@@ -164,14 +131,14 @@ fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
     let arm_only = AuthChain::new(Vec::new(), true);
     assert!(!arm_only.is_open());
     assert_eq!(
-        arm_only.run_chain_cached(Some("cred"), None, None, 1000, None),
+        arm_only.run_chain_with(Some("cred"), None, 1000, None),
         ChainVerdict::Denied
     );
     // And the one shape that opens.
     let unconfigured = AuthChain::new(Vec::new(), false);
     assert!(unconfigured.is_open());
     assert_eq!(
-        unconfigured.run_chain_cached(Some("cred"), None, None, 1000, None),
+        unconfigured.run_chain_with(Some("cred"), None, 1000, None),
         ChainVerdict::Open
     );
 }
@@ -201,7 +168,7 @@ fn a_revoked_identification_is_withdrawn_for_a_new_unit_and_not_for_one_in_fligh
 
     // In flight: the walk answers, and the gate is never consulted at all.
     assert!(matches!(
-        c.run_chain_cached(Some("alice-cred"), None, None, 1000, None),
+        c.run_chain_with(Some("alice-cred"), None, 1000, None),
         ChainVerdict::Identified { .. }
     ));
     assert!(
@@ -211,14 +178,7 @@ fn a_revoked_identification_is_withdrawn_for_a_new_unit_and_not_for_one_in_fligh
 
     // A NEW unit: the identification is withdrawn.
     assert_eq!(
-        c.run_chain_for_new_unit(
-            Some("alice-cred"),
-            None,
-            None,
-            1000,
-            None,
-            Some(&revocations)
-        ),
+        c.run_chain_for_new_unit(Some("alice-cred"), None, 1000, None, Some(&revocations)),
         ChainVerdict::Denied,
         "a revoked credential's identification is withdrawn at the door of a new unit"
     );
@@ -227,7 +187,7 @@ fn a_revoked_identification_is_withdrawn_for_a_new_unit_and_not_for_one_in_fligh
     // A credential that is not revoked keeps its identification.
     let other = Recording::new(&["someone-else"]);
     assert!(matches!(
-        c.run_chain_for_new_unit(Some("alice-cred"), None, None, 1000, None, Some(&other)),
+        c.run_chain_for_new_unit(Some("alice-cred"), None, 1000, None, Some(&other)),
         ChainVerdict::Identified { .. }
     ));
 }
@@ -252,7 +212,7 @@ fn the_revocation_set_is_asked_once_per_unit_and_never_without_a_credential() {
     );
 
     let r = Recording::new(&[]);
-    c.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&r));
+    c.run_chain_for_new_unit(Some("cred"), None, 1000, None, Some(&r));
     assert_eq!(
         r.asked().len(),
         1,
@@ -260,7 +220,7 @@ fn the_revocation_set_is_asked_once_per_unit_and_never_without_a_credential() {
     );
 
     let none_presented = Recording::new(&[]);
-    let verdict = c.run_chain_for_new_unit(None, None, None, 1000, None, Some(&none_presented));
+    let verdict = c.run_chain_for_new_unit(None, None, 1000, None, Some(&none_presented));
     assert!(
         none_presented.asked().is_empty(),
         "no credential was presented, so there is nothing to look up"
@@ -299,7 +259,7 @@ fn the_revocation_gate_can_refuse_but_never_admit() {
     let denying = AuthChain::new(vec![entry("m", answering("m", AuthOutcome::Reject))], false);
     let r = Recording::new(&[]); // nothing is revoked
     assert_eq!(
-        denying.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&r)),
+        denying.run_chain_for_new_unit(Some("cred"), None, 1000, None, Some(&r)),
         ChainVerdict::Denied,
         "an empty revocation set cannot promote a denial into an admission"
     );
