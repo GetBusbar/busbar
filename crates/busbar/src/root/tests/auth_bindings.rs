@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use busbar_kernel_identity::module::AuthOutcome;
 use std::sync::Mutex;
 
 /// A directory a test can state the whole truth of in four lines.
