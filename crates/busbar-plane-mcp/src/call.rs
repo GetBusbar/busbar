@@ -14,8 +14,8 @@
 //!    the kernel's auth binding adds it when it sends.
 //! 3. [`settle`]: the far end's answer read as the engine reads it — the last event of a streamed
 //!    answer, the JSON-RPC correlation, an upstream's ask judged against the operator's grants and
-//!    never forwarded, and a result relayed as the upstream sent it (Law 11) — into the caller's
-//!    answer and its call-log line.
+//!    relayed to the caller (busbar answers none itself, Law 11), and a result relayed as the
+//!    upstream sent it — into the caller's answer and its call-log line.
 //!
 //! What is not here is the kernel's: the trust lifecycle (pin, sightings, demotion), the hook gate
 //! and rewrite, the outbound credential, the breaker and the pool walk, the budget and the meter.
@@ -63,7 +63,8 @@ pub const REASON_CUSTOM_PARAM_MISMATCH: &str = "custom_param_mismatch";
 pub const REASON_TASKS_UNDECLARED: &str = "tasks_capability_undeclared";
 /// The call-log reason of an answer naming an input busbar did not ask for.
 pub const REASON_ANSWER_UNDECLARED: &str = "caller_ask_answer_undeclared";
-/// The call-log reason of an upstream ask that reached the terminal check.
+/// The call-log reason of a complete result still carrying an ask's field, refused at the terminal
+/// check (an ask is relayed only as an input-required result).
 pub const REASON_ASK_NOT_PROXIED: &str = "ask_not_proxied";
 /// The call-log reason of a call whose upstream asked its caller something, relayed to the caller.
 pub const REASON_ASK_RELAYED: &str = "ask_relayed";
@@ -1055,16 +1056,16 @@ impl std::fmt::Display for AskRefusal {
         match self {
             AskRefusal::Ungranted { server, kind } => write!(
                 f,
-                "MCP server `{server}` asked busbar to satisfy a `{kind}` request, and that grant \
-                 is not held. Server-initiated asks are deny-by-default: set \
-                 `tools.{server}.grants.{kind}: true` if the operator intends this server to put \
-                 that ask to its callers. The ask was not relayed."
+                "MCP server `{server}` asked its caller for a `{kind}` request, and that grant is \
+                 not held, so the ask was not relayed to you. Server-initiated asks are \
+                 deny-by-default: set `tools.{server}.grants.{kind}: true` if the operator intends \
+                 this server to put that ask to its callers."
             ),
             AskRefusal::RoundCapExceeded { server, cap } => write!(
                 f,
                 "MCP server `{server}` returned more than {cap} input-required rounds for one \
-                 dispatch. The cap is hard: an upstream that can ask indefinitely can amplify cost \
-                 indefinitely. Raise `tools.{server}.max_input_required_rounds` only if this \
+                 dispatch, and no further round is relayed. The cap is hard: an upstream that can \
+                 ask indefinitely can amplify cost indefinitely. Raise `tools.{server}.max_input_required_rounds` only if this \
                  exchange genuinely needs more rounds."
             ),
             AskRefusal::NoSealer { server } => write!(
@@ -1349,9 +1350,10 @@ fn completed(admitted: &AdmittedCall, value: &Value, body: &[u8]) -> Settled {
                 STATUS_FORBIDDEN,
                 id,
                 format!(
-                    "MCP server `{}` answered with an input-required result (`{field}`), which is \
-                     a request that YOU spend authority on its behalf. An upstream's ask \
-                     terminates at busbar and is never forwarded to you.",
+                    "MCP server `{}` answered with a complete result that still carries an ask's \
+                     `{field}`. An upstream's ask is relayed to you only as an input-required \
+                     result, under the operator's grant; this answer is neither a complete result \
+                     nor such an ask, so it is not served.",
                     entry.server
                 ),
                 REASON_ASK_NOT_PROXIED,
