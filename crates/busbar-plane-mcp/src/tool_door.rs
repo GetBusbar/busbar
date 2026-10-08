@@ -1185,13 +1185,14 @@ enum Step {
 /// ledger and then by the host's one-time `records.claim` of [`door::KIND_APPROVAL`]. A claim that
 /// pends leaves [`Self::pending`] set; the unit answers PENDING and decides again on the wake, the
 /// claim re-issued under the handle it was first issued under.
-struct DoorSeal<'a> {
-    services: Services,
-    ticket: Ticket,
-    issued: &'a mut u32,
-    claim: &'a mut Option<(String, u32)>,
-    spent: &'a Keyed<String, u64>,
-    pending: bool,
+#[doc(hidden)]
+pub struct DoorSeal<'a> {
+    pub services: Services,
+    pub ticket: Ticket,
+    pub issued: &'a mut u32,
+    pub claim: &'a mut Option<(String, u32)>,
+    pub spent: &'a Keyed<String, u64>,
+    pub pending: bool,
 }
 
 impl DoorSeal<'_> {
@@ -1222,12 +1223,15 @@ impl DoorSeal<'_> {
             .map(|s| s.signature.to_vec())
     }
 
-    /// The kernel's wall clock, in Unix seconds.
-    fn now(&mut self) -> u64 {
+    /// The kernel's wall clock, in Unix seconds; `None` when the host's clock cannot be read. A
+    /// sealed state's window is judged against this, so a failed read is never a time (the state
+    /// would be judged at the epoch and every lapsed one would stand): the caller refuses.
+    fn now(&mut self) -> Option<u64> {
         let handle = self.handle();
         self.services
             .clock_now(handle)
-            .map_or(0, |r| r.wall_ns / 1_000_000_000)
+            .ok()
+            .map(|r| r.wall_ns / 1_000_000_000)
     }
 }
 
@@ -2050,20 +2054,22 @@ fn twin_of(held: &Held, params: Option<&Value>, member: &str) -> Twin {
 }
 
 /// Where busbar's own ask is decided: who asks, under which roots epoch, and on what.
-struct Site<'a> {
-    principal: &'a str,
-    roots_epoch: u64,
-    method: &'a str,
-    server: &'a str,
-    capability: &'a str,
-    rounds: &'a [crate::tools_config::AskRoundCfg],
+#[doc(hidden)]
+pub struct Site<'a> {
+    pub principal: &'a str,
+    pub roots_epoch: u64,
+    pub method: &'a str,
+    pub server: &'a str,
+    pub capability: &'a str,
+    pub rounds: &'a [crate::tools_config::AskRoundCfg],
 }
 
 /// BUSBAR'S OWN ASK for one request ([`crate::ask::decide`]), bound to the unit's principal, the
 /// generation's catalogue and the request's arguments, sealed by `seal` ([`DoorSeal`]); `None` (no
 /// host services) or a host that signs nothing is a deployment with no sealer, and a capability that
 /// asks its caller is refused as one with no signing key refuses it.
-fn decide_ask(
+#[doc(hidden)]
+pub fn decide_ask(
     held: &Held,
     site: Site<'_>,
     params: Option<&Value>,
@@ -2092,7 +2098,17 @@ fn decide_ask(
     if !site.rounds.is_empty() && seal.as_deref_mut().is_some_and(|s| s.sign(b"").is_none()) {
         seal = None;
     }
-    let now = seal.as_deref_mut().map_or(0, DoorSeal::now);
+    // A state's window is stamped and judged at a time the host's clock gave: a clock that fails
+    // refuses (never the epoch), in words that name the clock and not the signing key.
+    let now = match seal.as_deref_mut().map(DoorSeal::now) {
+        Some(None) if !site.rounds.is_empty() || retry.state.is_some() => {
+            return AskDecision::Refuse(crate::ask::AskRefusal::ClockUnavailable {
+                capability: site.capability.to_string(),
+            });
+        }
+        Some(now) => now.unwrap_or_default(),
+        None => 0,
+    };
     let bind = crate::ask::Bind {
         principal: site.principal,
         method: site.method,
@@ -2234,8 +2250,7 @@ fn relay_ask(
         spent: &plane.spent,
         pending: false,
     };
-    let now = seal.now();
-    let bind = crate::ask::Bind {
+    let bind = |now| crate::ask::Bind {
         principal,
         method: crate::codec::METHOD_TOOLS_CALL,
         capability: &relay.admitted.entry.namespaced,
@@ -2243,14 +2258,53 @@ fn relay_ask(
         now,
         roots_epoch: 0,
     };
-    match crate::ask::relay_state(bind, &relay.admitted.sent_digest, leg, &mut seal) {
-        Some(state) => Relayed::Answer(Settled::Answer {
+    let digest = &relay.admitted.sent_digest;
+    match seal_relayed(
+        &mut seal,
+        &server,
+        bind,
+        digest,
+        leg,
+        crate::ask::DEFAULT_TTL_SECS,
+    ) {
+        Ok(state) => Relayed::Answer(Settled::Answer {
             status: 200,
             body: crate::ask::relayed_result(&relay.admitted.id, &result, &state),
             line: crate::call::relayed_line(&relay.admitted.entry),
         }),
-        None => refused(child, no_sealer),
+        Err(refusal) => refused(child, refusal),
     }
+}
+
+/// Why a relayed state is refused when the host's clock cannot be read.
+pub const CLOCK_UNAVAILABLE: &str = "the host's clock could not be read, so the window of the \
+     state the caller answers under can be neither stamped nor checked";
+
+/// A RELAYED ASK'S STATE, sealed at the host's clock (one home for a relayed ask and a task parked
+/// on its caller's answer): `bind` is made from the time read, and the state stands `ttl_secs`.
+///
+/// # Errors
+///
+/// `Unavailable` naming the clock when it cannot be read, `NoSealer` when the state cannot be signed.
+#[doc(hidden)]
+pub fn seal_relayed<'b>(
+    seal: &mut DoorSeal<'_>,
+    server: &str,
+    bind: impl FnOnce(u64) -> crate::ask::Bind<'b>,
+    digest: &str,
+    leg: crate::ask::UpstreamLeg,
+    ttl_secs: u64,
+) -> Result<String, crate::call::AskRefusal> {
+    let no_sealer = || crate::call::AskRefusal::NoSealer {
+        server: server.to_string(),
+    };
+    let now = seal
+        .now()
+        .ok_or_else(|| crate::call::AskRefusal::Unavailable {
+            server: server.to_string(),
+            reason: CLOCK_UNAVAILABLE.to_string(),
+        })?;
+    crate::ask::relay_state_for(bind(now), digest, leg, ttl_secs, seal).ok_or_else(no_sealer)
 }
 
 /// THE SWEEP of relayed asks' work handles, run as another is opened: each one whose state lapsed
