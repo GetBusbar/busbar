@@ -1306,7 +1306,7 @@ half    = "test"
 count   = "1"
 verdict = "tcb"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140-1141): the repo holds busbar-contract (\"the shapes and the author SDK\") and busbar-plugin-loader; the loader is the trusted computing base and names the contract the ABI lives in (ARCHITECTURE_TCB plugin-tooling -> contract)."
-why     = "busbar-plugin-loader names busbar-contract: declared dev in the test graph (features test-seal), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-plugin-loader names busbar-contract: declared dev in the test graph (features test-seal, services-double), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while busbar-plugin-loader is the loader TCB; the row records the edge so a NEW plugin-tooling -> contract coupling is visible on the landing that adds it."
 
 [[dep]]

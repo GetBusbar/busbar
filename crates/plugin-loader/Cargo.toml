@@ -258,7 +258,9 @@ busbar-transport-tcp-plugin = { workspace = true }
 busbar-transport-tcp = { workspace = true }
 # The transport adapter's witness (`transport_adapter_tests`) dials through the trait, which takes a
 # sealed destination: the contract's blessed test seal (#65), as the wire crates' own batteries use.
-busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+# The host-services doubles (`ClockOnly`, `DiskHost`, the services `Provider`) are the contract's
+# shared `services::double`, so a service the host adds does not reopen them.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal", "services-double"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
