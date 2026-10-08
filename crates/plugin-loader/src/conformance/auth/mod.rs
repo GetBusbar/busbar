@@ -34,9 +34,20 @@
 //!   "auth": {
 //!     "bad_settings": [<settings `open` must refuse, FAILED with a reason>, ...],
 //!     "rotated_settings": <settings for ANOTHER credential: no identity case identifies there>,
+//!                         (required unless the tail states FACT_READS_CREDENTIALS; there optional,
+//!                          the rotated instance then opens over it, else over "settings")
+//!     "host_credentials": [                         (required with FACT_READS_CREDENTIALS)
+//!       { "kind": "<credential kind>", "id": "<credential id>", "secret": "<its secret>",
+//!         "live": true | false }, ... ],
+//!     "rotated_host_credentials": [ <the same ids, other secrets> ],   (likewise)
 //!     "cases": [
 //!       { "credential": "<the extracted candidate>" | null,
-//!         "carriers": { "<carrier line>": "<its value>", ... },
+//!         "carriers" | "lines": { "<field line>": "<its value>", ... },
+//!         "method": "<method>",            (optional, default "GET")
+//!         "path": "<raw received path>",   (optional, default "/")
+//!         "query": "<raw query, no ?>",    (optional, default none)
+//!         "timestamp": <unix seconds>,     (optional, default 0)
+//!         "body": "<the body, as text>",   (optional, HeadBody doors only, default none)
 //!         "verdict": "identity:<subject>" | "reject" | "pass" }, ... ],
 //!     "never_echoed": ["<text no answer may carry: the token, the raw settings>", ...],
 //!     "login": {                                   // required when the tail states CAP_LOGIN
@@ -52,6 +63,24 @@
 //!       "complete_crossings": <crossings of each submitted complete_login, default 1> } } }
 //! ```
 //!
+//! The field lines are each a carrier the Statement states, unless the tail states
+//! `FACT_INBOUND_ALL_HEADERS` (then any line); `"carriers"` and `"lines"` are one input under two
+//! names. A door whose tail's `inbound_points` hold `POINT_HEAD_BODY` is presented each case at
+//! `HeadBody`, with the case's body (none when it names none); every other door at `Head`. The
+//! request facts (method, `conformance.invalid`, path, query, timestamp) are the case's, at either.
+//!
+//! A door whose tail states `FACT_READS_CREDENTIALS` reads its secret from the host: its leg's
+//! dispatcher serves the host services, `records.secret` from `host_credentials` (the entry's
+//! secret, `SECRET_LIVE` or `SECRET_NOT_LIVE`; for an id it does not hold, a fixed dummy secret,
+//! not live, as busbar's root answers) and every other service unserved. Its credential is not in
+//! its settings, so the ROTATED instance runs on a dispatcher of its own serving
+//! `rotated_host_credentials`. And since a service that may pend needs a ticket, its ON-THE-SPOT
+//! (ticket-less) `verify` may answer REFUSED for a case that needs the host read: the SUBMITTED one
+//! must answer the case's verdict, having read the host (`host_reads=` on its line), and every step
+//! the script reads a verdict from (`verify short, re-called`, `verify after refresh`,
+//! `verify #i rotated`) is submitted on a ticket, the short re-call ONCE on the same ticket. A door
+//! that does not read host credentials runs every step as before.
+//!
 //! The cases must reach every verdict (an identity, a reject, a pass), so the two legs' equality
 //! covers all three; but a door that judges no bearer credential (every case PASS, its identity
 //! is its login's) is compared over its login, which must then reach an identity and a refused
@@ -63,6 +92,8 @@
 //! an op on an instance that is not open before any crossing: 0); the short-buffer `verify` (the
 //! ONE re-call is +1: 2); and `ready` ([`super::ready_step`]).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{
@@ -70,13 +101,19 @@ use busbar_contract::abi::auth::{
     IdentifyOut, IdentityBuf, LoginField, NamedValue, OpenOutboundIn, OpenOutboundOut,
     OutboundReadyIn, OutboundReadyOut, StripName, VerifyIn, BEGIN_AUTHORIZE, BEGIN_FORM,
     FORM_PASSWORD, FORM_TEXT, LOGIN_BAD_CREDENTIAL, LOGIN_IDENTITY, LOGIN_KIND_CREDENTIAL,
-    LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS,
-    VERDICT_REJECT,
+    LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, POINT_HEAD_BODY, SPAN_ABSENT, VERDICT_IDENTITY,
+    VERDICT_PASS, VERDICT_REJECT,
 };
+use busbar_contract::abi::host::service::{ItemSpan, SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
+use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::services::{
+    Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
+    Stored, UNSERVED,
+};
 
 mod outbound;
 
@@ -89,7 +126,7 @@ use super::{
     release, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::auth::Auth;
-use crate::dispatch::{now_ns, Dispatcher, Frame, Plugin};
+use crate::dispatch::{now_ns, DispatchConfig, Dispatcher, Done, Frame, Plugin};
 
 /// How long a submitted `verify` is awaited: the host's call budget, generously.
 const SUBMIT_WAIT: Duration = Duration::from_secs(10);
@@ -108,9 +145,23 @@ struct Stated {
     caps: u32,
     facts: u32,
     login_kind: u32,
+    /// The points `verify` is called at (`AuthTail::inbound_points`).
+    points: u32,
     carriers: Vec<String>,
     /// The outbound styles the tail declares: name, flags, points.
     styles: Vec<(String, u32, u32)>,
+}
+
+impl Stated {
+    /// The tail states `FACT_READS_CREDENTIALS`: `verify` reads its secret from the host.
+    fn reads_credentials(&self) -> bool {
+        self.facts & auth::FACT_READS_CREDENTIALS != 0
+    }
+
+    /// The tail's points hold `HeadBody`: each case is presented there, with its body.
+    fn at_head_body(&self) -> bool {
+        self.points & POINT_HEAD_BODY != 0
+    }
 }
 
 /// `s`'s door's auth tail and carrier word marks.
@@ -161,14 +212,16 @@ fn stated(s: &Subject) -> Stated {
             caps: tail.caps,
             facts: tail.facts,
             login_kind: tail.login_kind,
+            points: tail.inbound_points,
             carriers,
             styles,
         }
     }
 }
 
-/// One case, as the host presents it: the candidate credential and the carrier lines, owned for
-/// as long as a `verify` over them may run, with the host's identity buffer.
+/// One case, as the host presents it: the candidate credential, the field lines, the request facts
+/// and (at `HeadBody`) the body, owned for as long as a `verify` over them may run, with the
+/// host's identity buffer.
 struct Presented {
     credential: Option<Vec<u8>>,
     names: Vec<String>,
@@ -178,6 +231,22 @@ struct Presented {
     groups: Vec<Span>,
     /// The host's strip array (the credential lines the plugin names, whatever its verdict).
     strips: Vec<StripName>,
+    /// Presented at `HeadBody` (else at `Head`).
+    at_body: bool,
+    method: Vec<u8>,
+    path: Vec<u8>,
+    query: Option<Vec<u8>>,
+    timestamp: u64,
+    /// The body lent at `HeadBody`; none = absent.
+    body: Option<Vec<u8>>,
+}
+
+/// A case's optional text input `key`, as bytes.
+fn case_text(case: &serde_json::Value, key: &str) -> Option<Vec<u8>> {
+    match case.get(key) {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(text(v)),
+    }
 }
 
 /// A secret octet blob over `bytes`.
@@ -191,12 +260,32 @@ fn secret(bytes: &[u8]) -> Blob {
 }
 
 impl Presented {
-    fn new(case: &serde_json::Value) -> Self {
+    fn new(case: &serde_json::Value, at_body: bool) -> Self {
         let credential = match &case["credential"] {
             serde_json::Value::Null => None,
             v => Some(text(v)),
         };
-        let lines = case["carriers"].as_object().cloned().unwrap_or_default();
+        assert!(
+            case.get("lines").is_none() || case.get("carriers").is_none(),
+            "conformance.json: an auth case names its field lines once, as `carriers` or `lines`"
+        );
+        let lines = case
+            .get("lines")
+            .unwrap_or(&case["carriers"])
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let body = case_text(case, "body");
+        assert!(
+            at_body || body.is_none(),
+            "conformance.json: an auth case names a body, but the door is not called at HeadBody"
+        );
+        let timestamp = match case.get("timestamp") {
+            None | Some(serde_json::Value::Null) => 0,
+            Some(v) => v
+                .as_u64()
+                .expect("conformance.json: an auth case's timestamp is unix seconds (u64)"),
+        };
         let names: Vec<String> = lines.keys().cloned().collect();
         let values: Vec<Vec<u8>> = lines.values().map(text).collect();
         let carriers = names
@@ -225,6 +314,12 @@ impl Presented {
                 };
                 auth::FIELDS_MAX as usize
             ],
+            at_body,
+            method: case_text(case, "method").unwrap_or_else(|| b"GET".to_vec()),
+            path: case_text(case, "path").unwrap_or_else(|| b"/".to_vec()),
+            query: case_text(case, "query"),
+            timestamp,
+            body,
         }
     }
 
@@ -245,12 +340,28 @@ impl Presented {
         f.input.credential = self.credential.as_deref().map_or(Blob::ABSENT, secret);
         f.input.lines = self.carriers.as_ptr();
         f.input.lines_len = self.carriers.len();
-        f.input.point = busbar_contract::abi::auth::AuthPoint::Head.bit();
+        f.input.point = if self.at_body {
+            POINT_HEAD_BODY
+        } else {
+            busbar_contract::abi::auth::AuthPoint::Head.bit()
+        };
         f.input.strip = self.strips.as_mut_ptr();
         f.input.strip_cap = self.strips.len() as u32;
-        f.input.request.method = AbiStr::over(b"GET");
+        f.input.request.method = AbiStr::over(&self.method);
         f.input.request.authority = AbiStr::over(b"conformance.invalid");
-        f.input.request.canonical_path = AbiStr::over(b"/");
+        f.input.request.canonical_path = AbiStr::over(&self.path);
+        if let Some(q) = &self.query {
+            f.input.request.query = AbiStr::over(q);
+        }
+        f.input.request.timestamp = self.timestamp;
+        if let Some(b) = &self.body {
+            f.input.body = Blob {
+                ptr: b.as_ptr(),
+                len: b.len(),
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            };
+        }
         f.input.out_buf = self.buf(full);
         f
     }
@@ -294,21 +405,29 @@ fn verify_now(p: &Plugin<Auth>, case: &mut Presented) -> String {
     format!("{} {}", called(&c), case.verdict(c.outcome, &f.out))
 }
 
-/// `verify` SUBMITTED on a ticket, awaited, the ticket recycled.
-fn verify_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &mut Presented) -> String {
-    let ticket = d.mint(0).expect("a ticket is free");
+/// `frame` submitted as `verify` on `ticket`, awaited.
+fn submit_verify(
+    p: &Plugin<Auth>,
+    d: &Dispatcher,
+    ticket: Ticket,
+    frame: Frame<VerifyIn, IdentifyOut>,
+) -> Option<Done<VerifyIn, IdentifyOut>> {
     let deadline = now_ns().saturating_add(SUBMIT_WAIT.as_nanos() as u64);
     let reply = d.submit(
         p,
         ticket,
         slot::VERIFY,
-        case.frame(true),
+        frame,
         DeadlineClass::Call,
         deadline,
     );
     let done = reply.wait(SUBMIT_WAIT);
     drop(reply);
-    d.recycle(ticket);
+    done
+}
+
+/// A submitted `verify`'s answer as the transcript spells it.
+fn submitted_answer(case: &Presented, done: Option<&Done<VerifyIn, IdentifyOut>>) -> String {
     let Some(done) = done else {
         return "no answer".to_string();
     };
@@ -326,6 +445,37 @@ fn verify_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &mut Presented) -> S
         done.outcome,
         done.lease != 0
     )
+}
+
+/// `verify` SUBMITTED on a ticket, awaited, the ticket recycled.
+fn verify_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &mut Presented) -> String {
+    let ticket = d.mint(0).expect("a ticket is free");
+    let done = submit_verify(p, d, ticket, case.frame(true));
+    d.recycle(ticket);
+    submitted_answer(case, done.as_ref())
+}
+
+/// [`verify_short`] SUBMITTED, for a door that reads host credentials (its ticket-less `verify`
+/// may not read them): the short answer, then the ONE re-call on the SAME ticket with the buffers
+/// it named.
+fn verify_short_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &mut Presented) -> String {
+    let ticket = d.mint(0).expect("a ticket is free");
+    let first = submit_verify(p, d, ticket, case.frame(false));
+    let short = first.as_ref().is_some_and(|f| f.short);
+    let answer = match first {
+        Some(Done {
+            frame: Some(mut f),
+            short: true,
+            ..
+        }) => {
+            f.input.out_buf = case.buf(true);
+            let again = submit_verify(p, d, ticket, *f);
+            submitted_answer(case, again.as_ref())
+        }
+        other => submitted_answer(case, other.as_ref()),
+    };
+    d.recycle(ticket);
+    format!("short={short} {answer}")
 }
 
 /// `verify` with NO buffer: the identity does not fit, the answer is short, and the host re-calls
@@ -353,6 +503,174 @@ fn undeclared<I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
 ) -> String {
     let mut f: Frame<I, O> = Frame::new(input(), output());
     called(&p.call(s, &mut f))
+}
+
+/// The secret `records.secret` answers, not live, for an id the host does not hold: busbar's root
+/// answers the kernel's `auth::DUMMY_SECRET`, these bytes.
+const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
+
+/// One host-held credential: kind, id, secret, live.
+type HeldCredential = (String, String, String, bool);
+
+/// `k[section]`, the host-held credentials (`[{"kind","id","secret","live"}]`).
+///
+/// # Panics
+/// When it is missing, empty or malformed.
+fn held_credentials(k: &serde_json::Value, section: &str) -> Vec<HeldCredential> {
+    let list = k[section].as_array().unwrap_or_else(|| {
+        panic!(
+            "conformance.json: the door reads host credentials (FACT_READS_CREDENTIALS): auth.{section} \
+             must be an array of {{\"kind\",\"id\",\"secret\",\"live\"}}"
+        )
+    });
+    assert!(
+        !list.is_empty(),
+        "conformance.json: auth.{section} is empty"
+    );
+    list.iter()
+        .map(|c| {
+            let field = |f: &str| {
+                c[f].as_str()
+                    .unwrap_or_else(|| panic!("conformance.json: auth.{section}[].{f} is a string"))
+                    .to_string()
+            };
+            let live = c["live"]
+                .as_bool()
+                .unwrap_or_else(|| panic!("conformance.json: auth.{section}[].live is a boolean"));
+            (field("kind"), field("id"), field("secret"), live)
+        })
+        .collect()
+}
+
+/// THE HOST a credential-reading door's leg is served by: `records.secret` over its credentials
+/// (and the dummy, not live, for any other id), answered at once and counted; every other service
+/// unserved; the wall clock.
+struct CredentialHost {
+    held: Vec<HeldCredential>,
+    reads: AtomicU64,
+}
+
+impl CredentialHost {
+    fn new(held: Vec<HeldCredential>) -> Arc<Self> {
+        Arc::new(Self {
+            held,
+            reads: AtomicU64::new(0),
+        })
+    }
+
+    /// The `records.secret` reads served so far.
+    fn reads(&self) -> u64 {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+fn unserved() -> Ran {
+    Ran::Now(Stored::refused(UNSERVED))
+}
+
+impl HostServices for CredentialHost {
+    fn now(&self) -> Reading {
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        Reading {
+            wall_ns: wall,
+            mono_ns: now_ns(),
+        }
+    }
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
+        unserved()
+    }
+    fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
+        unserved()
+    }
+    fn records_claim(&self, _: &Caller, _: &str, _: &[u8], _: u64, _: Later) -> Ran {
+        unserved()
+    }
+    fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
+        unserved()
+    }
+    fn trust_due(&self, _: &Caller) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn random_fill(&self, _: u64) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
+        unserved()
+    }
+    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
+        unserved()
+    }
+    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn hook_call(&self, _: &Caller, _: Option<u64>, _: HookAsk, _: Later) -> Ran {
+        unserved()
+    }
+    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
+        unserved()
+    }
+    fn snapshot_read(&self, _: &Caller, _: u32) -> Snapshot {
+        Snapshot::Refused(UNSERVED)
+    }
+    fn records_secret(&self, kind: &str, id: &str, _: Later) -> Ran {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let (secret, live) = self
+            .held
+            .iter()
+            .find(|(k, i, _, _)| k == kind && i == id)
+            .map_or((DUMMY_SECRET, false), |(_, _, s, live)| (s.as_str(), *live));
+        Ran::Now(Stored {
+            bytes: secret.as_bytes().to_vec(),
+            spans: vec![ItemSpan {
+                key: Span {
+                    offset: SPAN_ABSENT,
+                    len: 0,
+                },
+                value: Span {
+                    offset: 0,
+                    len: secret.len() as u32,
+                },
+            }],
+            ..Stored::ready(if live { SECRET_LIVE } else { SECRET_NOT_LIVE })
+        })
+    }
+}
+
+/// A dispatcher serving `host`'s services.
+fn served_by(host: &Arc<CredentialHost>) -> Arc<Dispatcher> {
+    Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        host.clone(),
+    ))
 }
 
 /// A login input's text (`""` when absent).
@@ -591,6 +909,22 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
         !bad.is_empty(),
         "conformance.json: auth.bad_settings is empty"
     );
+    // A door reading host credentials is served by a host holding them, and rotates through the
+    // host: a second host serves other secrets for the same ids.
+    let reads = st.reads_credentials();
+    let hosts = reads.then(|| {
+        let held = held_credentials(k, "host_credentials");
+        let rotated = held_credentials(k, "rotated_host_credentials");
+        for (kind, id, secret, _) in &rotated {
+            assert!(
+                held.iter()
+                    .any(|(k, i, s, _)| k == kind && i == id && s != secret),
+                "conformance.json: auth.rotated_host_credentials holds the ids of \
+                 host_credentials under other secrets; {kind}:{id} is not one"
+            );
+        }
+        (CredentialHost::new(held), CredentialHost::new(rotated))
+    });
     let specs: Vec<serde_json::Value> = if inbound {
         k["cases"]
             .as_array()
@@ -621,7 +955,8 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
             );
         }
     }
-    let mut cases: Vec<Presented> = specs.iter().map(Presented::new).collect();
+    let at_body = st.at_head_body();
+    let mut cases: Vec<Presented> = specs.iter().map(|c| Presented::new(c, at_body)).collect();
     if st.facts & auth::FACT_INBOUND_ALL_HEADERS == 0 {
         for c in &cases {
             for n in c.carrier_names() {
@@ -642,7 +977,10 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
         );
     }
 
-    let d = dispatcher();
+    let d = match &hosts {
+        Some((host, _)) => served_by(host),
+        None => dispatcher(),
+    };
     let p = load::<Auth>(s, leg, bind_far(&d, "auth", s)).expect("the auth door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
@@ -677,14 +1015,25 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
             r.line(&format!("verify #{i}"), 1, || verify_now(&p, c));
         }
         for (i, c) in cases.iter_mut().enumerate() {
-            r.line(&format!("verify #{i} submitted"), 1, || {
-                verify_submitted(&p, &d, c)
+            r.line(&format!("verify #{i} submitted"), 1, || match &hosts {
+                // The host reads the call made, so a REFUSED on the spot is told from a read it
+                // needed.
+                Some((host, _)) => {
+                    let before = host.reads();
+                    let answer = verify_submitted(&p, &d, c);
+                    format!("{answer} host_reads={}", host.reads() - before)
+                }
+                None => verify_submitted(&p, &d, c),
             });
         }
         if let Some(at) = identity_at {
             // 2: the short answer, then the ONE re-call with the buffers it named.
             r.line("verify short, re-called", 2, || {
-                verify_short(&p, &mut cases[at])
+                if reads {
+                    verify_short_submitted(&p, &d, &mut cases[at])
+                } else {
+                    verify_short(&p, &mut cases[at])
+                }
             });
         }
     } else {
@@ -733,7 +1082,13 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
     // The admin cache flush: `refresh` with a new generation and unchanged settings.
     r.line("refresh", 1, || called(&refresh(&p, &settings)));
     if let Some(at) = identity_at {
-        r.line("verify after refresh", 1, || verify_now(&p, &mut cases[at]));
+        r.line("verify after refresh", 1, || {
+            if reads {
+                verify_submitted(&p, &d, &mut cases[at])
+            } else {
+                verify_now(&p, &mut cases[at])
+            }
+        });
     }
     r.line("close", 1, || called(&close(&p)));
     if let Some(at) = identity_at {
@@ -743,15 +1098,32 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
 
     if inbound {
         // THE ROTATED CREDENTIAL, on an instance of its own (opened and made ready as the host
-        // opens every instance): no identity case identifies there.
-        let rotated = text(&k["rotated_settings"]);
-        let q = load::<Auth>(s, leg, bind_far(&d, "auth-rotated", s)).expect("the auth door loads");
+        // opens every instance): no identity case identifies there. A door reading host
+        // credentials rotates through the host: a dispatcher of its own serves the rotated ones,
+        // and its instance opens over `rotated_settings` when named, else over its own settings.
+        let rotated = if reads && k.get("rotated_settings").is_none_or(|v| v.is_null()) {
+            settings.to_vec()
+        } else {
+            text(&k["rotated_settings"])
+        };
+        let dq = match &hosts {
+            Some((_, rotated_host)) => served_by(rotated_host),
+            None => d.clone(),
+        };
+        let q =
+            load::<Auth>(s, leg, bind_far(&dq, "auth-rotated", s)).expect("the auth door loads");
         let mut rq = Recorder::new(crossings(&q));
         rq.line("open rotated", 1, || called(&open(&q, &rotated)));
-        ready_step(&mut rq, s, &q, &d);
+        ready_step(&mut rq, s, &q, &dq);
         for (i, c) in cases.iter_mut().enumerate() {
             if expected[i].contains("Identity(") {
-                rq.line(&format!("verify #{i} rotated"), 1, || verify_now(&q, c));
+                rq.line(&format!("verify #{i} rotated"), 1, || {
+                    if reads {
+                        verify_submitted(&q, &dq, c)
+                    } else {
+                        verify_now(&q, c)
+                    }
+                });
             }
         }
         rq.line("close rotated", 1, || called(&close(&q)));
@@ -759,7 +1131,7 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
     }
 
     let fold = r.fold();
-    contract(&fold, &expected, identity_at, &never_echoed(k));
+    contract(&fold, &expected, identity_at, &never_echoed(k), reads);
     if login {
         login_contract(&fold, lg, st.login_kind);
     }
@@ -857,7 +1229,15 @@ fn never_echoed(k: &serde_json::Value) -> Vec<String> {
 /// short answer is re-called once into the case's verdict; settings `open` refuses are FAILED with
 /// a reason; undeclared families are REFUSED; the flush keeps serving; a closed instance serves
 /// nothing; a rotated credential identifies no one; no answer carries what must never be echoed.
-fn contract(fold: &Fold, expected: &[String], identity_at: Option<usize>, never: &[String]) {
+/// For a door that `reads` host credentials, an on-the-spot answer may instead be REFUSED when
+/// its submitted twin read the host, and the submitted one carries the case's verdict.
+fn contract(
+    fold: &Fold,
+    expected: &[String],
+    identity_at: Option<usize>,
+    never: &[String],
+    reads: bool,
+) {
     let at = |label: &str| {
         fold.iter()
             .find(|s| s.label == label)
@@ -880,12 +1260,35 @@ fn contract(fold: &Fold, expected: &[String], identity_at: Option<usize>, never:
     };
     for (i, want) in expected.iter().enumerate() {
         let now = at(&format!("verify #{i}"));
-        assert!(verdict_ok(now, want), "verify #{i}: {now} (want {want})");
         let sub = at(&format!("verify #{i} submitted"));
-        assert_eq!(
-            sub, now,
-            "verify #{i}: submitted and on the spot answer alike"
-        );
+        if reads {
+            let (sub, host_reads) = sub
+                .rsplit_once(" host_reads=")
+                .unwrap_or_else(|| panic!("verify #{i} submitted names no host_reads: {sub}"));
+            assert!(
+                verdict_ok(sub, want),
+                "verify #{i} submitted: {sub} (want {want})"
+            );
+            if now.starts_with("Refused ") {
+                // The ABI requires a ticket for a service that may pend: only a case that needs
+                // the host's read may be refused on the spot.
+                assert_ne!(
+                    host_reads, "0",
+                    "verify #{i}: REFUSED on the spot, yet its submitted twin read nothing: {now}"
+                );
+            } else {
+                assert_eq!(
+                    sub, now,
+                    "verify #{i}: submitted and on the spot answer alike"
+                );
+            }
+        } else {
+            assert!(verdict_ok(now, want), "verify #{i}: {now} (want {want})");
+            assert_eq!(
+                sub, now,
+                "verify #{i}: submitted and on the spot answer alike"
+            );
+        }
         if want.contains("Identity(") {
             let rot = at(&format!("verify #{i} rotated"));
             assert!(
