@@ -684,24 +684,23 @@ fn asking(
             spent: &plane.spent,
             pending: false,
         };
-        let now = seal.now();
-        crate::ask::relay_state_for(
-            relay_bind(principal, &name, now),
+        let bind = |now| relay_bind(principal, &name, now);
+        crate::tool_door::seal_relayed(
+            &mut seal,
+            server,
+            bind,
             digest,
             leg,
             tasks::TASK_RELAY_TTL_SECS,
-            &mut seal,
         )
     };
-    let Some(state) = sealed else {
-        run.end = Some(End::Failed(
-            crate::call::AskRefusal::NoSealer {
-                server: server.to_string(),
-            }
-            .to_string(),
-        ));
-        run.phase = Phase::Settle;
-        return running(plane, ticket, principal, unit, run);
+    let state = match sealed {
+        Ok(state) => state,
+        Err(refusal) => {
+            run.end = Some(End::Failed(refusal.to_string()));
+            run.phase = Phase::Settle;
+            return running(plane, ticket, principal, unit, run);
+        }
     };
     let requests = result
         .get("inputRequests")
@@ -849,17 +848,19 @@ fn relayed_leg(
         spent: &plane.spent,
         pending: false,
     };
-    let now = seal.now();
-    let opened = crate::ask::open_relayed(
-        &retry.state,
-        relay_bind(principal, name, now),
-        &digest,
-        &mut seal,
-    );
+    // A clock that cannot be read opens nothing: the state's window is not judged at the epoch.
+    let opened = seal.now().map(|now| {
+        crate::ask::open_relayed(
+            &retry.state,
+            relay_bind(principal, name, now),
+            &digest,
+            &mut seal,
+        )
+    });
     if seal.pending {
         return Poll::Pending;
     }
-    Poll::Ready(opened.ok())
+    Poll::Ready(opened.and_then(Result::ok))
 }
 
 #[allow(clippy::too_many_lines)]
