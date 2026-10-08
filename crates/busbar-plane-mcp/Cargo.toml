@@ -16,9 +16,9 @@
 #
 # THE DEPENDENCY EDGE, AND THE THING THAT CHANGED. There is no longer a codec crate to name. The
 # MCP wire dialect — the mount path, the revision, the method names, the `_meta` keys, the error
-# code table, the notification pair, the durable record vocabulary, the content sanitizer and the
-# structured-output check — folded IN here, because definition 16–20 puts everything one protocol
-# needs and no other protocol may name in the protocol's own plane crate (#39: no `busbar-*-codec`).
+# code table, the notification pair, the durable record vocabulary and the content sanitizer —
+# folded IN here, because definition 16–20 puts everything one protocol needs and no other protocol
+# may name in the protocol's own plane crate (#39: no `busbar-*-codec`).
 # The engine's registry row and its two operation cells did NOT come with it: they name the kernel's
 # handler matrix, which is kernel-side machinery, and they now read this crate's vocabulary rather
 # than restating it. The adapter still names no runtime, opens nothing, holds no connection and
@@ -53,7 +53,8 @@ bytes = { workspace = true }
 serde = { workspace = true }
 # The object notation the codec speaks. The adapter hands values across the seam and never invents
 # a second parser.
-serde_json = { workspace = true }
+# `raw_value`: a tool result is relayed as the bytes the upstream sent (Law 11).
+serde_json = { workspace = true, features = ["raw_value"] }
 
 [dev-dependencies]
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed

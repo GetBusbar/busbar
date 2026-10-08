@@ -14,8 +14,8 @@
 //!    the kernel's auth binding adds it when it sends.
 //! 3. [`settle`]: the far end's answer read as the engine reads it — the last event of a streamed
 //!    answer, the JSON-RPC correlation, an upstream's ask judged against the operator's grants and
-//!    never forwarded, the published output schema, and the content normalised — into the
-//!    caller's answer and its call-log line.
+//!    never forwarded, and a result relayed as the upstream sent it (Law 11) — into the caller's
+//!    answer and its call-log line.
 //!
 //! What is not here is the kernel's: the trust lifecycle (pin, sightings, demotion), the hook gate
 //! and rewrite, the outbound credential, the breaker and the pool walk, the budget and the meter.
@@ -414,7 +414,6 @@ pub fn admit_call(
         header,
         admit,
         &mut |_| Trust::Verdict(DISTRUST_NONE),
-        &|_| false,
         ask,
     )
 }
@@ -519,12 +518,7 @@ fn trust_refusal(
 /// kernel's Approve said of it ([`Trust`], `trust.serves` over the tool's registration and trust
 /// key after the door's re-fetch sighted it), rendered by [`trust_refusal`]. Asked after the name
 /// and the grants, before the header mirror and the ask: a refused dispatch never reaches the wire.
-///
-/// THE ARGUMENT GUARD ([`crate::argguard`]) judges the arguments that go out (the caller's, with
-/// the operator-bounded answers merged) against the tool's approved input schema, under the
-/// registration's `allow_private` (`allow_private` answers it for the tool): a URL or host the
-/// call carries to an internal or metadata address is refused before the call is sent.
-#[allow(clippy::too_many_arguments)] // `admit`'s five, the trust gate and the addressing policy
+/// The arguments it admits are judged next, by [`judge_arguments`].
 pub fn admit_trusted(
     catalogue: &Catalogue,
     id: &Value,
@@ -532,7 +526,6 @@ pub fn admit_trusted(
     header: &impl Fn(&str) -> Option<String>,
     admit: &impl Fn(&str, &str) -> bool,
     trust: &mut dyn FnMut(&ToolEntry) -> Trust,
-    allow_private: &dyn Fn(&ToolEntry) -> bool,
     ask: &mut dyn FnMut(&ToolEntry, &Value) -> crate::ask::AskDecision,
 ) -> Admission {
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
@@ -700,28 +693,6 @@ pub fn admit_trusted(
             );
         }
     }
-    // THE ARGUMENT GUARD, on the arguments that go out. A tool that declared no schema is walked
-    // against `{"type": "object"}`: the walk is value-driven, so declaring no schema narrows what it
-    // calls "declared" and nothing else.
-    let schema = entry
-        .input_schema
-        .clone()
-        .unwrap_or_else(|| json!({ "type": "object" }));
-    let policy = crate::argguard::SsrfPolicy {
-        allow_private: allow_private(entry),
-    };
-    if let Err(refused) = crate::argguard::guard(&schema, &arguments, policy) {
-        return Admission::Refused(
-            error(
-                STATUS_FORBIDDEN,
-                id,
-                crate::codec::CODE_REFUSED,
-                refused.to_string(),
-                Some(json!({ "reason": REASON_TOOL_ARGUMENT_REFUSED })),
-            ),
-            line(REASON_TOOL_ARGUMENT_REFUSED),
-        );
-    }
     Admission::Go(AdmittedCall {
         entry: entry.clone(),
         arguments,
@@ -734,6 +705,44 @@ pub fn admit_trusted(
         sent_digest,
         relay,
     })
+}
+
+/// THE ARGUMENT GUARD ([`crate::argguard`]) on an admitted call: the arguments that go out (the
+/// caller's, with the operator-bounded answers merged) are walked against the tool's approved input
+/// schema, and every URL or host they carry is asked of the host's ONE destination judge: `judge`
+/// answers `dest.judge`'s verdict for the tool and the host (BUSBAR-1.6.0.md Appendix C B.3 item
+/// 11), `None` when it gave none. A refused one refuses the call before it is sent. A tool that
+/// declared no schema is walked against `{"type": "object"}`: the walk is value-driven, so declaring
+/// no schema narrows what it calls "declared" and nothing else. Any other admission is unchanged.
+pub fn judge_arguments(
+    admission: Admission,
+    judge: &mut dyn FnMut(&ToolEntry, &str) -> Option<u64>,
+) -> Admission {
+    let Admission::Go(admitted) = admission else {
+        return admission;
+    };
+    let entry = &admitted.entry;
+    let schema = entry
+        .input_schema
+        .clone()
+        .unwrap_or_else(|| json!({ "type": "object" }));
+    match crate::argguard::guard(&schema, &admitted.arguments, |dest| judge(entry, dest)) {
+        Ok(_) => Admission::Go(admitted),
+        Err(refused) => Admission::Refused(
+            error(
+                STATUS_FORBIDDEN,
+                &admitted.id,
+                crate::codec::CODE_REFUSED,
+                refused.to_string(),
+                Some(json!({ "reason": REASON_TOOL_ARGUMENT_REFUSED })),
+            ),
+            Some(CallLine::resolved(
+                entry,
+                vocab::OUTCOME_REFUSED,
+                REASON_TOOL_ARGUMENT_REFUSED,
+            )),
+        ),
+    }
 }
 
 /// What busbar declares to `def`'s server for `admitted`'s call: each ask kind the operator lets the
@@ -980,7 +989,8 @@ pub fn upstream_ask_field(value: &Value) -> Option<&'static str> {
 }
 
 /// The tool-execution-error RESULT for an upstream leg that failed: `isError: true` with the
-/// failure, busbar-attributed and naming the server, in a normalised text block.
+/// failure, busbar-attributed and naming the server, in one text block. An upstream's own words in
+/// `reason` (its JSON-RPC error message) are carried unchanged (Law 11).
 #[must_use]
 pub fn upstream_failure_result(server: &str, reason: &str) -> Value {
     json!({
@@ -988,9 +998,7 @@ pub fn upstream_failure_result(server: &str, reason: &str) -> Value {
         "isError": true,
         "content": [{
             "type": "text",
-            "text": crate::sanitize::normalise(&format!(
-                "The MCP server `{server}` did not complete this tool call: {reason}"
-            )),
+            "text": format!("The MCP server `{server}` did not complete this tool call: {reason}"),
         }],
     })
 }
@@ -1174,7 +1182,7 @@ pub fn settle_call_as(
         ),
     };
     match wire::parse_response(&body, sent_id) {
-        RpcOutcome::Result(value) => completed(admitted, value),
+        RpcOutcome::Result(value) => completed(admitted, &value, &body),
         failure @ (RpcOutcome::Error { .. }
         | RpcOutcome::Malformed(_)
         | RpcOutcome::Uncorrelated(_)) => {
@@ -1329,12 +1337,12 @@ pub fn ask_refused(admitted: &AdmittedCall, refusal: &AskRefusal) -> Settled {
     }
 }
 
-/// A finished result: the terminal ask check, the published output schema, then the normalised
-/// content.
-fn completed(admitted: &AdmittedCall, value: Value) -> Settled {
+/// A finished result: the terminal ask check, then the upstream's result relayed as it came
+/// (Law 11). `value` is the result parsed, `body` the answer it was parsed from.
+fn completed(admitted: &AdmittedCall, value: &Value, body: &[u8]) -> Settled {
     let entry = &admitted.entry;
     let id = &admitted.id;
-    if let Some(field) = upstream_ask_field(&value) {
+    if let Some(field) = upstream_ask_field(value) {
         return Settled::Answer {
             status: STATUS_FORBIDDEN,
             body: catalogue_refusal(
@@ -1352,36 +1360,41 @@ fn completed(admitted: &AdmittedCall, value: Value) -> Settled {
             line: CallLine::resolved(entry, vocab::OUTCOME_REFUSED, REASON_ASK_NOT_PROXIED),
         };
     }
-    if let (Some(schema), Some(structured)) = (&entry.output_schema, value.get("structuredContent"))
-    {
-        if let Err(why) = crate::outputschema::check(structured, schema) {
-            return Settled::Answer {
-                status: STATUS_OK,
-                body: result(
-                    id,
-                    upstream_failure_result(
-                        &entry.server,
-                        &format!(
-                            "it returned structured output that violates the `outputSchema` this \
-                             tool is published with ({why}). The structured result was NOT served: \
-                             a result that does not conform to the schema busbar published for it \
-                             would make busbar's own answer unverifiable."
-                        ),
-                    ),
-                ),
-                line: CallLine::resolved(
-                    entry,
-                    vocab::OUTCOME_DISPATCHED,
-                    vocab::REASON_UPSTREAM_FAILED,
-                ),
-            };
-        }
-    }
     Settled::Answer {
         status: STATUS_OK,
-        body: result(id, crate::sanitize::normalise_json(&value)),
+        body: relayed(id, value, body),
         line: CallLine::resolved(entry, vocab::OUTCOME_DISPATCHED, ""),
     }
+}
+
+/// The caller's answer carrying the upstream's `result` as the upstream wrote it: its own bytes,
+/// under the caller's id. The one addition is the dialect's `resultType: complete` on a result
+/// object that carries no `resultType` at all; a `resultType` the upstream sent is its own.
+fn relayed(id: &Value, value: &Value, body: &[u8]) -> Vec<u8> {
+    #[derive(serde::Deserialize)]
+    struct Answer<'a> {
+        #[serde(borrow)]
+        result: &'a serde_json::value::RawValue,
+    }
+    let Ok(answer) = serde_json::from_slice::<Answer<'_>>(body) else {
+        return result(id, value.clone());
+    };
+    let sent = answer.result.get();
+    let mut out = format!("{{\"id\":{id},\"jsonrpc\":\"2.0\",\"result\":");
+    match sent.trim_start().strip_prefix('{') {
+        Some(members) if value.get("resultType").is_none() => {
+            out.push_str("{\"resultType\":\"");
+            out.push_str(RESULT_TYPE_COMPLETE);
+            out.push('"');
+            if !members.trim_start().starts_with('}') {
+                out.push(',');
+            }
+            out.push_str(members);
+        }
+        _ => out.push_str(sent),
+    }
+    out.push('}');
+    out.into_bytes()
 }
 
 #[cfg(test)]

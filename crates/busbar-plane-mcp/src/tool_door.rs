@@ -1257,6 +1257,36 @@ fn ask_entitlements(
     }
 }
 
+/// THE KERNEL'S DESTINATION JUDGE on a host a call's arguments name (BUSBAR-1.6.0.md Appendix C
+/// B.3 item 11: `dest.judge`, called where the argument guard runs): the deployment's egress rules
+/// under its default class, private reach refused outright for a registration that was granted
+/// none (`allow_private`, as `DEST_REFUSE_PRIVATE`). The name alone is judged, never resolved, so
+/// it never pends (the B.2 row: "may pend: no"); a host that serves no judge, pends or fails
+/// gives no verdict, and the argument guard refuses (fail closed).
+fn dest_verdict(
+    services: Services,
+    handle: CompletionHandle,
+    held: &Held,
+    entry: &crate::catalogue::ToolEntry,
+    dest: &str,
+) -> Option<u64> {
+    let reach = held
+        .section
+        .servers
+        .get(&entry.server)
+        .is_some_and(|d| d.allow_private);
+    let flags = if reach {
+        0
+    } else {
+        busbar_contract::abi::host::service::DEST_REFUSE_PRIVATE
+    };
+    let class = busbar_contract::abi::host::conn::connector::EGRESS_DEFAULT;
+    match services.dest_judge_as(handle, dest, class, flags, None) {
+        std::task::Poll::Ready(Ok(judged)) => Some(judged.verdict),
+        _ => None,
+    }
+}
+
 /// What one piece came to.
 enum Step {
     /// Nothing to write: the piece was taken.
@@ -1874,17 +1904,20 @@ fn answer_body(
             &header,
             &admit,
             &mut trust,
-            &|entry: &crate::catalogue::ToolEntry| {
-                held.section
-                    .servers
-                    .get(&entry.server)
-                    .is_some_and(|d| d.allow_private)
-            },
             &mut ask,
         );
         if seal.is_some_and(|s| s.pending) {
             return Some(Step::Pending);
         }
+        let admission = crate::call::judge_arguments(admission, &mut |entry, dest| {
+            let handle = CompletionHandle {
+                ticket,
+                seq: unit.issued,
+                _reserved: 0,
+            };
+            unit.issued += 1;
+            dest_verdict(services?, handle, &held, entry, dest)
+        });
         return Some(match admission {
             Admission::Asked(body, line) | Admission::Unreached(body, line) => {
                 unit.pending = Some(
