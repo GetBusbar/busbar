@@ -335,3 +335,33 @@ fn the_plane_names_no_money_and_no_decision() {
         "the plane names money or decisions: {offenders:?}"
     );
 }
+
+/// The plane satisfies no upstream's ask (Law 11, BUSBAR-1.6.0 lines 2127-2132: busbar "answers
+/// nothing on the caller's behalf"; a code path that answers what a response asks for "is deleted,
+/// never added").
+///
+/// An upstream's sampling, elicitation or roots ask is relayed to the caller, who answers it. The
+/// satisfier vocabulary — a per-dispatch loop that decided whether BUSBAR may satisfy an ask and
+/// counted the rounds it satisfied — is the shape of the other answer, and it does not come back,
+/// in production code or in a test that keeps it alive.
+#[test]
+fn the_plane_satisfies_no_upstream_ask() {
+    let forbidden = ["may_satisfy", "InputRequiredLoop"];
+    let mut offenders = Vec::new();
+    walk(&src_dir(), &mut |path, text| {
+        for (n, line) in text.lines().enumerate() {
+            if is_comment(line) {
+                continue;
+            }
+            for name in forbidden {
+                if line.contains(name) {
+                    offenders.push(format!("{}:{}: {name}", path.display(), n + 1));
+                }
+            }
+        }
+    });
+    assert!(
+        offenders.is_empty(),
+        "the plane carries a satisfier of an upstream's ask: {offenders:?}"
+    );
+}
