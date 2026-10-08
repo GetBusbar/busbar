@@ -438,6 +438,10 @@ pub struct Ctx {
     /// read as, so an overlaid path never consults it and a plain path never reads its own bytes
     /// off disk twice in one process.
     read_memo: Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<ReadResult>>>>,
+    /// `cargo xtask selftest --declare`: where every `prove_*` case records its STATIC declaration
+    /// instead of running ([`crate::declare`]), shared by every clone and overlay of a declaring
+    /// context. `None` on every ordinary run.
+    declared: Option<Arc<std::sync::Mutex<Vec<crate::declare::Declared>>>>,
 }
 
 /// One file's disk read, memoized — named so [`Ctx`]'s `read_memo` field does not trip clippy's
@@ -469,6 +473,7 @@ impl Ctx {
             ignore_memo: Arc::default(),
             walk_memo: Arc::default(),
             read_memo: Arc::default(),
+            declared: None,
         })
     }
 
@@ -486,6 +491,7 @@ impl Ctx {
             ignore_memo: Arc::default(),
             walk_memo: Arc::default(),
             read_memo: Arc::default(),
+            declared: None,
         })
     }
 
@@ -520,6 +526,36 @@ impl Ctx {
     pub fn write_mode(mut self, yes: bool) -> Ctx {
         self.env.write = yes;
         self
+    }
+
+    /// The same context, DECLARING: every `prove_*` case records its declaration
+    /// ([`Ctx::declare`]) and runs no gate. `cargo xtask selftest --declare` only.
+    pub fn declaring(mut self) -> Ctx {
+        self.declared = Some(Arc::default());
+        self
+    }
+
+    pub fn is_declaring(&self) -> bool {
+        self.declared.is_some()
+    }
+
+    /// Record one case's declaration (nothing, on a context that is not declaring).
+    pub fn declare(&self, d: crate::declare::Declared) {
+        if let Some(sink) = &self.declared {
+            sink.lock().unwrap_or_else(|e| e.into_inner()).push(d);
+        }
+    }
+
+    /// Every declaration recorded so far, by case name, leaving none behind. The cases are taken
+    /// across the cores, so the order they arrive in is not the order they were pushed.
+    pub fn take_declared(&self) -> Vec<crate::declare::Declared> {
+        let mut out = self
+            .declared
+            .as_ref()
+            .map(|sink| std::mem::take(&mut *sink.lock().unwrap_or_else(|e| e.into_inner())))
+            .unwrap_or_default();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     /// A FRESH context with this overlay. The base is untouched.
