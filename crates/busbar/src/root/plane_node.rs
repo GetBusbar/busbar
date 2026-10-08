@@ -398,8 +398,12 @@ impl Node {
         let Ok(posted) = end.into_posted() else {
             return;
         };
-        // THE UNIT'S RECORD, sealed with its one line: what the line wrote is the record's amount.
-        let lines = exit_lines(outcome, &posted);
+        // THE UNIT'S RECORD, sealed with its one line. Its amount is the unit's counts plus the card
+        // version, never a price (`BUSBAR-1.6.0.md` THE DESIGN §1, #43, #77(3)). The exit's posting
+        // carries only the figure the settlement writer moved, money in nano-units, and no class or
+        // count, so it gives the record no line. A unit whose counts are known has a late arm, and
+        // that arm seals them ([`report_lines`]).
+        let lines = Vec::new();
         // Settle THROUGH the money-book seam rather than a `&mut` on the book itself: the lock is
         // taken and released inside the seam, so this arm settling does not hold the one book across
         // its whole exit the way a `&mut Durability` did. The pass-through settles the identical
@@ -1325,7 +1329,8 @@ impl LateAccrual {
             // Nothing arrived after all: the one line is the exit's posting as it stood, written
             // where the exit would have written it.
             if let Some(exit) = exit {
-                let lines = outcome.map(|o| exit_lines(o, &exit)).unwrap_or_default();
+                // No counts arrived, and the posting is a figure, not counts: no line.
+                let lines = Vec::new();
                 let _settled = settle(
                     &book,
                     &principal,
@@ -2290,22 +2295,6 @@ fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
         busbar_contract::FinishClass::Partial => RecordFinish::Partial,
         busbar_contract::FinishClass::Error => RecordFinish::Error,
     }
-}
-
-/// The record's amount for a line the EXIT wrote: the kernel's own accrual, as the exit's usage
-/// line carried it — nothing for a refused unit, which was charged nothing.
-fn exit_lines(outcome: Outcome, posted: &busbar_contract::caps::Posted) -> Vec<RecordLine> {
-    if matches!(outcome, Outcome::Refused(..)) || posted.settled() == 0 {
-        return Vec::new();
-    }
-    vec![RecordLine {
-        class: busbar_kernel::teller::KERNEL_ACCRUAL_CLASS,
-        quantity: posted.settled(),
-        source: busbar_contract::caps::QuantitySource::Count,
-        estimated: posted
-            .flags()
-            .contains(busbar_contract::caps::PostingFlags::ESTIMATED),
-    }]
 }
 
 /// The record's amount for a line the LATE ARM wrote: every class the unit reported, by the
