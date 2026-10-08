@@ -1030,6 +1030,66 @@ fn uplink_audio_meters_on_the_half_the_upstream_answer_arrives_on() {
     );
 }
 
+/// A Gemini Live caller's uplink is metered at the rate its blob's `mimeType` states.
+///
+/// Gemini requires 16 kHz PCM on its uplink: 32 bytes a millisecond. The relay step counted every
+/// uplink frame at the 24 kHz rate (48 bytes a millisecond), so one second a Gemini caller spoke
+/// metered as 666 ms and `audio_seconds_in` reported two-thirds of the audio (audit HIGH 9). A blob
+/// that states 24 kHz is metered at 24 kHz.
+#[test]
+fn a_gemini_live_uplink_is_metered_at_the_rate_its_blob_states() {
+    use crate::tests::harness::{ctx_with_session, PairedSession};
+
+    static UPSTREAMS: &[Upstream] = &[Upstream {
+        lane: LaneId::new("realtime-gemini"),
+        host: "api.gemini.example",
+        dialect: Dialect::GeminiLive,
+    }];
+    let plane = StreamingPlane::new(UPSTREAMS);
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new(
+        "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+    );
+    let labels = Labels::new();
+    let session = PairedSession::new(Dialect::GeminiLive.name(), 1);
+    let c = ctx_with_session(&arena, &config, &transport, &labels, &session);
+    let dest = destination("api.gemini.example", LaneId::new("realtime-gemini"));
+    let relay_unit = unit(
+        busbar_contract::ids::OpClassId::new("duplex_turn"),
+        busbar_contract::bounded::Ir::empty(),
+        Facts::new(),
+    );
+
+    // The uplink milliseconds one relayed blob of `bytes` bytes at `mime` adds to the turn.
+    let relayed_ms = |mime: &str, bytes: usize| {
+        let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+        let blob = serde_json::to_vec(&json!({
+            "realtimeInput": { "audio": { "mimeType": mime, "data": base64_of(&vec![0u8; bytes]) } },
+        }))
+        .expect("audio fixture serializes");
+        let frames = [frame(&blob)];
+        let _relayed =
+            plane.encode_ingress_frame(&relay_unit, &frames[0], &dest, Some(&mut upstream), &c);
+        upstream
+            .get_mut::<crate::session::VoiceSessionState>()
+            .expect("the plane's own session state")
+            .turn
+            .audio_ms_in
+    };
+
+    // One second at 16 kHz: 32 000 bytes.
+    assert_eq!(
+        relayed_ms("audio/pcm;rate=16000", 32_000),
+        1_000,
+        "one second of 16 kHz uplink is one second, not two-thirds of one"
+    );
+    // An untagged blob is the direction's own rate, 16 kHz.
+    assert_eq!(relayed_ms("audio/pcm", 32_000), 1_000);
+    // One second at 24 kHz: 48 000 bytes.
+    assert_eq!(relayed_ms("audio/pcm;rate=24000", 48_000), 1_000);
+}
+
 /// The duration class is denominated in seconds, and the counter behind it is in milliseconds.
 ///
 /// The design names the class `audio_seconds_in`. This plane counts milliseconds, because that is
