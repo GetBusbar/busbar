@@ -64,7 +64,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, MetricEntry, OutHead, Outcome, MAX_ENVELOPE_ENTRIES,
@@ -184,16 +184,19 @@ pub(crate) struct Reason {
 /// [`Holders`], and the SDK answers FAULT, so the host reads nothing, when one of them is gone by
 /// the time the body returns: a table the body made for itself and dropped would have freed the
 /// memory the host is about to read.
+/// Its token is made at the first writer that needs it, so a table is still built in a `const`
+/// context.
 #[derive(Default)]
-pub(crate) struct Alive(OnceLock<Arc<()>>);
+pub(crate) struct Alive(Mutex<Option<Arc<()>>>);
 
 impl Alive {
     pub(crate) const fn new() -> Self {
-        Self(OnceLock::new())
+        Self(Mutex::new(None))
     }
 
     fn token(&self) -> Weak<()> {
-        Arc::downgrade(self.0.get_or_init(|| Arc::new(())))
+        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::downgrade(held.get_or_insert_with(|| Arc::new(())))
     }
 }
 

@@ -45,7 +45,6 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::abi::mechanism::call::{InHead, OutHead, Outcome, FLAG_RESUME};
@@ -471,11 +470,9 @@ impl<S: SafeSlot> Entry for Safe<S> {
                 let gone = unsafe { Box::from_raw(instance.cast::<Tagged<S::State>>()) };
                 // The state's `Drop` is plugin code and may panic. The box is deallocated during
                 // that unwind all the same, so the answer stays READY: a FAULT here would tell the
-                // host the instance is still live while its memory is gone. A payload is leaked,
-                // not dropped, since its own `Drop` may panic again.
-                if let Err(payload) = catch_unwind(AssertUnwindSafe(move || drop(gone))) {
-                    std::mem::forget(payload);
-                }
+                // host the instance is still live while its memory is gone. The panic dies at the
+                // boundary's one reviewed catch ([`crate::abi::sdk::boundary::caught`]).
+                let _ = crate::abi::sdk::boundary::caught(move || drop(gone));
             }
             _ => {}
         }
