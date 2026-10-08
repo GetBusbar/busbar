@@ -45,8 +45,10 @@ use crate::topology::{
     StartError,
 };
 use busbar_kernel::config::RootCfg;
-use busbar_kernel::egress::duplex_ws::{CredentialPlacement as WsPlacement, DialCredential};
-use busbar_kernel::egress::engine::{send_bounded, EngineClient};
+use busbar_kernel::egress::{
+    duplex_ws::{CredentialPlacement as WsPlacement, DialCredential},
+    engine::{send_bounded, EngineClient},
+};
 use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::ingress::duplex_ws::{
     accept_gauntlet, install_ws_arrivals, WsAcceptFuture, WsArrival, WsArrivalSpec,
