@@ -1773,7 +1773,7 @@ bears on none of them, it is reporting a defect in itself.
 
 Dev-green on **one SHA**, with nothing outstanding or niggling:
 
-1. `scripts/verify-1.6.0-done.sh` exits 0 across all of its groups (`DONE_GROUPS_DECLARED`, 24 today) — full run, never `--fast`
+1. `scripts/verify-1.6.0-done.sh` exits 0 across all of its groups (`DONE_GROUPS_DECLARED`, 25 today) — full run, never `--fast`
    (exit 3 is PROVISIONAL, not spendable), every bless/repoint env var empty.
 2. Construction standing-reds **empty** — `ship-ready` green, not merely `--posture`-tolerated.
    Hard clause: every `Family::Neutral` crate names **ZERO** plane/control/transport/dialect instance

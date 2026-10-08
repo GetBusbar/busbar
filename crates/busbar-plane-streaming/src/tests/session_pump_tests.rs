@@ -160,6 +160,51 @@ fn a_tool_call_is_run_once_on_its_close_with_its_accumulated_arguments() {
     );
 }
 
+/// P-ITEM: VOICE TOOL-ARGS (spec DONE item 2, "All P-item behaviours match 1.5.5"; the drive log's
+/// P5, commit 470351a480: "streamed tool-call arguments are discarded"). The model streams a call's
+/// arguments as several partial-JSON fragments; they reach the executor CONCATENATED, as one call,
+/// run once, on the call's close and not before.
+///
+/// Voice is new in 1.6.0; the 1.5.5 behaviour it matches is the llm surface's own streamed tool
+/// call (owner correction 2026-09-28): 1.5.5 accumulated every `InputJsonDelta` fragment of an open
+/// tool block and emitted the call ONCE on its block stop with the fully reassembled arguments,
+/// because parsing each fragment alone lost the arguments and split one call into many (v1.5.5
+/// `crates/busbar/src/proto/gemini/writer.rs:734-780`).
+#[test]
+fn p_item_voice_tool_args_streamed_fragments_reach_the_executor_whole_and_once() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let mut runs = Vec::new();
+    let open = wire(serde_json::json!({"type":"response.output_item.added",
+        "item":{"type":"function_call","call_id":"cw","name":"weather"}}));
+    let (_, r) = p.on_server_frame(open, 0, &mut sink, &serves_all);
+    assert!(r.is_empty(), "an announced call is not run");
+    for fragment in ["{\"lo", "c\":\"S", "F\"}"] {
+        let delta = wire(
+            serde_json::json!({"type":"response.function_call_arguments.delta",
+            "call_id":"cw","delta":fragment}),
+        );
+        let (_, r) = p.on_server_frame(delta, 0, &mut sink, &serves_all);
+        assert!(
+            r.is_empty(),
+            "a call is not run on a fragment of its arguments"
+        );
+    }
+    let done = wire(
+        serde_json::json!({"type":"response.function_call_arguments.done",
+        "call_id":"cw"}),
+    );
+    let (_, r) = p.on_server_frame(done, 0, &mut sink, &serves_all);
+    runs.extend(r);
+    assert_eq!(runs.len(), 1, "one call, run once on its close");
+    assert_eq!(runs[0].name, "weather");
+    assert_eq!(runs[0].call_id, "cw");
+    assert_eq!(
+        runs[0].args, b"{\"loc\":\"SF\"}",
+        "the fragments reach the executor whole, in order"
+    );
+}
+
 /// A table that records what the pump asked of it.
 #[derive(Default)]
 struct Table {
