@@ -36,6 +36,7 @@
 
 pub mod audit;
 pub mod audit_cmd;
+pub mod audit_pinned;
 pub mod audit_verify;
 pub mod cli;
 pub mod conformance_check;
