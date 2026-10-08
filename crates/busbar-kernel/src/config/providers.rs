@@ -309,14 +309,15 @@ pub enum ProviderAuth {
     /// OAuth 2.0 JWT-bearer grant (RFC 7523): the provider's credential is a signing key (delivered as
     /// a Google service-account JSON in `api_key_env`), which busbar uses to mint + auto-refresh a
     /// short-lived bearer token per lane. Generic — Vertex AI is the first provider to select it. The
-    /// token minting/refresh lives in `busbar_kernel::egress_auth::jwt_bearer`; this is only the
-    /// selector.
+    /// token minting/refresh lives in the auth plugin serving the `jwt-bearer` style; this is only
+    /// the selector.
     #[serde(rename = "jwt-bearer")]
     JwtBearer,
     /// OAuth 2.0 client-credentials grant (RFC 6749 §4.4): `api_key_env` carries
     /// `client_id:client_secret`, and the provider's `token_url` + `scope` complete the exchange for
     /// an auto-refreshed bearer. Generic — Azure OpenAI via Microsoft Entra ID is the first consumer.
-    /// The token minting/refresh lives in `busbar_kernel::egress_auth::oauth_client_credentials`.
+    /// The token minting/refresh lives in the auth plugin serving the `oauth-client-credentials`
+    /// style.
     #[serde(rename = "oauth-client-credentials")]
     OAuthClientCredentials,
 }

@@ -937,7 +937,7 @@ ops.scrape|v1models|none
 ops.scrape|v1models|openai-fp
 ops.scrape|v1models|x-api-key
 ops.scrape|v1modelsid|retrieve
-plugins.abi|json-contract|store-sqlite
+plugins.abi|json-contract|store-sqlite@1.5-line
 plugins.load|auth-github
 plugins.load|auth-ldap
 plugins.load|auth-oidc
