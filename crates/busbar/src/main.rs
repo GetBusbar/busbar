@@ -992,6 +992,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new(move |app| door_appliers.apply(app)));
+    // Every opened plugin instance's log sink follows the applied `plugins.logs` (THE DESIGN §11.2).
+    app_handle.on_apply(Box::new(|app| {
+        root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
+    }));
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.
     if let Some(kernel) = late_services.kernel() {
