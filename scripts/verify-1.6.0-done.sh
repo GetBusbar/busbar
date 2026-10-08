@@ -1144,6 +1144,16 @@ end_group
 begin_group "KIND-ISOLATION — the plugin kinds never cross-contaminate (ship criterion, 0 exemptions)"
 step "kind-isolation --selftest" cargo xtask gate kind-isolation-ship --selftest
 step "kind-isolation --ship"     cargo xtask gate kind-isolation-ship
+# THE DoD HARD CLAUSE (BUSBAR-1.6.0.md:1994-1999): every core-neutral crate names ZERO plugin-
+# instance vocabulary. `kind-isolation:law0` holds each crate at its `[[law0]]` ceiling (Law 9,
+# ARCHITECT 2026-10-07); DONE is every ceiling at 0, read here off the one ledger.
+step "every core-neutral [[law0]] ceiling is 0" python3 -c '
+import re, sys
+rows = re.findall(r"\[\[law0\]\]\s*\ncrate\s*=\s*\"([^\"]+)\"\s*\naxis\s*=\s*\"([^\"]+)\"\s*\ncount\s*=\s*\"([0-9]+)\"", open("qa/kind-isolation.toml").read())
+open_ = [f"{c} x {a} = {n}" for c, a, n in rows if int(n) > 0]
+print(f"{len(rows)} [[law0]] row(s); {len(open_)} above 0" + (": " + "; ".join(open_) if open_ else ""))
+sys.exit(1 if open_ or not rows else 0)
+'
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

@@ -1033,6 +1033,17 @@ struct DepQuestion {
     question: String,
 }
 
+/// One `[[law0]]` row: a neutral crate's Law 0 count on one axis, recorded at today's measurement
+/// (Law 9, ARCHITECT 2026-10-07). The count may only fall; the DoD's hard clause (BUSBAR-1.6.0.md
+/// :1994-1999) is every such row at 0, which `scripts/verify-1.6.0-done.sh` reads.
+#[derive(Debug, Clone)]
+pub(super) struct Law0Ceiling {
+    pub krate: String,
+    pub axis: String,
+    pub count: usize,
+    pub cite: String,
+}
+
 /// One `[[face]]` row: a crate that implements ANOTHER kind's entry face today, at the exact number
 /// of implementations, with the sentence that says why it is still here.
 ///
@@ -1063,6 +1074,9 @@ struct KindRegistry {
     dep_questions: Vec<DepQuestion>,
     /// The `:faces` row's table — one row per crate that implements another kind's entry face.
     faces: Vec<FaceDebt>,
+    /// `[[law0]]` rows: today's Law 0 count per neutral crate and axis (Law 9), the ceilings
+    /// `kind-isolation:law0` holds every neutral crate to. See `matrix::rule_law0`.
+    law0: Vec<Law0Ceiling>,
     /// The `:matrix` row's two tables. They live in this reader rather than in a second one
     /// because there is ONE registry file and a file read twice is a file two rules can disagree
     /// about.
@@ -1502,6 +1516,31 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 drain: v[5].clone(),
             });
         }
+        "law0" => {
+            let Some(v) = take_row(
+                fields,
+                &["crate", "axis", "count", "cite"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            let Ok(count) = v[2].parse::<usize>() else {
+                reg.errors.push(format!(
+                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[law0]] count = \"{}\"` is not a number. A \
+                     ceiling that cannot be compared to a measurement is not a ceiling",
+                    v[2]
+                ));
+                return;
+            };
+            reg.law0.push(Law0Ceiling {
+                krate: v[0].clone(),
+                axis: v[1].clone(),
+                count,
+                cite: v[3].clone(),
+            });
+        }
         "question" => {
             let Some(v) = take_row(
                 fields,
@@ -1530,8 +1569,8 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
-             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` \
-             and `[[patch]]` rows and nothing else"
+             `[[question]]`, `[[face]]`, `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, \
+             `[[core-name]]` and `[[patch]]` rows and nothing else"
         )),
     }
 }
@@ -1566,7 +1605,7 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` and `[[patch]]` rows and \
+                 `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` and `[[patch]]` rows and \
                  nothing else",
                 i + 1
             ));
@@ -6691,6 +6730,7 @@ impl Gate for KindIsolationGate {
             ROW_WIRES.to_string(),
             ROW_TRUTHS.to_string(),
             ROW_MATRIX.to_string(),
+            matrix::ROW_LAW0.to_string(),
         ];
         if self.ship {
             owed.push(ROW_DRAIN.to_string());
@@ -6781,7 +6821,7 @@ impl Gate for KindIsolationGate {
             &|| vec![rule_steps(cx, crates)],
             &|| vec![rule_wires(cx, crates)],
             &|| vec![truths::rule_truths(cx, &kind_names(), crates)],
-            &|| vec![matrix::rule_matrix(cx, crates, reg, ship, matrix_gating)],
+            &|| matrix::rule_matrix_rows(cx, crates, reg, ship, matrix_gating),
             // THE SOURCE INDEX IS BUILT FOR BOTH REGISTRATIONS NOW. It was the ship twin's private
             // input, because the two rows that read it are ship criteria — but `:faces` is not a
             // ship criterion. A wire that implements `Plane` is a plane at the type level on the
