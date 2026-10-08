@@ -609,9 +609,10 @@
         "status": "none",
         "note": "no rig scenario asks the decision plane for a provider the caller's credential may not reach",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-decisions",
-          "note": "the leg's one keyed caller may reach its one configured provider, so no unit is refused a destination at verify before the door opens a hold"
+          "note": "a unit presented by a key that names only another pool ends at the verify step before its dial, the refusal sealed on the audit chain as PoolNotPermitted, while the same door serves the key granted every pool",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_from_a_key_naming_another_pool_ends_at_verify_before_its_dial"
         }
       },
       "approve": {
@@ -629,9 +630,10 @@
         "status": "none",
         "note": "no rig scenario spends a decisions caller's budget and watches the next request refused before its dial",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-decisions",
-          "note": "the served cell admits its one keyed request and counts it on the governance ledger, but no cell spends the key's budget, so the over-budget refusal before the dial is never driven here"
+          "note": "a keyed caller within its group budget is served and charged, the next unit past the budget is refused 429 before its dial naming the seconds until the window rolls, and a never-rolling window names none",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_past_its_budget_is_refused_with_a_retry_after"
         }
       },
       "route": {
@@ -661,9 +663,10 @@
         "status": "none",
         "note": "no rig scenario reads the audit chain after a decisions unit; the plane declares no record kinds",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-decisions",
-          "note": "the leg reads the governance ledger and the node's book but never the audit chain, so a decision unit's sealed audit entry is unwitnessed over the driver"
+          "note": "a served unit and a rate-limited unit each seal one record on the node's audit chain under the plane's operation class, linked in sequence, the walk clean and a record altered after its seal breaking it",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain"
         }
       },
       "encode": {

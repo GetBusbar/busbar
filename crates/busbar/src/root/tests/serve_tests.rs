@@ -2098,6 +2098,19 @@ async fn serve_governed(
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
     fee: i64,
 ) -> Serving {
+    serve_keyed(linked, instance, port, limits, fee, None).await
+}
+
+#[cfg(feature = "plane-decisions")]
+/// [`serve_governed`], the caller's key minted with `allowed_pools` (`None` = every pool).
+async fn serve_keyed(
+    linked: &crate::root::linked::Linked,
+    instance: &str,
+    port: u16,
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+    fee: i64,
+    allowed_pools: Option<Vec<String>>,
+) -> Serving {
     // The scrape sink's `/metrics` is mounted on a test app built with the recorder installed.
     busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
@@ -2173,6 +2186,7 @@ async fn serve_governed(
         .mint_signed(
             NewKeySpec {
                 name: "decider".to_string(),
+                allowed_pools,
                 group: (!groups.is_empty()).then(|| group.clone()),
                 ..Default::default()
             },
@@ -2897,4 +2911,49 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(!reached);
     assert_eq!(wait, None, "a total never rolls: no wait is named");
+}
+
+#[cfg(feature = "plane-decisions")]
+/// VERIFY: a unit presented by a key that names only another pool is refused at the verify step
+/// before its dial, the refusal sealed on the audit chain as the unit's end; the same door serves
+/// the key granted every pool (the control). RED: with the key granted every pool the unit is
+/// served and the far end hears it, so the refusal assertions fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decisions_unit_from_a_key_naming_another_pool_ends_at_verify_before_its_dial() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-verify";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let other = Some(vec!["elsewhere".to_string()]);
+    let serving = serve_keyed(&crate::LINKED, instance, port, Vec::new(), 0, other).await;
+    let (status, _wait, reached) = call_through(&serving, &mut heard).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a pool the key does not name is not served"
+    );
+    assert!(!reached, "the far end is never dialled");
+    let records = serving.audit_records();
+    assert_eq!(records.len(), 1, "the refusal is sealed: {records:?}");
+    assert!(
+        matches!(
+            records[0].outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Verify,
+                ReasonCode::PoolNotPermitted
+            )
+        ),
+        "refused at verify: {:?}",
+        records[0].outcome
+    );
+    drop(serving);
+
+    // THE CONTROL: the same door, the key granted every pool, is served and dials.
+    let instance = "serve-door-verify-control";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_keyed(&crate::LINKED, instance, port, Vec::new(), 0, None).await;
+    let (status, _wait, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(status, StatusCode::OK, "the granted key is served");
+    assert!(reached, "and dispatched");
 }
