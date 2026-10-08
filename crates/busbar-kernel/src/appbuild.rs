@@ -1750,10 +1750,9 @@ pub fn build_app_from_config(
         }
     };
 
-    // The generation's hook CONTENT ceiling, installed once here and read on the hook seam with a
-    // single relaxed load — never recomputed per request, and never consulted at all on a
-    // deployment with no content-granted hook, because no content projection is built there.
-    crate::proxy::set_hook_content_max_bytes(cfg.limits.hook_content_max_bytes);
+    // The generation's hook CONTENT ceiling rides the limits guard installed above
+    // (`limits::mirror_derived_caps`): live for this build, put back if the build is refused, and
+    // read on the hook seam with a single relaxed load.
 
     let app = App {
         plane_sections: Some(cfg.plane_sections.clone()),
