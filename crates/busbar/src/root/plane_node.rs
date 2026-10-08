@@ -495,6 +495,42 @@ impl Node {
         let _dispatched = durability.journal_dispatch(&at);
     }
 
+    /// Record on the book this unit's ACCRUAL SO FAR: a durability `unit.accrued` checkpoint
+    /// (THE DESIGN §7), counts and the instant they price at, never a figure (#71).
+    ///
+    /// On the balance, window and arrival reading its hold was opened under
+    /// ([`Self::open_on_book`]), as [`Self::dispatch_on_book`] marks it, so a node killed before the
+    /// unit's one line is written recovers the hold at these counts, marked recovered. Called from
+    /// the root's checkpoint flush tick alone, never on a piece's path. A journal that will not take
+    /// it retains and re-offers it; a checkpoint for a hold already closed marks nothing.
+    fn checkpoint_on_book(
+        &self,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        counts: &crate::root::durability::UnitCounts,
+    ) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let key = balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_DAY,
+                arrived.secs(),
+            ),
+            durability: &self.durability_token,
+            step: busbar_contract::caps::StepName::Meter,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: arrived.secs(),
+                mono: arrived.mono(),
+            },
+        };
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _accrued = durability.checkpoint_accrual(&at, counts, arrived.ms());
+    }
+
     /// THE SWEEP: the second holder of a key to every unit's hold cell, run over the slots the drop
     /// guard MARKED (item 129).
     ///
@@ -2092,6 +2128,29 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     /// end settles what it consumed (the loop's one exit, or the abandoned end posted here), and a
     /// recovery reads the dispatch mark as "something left", which an abandoned attempt did.
     fn abandoned(&self, _record: &busbar_kernel_egress::ports::Dispatched) {}
+}
+
+/// THE RUNNING UNIT'S CHECKPOINT, ON THE NODE'S BOOK (THE DESIGN §7): the root's flush tick hands
+/// each driven unit's accrual so far here ([`busbar_kernel::plane_driver::PlaneMoney::flush_checkpoints`]),
+/// and it is journaled as a `unit.accrued` record under the facts the unit was opened with at
+/// admission. A session's turns are the same call with its cumulative counts. A unit with no open
+/// facts was never admitted onto the book: nothing is written.
+impl busbar_kernel::plane_driver::Checkpointer for NodeEndPost {
+    fn checkpoint(&self, key: UnitKey, accrued: &busbar_kernel::plane_driver::Accrued) {
+        let facts = self
+            .lock()
+            .get(&key)
+            .map(|(principal, arrived, _, _)| (principal.clone(), *arrived));
+        let Some((principal, arrived)) = facts else {
+            return;
+        };
+        let counts = crate::root::durability::UnitCounts {
+            lane: accrued.lane.clone(),
+            fee_count: accrued.fee_count,
+            classes: accrued.classes.clone(),
+        };
+        self.node.checkpoint_on_book(&principal, arrived, &counts);
+    }
 }
 
 impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
