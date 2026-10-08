@@ -662,10 +662,12 @@ pub fn dropped_transports(
                             .cloned()
                             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
                         let key = facts.claims.first().copied().unwrap_or_default();
+                        let claims = facts.claims;
                         let composes_over = facts.composes_over;
                         let wire = crate::root::doors::host_wire(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
+                            claims,
                             composes_over,
                             wire,
                         })
@@ -853,7 +855,13 @@ pub fn book(app: &busbar_kernel::state::App) -> Result<super::durability::NodeBo
     let durability = Arc::new(std::sync::Mutex::new(durability));
     // Every amendment sealed from here on goes on the book it was rebuilt from.
     super::durability::bind_amendments(&durability);
-    Ok(super::durability::NodeBook { durability, rows })
+    Ok(super::durability::NodeBook {
+        durability,
+        rows,
+        // The disaster-recovery verbs reach the store this book is shipped to, through the same
+        // adapter: one store behind the node, not one per seam (row 113, ruling (B)).
+        verb_store: Some(adapter.verb_store()),
+    })
 }
 
 #[cfg(test)]

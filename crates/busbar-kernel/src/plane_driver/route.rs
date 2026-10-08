@@ -125,6 +125,17 @@ pub struct OutboundRequest {
 
 /// THE FAR END, as the pump reaches it: the kernel's egress walk and the connector stand behind it
 /// in production (member pick, breaker, allow-list, pin, auth fields, the send); a test double in
+/// THE ROUTE THE KERNEL RESOLVED FOR A UNIT, as its in-session hooks are scoped: the pool label its
+/// walk runs under (empty for a direct route, as 1.5.5 labelled it) and the container its entry's
+/// hooks are filed under (a pool route's label, or the direct route's entry).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoutedScope {
+    /// The pool label (routed-order planes: the global and this pool's hooks).
+    pub pool: String,
+    /// The container (gate-first planes: the hooks attached to this entry).
+    pub container: String,
+}
+
 /// the driver's own proofs.
 pub trait FarEnd: Sync {
     /// The member for attempt `attempt_no` (from `1`), or the walk's exhaustion terminal. May await
@@ -158,6 +169,14 @@ pub trait FarEnd: Sync {
     /// Why the attempt that just failed over failed, in the walk's failover vocabulary (the
     /// `routing` stage tap's `previous_failure`); `None` when the walk does not say.
     fn failure(&self, token: &Pass<Route>) -> Option<&'static str> {
+        let _ = token;
+        None
+    }
+
+    /// The route the KERNEL resolved for the unit ([`RoutedScope`]): the scope of its in-session
+    /// hook stage (`hook.call`, `content.scan`), so its pool's (or its entry's) own hooks apply to
+    /// its sub-operations as they did in 1.5.5. `None` when the far end names none.
+    fn scope(&self, token: &Pass<Route>) -> Option<RoutedScope> {
         let _ = token;
         None
     }

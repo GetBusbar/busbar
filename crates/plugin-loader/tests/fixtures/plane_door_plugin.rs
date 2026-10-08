@@ -8,9 +8,11 @@
 //! It answers every plane op through the SDK's trampolines: `open` and `refresh` publish a
 //! generation snapshot (valid until `retire` of that generation; opened under a public URL, every
 //! generation also claims the session door `GET /upgrade`), `arrive`, `on_piece`, `refusal`,
-//! `serve` and `project` write only into the host's buffers, `drive` names the session with
-//! unsolicited output, `cancel` answers a disposition and `tick` its next tick. The request-path
-//! ops never allocate and never block: the only shared state they touch is one atomic.
+//! `serve` and `project` write only into the host's buffers (an arrival on the session door, claim
+//! 1, states `ROUTE_SESSION`), `drive` names the session with unsolicited output, `cancel` answers a
+//! disposition (one naming the ticket the session's caller piece crossed on ends the session) and
+//! `tick` its next tick. The request-path ops never allocate and never block: the only shared
+//! state they touch is two atomics.
 //!
 //! It is written on the SDK's SAFE surface (`abi::sdk::safe`, `abi::sdk::lent`): every slot is a
 //! `SafeSlot`, the instance is the SDK's typed `Instance<Plane>`, host-lent bytes and host buffers
@@ -28,6 +30,7 @@ use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement, SE
 use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
@@ -134,11 +137,13 @@ fn routes() -> Vec<AdminRouteSpec> {
 /// The settings `validate` refuses.
 pub const BAD_SETTINGS: &[u8] = b"bad";
 
-/// One instance: the live generations' snapshots (control lane only) and the session with
-/// unsolicited output, `0` = none (the one thing the request path touches).
+/// One instance: the live generations' snapshots (control lane only), the session with
+/// unsolicited output, `0` = none, and the ticket its caller piece crossed on, packed, `0` = none
+/// (the two things the request path touches).
 struct Plane {
     snapshots: Generations<PlaneSnapshot>,
     ready: AtomicU64,
+    session_ticket: AtomicU64,
     /// Opened under a public URL.
     public: bool,
 }
@@ -187,6 +192,7 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
     let p = Plane {
         snapshots: Generations::new(),
         ready: AtomicU64::new(0),
+        session_ticket: AtomicU64::new(0),
         public: !input.field(|i| &i.public_url).bytes().is_empty(),
     };
     out.publish(
@@ -253,10 +259,31 @@ slot!(
     }
 );
 
-slot!(Cancel, PlaneCancelIn, PlaneCancelOut, |_, _, out| {
-    out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
-    Outcome::Ready
-});
+/// A ticket as one word, `0` = none.
+fn packed(t: Ticket) -> u64 {
+    (u64::from(t.slot) << 32) | u64::from(t.generation)
+}
+
+// `cancel`: one naming the ticket the session's caller piece crossed on ends the session.
+slot!(
+    Cancel,
+    PlaneCancelIn,
+    PlaneCancelOut,
+    |instance, input, out| {
+        let named = packed(input.cancel.ticket);
+        if let Some(p) = instance.get() {
+            if named != 0
+                && p.session_ticket
+                    .compare_exchange(named, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                p.ready.store(0, Ordering::Release);
+            }
+        }
+        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
+        Outcome::Ready
+    }
+);
 
 slot!(Release, ReleaseIn, OutHead, |_, _, _out| { Outcome::Ready });
 
@@ -278,6 +305,9 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     out.set(|o| &o.op_class, 0);
     out.set(|o| &o.dialect, 0);
     out.set(|o| &o.principal_need, PRINCIPAL_NONE);
+    if input.claim == 1 {
+        out.session();
+    }
     Outcome::Ready
 });
 
@@ -310,6 +340,8 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
                 return Outcome::Failed;
             };
             p.ready.store(input.stream, Ordering::Release);
+            p.session_ticket
+                .store(packed(input.head.ticket), Ordering::Release);
         }
         // The far end's answer: echoed to the caller, with a field, a count and a record.
         (FROM_FAR_END, _) => {

@@ -703,3 +703,30 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         "a store with no slots bound nothing"
     );
 }
+
+/// A FRAMED CLAIM'S CALLER LEG READS THE MESSAGES, NOT THE FRAMING (audit root-R1 L15): the unit
+/// arrives with the messages its claim's framer read out of the request body, and a unit that reads
+/// its caller leg (a session) is handed the same messages, never the bytes the host strips.
+#[tokio::test]
+async fn a_framed_claims_caller_reads_the_deframed_messages() {
+    use busbar_kernel::plane_driver::SessionCaller as _;
+    let framed = Arrival {
+        claim: 0,
+        method: b"POST".to_vec(),
+        target: b"/framed".to_vec(),
+        fields: Default::default(),
+        body: Arc::from(&b"\x02ab\x02cd"[..]),
+    };
+    let messages = vec![b"ab".to_vec(), b"cd".to_vec()];
+    let (arrival, caller, _reply) = deframed_arrival(framed, &messages);
+    assert_eq!(
+        &arrival.body[..],
+        b"abcd",
+        "the unit arrives with the messages"
+    );
+    assert_eq!(
+        caller.read().await.as_deref(),
+        Some(&b"abcd"[..]),
+        "the caller leg reads the messages, never the framing"
+    );
+}
