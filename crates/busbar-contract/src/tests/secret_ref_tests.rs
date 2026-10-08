@@ -397,3 +397,31 @@ fn serialize_yields_the_canonical_module_settings_wire_shape() {
         serde_json::json!({"module": "none", "settings": {}})
     );
 }
+
+/// A TEMPLATE reference (a credential `${VAR}` filled in part) resolves by filling each `${VAR}`
+/// with its `env` reference's value; any other reference is handed to the resolver whole; a `$`
+/// that opens no `${VAR}` stays as written; and the text it carries holds no secret byte.
+#[test]
+fn a_template_reference_resolves_each_variable_in_place() {
+    let resolve = |r: &SecretRef| match r.env_var() {
+        Some("A") => Ok("alpha".to_string()),
+        Some("B") => Ok("beta".to_string()),
+        _ => Err(format!("{} does not resolve", r.describe())),
+    };
+    let t = SecretRef::template("Bearer ${A}:${B} $5 ${ and ${");
+    assert_eq!(t.module, SECRET_MODULE_TEMPLATE);
+    assert_eq!(t.template_text(), Some("Bearer ${A}:${B} $5 ${ and ${"));
+    assert_eq!(
+        t.resolve_template(&resolve).as_deref(),
+        Ok("Bearer alpha:beta $5 ${ and ${")
+    );
+    assert_eq!(
+        SecretRef::env("B").resolve_template(&resolve).as_deref(),
+        Ok("beta")
+    );
+    let unresolved = SecretRef::template("x ${C}").resolve_template(&resolve);
+    assert_eq!(unresolved, Err("env:C does not resolve".to_string()));
+    // The canonical shape round-trips through the one deserializer.
+    let back: SecretRef = serde_json::from_value(serde_json::to_value(&t).unwrap()).unwrap();
+    assert_eq!(back, t);
+}

@@ -1087,6 +1087,8 @@ pub(crate) fn compose_planes_over(
                 let value = serde_json::to_value(sections.get(name)?).ok()?;
                 let value =
                     busbar_kernel::config_validate::deal::strip(name, value, &mut Vec::new());
+                // A secret reference at every credential position `${VAR}` filled, never the bytes.
+                let value = busbar_kernel::config::filled::plane_bound(&[name], value);
                 Some(((*name).to_string(), value))
             })
             .collect();
@@ -1455,6 +1457,9 @@ fn crossed(
     let json =
         |v: &serde_yaml::Value| serde_json::to_value(v).map_err(|e| format!("its section: {e}"));
     let (own, affinity) = deal::crossing(facts.section, json(section)?);
+    // A secret reference at every credential position `${VAR}` filled, never the bytes (THE DESIGN
+    // §6; SECURITY ruling 2026-10-07: credential fields only, a template for a part).
+    let own = busbar_kernel::config::filled::plane_bound(&[facts.section], own);
     let affinity = if affinity.is_empty() {
         Vec::new()
     } else {
@@ -1469,7 +1474,10 @@ fn crossed(
         if let Some(value) = sections.get(name) {
             keyed.insert(
                 (*name).to_string(),
-                deal::strip(name, json(value)?, &mut Vec::new()),
+                busbar_kernel::config::filled::plane_bound(
+                    &[name],
+                    deal::strip(name, json(value)?, &mut Vec::new()),
+                ),
             );
         }
     }

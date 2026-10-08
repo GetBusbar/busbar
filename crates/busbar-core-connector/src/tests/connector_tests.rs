@@ -901,6 +901,7 @@ fn program(command: &str, args: &[&str], env: &[(&str, &str)]) -> busbar_contrac
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect(),
+        secret_env: Vec::new(),
     }
 }
 

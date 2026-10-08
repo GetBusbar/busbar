@@ -61,6 +61,14 @@ pub const SECRET_MODULE_NONE: &str = "none";
 pub const SECRET_ENV_SETTING_KEY: &str = "key";
 /// The `file` module's settings key naming the file path.
 pub const SECRET_FILE_SETTING_PATH: &str = "path";
+/// The TEMPLATE reference's module name: a credential value `${VAR}` filled only in part
+/// (`"Bearer ${TOKEN}"`). Its settings' `text` is the value as written, each `${VAR}` an `env`
+/// reference the host resolves where it reads the value ([`SecretRef::resolve_template`]); the
+/// text itself holds no secret byte. It names no secret module: only a host reader that resolves
+/// templates accepts it, and every other resolver refuses it as an unknown module (fail-closed).
+pub const SECRET_MODULE_TEMPLATE: &str = "template";
+/// The template module's settings key holding the value as written.
+pub const SECRET_TEMPLATE_SETTING_TEXT: &str = "text";
 
 /// "At least one non-whitespace character", as [`oneof_schema`] states the non-empty rule. The
 /// visitor's own check is `value.trim().is_empty()`, and `minLength: 1` is NOT that: a string of
@@ -72,7 +80,7 @@ const NON_BLANK: &str = r"\S";
 /// A reference to a secret, resolved through a secret MODULE. See the module docs for the accepted
 /// YAML/JSON spellings. `settings` is the module's own (opaque) config — busbar passes it through
 /// verbatim and never interprets it beyond the built-ins.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SecretRef {
     /// The secret module resolving this reference (`env` / `file` built-ins, or a `kind: secret`
     /// plugin's name/alias).
@@ -113,6 +121,69 @@ impl SecretRef {
             module: SECRET_MODULE_FILE.to_string(),
             settings,
         }
+    }
+
+    /// A TEMPLATE reference over `text`, a value as written whose every `${VAR}` names an
+    /// environment variable ([`SECRET_MODULE_TEMPLATE`]).
+    pub fn template(text: impl Into<String>) -> Self {
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            SECRET_TEMPLATE_SETTING_TEXT.to_string(),
+            serde_json::Value::String(text.into()),
+        );
+        Self {
+            module: SECRET_MODULE_TEMPLATE.to_string(),
+            settings,
+        }
+    }
+
+    /// The template's text, when this is a [`SECRET_MODULE_TEMPLATE`] reference.
+    pub fn template_text(&self) -> Option<&str> {
+        if self.module == SECRET_MODULE_TEMPLATE {
+            self.settings
+                .get(SECRET_TEMPLATE_SETTING_TEXT)
+                .and_then(|v| v.as_str())
+        } else {
+            None
+        }
+    }
+
+    /// THE VALUE THIS REFERENCE NAMES, resolved through `resolve`: a template's text with each
+    /// `${VAR}` replaced by what `resolve` answers for `{ env: VAR }`, any other reference handed to
+    /// `resolve` whole. `${VAR}` is read as the config interpolation reads it (every byte up to the
+    /// first `}`); a `$` that opens no `${VAR}` is kept as written.
+    ///
+    /// # Errors
+    ///
+    /// `resolve`'s error for the first reference that does not resolve, or a template with no text.
+    pub fn resolve_template(
+        &self,
+        resolve: &dyn Fn(&SecretRef) -> Result<String, String>,
+    ) -> Result<String, String> {
+        if self.module != SECRET_MODULE_TEMPLATE {
+            return resolve(self);
+        }
+        let text = self
+            .template_text()
+            .ok_or_else(|| "a template reference carries no text".to_string())?;
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find("${") {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + 2..];
+            match after.find('}') {
+                Some(end) if end > 0 => {
+                    out.push_str(&resolve(&SecretRef::env(&after[..end]))?);
+                    rest = &after[end + 1..];
+                }
+                _ => {
+                    out.push_str("${");
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        Ok(out)
     }
 
     /// The `none` reference: an EXPLICIT declaration that there is no credential. See

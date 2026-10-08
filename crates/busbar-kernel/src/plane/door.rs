@@ -247,17 +247,17 @@ impl PlaneCfg for DoorSection {
     }
 }
 
-/// The section as the door's `validate` reads it: JSON, in the order it was written.
-fn settings_of(value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
-    if value.is_null() {
-        return Ok(Vec::new());
-    }
-    serde_json::to_vec(value).map_err(|e| format!("the section is not representable as JSON: {e}"))
+/// The section `key` as the door's `validate` reads it: JSON, in the order it was written, a secret
+/// reference at every credential position `${VAR}` filled (a plane never receives secret bytes,
+/// THE DESIGN §6; [`crate::config::filled::plane_bound`]).
+fn settings_of(key: &str, value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
+    crate::config::filled::plane_bound_bytes(&[key], value)
 }
 
 /// The section `key` as it CROSSES to the door's probe `open`/`refresh` (P1b, spec Part 1 :561-570):
 /// JSON, through the deal's one strip (`config_validate::deal::strip`), its reserved core-owned
-/// sub-keys taken off; empty when absent.
+/// sub-keys taken off, a secret reference at every credential position `${VAR}` filled
+/// ([`crate::config::filled::plane_bound`]); empty when absent.
 fn crossing_of(key: &str, value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
     if value.is_null() {
         return Ok(Vec::new());
@@ -265,7 +265,9 @@ fn crossing_of(key: &str, value: &serde_yaml::Value) -> Result<Vec<u8>, String> 
     let value = serde_json::to_value(value)
         .map_err(|e| format!("the section is not representable as JSON: {e}"))?;
     let stripped = crate::config_validate::deal::strip(key, value, &mut Vec::new());
-    serde_json::to_vec(&stripped).map_err(|e| e.to_string())
+    // A secret reference at every credential position `${VAR}` filled, never the bytes.
+    serde_json::to_vec(&crate::config::filled::plane_bound(&[key], stripped))
+        .map_err(|e| e.to_string())
 }
 
 /// One registration projected onto the shared named-definition view: its name, and the trust keys
@@ -508,7 +510,8 @@ pub struct DoorOwned {
 impl DoorOwned {
     /// The owned sections as `PlaneOpenIn::owned` carries them: one JSON object keyed by section
     /// name, the section through the deal's one strip (P1b: its reserved core-owned sub-keys never
-    /// cross); empty when the section is absent or not representable.
+    /// cross), a secret reference at every credential position `${VAR}` filled; empty when the
+    /// section is absent or not representable.
     #[must_use]
     pub fn bytes(&self) -> Vec<u8> {
         if self.value.is_null() {
@@ -517,6 +520,7 @@ impl DoorOwned {
         serde_json::to_value(&self.value)
             .ok()
             .map(|v| crate::config_validate::deal::strip(self.section, v, &mut Vec::new()))
+            .map(|v| crate::config::filled::plane_bound(&[self.section], v))
             .and_then(|v| serde_json::to_vec(&serde_json::json!({ self.section: v })).ok())
             .unwrap_or_default()
     }
@@ -562,7 +566,7 @@ fn parse_section<const I: usize>(value: &serde_yaml::Value) -> Result<Box<dyn Pl
     let Some(d) = door(I) else {
         return Err("a door plane's section was parsed before its door was folded".to_string());
     };
-    (d.reg.validate)(&settings_of(value)?)?;
+    (d.reg.validate)(&settings_of(d.reg.section, value)?)?;
     Ok(Box::new(DoorSection {
         section: d.reg.section,
         value: value.clone(),
