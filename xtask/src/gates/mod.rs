@@ -709,7 +709,8 @@ const MEASURED_PLANE_TRANSPORT_NEUTRALITY: f64 = 12_959.0; // 9 cases, 12.9 s (o
 /// RE-MEASURED for the decision plane's seven gating rig cells (ARCHITECT Q12(a): raise the measure to
 /// the measured units and keep the case). The battery grew from 15 to 22 cases (the derived roster's
 /// plants and the `jev.rig|<check>` resolver plant), and the serial re-take read 21 803 units on
-/// Latchkey large; the 12 382 it replaces is the 15-case figure taken at [`TAKEN`].
+/// Latchkey large. The 12 382 before it is the 15-case figure taken at [`TAKEN`]; the teller lane's
+/// 21-case re-take (19 850, #628) is below this battery, which carries the jev rig's resolver case.
 const MEASURED_TELLER_STEPS: f64 = 21_803.0; // 22 cases, --jobs 1 re-take (was 12 382, 15 cases)
 /// Where [`MEASURED_TELLER_STEPS`] was taken: the jev rig cells' head, `xtask selftest teller-steps`
 /// re-taken at `--jobs 1`, Latchkey large (job cli-d72bc289).
