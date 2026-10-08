@@ -752,7 +752,7 @@ pub(super) fn continuation_answered(
             run.far_bytes = run.far_bytes.saturating_add(far);
         }
         run.end = Some(match leg {
-            Leg::Done(value) => End::Completed(crate::sanitize::normalise_json(&value)),
+            Leg::Done(value) => End::Completed(value),
             Leg::Failed(reason) => End::Failed(format!("the MCP upstream call failed: {reason}")),
             Leg::Asked => End::Failed(
                 serde_json::from_slice::<Value>(body)
