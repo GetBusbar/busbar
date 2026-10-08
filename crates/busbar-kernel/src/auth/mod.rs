@@ -18,7 +18,10 @@ use crate::diagnostics::{
     KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
 };
 use crate::state::App;
-use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest};
+use busbar_contract::auth_calls::{
+    AuthCalls, Replay, Strip, StripPlace, Verified, VerifyAnswer, VerifyRequest,
+};
+use busbar_kernel_identity::operator::Judgement;
 use busbar_kernel_identity::{
     egress_auth::sigv4::SIGV4_ALGORITHM,
     ingress_sigv4::{
@@ -161,20 +164,107 @@ struct ChainEntry {
     name: String,
 }
 
-/// A position's `verify` answer as the chain walks it. FAIL-CLOSED: an answer with no verdict
-/// (FAILED, FAULT, REFUSED, a timeout, a second short answer) and an overloaded verifier are a
-/// `Reject`, as 1.5.5 rejected on a module failure and denied on a saturated offload (its 401).
-fn chain_verdict_of(answer: VerifyAnswer) -> AuthVerdict {
-    match answer.verified {
-        Verified::Identity(id) => AuthVerdict::Identify(Principal {
-            id: id.subject,
-            name: id.name,
-            roles: id.groups,
-            ttl_secs: id.ttl_secs,
-        }),
-        Verified::Pass => AuthVerdict::Pass,
-        Verified::Reject | Verified::Failed | Verified::Overloaded => AuthVerdict::Reject,
+/// A position's `verify` answer as the chain walks it: the verdict, together with the identity's
+/// replay claim (THE DESIGN §6, Inbound verify: the verify caller claims it before admitting) and
+/// the lines the auth named for the transport to strip, whatever its verdict (§6.4). FAIL-CLOSED:
+/// an answer with no verdict (FAILED, FAULT, REFUSED, a timeout, a second short answer) and an
+/// overloaded verifier are a `Reject`, as 1.5.5 rejected on a module failure and denied on a
+/// saturated offload (its 401).
+fn chain_verdict_of(answer: VerifyAnswer) -> Judgement {
+    Judgement::answered(answer)
+}
+
+/// A refusal that keeps the lines `answer` named: a verifier that faulted or was overloaded still
+/// named what the transport strips.
+fn refused_keeping_strips(answer: VerifyAnswer) -> Judgement {
+    Judgement {
+        strips: answer.strips,
+        ..Judgement::of(AuthVerdict::Reject)
     }
+}
+
+/// The record kind a replay claim is held under in governance's record store.
+const AUTH_REPLAY: &str = "auth-replay";
+
+/// THE REPLAY CLAIM (THE DESIGN §6, Inbound verify: "a verified identity may carry a replay_key and
+/// replay_ttl_secs, and the verify caller claims the record ... already TAKEN is 401"): the identity
+/// `provider` verified is admitted only by the call that first claims `<provider>/<key>` in
+/// governance's record store, the claim standing `ttl_secs` from `now`. An empty key asks for no
+/// claim. FAIL-CLOSED: a claim already taken, a store that cannot answer, and no governance to
+/// claim in each refuse — a ledger that cannot say whether the message was seen must not be read
+/// as saying it was not. A sender's retry inside the window is a replay, refused alike.
+fn replay_claimed(
+    gov: Option<&crate::governance::GovState>,
+    provider: &str,
+    replay: &Replay,
+    now: u64,
+) -> bool {
+    if replay.key.is_empty() {
+        return true;
+    }
+    let Some(gov) = gov else {
+        return false;
+    };
+    let token = format!("{provider}/{}", replay.key);
+    let expires_at = now.saturating_add(replay.ttl_secs);
+    gov.store()
+        .redeem_plane_token(AUTH_REPLAY, &token, expires_at, now)
+        .unwrap_or(false)
+}
+
+/// THE LINES THE CHAIN'S AUTHS NAMED, struck before any plane sees the request (THE DESIGN §6.4:
+/// "the transport strips both, so the plane never sees a credential"). Each field line joins what
+/// the gate consumed, beside the gate's own carriers (kept for 1.5.5 parity), so every handoff that
+/// strips those strips it too. Each query key leaves the request's target here, once, so every
+/// downstream reader of the URI (and of the router's original URI) reads the query without it.
+fn strike_named(req: &mut Request<Body>, consumed: &mut ConsumedCredentials, strips: &[Strip]) {
+    let fields: Vec<HeaderName> = strips
+        .iter()
+        .filter(|s| s.place == StripPlace::Field)
+        .filter_map(|s| HeaderName::from_bytes(s.name.as_bytes()).ok())
+        .collect();
+    consumed.carry(&fields);
+    let keys: Vec<&str> = strips
+        .iter()
+        .filter(|s| s.place == StripPlace::Query)
+        .map(|s| s.name.as_ref())
+        .collect();
+    if keys.is_empty() {
+        return;
+    }
+    if let Some(uri) = without_query_keys(req.uri(), &keys) {
+        *req.uri_mut() = uri;
+    }
+    if let Some(original) = req.extensions_mut().get_mut::<axum::extract::OriginalUri>() {
+        if let Some(uri) = without_query_keys(&original.0, &keys) {
+            original.0 = uri;
+        }
+    }
+}
+
+/// `uri` without the query pairs whose key is one of `keys` — matched case-sensitively, as sent or
+/// percent-decoded — every other pair kept byte for byte, in order; `None` when no pair goes.
+fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option<axum::http::Uri> {
+    let query = uri.query()?;
+    let named = |pair: &&str| {
+        let key = pair.split_once('=').map_or(*pair, |(k, _)| k);
+        let decoded = url::form_urlencoded::parse(key.as_bytes())
+            .next()
+            .map(|(k, _)| k);
+        keys.iter()
+            .any(|k| *k == key || decoded.as_deref() == Some(*k))
+    };
+    if !query.split('&').any(|p| named(&p)) {
+        return None;
+    }
+    let kept: Vec<&str> = query.split('&').filter(|p| !named(p)).collect();
+    let path_and_query = match kept.is_empty() {
+        true => uri.path().to_string(),
+        false => format!("{}?{}", uri.path(), kept.join("&")),
+    };
+    let mut parts = uri.clone().into_parts();
+    parts.path_and_query = Some(path_and_query.parse().ok()?);
+    axum::http::Uri::from_parts(parts).ok()
 }
 
 // ── THE AUTH ADMISSION BUDGETS (await-only) ─────────────────────────────────────────────────────
@@ -322,15 +412,15 @@ fn admin_stalled_on(latch: &std::sync::atomic::AtomicBool) {
 
 /// A data-plane position's verdict of a verify that answered `answer` (`faulted`: the plugin broke
 /// its contract): a fault is 4006 and a saturated verifier 4005, each a deny.
-fn data_verdict_of(answer: VerifyAnswer, faulted: bool) -> AuthVerdict {
+fn data_verdict_of(answer: VerifyAnswer, faulted: bool) -> Judgement {
     if faulted {
         auth_faulted();
-        return AuthVerdict::Reject;
+        return refused_keeping_strips(answer);
     }
     cleared(&AUTH_FAULTED_WARNED);
     if matches!(answer.verified, Verified::Overloaded) {
         auth_saturated();
-        return AuthVerdict::Reject;
+        return refused_keeping_strips(answer);
     }
     cleared(&AUTH_SATURATED_WARNED);
     chain_verdict_of(answer)
@@ -338,15 +428,15 @@ fn data_verdict_of(answer: VerifyAnswer, faulted: bool) -> AuthVerdict {
 
 /// An external admin module's verdict of a verify that answered `answer` (`faulted`: the plugin
 /// broke its contract): a fault is 4009 and a saturated verifier 4008, each a deny.
-fn admin_verdict_of(answer: VerifyAnswer, faulted: bool) -> AuthVerdict {
+fn admin_verdict_of(answer: VerifyAnswer, faulted: bool) -> Judgement {
     if faulted {
         admin_stalled();
-        return AuthVerdict::Reject;
+        return refused_keeping_strips(answer);
     }
     cleared(&ADMIN_STALLED_WARNED);
     if matches!(answer.verified, Verified::Overloaded) {
         admin_saturated();
-        return AuthVerdict::Reject;
+        return refused_keeping_strips(answer);
     }
     cleared(&ADMIN_SATURATED_WARNED);
     chain_verdict_of(answer)
@@ -812,6 +902,7 @@ impl AuthMiddleware {
         // A SYNC caller: every position on this thread (`Reach::Inline`). Nothing the walk awaits
         // is pending unless a door must wait, and then this thread waits for it, as the caller
         // asked by calling synchronously.
+        // The lines a position names are the transport's, and a sync caller hands no request on.
         futures::executor::block_on(self.walk(
             &ChainHead::default(),
             candidate,
@@ -819,13 +910,17 @@ impl AuthMiddleware {
             now,
             expected_aud,
             Reach::Inline,
+            &mut Vec::new(),
         ))
     }
 
     /// THE CHAIN WALK, one `verify` per position per request (THE DESIGN 11.6): config order, the
     /// first `Identify` admits, a `Reject` denies, all-`Pass` on a non-empty chain denies, and the
     /// `keys` engine arm runs after every position. `head` is what each position is lent beside the
-    /// candidate; `reach` how each is called.
+    /// candidate; `reach` how each is called. Every position called adds the lines it named to
+    /// `strips`, whatever its verdict (THE DESIGN §6.4). An identity that asks for a replay claim
+    /// is admitted only once the walk wins it ([`replay_claimed`]); a claim it loses is `Denied`.
+    #[allow(clippy::too_many_arguments)]
     async fn walk(
         &self,
         head: &ChainHead,
@@ -834,6 +929,7 @@ impl AuthMiddleware {
         now: u64,
         expected_aud: Option<&str>,
         reach: Reach,
+        strips: &mut Vec<Strip>,
     ) -> ChainVerdict {
         // The OPEN front door: no chain position AND no built-in `keys` engine arm → admit
         // anonymously. `keys_in_chain` (an engine arm, not a position) keeps the door CLOSED even
@@ -843,8 +939,16 @@ impl AuthMiddleware {
             return ChainVerdict::Open;
         }
         for entry in &self.chain {
-            match judge(entry, head.request(candidate, now), reach).await {
+            let judged = judge(entry, head.request(candidate, now), reach).await;
+            strips.extend(judged.strips);
+            match judged.verdict {
                 AuthVerdict::Identify(principal) => {
+                    // The replay claim travels with the verdict and is won here, before admitting.
+                    if let Some(replay) = judged.replay.as_deref() {
+                        if !replay_claimed(gov, &entry.provider, replay, now) {
+                            return ChainVerdict::Denied;
+                        }
+                    }
                     // No per-module role filter: the NESTED role_bindings table IS the allowlist -
                     // a role this module asserts grants nothing unless
                     // `role_bindings.<this module>.<role>` binds it. A PLUGIN module never resolves
@@ -887,18 +991,37 @@ impl AuthMiddleware {
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
     ) -> ChainVerdict {
+        Self::run_chain_on_request_path_naming(auth, candidate, head, gov, expected_aud)
+            .await
+            .0
+    }
+
+    /// [`Self::run_chain_on_request_path`], with the lines every position called named for the
+    /// transport to strip, whatever its verdict (THE DESIGN §6.4): what the auth middleware calls,
+    /// because it hands the request on.
+    pub async fn run_chain_on_request_path_naming(
+        auth: &std::sync::Arc<AuthMiddleware>,
+        candidate: Option<String>,
+        head: ChainHead,
+        gov: Option<std::sync::Arc<crate::governance::GovState>>,
+        expected_aud: Option<String>,
+    ) -> (ChainVerdict, Vec<Strip>) {
         // Captured once, before the first position: the clock the chain reasons about is the
         // instant the request reached this decision, not whenever a position got scheduled.
         let now = busbar_kernel::store::now();
-        auth.walk(
-            &head,
-            candidate.as_deref(),
-            gov.as_deref(),
-            now,
-            expected_aud.as_deref(),
-            Reach::RequestPath,
-        )
-        .await
+        let mut strips = Vec::new();
+        let verdict = auth
+            .walk(
+                &head,
+                candidate.as_deref(),
+                gov.as_deref(),
+                now,
+                expected_aud.as_deref(),
+                Reach::RequestPath,
+                &mut strips,
+            )
+            .await;
+        (verdict, strips)
     }
 
     /// Constant-time string comparison — the single timing-safe primitive, now provided by the
@@ -963,7 +1086,7 @@ impl AuthMiddleware {
 }
 
 /// ONE POSITION'S VERDICT over `request` (its candidate lent), reached as `reach` says.
-async fn judge(entry: &ChainEntry, request: VerifyRequest, reach: Reach) -> AuthVerdict {
+async fn judge(entry: &ChainEntry, request: VerifyRequest, reach: Reach) -> Judgement {
     match reach {
         // A sync caller: on the spot; a door that must wait answers REFUSED there, and is
         // submitted and awaited where the caller polls.
@@ -982,7 +1105,7 @@ async fn judge(entry: &ChainEntry, request: VerifyRequest, reach: Reach) -> Auth
                 tokio::time::timeout(AUTH_ADMISSION_WAIT, AUTH_ADMISSION_PERMITS.acquire()).await
             else {
                 auth_saturated();
-                return AuthVerdict::Reject;
+                return Judgement::of(AuthVerdict::Reject);
             };
             let mut call = entry.calls.verify(request);
             let answer = (&mut call).await;
@@ -1228,6 +1351,15 @@ impl AuthModule for TestIdpModule {
 /// One admin chain's answer: the chain verdict and the identifying module's scope ceiling.
 type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
 
+/// What an admin chain walk carries beside its answer: the lines every module it called named for
+/// the transport to strip, whatever its verdict (THE DESIGN §6.4), and the identifying module's
+/// replay claim — the provider and the claim — which the admin door claims before admitting.
+#[derive(Debug, Default)]
+pub(crate) struct AdminCarried {
+    strips: Vec<Strip>,
+    replay: Option<(String, Box<Replay>)>,
+}
+
 /// Execute the ADMIN auth chain (`admin_auth:`) over one request (`method`, `target`, `headers`).
 /// Mirrors `AuthMiddleware::run_chain` (first Identify admits, Reject denies, all-Pass denies, empty
 /// chain = the explicit open posture). The operator credential is judged on the request's head
@@ -1242,6 +1374,7 @@ async fn run_admin_chain(
     target: &str,
     headers: &HeaderMap,
     probe: bool,
+    carried: &mut AdminCarried,
 ) -> AdminChainAnswer {
     if app.admin_chain.is_empty() {
         return (ChainVerdict::Open, None);
@@ -1262,10 +1395,10 @@ async fn run_admin_chain(
                     Some(group) => {
                         let mut p = Principal::from_id(format!("test:{group}"));
                         p.roles = vec![group.to_string()];
-                        AuthVerdict::Identify(p)
+                        Judgement::of(AuthVerdict::Identify(p))
                     }
                     // Not my credential shape — the next module is tried (the PAM contract).
-                    None => AuthVerdict::Pass,
+                    None => Judgement::of(AuthVerdict::Pass),
                 },
             ),
             // The operator credential (its row, opened through the auth axis by the provider key),
@@ -1279,11 +1412,10 @@ async fn run_admin_chain(
                 // the lines the plugin reads its carriers from.
                 head.credential =
                     bearer.map(|b| busbar_contract::redacted::Redacted::new(b.as_bytes().to_vec()));
-                let judged = match probe {
+                match probe {
                     true => operator.probe(&head),
                     false => operator.judge(head).await,
-                };
-                judged.map(busbar_kernel_identity::operator::Judgement::verdict)
+                }
             }
             // An EXTERNAL `kind: auth` admin plugin, resolved at load into `app.admin_modules`
             // (keyed by config name — the same `name` this loop iterates).
@@ -1306,10 +1438,13 @@ async fn run_admin_chain(
                 "admin_auth names a module with no resolved plugin; skipping (boot resolves \
                  every non-builtin admin module, fail-closed)"
             );
-            AuthVerdict::Pass
+            Judgement::of(AuthVerdict::Pass)
         });
-        match outcome {
+        carried.strips.extend(outcome.strips);
+        match outcome.verdict {
             AuthVerdict::Identify(principal) => {
+                // The replay claim travels with the verdict, out to the door that claims it.
+                carried.replay = outcome.replay.map(|r| (name.clone(), r));
                 // Carry the identifying MODULE out (role_bindings are nested by module) plus the
                 // module's admin-scope ceiling for the authorization step. There is no per-module
                 // role filter: the nested bindings table IS the allowlist.
@@ -1342,17 +1477,13 @@ async fn external_admin_module(
     name: &str,
     request: VerifyRequest,
     probe: bool,
-) -> Option<AuthVerdict> {
+) -> Option<Judgement> {
     let module = app.admin_modules.modules.get(name)?;
     if probe {
-        return Some(
-            module
-                .calls
-                .verify_now(&request)
-                .map_or(AuthVerdict::Reject, |answer| {
-                    admin_verdict_of(answer, false)
-                }),
-        );
+        return Some(module.calls.verify_now(&request).map_or_else(
+            || Judgement::of(AuthVerdict::Reject),
+            |answer| admin_verdict_of(answer, false),
+        ));
     }
     // Admitted on the admin budget (a slot that does not come free within the wait is a saturated
     // verifier, 4008), then bounded by the same wait to answer (one that does not is stalled, 4009):
@@ -1361,7 +1492,7 @@ async fn external_admin_module(
         tokio::time::timeout(ADMIN_ADMISSION_WAIT, ADMIN_ADMISSION_PERMITS.acquire()).await
     else {
         admin_saturated();
-        return Some(AuthVerdict::Reject);
+        return Some(Judgement::of(AuthVerdict::Reject));
     };
     let mut call = module.calls.verify(request);
     let answered = tokio::time::timeout(ADMIN_ADMISSION_WAIT, &mut call).await;
@@ -1370,7 +1501,7 @@ async fn external_admin_module(
         Ok(answer) => admin_verdict_of(answer, call.faulted()),
         Err(_) => {
             admin_stalled();
-            AuthVerdict::Reject
+            Judgement::of(AuthVerdict::Reject)
         }
     })
 }
@@ -1422,7 +1553,9 @@ pub fn dry_run_admin_scope(
         );
         return busbar_contract::authz::Grants::default();
     }
-    match admin_door(app, "GET", "/", headers) {
+    // A DRY RUN claims no replay: it asks what the caller WOULD earn, and the live door already
+    // claimed this request's.
+    match probe_admin_door(app, "GET", "/", headers, false) {
         AdminDoor::Identified(_, grants) => grants,
         // `Open` is unreachable past the early return above, and is no earned grant if reached.
         AdminDoor::Open | AdminDoor::Denied => busbar_contract::authz::Grants::default(),
@@ -1481,15 +1614,30 @@ fn admin_head(
 }
 
 /// THE ADMIN DOOR'S VERDICT of one request (`method`, `target`, `headers`) on `app`'s live admin
-/// chain. `probe`: see [`run_admin_chain`].
+/// chain. `probe`: see [`run_admin_chain`]. `claim`: an identity that asks for a replay claim is
+/// admitted only once the door wins it in governance's record store ([`replay_claimed`]), a claim
+/// it loses `Denied`; a dry run (`false`) claims nothing. The lines every module named for the
+/// transport are added to `strips`.
 async fn judge_admin_door(
     app: &App,
     method: &str,
     target: &str,
     headers: &HeaderMap,
     probe: bool,
+    claim: bool,
+    strips: &mut Vec<Strip>,
 ) -> AdminDoor {
-    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe).await;
+    let mut carried = AdminCarried::default();
+    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
+    strips.append(&mut carried.strips);
+    if let (true, ChainVerdict::Identified { .. }, Some((provider, replay))) =
+        (claim, &verdict, &carried.replay)
+    {
+        let now = busbar_kernel::store::now();
+        if !replay_claimed(app.governance.as_deref(), provider, replay, now) {
+            return AdminDoor::Denied;
+        }
+    }
     match verdict {
         ChainVerdict::Open => AdminDoor::Open,
         ChainVerdict::Denied => AdminDoor::Denied,
@@ -1507,7 +1655,28 @@ async fn judge_admin_door(
 /// chain that cannot be judged on the spot (the verifier overloaded, pending or down) is `Denied`:
 /// the probe fails closed. See [`AdminDoor`]; the middleware awaits the same verdict instead.
 pub fn admin_door(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminDoor {
-    let judged = std::pin::pin!(judge_admin_door(app, method, target, headers, true));
+    probe_admin_door(app, method, target, headers, true)
+}
+
+/// [`admin_door`], claiming an identity's replay claim or not (`claim`: see [`judge_admin_door`]).
+fn probe_admin_door(
+    app: &App,
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+    claim: bool,
+) -> AdminDoor {
+    // The lines a module names are the transport's; a probe hands no request on.
+    let mut strips = Vec::new();
+    let judged = std::pin::pin!(judge_admin_door(
+        app,
+        method,
+        target,
+        headers,
+        true,
+        claim,
+        &mut strips
+    ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(judged, &mut cx) {
         std::task::Poll::Ready(door) => door,
@@ -1843,10 +2012,20 @@ pub(crate) async fn auth_middleware(
     // every /admin path crosses, over the two admin carriers (`admin_carriers`).
     if is_admin {
         let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
-        let judged = judge_admin_door(&app, req.method().as_str(), target, req.headers(), false);
+        let mut strips = Vec::new();
+        let judged = judge_admin_door(
+            &app,
+            req.method().as_str(),
+            target,
+            req.headers(),
+            false,
+            true,
+            &mut strips,
+        );
         // The admin door AWAITS a pending verify. An overloaded verifier or one that answered no
         // verdict is denied, 1.5.5's 401: the admin-door 503 is not a signed accepted difference.
         let door = judged.await;
+        strike_named(&mut req, &mut consumed, &strips);
         req.extensions_mut().insert(consumed);
         // AUTHORIZATION rides the door's verdict: the principal's admin scope (module-intrinsic for
         // the operator token; `role_bindings:` for group-carrying principals, unmapped groups grant
@@ -2002,6 +2181,8 @@ pub(crate) async fn auth_middleware(
     // a second door into an audience-bound plane that the RFC 8707 check does not stand behind. An
     // audience-bound plane has no SigV4 dialect to be compatible with, so nothing is lost by closing
     // it.
+    // The lines the chain's positions named for the transport, struck once the request is admitted.
+    let mut strips = Vec::new();
     let verdict = if admission.is_none()
         && app.auth.keys_in_chain
         && ingress_signed
@@ -2102,14 +2283,16 @@ pub(crate) async fn auth_middleware(
                 }
             }
         }
-        AuthMiddleware::run_chain_on_request_path(
+        let (verdict, named) = AuthMiddleware::run_chain_on_request_path_naming(
             &app.auth,
             client_token.clone(),
             ChainHead::of(&req),
             app.governance.clone(),
             admission.as_ref().map(|a| a.audience.clone()),
         )
-        .await
+        .await;
+        strips = named;
+        verdict
     };
 
     // THE SINGLE DATA-PLANE GATE — one resolution of the chain verdict, with NO branch anywhere on
@@ -2123,6 +2306,7 @@ pub(crate) async fn auth_middleware(
             // door — so downstream `Extension` extraction never 500s `MissingExtension`.
             req.extensions_mut().insert(principal);
             req.extensions_mut().insert(gov);
+            strike_named(&mut req, &mut consumed, &strips);
             req.extensions_mut().insert(consumed);
         }
         Err(IdentityRefusal::Denied) => {

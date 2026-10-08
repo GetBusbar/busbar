@@ -2251,7 +2251,15 @@ pub(super) fn run_admin_chain_on(
     header: Option<&str>,
 ) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
     let headers = admin_headers(bearer, header);
-    let walk = std::pin::pin!(run_admin_chain(app, "GET", "/", &headers, true));
+    let mut carried = AdminCarried::default();
+    let walk = std::pin::pin!(run_admin_chain(
+        app,
+        "GET",
+        "/",
+        &headers,
+        true,
+        &mut carried
+    ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(walk, &mut cx) {
         std::task::Poll::Ready(answer) => answer,
@@ -2334,7 +2342,7 @@ pub(super) fn operator_app(
 async fn walk(verified: busbar_contract::auth_calls::Verified) -> AdminChainAnswer {
     let app = operator_app(verified);
     let headers = admin_headers(Some("tok"), None);
-    run_admin_chain(&app, "GET", "/", &headers, false).await
+    run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await
 }
 
 /// THE ADMIN DOOR ON THE OPERATOR'S DOOR: the operator credential's verify is AWAITED, and an
@@ -2666,7 +2674,7 @@ async fn an_external_admin_door_is_lent_the_candidate_and_an_unjudged_verify_is_
     ] {
         let app = external_door_app(Verified::Reject);
         assert!(matches!(
-            run_admin_chain(&app, "GET", "/", &headers, false).await,
+            run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
             (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
         ));
         assert!(matches!(
@@ -2683,7 +2691,7 @@ async fn an_external_admin_door_is_lent_the_candidate_and_an_unjudged_verify_is_
     ] {
         let app = external_door_app(otherwise.clone());
         assert_eq!(
-            run_admin_chain(&app, "GET", "/", &wrong, false).await,
+            run_admin_chain(&app, "GET", "/", &wrong, false, &mut Default::default()).await,
             (ChainVerdict::Denied, None),
             "{otherwise:?}: the 1.5.5 refusal"
         );
@@ -2770,11 +2778,11 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
     });
     let headers = admin_headers(Some("tok"), None);
     assert!(matches!(
-        run_admin_chain(&app, "GET", "/", &headers, false).await,
+        run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
         (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
     ));
     assert_eq!(
-        run_admin_chain(&app, "GET", "/", &headers, false).await,
+        run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
         (ChainVerdict::Denied, None),
         "the second request is the door's second answer, never a cached Identified"
     );
@@ -2782,5 +2790,303 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
         door.verifies.load(std::sync::atomic::Ordering::SeqCst),
         2,
         "one door verify per request"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// K3 #9 / #10 (ARCHITECT SECURITY rulings A and B): a verified identity's replay claim is claimed
+// by the kernel before admitting (THE DESIGN §6, Inbound verify: "already TAKEN is 401"), and the
+// lines an auth names are struck before any plane sees the request (§6.4), whatever its verdict.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A door that answers every `verify` with `answer` — its verdict, its identity's replay claim and
+/// the lines it names — on the spot and awaited alike.
+struct NamingDoor(busbar_contract::auth_calls::VerifyAnswer);
+
+impl busbar_contract::auth_calls::AuthCalls for NamingDoor {
+    fn name(&self) -> &str {
+        "naming-door"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.0.clone())
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(Answered(Some(self.0.clone())))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// An identity in group `hooks`, asking for the replay claim `key` (none when `None`), its door
+/// naming `strips`.
+fn hook_answer(
+    key: Option<&str>,
+    strips: Vec<busbar_contract::auth_calls::Strip>,
+) -> busbar_contract::auth_calls::VerifyAnswer {
+    use busbar_contract::auth_calls::{Replay, Verified, VerifiedIdentity, VerifyAnswer};
+    let identity = Verified::Identity(VerifiedIdentity {
+        subject: "hook:sender".into(),
+        groups: vec!["hooks".into()],
+        replay: key.map(|key| {
+            Box::new(Replay {
+                key: key.to_string(),
+                ttl_secs: 300,
+            })
+        }),
+        ..VerifiedIdentity::default()
+    });
+    VerifyAnswer {
+        strips,
+        ..VerifyAnswer::from(identity)
+    }
+}
+
+/// The data-plane chain `[door]` over `answer`.
+fn naming_chain(
+    answer: busbar_contract::auth_calls::VerifyAnswer,
+) -> std::sync::Arc<AuthMiddleware> {
+    std::sync::Arc::new(AuthMiddleware::from_doors_for_test(vec![(
+        "door".to_string(),
+        std::sync::Arc::new(NamingDoor(answer)) as std::sync::Arc<dyn AuthCalls>,
+    )]))
+}
+
+/// A governance engine over a fresh in-memory record store (the default backend's ledger).
+fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
+    std::sync::Arc::new(
+        crate::governance::GovState::new(
+            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+            None,
+        )
+        .expect("gov"),
+    )
+}
+
+/// RED (K3 #9): a signed message replayed inside its claim's TTL is refused. The first delivery
+/// claims `door/<key>` and is admitted; the same key again is `Denied`; another key is admitted;
+/// and with no governance to claim in, an identity that asks for a claim is `Denied` (fail-closed).
+/// RED before: the chain dropped `replay`, so every delivery was `Identified`.
+#[tokio::test]
+async fn a_replayed_signed_message_inside_its_ttl_is_denied() {
+    let gov = replay_gov();
+    let run = |key: &str, gov: Option<std::sync::Arc<crate::governance::GovState>>| {
+        let auth = naming_chain(hook_answer(Some(key), Vec::new()));
+        async move {
+            AuthMiddleware::run_chain_on_request_path(
+                &auth,
+                Some("signed".into()),
+                ChainHead::default(),
+                gov,
+                None,
+            )
+            .await
+        }
+    };
+    let first = run("standard-webhooks/msg_1", Some(gov.clone())).await;
+    assert!(
+        matches!(first, ChainVerdict::Identified { .. }),
+        "{first:?}"
+    );
+    assert_eq!(
+        run("standard-webhooks/msg_1", Some(gov.clone())).await,
+        ChainVerdict::Denied,
+        "the same message inside its TTL is a replay"
+    );
+    let other = run("standard-webhooks/msg_2", Some(gov)).await;
+    assert!(
+        matches!(other, ChainVerdict::Identified { .. }),
+        "{other:?}"
+    );
+    assert_eq!(
+        run("standard-webhooks/msg_3", None).await,
+        ChainVerdict::Denied,
+        "no governance to claim in refuses"
+    );
+}
+
+/// The gate as the router layers it, in front of one handler at `/echo` that answers what a plane
+/// handed this request would read: the request's URI and the router's original URI, and its field
+/// line names after the host strips what the gate consumed (as every plane handoff strips them).
+async fn echo_behind_the_gate(
+    app: std::sync::Arc<crate::state::App>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    async fn echo(
+        axum::extract::OriginalUri(original): axum::extract::OriginalUri,
+        consumed: Option<axum::Extension<ConsumedCredentials>>,
+        req: Request<Body>,
+    ) -> axum::Json<serde_json::Value> {
+        let mut headers = req.headers().clone();
+        ConsumedCredentials::strip_from(consumed.as_ref().map(|c| &c.0), &mut headers);
+        let names: Vec<&str> = headers.keys().map(|n| n.as_str()).collect();
+        axum::Json(serde_json::json!({
+            "uri": req.uri().to_string(),
+            "original": original.to_string(),
+            "headers": names,
+        }))
+    }
+    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
+    let core_routes: &'static crate::core_routes::CoreRouteTable = Box::leak(Box::default());
+    let router = axum::Router::new()
+        .route("/echo", axum::routing::any(echo))
+        .layer(axum::middleware::from_fn_with_state(
+            handle.clone(),
+            move |app: crate::state::CurrentApp,
+                  req: axum::extract::Request,
+                  next: axum::middleware::Next| {
+                auth_middleware(app, core_routes, req, next)
+            },
+        ))
+        .with_state(handle);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (format!("http://{addr}"), served)
+}
+
+/// An app whose data-plane chain is `[door]` over `answer`, its `hooks` group bound (so the
+/// identity earns a key), governance over a fresh in-memory store.
+fn naming_app(
+    answer: busbar_contract::auth_calls::VerifyAnswer,
+) -> std::sync::Arc<crate::state::App> {
+    let mut rb = crate::config::RoleBindings::default();
+    rb.entry("door".to_string())
+        .or_default()
+        .entry("hooks".to_string())
+        .or_default();
+    crate::test_support::TestApp::new()
+        .auth(naming_chain(answer))
+        .role_bindings(rb)
+        .governance(replay_gov())
+        .build()
+}
+
+/// RED (K3 #9), on the wire: the same signed delivery twice inside its TTL — the first is served,
+/// the second is the data plane's 401 (a sender's retry inside the window included, as the spec
+/// requires). RED before: both were served.
+#[tokio::test]
+async fn a_replayed_signed_delivery_is_answered_401_the_second_time() {
+    crate::snapshot::init();
+    let app = naming_app(hook_answer(Some("standard-webhooks/msg_1"), Vec::new()));
+    let (base, served) = echo_behind_the_gate(app).await;
+    let deliver = || async {
+        reqwest::Client::new()
+            .post(format!("{base}/echo"))
+            .bearer_auth("signed")
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    assert_eq!(deliver().await, 200, "the first delivery is served");
+    assert_eq!(deliver().await, 401, "the replay is refused");
+    served.abort();
+}
+
+/// RED (K3 #10): the field line and the query key an auth names never reach the plane — the line
+/// is struck with the gate's own carriers (`authorization` too), and the query key leaves the
+/// request's URI and the router's original URI, every other pair kept byte for byte, in order (a
+/// percent-encoded spelling of the key leaves too). A line the auth did not name crosses. RED
+/// before: the answer's `strips` had no consumer, so `x-hook-secret` and `api_key` reached the plane.
+#[tokio::test]
+async fn an_auth_named_header_and_query_key_never_reach_the_plane() {
+    use busbar_contract::auth_calls::Strip;
+    crate::snapshot::init();
+    let app = naming_app(hook_answer(
+        None,
+        vec![Strip::field("X-Hook-Secret"), Strip::query("api_key")],
+    ));
+    let (base, served) = echo_behind_the_gate(app).await;
+    let seen: serde_json::Value = reqwest::Client::new()
+        .get(format!(
+            "{base}/echo?x=1&api_key=s3cret&y=a%20b&api%5Fkey=t"
+        ))
+        .bearer_auth("signed")
+        .header("x-hook-secret", "hs")
+        .header("x-trace", "t-1")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    served.abort();
+    let headers: Vec<&str> = seen["headers"]
+        .as_array()
+        .expect("names")
+        .iter()
+        .filter_map(|n| n.as_str())
+        .collect();
+    assert!(!headers.contains(&"x-hook-secret"), "{headers:?}");
+    assert!(!headers.contains(&"authorization"), "{headers:?}");
+    assert!(headers.contains(&"x-trace"), "{headers:?}");
+    assert_eq!(seen["uri"], "/echo?x=1&y=a%20b");
+    assert_eq!(seen["original"], "/echo?x=1&y=a%20b");
+}
+
+/// An app whose admin chain is the external door `ext-door` over `answer`, its `hooks` group bound
+/// read-only, governance over a fresh in-memory store.
+fn naming_admin_app(
+    answer: busbar_contract::auth_calls::VerifyAnswer,
+) -> std::sync::Arc<crate::state::App> {
+    let rb = bindings_for(
+        "ext-door",
+        &[("hooks", binding(None, None, Some("read-only")))],
+    );
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["ext-door".to_string()])
+        .role_bindings(rb)
+        .governance(replay_gov())
+        .build();
+    let mut modules = std::collections::HashMap::new();
+    modules.insert(
+        "ext-door".to_string(),
+        AdminModule {
+            calls: std::sync::Arc::new(NamingDoor(answer)),
+        },
+    );
+    std::sync::Arc::get_mut(&mut app)
+        .expect("freshly built App Arc is unshared")
+        .admin_modules = std::sync::Arc::new(AdminAuthChain {
+        modules,
+        operator: Operator::new(crate::config::operator_provider()),
+    });
+    app
+}
+
+/// RED (K3 #9 and #10, the admin door): an admin identity that asks for a replay claim is admitted
+/// once and `Denied` the second time; the dry run claims nothing, so it still reports the grant;
+/// and the lines the module named ride out of the walk whatever its verdict. RED before: the admin
+/// chain dropped both, so the second request was admitted and no line was named.
+#[tokio::test]
+async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
+    use busbar_contract::auth_calls::Strip;
+    let app = naming_admin_app(hook_answer(
+        Some("signed/admin_1"),
+        vec![Strip::field("x-hook-secret")],
+    ));
+    let headers = admin_headers(Some("signed"), None);
+    let mut strips = Vec::new();
+    let first = judge_admin_door(&app, "GET", "/", &headers, false, true, &mut strips).await;
+    assert!(matches!(first, AdminDoor::Identified(..)), "{first:?}");
+    assert_eq!(strips, vec![Strip::field("x-hook-secret")]);
+    assert_eq!(
+        admin_door(&app, "GET", "/", &headers),
+        AdminDoor::Denied,
+        "the replay is refused"
+    );
+    assert!(
+        dry_run_admin_scope(&app, &headers) != busbar_contract::authz::Grants::default(),
+        "a dry run claims nothing"
     );
 }

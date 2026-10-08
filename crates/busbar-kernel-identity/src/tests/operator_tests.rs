@@ -100,11 +100,11 @@ fn request() -> VerifyRequest {
 }
 
 fn kind(j: Option<Judgement>) -> &'static str {
-    match j {
+    match j.map(|j| j.verdict) {
         None => "unanswered",
-        Some(Judgement::Verdict(AuthVerdict::Identify(_))) => "identify",
-        Some(Judgement::Verdict(AuthVerdict::Reject)) => "reject",
-        Some(Judgement::Verdict(AuthVerdict::Pass)) => "pass",
+        Some(AuthVerdict::Identify(_)) => "identify",
+        Some(AuthVerdict::Reject) => "reject",
+        Some(AuthVerdict::Pass) => "pass",
     }
 }
 
@@ -154,7 +154,10 @@ fn the_identity_becomes_the_principal() {
         true,
     );
     let credential = OperatorCredential::Module(double);
-    let Some(Judgement::Verdict(AuthVerdict::Identify(p))) = ready(credential.judge(request()))
+    let Some(Judgement {
+        verdict: AuthVerdict::Identify(p),
+        ..
+    }) = ready(credential.judge(request()))
     else {
         panic!("identifies");
     };
@@ -204,8 +207,8 @@ fn an_unjudged_admin_verdict_is_the_1_5_5_refusal() {
             credential.probe(&request()),
         ];
         for (judged, how) in judged.into_iter().zip(["awaited", "probed"]) {
-            let got = judged.expect("a row answers").verdict();
-            assert_eq!(kind(Some(Judgement::Verdict(got))), want, "{how}");
+            assert!(judged.is_some(), "a row answers");
+            assert_eq!(kind(judged), want, "{how}");
         }
     }
 }

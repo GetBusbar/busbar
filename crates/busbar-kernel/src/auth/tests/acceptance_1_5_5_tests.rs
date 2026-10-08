@@ -317,7 +317,9 @@ async fn admin_door_walk(answer: DoorAnswer) -> ChainVerdict {
         .build();
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer cred"));
-    run_admin_chain(&app, "GET", "/", &headers, false).await.0
+    run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default())
+        .await
+        .0
 }
 
 /// 4005's text at the default budget: 1.5.5's, byte for byte.

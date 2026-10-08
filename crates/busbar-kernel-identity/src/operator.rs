@@ -17,7 +17,9 @@
 use std::sync::Arc;
 
 use busbar_contract::auth::{AuthVerdict, Principal};
-use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest};
+use busbar_contract::auth_calls::{
+    AuthCalls, Replay, Strip, Verified, VerifyAnswer, VerifyRequest,
+};
 
 /// A linked auth row: the key configuration names it by, and its door on the auth kind's memory
 /// ABI — the same door its dropped-in build exports (THE DESIGN: compiled-in = dropped-in).
@@ -167,38 +169,56 @@ pub fn migrated_token(op: &str) -> String {
 }
 
 /// What the operator credential answered one request: a verdict — identified, a bad credential
-/// (1.5.5's refusal bytes), or not its credential. A verifier that is overloaded or answered no
-/// verdict is a bad credential, denied with 1.5.5's 401 (no admin 503 ships: Q134).
+/// (1.5.5's refusal bytes), or not its credential — and what rides with it. A verifier that is
+/// overloaded or answered no verdict is a bad credential, denied with 1.5.5's 401 (no admin 503
+/// ships: Q134).
 #[derive(Debug)]
-pub enum Judgement {
+pub struct Judgement {
     /// The verdict.
-    Verdict(AuthVerdict),
+    pub verdict: AuthVerdict,
+    /// The replay claim the identity asks for (THE DESIGN §6, Inbound verify): the caller admits
+    /// the identity only once it wins the claim. `None` = none (or no identity).
+    pub replay: Option<Box<Replay>>,
+    /// The credential lines and query keys the plugin named, whatever its verdict: the transport
+    /// strips them before any plane sees the request (THE DESIGN §6.4).
+    pub strips: Vec<Strip>,
 }
 
 impl Judgement {
-    /// The judgement as the admin chain walks it.
+    /// `verdict` alone: no claim, nothing named.
     #[must_use]
-    pub fn verdict(self) -> AuthVerdict {
-        match self {
-            Self::Verdict(v) => v,
+    pub fn of(verdict: AuthVerdict) -> Self {
+        Self {
+            verdict,
+            replay: None,
+            strips: Vec::new(),
         }
     }
-}
 
-/// A `verify` answer as the admin chain reads it. The strips are the transport's, never the
-/// chain's.
-fn judgement(answer: VerifyAnswer) -> Judgement {
-    match answer.verified {
-        Verified::Identity(id) => Judgement::Verdict(AuthVerdict::Identify(Principal {
-            id: id.subject,
-            name: id.name,
-            roles: id.groups,
-            ttl_secs: id.ttl_secs,
-        })),
-        Verified::Reject => Judgement::Verdict(AuthVerdict::Reject),
-        Verified::Pass => Judgement::Verdict(AuthVerdict::Pass),
-        // An overloaded verifier, and one that answered no verdict, deny as 1.5.5 did (its 401).
-        Verified::Overloaded | Verified::Failed => Judgement::Verdict(AuthVerdict::Reject),
+    /// A `verify` answer as a chain reads it: the verdict, the identity's replay claim, and the
+    /// lines the plugin named for the transport. A verifier that is overloaded or answered no
+    /// verdict is a `Reject`, as 1.5.5 denied one (its 401).
+    #[must_use]
+    pub fn answered(answer: VerifyAnswer) -> Self {
+        let (verdict, replay) = match answer.verified {
+            Verified::Identity(id) => (
+                AuthVerdict::Identify(Principal {
+                    id: id.subject,
+                    name: id.name,
+                    roles: id.groups,
+                    ttl_secs: id.ttl_secs,
+                }),
+                id.replay,
+            ),
+            Verified::Reject => (AuthVerdict::Reject, None),
+            Verified::Pass => (AuthVerdict::Pass, None),
+            Verified::Overloaded | Verified::Failed => (AuthVerdict::Reject, None),
+        };
+        Self {
+            verdict,
+            replay,
+            strips: answer.strips,
+        }
     }
 }
 
@@ -239,26 +259,26 @@ impl OperatorCredential {
     pub async fn judge(&self, request: VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
-            Self::Unset => return Some(Judgement::Verdict(AuthVerdict::Pass)),
+            Self::Unset => return Some(Judgement::of(AuthVerdict::Pass)),
             Self::Module(module) => module,
         };
-        Some(judgement(module.verify(request).await))
+        Some(Judgement::answered(module.verify(request).await))
     }
 
     /// The SYNCHRONOUS PROBE of the same judgement: one ticketless, watchdog-bounded crossing on
     /// the caller's thread (`verify_now`), for a caller that cannot await (the dry run, the root's
     /// admin door). A plugin that must wait answers no verdict here, which is a
-    /// [`Judgement::Outage`] — the probe fails closed.
+    /// refusal (a `Reject` judgement) — the probe fails closed.
     pub fn probe(&self, request: &VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
-            Self::Unset => return Some(Judgement::Verdict(AuthVerdict::Pass)),
+            Self::Unset => return Some(Judgement::of(AuthVerdict::Pass)),
             Self::Module(module) => module,
         };
         Some(
             module
                 .verify_now(request)
-                .map_or(Judgement::Verdict(AuthVerdict::Reject), judgement),
+                .map_or_else(|| Judgement::of(AuthVerdict::Reject), Judgement::answered),
         )
     }
 }
