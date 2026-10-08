@@ -62,7 +62,7 @@ That mounts four route entries over two paths (`crates/busbar-core/src/router.rs
 |---|---|---|
 | `GET /.well-known/oauth-protected-resource/mcp` | **none** | RFC 9728 §3.1 metadata. The one open route on this plane — every caller who needs it is by definition one that has no token yet. |
 | `POST /mcp` | key | The endpoint. JSON-RPC 2.0. |
-| `GET /mcp`, `DELETE /mcp` | key | `405`. This revision has no GET stream and no sessions. Behind the key so an anonymous caller gets the `401` challenge instead of a description of the surface. |
+| `GET /mcp`, `DELETE /mcp` | key | The session revisions (2025-11-25, 2025-06-18): a GET naming `Mcp-Session-Id` opens that session's event stream, a DELETE naming it ends it; a session another key presents is `404`. A GET accepting `text/event-stream` with no session and no `MCP-Protocol-Version` opens the 2024-11-05 event stream. Any other GET or DELETE is `405`. Behind the key so an anonymous caller gets the `401` challenge instead of a description of the surface. |
 
 The metadata path is the well-known prefix with the resource's path appended **after** it, per RFC 9728's path-insertion rule (`crates/busbar-mcp/src/mcp/mod.rs:266-272`). Getting that backwards 404s every compliant client's discovery. The document Busbar renders carries `resource` always, `authorization_servers` and `scopes_supported` when non-empty, and `bearer_methods_supported: ["header"]`, with `Cache-Control: public, max-age=3600` (`crates/busbar-core/src/ingress/protocol.rs:344-372`). `bearer_methods_supported` is not configurable: Busbar accepts a bearer in the `Authorization` header and nowhere else, on every plane.
 

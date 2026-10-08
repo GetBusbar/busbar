@@ -86,6 +86,10 @@ pub const STATEMENT: Statement = Statement {
     needs_len: door::NEEDS.len(),
     secret_refs: door::SECRET_REFS.as_ptr(),
     secret_refs_len: door::SECRET_REFS.len(),
+    // The instance's own diagnostic: an ungoverned chain's sessions are unisolated
+    // ([`door_sessions::UNGOVERNED_LEGACY_STREAM`]).
+    diag_ids: door_sessions::DIAG_IDS.as_ptr(),
+    diag_ids_len: door_sessions::DIAG_IDS.len(),
     ..statement(crate::PLANE_KEY, VERSION, MAX_INFLIGHT)
 };
 
@@ -202,6 +206,21 @@ pub struct McpDoor {
     /// lapses (Unix ms). One the caller never came back for is settled by the next relay's sweep,
     /// so an abandoned ask does not hold a live handle forever.
     relays: Keyed<u64, u64>,
+    /// THE SESSIONS of the session revisions and the `2024-11-05` stream: this process's, bounded
+    /// per owner in count and bytes ([`crate::tool_sessions::SessionTable`], [`door_sessions`]).
+    sessions: Keyed<(), crate::tool_sessions::SessionTable>,
+    /// Each session's own state beside its table row: its subscriptions, its log floor, the
+    /// updates announced for it.
+    session_state: Keyed<String, door_sessions::SessionState>,
+    /// The held GET streams of the sessions, by unit.
+    streams: Keyed<u64, door_sessions::Stream>,
+    /// WHAT BUSBAR REMEMBERS ABOUT EACH UPSTREAM as a client: the revision it negotiated and its
+    /// session ([`crate::tool_sessions::UpstreamTable`]).
+    upstreams: Keyed<(), crate::tool_sessions::UpstreamTable>,
+    /// Whether this instance said its ungoverned chain's sessions are unisolated (once).
+    said_ungoverned: Keyed<(), ()>,
+    /// The session revision each line-carrier session negotiated with `initialize`.
+    line_revisions: Keyed<u64, crate::revision::Revision>,
 }
 
 impl McpDoor {
@@ -314,7 +333,21 @@ slot!(
             line_listens: Keyed::new(),
             ask_seq: Keyed::new(),
             relays: Keyed::new(),
+            sessions: Keyed::new(),
+            session_state: Keyed::new(),
+            streams: Keyed::new(),
+            upstreams: Keyed::new(),
+            said_ungoverned: Keyed::new(),
+            line_revisions: Keyed::new(),
         };
+        plane.sessions.insert(
+            (),
+            crate::tool_sessions::SessionTable::new(crate::tool_sessions::Bounds::default()),
+        );
+        plane.upstreams.insert(
+            (),
+            crate::tool_sessions::UpstreamTable::new(UPSTREAMS_KEPT, UPSTREAM_BYTES_KEPT),
+        );
         let spec = door::snapshot_spec_with(plane.admitted.clone(), plane.facts.clone());
         let held = Held::pooled(generation, cfg, pools);
         out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, held);
@@ -361,7 +394,9 @@ slot!(
         let given = input.get();
         let next = instance.get().map_or(0, |plane| {
             door_line::tick(plane, given.head.ticket, given.now_ns);
-            door_listen::tick(plane, given.head.ticket, given.now_ns)
+            let next = door_listen::tick(plane, given.head.ticket, given.now_ns);
+            door_sessions::tick(plane);
+            next
         });
         out.set(|o| &o.next_tick_ns, next);
         Outcome::Ready
@@ -389,6 +424,7 @@ slot!(
             stopped = door_tasks::cancelled(plane, ticket);
             plane.units.with_all(|m| m.retain(|_, u| u.ticket != Some(ticket)));
             door_listen::cancelled(plane, ticket);
+            door_sessions::cancelled(plane, ticket);
         }
         // The rows ride the one cancel answer (it is never re-called): what fits is written.
         let (mut records, mut arena) = (input.records_buf(), input.arena_buf());
@@ -425,6 +461,12 @@ slot!(
 
 /// The most units the instance keeps state for at once; past it, the oldest is dropped first.
 pub const MAX_UNITS: usize = 4096;
+
+/// The most upstreams busbar remembers a negotiated revision for, and their bytes: forgetting one
+/// costs one renegotiation.
+const UPSTREAMS_KEPT: usize = 1024;
+/// See [`UPSTREAMS_KEPT`].
+const UPSTREAM_BYTES_KEPT: usize = 1 << 20;
 
 /// One unit's state, from its arrival to its end.
 struct CallUnit {
@@ -470,6 +512,11 @@ struct CallUnit {
     line: Option<door_line::LineUnit>,
     /// The retry of a stdio child's relayed ask: its work handle found, bound and settled.
     child_work: ChildWork,
+    /// What the unit is to the session revisions ([`door_sessions`]).
+    session: Option<door_sessions::SessionUnit>,
+    /// An upstream conversation under negotiation, parked across PENDING entries
+    /// ([`door_sessions::Negotiating`]).
+    negotiating: Option<Box<door_sessions::Negotiating>>,
 }
 
 /// The retry of a stdio child's relayed ask, binding the work handle the ask is correlated under
@@ -895,12 +942,55 @@ slot!(
                 FORBIDDEN_ORIGIN_TEXT.to_string(),
             );
         }
-        if claim.is_some_and(|r| r.verb != "POST") {
-            return refused_arrival(                &mut out,
-                door::STATUS_METHOD_NOT_ALLOWED,
-                NOT_ALLOWED_TEXT.to_string(),
-            );
-        }
+        // THE ENDPOINT'S THREE VERBS (THE DESIGN section 2, the mcp bullet): the stateless revision's
+        // POST is the path it always was; `initialize`, a session's messages and streams, DELETE
+        // and the `2024-11-05` stream are the session revisions' ([`door_sessions`]); a GET or
+        // DELETE naming no session (and no legacy stream) is `405`.
+        let endpoint = claim.is_some_and(|r| {
+            r.target == crate::tool_claims::DEFAULT_MOUNT
+                && r.carrier == crate::tool_claims::CARRIER_HTTP
+        });
+        let head_field = |name: &str| {
+            fields
+                .iter()
+                .find(|f| {
+                    f.field(|f| &f.name)
+                        .as_str()
+                        .is_ok_and(|n| n.eq_ignore_ascii_case(name))
+                })
+                .and_then(|f| f.field(|f| &f.value).as_str().ok())
+                .map(str::to_string)
+        };
+        let arrived = if endpoint {
+            let held = plane.current();
+            door_sessions::arrive(
+                held.as_deref(),
+                claim.map_or("POST", |r| r.verb),
+                input.field(|i| &i.target).as_str().unwrap_or_default(),
+                body,
+                &head_field,
+            )
+        } else if claim.is_some_and(|r| r.verb != "POST") {
+            door_sessions::Arrived::NotAllowed
+        } else {
+            door_sessions::Arrived::Stateless
+        };
+        let (mut session_unit, session_body, session_mirror) = match arrived {
+            door_sessions::Arrived::NotAllowed => {
+                return refused_arrival(
+                    &mut out,
+                    door::STATUS_METHOD_NOT_ALLOWED,
+                    NOT_ALLOWED_TEXT.to_string(),
+                )
+            }
+            door_sessions::Arrived::Stateless => (None, None, Vec::new()),
+            door_sessions::Arrived::Session(a) => {
+                let a = *a;
+                (Some(a.unit), a.dispatch, a.mirror)
+            }
+        };
+        // A session unit the session answers itself: nothing for the one dispatch to decide.
+        let session_local = session_unit.is_some() && session_body.is_none();
         // A TASK'S CONTINUATION (ARCHITECT round 5 Q-L3B-TASKS (b) → (A)): the task it runs, and the
         // call it carries, decided below as the `tools/call` it is.
         let task_run = (input.get().claim as usize == door::TASK_RUN_ROUTE)
@@ -949,19 +1039,32 @@ slot!(
             None => mirrored,
         };
         let line_unit = line_arrival.map(|a| a.unit);
+        // A line raised from its carrier session's negotiated revision is lowered back.
+        if line_unit.as_ref().is_some_and(|u| u.raised) {
+            session_unit = Some(door_sessions::SessionUnit::Line);
+        }
         let body: &[u8] = line_body
             .as_deref()
             .or(task_body.as_deref())
+            .or(session_body.as_deref())
             .unwrap_or(body);
+        // A raised session message is decided under the fields its raised body implies, ahead of
+        // the caller's own (which name its session revision).
         let field = |name: &str| {
-            fields
+            session_mirror
                 .iter()
-                .find(|f| {
-                    f.field(|f| &f.name)
-                        .as_str()
-                        .is_ok_and(|n| n.eq_ignore_ascii_case(name))
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.as_str())
+                .or_else(|| {
+                    fields
+                        .iter()
+                        .find(|f| {
+                            f.field(|f| &f.name)
+                                .as_str()
+                                .is_ok_and(|n| n.eq_ignore_ascii_case(name))
+                        })
+                        .and_then(|f| f.field(|f| &f.value).as_str().ok())
                 })
-                .and_then(|f| f.field(|f| &f.value).as_str().ok())
                 .or_else(|| {
                     mirrored
                         .iter()
@@ -969,11 +1072,13 @@ slot!(
                         .map(|(_, v)| v.as_str())
                 })
         };
-        let disposition = if line_silent {
+        let mut disposition = if line_silent {
             // A line the carrier answers itself: nothing for the one dispatch to decide.
             Disposition::Notice {
                 method: String::new(),
             }
+        } else if let Some(unit) = session_unit.as_ref().filter(|_| session_local) {
+            door_sessions::disposition(unit)
         } else {
             match crate::tool_arrival::decide(body, field) {
                 // A notification is never answered on the line, refused or not.
@@ -985,6 +1090,17 @@ slot!(
                 decided => decided,
             }
         };
+        // A session message the one dispatch refused is answered once its session is the caller's
+        // (a mismatch answers `404` on every path), never at its arrival.
+        let refused = match &disposition {
+            Disposition::Refused(r) => Some(r.clone()),
+            _ => None,
+        };
+        if let (Some(refusal), Some(unit)) = (refused, session_unit.as_mut()) {
+            if door_sessions::refused_in_session(unit, &refusal) {
+                disposition = door_sessions::disposition(unit);
+            }
+        }
         if let Disposition::Refused(refusal) = &disposition {
             return refused_arrival(&mut out, refusal.status, refusal_text(refusal));
         }
@@ -995,14 +1111,14 @@ slot!(
         out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
         out.set(|o| &o.dialect, 0);
         let value = serde_json::from_slice::<Value>(body).ok();
-        // A line's answer is one line: never an event stream.
+        // A line's answer is one line, and a session's is one document: never an event stream.
         let framing = match (&disposition, value.as_ref()) {
-            (Disposition::Request { row, .. }, Some(v)) if !line_route => {
+            (Disposition::Request { row, .. }, Some(v)) if !line_route && session_unit.is_none() => {
                 Framing::of(field("accept"), row.method, v)
             }
             _ => None,
         };
-        let param_fields = fields
+        let mut param_fields: Vec<(String, String)> = fields
             .iter()
             .filter_map(|f| {
                 let name = f.field(|f| &f.name).as_str().ok()?.to_ascii_lowercase();
@@ -1010,6 +1126,13 @@ slot!(
                 name.starts_with(PARAM_FIELD_PREFIX).then(|| (name, value.to_string()))
             })
             .collect();
+        // A raised `tools/call` carries the parameter mirror its session revision could not.
+        for (name, value) in &session_mirror {
+            if name.starts_with(PARAM_FIELD_PREFIX) {
+                param_fields.retain(|(n, _)| n != name);
+                param_fields.push((name.clone(), value.clone()));
+            }
+        }
         // THE ROUTE (ARCHITECT Q-SW6 / Q-FL3): a relayed call names the one registered server its
         // published tool is served by, a DIRECT entry of the `tools:` section; the kernel resolves
         // (plane key, entry) and never parses the name.
@@ -1107,6 +1230,8 @@ slot!(
             }),
             line: line_unit,
             child_work: ChildWork::default(),
+            session: session_unit,
+            negotiating: None,
         };
         keep(&plane.units, MAX_UNITS, input.get().unit, unit);
         Outcome::Ready
@@ -1137,6 +1262,36 @@ fn ask_entitlements(
             s.entitled(handle, &target).unwrap_or(false)
         });
         unit.entitled.insert(target, answer);
+    }
+}
+
+/// THE KERNEL'S DESTINATION JUDGE on a host a call's arguments name (BUSBAR-1.6.0.md Appendix C
+/// B.3 item 11: `dest.judge`, called where the argument guard runs): the deployment's egress rules
+/// under its default class, private reach refused outright for a registration that was granted
+/// none (`allow_private`, as `DEST_REFUSE_PRIVATE`). The name alone is judged, never resolved, so
+/// it never pends (the B.2 row: "may pend: no"); a host that serves no judge, pends or fails
+/// gives no verdict, and the argument guard refuses (fail closed).
+fn dest_verdict(
+    services: Services,
+    handle: CompletionHandle,
+    held: &Held,
+    entry: &crate::catalogue::ToolEntry,
+    dest: &str,
+) -> Option<u64> {
+    let reach = held
+        .section
+        .servers
+        .get(&entry.server)
+        .is_some_and(|d| d.allow_private);
+    let flags = if reach {
+        0
+    } else {
+        busbar_contract::abi::host::service::DEST_REFUSE_PRIVATE
+    };
+    let class = busbar_contract::abi::host::conn::connector::EGRESS_DEFAULT;
+    match services.dest_judge_as(handle, dest, class, flags, None) {
+        std::task::Poll::Ready(Ok(judged)) => Some(judged.verdict),
+        _ => None,
     }
 }
 
@@ -1359,26 +1514,22 @@ fn verify_on_call(
                     held.section.effective_upstream_credentials(server),
                 )
                 .then(|| crate::tool_scope::registration_scope(server, def));
-                let answer = exchange_at(instance, plane.host.as_ref(), base, &url, server, || {
-                    let mut request =
-                        crate::client::jsonrpc::tools_list(&url, CONNECT_REQUEST_ID, None);
-                    scoped(&mut request.headers, scope.as_deref());
-                    busbar_contract::abi::sdk::exchange::Request {
-                        method: b"POST".to_vec(),
-                        target: crate::call::path_of(&url).into_bytes(),
-                        fields: request
-                            .headers
-                            .iter()
-                            .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
-                            .collect(),
-                        body: request.body,
-                        timeout_ms,
-                    }
-                });
+                // The fetch is the stateless `tools/list` first, NEGOTIATED with an upstream that
+                // requires a session ([`door_sessions::fetch`]), every hop on the connector.
+                let mut request =
+                    crate::client::jsonrpc::tools_list(&url, CONNECT_REQUEST_ID, None);
+                scoped(&mut request.headers, scope.as_deref());
+                let answer = door_sessions::fetch(
+                    instance,
+                    plane,
+                    unit,
+                    (base, server, timeout_ms),
+                    request,
+                );
                 let std::task::Poll::Ready(answer) = answer else {
                     return Looked::Pending;
                 };
-                sighting_of(answer.map_err(|e| e.to_string()), CONNECT_REQUEST_ID)
+                sighting_of(answer, CONNECT_REQUEST_ID)
             }
         }
     };
@@ -1589,6 +1740,11 @@ fn answer_body(
     } else {
         caller
     };
+    // A SESSION REVISION'S UNIT: its session checked against its owner first (a mismatch is `404`
+    // on every path); what the session answers itself is answered here.
+    if let Some(step) = door_sessions::answer(plane, ticket, caller, unit) {
+        return Some(step);
+    }
     // A LINE the carrier answers itself (an era verb, an answer busbar asked for), and a line's
     // subscription, kept on its carrier session ([`door_line`]).
     if let Some(pending) = door_line::preset(plane, ticket, unit) {
@@ -1804,17 +1960,20 @@ fn answer_body(
             &header,
             &admit,
             &mut trust,
-            &|entry: &crate::catalogue::ToolEntry| {
-                held.section
-                    .servers
-                    .get(&entry.server)
-                    .is_some_and(|d| d.allow_private)
-            },
             &mut ask,
         );
         if seal.is_some_and(|s| s.pending) {
             return Some(Step::Pending);
         }
+        let admission = crate::call::judge_arguments(admission, &mut |entry, dest| {
+            let handle = CompletionHandle {
+                ticket,
+                seq: unit.issued,
+                _reserved: 0,
+            };
+            unit.issued += 1;
+            dest_verdict(services?, handle, &held, entry, dest)
+        });
         return Some(match admission {
             Admission::Asked(body, line) | Admission::Unreached(body, line) => {
                 unit.pending = Some(
@@ -1948,6 +2107,16 @@ fn answer_body(
                     relay.scope =
                         exchange_scope(services, ticket, unit, &held, &member, &relay.admitted);
                     scoped(&mut outbound.fields, relay.scope.as_deref());
+                    // THE CLIENT LADDER'S FIRST HOP is the walk's: the stateless request as it
+                    // always was, or, to an upstream busbar holds a session with, that request
+                    // lowered into the session ([`door_sessions::Negotiating`]).
+                    let original = door_sessions::original(&def.url, &outbound);
+                    let negotiating = door_sessions::Negotiating::begin(plane, &member, original);
+                    if let Some(first) = negotiating.first_request() {
+                        outbound.fields.clone_from(&first.headers);
+                        outbound.body.clone_from(&first.body);
+                    }
+                    unit.negotiating = Some(Box::new(negotiating));
                 }
                 // ONE CALL AT A TIME on a child whose asks are relayed (finding 5): a call behind
                 // another in its member's line waits its turn, within its own deadline.
@@ -2486,8 +2655,12 @@ slot!(
             return Outcome::Failed;
         };
         let piece = input.get();
-        // A piece of a session (a subscription on the HTTP carrier) is the session's.
+        // A piece of a session (a subscription on the HTTP carrier, or a session revision's held
+        // stream) is the session's.
         if piece.stream != 0 {
+            if door_sessions::holds(plane, piece.unit) {
+                return door_sessions::piece(plane, input, &mut out);
+            }
             return door_listen::piece(plane, input, &mut out);
         }
         let key = piece.unit;
@@ -2502,6 +2675,16 @@ slot!(
                 f.field(|f| &f.name)
                     .as_str()
                     .is_ok_and(|n| n.eq_ignore_ascii_case(CONTENT_TYPE))
+            })
+            .and_then(|f| f.field(|f| &f.value).as_str().ok().map(str::to_string));
+        // A session revision's far end names its session in its head.
+        let far_session = input
+            .head_fields()
+            .iter()
+            .find(|f| {
+                f.field(|f| &f.name)
+                    .as_str()
+                    .is_ok_and(|n| n.eq_ignore_ascii_case(crate::adapt::H_SESSION_ID))
             })
             .and_then(|f| f.field(|f| &f.value).as_str().ok().map(str::to_string));
         // A stdio member's lease names the generation of the child it reached in its head.
@@ -2535,6 +2718,8 @@ slot!(
                     unit.member = Some(member);
                     unit.attempt = piece.attempt_no;
                     unit.verified = None;
+                    // A new attempt negotiates afresh with its own member.
+                    unit.negotiating = None;
                     Some(Step::Taken)
                 }
                 FROM_KERNEL => Some(Step::Taken),
@@ -2651,24 +2836,69 @@ slot!(
                             }
                         }
                         () => {
-                            if piece.flags & PIECE_HAS_STATUS != 0 {
-                                relay.status = piece.status_code;
-                                relay.sse = far_type
-                                    .as_deref()
-                                    .is_some_and(|t| t.starts_with(EVENT_STREAM));
+                            // A negotiation under way is entered again with the piece it began
+                            // on: the far end's answer is already whole.
+                            let resumed = unit.negotiating.as_ref().is_some_and(|n| n.fed);
+                            if !resumed {
+                                if piece.flags & PIECE_HAS_STATUS != 0 {
+                                    relay.status = piece.status_code;
+                                    relay.sse = far_type
+                                        .as_deref()
+                                        .is_some_and(|t| t.starts_with(EVENT_STREAM));
+                                    if let Some(n) = unit.negotiating.as_mut() {
+                                        n.walk_session = far_session.clone();
+                                    }
+                                }
+                                relay.far.extend_from_slice(bytes);
+                                if piece.flags & PIECE_LAST == 0 {
+                                    return Some(Step::Taken);
+                                }
                             }
-                            relay.far.extend_from_slice(bytes);
-                            if piece.flags & PIECE_LAST == 0 {
-                                return Some(Step::Taken);
+                            // THE CLIENT LADDER (THE DESIGN section 2, the mcp bullet): an upstream that
+                            // refuses the stateless request is negotiated with over the door's
+                            // connector; one that answered is handed on as it answered.
+                            let mut failed = None;
+                            if let (Some(n), Some(def)) = (unit.negotiating.as_mut(), def) {
+                                let base = NEGOTIATE_SEQ
+                                    .saturating_add(unit.attempt.saturating_mul(ROUND_SEQ_SPAN));
+                                let member = unit.member.as_deref().unwrap_or_default();
+                                let polled = door_sessions::far_answer(
+                                    &instance,
+                                    plane,
+                                    n,
+                                    (base, member, def.timeout_ms()),
+                                    (relay.status, relay.sse, &relay.far),
+                                );
+                                let std::task::Poll::Ready(done) = polled else {
+                                    return Some(Step::Pending);
+                                };
+                                match done {
+                                    None => {}
+                                    Some(door_sessions::Negotiated::Answer(status, raw, sse)) => {
+                                        relay.status = u32::from(status);
+                                        relay.far = raw;
+                                        relay.sse = sse;
+                                    }
+                                    Some(door_sessions::Negotiated::Failed(reason)) => {
+                                        relay.status = 0;
+                                        failed = Some(reason);
+                                    }
+                                }
                             }
-                            crate::call::settle_call(
-                                &relay.admitted,
-                                def,
-                                relay.status,
-                                &relay.far,
-                                relay.sse,
-                                relay.round,
-                            )
+                            unit.negotiating = None;
+                            match failed {
+                                Some(reason) => {
+                                    crate::call::upstream_failed(&relay.admitted, &reason)
+                                }
+                                None => crate::call::settle_call(
+                                    &relay.admitted,
+                                    def,
+                                    relay.status,
+                                    &relay.far,
+                                    relay.sse,
+                                    relay.round,
+                                ),
+                            }
                         }
                     };
                     let mut frames = std::mem::take(&mut relay.frames);
@@ -2733,6 +2963,20 @@ slot!(
                     if relay.sse {
                         frames.extend(crate::call::progress_frames(&relay.far));
                         frames.truncate(MAX_PROGRESS_FRAMES);
+                        // What the upstream said beside its answer: its resource updates reach the
+                        // sessions watching them, its log records the caller's own session.
+                        let server = unit.member.clone().unwrap_or_default();
+                        let in_session = door_sessions::session_of(&unit.session);
+                        let owner = door_sessions::owner_of(&caller);
+                        let now = in_session.as_ref().map_or(0, |_| {
+                            door_sessions::wall_ms(plane.services, ticket, &mut unit.issued)
+                        });
+                        door_sessions::heard(
+                            plane,
+                            &server,
+                            &relay.far,
+                            in_session.as_deref().map(|s| (s, &owner, now)),
+                        );
                     }
                     let progress = frames;
                     let Settled::Answer { status, body, line } = settled else {
@@ -2786,6 +3030,9 @@ slot!(
             Some(Step::Write) => {
                 let finished = plane.units.with(&key, |unit| {
                     let unit = unit?;
+                    // A session revision's answer is lowered into it before its first byte goes
+                    // ([`door_sessions::lower`]).
+                    door_sessions::lower(plane, ticket, &caller, unit);
                     // A line's `input_required` answer is put to its caller as live requests on
                     // the carrier session ([`door_line::liven`]), before its first byte goes.
                     if unit.line.is_some() && unit.pending.as_ref().is_some_and(|p| !p.headed) {
@@ -3199,6 +3446,11 @@ const VERIFY_SEQ: u32 = 1 << 29;
 
 /// How many handles one attempt's verify-on-call exchange may number.
 const ROUND_SEQ_SPAN: u32 = 1 << 12;
+
+/// The first handle seq a relayed call's negotiation (its hops after the walk's) numbers its
+/// connector services from on a unit's ticket: clear of the unit's own handles and of
+/// verify-on-call's ([`VERIFY_SEQ`]), each attempt [`ROUND_SEQ_SPAN`] apart.
+const NEGOTIATE_SEQ: u32 = 1 << 28;
 
 /// ONE EXCHANGE ON A UNIT'S TICKET, its connector services numbered from `base` (a unit's ticket
 /// carries several exchanges, one after another: each counts its own handles, so none reads
@@ -3624,6 +3876,10 @@ mod door_line;
 /// unit and relay state.
 #[path = "door_program.rs"]
 mod door_program;
+/// THE SESSION REVISIONS AND THE LEGACY EVENT STREAM, both directions (THE DESIGN section 2, the mcp
+/// bullet): a child of the door, so it reads the door's own unit, answer and stream state.
+#[path = "door_sessions.rs"]
+mod door_sessions;
 /// THE TASKS EXTENSION'S UNITS (ARCHITECT round 5 Q-L3B-TASKS (b) → (A)): a child of the door, so it
 /// reads the door's own unit and answer state.
 #[path = "door_tasks.rs"]
