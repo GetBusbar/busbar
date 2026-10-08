@@ -1316,6 +1316,9 @@ enum Step {
     Write,
     /// A host service pended (the approval's claim): called again on its wake.
     Pending,
+    /// Held open (a stdio call waiting for its turn behind the call ahead of it): called again on a
+    /// wake, or at this instant of the host's monotonic clock (`0` = on a wake only).
+    Wait(u64),
     /// The walk's member is one this unit may not be sent to: declined, the walk moves on.
     Decline,
 }
@@ -3045,6 +3048,12 @@ slot!(
             Some(Step::Decline) => {
                 out.set(|o| &o.verdict, VERDICT_RETRY);
                 Outcome::Ready
+            }
+            Some(Step::Wait(at)) => {
+                if at != 0 {
+                    out.wake_at(at);
+                }
+                Outcome::Pending
             }
             Some(Step::Write) => {
                 let finished = plane.units.with(&key, |unit| {
