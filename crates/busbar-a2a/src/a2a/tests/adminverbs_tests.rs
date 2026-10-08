@@ -24,6 +24,12 @@ use serde_json::{json, Value};
 use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
 use crate::a2a::jws::ED25519_KEY_INFO_PREFIX;
 use crate::testkit::engine_boot::engine;
+use busbar_kernel::{
+    governance::signing::{TokenSigner, DEFAULT_KID},
+    plane::registry::{CardIssuer, PlaneBootCtx, RestoredSummary},
+    plane::store::{PlaneStore, PlaneStoreView},
+    plane_host::EngineHost,
+};
 
 const TOKEN: &str = "admintok";
 const STD: base64::engine::general_purpose::GeneralPurpose =
@@ -162,12 +168,7 @@ async fn serve(
         .governance(
             engine().scratch_store(),
             Some(TOKEN.to_string()),
-            Some(
-                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
-                    &[9u8; 32],
-                    busbar_kernel::governance::signing::DEFAULT_KID,
-                ),
-            ),
+            Some(TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID)),
         )
         .unwrap();
     let app = engine()
@@ -527,26 +528,26 @@ pub async fn drive_a2a_verb_errors() {
 /// THE HYDRATE-PHASE BOOT CONTEXT a restart hands the plane's `hydrate` hook: the configured store,
 /// and the host over the freshly-built app. The methods the A2A hook never calls are inert.
 struct RestartBootCtx {
-    store: Arc<dyn busbar_kernel::plane::store::PlaneStore>,
-    host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    store: Arc<dyn PlaneStore>,
+    host: Arc<dyn EngineHost>,
 }
 
-impl busbar_kernel::plane::registry::PlaneBootCtx for RestartBootCtx {
+impl PlaneBootCtx for RestartBootCtx {
     fn has_store(&self) -> bool {
         true
     }
     fn register_call_stream(&self) {}
-    fn restore_call_log(&self) -> Result<busbar_kernel::plane::registry::RestoredSummary, String> {
-        Ok(busbar_kernel::plane::registry::RestoredSummary::default())
+    fn restore_call_log(&self) -> Result<RestoredSummary, String> {
+        Ok(RestoredSummary::default())
     }
     fn attach_durable_sinks(&self) {}
-    fn plane_store(&self) -> Option<Arc<dyn busbar_kernel::plane::store::PlaneStore>> {
+    fn plane_store(&self) -> Option<Arc<dyn PlaneStore>> {
         Some(Arc::clone(&self.store))
     }
-    fn card_issuer(&self) -> Option<busbar_kernel::plane::registry::CardIssuer> {
+    fn card_issuer(&self) -> Option<CardIssuer> {
         None
     }
-    fn engine_host(&self) -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
+    fn engine_host(&self) -> Arc<dyn EngineHost> {
         Arc::clone(&self.host)
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -565,12 +566,7 @@ async fn boot_over(
         .governance(
             Arc::clone(&store),
             Some(TOKEN.to_string()),
-            Some(
-                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
-                    &[9u8; 32],
-                    busbar_kernel::governance::signing::DEFAULT_KID,
-                ),
-            ),
+            Some(TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID)),
         )
         .unwrap();
     let app = engine()
@@ -579,7 +575,7 @@ async fn boot_over(
         .agent_def("echo", def)
         .build();
     let ctx = RestartBootCtx {
-        store: busbar_kernel::plane::store::PlaneStoreView::narrow(store),
+        store: PlaneStoreView::narrow(store),
         host: Arc::clone(&app).engine_host(),
     };
     crate::a2a::a2a_hydrate(&ctx).expect("the a2a hydrate hook");

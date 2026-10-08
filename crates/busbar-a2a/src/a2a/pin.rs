@@ -40,10 +40,14 @@
 
 use super::config::{AgentPinCfg, PinMechanism};
 use super::{card, jws};
-use busbar_kernel::plane::DemotionRecord;
-use busbar_kernel::trust::book::RulingRow;
-use busbar_kernel::trust::declared::{declared_pin, Declaration};
-use busbar_kernel::trust::{Approval, CapabilityApproval, PinnedArtifact, Sighting, TrustError};
+use busbar_kernel::{
+    plane::DemotionRecord,
+    trust::{
+        book::RulingRow,
+        declared::{declared_pin, Declaration},
+        Approval, CapabilityApproval, PinnedArtifact, Sighting, TrustError,
+    },
+};
 
 /// The identity an A2A registration is pinned to. The mechanism is part of the value, not a
 /// separate field, so a registration cannot claim `jws_issuer_key` while carrying a transport pin.
@@ -251,7 +255,7 @@ fn observed_pin(sighting: &Sighting<CardPin>) -> Option<CardPin> {
 
 /// The instance label an A2A approval is kept under in the kernel's trust-decision record: the
 /// plane's config section, the label the kernel gives a plane's implicit first instance.
-pub(crate) const KEPT_INSTANCE: &str = busbar_plane_a2a::CONFIG_SECTION;
+pub(crate) const KEPT_INSTANCE: &str = super::PLANE_DECLARATION.config_section;
 
 /// KEEP AN APPROVAL DURABLY, through the kernel's trust-decision record (`trust_decision` rows,
 /// [`RulingRow`]), the record the kernel keeps its own operator decisions in.

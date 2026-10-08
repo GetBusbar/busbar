@@ -39,6 +39,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use busbar_kernel::{plane::DemotionRecord, trust::VerifyGate};
+
 use super::config::{AgentPinCfg, AgentsCfg, DEFAULT_RECOVERY_BACKOFF_MS};
 use super::fetch::FetchPolicy;
 use super::registry::AgentRegistration;
@@ -104,7 +106,7 @@ pub struct A2aPlane {
     /// accumulated coordination state, not intent. When the `agents:` block is REMOVED there is no
     /// plane this generation, so the gate is dropped whole — the unobservable analogue of the old
     /// `retain(&empty)`, since a deployment fronting no agents runs no delegation to read it.
-    verify: Arc<busbar_kernel::trust::VerifyGate>,
+    verify: Arc<VerifyGate>,
     /// THE A2A CARD-FETCH TRANSPORTS, resolved ONCE at boot (per-agent client identities, the same
     /// object the delegation hop relays through). Verify-on-call reads it on the request path to
     /// re-fetch and re-verify a stale card. Empty until the A2A `start` hook publishes it through
@@ -123,7 +125,7 @@ pub struct A2aPlane {
     /// moved meanwhile is judged as drift rather than met as a first sighting. Carried across
     /// applies by the same `Arc`, like [`Self::verify`]. With no store (`store: memory`) it keeps
     /// nothing and reloads nothing.
-    kept: Arc<busbar_kernel::plane::DemotionRecord>,
+    kept: Arc<DemotionRecord>,
     /// THE RESOLVED `agents:` REGISTRY this generation was lowered from — the raw operator INTENT,
     /// carried on the plane's own runtime object so the admin read/config surface reads it off the
     /// neutral plane slot rather than off the type-erased `App::agent_defs` handle. The exact
@@ -223,7 +225,7 @@ impl A2aPlane {
         Self::from_config_carrying(
             cfg,
             public_url,
-            Arc::new(busbar_kernel::trust::VerifyGate::new()),
+            Arc::new(VerifyGate::new()),
             Arc::new(OnceLock::new()),
             Arc::default(),
         )
@@ -238,9 +240,9 @@ impl A2aPlane {
     pub(crate) fn from_config_carrying(
         cfg: &AgentsCfg,
         public_url: Option<&str>,
-        verify: Arc<busbar_kernel::trust::VerifyGate>,
+        verify: Arc<VerifyGate>,
         cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
-        kept: Arc<busbar_kernel::plane::DemotionRecord>,
+        kept: Arc<DemotionRecord>,
     ) -> Option<Arc<Self>> {
         if cfg.agents.is_empty() {
             return None;
@@ -291,12 +293,12 @@ impl A2aPlane {
     }
 
     /// THE KEPT-APPROVAL RECORD, as the `hydrate` hook attaches its store and `approve` writes it.
-    pub(crate) fn kept(&self) -> &busbar_kernel::plane::DemotionRecord {
+    pub(crate) fn kept(&self) -> &DemotionRecord {
         &self.kept
     }
 
     /// The OWNED-`Arc` twin of [`Self::kept`], carried across a config apply.
-    pub(crate) fn kept_arc(&self) -> Arc<busbar_kernel::plane::DemotionRecord> {
+    pub(crate) fn kept_arc(&self) -> Arc<DemotionRecord> {
         Arc::clone(&self.kept)
     }
 
@@ -326,14 +328,14 @@ impl A2aPlane {
     /// THE VERIFY-ON-CALL GATE this plane re-verifies fronted agents through, as the delegation path
     /// and the `retain_verify_gates` prune read it. Held on the plane, not on `App`, mirroring MCP's
     /// `McpRuntime::verify`.
-    pub fn verify(&self) -> &Arc<busbar_kernel::trust::VerifyGate> {
+    pub fn verify(&self) -> &Arc<VerifyGate> {
         &self.verify
     }
 
     /// The OWNED-`Arc` twin of [`Self::verify`], for the carry across a config apply
     /// ([`Self::from_config_carrying`]) — a refcount bump of the same gate, so the coalescing epochs
     /// persist.
-    pub(crate) fn verify_arc(&self) -> Arc<busbar_kernel::trust::VerifyGate> {
+    pub(crate) fn verify_arc(&self) -> Arc<VerifyGate> {
         Arc::clone(&self.verify)
     }
 
