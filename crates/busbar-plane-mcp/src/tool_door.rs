@@ -2850,7 +2850,7 @@ slot!(
                             // A negotiation under way is entered again with the piece it began
                             // on: the far end's answer is already whole.
                             let resumed = unit.negotiating.as_ref().is_some_and(|n| n.fed);
-                            let mut over = false;
+                            let mut over = None;
                             if !resumed {
                                 if piece.flags & PIECE_HAS_STATUS != 0 {
                                     relay.status = piece.status_code;
@@ -2868,7 +2868,10 @@ slot!(
                                     relay.far = Vec::new();
                                     relay.status = 0;
                                     relay.sse = false;
-                                    over = true;
+                                    over = Some(crate::call::upstream_failed(
+                                        &relay.admitted,
+                                        REPLY_OVER_BOUND,
+                                    ));
                                 } else {
                                     relay.far.extend_from_slice(bytes);
                                     if piece.flags & PIECE_LAST == 0 {
@@ -2876,52 +2879,56 @@ slot!(
                                     }
                                 }
                             }
-                            // THE CLIENT LADDER (THE DESIGN section 2, the mcp bullet): an upstream that
-                            // refuses the stateless request is negotiated with over the door's
-                            // connector; one that answered is handed on as it answered.
-                            let mut failed = over.then(|| REPLY_OVER_BOUND.to_string());
-                            if let (false, Some(n), Some(def)) =
-                                (over, unit.negotiating.as_mut(), def)
-                            {
-                                let base = NEGOTIATE_SEQ
-                                    .saturating_add(unit.attempt.saturating_mul(ROUND_SEQ_SPAN));
-                                let member = unit.member.as_deref().unwrap_or_default();
-                                let polled = door_sessions::far_answer(
-                                    &instance,
-                                    plane,
-                                    n,
-                                    (base, member, def.timeout_ms()),
-                                    (relay.status, relay.sse, &relay.far),
-                                );
-                                let std::task::Poll::Ready(done) = polled else {
-                                    return Some(Step::Pending);
-                                };
-                                match done {
-                                    None => {}
-                                    Some(door_sessions::Negotiated::Answer(status, raw, sse)) => {
-                                        relay.status = u32::from(status);
-                                        relay.far = raw;
-                                        relay.sse = sse;
-                                    }
-                                    Some(door_sessions::Negotiated::Failed(reason)) => {
-                                        relay.status = 0;
-                                        failed = Some(reason);
+                            if let Some(settled) = over {
+                                unit.negotiating = None;
+                                settled
+                            } else {
+                                // THE CLIENT LADDER (THE DESIGN section 2, the mcp bullet): an
+                                // upstream that refuses the stateless request is negotiated with
+                                // over the door's connector; one that answered is handed on as it
+                                // answered.
+                                let mut failed = None;
+                                if let (Some(n), Some(def)) = (unit.negotiating.as_mut(), def) {
+                                    let base = NEGOTIATE_SEQ
+                                        .saturating_add(unit.attempt.saturating_mul(ROUND_SEQ_SPAN));
+                                    let member = unit.member.as_deref().unwrap_or_default();
+                                    let polled = door_sessions::far_answer(
+                                        &instance,
+                                        plane,
+                                        n,
+                                        (base, member, def.timeout_ms()),
+                                        (relay.status, relay.sse, &relay.far),
+                                    );
+                                    let std::task::Poll::Ready(done) = polled else {
+                                        return Some(Step::Pending);
+                                    };
+                                    match done {
+                                        None => {}
+                                        Some(door_sessions::Negotiated::Answer(status, raw, sse)) => {
+                                            relay.status = u32::from(status);
+                                            relay.far = raw;
+                                            relay.sse = sse;
+                                        }
+                                        Some(door_sessions::Negotiated::Failed(reason)) => {
+                                            relay.status = 0;
+                                            failed = Some(reason);
+                                        }
                                     }
                                 }
-                            }
-                            unit.negotiating = None;
-                            match failed {
-                                Some(reason) => {
-                                    crate::call::upstream_failed(&relay.admitted, &reason)
+                                unit.negotiating = None;
+                                match failed {
+                                    Some(reason) => {
+                                        crate::call::upstream_failed(&relay.admitted, &reason)
+                                    }
+                                    None => crate::call::settle_call(
+                                        &relay.admitted,
+                                        def,
+                                        relay.status,
+                                        &relay.far,
+                                        relay.sse,
+                                        relay.round,
+                                    ),
                                 }
-                                None => crate::call::settle_call(
-                                    &relay.admitted,
-                                    def,
-                                    relay.status,
-                                    &relay.far,
-                                    relay.sse,
-                                    relay.round,
-                                ),
                             }
                         }
                     };
