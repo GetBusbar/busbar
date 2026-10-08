@@ -23,7 +23,7 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::transport::FrameSpan;
 use busbar_plane_mcp::client::jsonrpc::ServerRequestGrants;
-use busbar_plane_mcp::tool_program::{list_id, Exchanged, Peer, ProgramExchange};
+use busbar_plane_mcp::tool_program::{list_id, AskOwner, Exchanged, Peer, ProgramExchange};
 use serde_json::{json, Value};
 
 /// THE STAND-IN CHILD: its generation, every message it received, the messages each open lease has
@@ -220,6 +220,14 @@ impl Peer for Door {
             self.claimed.push(key);
         }
         fresh
+    }
+    fn owner(&mut self, generation: u64, id: &Value) -> AskOwner {
+        // No call is relayed here: an ask is no call's, refused by the first exchange to read it.
+        if self.claim(generation, id) {
+            AskOwner::Refuse
+        } else {
+            AskOwner::Refused
+        }
     }
     fn notice(&mut self) {
         self.noticed += 1;

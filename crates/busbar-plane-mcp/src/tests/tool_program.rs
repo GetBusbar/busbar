@@ -15,6 +15,7 @@ struct Door {
     noticed: u32,
     grants: ServerRequestGrants,
     open: Vec<u64>,
+    owners: Vec<((u64, String), Option<u64>)>,
 }
 
 impl Peer for Door {
@@ -28,6 +29,15 @@ impl Peer for Door {
         }
         self.claimed.push(key);
         true
+    }
+    fn owner(&mut self, generation: u64, id: &Value) -> AskOwner {
+        let key = (generation, id.to_string());
+        if let Some((_, owner)) = self.owners.iter().find(|(k, _)| *k == key) {
+            return owner.map_or(AskOwner::Refused, AskOwner::Call);
+        }
+        let owner = first_in_line(self.open.iter().map(|&call| (call, 0)), generation);
+        self.owners.push((key, owner));
+        owner.map_or(AskOwner::Refuse, AskOwner::Call)
     }
     fn notice(&mut self) {
         self.noticed += 1;
@@ -176,6 +186,7 @@ fn a_granted_ask_is_taken_for_the_caller_and_never_answered_here() {
             sampling: true,
             ..ServerRequestGrants::default()
         },
+        open: vec![9],
         ..Door::default()
     };
     let sampling = json!({"jsonrpc": "2.0", "id": "srv-1", "method": "sampling/createMessage",
@@ -221,8 +232,8 @@ fn a_granted_ask_is_taken_for_the_caller_and_never_answered_here() {
     );
 }
 
-/// An exchange of the door's own (a greeting, a tool list) relays no call: it neither takes nor
-/// answers a granted ask, and leaves it unclaimed for the exchange relaying the call to take.
+/// An exchange of the door's own (a greeting, a tool list) relays no call: reading a granted ask
+/// first, it neither takes nor answers it, and leaves it for the one call relaying to take.
 #[test]
 fn an_exchange_of_the_doors_own_leaves_a_granted_ask_for_the_call() {
     let mut door = Door {
@@ -230,6 +241,7 @@ fn an_exchange_of_the_doors_own_leaves_a_granted_ask_for_the_call() {
             elicitation: true,
             ..ServerRequestGrants::default()
         },
+        open: vec![9],
         ..Door::default()
     };
     let ask = bytes(
@@ -364,4 +376,23 @@ fn each_callers_ask_reaches_only_that_caller() {
         refusals[0]["error"]["data"]["reason"],
         json!("ask_unattributed")
     );
+}
+
+/// An ask is the call's first in its child's line: a call whose lease has not named its generation
+/// counts on every generation; a line whose first call is on another child, or an empty line, has
+/// no call for it.
+#[test]
+fn the_call_an_ask_belongs_to() {
+    assert_eq!(first_in_line([(9, 1), (10, 1)], 1), Some(9));
+    assert_eq!(
+        first_in_line([(9, 0), (10, 1)], 1),
+        Some(9),
+        "before its head"
+    );
+    assert_eq!(
+        first_in_line([(9, 2)], 1),
+        None,
+        "another generation's child"
+    );
+    assert_eq!(first_in_line([], 1), None, "no call");
 }

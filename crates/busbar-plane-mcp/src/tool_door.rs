@@ -181,9 +181,13 @@ pub struct McpDoor {
     /// THE STDIO SERVERS' GREETINGS: the generation of each member's child the door ran
     /// `initialize` on ([`door_program`]), once per generation.
     greeted: Keyed<String, u64>,
-    /// The requests of a stdio child's own the door answered, by member, generation and id: one
-    /// answer each, whichever exchange read it first.
-    answered: Keyed<(String, u64, String), ()>,
+    /// The requests of a stdio child's own the door decided, by member, generation and id: the call
+    /// a granted ask was put to, or `None` = busbar answered it, decided once by whichever exchange
+    /// read it first.
+    answered: Keyed<(String, u64, String), Option<u64>>,
+    /// The line of calls relayed to stdio children: which call a child serves, so whose its ask
+    /// is ([`door_program::Relaying`]).
+    relaying: door_program::Relaying,
     /// THE TASKS this instance holds, by `taskId` (SEP-2663, [`door_tasks`]).
     tasks: Keyed<String, crate::tool_tasks::Task>,
     /// The result chunks of dropped tasks still to strike, by `taskId`: how many.
@@ -305,6 +309,7 @@ slot!(
             roots: Keyed::new(),
             greeted: Keyed::new(),
             answered: Keyed::new(),
+            relaying: Arc::default(),
             live_asks: Keyed::new(),
             line_listens: Keyed::new(),
             ask_seq: Keyed::new(),
@@ -505,6 +510,9 @@ struct Relay {
     /// (ms): what tells a walk that spent the server's `timeout:` on a dispatched call from one
     /// that dispatched nothing ([`timed_out`]).
     dispatched_ms: Option<u64>,
+    /// A stdio call waiting its turn on its member's child ([`door_program::in_line`]): its
+    /// request, and the instant its deadline passes (the kernel's monotonic clock, ms; `0` = none).
+    queued: Option<(crate::call::OutboundCall, u64)>,
 }
 
 /// The most progress frames one request relays: a progress stream is untrusted upstream input,
@@ -1523,6 +1531,51 @@ fn hides(trust: &crate::call::Trust) -> bool {
     )
 }
 
+/// A STDIO CALL WAITING ITS TURN (finding 5), called again on the wake of the call ahead of it
+/// leaving its member's line or at its deadline: sent once it is first in line; answered busy,
+/// never sent, once its deadline passed while it waited. `None` for a unit that is not waiting.
+fn take_turn(
+    plane: &McpDoor,
+    ticket: Ticket,
+    principal: &str,
+    generation: u64,
+    unit: &mut CallUnit,
+) -> Option<Step> {
+    let deadline = unit.relay.as_ref()?.queued.as_ref()?.1;
+    let now = mono_ms(plane.services, ticket, unit);
+    let relay = unit.relay.as_mut()?;
+    let first = relay
+        .program
+        .as_ref()
+        .is_none_or(|p| door_program::in_line(plane, p, now, ticket));
+    if first {
+        let (outbound, _) = relay.queued.take()?;
+        relay.dispatched_ms = now;
+        unit.pending = Some(Pending::far(outbound).laned(&relay.admitted.entry.namespaced));
+        return Some(Step::Write);
+    }
+    if deadline == 0 || now.is_none_or(|now| now < deadline) {
+        return Some(Step::Wait(deadline.saturating_mul(1_000_000)));
+    }
+    relay.queued = None;
+    relay.program = None;
+    let Settled::Answer { status, body, line } =
+        crate::call::upstream_failed(&relay.admitted, door_program::BUSY)
+    else {
+        return None;
+    };
+    let ts = clock_s(plane.services, ticket, unit);
+    unit.pending = Some(
+        Pending::answer(status, body, unit.framing.as_ref(), &[]).logged(
+            Some(&line),
+            principal,
+            generation,
+            ts,
+        ),
+    );
+    Some(Step::Write)
+}
+
 fn answer_body(
     instance: &Instance<'_, McpDoor>,
     plane: &McpDoor,
@@ -1563,6 +1616,9 @@ fn answer_body(
         }
     }
     let held = unit.held.clone()?;
+    if let Some(step) = take_turn(plane, ticket, principal, held.catalogue.generation(), unit) {
+        return Some(step);
+    }
     let mut params = unit.params.clone();
     let disposition = unit.disposition.clone();
     // THE POOL'S TWIN (ARCHITECT round 4 Q-L3B-SURFACES (h)): the kernel's walk picked another
@@ -1854,6 +1910,8 @@ fn answer_body(
                         replies.remove(0)
                     };
                     relay.program = Some(door_program::ProgramRelay::retrying(
+                        plane,
+                        &member,
                         child.wait,
                         child.generation,
                         replies,
@@ -1867,7 +1925,7 @@ fn answer_body(
                 } else if door_program::is_program(def) {
                     // A stdio member: the call carries the unit's own id on the child.
                     let id = door_program::id_of(unit.key, round);
-                    relay.program = Some(door_program::ProgramRelay::waiting(id));
+                    relay.program = Some(door_program::ProgramRelay::waiting(plane, &member, id));
                     crate::call::outbound_program(
                         &relay.admitted,
                         &member,
@@ -1891,7 +1949,21 @@ fn answer_body(
                         exchange_scope(services, ticket, unit, &held, &member, &relay.admitted);
                     scoped(&mut outbound.fields, relay.scope.as_deref());
                 }
-                relay.dispatched_ms = mono_ms(services, ticket, unit);
+                // ONE CALL AT A TIME on a child whose asks are relayed (finding 5): a call behind
+                // another in its member's line waits its turn, within its own deadline.
+                let now = mono_ms(services, ticket, unit);
+                if door_program::serialised(def)
+                    && relay
+                        .program
+                        .as_ref()
+                        .is_some_and(|p| !door_program::in_line(plane, p, now, ticket))
+                {
+                    let deadline = now.map_or(0, |now| now.saturating_add(def.timeout_ms()));
+                    relay.queued = Some((outbound, deadline));
+                    unit.relay = Some(relay);
+                    return Some(Step::Wait(deadline.saturating_mul(1_000_000)));
+                }
+                relay.dispatched_ms = now;
                 unit.pending = Some(Pending::far(outbound).laned(&relay.admitted.entry.namespaced));
                 unit.relay = Some(relay);
                 Step::Write
@@ -2337,6 +2409,7 @@ impl Relay {
             asked: None,
             work_slot: None,
             dispatched_ms: None,
+            queued: None,
         }
     }
 }
@@ -2524,6 +2597,24 @@ slot!(
                                             asks.into_iter().map(|a| a.id).collect();
                                         return Some(refuse_child(
                                             plane, ticket, member, def, program, &ids, &refusal,
+                                        ));
+                                    }
+                                    // The child still serves the call: its place in the line
+                                    // is held for the retry, until the ask's state lapses.
+                                    if let Some(now) = plane
+                                        .services
+                                        .and_then(|s| {
+                                            s.clock_now(door_tasks::handle(
+                                                ticket,
+                                                &mut unit.issued,
+                                                &mut None,
+                                            ))
+                                            .ok()
+                                        })
+                                        .map(|r| r.mono_ns / 1_000_000)
+                                    {
+                                        program.hold(now.saturating_add(
+                                            crate::ask::DEFAULT_TTL_SECS.saturating_mul(1000),
                                         ));
                                     }
                                     let (result, keys) = crate::tool_program::relayed_asks(&asks);

@@ -13,14 +13,55 @@
 //!   member's; its answer is the message carrying the unit's id among everything the child writes
 //!   ([`far`]), and a request of the child's own read on the way is answered on a lease of its own
 //!   (`ping`, an unknown method, an ungranted ask) or, a granted authority ask, handed up as busbar's
-//!   caller's to answer ([`Far::Asked`], Law 11). The caller's answer comes back on a retry of the
-//!   call ([`ProgramRelay::retrying`]): written to the child under its own request id, and the call
-//!   the child still owes read on.
+//!   caller's to answer ([`Far::Asked`], Law 11) — the caller of the call FIRST IN THE CHILD'S
+//!   LINE ([`Relaying`]): calls to a member whose grants let its asks be relayed reach its child one
+//!   at a time, in arrival order, each holding its place until its answer is read (across a relayed
+//!   ask's round trip, until its retry or the ask's state lapses); a call behind it waits its turn
+//!   within its own deadline ([`in_line`]). An ask raised while no such call is open is refused. The
+//!   caller's answer comes back on a retry of the call ([`ProgramRelay::retrying`]): written to the
+//!   child under its own request id, and the call the child still owes read on.
 //! * Verify-on-call's `tools/list` ([`tools_listed`]), an operator's `connect`, and a further round reach the
 //!   same child the same way.
 
 use super::*;
-use crate::tool_program::{call_id, list_id, Correlator, Exchanged, Peer, ProgramExchange};
+use crate::tool_program::{
+    call_id, first_in_line, list_id, AskOwner, Correlator, Exchanged, Peer, ProgramExchange,
+};
+
+/// THE LINE OF CALLS RELAYED TO STDIO CHILDREN, by serial (arrival order) (finding 5): every
+/// relayed call is entered before its request could reach the kernel's walk and leaves when its
+/// relay is dropped (or, holding its place across a relayed ask's round trip, when that lapses).
+/// For a member whose asks may be relayed, only the call first in its line is sent ([`in_line`]),
+/// so the child serves one such call at a time and its ask is that call's ([`first_in_line`]).
+pub(super) type Relaying = Arc<Keyed<u64, InLine>>;
+
+/// One call in a stdio member's line.
+#[derive(Debug, Clone)]
+pub(super) struct InLine {
+    member: String,
+    /// The generation its lease reached; `0` before its head.
+    generation: u64,
+    /// The id the call carries on the child.
+    call: u64,
+    /// The ticket of its unit while it waits its turn: woken when the call ahead of it leaves.
+    ticket: Option<Ticket>,
+    /// Held across a relayed ask's round trip until this instant of the host's monotonic clock
+    /// (ms): the child still serves the call, so its place is kept for the retry. `0` = a live
+    /// relay.
+    held_until: u64,
+}
+
+/// Whether member `def`'s calls wait their turn on its child: its grants let a child's ask be
+/// relayed to a caller (a call whose asks are all refused may share the child freely).
+pub(super) fn serialised(def: &crate::tools_config::McpServerDefCfg) -> bool {
+    let g = def.grants.as_ask_grants();
+    g.sampling || g.elicitation || g.roots
+}
+
+/// The sentence a call answers when its deadline passed while another call held the child.
+pub(super) const BUSY: &str = "the stdio MCP child was serving another call whose asks are \
+                               relayed to its own caller, and this call's deadline passed while it \
+                               waited its turn; it was never sent";
 
 /// Where the door's own program exchanges number their host services on a unit's ticket: the
 /// greeting before each attempt, [`crate::tool_program::EXCHANGE_SERVICES`] apart per attempt.
@@ -30,8 +71,8 @@ const READY_SEQ: u32 = 1 << 31;
 /// [`crate::tool_program::EXCHANGE_SERVICES`] apart.
 const REPLY_SEQ: u32 = (1 << 31) + (1 << 30);
 
-/// The most requests of a child's own the door remembers having answered (per member and
-/// generation, by id), so two exchanges reading one request answer it once.
+/// The most requests of a child's own the door remembers having answered or put to a call (per
+/// member and generation, by id), so two exchanges reading one request decide it once.
 const MAX_ANSWERED: usize = 4096;
 
 /// Whether `def` is a `transport: stdio` registration: a member of the program need.
@@ -65,11 +106,59 @@ pub(super) struct ProgramRelay {
     /// A retry answering the child's own requests: the generation that asked, which is the only one
     /// its answers and its wait mean anything to.
     expect: Option<u64>,
+    /// Its place in the line ([`Relaying`]), left when it is dropped.
+    open: (Relaying, u64),
+    /// The host's wake, for the call behind it when it leaves the line.
+    wake: Option<busbar_contract::abi::sdk::services::Wake>,
+    /// Its asks went to its caller: dropped, it holds its place until this instant (ms).
+    hold: u64,
+}
+
+impl Drop for ProgramRelay {
+    fn drop(&mut self) {
+        let (line, serial) = &self.open;
+        let hold = self.hold;
+        let next = line.with_all(|m| {
+            if hold != 0 {
+                if let Some(e) = m.get_mut(serial) {
+                    e.held_until = hold;
+                }
+                return None;
+            }
+            let gone = m.remove(serial)?;
+            if m.range(..*serial).any(|(_, e)| e.member == gone.member) {
+                return None;
+            }
+            m.values().find(|e| e.member == gone.member)?.ticket
+        });
+        if let (Some(wake), Some(ticket)) = (self.wake, next) {
+            wake.wake(ticket);
+        }
+    }
 }
 
 impl ProgramRelay {
-    /// The relay of a call whose round carries `wait`.
-    pub(super) fn waiting(wait: u64) -> Self {
+    /// The relay of a call to member `member` whose round carries `wait`: entered at the end of
+    /// the member's line.
+    pub(super) fn waiting(plane: &McpDoor, member: &str, wait: u64) -> Self {
+        let serial = plane.relaying.with_all(|line| {
+            let serial = line.last_key_value().map_or(1, |(k, _)| k.wrapping_add(1));
+            line.insert(
+                serial,
+                InLine {
+                    member: member.to_string(),
+                    generation: 0,
+                    call: wait,
+                    ticket: None,
+                    held_until: 0,
+                },
+            );
+            serial
+        });
+        ProgramRelay::at(plane, wait, serial)
+    }
+
+    fn at(plane: &McpDoor, wait: u64, serial: u64) -> Self {
         ProgramRelay {
             wait,
             generation: 0,
@@ -78,14 +167,40 @@ impl ProgramRelay {
             replies: 0,
             settled: None,
             expect: None,
+            open: (Arc::clone(&plane.relaying), serial),
+            wake: plane.wake,
+            hold: 0,
         }
+    }
+
+    /// Its asks went to its caller: dropped, it keeps its place in the line until `until` (the
+    /// host's monotonic clock, ms), for the retry that answers them.
+    pub(super) fn hold(&mut self, until: u64) {
+        self.hold = until;
     }
 
     /// THE RETRY OF A CHILD'S RELAYED ASK: the caller's answers after the first (which the walk's
     /// own lease carries) owed on the child of `generation`, and the call `wait` it still owes read
-    /// on, on that generation only.
-    pub(super) fn retrying(wait: u64, generation: u64, rest: Vec<Vec<u8>>) -> Self {
-        let mut relay = ProgramRelay::waiting(wait);
+    /// on, on that generation only. It takes up the place in the line the call held while its
+    /// caller answered.
+    pub(super) fn retrying(
+        plane: &McpDoor,
+        member: &str,
+        wait: u64,
+        generation: u64,
+        rest: Vec<Vec<u8>>,
+    ) -> Self {
+        let held = plane.relaying.with_all(|line| {
+            let (serial, e) = line
+                .iter_mut()
+                .find(|(_, e)| e.held_until != 0 && e.member == member && e.call == wait)?;
+            e.held_until = 0;
+            Some(*serial)
+        });
+        let mut relay = match held {
+            Some(serial) => ProgramRelay::at(plane, wait, serial),
+            None => ProgramRelay::waiting(plane, member, wait),
+        };
         relay.expect = Some(generation);
         relay.corr.outbox.extend(rest);
         relay
@@ -96,11 +211,65 @@ impl ProgramRelay {
 pub(super) const RESTARTED: &str = "the stdio MCP child that asked was restarted before the \
                                     caller's answer reached it, so the call it was serving is gone";
 
+/// WHETHER `relay`'s CALL IS FIRST IN ITS MEMBER'S LINE, so may be sent: a place held across a
+/// relayed ask's round trip that lapsed by `now` (the host's monotonic clock, ms) is given up first.
+/// One that is not waits its turn, its unit's `ticket` woken when the call ahead of it leaves.
+pub(super) fn in_line(
+    plane: &McpDoor,
+    relay: &ProgramRelay,
+    now: Option<u64>,
+    ticket: Ticket,
+) -> bool {
+    let serial = relay.open.1;
+    plane.relaying.with_all(|line| {
+        let Some(member) = line.get(&serial).map(|e| e.member.clone()) else {
+            return true;
+        };
+        if let Some(now) = now {
+            line.retain(|_, e| e.member != member || e.held_until == 0 || e.held_until > now);
+        }
+        let first = line
+            .iter()
+            .find(|(_, e)| e.member == member)
+            .is_none_or(|(s, _)| *s == serial);
+        if let Some(e) = line.get_mut(&serial).filter(|_| !first) {
+            e.ticket = Some(ticket);
+        }
+        first
+    })
+}
+
 /// The door, as an exchange with member `member`'s child needs it.
 struct DoorPeer<'a> {
     plane: &'a McpDoor,
     member: &'a str,
     grants: crate::client::jsonrpc::ServerRequestGrants,
+}
+
+impl DoorPeer<'_> {
+    /// What became of the child's request `id` of `generation`: the call it was put to (`None` =
+    /// busbar answered it), decided by `first` when this exchange is the first to read it (`true`).
+    fn decide(
+        &self,
+        generation: u64,
+        id: &Value,
+        first: impl FnOnce() -> Option<u64>,
+    ) -> (Option<u64>, bool) {
+        let key = (self.member.to_string(), generation, id.to_string());
+        self.plane.answered.with_all(|m| {
+            if let Some(owner) = m.get(&key) {
+                return (*owner, false);
+            }
+            while m.len() >= MAX_ANSWERED {
+                if m.pop_first().is_none() {
+                    break;
+                }
+            }
+            let owner = first();
+            m.insert(key, owner);
+            (owner, true)
+        })
+    }
 }
 
 impl Peer for DoorPeer<'_> {
@@ -109,19 +278,26 @@ impl Peer for DoorPeer<'_> {
     }
 
     fn claim(&mut self, generation: u64, id: &Value) -> bool {
-        let key = (self.member.to_string(), generation, id.to_string());
-        self.plane.answered.with_all(|m| {
-            if m.contains_key(&key) {
-                return false;
-            }
-            while m.len() >= MAX_ANSWERED {
-                if m.pop_first().is_none() {
-                    break;
-                }
-            }
-            m.insert(key, ());
-            true
-        })
+        self.decide(generation, id, || None).1
+    }
+
+    fn owner(&mut self, generation: u64, id: &Value) -> AskOwner {
+        let member = self.member;
+        let line = &self.plane.relaying;
+        match self.decide(generation, id, || {
+            line.with_all(|l| {
+                first_in_line(
+                    l.values()
+                        .filter(|e| e.member == member)
+                        .map(|e| (e.call, e.generation)),
+                    generation,
+                )
+            })
+        }) {
+            (Some(call), _) => AskOwner::Call(call),
+            (None, true) => AskOwner::Refuse,
+            (None, false) => AskOwner::Refused,
+        }
     }
 
     fn notice(&mut self) {
@@ -317,6 +493,11 @@ pub(super) fn far(
     if relay.replying.is_none() && relay.settled.is_none() {
         if let Some(generation) = head {
             relay.generation = generation;
+            plane.relaying.with(&relay.open.1, |e| {
+                if let Some(e) = e {
+                    e.generation = generation;
+                }
+            });
             // A retry reaches only the child that asked: a restarted one owes nothing.
             if relay.expect.is_some_and(|g| g != generation) {
                 relay.corr.outbox.clear();
@@ -332,6 +513,7 @@ pub(super) fn far(
             member,
             grants: def.grants.as_ask_grants(),
         };
+        relay.hold = 0;
         match relay
             .corr
             .take(bytes, relay.wait, member, relay.generation, &mut peer)
