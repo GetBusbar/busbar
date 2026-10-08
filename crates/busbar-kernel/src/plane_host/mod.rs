@@ -486,13 +486,9 @@ impl EngineHostImpl {
 // bodies are relocated byte-for-byte — same-dispatch reaches, same arenas — so the split is purely
 // structural. `EngineHost: BreakerHost` (in substrate) makes these visible on every `dyn EngineHost`.
 impl busbar_kernel::plane_host::BreakerHost for EngineHostImpl {
-    fn breaker_admit(
-        &self,
-        scope: &DispatchScope,
-        pool: &[u8],
-        lane: u32,
-    ) -> Result<busbar_contract::abi::hot::AdmissionId, busbar_kernel::store::Unavailable> {
-        breaker::breaker_admit_over(&self.app, scope, pool, lane)
+    fn breaker_store(&self) -> &Arc<busbar_kernel::store::PlaneBreakers> {
+        // The bound snapshot's ONE breaker store (process-lifetime across applies).
+        &self.app.plane_breakers
     }
 
     fn breaker_settle(
@@ -511,23 +507,6 @@ impl busbar_kernel::plane_host::BreakerHost for EngineHostImpl {
                 signal as *const busbar_contract::abi::hot::Signal,
             )
         })
-    }
-
-    fn breaker_record_success(&self, pool: &str, lane: usize) {
-        self.app.plane_breakers.record_success(pool, lane);
-    }
-
-    fn breaker_record_signal(
-        &self,
-        pool: &str,
-        lane: usize,
-        sig: &busbar_contract::upstream::CanonicalSignal,
-    ) {
-        self.app.plane_breakers.record_signal(pool, lane, sig);
-    }
-
-    fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64 {
-        self.app.plane_breakers.retry_after_secs(pool, lane)
     }
 }
 
@@ -949,29 +928,6 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
 }
 
 impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
-    fn tap_attached(&self, plane_key: &str, container: &str) -> bool {
-        // Pure snapshot read of the generic per-plane REWRITE map — the tap twin of
-        // `admission_gates_attached`.
-        // `resolve_container_rewrites` never files an empty chain, so presence == a real rewrite hook.
-        self.app
-            .plane_rewrites(plane_key)
-            .and_then(|m| m.get(container))
-            .is_some_and(|c| !c.is_empty())
-    }
-
-    fn transform_over(
-        &self,
-        plane_key: &str,
-        container: &str,
-        request_id: u64,
-        tool: &str,
-        args_json: &[u8],
-        _key: Option<(&str, &str)>,
-        _session_id: Option<&str>,
-    ) -> busbar_kernel::plane_host::TransformVerdict {
-        transform_over_over(&self.app, plane_key, container, request_id, tool, args_json)
-    }
-
     fn govern_admit_reason(
         &self,
         scope: &DispatchScope,
@@ -1312,28 +1268,50 @@ pub fn admission_gates_decide<H: HookConfigHost + ?Sized>(
     }
 }
 
-/// Fire the operator's REQUEST-ADMISSION TRANSFORM (`<section>.hooks:` `prompt: rw`) chain over the
-/// container's resolved rewrite hooks and reconstruct the [`TransformVerdict`] — the TAP/observe-
-/// transform twin of [`admission_gates_decide`]. The host owns and re-selects the chain by `(plane_key,
-/// container)`, so an MCP/A2A plane body admits a rewrite pass over its payload without ever naming
-/// `crate::hooks` or holding the resolved `Arc<dyn RoutingPolicy>` set (the Seam-B inversion), exactly
-/// as it fires the gate.
+/// Whether the deployment attached any REQUEST-ADMISSION TRANSFORM (`prompt: rw` rewrite) hook to
+/// `container` on the plane filed under the registry key `plane_key` — the presence pre-filter a plane
+/// reads before it serializes anything or takes the blocking [`admission_transform`] hop, the tap twin
+/// of [`admission_gates_attached`]. A FREE FUNCTION over the hooks seam every plane already holds
+/// ([`HookConfigHost::plane_rewrites_of`]), so the universal [`EngineHost`] carries no per-plane tap
+/// method. The resolved map never files an empty chain, so presence is a non-empty chain.
 ///
-/// The projection is the SAME `InvokeReq` the gate builds from `(tool, arguments)` — rebuilt from the
-/// CURRENT arguments on every iteration so a later hook sees the earlier rewrite (a true transform
-/// chain, mirroring the LLM `apply_global_rewrites` seam). Precedence on the transform path is the
-/// canonical **reject > rewrite > abstain**.
-///
-/// FAIL-SAFE, not fail-closed: a rewrite is an OBSERVE/transform pass (the admission GATE already ran
-/// and screened the request), so a hook that errors, times out or abstains — or a runtime that will
-/// not start — proceeds with the ORIGINAL payload, byte-for-byte. Only an explicit `reject` stops the
-/// request, and only a committed `rewrite` changes a byte.
+/// The presence check is the whole zero-cost guarantee: absent a rewrite hook a plane never
+/// serializes the payload, never spawns the blocking hop, and never touches its own bytes.
+#[must_use]
+pub fn admission_tap_attached<H: HookConfigHost + ?Sized>(
+    host: &H,
+    plane_key: &str,
+    container: &str,
+) -> bool {
+    !host.plane_rewrites_of(plane_key, container).is_empty()
+}
+
+/// Fire the REQUEST-ADMISSION TRANSFORM (`<section>.hooks:` `prompt: rw`) chain the deployment attached
+/// to `container` on the plane filed under `plane_key`, over the `{tool, arguments}` projection of one
+/// request (`method` + the caller's `args_json`), and answer the [`TransformVerdict`] — the
+/// TAP/observe-transform twin of [`admission_gates_decide`]. The chain is read off the host
+/// ([`HookConfigHost::plane_rewrites_of`]) and run by the kernel ([`transform_chain`]), so the plane
+/// names no core hook symbol and holds no resolved `Arc<dyn RoutingPolicy>` set (the Seam-B inversion).
 ///
 /// Drives the ASYNC hooks on a fresh current-thread runtime, so it MUST be called from a BLOCKING
 /// thread (`spawn_blocking`) — `block_on` on a runtime worker would panic — exactly like
 /// [`admission_gates_decide`].
+#[must_use]
+pub fn admission_transform<H: HookConfigHost + ?Sized>(
+    host: &H,
+    plane_key: &str,
+    container: &str,
+    request_id: u64,
+    method: &str,
+    args_json: &[u8],
+) -> TransformVerdict {
+    let chain = host.plane_rewrites_of(plane_key, container);
+    transform_chain(&chain, plane_key, request_id, method, args_json)
+}
+
+/// [`admission_transform`] over a live [`App`]'s own resolved rewrite map: the same chain, the same
+/// run. The kernel's own tests drive it over a built `App`.
 #[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn transform_over_over(
     app: &App,
@@ -1343,13 +1321,34 @@ pub fn transform_over_over(
     tool: &str,
     args_json: &[u8],
 ) -> busbar_kernel::plane_host::TransformVerdict {
-    // Resolve THIS container's rewrite chain. Empty ⇒ nothing attached ⇒ byte-identical no-op. The
-    // caller already guards on `tap_attached`; the re-check keeps the fn correct if invoked directly.
     let chain: &[(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)] = app
         .plane_rewrites(plane_key)
         .and_then(|m| m.get(container))
         .map(Vec::as_slice)
         .unwrap_or(&[]);
+    transform_chain(chain, plane_key, request_id, tool, args_json)
+}
+
+/// Run one resolved REQUEST-ADMISSION TRANSFORM chain over the `InvokeReq` projection of a request.
+///
+/// The projection is the SAME `InvokeReq` the gate builds from `(tool, arguments)` — rebuilt from the
+/// CURRENT arguments on every iteration so a later hook sees the earlier rewrite (a true transform
+/// chain, mirroring the LLM `apply_global_rewrites` seam). Precedence on the transform path is the
+/// canonical **reject > rewrite > abstain**. The `ingress_protocol` label is the plane's registry key.
+///
+/// FAIL-SAFE, not fail-closed: a rewrite is an OBSERVE/transform pass (the admission GATE already ran
+/// and screened the request), so a hook that errors, times out or abstains — or a runtime that will
+/// not start — proceeds with the ORIGINAL payload, byte-for-byte. Only an explicit `reject` stops the
+/// request, and only a committed `rewrite` changes a byte.
+fn transform_chain(
+    chain: &[(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)],
+    plane_key: &str,
+    request_id: u64,
+    tool: &str,
+    args_json: &[u8],
+) -> TransformVerdict {
+    // Empty ⇒ nothing attached ⇒ byte-identical no-op. A caller normally guards on
+    // `admission_tap_attached`; the re-check keeps the run correct if invoked directly.
     if chain.is_empty() {
         return TransformVerdict::Proceed {
             applied: false,
@@ -1666,7 +1665,6 @@ pub mod slots_through;
 pub mod spki;
 pub mod trust_anchor;
 
-use crate::breaker::CanonicalSignal;
 pub use crate::plane_host::build_input::{
     AffinityInput, AuthReach, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput,
     HealthInput, HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput,
@@ -1675,7 +1673,6 @@ pub use crate::plane_host::build_input::{
 pub use crate::plane_host::engine_view::{
     EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
 };
-use crate::store::Unavailable;
 use busbar_contract::abi::hot::{AdmissionId, Signal, StatusClass};
 use busbar_contract::records::PlaneRequestCtx;
 
@@ -1711,10 +1708,10 @@ pub enum GateOutcome {
     },
 }
 
-/// The verdict of a request-admission TRANSFORM (`prompt: rw` rewrite) chain fired over the host
-/// `transform_over` seam — the TAP/observe-transform half of the hook surface, the twin of
-/// [`GateOutcome`] for the rewrite pass. When no rewrite hook is attached the plane never calls the
-/// seam (it guards on [`AdmissionHost::tap_attached`]), so the request/response path is BYTE-IDENTICAL
+/// The verdict of a request-admission TRANSFORM (`prompt: rw` rewrite) chain fired by
+/// [`admission_transform`] — the TAP/observe-transform half of the hook surface, the twin of
+/// [`GateOutcome`] for the rewrite pass. When no rewrite hook is attached the plane never calls it
+/// (it guards on [`admission_tap_attached`]), so the request/response path is BYTE-IDENTICAL
 /// to a deployment with the seam absent: the tap is a no-op absent hooks.
 #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 pub enum TransformVerdict {
@@ -2190,25 +2187,17 @@ pub struct AdmitHandle(pub Arc<dyn std::any::Any + Send + Sync>);
 
 /// BRAKE (audit D): the BREAKER-family slice of the host seam, split off `EngineHost` as a supertrait
 /// so the circuit-breaker admission/settle/record cluster stays a cohesive, bounded ABI rather than
-/// dissolving into the ~30-method god-trait. Groups the five `(pool, lane)` breaker seams a plane's
-/// dispatch/failover legs drive: win a probe ([`breaker_admit`](Self::breaker_admit)), fold a leg's
-/// outcome ([`breaker_settle`](Self::breaker_settle)), the in-place record fallbacks
-/// ([`breaker_record_success`](Self::breaker_record_success) /
-/// [`breaker_record_signal`](Self::breaker_record_signal)), and the cooldown read
-/// ([`breaker_retry_after_secs`](Self::breaker_retry_after_secs)). PURE STRUCTURAL: every method keeps
-/// its exact signature and same-dispatch body; a plane that names `EngineHost` still calls these
-/// through the inherited supertrait bound.
+/// dissolving into the ~30-method god-trait. A plane's dispatch/failover legs win a probe, record a
+/// leg in place and read a cooldown through the kernel's breaker functions ([`breaker::admit`],
+/// [`breaker::record_success`], [`breaker::record_signal`], [`breaker::retry_after_secs`]), which
+/// reach the shared breaker through [`breaker_store`](Self::breaker_store): the breaker is a core
+/// capability every plane gets, not a per-plane host method. A leg's outcome folds through
+/// [`breaker_settle`](Self::breaker_settle).
 pub trait BreakerHost: Send + Sync {
-    /// WIN ONE `(pool, lane)` breaker probe through the host `breaker_admit` seam, leaving the
-    /// settle-capable admission REGISTERED in `scope`'s arena and returning the POD [`AdmissionId`] —
-    /// or the store's own [`Unavailable`] refusal. Identical to
-    /// `busbar_kernel::plane_host::breaker::breaker_admit_over`.
-    fn breaker_admit(
-        &self,
-        scope: &DispatchScope,
-        pool: &[u8],
-        lane: u32,
-    ) -> Result<AdmissionId, Unavailable>;
+    /// The kernel's breaker cell store: the one `(pool, lane)` breaker every plane's targets share.
+    /// Only the kernel's breaker functions ([`breaker::admit`] and its siblings) read it; a plane
+    /// reaches the breaker through those, never through this.
+    fn breaker_store(&self) -> &Arc<crate::store::PlaneBreakers>;
 
     /// Fold a leg's classified outcome through the host `breaker_settle` seam over `admission` (looked
     /// up in `scope`'s arena). `Ok` means the live admission was found and settled; a `Gone` means it
@@ -2220,22 +2209,6 @@ pub trait BreakerHost: Send + Sync {
         admission: AdmissionId,
         signal: &Signal,
     ) -> StatusClass;
-
-    /// Record a SUCCESS against the `(pool, lane)` breaker cell in place — the fallback a settle leg
-    /// takes when no arena owns the probe (or a multi-round leg whose probe was already settled).
-    /// Identical to the plane's own `PlaneBreakers::record_success`.
-    fn breaker_record_success(&self, pool: &str, lane: usize);
-
-    /// Record a canonical failure signal against the `(pool, lane)` breaker cell in place — the
-    /// fallback twin of [`breaker_record_success`](Self::breaker_record_success). Identical to the
-    /// plane's own `PlaneBreakers::record_signal`.
-    fn breaker_record_signal(&self, pool: &str, lane: usize, sig: &CanonicalSignal);
-
-    /// The seconds until the `(pool, lane)` breaker cell's cooldown expires — the honest `Retry-After`
-    /// for a refused pooled dispatch, read PER MEMBER so a pool whose members trip independently
-    /// answers with the soonest. Identical to the plane's own `PlaneBreakers::retry_after_secs`; a
-    /// pure read, so it needs no `HostCtx`.
-    fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64;
 }
 
 /// BRAKE (audit D): the LANE/POOL-family slice of the host seam, split off `EngineHost` as a
@@ -2742,42 +2715,9 @@ pub trait IdentityHost: Send + Sync {
     }
 }
 
-/// The ADMISSION slice: the request-admission gauntlet seams — the rewrite pass + presence pre-filter,
-/// the governance admit-reason, the destination guard, the budget-admission door, the audience-bound
+/// The ADMISSION slice: the request-admission gauntlet seams — the governance admit-reason, the destination guard, the budget-admission door, the audience-bound
 /// mount read, and the post-admission/not-charged finishes. Split off `EngineHost` as a supertrait.
 pub trait AdmissionHost: Send + Sync {
-    /// Cheap presence pre-filter for the TAP/TRANSFORM half: is any `prompt: rw` rewrite hook attached
-    /// to `container` on the plane identified by the opaque registry `plane_key`? Lets a plane skip the
-    /// blocking `transform_over` hop — and stay BYTE-IDENTICAL to a build without the seam — when
-    /// nothing is attached. Identical to `App::plane_rewrites(plane_key).get(container).is_some()`.
-    ///
-    /// The presence check is the whole zero-cost guarantee: absent a rewrite hook a plane never
-    /// serializes the payload, never spawns the blocking hop, and never touches its own bytes.
-    fn tap_attached(&self, plane_key: &str, container: &str) -> bool;
-
-    /// Fire the operator's REQUEST-ADMISSION TRANSFORM (`<section>.hooks:` `prompt: rw`) chain over the
-    /// host `transform_over` seam and reconstruct the [`TransformVerdict`] — the TAP/observe-transform
-    /// twin of [`admission_gates_decide`]. The host re-selects the rewrite chain by
-    /// `(plane_key, container)` (the Seam-B inversion: the plane body names no core hook symbol), builds
-    /// the SAME `InvokeReq` projection the gate builds from `(tool, args_json)`, runs each hook's
-    /// `transform` in priority order (each seeing the prior's output — a true transform chain), and
-    /// returns the rewritten payload or a reject. Drives the ASYNC hooks on a fresh runtime, so it MUST
-    /// be called from a BLOCKING thread (`spawn_blocking`), exactly like the gate.
-    ///
-    /// `plane_key`/`container`/`request_id`/`tool`/`args_json`/`key`/`session_id` carry the identical
-    /// meaning they do on [`admission_gates_decide`].
-    #[allow(clippy::too_many_arguments)]
-    fn transform_over(
-        &self,
-        plane_key: &str,
-        container: &str,
-        request_id: u64,
-        tool: &str,
-        args_json: &[u8],
-        key: Option<(&str, &str)>,
-        session_id: Option<&str>,
-    ) -> TransformVerdict;
-
     /// Admit one unit of work for `caller` (the request's middleware-resolved context, DEC-SERVE G1b)
     /// over the host `govern_admit_reason` seam, REGISTERING the RAII grant in `scope`'s arena on
     /// success and returning the RENDERED refusal reason on a blocked limit.

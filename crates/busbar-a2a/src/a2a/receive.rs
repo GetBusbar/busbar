@@ -1089,7 +1089,7 @@ const TAP_CHAIN: &str = "<the agent's prompt: rw chain>";
 ///
 /// # Why it is not the seam's own fail-safe arms with a different answer
 ///
-/// `transform_over_over` is fail-safe by design: a hook that errors, times out or abstains — or a
+/// `admission_transform` is fail-safe by design: a hook that errors, times out or abstains — or a
 /// runtime that will not start — proceeds with the original payload. Every one of those is the SEAM
 /// HAVING RUN and the operator's own `on_error` disposition having been applied to the result (a
 /// `Failed` call becomes a `Reject` when the operator declared the hook load-bearing; see
@@ -1122,7 +1122,7 @@ pub(super) fn tap_join_verdict(
         Ok(verdict) => verdict,
         Err(e) => {
             // NEVER SILENT. This was the one disposition on this seam that left no trace at all:
-            // `transform_over_over` logs its own `Failed` and timeout arms, so a join failure was
+            // `admission_transform` logs its own `Failed` and timeout arms, so a join failure was
             // the only way a `prompt: rw` hook could stop answering with no line naming anything.
             tracing::error!(
                 agent = %agent,
@@ -1398,13 +1398,14 @@ async fn admitted(
     // ── THE OPERATOR'S REWRITE (TAP/TRANSFORM) PASS — the `prompt: rw` half of `agents.hooks:` and
     //    `agents.<agent>.hooks:`. ──────────────────────────────────────────────────────────────────
     //
-    // The twin of the MCP plane's rewrite pass, through the SAME `transform_over` host seam and the
-    // SAME `InvokeReq` projection (method + `params`). Fired right after the gate and BEFORE the
+    // The twin of the MCP plane's rewrite pass, through the SAME kernel transform
+    // (`plane_host::admission_transform`, over the hooks seam every plane holds) and the SAME
+    // `InvokeReq` projection (method + `params`). Fired right after the gate and BEFORE the
     // meter/egress gate/callback guard/task row, so a redaction/guardrail hook edits the submission
     // `params` that go upstream before any credential is leased or durable row minted — the same
     // ordering the gate makes about itself, one step later.
     //
-    // BYTE-IDENTICAL when nothing is attached: `tap_attached` misses, nothing is serialized or hopped,
+    // BYTE-IDENTICAL when nothing is attached: `admission_tap_attached` misses, nothing is serialized or hopped,
     // `envelope` is never mutated, and the relay forwards the caller's VERBATIM bytes exactly as today.
     // A committed rewrite is the ONLY thing that flips `params_rewritten` and re-serializes the body.
     let mut params_rewritten = false;
@@ -1414,7 +1415,11 @@ async fn admitted(
     // gate already screened them); only the RELAYED body carries the rewrite, which is the payload the
     // upstream tool receives.
     let mut rewritten_params: Option<serde_json::Value> = None;
-    if engine_host.tap_attached(crate::PLANE_DECLARATION.key, &admitted.dispatch.agent_id) {
+    if busbar_kernel::plane_host::admission_tap_attached(
+        &*engine_host,
+        crate::PLANE_DECLARATION.key,
+        &admitted.dispatch.agent_id,
+    ) {
         let params = envelope
             .get("params")
             .cloned()
@@ -1426,18 +1431,15 @@ async fn admitted(
         let method = tool.clone();
         let request_id = engine_host.next_request_id();
         let agent = admitted.dispatch.agent_id.clone();
-        let key_pair = (key.id.clone(), key.name.clone());
-        let sid = context_id.to_string();
         let host2 = Arc::clone(&engine_host);
         let verdict = tokio::task::spawn_blocking(move || {
-            host2.transform_over(
+            busbar_kernel::plane_host::admission_transform(
+                &*host2,
                 crate::PLANE_DECLARATION.key,
                 &agent,
                 request_id,
                 &tool,
                 &args_json,
-                Some((key_pair.0.as_str(), key_pair.1.as_str())),
-                (!sid.is_empty()).then_some(sid.as_str()),
             )
         })
         .await;
@@ -1936,7 +1938,7 @@ async fn admitted(
     let walk_refusal = selected_member.walk_refusal;
     let pin_mismatch = selected_member.pin_mismatch;
     // THE WALK'S PROBE HOLD ALREADY RIDES THE SHARED SCOPE. `select_member` inverted the pooled
-    // fresh-submission walk onto the host `breaker_admit` seam (CLUSTER-1): a won member's
+    // fresh-submission walk onto the kernel's `breaker::admit` (CLUSTER-1): a won member's
     // settle-capable probe hold is REGISTERED in `hop_scope`'s arena and the plane holds only the POD
     // `AdmissionId` returned here — never a `PlaneAdmission`. The hop's settle and its record share
     // that one arena over this id; the recorded outcome consumes it and the scope-drop release is then

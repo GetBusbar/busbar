@@ -718,7 +718,7 @@ pub(crate) struct GovernedOpen<'a> {
 ///    over the session-open params. A `Reject` refuses BEFORE any lease/mint/dial. BYTE-IDENTICAL
 ///    (nothing serialized, no blocking hop) when no gate is attached — the
 ///    `admission_gates_attached` presence pre-filter.
-/// 2. **hooks-tap** (`host.transform_over`) — a `prompt: rw` rewrite over the same params, AFTER the
+/// 2. **hooks-tap** (`plane_host::admission_transform`) — a `prompt: rw` rewrite over the same params, AFTER the
 ///    gate and BEFORE the credential is leased. A committed rewrite REPLACES the locked session params
 ///    the mint/dial then carries; an abstaining chain (or no attached rewrite) leaves them
 ///    byte-identical.
@@ -784,12 +784,12 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     };
 
     // (1) HOOKS-GATE — refuse before any lease/mint/dial. Zero-cost / byte-identical when unattached.
-    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
+    if let Err(refused) = hook_gate(&host, key, &call_id, now, &session_cfg).await {
         return finish(&host, started, *refused);
     }
     // (2) HOOKS-TAP — rewrite the session-open params before the credential is leased. Byte-identical
     // (params untouched) when no rewrite hook is attached or the chain abstains.
-    match hook_tap(&host, key, &owner, &call_id, now, &session_cfg).await {
+    match hook_tap(&host, &owner, &call_id, now, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
         Err(refused) => return finish(&host, started, *refused),
@@ -989,43 +989,44 @@ pub(crate) fn committed_session_config(
         .map_err(|e| format!("the output is not a session config: {e}"))
 }
 
-/// The hooks-TAP leg (`host.transform_over`) over the session-open params. `Ok(Some(cfg))` is a
+/// The hooks-TAP leg (`plane_host::admission_transform`) over the session-open params. `Ok(Some(cfg))` is a
 /// committed rewrite the caller substitutes for the locked params; `Ok(None)` is "no change" (no
 /// attached rewrite, or an abstaining chain — BYTE-IDENTICAL); `Err` is a refusal — the rewrite
 /// gate's own `Reject`, or a committed rewrite busbar could not read back (see
 /// [`committed_session_config`]).
 async fn hook_tap(
     host: &Arc<dyn EngineHost>,
-    key: Option<(String, String)>,
     owner: &str,
     session_id: &str,
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<Option<SessionConfig>, Box<axum::response::Response>> {
-    if !host.tap_attached(crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
+    if !busbar_kernel::plane_host::admission_tap_attached(
+        &**host,
+        crate::PLANE_DECLARATION.key,
+        GATE_CONTAINER,
+    ) {
         return Ok(None);
     }
     let args_json = serde_json::to_vec(cfg).unwrap_or_default();
-    let sid = session_id.to_string();
     // The `'static` handle the blocking leg owns. Named apart from the `host` param rather than
     // shadowing it, because the refusal below audits through the SAME host after the join.
     let hook_host = Arc::clone(host);
     let verdict = tokio::task::spawn_blocking(move || {
-        hook_host.transform_over(
+        busbar_kernel::plane_host::admission_transform(
+            &*hook_host,
             crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
             now,
             SESSION_OPEN_METHOD,
             &args_json,
-            key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
-            (!sid.is_empty()).then_some(sid.as_str()),
         )
     })
     .await
     // A join panic is FAIL-SAFE on the transform path (the gate already admitted): proceed unchanged.
     .unwrap_or_else(|e| {
         // ...but never SILENT. This is the one disposition on this seam where a hook failure used to
-        // leave no trace at all: `transform_over_over` logs its own `Failed`/timeout arms, so a join
+        // leave no trace at all: `admission_transform` logs its own `Failed`/timeout arms, so a join
         // panic is the only way a `prompt: rw` hook can stop answering without a line naming it.
         tracing::error!(
             session = %session_id,
@@ -1466,12 +1467,12 @@ where
     // gap where telephony (which has no preceding `ek_` mint pass) reached the media leg screened by
     // nothing but the destination gauntlet; both WS legs now honor the operator gate exactly as the
     // one-shot mint/SDP passes do in `open_governed`.
-    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
+    if let Err(refused) = hook_gate(&host, key, &call_id, now, &session_cfg).await {
         return *refused;
     }
     // (2) HOOKS-TAP — a committed rewrite replaces the locked session posture BEFORE the gauntlet judges
     // the destination and BEFORE the socket binds; byte-identical when no rewrite hook is attached.
-    match hook_tap(&host, key, &owner, &call_id, now, &session_cfg).await {
+    match hook_tap(&host, &owner, &call_id, now, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
         Err(refused) => return *refused,

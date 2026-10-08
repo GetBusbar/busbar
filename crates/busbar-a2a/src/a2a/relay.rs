@@ -296,10 +296,10 @@ pub(crate) struct RelayCall<'a> {
     pub(crate) breakers: Option<RelayBreaker>,
     /// THE NEUTRAL HOST SEAM this hop admits, settles and records its breaker through — the
     /// [`EngineHost`](busbar_kernel::plane_host::EngineHost) minted over the hop's admitted engine
-    /// snapshot. [`prepare`]'s un-pooled admit WINS its probe through `host.breaker_admit` over
+    /// snapshot. [`prepare`]'s un-pooled admit WINS its probe through `plane_host::breaker::admit` over
     /// [`host_scope`](Self::host_scope) (CLUSTER-1: the plane holds only the POD id, never a
     /// `PlaneAdmission`), [`record_hop_outcome`] settles/records through the same seam, and a refusal
-    /// reads its `Retry-After` from `host.breaker_retry_after_secs`. Threaded (with `host_scope`) from
+    /// reads its `Retry-After` from `plane_host::breaker::retry_after_secs`. Threaded (with `host_scope`) from
     /// the request path; `None` only where no scoped seam is wired.
     pub(crate) host: Option<&'a dyn busbar_kernel::plane_host::EngineHost>,
     /// THE ONE HOST SCOPE THIS HOP'S ADMIT AND SETTLE SHARE (§4 a2a scope unification). Created
@@ -313,7 +313,7 @@ pub(crate) struct RelayCall<'a> {
     /// THE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's probe hold was
     /// registered under in [`host_scope`](Self::host_scope) before this call was built.
     /// [`AdmissionId::NONE`](busbar_contract::abi::hot::AdmissionId::NONE) for an un-pooled hop (whose id
-    /// [`prepare`] mints directly through the host `breaker_admit` seam) and in the originate direction.
+    /// [`prepare`] mints directly through the kernel's `breaker::admit`) and in the originate direction.
     pub(crate) admission: busbar_contract::abi::hot::AdmissionId,
     /// WHERE THIS HOP COUNTS THE PAYLOAD BYTES IT MOVED — the tally the ingress bills the hop's
     /// `bytes` class from (see [`HopBytes`]). `None` counts nothing: busbar's own housekeeping hops
@@ -1519,7 +1519,7 @@ fn record_hop_outcome(
     let outcome = classify_hop(refusal);
     // STAGE 2 — settle where the scope is. With the shared host scope owning this hop's probe, fold the
     // outcome through the host `breaker_settle` seam over `settle` (the CLUSTER-1 inversion); otherwise
-    // record in place against the `(key, lane)` cell through the host `breaker_record_*` seam.
+    // record in place against the `(key, lane)` cell through the kernel's `breaker::record_*`.
     match (call.host, call.host_scope) {
         (Some(host), Some(scope)) if !settle.is_none() => match outcome {
             HopOutcome::Success => {
@@ -1543,9 +1543,16 @@ fn record_hop_outcome(
         // No live admission in the scope to settle (never won, or already consumed): record in place
         // against the cell through the host seam.
         (Some(host), _) => match outcome {
-            HopOutcome::Success => host.breaker_record_success(&target.key, target.lane),
+            HopOutcome::Success => {
+                busbar_kernel::plane_host::breaker::record_success(host, &target.key, target.lane);
+            }
             HopOutcome::Failure(cs) => {
-                host.breaker_record_signal(&target.key, target.lane, &cs);
+                busbar_kernel::plane_host::breaker::record_signal(
+                    host,
+                    &target.key,
+                    target.lane,
+                    &cs,
+                );
             }
             HopOutcome::Nothing => {}
         },
@@ -1639,8 +1646,8 @@ fn prepare<'a>(
     //    HalfOpen cell would lose the single-flight race to our own token.
     if let Some(target) = call.breakers.as_ref() {
         if !target.pre_admitted {
-            // CLUSTER-1 inversion, unified onto the host seam: WIN the probe THROUGH the host
-            // `breaker_admit` seam over the hop's shared scope, which registers the settle-capable
+            // CLUSTER-1 inversion, unified onto the host seam: WIN the probe THROUGH the kernel's
+            // `breaker::admit` over the hop's shared scope, which registers the settle-capable
             // hold in that scope and mints the POD id — so the plane holds ONLY the id, never a
             // `PlaneAdmission`. `record_hop_outcome` settles this hop over `*admit_id` through the same
             // scope; an abandoned hop releases the probe when the scope drops. On refusal the request
@@ -1653,12 +1660,21 @@ fn prepare<'a>(
                     retry_after_secs: 1,
                 });
             };
-            match host.breaker_admit(scope, target.key.as_bytes(), target.lane as u32) {
+            match busbar_kernel::plane_host::breaker::admit(
+                host,
+                scope,
+                target.key.as_bytes(),
+                target.lane as u32,
+            ) {
                 Ok(id) => *admit_id = id,
                 Err(_) => {
                     return Err(RelayRefusal::BreakerOpen {
                         agent_id: call.agent_id.to_string(),
-                        retry_after_secs: host.breaker_retry_after_secs(&target.key, target.lane),
+                        retry_after_secs: busbar_kernel::plane_host::breaker::retry_after_secs(
+                            host,
+                            &target.key,
+                            target.lane,
+                        ),
                     })
                 }
             }
@@ -1759,7 +1775,7 @@ pub(crate) fn relay(
     now_ms: u64,
 ) -> Result<RelayReply, RelayRefusal> {
     // THE HOST ID THIS HOP SETTLES OVER (CLUSTER-1): the pre-admitted WALK id when this is a pooled
-    // fresh submission, or the un-pooled admit `prepare` mints through the host `breaker_admit` seam.
+    // fresh submission, or the un-pooled admit `prepare` mints through the kernel's `breaker::admit`.
     // Stays `NONE` when the hop carries no breaker cell (the originate direction).
     let mut settle = call.admission;
     let outcome = relay_once(call, seam, now_ms, &mut settle);

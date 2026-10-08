@@ -20,7 +20,6 @@ use crate::testkit::fixture_host::FixtureHost;
 use crate::topology::{dial_provider, stream_breaker_key, DialProviderError};
 use busbar_contract::upstream::{CanonicalSignal, StatusClass};
 use busbar_kernel::net_guard::GuardPolicy;
-use busbar_kernel::plane_host::BreakerHost;
 use busbar_kernel::store::BreakerState;
 
 /// A canonical hard-down signal — the disposition a definitive provider failure (auth/billing, or a
@@ -68,7 +67,7 @@ async fn a_tripped_provider_cell_refuses_before_the_dial() {
     let pool = stream_breaker_key("openai-realtime");
 
     // TRIP the cell through the same host seam a dial-leg failure records through.
-    host.breaker_record_signal(&pool, 0, &hard_down());
+    busbar_kernel::plane_host::breaker::record_signal(&host, &pool, 0, &hard_down());
     assert!(
         matches!(host.breaker_state(&pool, 0), BreakerState::Open { .. }),
         "the cell is Open (tripped) before the fresh dial"

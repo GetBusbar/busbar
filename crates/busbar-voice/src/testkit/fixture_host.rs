@@ -10,13 +10,15 @@
 //! This host models, in memory, just the host-side state a plane's production path drives through the
 //! seam and a test then reads back:
 //!
-//! * the `(pool, lane)` BREAKER cells (`breaker_admit` / `breaker_record_*` / `breaker_retry_after_secs`),
-//!   readable through [`FixtureHost::breaker_state`];
+//! * the `(pool, lane)` BREAKER cells: the kernel's own breaker store (`breaker_store`), which the
+//!   kernel's breaker functions (`plane_host::breaker::{admit, record_*, retry_after_secs}`) drive
+//!   exactly as they drive a deployment's, readable through [`FixtureHost::breaker_state`];
 //! * the OPERATOR HOOK gate / rewrite chains keyed by `(plane_key, container)`, attached as scripted
 //!   verdicts ([`FixtureHost::attach_gate`] / [`FixtureHost::attach_rewrite`]): a gate is filed as a
 //!   resolved policy on the hooks seam (`plane_gates_of`), so the kernel's own
 //!   `admission_gates_attached` / `admission_gates_decide` fire it exactly as they fire a configured
-//!   deployment's, and the `tap_attached` / `transform_over` legs run the rewrite script;
+//!   deployment's, and a rewrite is filed as a resolved rewrite chain (`plane_rewrites_of`), so the
+//!   kernel's own `admission_tap_attached` / `admission_transform` run it;
 //! * the per-key usage LEDGER the metering seams land on (`meter_ledger` / `meter_series`), readable
 //!   through [`FixtureHost::ledger_usage`], per `(lane, class)` through [`FixtureHost::ledger_rows`],
 //!   and per series row through [`FixtureHost::series_rows`] once the host is
@@ -35,16 +37,16 @@
 //! answers its documented empty value rather than pretending to be the engine.
 
 use busbar_contract::abi::hot::{AdmissionId, Signal};
+use busbar_contract::hooks::TransformOutcome;
 use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
 use busbar_kernel::billing::{TokenUsage, Usage};
-use busbar_kernel::breaker::{CanonicalSignal, Disposition};
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy, TapEntry};
 use busbar_kernel::plane_host::{
     AdmissionHost, AdmitHandle, BreakerHost, BudgetHost, ClockHost, DispatchScope, EngineHost,
     GateOutcome, GovAdmit, GovHandle, HookConfigHost, IdentityHost, JournalHost, LanePoolHost,
-    MeterPin, MountHost, RegistryHost, TelemetryHost, TransformVerdict,
+    MeterPin, MountHost, RegistryHost, TelemetryHost,
 };
-use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
+use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, PlaneBreakers};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -68,18 +70,7 @@ impl busbar_contract::hooks::RoutingPolicy for ScriptedGate {
         _ctx: &busbar_contract::hooks::RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> busbar_contract::hooks::PolicyResult {
-        let content = req
-            .prompt
-            .as_ref()
-            .map(|p| {
-                p.messages
-                    .iter()
-                    .map(|(_, text)| text.as_ref())
-                    .collect::<Vec<&str>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        Ok(match (self.0)(content.as_bytes()) {
+        Ok(match (self.0)(prompt_content(req).as_bytes()) {
             GateOutcome::Proceed => busbar_contract::hooks::RoutingDecision::Abstain,
             GateOutcome::Reject {
                 status, message, ..
@@ -92,10 +83,54 @@ impl busbar_contract::hooks::RoutingPolicy for ScriptedGate {
     }
 }
 
-/// A scripted rewrite verdict for one `(plane_key, container)`: handed the serialized payload, answers
-/// the [`TransformVerdict`] the real `prompt: rw` chain would (a committed rewrite, an abstain, or a
-/// reject).
-pub type RewriteScript = Arc<dyn Fn(&[u8]) -> TransformVerdict + Send + Sync>;
+/// A scripted rewrite reply for one `(plane_key, container)`: handed the content the kernel's transform
+/// projected for the hook (the prompt projection's message texts, newline-joined — the serialized
+/// payload), answers the [`TransformOutcome`] the real `prompt: rw` hook would (a rewrite reply, an
+/// abstain, or a reject). The kernel's transform applies it exactly as it applies a configured hook's.
+pub type RewriteScript = Arc<dyn Fn(&[u8]) -> TransformOutcome + Send + Sync>;
+
+/// A [`RewriteScript`] filed as the hook a resolved rewrite chain carries, so the kernel's transform
+/// drives it through the same `transform` call it makes on a configured hook.
+struct ScriptedRewrite(RewriteScript);
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::RoutingPolicy for ScriptedRewrite {
+    async fn decide(
+        &self,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _candidates: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> busbar_contract::hooks::PolicyResult {
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
+    }
+
+    async fn transform(
+        &self,
+        req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _budget: std::time::Duration,
+    ) -> TransformOutcome {
+        (self.0)(prompt_content(req).as_bytes())
+    }
+
+    fn name(&self) -> &'static str {
+        "fixture-rewrite"
+    }
+}
+
+/// The content a hook is shown: the prompt projection's message texts, newline-joined.
+fn prompt_content(req: &busbar_contract::hooks::RoutingRequest<'_>) -> String {
+    req.prompt
+        .as_ref()
+        .map(|p| {
+            p.messages
+                .iter()
+                .map(|(_, text)| text.as_ref())
+                .collect::<Vec<&str>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
 
 /// The usage a key has ledgered through the fixture's metering seams — the read-back twin of the
 /// engine's `usage_for(key)`: `tokens` is every unit `meter_ledger` accrued, `requests` the billable
@@ -108,16 +143,6 @@ pub struct LedgerUsage {
     /// kept apart from the turn counts above and from [`FixtureHost::ledger_rows`].
     pub sessions: u64,
 }
-
-/// One `(pool, lane)` breaker cell of the fixture.
-#[derive(Clone, Copy, Debug)]
-struct Cell {
-    state: BreakerState,
-}
-
-/// The seconds an OPEN cell stays open after a definitive (hard-down) record — the engine's first
-/// cooldown step, so a `Retry-After` read off the fixture is a plausible whole-second floor.
-const OPEN_COOLDOWN_SECS: u64 = 15;
 
 /// One admin-audit row [`JournalHost::audit_record`] landed on the fixture — the read-back a plane's
 /// exit-path/mutation test asserts against (action literal, resource, outcome, principal), the fixture
@@ -132,7 +157,6 @@ pub struct FixtureAuditEntry {
 
 #[derive(Default)]
 struct Inner {
-    cells: BTreeMap<(String, usize), Cell>,
     gates: BTreeMap<(String, String), GateScript>,
     rewrites: BTreeMap<(String, String), RewriteScript>,
     ledger: BTreeMap<String, LedgerUsage>,
@@ -175,6 +199,9 @@ pub struct FixtureHost {
     /// The lane store `lane_store` hands out: the kernel's OWN `LaneRuntime` implementor with no
     /// lanes configured, so this double never re-implements (and never drifts from) that trait.
     lanes: HealthState,
+    /// The breaker store `breaker_store` hands out: the kernel's OWN provisioned `PlaneBreakers`, so
+    /// the kernel's breaker functions run the real cell FSM against it rather than a model of it.
+    breakers: Arc<PlaneBreakers>,
     /// No hook on the fixture requests a candidate signal (the all-zero mask).
     signals: RequestedSignals,
 }
@@ -194,6 +221,7 @@ impl FixtureHost {
             governed: false,
             next_request_id: AtomicU64::new(1),
             lanes: HealthState::new(Vec::new()),
+            breakers: Arc::new(PlaneBreakers::provisioned()),
             signals: RequestedSignals::default(),
         }
     }
@@ -239,8 +267,9 @@ impl FixtureHost {
         self
     }
 
-    /// Attach a scripted `prompt: rw` REWRITE to `container` on plane `plane_key`, so `tap_attached`
-    /// answers true and `transform_over` runs `script` over the projected payload.
+    /// Attach a scripted `prompt: rw` REWRITE to `container` on plane `plane_key`, filed on the hooks
+    /// seam (`plane_rewrites_of`) so `admission_tap_attached` answers true and `admission_transform`
+    /// runs `script` through the kernel's transform.
     #[must_use]
     pub fn attach_rewrite(self, plane_key: &str, container: &str, script: RewriteScript) -> Self {
         self.lock()
@@ -258,10 +287,7 @@ impl FixtureHost {
     /// The `(pool, lane)` breaker cell's current state — Closed until something is recorded.
     #[must_use]
     pub fn breaker_state(&self, pool: &str, lane: usize) -> BreakerState {
-        self.lock()
-            .cells
-            .get(&(pool.to_string(), lane))
-            .map_or(BreakerState::Closed, |c| c.state)
+        self.breakers.state_at(pool, lane)
     }
 
     /// What `key_id` has ledgered through the metering seams, or `None` if nothing ever landed.
@@ -344,23 +370,11 @@ fn system_clock_secs() -> u64 {
         .as_secs()
 }
 
-// ── The breaker slice: one in-memory cell per (pool, lane) ─────────────────────────────────────────
+// ── The breaker slice: the kernel's own breaker store ─────────────────────────────────────────────
 
 impl BreakerHost for FixtureHost {
-    fn breaker_admit(
-        &self,
-        scope: &DispatchScope,
-        pool: &[u8],
-        lane: u32,
-    ) -> Result<AdmissionId, Unavailable> {
-        let pool = String::from_utf8_lossy(pool).into_owned();
-        let state = self.breaker_state(&pool, lane as usize);
-        if let BreakerState::Open { until } = state {
-            if Self::now() < until {
-                return Err(Unavailable::BreakerOpen { until });
-            }
-        }
-        Ok(scope.register_admission(Box::new(())))
+    fn breaker_store(&self) -> &Arc<PlaneBreakers> {
+        &self.breakers
     }
 
     fn breaker_settle(
@@ -372,38 +386,6 @@ impl BreakerHost for FixtureHost {
         scope
             .settle_admission(admission, signal)
             .unwrap_or(signal.class.class())
-    }
-
-    fn breaker_record_success(&self, pool: &str, lane: usize) {
-        self.lock().cells.insert(
-            (pool.to_string(), lane),
-            Cell {
-                state: BreakerState::Closed,
-            },
-        );
-    }
-
-    fn breaker_record_signal(&self, pool: &str, lane: usize, sig: &CanonicalSignal) {
-        // The same fold the engine applies: a definitive signal (auth / billing) opens the cell on
-        // the first record; a client fault or context-length miss never penalizes it; a transient
-        // blip is noted but a single one does not trip the fixture cell.
-        if let Disposition::HardDown = busbar_kernel::breaker::classify(sig) {
-            self.lock().cells.insert(
-                (pool.to_string(), lane),
-                Cell {
-                    state: BreakerState::Open {
-                        until: Self::now() + OPEN_COOLDOWN_SECS,
-                    },
-                },
-            );
-        }
-    }
-
-    fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64 {
-        match self.breaker_state(pool, lane) {
-            BreakerState::Open { until } => until.saturating_sub(Self::now()).max(1),
-            _ => 0,
-        }
     }
 }
 
@@ -591,6 +573,28 @@ impl HookConfigHost for FixtureHost {
             })
             .unwrap_or_default()
     }
+    fn plane_rewrites_of(
+        &self,
+        plane_key: &str,
+        container: &str,
+    ) -> Vec<(
+        std::time::Duration,
+        Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+    )> {
+        let script = self
+            .lock()
+            .rewrites
+            .get(&(plane_key.to_string(), container.to_string()))
+            .cloned();
+        script
+            .map(|s| {
+                vec![(
+                    std::time::Duration::from_secs(10),
+                    Arc::new(ScriptedRewrite(s)) as Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+                )]
+            })
+            .unwrap_or_default()
+    }
     fn pool_gates(&self, _pool: &str) -> &[(u16, ResolvedPolicy)] {
         &[]
     }
@@ -723,37 +727,9 @@ impl BudgetHost for FixtureHost {
 
 impl IdentityHost for FixtureHost {}
 
-// ── The admission slice: the scripted hook gate / rewrite chains ────────────────────────────────
+// ── The admission slice ────────────────────────────────
 
 impl AdmissionHost for FixtureHost {
-    fn tap_attached(&self, plane_key: &str, container: &str) -> bool {
-        self.lock()
-            .rewrites
-            .contains_key(&(plane_key.to_string(), container.to_string()))
-    }
-    fn transform_over(
-        &self,
-        plane_key: &str,
-        container: &str,
-        _request_id: u64,
-        _tool: &str,
-        args_json: &[u8],
-        _key: Option<(&str, &str)>,
-        _session_id: Option<&str>,
-    ) -> TransformVerdict {
-        let script = self
-            .lock()
-            .rewrites
-            .get(&(plane_key.to_string(), container.to_string()))
-            .cloned();
-        match script {
-            Some(s) => s(args_json),
-            None => TransformVerdict::Proceed {
-                applied: false,
-                args_json: args_json.to_vec(),
-            },
-        }
-    }
     fn govern_admit_reason(
         &self,
         _scope: &DispatchScope,
