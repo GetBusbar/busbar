@@ -154,7 +154,16 @@ pub fn validate_dealt<'s>(
         let Some(section) = doc.deal(seat) else {
             continue;
         };
-        let blob = serde_json::to_vec(&section.settings).map_err(|e| e.to_string())?;
+        // A plane's verb sections, keyed by their top-level names, carry a secret reference at every
+        // credential position `${VAR}` filled: a plane never receives secret bytes (THE DESIGN §6).
+        // An instance's own settings are a non-plane plugin's, which may hold the secrets they name.
+        let settings = match seat {
+            Seat::Verbs(_) => {
+                busbar_kernel::config::filled::plane_bound(&[], section.settings.clone())
+            }
+            Seat::Instance(..) => section.settings.clone(),
+        };
+        let blob = serde_json::to_vec(&settings).map_err(|e| e.to_string())?;
         validate(instance, &blob).map_err(|reason| {
             format!(
                 "config.yaml: invalid YAML: {}",

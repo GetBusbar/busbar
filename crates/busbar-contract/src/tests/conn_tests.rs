@@ -87,6 +87,7 @@ fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_
             command: "/usr/bin/server".into(),
             args: vec!["--serve".into(), "-v".into()],
             env: vec![("TOKEN".into(), "s3cr3t".into())],
+            secret_env: Vec::new(),
         })
     );
     assert_eq!(
@@ -95,6 +96,7 @@ fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_
             command: "/bin/cat".into(),
             args: Vec::new(),
             env: Vec::new(),
+            secret_env: Vec::new(),
         })
     );
     let refused = [
@@ -144,6 +146,7 @@ fn a_programs_environment_never_prints() {
         command: "/usr/bin/server".into(),
         args: vec!["--serve".into()],
         env: vec![("TOKEN".into(), "s3cr3t-value".into())],
+        secret_env: Vec::new(),
     };
     let printed = format!("{p:?}");
     assert!(printed.contains("TOKEN") && printed.contains("/usr/bin/server"));
@@ -171,6 +174,7 @@ fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
             command: "/usr/bin/server".into(),
             args: vec!["--serve".into()],
             env: vec![("LEVEL".into(), "debug".into())],
+            secret_env: Vec::new(),
         }))
     );
     assert_eq!(
@@ -186,4 +190,42 @@ fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
     assert!(crate::section::member_program("settings.*"));
     assert!(!crate::section::member_program("settings.*.url"));
     assert!(crate::section::member_target("settings.*").is_none());
+}
+
+/// A program's `env` entry written as a secret REFERENCE is held as the reference
+/// (`Program::secret_env`), never resolved by the reader: the host resolves it at the spawn. A
+/// value that is neither a string nor a reference is refused.
+#[test]
+fn a_programs_secret_environment_is_held_as_its_reference() {
+    let p = Program::from_settings(&serde_json::json!({
+        "command": "/usr/bin/server",
+        "env": {"PLAIN": "v", "KEY": {"env": "SECRET_VAR"}, "T": {"module": "template", "settings": {"text": "Bearer ${SECRET_VAR}"}}}
+    }))
+    .expect("a program");
+    assert_eq!(p.env, vec![("PLAIN".to_owned(), "v".to_owned())]);
+    assert_eq!(
+        p.secret_env,
+        vec![
+            (
+                "KEY".to_owned(),
+                crate::secret_ref::SecretRef::env("SECRET_VAR")
+            ),
+            (
+                "T".to_owned(),
+                crate::secret_ref::SecretRef::template("Bearer ${SECRET_VAR}")
+            ),
+        ]
+    );
+    let printed = format!("{p:?}");
+    assert!(printed.contains("KEY = env:SECRET_VAR"), "{printed}");
+    for bad in [
+        serde_json::json!(7),
+        serde_json::json!(["x"]),
+        serde_json::json!({"nope": 1}),
+    ] {
+        assert_eq!(
+            Program::from_settings(&serde_json::json!({"command": "/bin/x", "env": {"K": bad}})),
+            Err(ProgramRefused::Env)
+        );
+    }
 }

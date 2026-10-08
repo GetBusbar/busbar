@@ -761,7 +761,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     // The kernel still reads its `work:` bounds off the section; the plane is never handed them.
     assert!(applied.get("work").is_some());
     let handed: serde_json::Value =
-        serde_json::from_slice(&handed_settings(&applied).expect("settings")).expect("json");
+        serde_json::from_slice(&handed_settings(key, &applied).expect("settings")).expect("json");
     assert!(
         handed.get("work").is_none(),
         "the plane was handed the core-owned work: key: {handed}"
