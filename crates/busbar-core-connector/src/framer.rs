@@ -61,11 +61,22 @@ pub struct DoorFacts {
     pub name: String,
     /// Every scheme it answers for; the first is its own.
     pub claims: Vec<&'static str>,
-    /// The claims it composes over; empty = directly over the host's socket.
+    /// The tail's ROLE (`ROLE_CARRIER` | `ROLE_FRAMER`, ARCHITECT ruling Q128 U7): a CARRIER is a
+    /// byte stream the host's socket or pipe carries as itself (no opening message, nothing framed,
+    /// a stream it may secure mid-way); a FRAMER frames messages over the carrier the connector
+    /// chose from the target's scheme. The role is stated, never derived from `composes_over`.
+    pub role: u32,
+    /// The claims it composes over: always empty now (no transport names another); an entry that
+    /// states one is refused where it would be served.
     pub composes_over: Vec<&'static str>,
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has; a stream's final status is judged against its claim's ([`crate::framed_stream`]).
     pub status_rows: Vec<(u32, u32, u32)>,
+    /// THE DUPLEX CLAIMS: the ones a stream rides, read off the claim rows of its Statement
+    /// (ARCHITECT ruling Q128 U7): each whose unit 0 opens at an UPGRADE (`UNIT0_UPGRADE`) or that
+    /// carries a session (`session`). A claim that states neither is a request and its answer, which
+    /// the listener it arrived on frames already; a stream on one of these is this entry's to frame.
+    pub duplex: Vec<&'static str>,
 }
 
 /// A transport entry's framer table, as the host reaches it.
