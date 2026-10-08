@@ -52,15 +52,76 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 /// THE AUTH AXIS of one build: that build's registry's auth rows, opened on the process's dispatcher
 /// (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1). Installed on the kernel as its auth-axis opener
 /// (`busbar_kernel::preflight::install_auth_axis`), so the kernel opens every auth instance through
-/// the contract's `AuthAxis` and names neither the loader's rows nor this dispatcher. An instance
-/// opened to serve declares its needs on the process's one connector (`root::connector::the()`, read
-/// when it opens), as every other axis's does: a networked auth door (a `tcp` directory) dials it.
+/// the contract's `AuthAxis` and names neither the loader's rows nor this dispatcher.
+///
+/// Its outbound half ([`busbar_contract::auth_calls::AuthAxis::serving`]) is the process's one set
+/// of outbound auth instances ([`crate::root::door_steps::process_auths`]): an outbound style is
+/// served by the same opened instance whichever build binds it, its tick schedule running once.
 pub fn auth_axis(
     registry: Arc<crate::root::loader::PluginRegistry>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
-    Arc::new(
+    Arc::new(RootAuthAxis(
         crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher()).with_conns(conns),
-    )
+    ))
+}
+
+/// One build's auth rows, with the process's outbound auth instances as its outbound half.
+struct RootAuthAxis(crate::root::loader::auth_axis::AuthRows);
+
+impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
+    fn linked_names(&self) -> Vec<String> {
+        self.0.linked_names()
+    }
+
+    fn answers(&self, module: &str) -> bool {
+        self.0.answers(module)
+    }
+
+    fn linked(&self, module: &str) -> bool {
+        self.0.linked(module)
+    }
+
+    fn operator(&self) -> Option<(String, String)> {
+        self.0.operator()
+    }
+
+    fn open(
+        &self,
+        module: &str,
+        label: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Arc<dyn busbar_contract::auth_calls::AuthCalls>, String> {
+        self.0.open(module, label, settings)
+    }
+
+    fn credential_readers(&self) -> Vec<String> {
+        self.0.credential_readers()
+    }
+
+    fn check_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        crate::root::door_steps::process_auths().check(style, credential, settings)
+    }
+
+    fn serving(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
+        Ok(crate::root::door_steps::process_auths()
+            .serving(style, settings)?
+            .map(
+                |(auth, decl)| busbar_contract::auth_calls::OutboundServing {
+                    auth,
+                    flags: decl.flags,
+                    points: decl.points,
+                },
+            ))
+    }
 }
 
 /// The process's one connection table, as an auth instance opened to serve declares its needs on
@@ -72,3 +133,11 @@ fn conns() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
 #[cfg(test)]
 #[path = "tests/dispatch.rs"]
 mod tests;
+
+// The suite binds each dialect's declared scheme on the LINKED auth plugins serving its style: the
+// static schemes on `busbar-auth-header`, the signing scheme on `busbar-auth-sigv4` (the default
+// distribution links both). A build without either links no plugin serving that style, so the bind
+// is refused there, exactly as `door_steps`' positive binding proof is gated on `auth-header`.
+#[cfg(all(test, feature = "auth-header", feature = "auth-sigv4"))]
+#[path = "tests/declared_credentials.rs"]
+mod declared_credentials_tests;
