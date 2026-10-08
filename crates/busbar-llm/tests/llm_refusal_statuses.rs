@@ -155,3 +155,35 @@ fn the_rows_pass_the_validator() {
         Ok(())
     );
 }
+
+/// P-ITEM: REFUSAL-REASON COLLAPSE on the llm surface, the one surface 1.5.5 had (spec DONE item 2;
+/// owner correction 2026-09-28). 1.5.5 answered every limit reason with its own status and kind and
+/// none of them as an internal error (v1.5.5 `crates/busbar/src/ingress/mod.rs:237-305`). For
+/// every dialect and every reason the driver can refuse for, the status the driver chooses is never
+/// a bare 500, and the kind the plane renders is the generic `api_error` only for the node's own
+/// faults and for a timeout (whose 504 is its own status). The classes come from the one
+/// classification; the rows above keep every recorded 1.5.5 status.
+#[test]
+fn p_item_refusal_reason_collapse_no_llm_refusal_reads_as_an_internal_error() {
+    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    use busbar_plane_llm::exchange::refuse::kind_of;
+    let config = config();
+    let mut wrong = Vec::new();
+    for d in SIX {
+        for reason in ReasonCode::ALL {
+            let class = class_of(*reason);
+            let status = config.status(dialect(d), *reason);
+            let kind = kind_of(reason.as_str(), u16::try_from(status).expect("a status"));
+            if status == 500 {
+                wrong.push(format!("{d} {reason:?} answers a bare 500"));
+            }
+            let generic = kind == busbar_contract::protocol::KIND_API_ERROR;
+            if generic != (class.is_node_fault() || class == RefusalClass::Timeout) {
+                wrong.push(format!(
+                    "{d} {reason:?} ({class:?}) reads as {kind} at {status}"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

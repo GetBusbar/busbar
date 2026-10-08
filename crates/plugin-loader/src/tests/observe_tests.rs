@@ -369,3 +369,31 @@ fn a_full_intake_drops_and_counts_and_never_stalls_the_caller() {
         "every back-channel not kept is counted dropped: sent {sent}, kept {kept}, dropped {dropped}"
     );
 }
+
+/// A READER COUNTS ONLY ITS OWN TEST'S FOLDS (busbar status row 118). The `exclusive` guard
+/// serializes the tests that READ the fold log, never the rest of the binary: any test driving a
+/// door with a non-bare envelope folds into the one process-wide observer while a reader holds the
+/// guard (the row's evidence: `dispatch-test-plugin`'s `m1_calls`, folded by a dispatch test, in
+/// the export envelope test's count). Here a neighbour on a thread of its own folds between the
+/// reader's own two folds; the reader's log holds exactly its two. RED before the per-test scope:
+/// the neighbour's fold is counted, three where the reader folded two.
+#[test]
+fn a_reader_counts_only_its_own_tests_folds() {
+    let _guard = exclusive();
+    let metric = |name: &str| Envelope {
+        result: (),
+        metrics: vec![serde_json::json!({"name": name, "type": "counter"})],
+        diagnostics: Vec::new(),
+    };
+    fold("scope-reader", "export", &metric("mine_total"));
+    std::thread::spawn(move || fold("scope-neighbour", "export", &metric("theirs_total")))
+        .join()
+        .expect("the neighbour folds");
+    fold("scope-reader", "export", &metric("mine_total"));
+    let got = testing::folds();
+    assert_eq!(
+        got.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(),
+        ["scope-reader", "scope-reader"],
+        "{got:?}"
+    );
+}
