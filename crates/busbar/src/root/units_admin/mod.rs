@@ -2714,6 +2714,12 @@ pub struct AdminBinding {
     /// first use over [`AdminBinding::claims`], so a durable node journals each claim exactly as the
     /// key mint and rotate caches do (item 271).
     pub replays: Arc<std::sync::OnceLock<Arc<bound::ReplayCache>>>,
+    /// THE NODE'S MUTATION LIMITER for the verbs unit: built once, here, with the binding, and
+    /// handed to every `Verbs` the route step builds. A `Verbs` lives for one request, so the
+    /// limiter it used to build for itself saw an empty window on every call and never refused.
+    /// It spends only the new verbs; a legacy verb is spent by the mounted surface's own limiter,
+    /// so each request is counted by exactly one of the two.
+    pub mutations: Arc<busbar_core_admin::rate::MutationLimiter>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2851,6 +2857,7 @@ impl AdminBinding {
             records: None,
             trust: no_trust(),
             replays: Arc::new(std::sync::OnceLock::new()),
+            mutations: Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
             units: AdminUnits::new(),
         }
     }
@@ -3248,6 +3255,7 @@ pub(crate) fn route(
             ArrivalNonce(request.at),
             PackedReplay,
             CONFIG_CLASS_RULES,
+            Arc::clone(&binding.mutations),
         )
         // Item 271: the claims the create-key and rotate-key caches take go on the node's journal
         // where a root bound one; `None` (no data directory) is exactly the unbound executor.

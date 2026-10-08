@@ -3062,6 +3062,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             ArrivalNonce(1),
             PackedReplay,
             CONFIG_CLASS_RULES,
+            Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
         let packed = verbs
             .execute(
@@ -3104,6 +3105,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
         ArrivalNonce(1),
         PackedReplay,
         CONFIG_CLASS_RULES,
+        Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );
     assert!(verbs
         .execute(
