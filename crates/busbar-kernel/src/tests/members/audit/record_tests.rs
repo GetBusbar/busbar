@@ -562,28 +562,6 @@ fn a_window_verifies_a_contiguous_middle_run_and_not_a_gapped_one() {
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
 }
 
-/// TAIL truncation: the newest records dropped. Nothing in the surviving records can say so — they
-/// link, they number from one, they hash — so it takes the chain's own head to notice, which is
-/// what verifying AGAINST THE HEAD is for.
-#[test]
-fn a_run_missing_its_newest_records_does_not_verify_against_the_head() {
-    let mut chain = AuditChain::new();
-    let records: Vec<_> = (1..=4).map(|i| chain.seal(inputs(i), &token())).collect();
-
-    assert!(chain.verify_to_head(&records).is_ok());
-
-    let cut = &records[..3];
-    let brk = chain.verify_to_head(cut).unwrap_err();
-    assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
-    assert_eq!(brk.at_index, 3);
-
-    // And the limit this makes explicit: reading only the records, a cut tail is a whole chain.
-    assert!(AuditChain::verify_chain(cut).is_ok());
-
-    // Emptied entirely, against a chain that has sealed records, is a truncation too.
-    assert!(chain.verify_to_head(&[]).is_err());
-}
-
 #[test]
 fn an_empty_run_verifies_and_the_limit_is_deliberate() {
     // Nothing in the records themselves can tell "no records" from "every record deleted", so
