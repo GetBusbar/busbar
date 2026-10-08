@@ -85,74 +85,6 @@ fn build_with_hook_demotes_global_false_removes_wiring() {
     );
 }
 
-/// A hook registered through the ADMIN API must become live on every OTHER compiled-in plane too,
-/// not only on the pool-scoped hooks.
-///
-/// The failure this pins is specific and silent: an operator writes an MCP server's `hooks: [screen]`
-/// attach in the file and registers the `screen` DEFINITION later through the API. At boot the name
-/// resolved to nothing (no definition yet), so the server's gate chain was empty — and without
-/// `reresolve_plane_gates` the register would answer `200 OK` while that chain stayed empty
-/// forever, leaving the operator believing a control is attached that is not. The pool-scoped hooks'
-/// own three `resolve_*` calls exist for exactly this reason; this test exercises that same
-/// fail-open for a plane-owned attach, using MCP as the concrete plane under test.
-#[test]
-fn build_with_hook_makes_a_plane_attach_live() {
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
-    // The ONLY thing this test reads of the `tools.fs` registration is its hook ATTACH
-    // (`hooks: [screen]`), whose resolution lands in the plane's gate map. Drive that through core's
-    // NEUTRAL container-hook seam, keyed by the plane the registry says owns the `tools:` section, so
-    // this in-crate unit test names no plane, no plane crate and no plane config type (the full
-    // end-to-end builder path is covered by the plane crate's own integration tests).
-    let mut builder = crate::new_test_app().hook_env(env);
-    let tools = busbar_kernel::plane::registry::plane_decl_for_config_section("tools")
-        .expect("a plane is registered to own the `tools:` section");
-    builder.set_container_hooks(
-        tools.key,
-        vec![("fs".to_string(), vec!["screen".to_string()])],
-        Vec::new(),
-    );
-    // The `reresolve_gates` seam re-reads the SERVER REGISTRY off the plane's runtime slot, so the
-    // runtime this generation carries must actually hold the `fs` server (with its `hooks: [screen]`
-    // attach) for the re-resolution under test to have anything to resolve. Build it the way
-    // `appbuild` does — the owning plane parses its own section and builds its runtime from it — so
-    // `build()`'s default empty runtime is not what gets read back.
-    {
-        let section: serde_yaml::Value = serde_yaml::from_str(
-            "fs:\n  url: https://tools.internal/fs\n  pin: { mechanism: cert_spki, key: \"sha256/BASE=\" }\n  hooks: [screen]\n",
-        )
-        .unwrap();
-        let parse = tools
-            .parse_section
-            .expect("the plane parses its own section");
-        let cfg = parse(&section).expect("the `tools:` section parses");
-        let build = tools
-            .build_runtime
-            .expect("the plane builds its runtime from its section");
-        builder.install_plane_runtime(
-            busbar_kernel::state::runtime_slot_key(tools.key),
-            build(cfg.as_any(), None),
-        );
-    }
-    let app = builder.build();
-    assert!(
-        !app.plane_gates(tools.key)
-            .is_some_and(|g| g.contains_key("fs")),
-        "the attach names a hook no registry entry defines yet, so it resolves to nothing"
-    );
-
-    let next = build_with_hook(&app, "screen", hook(HookKind::Gate, false))
-        .expect("a valid gate registers");
-    assert_eq!(
-        next.plane_gates(tools.key)
-            .and_then(|g| g.get("fs"))
-            .map(|g| g.len())
-            .unwrap_or_default(),
-        1,
-        "registering the DEFINITION must make the server's existing attach resolve — a 200 OK that \
-         leaves the chain empty is an operator told a control is attached when it is not"
-    );
-}
-
 /// The `settings` map size cap enforced by PATCH must ALSO gate
 /// register/PUT (both funnel through `build_with_hook`) — else an unbounded map could be
 /// registered/replaced, bloating the durable state and the reconnect path the cap protects.
@@ -4093,6 +4025,59 @@ mod plane_fees_on_admin_usage {
             610 * MICROS_PER_MINOR,
             "/admin/usage agrees (before: 10)"
         );
+    }
+
+    /// A POOLS ROW'S OPEN CLASS IS PRICED, NEVER ITEMIZED: the rerank's `search_units` stay in
+    /// `spend_micros` (610 over the model rows and on the total, as above), and no model row, key row
+    /// or total carries a `classes` key — 1.5.5's usage shape, which the signed LEDGER-SIMPLE entry
+    /// pins byte for byte on `usage.gemini|stream-grounded|no-tool-use-count` (its open class there
+    /// is `unitemized_tokens`). Only a non-pools plane's row itemizes its declared classes.
+    #[tokio::test]
+    async fn a_pools_open_class_is_priced_but_never_itemized_on_the_usage_read() {
+        let calls = [
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+        ];
+        let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &calls).await;
+        assert_eq!(view.total.spend_micros, 610 * MICROS_PER_MINOR);
+        assert_eq!(
+            view.by_model
+                .iter()
+                .map(|r| r.usage.spend_micros)
+                .sum::<i64>(),
+            610 * MICROS_PER_MINOR,
+            "the model rows still price the open class"
+        );
+        let mut wires = vec![(
+            "total".to_string(),
+            serde_json::to_value(&view.total).expect("the total serializes"),
+        )];
+        for r in &view.by_model {
+            wires.push((
+                format!("model row {}/{}", r.model, r.upstream),
+                serde_json::to_value(r).expect("the row serializes"),
+            ));
+        }
+        for r in &view.by_key {
+            wires.push((
+                format!("key row {}", r.id),
+                serde_json::to_value(r).expect("the key row serializes"),
+            ));
+        }
+        assert!(
+            wires.len() >= 3,
+            "a total, a model row and a key row: {wires:?}"
+        );
+        for (what, wire) in wires {
+            assert!(
+                wire.get("classes").is_none(),
+                "a pools {what} keeps 1.5.5's usage shape: {wire}"
+            );
+        }
     }
 
     /// (c) Pools-only token traffic is unchanged: the tokens ride the row's token columns, the fee

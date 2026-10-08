@@ -21,7 +21,8 @@ use std::task::{Context, Poll, Waker};
 
 use busbar_contract::abi::auth::{
     slot, AuthPoint, FieldSpan, FieldsIn, FieldsOut, NamedValue, OpenOutboundIn, OpenOutboundOut,
-    RequestFacts, FIELDS_BUF_BYTES, FIELDS_MAX, FIELD_SENSITIVE, MODE_OWN, MODE_PASSTHROUGH,
+    OutboundReadyIn, OutboundReadyOut, RequestFacts, FIELDS_BUF_BYTES, FIELDS_MAX, FIELD_SENSITIVE,
+    MODE_OWN, MODE_PASSTHROUGH,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
@@ -365,14 +366,20 @@ fn settled(outcome: Outcome, lend: &Lend, out: &FieldsOut) -> Fields {
     }
 }
 
-impl OutboundAuth for OutboundInstance {
-    fn open_outbound(
+impl OutboundInstance {
+    /// `open_outbound`, its refusal as the plugin wrote it: the outcome and the plugin's own error
+    /// text (empty when it wrote none).
+    ///
+    /// # Errors
+    /// The binding did not open: the outcome and the plugin's words.
+    pub fn open_outbound_raw(
         &self,
         style: &str,
         credential: &[u8],
         settings: &serde_json::Value,
-    ) -> Result<u64, String> {
-        let settings = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+    ) -> Result<u64, (Outcome, String)> {
+        let settings =
+            serde_json::to_vec(settings).map_err(|e| (Outcome::Refused, e.to_string()))?;
         let mut frame = Frame::new(
             OpenOutboundIn {
                 head: in_head(),
@@ -397,11 +404,42 @@ impl OutboundAuth for OutboundInstance {
             .error
             .map(|e| String::from_utf8_lossy(&e).into_owned())
             .unwrap_or_default();
-        Err(format!(
-            "`{}` did not open the outbound style `{style}`: {:?} {why}",
-            self.plugin.name(),
-            called.outcome
-        ))
+        Err((called.outcome, why))
+    }
+}
+
+impl OutboundAuth for OutboundInstance {
+    fn open_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<u64, String> {
+        self.open_outbound_raw(style, credential, settings)
+            .map_err(|(outcome, why)| {
+                format!(
+                    "`{}` did not open the outbound style `{style}`: {outcome:?} {why}",
+                    self.plugin.name(),
+                )
+            })
+    }
+
+    fn ready(&self, handle: u64) -> bool {
+        let mut frame = Frame::new(
+            OutboundReadyIn {
+                head: in_head(),
+                handle,
+            },
+            OutboundReadyOut {
+                head: out_head(),
+                ready: 0,
+                _reserved: 0,
+            },
+        );
+        // Not READY (a handle this generation does not hold, a fault): not ready, so a prober never
+        // sends an unauthenticated request on it.
+        self.plugin.call(slot::OUTBOUND_READY, &mut frame).outcome == Outcome::Ready
+            && frame.out.ready != 0
     }
 
     fn fields_now(&self, handle: u64, request: &FieldsRequest) -> Option<Fields> {

@@ -375,8 +375,8 @@ pub fn scan(segment: &Segment) -> io::Result<Recovered> {
     })
 }
 
-/// Every record in `[from, len)`, read frame by frame through each frame's HEADER CHECK (a
-/// version-2 frame) or its full verification (a version-1 frame), payloads joined as they now read.
+/// Every record in `[from, len)`, read frame by frame through each frame's full verification or its
+/// HEADER CHECK, payloads joined as they now read.
 /// A WHOLE frame whose header does not check is read as its bytes stand ([`unchecked_whole`]): it
 /// was acknowledged, so its identity is taken and its record is handed over rather than dropped —
 /// a caller that cannot decode it holds back what it cannot rule out, which is the safe side. A
