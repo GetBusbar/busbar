@@ -428,3 +428,36 @@ fn the_restart_policy_backs_off_and_stops_a_crash_loop() {
     aged.crashed(t0 + Duration::from_secs(120));
     assert!(aged.may_restart(t0 + Duration::from_secs(121)));
 }
+
+/// RED (ARCHITECT timeout ruling, step 2): a lease's bound runs past its head, which the host serves
+/// the instant the lease opens, to the program's own first bytes: a program that takes the request
+/// and never answers is a timeout once the bound passes.
+#[test]
+fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
+    worker().block_on(async {
+        let c = connector();
+        declare(&c, &[("mute", sh("cat >/dev/null", &[]))]).unwrap();
+        let id = c
+            .open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    target: "mute",
+                    body: b"ask\n",
+                    timeout_ms: 300,
+                    ..OpenDesc::default()
+                },
+            )
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(generation(&c, id).await, 1, "the head is served at once");
+        let mut buf = [0_u8; 64];
+        assert_eq!(read(&c, id, &mut buf).await, Err(ConnError::Timeout));
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(300) && took < Duration::from_secs(5),
+            "timed out at the bound: {took:?}"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}

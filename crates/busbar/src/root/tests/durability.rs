@@ -2828,3 +2828,100 @@ fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
         walk.findings
     );
 }
+
+/// **RACING FIRST BOOTS KEEP ONE DEPLOYMENT KEYSET** (ARCHITECT 2026-10-07 H3 ruling): minting the
+/// keyset redeems the store's single-use claim first, so a boot that lost it takes the key the
+/// winner keeps rather than keeping its own over it.
+///
+/// RED before the claim: the losing boot put its own seed and read its own back, and the two nodes
+/// signed with two keys.
+#[test]
+fn a_first_boot_that_lost_the_keyset_claim_takes_the_winners_key() {
+    use store_identity::{KEYSET_CLAIM, KEYSET_SCHEMA, MINT_CLAIM_KIND};
+    let slots = crate::root::store_double::RecordSlots::new();
+    let winners = "a".repeat(64);
+    let mine = "b".repeat(64);
+    // The other boot won the claim and keeps its key a moment later.
+    assert!(slots.redeem(MINT_CLAIM_KIND, KEYSET_CLAIM, u64::MAX, 0));
+    let writer = {
+        let slots = slots.clone();
+        let winners = winners.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            slots.put_row(KEYSET_SCHEMA, b"deployment", winners.as_bytes());
+        })
+    };
+    let kept = keep_keyset(slots.calls().as_ref(), &mine).expect("the winner's keyset");
+    writer.join().expect("the winner kept its key");
+    assert_eq!(
+        kept, winners,
+        "the boot that lost the claim takes the winner's key"
+    );
+    assert_eq!(
+        stored_keyset(slots.calls().as_ref()).expect("read"),
+        Some(winners),
+        "and never keeps its own over it"
+    );
+}
+
+/// A boot that lost the keyset claim and finds nothing kept in time REFUSES rather than mint a
+/// second key; once the claim lapses, a later boot claims it and mints.
+#[test]
+fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
+    use store_identity::{KEYSET_CLAIM, MINT_CLAIM_KIND};
+    let slots = crate::root::store_double::RecordSlots::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+    // A winner that died before it kept anything: its claim stands until `now + 1`.
+    assert!(slots.redeem(MINT_CLAIM_KIND, KEYSET_CLAIM, now + 1, now));
+    let mine = "c".repeat(64);
+    let refused = keep_keyset(slots.calls().as_ref(), &mine).expect_err("no second key");
+    assert!(refused.contains("claim"), "{refused}");
+    assert_eq!(stored_keyset(slots.calls().as_ref()).expect("read"), None);
+    // The claim lapses; the next boot claims it and mints.
+    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    assert_eq!(
+        keep_keyset(slots.calls().as_ref(), &mine).expect("minted"),
+        mine
+    );
+}
+
+/// **RACING FIRST BOOTS OF ONE HOST TAKE ONE NODE ID** (ARCHITECT 2026-10-07 H3 ruling): minting a
+/// host's id redeems the store's claim on that host first, so the boot that lost it takes the id
+/// the winner keeps.
+///
+/// RED before the claim: the losing boot minted and kept an id of its own over the winner's, and
+/// the two boots wrote two chains for one host.
+#[test]
+fn a_first_boot_that_lost_the_host_claim_takes_the_winners_node_id() {
+    use store_identity::{host_claim, MINT_CLAIM_KIND, NODE_SCHEMA};
+    let slots = crate::root::store_double::RecordSlots::new();
+    assert!(slots.redeem(MINT_CLAIM_KIND, &host_claim("host-r"), u64::MAX, 0));
+    let writer = {
+        let slots = slots.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            slots.put_row(NODE_SCHEMA, b"host:host-r", &77u64.to_be_bytes());
+        })
+    };
+    let id = node_id(slots.calls().as_ref(), "host-r").expect("the winner's id");
+    writer.join().expect("the winner kept its id");
+    assert_eq!(id, 77, "the boot that lost the claim takes the winner's id");
+    assert_eq!(slots.rows_under(NODE_SCHEMA), 1, "and keeps no second row");
+}
+
+/// A minted node id is claimed for good before it is kept: every id the registry gives a host is
+/// one the store's id claims hold, so no second host can be handed it.
+#[test]
+fn every_minted_node_id_is_held_by_its_claim() {
+    use store_identity::MINT_CLAIM_KIND;
+    let slots = crate::root::store_double::RecordSlots::new();
+    let a = node_id(slots.calls().as_ref(), "host-x").expect("an id");
+    assert!(
+        !slots.redeem(MINT_CLAIM_KIND, &format!("node-id:{a:016x}"), u64::MAX, 0),
+        "the id's claim is already redeemed"
+    );
+    assert_eq!(node_id(slots.calls().as_ref(), "host-x").expect("again"), a);
+}

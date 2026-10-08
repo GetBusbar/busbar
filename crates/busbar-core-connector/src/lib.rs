@@ -65,6 +65,7 @@ pub mod udp;
 pub mod wire;
 
 use std::collections::HashMap;
+use std::future::Future as _;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -76,6 +77,7 @@ use busbar_contract::abi::host::conn::connector::{
 };
 use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_PLAINTEXT, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
+use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
     Piece, PieceKind, PollConns, Ticket, NO_TICKET,
@@ -337,6 +339,21 @@ struct Held {
     redial: Mutex<Option<Redial>>,
     /// A LEASE on a member's long-lived program connection, in place of a connection of its own.
     lease: Option<(Arc<program::Member>, u64)>,
+    /// THE REQUEST'S WHOLE BOUND until its answer (`OpenDesc::timeout_ms`; `None` = unbounded
+    /// here): see [`Due`].
+    due: Mutex<Option<Due>>,
+}
+
+/// THE WHOLE REQUEST'S BOUND (`RequestPiece::timeout_ms`, BUSBAR-1.6.0.md:4890 "timeout clamped to
+/// the deadline class"; the `call` class, :3496-3505): from the open, through the dial, the
+/// judgement, the handshake and the send, until the far end's FIRST piece of its answer. Past it a
+/// read is answered [`ConnError::Timeout`], and a reader waiting on the connection is woken to read
+/// it. Once an answer has begun the bound is spent: what bounds a streamed answer is its own class,
+/// as its reader keeps it, never this one (an answer cut mid-stream by a time-to-answer bound would
+/// be a different outcome from the one the reader chose).
+struct Due {
+    at: std::time::Instant,
+    timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl Held {
@@ -354,11 +371,60 @@ impl Held {
             whole: AtomicBool::new(false),
             redial: Mutex::new(None),
             lease: None,
+            due: Mutex::new(None),
         }
     }
 
     fn line(&self) -> Option<(Arc<Line>, u64)> {
         self.line.lock().expect("line").clone()
+    }
+
+    /// Bounded by `timeout_ms` from now until its answer begins; `0` = no bound of its own.
+    fn bounded(self, timeout_ms: u64) -> Self {
+        if timeout_ms != 0 {
+            *self.due.lock().expect("due") = Some(Due {
+                at: std::time::Instant::now() + Duration::from_millis(timeout_ms),
+                timer: None,
+            });
+        }
+        self
+    }
+
+    /// [`ConnError::Timeout`] once the bound has passed; otherwise `waker` is woken when it passes.
+    fn within_due(&self, waker: &Waker) -> Result<(), ConnError> {
+        let mut due = self.due.lock().expect("due");
+        let Some(d) = due.as_mut() else {
+            return Ok(());
+        };
+        if std::time::Instant::now() >= d.at {
+            return Err(ConnError::Timeout);
+        }
+        if d.timer.is_none() {
+            // A conn read from a dispatcher worker arms its bound on the process's runtime timer,
+            // as its socket is on that runtime's reactor; with no runtime to arm it on, the bound
+            // is still held at every read.
+            let _entered = crate::io::enter_process_runtime();
+            if tokio::runtime::Handle::try_current().is_ok() {
+                d.timer = Some(Box::pin(tokio::time::sleep_until(
+                    tokio::time::Instant::from_std(d.at),
+                )));
+            }
+        }
+        if let Some(timer) = d.timer.as_mut() {
+            if timer
+                .as_mut()
+                .poll(&mut Context::from_waker(waker))
+                .is_ready()
+            {
+                return Err(ConnError::Timeout);
+            }
+        }
+        Ok(())
+    }
+
+    /// The answer began: the bound is spent.
+    fn answered(&self) {
+        *self.due.lock().expect("due") = None;
     }
 }
 
@@ -710,8 +776,8 @@ impl Connector {
     /// THE MEMBER-PROGRAM NEED (`busbar_contract::section::MEMBER_PROGRAM`): `owner`'s outbound
     /// `need` reaches each member's own program (its pipes framed by the entry serving
     /// `transport`), ONE long-lived connection per member, carried as a program need is
-    /// ([`Connector::record_program`]: operator-infrastructure only, no auth style, an entry that
-    /// frames a byte stream directly). A member whose program is unchanged keeps its running
+    /// ([`Connector::record_program`]: operator-infrastructure only, no auth style, a CARRIER
+    /// entry). A member whose program is unchanged keeps its running
     /// program across the re-declaration; one that is gone or changed is retired.
     ///
     /// # Errors
@@ -728,7 +794,7 @@ impl Connector {
         let served = {
             let view = self.transports.read().expect("transports");
             view.serving(&spec.transport)
-                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .filter(|served| served.entry.door.facts().role == ROLE_CARRIER)
                 .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
         };
         let carried = spec.direction == DIRECTION_OUTBOUND
@@ -784,8 +850,7 @@ impl Connector {
     /// THE PROGRAM NEED: `owner`'s outbound `need` dials `program` (its pipes, framed by the entry
     /// serving `transport`). Carried only in the operator-infrastructure class (the operator wrote
     /// the program into config), with no auth style (no credential rides a pipe), over an entry
-    /// that frames a byte stream directly (it composes over nothing, as a framer over the host's
-    /// socket does).
+    /// that is a CARRIER (its tail's role: a byte stream carried as itself).
     ///
     /// # Errors
     ///
@@ -800,7 +865,7 @@ impl Connector {
         let served = {
             let view = self.transports.read().expect("transports");
             view.serving(&spec.transport)
-                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .filter(|served| served.entry.door.facts().role == ROLE_CARRIER)
                 .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
         };
         let carried = spec.direction == DIRECTION_OUTBOUND
@@ -1083,6 +1148,23 @@ impl Connector {
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        // THE WHOLE REQUEST'S BOUND, held before anything is read: past it the read is a timeout,
+        // and short of it the reader is woken when it passes.
+        held.within_due(waker)?;
+        let read = self.read_held(&held, waker, buf);
+        // A LEASE'S HEAD is the host's own (the generation of the program it reaches), served the
+        // instant the lease opens: the far end's answer begins with the program's first bytes.
+        if read
+            .as_ref()
+            .is_ok_and(|p| held.lease.is_none() || p.kind != PieceKind::Fields)
+        {
+            held.answered();
+        }
+        read
+    }
+
+    /// One read of `held`'s answer (see [`Self::read_waking`]).
+    fn read_held(&self, held: &Held, waker: &Waker, buf: &mut [u8]) -> Result<Piece, ConnError> {
         if let Some((member, lease)) = &held.lease {
             return member.read(*lease, waker, buf);
         }
@@ -1094,7 +1176,7 @@ impl Connector {
                     return Err(ConnError::Closed);
                 }
                 let got = loop {
-                    if !self.settle(&held, Some(waker))? {
+                    if !self.settle(held, Some(waker))? {
                         return Err(ConnError::Pending);
                     }
                     let (line, stream) = held.line().ok_or(ConnError::Closed)?;
@@ -1102,7 +1184,7 @@ impl Connector {
                         Poll::Pending => return Err(ConnError::Pending),
                         // A lent pooled line that ended or failed before any byte of this
                         // exchange left: redialled once, fresh, and read again.
-                        Poll::Ready(Err(_) | Ok(None)) if self.redial(&held)? => {}
+                        Poll::Ready(Err(_) | Ok(None)) if self.redial(held)? => {}
                         Poll::Ready(Err(f)) => return Err(map(&f)),
                         Poll::Ready(Ok(None)) => {
                             rest.2 = true;
@@ -1367,14 +1449,15 @@ impl DeclaredConns for Connector {
         }
     }
 
-    /// A need is framed when the entry serving its transport composes over another claim (a framer
-    /// above a carrier, http's kind); an entry directly over the host's socket is a raw stream.
+    /// A need is framed when the entry serving its transport is a FRAMER (its tail's role, ARCHITECT
+    /// ruling Q128 U7: http's kind, over the carrier the connector chose); a CARRIER entry is a raw
+    /// stream.
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
         self.over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .is_some_and(|d| !d.door.facts().composes_over.is_empty())
+            .is_some_and(|d| d.door.facts().role == ROLE_FRAMER)
     }
 
     fn serves_scheme(&self, transport: &str) -> bool {
@@ -1484,7 +1567,7 @@ impl Conns for Connector {
                 .cloned()
                 .ok_or(ConnError::Refused)?;
             let lease = member.lease(desc.body)?;
-            let mut held = Held::over(None, None, None);
+            let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);
             held.lease = Some((member, lease));
             // A refused insert drops the held lease, which closes it.
             return self.slab.insert(caller, need, held);
@@ -1517,7 +1600,7 @@ impl Conns for Connector {
             return self.slab.insert(
                 caller,
                 need,
-                Held::over(Some((line, EXCHANGE_STREAM)), None, None),
+                Held::over(Some((line, EXCHANGE_STREAM)), None, None).bounded(desc.timeout_ms),
             );
         }
         // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
@@ -1565,7 +1648,7 @@ impl Conns for Connector {
             return self.slab.insert(
                 caller,
                 need,
-                Held::over(Some((line, EXCHANGE_STREAM)), None, None),
+                Held::over(Some((line, EXCHANGE_STREAM)), None, None).bounded(desc.timeout_ms),
             );
         }
         endpoint::check(target).map_err(|_| ConnError::Refused)?;
@@ -1664,7 +1747,8 @@ impl Conns for Connector {
                 let (opening, words) = planned.into_opening();
                 match line.attach(opening, words) {
                     Ok(stream) => {
-                        let held = Held::over(Some((line, stream)), None, pooled);
+                        let held =
+                            Held::over(Some((line, stream)), None, pooled).bounded(desc.timeout_ms);
                         *held.redial.lock().expect("redial") = Some(redial);
                         return self.slab.insert(caller, need, held);
                     }
@@ -1690,7 +1774,7 @@ impl Conns for Connector {
         }
         let (conn, judging) =
             self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
-        let held = Held::over(None, judging, pooled);
+        let held = Held::over(None, judging, pooled).bounded(desc.timeout_ms);
         if let Some(conn) = conn {
             self.ride(&held, conn);
         }
@@ -1751,6 +1835,10 @@ impl Conns for Connector {
         let mut cx = Context::from_waker(&waker);
         for (at, conn) in set.iter().enumerate() {
             let (_, held) = self.slab.get(caller, *conn)?;
+            // A request past its bound is ready: its read answers the timeout.
+            if held.within_due(&waker).is_err() {
+                return Ok(at);
+            }
             if let Some((member, lease)) = &held.lease {
                 match member.ready(*lease, &waker) {
                     Ok(false) => continue,

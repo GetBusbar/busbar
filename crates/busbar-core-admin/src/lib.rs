@@ -56,7 +56,8 @@ pub mod planeverbs;
 pub mod posture;
 pub mod rate;
 pub mod refusal;
-/// The verbs unit's test-only `SecretOnce` mint (ARCHITECT ruling B): `cfg(test)` or `test-support` only.
+/// The verbs unit's test-only `SecretOnce` mint (ARCHITECT ruling B), and the handles the composition
+/// root's admin tests drive this crate through: `cfg(test)` or `test-support` only.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod verb;

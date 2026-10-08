@@ -633,11 +633,13 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
         };
         gated.push((name.to_string(), feature.clone()));
     }
-    // Three today: the node (`linked_axis_node`), the admin units (`root-admin`) and the test
-    // harness. A plane served through its door has no root module (FLIP-DECISIONS deleted the
-    // decisions plane's), so the floor counts what is left and still refuses a scan that read none.
+    // Two today: the admin units (`root-admin`) and the test harness. There were four (the node, the
+    // decisions plane's module, the admin units and the harness); the node now compiles in every
+    // build (ARCHITECT Q1), and a plane served through its door has no root module (FLIP-DECISIONS
+    // deleted the decisions plane's). The floor counts what is left and still refuses a scan that
+    // read none.
     assert!(
-        gated.len() >= 3,
+        gated.len() >= 2,
         "the root declares its feature-gated modules, or this test is reading the wrong file: \
          found {gated:?}"
     );

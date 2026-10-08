@@ -52,7 +52,9 @@ impl Provider {
     }
 }
 
-impl HostServices for Provider {
+/// Every service but `trust.sight`, which the contract's shared double refuses as unserved
+/// ([`UNIMPLEMENTED`]), as the loader refuses a slot with no service.
+impl busbar_contract::services::double::ServicesDouble for Provider {
     fn now(&self) -> Reading {
         Reading {
             wall_ns: 1_700_000_000_000_000_000,
@@ -131,11 +133,6 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
-    /// Not served by the double: refused, as the loader refuses a slot with no service.
-    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
-        Ran::Now(Stored::refused(UNIMPLEMENTED))
-    }
-
     fn trust_due(&self, c: &Caller) -> Stored {
         self.saw(c, "trust.due", b"");
         Stored::ready(0)
@@ -181,6 +178,22 @@ impl HostServices for Provider {
         );
         self.saw(c, "trust.decide", arg.as_bytes());
         Stored::ready(svc::TRUST_DECIDED_SERVING)
+    }
+
+    /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same.
+    fn trust_state(&self, c: &Caller, counterparty: &str) -> Stored {
+        self.saw(c, "trust.state", counterparty.as_bytes());
+        let value = b"drifted\0d1\0d2";
+        let mut stored = Stored::ready(svc::KEY_SAME);
+        stored.bytes = [&b"t"[..], value].concat();
+        stored.spans = vec![ItemSpan {
+            key: Span { offset: 0, len: 1 },
+            value: Span {
+                offset: 1,
+                len: value.len() as u32,
+            },
+        }];
+        stored
     }
 
     /// The last verdict, never a sighting: `TRUST_SAME`.
@@ -556,14 +569,34 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.trust_sight_item,
         HOST_SLOTS.trust_serves,
         HOST_SLOTS.trust_decide,
+        HOST_SLOTS.trust_state,
+        HOST_SLOTS.session_emit,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
+    // The room a READ service is handed, so its well-formed call can be answered whole.
+    let (mut read_buf, mut read_spans) = ([0u8; 64], [NO_SPAN; 4]);
     for (service, f) in (0..SERVICES).zip(slots) {
         // The largest `in` in the table, all zero past its head: every `in` fits it.
         let mut raw = [0u64; 32];
         let h = head(service, Ticket::NONE, 0, size_of_val(&raw));
         // SAFETY: the head fits the buffer's start.
         unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
+        // A read that answers into the caller's buffers is handed a WELL-FORMED `in` (a named
+        // counterparty, room for its items): the slot is served as any other is. Its all-zero
+        // `in` is a short answer of its own (`an_all_zero_trust_state_in_is_a_short_answer`).
+        if service == op::TRUST_STATE {
+            let well_formed = svc::TrustStateIn {
+                head: h,
+                counterparty: text("peer"),
+                into: bufs(&mut read_buf, &mut read_spans),
+            };
+            // SAFETY: a `TrustStateIn` fits the buffer's start.
+            unsafe {
+                raw.as_mut_ptr()
+                    .cast::<svc::TrustStateIn>()
+                    .write_unaligned(well_formed)
+            };
+        }
         let mut o = blank();
         let ret = f.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
         if may_pend(service) {
@@ -577,6 +610,13 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 busbar_contract::conn::ConnError::UndeclaredNeed.text(),
                 "service {service}"
             );
+        } else if service == op::TRUST_STATE {
+            // Its well-formed call, answered whole into the room it named.
+            assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
+        } else if service == op::SESSION_EMIT {
+            // An emit naming no session and nothing to write is refused before the provider.
+            assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
+            assert_eq!(error(&o), EMIT_NOTHING, "service {service}");
         } else if service == op::VERIFY_STORE {
             // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
@@ -1878,6 +1918,58 @@ fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
                 b"peer/-@- false".to_vec()
             ),
         ]
+    );
+}
+
+/// `trust.state` OVER THE SDK: the counterparty's state and its items, read through the
+/// caller's buffers under the short-buffer rule (a short buffer is `Short`, the re-call on the same
+/// handle reads the stored answer), and the kernel was asked once.
+#[test]
+fn the_sdk_trust_state_reads_the_kernels_items_under_the_short_buffer_rule() {
+    use busbar_contract::abi::sdk::{ServiceError, TrustItem};
+    let d = double();
+    let s = sdk(&d);
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 4]);
+    assert!(matches!(
+        s.trust_state(ticketed(0), "peer", &mut buf, &mut spans),
+        Err(ServiceError::Short { .. })
+    ));
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 4]);
+    let state = s
+        .trust_state(ticketed(0), "peer", &mut buf, &mut spans)
+        .expect("the stored answer");
+    assert_eq!(state.state, svc::KEY_SAME);
+    assert_eq!(
+        state.items().collect::<Vec<_>>(),
+        vec![TrustItem {
+            item: "t",
+            state: "drifted",
+            approved: Some("d1"),
+            seen: Some("d2"),
+        }]
+    );
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![("double".to_string(), "trust.state", b"peer".to_vec())]
+    );
+}
+
+/// `trust.state` WITH AN ALL-ZERO `in`: it names no room, so the item the kernel answers is a
+/// SHORT answer, FAILED with the full size named (the short-buffer rule), never READY.
+#[test]
+fn an_all_zero_trust_state_in_is_a_short_answer() {
+    let d = double();
+    let mut raw = [0u64; 32];
+    let h = head(op::TRUST_STATE, Ticket::NONE, 0, size_of_val(&raw));
+    // SAFETY: the head fits the buffer's start.
+    unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_state.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert!(
+        o.needed_bytes > 0 && o.needed_items == 1,
+        "the full size is named"
     );
 }
 

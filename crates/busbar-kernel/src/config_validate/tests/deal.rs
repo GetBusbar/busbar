@@ -82,6 +82,7 @@ tools:
     affinity: {header_name: x}
     tier: big
     repeatable: [read]
+    timeout: 10s
     upstream_credentials: passthrough
 ");
     let s = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
@@ -104,6 +105,7 @@ tools:
         "tools.t1.affinity",
         "tools.t1.tier",
         "tools.t1.repeatable",
+        "tools.t1.timeout",
         "tools.t1.upstream_credentials",
     ];
     want.sort_unstable();

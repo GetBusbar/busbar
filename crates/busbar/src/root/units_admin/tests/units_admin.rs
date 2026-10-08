@@ -432,14 +432,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             .expect("the plane's table declares this operation");
         binding.units.set_granted(key, VerbScope::Full);
         let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
-        let outcome = route(
-            &binding,
-            Arc::new(crate::root::kernel::RefusingStore),
-            &admin,
-            &token,
-            &ctx,
-        )
-        .into_result(&seal);
+        let outcome = route(&binding, None, &admin, &token, &ctx).into_result(&seal);
         binding.units.close(key);
         outcome.map(|_| ()).map_err(|refusal| refusal.reason())
     };
@@ -774,8 +767,8 @@ impl busbar_contract::verb_store::Store for ReplaySlots {
     }
 }
 
-/// A replayed idempotency key answers with the FIRST answer's bytes, through the root's own
-/// store adapter and its own packing. Byte-identical is the property: a re-render would mint a
+/// A replayed idempotency key answers with the FIRST answer's bytes, through a store's replay
+/// slot and the root's own packing. Byte-identical is the property: a re-render would mint a
 /// second one-time secret over one identity, and the whole reason the answer travels as opaque
 /// bytes is that there is no decode step here that could.
 #[test]
@@ -790,7 +783,7 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
     let first = answer.pack();
     let key = ("idem-1".to_string(), "POST /api/v1/admin/keys".to_string());
 
-    let store = StoreRef(Arc::new(ReplaySlots::default()));
+    let store = ReplaySlots::default();
     assert_eq!(
         store.replay_new_verb(&key).expect("the slot reads"),
         None,
@@ -1678,7 +1671,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
         let outcome = route(
             &binding,
-            Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+            Some(Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>),
             &admin,
             &token,
             &ctx,
@@ -3142,7 +3135,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
                 *verb,
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
-            crate::root::kernel::RefusingStore,
+            None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
             ArrivalNonce(1),
             PackedReplay,
             CONFIG_CLASS_RULES,
@@ -3184,7 +3177,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             KernelVerb::Adjust,
             a_ledger_request("/api/v1/admin/adjust"),
         ),
-        crate::root::kernel::RefusingStore,
+        None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
         ArrivalNonce(1),
         PackedReplay,
         CONFIG_CLASS_RULES,
@@ -5494,7 +5487,7 @@ fn adjust_through_route(
     binding.units.set_granted(key, granted);
     let outcome = route(
         binding,
-        Arc::new(crate::root::kernel::RefusingStore),
+        None,
         &admin,
         &busbar_kernel::test_support::tokens::pass::<Route>(),
         &ctx,
@@ -5849,6 +5842,7 @@ fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
             open_door(),
             Arc::new(Mutex::new(durability)),
             Arc::new(rows),
+            None,
         )
     };
     assert!(

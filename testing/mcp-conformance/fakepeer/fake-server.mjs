@@ -91,6 +91,18 @@ if (process.argv.includes('--list-modes')) {
   for (const m of Object.keys(MODE_METHODS)) console.log(m);
   process.exit(0);
 }
+// `--mode-methods <mode>` prints the methods that mode fires on, as JSON (`"ANY"` or an array), and
+// exits; an unknown mode exits 2. Same reason as `--list-modes`: a driver that has to know WHERE an
+// attack lands (on a listing, or on whatever is sent) reads it from this table, never from a copy.
+{
+  const at = process.argv.indexOf('--mode-methods');
+  if (at !== -1) {
+    const m = MODE_METHODS[process.argv[at + 1]];
+    if (m === undefined) process.exit(2);
+    console.log(JSON.stringify(m));
+    process.exit(0);
+  }
+}
 
 /** Does the selected mode fire on this method? */
 function modeFires(mode, method) {
