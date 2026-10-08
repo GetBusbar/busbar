@@ -683,10 +683,12 @@ pub fn dropped_transports(
                             .cloned()
                             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
                         let key = facts.claims.first().copied().unwrap_or_default();
+                        let claims = facts.claims;
                         let composes_over = facts.composes_over;
                         let wire = crate::root::doors::host_wire(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
+                            claims,
                             composes_over,
                             wire,
                         })

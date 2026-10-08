@@ -609,7 +609,7 @@ plugins:
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
     # repo). Created by `busbar-release plugin new auth sigv4`; busbar's in-tree crate moves in with its
     # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
-    # Nothing in busbar links it (the bedrock dialect signs with the kernel's own SigV4). First release with the core version that pins it.
+    # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own SigV4, outbound and inbound, is deleted). First release with the core version that pins it.
     released: false
     pending_crate: true
   - repo: busbar-auth-oauth
@@ -626,7 +626,7 @@ plugins:
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
     # repo). Created by `busbar-release plugin new auth oauth`; busbar's in-tree crate moves in with its
     # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
-    # busbar's root tests mint through the logic crate at a pinned rev. First release with the core version that pins it.
+    # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own minting copies are deleted). First release with the core version that pins it.
     released: false
     pending_crate: true
   - repo: busbar-secret-c

@@ -23,6 +23,8 @@ const NEUTRAL: &str = "pub fn install() {}\n";
 const WIRE_TOML: &str = "crates/busbar-plane-llm/dialects/openai_responses.toml";
 const WIRE_MOD: &str = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
 const WIRE_OTHER: &str = "crates/busbar-plane-llm/src/codec/proto_stream.rs";
+// qa-names: crates/busbar-kernel/src/planted_wire_word.rs -- xtask/src/gates/instance_noun_neutrality/cases.rs -- the overlay-only kernel file a case plants a dialect's wire literal in, to prove a wire word outside a dialect module is still a leak
+const KERNEL_PLANT: &str = "crates/busbar-kernel/src/planted_wire_word.rs";
 const GOOD: &str = "pub const DOOR: &str = \"the mcp door\"; \
                     // noun-neutrality: frozen-literal pinned-by=docs/pin.md the door's wire text\n";
 const PIN_TEXT: &str = "The catalog renders: the mcp door\n";
@@ -126,19 +128,19 @@ pub(super) fn push(
     let mcp = row_id("mcp");
 
     // THE DIALECT'S OWN WIRE-PATH TABLE (ruling C5-Q1, the #324 precedent): a Responses item type
-    // spelled in the dialect module's drop table is the provider's word; the same word in another
-    // constant of that module, or in a drop table outside a dialect module, is a leak.
+    // spelled in the dialect module's drop table is the provider's word; the same word as an
+    // IDENTIFIER in that module, or in a drop table outside a dialect module, is a leak. (A literal
+    // elsewhere in a dialect module is the dialect's vocabulary too since ARCHITECT 2026-10-07,
+    // INSTANCE-NOUN (b), so the in-module leak this case plants is an identifier.)
     let table = "const RESPONSE_DROPS: &[&str] = &[\n    \"output[].type=mcp_call\",\n];\n";
     let dialect = |body: &str| ov(&[(WIRE_TOML, ""), (WIRE_MOD, body), (WIRE_OTHER, NEUTRAL)]);
     red(
-        "a dialect module's wire-path table entry is the provider's word; the same word in another \
-         constant of that module is a leak",
+        "a dialect module's wire-path table entry is the provider's word; the same word as an \
+         identifier in that module is a leak",
         &mcp,
         WIRE_MOD,
         dialect(table),
-        dialect(&format!(
-            "{table}const PLANTED: &str = \"output[].type=mcp_call\";\n"
-        )),
+        dialect(&format!("{table}pub fn mcp_call_drops() {{}}\n")),
     );
     red(
         "a wire-path table outside a dialect module still counts",
@@ -146,6 +148,58 @@ pub(super) fn push(
         WIRE_OTHER,
         dialect(table),
         ov(&[(WIRE_TOML, ""), (WIRE_MOD, table), (WIRE_OTHER, table)]),
+    );
+
+    // A DIALECT'S OWN WIRE LITERALS ARE ITS VOCABULARY (ARCHITECT 2026-10-07, INSTANCE-NOUN (b);
+    // Law 5): in a declared dialect module a `"voice"` literal (OpenAI's TTS member) is the
+    // provider's word and is not counted. Three things stay counted, each proven RED from that
+    // clean state: an IDENTIFIER in the same dialect module, the literal in the kernel, and the
+    // literal in a plane module that is not a dialect.
+    let voice = row_id("voice");
+    let wire_lit = "pub const MEMBER: &str = \"voice\";\n";
+    let voice_clean = || {
+        ov(&[
+            (WIRE_TOML, ""),
+            (WIRE_MOD, wire_lit),
+            (WIRE_OTHER, NEUTRAL),
+            (KERNEL_PLANT, NEUTRAL),
+        ])
+    };
+    red(
+        "a dialect module's own wire literal is its vocabulary; an identifier beside it is a leak",
+        &voice,
+        WIRE_MOD,
+        voice_clean(),
+        ov(&[
+            (WIRE_TOML, ""),
+            (WIRE_MOD, &format!("{wire_lit}pub fn voice_id() {{}}\n")),
+            (WIRE_OTHER, NEUTRAL),
+            (KERNEL_PLANT, NEUTRAL),
+        ]),
+    );
+    red(
+        "the same wire literal in the kernel is a leak",
+        &voice,
+        KERNEL_PLANT,
+        voice_clean(),
+        ov(&[
+            (WIRE_TOML, ""),
+            (WIRE_MOD, wire_lit),
+            (WIRE_OTHER, NEUTRAL),
+            (KERNEL_PLANT, wire_lit),
+        ]),
+    );
+    red(
+        "the same wire literal in a plane module that is not a dialect is a leak",
+        &voice,
+        WIRE_OTHER,
+        voice_clean(),
+        ov(&[
+            (WIRE_TOML, ""),
+            (WIRE_MOD, wire_lit),
+            (WIRE_OTHER, wire_lit),
+            (KERNEL_PLANT, NEUTRAL),
+        ]),
     );
 
     // THE EXEMPTION IS REAL, AND ONLY THE MARKER GRANTS IT: with the pragma the `mcp` row is green;
