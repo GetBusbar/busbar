@@ -55,7 +55,6 @@ pub(crate) async fn exchange(
     let candidate = AuthMiddleware::extract_client_token(&req);
     let verdict = AuthMiddleware::run_chain_on_request_path(
         &app.auth,
-        &app.credential_cache,
         candidate,
         crate::auth::ChainHead::of(&req),
         app.governance.clone(),

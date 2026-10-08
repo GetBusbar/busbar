@@ -121,7 +121,7 @@
 //! coupling. So a quoted map KEY is masked ONLY when it resolves EXACTLY to a path of the wire lock
 //! the file names (`[dialect] wire`, `testing/llm-conformance/wire/<lock>.wire.json`). The same word
 //! in a value, a comment, or a key the lock does not have is counted as before
-//! ([`mask_dialect_wire_keys`]).
+//! ([`mask_wire_keys`]).
 //!
 //! ONE COLUMN IS NOT MEASURED, AND IT IS A RULE RATHER THAN AN ALLOWANCE: a crate of one of the
 //! seven plugin kinds is not counted in the `contract` column. #40(a) makes `busbar-contract` the
@@ -515,7 +515,7 @@ fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
 // ------------------------------------------------------------------------------------------------
 
 /// One cell of the matrix.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Cell {
     /// The HIGHEST of the scanners, never the lowest.
     count: usize,
@@ -580,7 +580,115 @@ struct Plan {
 
 type Measured = (Matrix, usize, Vec<String>);
 
+/// Whether a measurement may use the per-file memos ([`MASKED_MEMO`], [`PLAN_MEMO`],
+/// [`FILE_MEMO`], [`super::code_only_memo`]) or must walk every file afresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    /// Every per-file reading from its memo where one is held: the gate's own path.
+    Memoised,
+    /// Every per-file reading taken afresh, no memo read or written: the reference the memoised
+    /// path is held equal to.
+    Full,
+}
+
+/// THE MEMO IS HELD EQUAL TO THE FULL WALK. With `XTASK_MATRIX_VERIFY=1` every measurement is
+/// taken twice, memoised and in full, and a difference is a refusal (the row FAILs naming it), so
+/// a self-test battery run with it set proves that every tree it measured — the unplanted tree and
+/// every planted one — has the matrix a full re-walk produces.
+///
+/// THE COUNT IS OF MEASUREMENTS, NOT OF CASES. Every call prints EXACTLY ONE stderr line, whatever
+/// the outcome — `matrix-verify: equal` (both walks measured the same matrix, or both refused the
+/// tree with the same reason) or `matrix-verify: DIFFER` — naming the tree it measured
+/// (`unplanted`, or the plant's fingerprint digest). A case measures the matrix
+/// zero times (its gate stops before the matrix rule, or its subject does not run it), once (its
+/// planted run), or more (it runs the gate again, e.g. the registered twin beside the subject); the
+/// shared unplanted baseline is one more per gate. So the lines are not the cases, and the proof is
+/// that every line says `equal`. A `DIFFER` is printed here as well as in the row, because the row
+/// of a case expecting RED can fail for the difference and still read as the proof.
+const VERIFY_ENV: &str = "XTASK_MATRIX_VERIFY";
+
 fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
+    if std::env::var(VERIFY_ENV).as_deref() != Ok("1") {
+        return measure_with(cx, crates, Walk::Memoised);
+    }
+    measure_verified(cx, crates)
+}
+
+/// [`measure`] under [`VERIFY_ENV`]: memoised and full, compared, one stderr line either way.
+fn measure_verified(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
+    let tree = match cx.overlay().map(crate::ctx::Overlay::fingerprint) {
+        None => "unplanted".to_string(),
+        Some(f) if f.is_empty() => "unplanted".to_string(),
+        Some(f) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            f.hash(&mut h);
+            format!("plant {:016x}", h.finish())
+        }
+    };
+    // A REFUSAL IS A READING TOO: a planted tree the scan refuses (below the file floor) must be
+    // refused the same way by both walks, so both are always taken and compared.
+    let (memoised, full) = match (
+        measure_with(cx, crates, Walk::Memoised),
+        measure_with(cx, crates, Walk::Full),
+    ) {
+        (Ok(m), Ok(f)) => (m, f),
+        (Err(m), Err(f)) if m == f => {
+            eprintln!("matrix-verify: equal ({tree}; both refused: {m})");
+            return Err(m);
+        }
+        (m, f) => {
+            let why =
+                format!(
+                "{VERIFY_ENV}: the memoised walk and the full walk disagree on whether the scan \
+                 runs (memoised: {}, full: {})",
+                m.as_ref().map_or_else(|e| e.clone(), |_| "measured".to_string()),
+                f.as_ref().map_or_else(|e| e.clone(), |_| "measured".to_string())
+            );
+            eprintln!("matrix-verify: DIFFER ({tree}): {why}");
+            return Err(why);
+        }
+    };
+    {
+        if full != memoised {
+            let cells = |m: &Matrix| m.keys().cloned().collect::<BTreeSet<_>>();
+            let differ: Vec<String> = cells(&memoised.0)
+                .union(&cells(&full.0))
+                .filter(|k| memoised.0.get(*k) != full.0.get(*k))
+                .take(10)
+                .map(|(c, k)| format!("{c} x {k}"))
+                .collect();
+            let why = format!(
+                "{VERIFY_ENV}: the memoised matrix differs from the full walk (files {} vs {}, \
+                 skipped {} vs {}; cells: {})",
+                memoised.1,
+                full.1,
+                memoised.2.len(),
+                full.2.len(),
+                differ.join(", ")
+            );
+            eprintln!("matrix-verify: DIFFER ({tree}): {why}");
+            return Err(why);
+        }
+        eprintln!(
+            "matrix-verify: equal ({tree}; {} cells, {} files)",
+            memoised.0.len(),
+            memoised.1
+        );
+    }
+    Ok(memoised)
+}
+
+/// THE MASKED TEXT OF ONE FILE, memoised on everything the mask chain reads: the path, the owning
+/// directory, the bytes, and every input that is not the file — whether it is the contract's own,
+/// the contract's exported identifiers, the crate's external roots, the auth scope, and for a
+/// plane crate whether the file is a dialect module and, for a dialect mapping file, the wire
+/// lock's paths. A planted case changes one file or one crate; every other file's masked text is
+/// a hit here instead of nine masks over its bytes.
+static MASKED_MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, std::sync::Arc<String>>>> =
+    std::sync::OnceLock::new();
+
+fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, String> {
     let vocab = vocabulary(crates);
     let by_dir: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.dir.as_str(), c)).collect();
 
@@ -633,7 +741,15 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     let auth_decision = auth_words::declared(&files);
     // A plugin's own conformance test naming the loader it is granted is the witness, not a
     // coupling ([`super::conformance_witness_edges`]).
-    let granted = super::conformance_witness_edges(cx, crates);
+    let granted = super::conformance_witness_edges_with(cx, crates, walk == Walk::Memoised);
+    // Everything the mask chain reads that is not the file, hashed once for the measurement.
+    let contract_key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        contract.hash(&mut h);
+        auth_decision.hash(&mut h);
+        h.finish()
+    };
 
     // The external crate roots each crate's manifest declares ([`external`]): a pure function of
     // the crate's dependency tables, so it is taken once per directory before the files are read.
@@ -682,55 +798,89 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         if c.name == CONTRACT_PACKAGE && is_contract_abi_shape(rel) {
             return None;
         }
-        // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
-        // vocabulary is its own row's to measure (see [`contract_identifiers`]).
-        let masked = if c.name == CONTRACT_PACKAGE {
-            std::borrow::Cow::Borrowed(text.as_str())
+        let auth = auth_words::scope(c.kind, &dir, rel).filter(|_| auth_decision);
+        let plane = c.kind == Some("plane");
+        // The two plane-crate masks read the tree beside the file: whether it is a dialect module,
+        // and the wire lock a dialect mapping file names. Both are read here, for the key.
+        let dialect_module = plane && in_dialect_module(cx, &dir, rel);
+        let wire = if plane {
+            let mut locks = wire_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            dialect_wire_paths(cx, &dir, rel, text, &mut locks)
         } else {
-            mask_identifiers(text, &contract)
+            None
         };
         // A name inside a path rooted at an EXTERNAL crate is that crate's word (`std::process::
         // Stdio`), and `busbar_kernel::audit` is a module of the kernel facade, not a sibling crate.
         let roots = &externals[dir.as_str()];
-        let masked = external::mask_external_paths(rel, &masked, roots);
-        let masked = external::mask_kernel_facade(rel, &masked);
-        // English words that are also instance names are not counted as English prose.
-        let masked = mask_english_prose(rel, &masked);
-        // Instance ids that are also a crate's or an abbreviation's name count only as references.
-        let masked = mask_colliding_words(rel, &masked);
-        // `unix` as the operating system (a cfg, `std::os::unix`, the clock) is not the carrier.
-        // Its context is read off the ORIGINAL text: an earlier mask's filler must not change what
-        // a neighbouring word says ("the unix socket" with `socket` masked as a contract name).
-        let masked = os_words::mask_os_words_in(rel, text, &masked);
-        let masked = match auth_words::scope(c.kind, &dir, rel).filter(|_| auth_decision) {
-            Some(with_type) => std::borrow::Cow::Owned(
-                auth_words::mask_auth_decision(rel, &masked, with_type).into_owned(),
-            ),
-            None => masked,
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            rel.hash(&mut h);
+            dir.hash(&mut h);
+            text.hash(&mut h);
+            (c.name == CONTRACT_PACKAGE).hash(&mut h);
+            contract_key.hash(&mut h);
+            roots.hash(&mut h);
+            auth.hash(&mut h);
+            plane.hash(&mut h);
+            dialect_module.hash(&mut h);
+            wire.hash(&mut h);
+            h.finish()
         };
-        // A dialect mapping file's wire-lock keys are the provider's words (ruling above).
-        let masked = if c.kind == Some("plane") {
-            let mut locks = wire_locks
+        let memo = MASKED_MEMO.get_or_init(Default::default);
+        let held = match walk {
+            Walk::Memoised => memo
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            mask_dialect_wire_keys(cx, &dir, rel, text, &masked, &mut locks)
-        } else {
-            std::borrow::Cow::Borrowed(&*masked)
+                .expect("the masked memo mutex is never poisoned")
+                .get(&key)
+                .cloned(),
+            Walk::Full => None,
         };
-        // A dialect module's native item-id prefix literal is the provider's word (ruling below).
-        let masked = if c.kind == Some("plane") {
-            mask_dialect_id_prefixes(cx, &dir, rel, text, &masked)
-        } else {
-            std::borrow::Cow::Borrowed(&*masked)
+        let masked: std::sync::Arc<String> = match held {
+            Some(m) => m,
+            None => {
+                let m = std::sync::Arc::new(mask_chain(MaskInputs {
+                    rel,
+                    text,
+                    is_contract: c.name == CONTRACT_PACKAGE,
+                    contract: &contract,
+                    roots,
+                    auth,
+                    dialect_module,
+                    wire: wire.as_ref(),
+                }));
+                if walk == Walk::Memoised {
+                    memo.lock()
+                        .expect("the masked memo mutex is never poisoned")
+                        .insert(key, std::sync::Arc::clone(&m));
+                }
+                m
+            }
+        };
+        let hits = match walk {
+            Walk::Memoised => scan_file(per_kind, &dir, rel, &masked),
+            Walk::Full => scan_fresh(per_kind, &dir, rel, &masked),
         };
         // A hit on a line the conformance witness covers is the witness, not a coupling. Each
         // hit's line is looked up in the file's line list, read once, rather than by walking the
-        // text from its start once per hit.
-        let lines: Vec<&str> = text.lines().collect();
-        let hits = scan_file(per_kind, &dir, rel, &masked);
+        // text from its start once per hit — and only when the witness grant can excuse a hit of
+        // this crate at all.
+        let lines: Vec<&str> = if hits
+            .iter()
+            .any(|h| super::witness_may_apply(&granted, c, h.kind))
+        {
+            text.lines().collect()
+        } else {
+            Vec::new()
+        };
         let kept: Vec<bool> = hits
             .iter()
             .map(|h| {
+                if !super::witness_may_apply(&granted, c, h.kind) {
+                    return true;
+                }
                 let line = h
                     .line
                     .checked_sub(1)
@@ -773,6 +923,103 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     Ok((matrix, files.len(), skipped))
 }
 
+/// Everything the mask chain reads for one file: the file, and the inputs that are not the file.
+struct MaskInputs<'a> {
+    rel: &'a str,
+    text: &'a str,
+    is_contract: bool,
+    contract: &'a BTreeSet<String>,
+    roots: &'a BTreeSet<String>,
+    auth: Option<bool>,
+    dialect_module: bool,
+    wire: Option<&'a BTreeSet<String>>,
+}
+
+/// THE MASK CHAIN, in its order, over one file: a pure function of [`MaskInputs`], which is what
+/// lets [`MASKED_MEMO`] hold its answer.
+fn mask_chain(m: MaskInputs<'_>) -> String {
+    let MaskInputs {
+        rel,
+        text,
+        is_contract,
+        contract,
+        roots,
+        auth,
+        dialect_module,
+        wire,
+    } = m;
+    // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
+    // vocabulary is its own row's to measure (see [`contract_identifiers`]).
+    let masked = if is_contract {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        mask_identifiers(text, contract)
+    };
+    // A name inside a path rooted at an EXTERNAL crate is that crate's word (`std::process::
+    // Stdio`), and `busbar_kernel::audit` is a module of the kernel facade, not a sibling crate.
+    let masked = external::mask_external_paths(rel, &masked, roots);
+    let masked = external::mask_kernel_facade(rel, &masked);
+    // English words that are also instance names are not counted as English prose.
+    let masked = mask_english_prose(rel, &masked);
+    // Instance ids that are also a crate's or an abbreviation's name count only as references.
+    let masked = mask_colliding_words(rel, &masked);
+    // `unix` as the operating system (a cfg, `std::os::unix`, the clock) is not the carrier.
+    // Its context is read off the ORIGINAL text: an earlier mask's filler must not change what
+    // a neighbouring word says ("the unix socket" with `socket` masked as a contract name).
+    let masked = os_words::mask_os_words_in(rel, text, &masked);
+    let masked = match auth {
+        Some(with_type) => std::borrow::Cow::Owned(
+            auth_words::mask_auth_decision(rel, &masked, with_type).into_owned(),
+        ),
+        None => masked,
+    };
+    // A dialect mapping file's wire-lock keys are the provider's words (ruling above).
+    let masked = match wire {
+        Some(paths) => mask_wire_keys(text, &masked, paths),
+        None => std::borrow::Cow::Borrowed(&*masked),
+    };
+    // A dialect module's native item-id prefix literal is the provider's word (ruling below).
+    let masked = if dialect_module {
+        mask_id_prefixes(rel, text, &masked)
+    } else {
+        std::borrow::Cow::Borrowed(&*masked)
+    };
+    masked.into_owned()
+}
+
+/// A single measurement walking every file afresh: [`scan_file`] with no memo read or written.
+fn scan_fresh(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Vec<Hit>> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let only: Vec<usize> = (0..plan.needles.len())
+        .filter(|&i| seen.insert(plan.needles[i].word.as_str()))
+        .collect();
+    let found = scan_needles(plan, &only, dir, rel, text);
+    let mut out: Vec<(usize, usize, Hit)> = Vec::new();
+    for (i, n) in plan.needles.iter().enumerate() {
+        let Some(hits) = found.get(&n.word) else {
+            continue;
+        };
+        for w in hits {
+            out.push((
+                w.line,
+                i,
+                Hit {
+                    kind: n.kind,
+                    word: n.word.clone(),
+                    line: w.line,
+                    by_segments: w.by_segments,
+                    by_windows: w.by_windows,
+                    by_decoded: w.by_decoded,
+                    confusable: w.confusable,
+                },
+            ));
+        }
+    }
+    out.sort_by_key(|(line, i, _)| (*line, *i));
+    one_needle_per_span(plan, &mut out);
+    std::sync::Arc::new(out.into_iter().map(|(_, _, h)| h).collect())
+}
+
 /// Is `rel` a Cargo manifest, by file name? The matrix does not count these (owner 2026-10-03).
 /// Only the exact name `Cargo.toml`: every other `.toml` is still scanned.
 fn is_cargo_manifest(rel: &str) -> bool {
@@ -787,30 +1034,31 @@ const WIRE_LOCK_DIR: &str = "testing/llm-conformance/wire";
 /// (`[dialect] wire = "<lock>"`) is masked. Nothing else is: not the value, not a comment, not a key
 /// the lock lacks, not a file outside `<plane crate>/dialects/`. A file whose lock is missing or
 /// unreadable masks nothing. The keys are read off the ORIGINAL `text` (an earlier mask may have
-/// filled a word of it) and filled in `masked`, which every earlier mask keeps byte-aligned with it.
-/// `locks` caches each lock's path set across files.
-fn mask_dialect_wire_keys<'a>(
+/// filled a word of it) and filled in `masked`, which every earlier mask keeps byte-aligned with it
+/// ([`mask_wire_keys`]).
+///
+/// The wire lock's paths for `rel` when it is a plane crate's dialect mapping file
+/// (`<dir>/dialects/<d>.toml`) that names its lock in `[dialect] wire`; `None` for any other file,
+/// and for one whose lock is missing or unreadable (an empty set: nothing is masked). `locks`
+/// caches each lock's path set across files.
+fn dialect_wire_paths(
     cx: &Ctx,
     dir: &str,
     rel: &str,
     text: &str,
-    masked: &'a str,
     locks: &mut BTreeMap<String, BTreeSet<String>>,
-) -> std::borrow::Cow<'a, str> {
+) -> Option<BTreeSet<String>> {
     let in_dialects = rel
         .strip_prefix(dir)
         .and_then(|r| r.strip_prefix("/dialects/"))
         .is_some_and(|f| f.ends_with(".toml") && !f.contains('/'));
-    if !in_dialects || masked.len() != text.len() {
-        return std::borrow::Cow::Borrowed(masked);
+    if !in_dialects {
+        return None;
     }
-    let Some(wire) = crate::toml_lite::parse_text(text)
+    let wire = crate::toml_lite::parse_text(text)
         .table("dialect")
         .get_one("wire")
-        .map(String::from)
-    else {
-        return std::borrow::Cow::Borrowed(masked);
-    };
+        .map(String::from)?;
     let paths = locks.entry(wire.clone()).or_insert_with(|| {
         cx.read(format!("{WIRE_LOCK_DIR}/{wire}.wire.json"))
             .ok()
@@ -818,6 +1066,20 @@ fn mask_dialect_wire_keys<'a>(
             .map(|l| l.dirs.into_values().flat_map(|d| d.into_keys()).collect())
             .unwrap_or_default()
     });
+    Some(paths.clone())
+}
+
+/// A dialect mapping file's quoted map KEYS that are exactly a path in `paths` (its wire lock),
+/// masked. The keys are read off the ORIGINAL `text` (an earlier mask may have filled a word of it)
+/// and filled in `masked`, which every earlier mask keeps byte-aligned with it.
+fn mask_wire_keys<'a>(
+    text: &str,
+    masked: &'a str,
+    paths: &BTreeSet<String>,
+) -> std::borrow::Cow<'a, str> {
+    if masked.len() != text.len() {
+        return std::borrow::Cow::Borrowed(masked);
+    }
     let mut out: Option<Vec<u8>> = None;
     let mut at = 0usize;
     for line in text.split_inclusive('\n') {
@@ -851,27 +1113,28 @@ fn mask_dialect_wire_keys<'a>(
 /// one-line `const <NAME>: &str = "<lit>";` whose NAME contains `ID_PREFIX` is masked. Nothing else
 /// is: not the constant's name, not the same word in a comment, another literal or another const,
 /// and not an id-prefix const outside a dialect module. Read off the ORIGINAL `text`, filled in
-/// `masked`, byte-aligned like every earlier mask.
-fn mask_dialect_id_prefixes<'a>(
-    cx: &Ctx,
-    dir: &str,
-    rel: &str,
-    text: &str,
-    masked: &'a str,
-) -> std::borrow::Cow<'a, str> {
-    let in_dialect = rel
-        .strip_prefix(dir)
-        .and_then(|r| r.strip_prefix("/src/"))
-        .is_some_and(|r| {
-            r.split('/').any(|seg| {
-                let d = seg.strip_suffix(".rs").unwrap_or(seg);
-                !d.is_empty()
-                    && d.bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-                    && cx.exists(format!("{dir}/dialects/{d}.toml"))
+/// `masked`, byte-aligned like every earlier mask ([`mask_id_prefixes`]).
+///
+/// Whether `rel` is such a dialect module of the plane crate at `dir`.
+fn in_dialect_module(cx: &Ctx, dir: &str, rel: &str) -> bool {
+    rel.ends_with(".rs")
+        && rel
+            .strip_prefix(dir)
+            .and_then(|r| r.strip_prefix("/src/"))
+            .is_some_and(|r| {
+                r.split('/').any(|seg| {
+                    let d = seg.strip_suffix(".rs").unwrap_or(seg);
+                    !d.is_empty()
+                        && d.bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                        && cx.exists(format!("{dir}/dialects/{d}.toml"))
+                })
             })
-        });
-    if !rel.ends_with(".rs") || !in_dialect || masked.len() != text.len() {
+}
+
+/// A dialect module's id-prefix literals masked ([`in_dialect_module`] decided it is one).
+fn mask_id_prefixes<'a>(rel: &str, text: &str, masked: &'a str) -> std::borrow::Cow<'a, str> {
+    if !rel.ends_with(".rs") || masked.len() != text.len() {
         return std::borrow::Cow::Borrowed(masked);
     }
     let mut out: Option<Vec<u8>> = None;
@@ -4547,6 +4810,85 @@ mod tests {
         let (planes, ports) = super::super::vocabularies(&crates);
         super::super::assign_instances(&mut crates, &planes, &ports);
         crates
+    }
+
+    /// THE MEMOISED MATRIX IS THE FULL WALK'S, on the real tree and on planted ones: a plant in one
+    /// crate (one file's bytes change), a new transport crate (the vocabulary changes, so every
+    /// crate's needles do), and both measured after the unplanted tree has filled every memo.
+    #[test]
+    fn the_memoised_matrix_is_the_full_walk_on_planted_trees() {
+        let base = Ctx::workspace().expect("the workspace opens");
+        let plants = [
+            crate::ctx::Overlay::new(),
+            plant(
+                &base,
+                "crates/busbar-kernel/src/planted_leak.rs",
+                "//! names busbar_plane_llm and the mcp plane\n",
+            ),
+            with_transport(crate::ctx::Overlay::new(), "a2a"),
+        ];
+        for (i, ov) in plants.into_iter().enumerate() {
+            let cx = base.with_overlay(ov);
+            let crates = crates_of(&cx);
+            let memoised = measure_with(&cx, &crates, Walk::Memoised).expect("memoised");
+            let again = measure_with(&cx, &crates, Walk::Memoised).expect("memoised, warm");
+            let full = measure_with(&cx, &crates, Walk::Full).expect("full");
+            assert!(
+                memoised == full,
+                "plant {i}: the memoised matrix is not the full walk's"
+            );
+            assert!(
+                again == full,
+                "plant {i}: the warm memoised matrix is not the full walk's"
+            );
+        }
+    }
+
+    /// What the verify RED arm writes over its planted file's memo entry: names a plane.
+    const POISON: &str = "busbar_plane_llm mcp a2a\n";
+
+    /// Whether some memo entry holds [`POISON`].
+    fn memo_poisoned() -> bool {
+        MASKED_MEMO.get().is_some_and(|m| {
+            m.lock()
+                .expect("the masked memo mutex is never poisoned")
+                .values()
+                .any(|v| v.as_str() == POISON)
+        })
+    }
+
+    /// THE VERIFY CAN FAIL: a memo entry that no longer matches its file (here, one file's masked
+    /// text replaced by one that names a plane) is a DIFFER, refused, and not a quiet `equal`.
+    #[test]
+    fn the_verify_refuses_a_memo_that_differs_from_the_full_walk() {
+        let cx = Ctx::workspace()
+            .expect("the workspace opens")
+            .with_overlay(plant(
+                &Ctx::workspace().expect("the workspace opens"),
+                "crates/busbar-kernel/src/planted_verify.rs",
+                "//! zqxjkw9vq\n",
+            ));
+        let crates = crates_of(&cx);
+        measure_verified(&cx, &crates).expect("equal before the memo is corrupted");
+        {
+            let mut memo = MASKED_MEMO
+                .get()
+                .expect("the measurement filled the memo")
+                .lock()
+                .expect("the masked memo mutex is never poisoned");
+            let poisoned = std::sync::Arc::new(POISON.to_string());
+            for v in memo.values_mut() {
+                if v.contains("zqxjkw9vq") {
+                    *v = std::sync::Arc::clone(&poisoned);
+                }
+            }
+        }
+        assert!(
+            memo_poisoned(),
+            "the planted file's masked text was found in the memo and corrupted"
+        );
+        let err = measure_verified(&cx, &crates).expect_err("a corrupted memo is refused");
+        assert!(err.contains("differs from the full walk"), "{err}");
     }
 
     /// One cell's measured count over the real workspace with `ov` laid over it.
