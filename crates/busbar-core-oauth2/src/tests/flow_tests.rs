@@ -253,7 +253,7 @@ async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
 async fn serve_with_admin_chain(
     admin_chain: Vec<String>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -600,6 +600,88 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         "/consent",
         "a spent approval must not authorise a second request"
     );
+}
+
+/// THE APPROVAL IS SPENT UNDER THE REQUEST IT WAS GIVEN FOR, whatever the scope text says (Q128
+/// core-oauth2). The screen used to stake the raw `scope` text while `/authorize` spent under
+/// `oauth-as`'s normalised set (sorted, deduplicated, the registered default when absent), so a
+/// request naming two scopes out of order, a scope twice, or no scope at all was sent back to the
+/// consent screen forever. Each request here must reach a code on its first approval.
+#[tokio::test]
+async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent() {
+    const MULTI: &str = "flow-test-multi-scope";
+    let (origin, app) = serve().await;
+    let scopes = ScopeSet::from_tokens(["read", "write"]).expect("scope");
+    oauth_as_plane(&app)
+        .expect("configured")
+        .server()
+        .register_client(Client {
+            client_id: ClientId::new(MULTI),
+            auth: ClientAuth::Public,
+            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+            redirect_uris: vec![REDIRECT_URI.to_string()],
+            allowed_scopes: scopes.clone(),
+            default_scopes: scopes,
+            name: Some("Multi Scope".to_string()),
+            registration: None,
+        })
+        .await
+        .expect("register client");
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    // Out of order; repeated; absent (the registered default, `read write`).
+    for scope in ["&scope=write%20read", "&scope=read%20read%20write", ""] {
+        let mut jar = Jar::new(false);
+        let authorize = format!(
+            "{origin}/authorize?response_type=code&client_id={MULTI}\
+             &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1{scope}\
+             &code_challenge={CHALLENGE}&code_challenge_method=S256"
+        );
+        let (status, headers, body) =
+            send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+        assert_eq!(
+            status, 302,
+            "{scope:?}: authorize must redirect to consent: {body}"
+        );
+        let consent = location(&headers, &origin);
+        let (status, _headers, body) =
+            send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+        assert_eq!(
+            status, 200,
+            "{scope:?}: the consent screen must render: {body}"
+        );
+        let return_to = percent_decode(
+            &query_param(&consent, "return").expect("the screen carries the pending request"),
+        );
+        let (status, headers, body) = send(
+            &client,
+            &mut jar,
+            reqwest::Method::POST,
+            &format!("{origin}/consent"),
+            Some(&[("return", return_to.as_str())]),
+        )
+        .await;
+        assert_eq!(
+            status, 302,
+            "{scope:?}: an approval must redirect back: {body}"
+        );
+        let back = location(&headers, &origin);
+        let (status, headers, body) =
+            send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
+        assert_eq!(status, 302, "{scope:?}: {body}");
+        let redirect = location(&headers, &origin);
+        assert!(
+            redirect.starts_with(REDIRECT_URI),
+            "{scope:?}: an approved request goes to the client's redirect URI on its FIRST \
+             approval, not back to the consent screen. Got: {redirect}"
+        );
+        assert!(
+            query_param(&redirect, "code").is_some_and(|c| !c.is_empty()),
+            "{scope:?}: the approved request carries a code: {redirect}"
+        );
+    }
 }
 
 // ── all three registration mechanisms, end to end ───────────────────────────────────────────────

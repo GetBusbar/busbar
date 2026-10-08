@@ -21,16 +21,15 @@ const MIGRATED_FILES: &[&str] = &[
     // plane-purity lint forbids core naming a plane path — and that plugin crate carries its own
     // uncoded-diagnostic floor, so these are no longer listed here (mirroring the substrate/plane note).
     "src/handlers/mod.rs",
-    "src/metrics/mod.rs",
-    "src/metrics/money.rs",
+    "src/snapshot/mod.rs",
+    "src/snapshot/money.rs",
     "src/auth/exchange.rs",
     "src/auth/token.rs",
     "src/auth/mod.rs",
     "src/auth/self_keys.rs",
-    "src/egress_auth/mod.rs",
-    // `egress_auth/bearer_token.rs` (the OAuth cached-token refresh loop, the one egress_auth file
-    // that emits coded diagnostics) RELOCATED to `busbar-substrate` with the whole egress_auth module;
-    // substrate carries its own uncoded-diagnostic floor, so core no longer scans it here.
+    // `egress_auth/` is DELETED (P2 D1, the auth split): each outbound style lives in the auth
+    // plugin that serves it, and its diagnostics are that plugin's.
+    "src/bound_credential.rs",
     "src/trust/verify.rs",
     // `oauth_as/plane.rs` RELOCATED to the sibling `busbar-core-oauth2` crate with the rest of the AS
     // plane's runtime (the extraction that left only `oauth_as::config`/`oauth_as::seam` in core).

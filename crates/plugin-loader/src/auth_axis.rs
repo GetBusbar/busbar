@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-use busbar_contract::abi::auth::FACT_CACHEABLE;
+use busbar_contract::abi::auth::{FACT_CACHEABLE, FACT_READS_CREDENTIALS};
 use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
 use busbar_contract::abi::mechanism::rendering::read;
 use busbar_contract::auth::{AuthModule, AuthVerdict};
@@ -61,6 +61,9 @@ pub struct AuthRows {
     /// The host's one connection table, read when an instance OPENS to serve: it declares its needs
     /// on it (a row only read for its facts binds with none).
     conns: Option<fn() -> Arc<dyn DeclaredConns>>,
+    /// A connection table held by the axis itself (a test's stand-in for the connector, with far
+    /// ends of its own), used the same way when no `conns` is read.
+    held: Option<Arc<dyn DeclaredConns>>,
 }
 
 impl std::fmt::Debug for AuthRows {
@@ -77,6 +80,7 @@ impl AuthRows {
             registry,
             dispatcher,
             conns: None,
+            held: None,
         }
     }
 
@@ -86,6 +90,15 @@ impl AuthRows {
     #[must_use]
     pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
         self.conns = Some(conns);
+        self
+    }
+
+    /// [`Self::with_conns`] over a table the axis holds: a test's stand-in for the process's
+    /// connector (an IdP's far ends in process). Never a shipped build's: the root hands the
+    /// connector through [`Self::with_conns`].
+    #[must_use]
+    pub fn with_table(mut self, table: Arc<dyn DeclaredConns>) -> Self {
+        self.held = Some(table);
         self
     }
 
@@ -119,10 +132,10 @@ impl AuthRows {
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink: sink.bind(),
             dispatcher: self.dispatcher.adopter(),
-            // Serving: the host's table, or (an axis handed none) a door that declares no need.
-            // A fact read: a probe, bound with no table whatever it declares.
+            // Serving: the host's table (else a table the axis holds), or (none) a door that
+            // declares no need. A fact read: a probe, bound with no table whatever it declares.
             conns: if serving {
-                ConnTable::serving(self.conns.map(|c| c()))
+                ConnTable::serving(self.conns.map(|c| c()).or_else(|| self.held.clone()))
             } else {
                 ConnTable::Probe
             },
@@ -188,6 +201,28 @@ impl AuthRows {
             let principal = plugin.context::<AuthFacts>()?.operator_principal.clone()?;
             Some((alias.clone(), principal))
         })
+    }
+
+    /// THE CREDENTIAL READERS: the config keys of the auth rows whose Statement states
+    /// `FACT_READS_CREDENTIALS` (a row whose door will not load states nothing here), linked rows
+    /// first, then the plugins directory's.
+    #[must_use]
+    pub fn credential_readers(&self) -> Vec<String> {
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        rows.filter(|p| p.manifest.kind == AUTH)
+            .filter_map(|row| {
+                let alias = &row.manifest.alias;
+                let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
+                    return None;
+                };
+                let facts = plugin.context::<AuthFacts>()?;
+                (facts.facts & FACT_READS_CREDENTIALS != 0).then(|| alias.clone())
+            })
+            .collect()
     }
 
     /// ONE VERIFIER PER CREDENTIAL KIND: a row whose Statement declares it reads a credential kind
@@ -291,7 +326,30 @@ pub fn stand_in(registry: Arc<PluginRegistry>) -> Arc<dyn busbar_contract::auth_
     static DISPATCHER: std::sync::OnceLock<Arc<Dispatcher>> = std::sync::OnceLock::new();
     let dispatcher = DISPATCHER
         .get_or_init(|| Arc::new(Dispatcher::new(crate::dispatch::DispatchConfig::default())));
-    Arc::new(AuthRows::new(registry, dispatcher.clone()))
+    let rows = AuthRows::new(registry, dispatcher.clone());
+    let table = STAND_IN_CONNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    Arc::new(match table {
+        Some(table) => rows.with_table(table),
+        None => rows,
+    })
+}
+
+/// The connection table the TEST STAND-IN's opened instances are bound to, when a test installed
+/// one ([`stand_in_conns`]).
+#[cfg(any(test, feature = "test-support"))]
+static STAND_IN_CONNS: std::sync::Mutex<Option<Arc<dyn DeclaredConns>>> =
+    std::sync::Mutex::new(None);
+
+/// TEST STAND-IN: bind every instance the stand-in axis opens from now on to `conns` (a test's
+/// stand-in for the process's connector, e.g. [`crate::https_conns::HttpsConns`]). Never shipped.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stand_in_conns(conns: Arc<dyn DeclaredConns>) {
+    *STAND_IN_CONNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(conns);
 }
 
 /// The contract's auth axis over one build's rows: what the kernel's identity chain opens auth
@@ -311,6 +369,10 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
 
     fn operator(&self) -> Option<(String, String)> {
         AuthRows::operator(self)
+    }
+
+    fn credential_readers(&self) -> Vec<String> {
+        AuthRows::credential_readers(self)
     }
 
     fn open(

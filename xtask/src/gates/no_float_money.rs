@@ -32,11 +32,16 @@
 //!
 //! THE SURFACE IS AUDITABLE BY READING [`MONEY_INTAKE`], which is the whole point of its existing.
 //! Every place money enters this system from configuration is a row in that table, with the file it
-//! lives in, the FUNCTION that is the boundary, and how much of the file that boundary covers.
-//! There are two today and the table says which is which:
+//! lives in and the ITEM, by name, that is the conversion. Only the named items' own spans are
+//! exempt; every other line of the file is scanned. Two files carry intakes today:
 //!
-//! * `busbar-kernel-ledger/src/cost/rate.rs` :: `nano_rate` — the card-build arithmetic itself.
-//!   The WHOLE FILE is the conversion (#44), which is why it is excluded from the ledger walk.
+//! * `busbar-kernel-ledger/src/cost/rate.rs` — the card-build arithmetic itself (#44): `nano_rate`
+//!   and the four constructor fns that hand a configured decimal to it, plus `TierRates`, the
+//!   record of configured decimals they read. **THE FILE IS NOT EXEMPT.** It used to be dropped
+//!   from the ledger walk whole as "the card build", while it also holds the `u128` accumulation
+//!   (`nanos_sum`), the card digest and the runtime price reads (`fee_of`, `fee_unit_price_nanos`,
+//!   `nanos_per_unit`): a float in any of those read GREEN for any amount of float (audit xtask-X3
+//!   finding 1). It is walked with the rest of the ledger now, and only the named items are exempt.
 //! * `crates/busbar/src/root/kernel.rs` :: `card_from_config` — **THE SECOND INTAKE, AND IT WAS
 //!   UNDECLARED AND UNSCANNED.** This is where the deployment's configured rates become the card
 //!   every plane's exit prices against: the root reads config, `card_from_config` relays it into the
@@ -132,28 +137,24 @@ pub const ROW_COUNT_SCALE: &str = "no-float-money:count-scale-discriminator";
 /// The consolidated one-book money crate (W3.a). Its whole job is integer money arithmetic.
 const LEDGER_SRC: &str = "crates/busbar-kernel-ledger/src";
 
-/// THE LEDGER'S CARD-BUILD BOUNDARY (#44), as the ledger WALK's exclude fragment. The whole file is
-/// the config-decimal-to-integer conversion, so it is not walked; it is still READ, by the intake
-/// pass, because [`MONEY_INTAKE`] holds it to the return-type rule like every other boundary.
-/// Matched as a substring of the `/`-prefixed relative path, so it is this file and not a directory.
-const CARD_BUILD_BOUNDARY: &str = "busbar-kernel-ledger/src/cost/rate.rs";
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // THE MONEY-INTAKE BOUNDARIES — WHERE A CONFIGURED DECIMAL BECOMES A STORED INTEGER
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-/// How much of an intake's file the conversion is.
+/// What kind of item an intake row names. Either way ONLY THE NAMED ITEM IS THE CONVERSION, and
+/// the rest of its file is money runtime path, scanned: a float inside the named item is the
+/// configured decimal being converted; a float ANYWHERE ELSE in the file is a float that survived
+/// the intake, which is the finding. There is no whole-file exemption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntakeExtent {
-    /// THE WHOLE FILE IS THE CONVERSION. Only `cost/rate.rs`: its every item is the card build —
-    /// the raw tier decimals, the rounding, the clamp and the card they produce — so there is no
-    /// "past the boundary" inside it to scan for. It is excluded from the ledger walk for this
-    /// reason and for no other.
-    WholeFileIsTheConversion,
-    /// ONLY THE NAMED FUNCTION IS THE CONVERSION, and the rest of the file is money runtime path.
-    /// A float inside the named body is the configured decimal being converted; a float ANYWHERE
-    /// ELSE in the file is a float that survived the intake, which is the finding.
-    OnlyTheBoundaryFn,
+pub enum IntakeItem {
+    /// `fn <boundary>`: its body is exempt, and its declared RETURN TYPE is held to "integers come
+    /// out".
+    ConversionFn,
+    /// `struct <boundary>` and its inherent `impl <boundary>` blocks: THE RECORD OF CONFIGURED
+    /// DECIMALS a conversion fn reads, exempt as declared. It carries decimals INTO a named
+    /// conversion fn, so it has no "integers come out" to hold it to; what it hands on is read by
+    /// one of the named fns or the read is a finding in the fn that makes it.
+    DecimalRecord,
 }
 
 /// ONE PLACE MONEY ENTERS THIS SYSTEM FROM CONFIGURATION.
@@ -165,12 +166,12 @@ pub enum IntakeExtent {
 pub struct MoneyIntake {
     /// The repo-relative file the boundary lives in.
     pub file: &'static str,
-    /// The FUNCTION that is the boundary. Named, not inferred: the exempt span is a body somebody
-    /// can open and read, and a rename that moves it is a scan-set failure rather than a silent
+    /// The ITEM that is the boundary. Named, not inferred: the exempt span is a body somebody can
+    /// open and read, and a rename that moves it is a scan-set failure rather than a silent
     /// widening (a boundary that cannot be found exempts nothing and is REFUSED).
     pub boundary: &'static str,
-    /// How much of `file` the conversion covers.
-    pub extent: IntakeExtent,
+    /// Whether `boundary` names a conversion fn or the record of decimals one reads.
+    pub item: IntakeItem,
     /// Why this is an intake at all.
     pub why: &'static str,
 }
@@ -179,15 +180,51 @@ pub struct MoneyIntake {
 /// surface; there is nowhere else a float is permitted on the money path.
 pub const MONEY_INTAKE: &[MoneyIntake] = &[
     MoneyIntake {
-        file: "crates/busbar-kernel-ledger/src/cost/rate.rs",
+        file: CARD_BUILD_FILE,
         boundary: "nano_rate",
-        extent: IntakeExtent::WholeFileIsTheConversion,
-        why: "#44's card build: a configured `micro_per_unit` times a thousand, rounded               half-away-from-zero, ONCE, into an integer nano-rate. The whole file is that               arithmetic and the card it produces.",
+        item: IntakeItem::ConversionFn,
+        why: "#44's card build: a configured `micro_per_unit` times a thousand, rounded \
+              half-away-from-zero, ONCE, into an integer nano-rate.",
+    },
+    MoneyIntake {
+        file: CARD_BUILD_FILE,
+        boundary: "representable_nano_rate",
+        item: IntakeItem::ConversionFn,
+        why: "#44's card-build question (item 22): `nano_rate`'s quantisation, or `None` for a \
+              configured decimal the card cannot hold. A configured `f64` in, `Option<u64>` out.",
+    },
+    MoneyIntake {
+        file: CARD_BUILD_FILE,
+        boundary: "from_micro_rates",
+        item: IntakeItem::ConversionFn,
+        why: "#44: the card constructor over configured micro-unit decimals; each one goes to \
+              `place_rate` and nowhere else. Decimals in, a card of integer cells out.",
+    },
+    MoneyIntake {
+        file: CARD_BUILD_FILE,
+        boundary: "from_config",
+        item: IntakeItem::ConversionFn,
+        why: "#44: THE CARD A DEPLOYMENT CONFIGURED, built from its `TierRates` decimals by the \
+              class fan-out into `from_micro_rates`. Decimals in, a card out.",
+    },
+    MoneyIntake {
+        file: CARD_BUILD_FILE,
+        boundary: "place_rate",
+        item: IntakeItem::ConversionFn,
+        why: "#44: the one placement of a configured decimal into a cell, through \
+              `representable_nano_rate`; returns unit and leaves an integer cell.",
+    },
+    MoneyIntake {
+        file: CARD_BUILD_FILE,
+        boundary: "TierRates",
+        item: IntakeItem::DecimalRecord,
+        why: "#44: one lane's four configured micro-unit decimals, the raw-value record \
+              `from_config` converts, and its `by_class` fan-out. The record a conversion reads.",
     },
     MoneyIntake {
         file: "crates/busbar/src/root/kernel.rs",
         boundary: "card_from_config",
-        extent: IntakeExtent::OnlyTheBoundaryFn,
+        item: IntakeItem::ConversionFn,
         why: "THE SECOND INTAKE: the composition root relaying the deployment's configured rates               into the cost unit's card, on boot and on every live rate apply. Its call path —               `CardRepricer::rates_applied`, which appends the built card to the history, and               `RateEpoch::effective_from_at`, which dates a price against it — is the rest of this               file, and is scanned.",
     },
 ];
@@ -223,7 +260,7 @@ pub struct MoneyEgress {
 /// EVERY MONEY-EGRESS BOUNDARY IN THE TREE, at most one per file. Read this table and [`MONEY_INTAKE`]
 /// and you have read the gate's whole exempt surface.
 pub const MONEY_EGRESS: &[MoneyEgress] = &[MoneyEgress {
-    file: "crates/busbar-kernel/src/metrics/money.rs",
+    file: "crates/busbar-kernel/src/snapshot/money.rs",
     boundary: "set_gauge",
     why: "The `/metrics` money gauges (spend, budget-remaining, token counts): an `i64`/`u64` figure \
           widened to `i128`, then handed to the `metrics` facade, whose gauge stores and the \
@@ -238,8 +275,8 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 const EXCLUDE_TESTS_FILE: &str = "_tests.rs";
 const EXCLUDE_TESTS_MOD: &str = "/tests.rs";
 
-/// The denominator floor for the ledger scan. Twenty-three production files (excluding the exempt
-/// boundary) when this was written; the floor tracks the real tree rather than `> 0`, because one
+/// The denominator floor for the ledger scan. Twenty-three production files (then excluding the
+/// card-build file, which is walked now) when this was written; the floor tracks the real tree rather than `> 0`, because one
 /// surviving file is as vacuous as none.
 const SCAN_FLOOR: usize = 18;
 
@@ -378,11 +415,12 @@ const WAL_FLOOR: usize = 6;
 /// * `billing.rs` — the billable-item model, the shape a response's metered quantities arrive in.
 ///
 /// NEITHER WAS IN ANY SCAN SET EITHER, and `cost.rs` is where a float is most consequential: it
-/// holds a SECOND copy of the card-build conversion. #44 exempts that conversion in exactly one file
-/// ([`CARD_BUILD_BOUNDARY`]) precisely so there is one place for the rounding and clamping rules to
-/// live; a copy of them somewhere the ban cannot see is how the two drift, and a rate that is judged
-/// at one value and billed at another is the failure the whole integer-money model exists to make
-/// impossible. The exemption is a FILE, not an arithmetic, so a second copy of it is a finding here.
+/// holds a SECOND copy of the card-build conversion. #44 exempts that conversion as named items in
+/// exactly one file ([`CARD_BUILD_FILE`], rows of [`MONEY_INTAKE`]) precisely so there is one place
+/// for the rounding and clamping rules to live; a copy of them somewhere the ban cannot see is how
+/// the two drift, and a rate that is judged at one value and billed at another is the failure the
+/// whole integer-money model exists to make impossible. The exemption is a NAMED ITEM, not an
+/// arithmetic, so a second copy of it is a finding here.
 ///
 /// THE THIRD ENTRY, ADDED 2026-09-23: `rate_apply.rs` — the RATE-APPLY SEAM. Its own header says
 /// "this seam carries a price": it is the one notification that says "this deployment's configured
@@ -393,7 +431,7 @@ const WAL_FLOOR: usize = 6;
 /// (`5fa320208`, R100) and was in no money scan set on either side of the move. MEASURED: zero
 /// `f64`/`f32` in it today.
 ///
-/// THE FOURTH ENTRY, ADDED 2026-09-23 (item 24): `metrics/money.rs` — THE SERVED MONEY GAUGES.
+/// THE FOURTH ENTRY, ADDED 2026-09-23 (item 24): `snapshot/money.rs` — THE SERVED MONEY GAUGES.
 /// `busbar_key_spend_cents`, `busbar_bucket_spend_cents` and `busbar_bucket_budget_remaining_cents`
 /// are money a customer scrapes, and they were published from `metrics.rs`, a file of routing
 /// weights and durations this list could not take whole (armed over it, it named fourteen floats,
@@ -408,7 +446,7 @@ const KERNEL_MONEY_FILES: &[&str] = &[
     "crates/busbar-kernel/src/billing.rs",
     "crates/busbar-kernel/src/cost.rs",
     "crates/busbar-kernel/src/rate_apply.rs",
-    "crates/busbar-kernel/src/metrics/money.rs",
+    "crates/busbar-kernel/src/snapshot/money.rs",
     "crates/busbar-kernel/src/plane_driver/money.rs",
 ];
 
@@ -483,9 +521,13 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     // plugin-path row drains"). The destination needs no third home added: it is the same directory
     // as `crates/busbar-plane-mcp/src`, already a home below, so the moved file was never out of this
     // group's count for a single scan.
+    //
+    // `crates/busbar-mcp/src/codec` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine and
+    // its registry row are deleted, and the mcp plane is its door crate alone — the home already
+    // listed. The floor does not move.
     CountRoot {
         area: "the tool codec, its records and the plane",
-        homes: &["crates/busbar-mcp/src/codec", "crates/busbar-plane-mcp/src"],
+        homes: &["crates/busbar-plane-mcp/src"],
         floor: 12,
     },
     CountRoot {
@@ -963,17 +1005,41 @@ struct Boundary {
     params: String,
 }
 
-/// Is this line the declaration of `fn <name>`?
-fn declares_fn(code: &str, name: &str) -> bool {
+/// Is this line the declaration of `<kw> <name>` (`fn`, `struct`, or an inherent `impl`)? The
+/// keyword must sit directly before the name, so `impl Default for Name` is not `impl Name`.
+fn declares(code: &str, kw: &str, name: &str) -> bool {
     word_positions(code, name).any(|i| {
         let before = code[..i].trim_end();
-        let Some(head) = before.strip_suffix("fn") else {
+        let Some(head) = before.strip_suffix(kw) else {
             return false;
         };
         head.chars()
             .next_back()
             .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
     })
+}
+
+/// Is this line the declaration of `fn <name>`?
+fn declares_fn(code: &str, name: &str) -> bool {
+    declares(code, "fn", name)
+}
+
+/// Every span a [`IntakeItem::DecimalRecord`] covers: `struct <name>` and each inherent
+/// `impl <name>` block, 1-based and inclusive. Empty when the struct is not declared in `text`: a
+/// record that cannot be found exempts nothing, and the caller refuses it.
+fn record_spans(text: &str, name: &str) -> Vec<(usize, usize)> {
+    let mut st = scan::LexState::default();
+    let lines: Vec<String> = text.lines().map(|l| scan::blank_code(l, &mut st)).collect();
+    if !lines.iter().any(|code| declares(code, "struct", name)) {
+        return Vec::new();
+    }
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, code)| declares(code, "struct", name) || declares(code, "impl", name))
+        .filter_map(|(start, _)| measure_item(&lines, start))
+        .map(|b| (b.first_line, b.last_line))
+        .collect()
 }
 
 /// Find the declared boundary `fn <name>` in `text` and measure it.
@@ -986,7 +1052,13 @@ fn find_boundary(text: &str, name: &str) -> Option<Boundary> {
     let mut st = scan::LexState::default();
     let lines: Vec<String> = text.lines().map(|l| scan::blank_code(l, &mut st)).collect();
     let start = lines.iter().position(|code| declares_fn(code, name))?;
+    measure_item(&lines, start)
+}
 
+/// Measure the item declared on `lines[start]` (already blanked): its header, and its body to the
+/// brace that closes it. An item that ends in `;` at depth zero before any `{` (a tuple or unit
+/// struct) is its header lines alone.
+fn measure_item(lines: &[String], start: usize) -> Option<Boundary> {
     // THE HEADER runs from the declaration to the `{` that opens the body, at paren depth zero.
     let mut header = String::new();
     let mut depth = 0i32;
@@ -996,6 +1068,14 @@ fn find_boundary(text: &str, name: &str) -> Option<Boundary> {
             match ch {
                 '(' | '[' => depth += 1,
                 ')' | ']' => depth -= 1,
+                ';' if depth <= 0 => {
+                    return Some(Boundary {
+                        first_line: start + 1,
+                        last_line: i + 1,
+                        returns: String::new(),
+                        params: String::new(),
+                    });
+                }
                 '{' if depth <= 0 => {
                     open = Some(i);
                     break 'lines;
@@ -1411,10 +1491,11 @@ impl Gate for NoFloatMoneyGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        // The ledger crate, minus the one exempt boundary and the fixtures, held to its floor.
+        // The ledger crate WHOLE, card-build file included, minus the fixtures, held to its floor.
+        // The card build's conversion is exempt by named item ([`MONEY_INTAKE`]), never by file.
         let ledger_spec = WalkSpec::new([LEDGER_SRC])
             .ext("rs")
-            .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE, CARD_BUILD_BOUNDARY])
+            .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE])
             .min_files(SCAN_FLOOR);
         let ledger_files = match cx.walk(&ledger_spec) {
             Ok(f) => f,
@@ -1572,8 +1653,9 @@ impl Gate for NoFloatMoneyGate {
 
         // ── THE MONEY-INTAKE BOUNDARIES ───────────────────────────────────────────────────────
         //
-        // Every row of [`MONEY_INTAKE`] is READ, whatever its extent: the boundary has to be found
-        // where the table says it is, and it has to hand back an integer. A boundary that cannot be
+        // Every row of [`MONEY_INTAKE`] is READ: the boundary has to be found where the table says
+        // it is, a conversion fn has to hand back an integer, and only the named item's own span is
+        // exempt. A boundary that cannot be
         // found exempts NOTHING and is refused — the alternative is a table that names a function
         // somebody renamed, quietly exempting a span that is no longer there or, worse, still
         // naming a span that is now something else.
@@ -1599,30 +1681,39 @@ impl Gate for NoFloatMoneyGate {
                     continue;
                 }
             };
-            let Some(b) = find_boundary(&text, intake.boundary) else {
+            let spans = match intake.item {
+                IntakeItem::ConversionFn => match find_boundary(&text, intake.boundary) {
+                    Some(b) => {
+                        if let Some(escaped) = returns_float(intake, &b) {
+                            offenders.push(escaped);
+                        }
+                        vec![(b.first_line, b.last_line)]
+                    }
+                    None => Vec::new(),
+                },
+                IntakeItem::DecimalRecord => record_spans(&text, intake.boundary),
+            };
+            if spans.is_empty() {
                 float_scan_problems.push(format!(
-                    "{}: the declared money-intake boundary `fn {}` is not in that file — the \
-                     exemption names a function that is not there, so either the boundary moved \
+                    "{}: the declared money-intake boundary `{}` is not in that file — the \
+                     exemption names an item that is not there, so either the boundary moved \
                      (move this row with it, in the diff that moves it) or the table is stale",
                     intake.file, intake.boundary
                 ));
                 continue;
-            };
-            if let Some(escaped) = returns_float(intake, &b) {
-                offenders.push(escaped);
             }
-            if intake.extent == IntakeExtent::OnlyTheBoundaryFn {
-                intake_spans
-                    .entry(intake.file.to_string())
-                    .or_default()
-                    .push((b.first_line, b.last_line));
+            intake_spans
+                .entry(intake.file.to_string())
+                .or_default()
+                .extend(spans);
+            if !intake_texts.iter().any(|(f, _)| *f == intake.file) {
                 intake_texts.push((intake.file, text));
             }
         }
 
         // AN INTAKE FILE THE OTHER SETS DO NOT ALREADY CARRY IS SCANNED HERE. `root/kernel.rs` is in
         // no other set at all, which is the hole — the second intake and its whole call path were
-        // invisible to this ban.
+        // invisible to this ban. (`cost/rate.rs` is the ledger walk's, so it is not added twice.)
         let already: std::collections::BTreeSet<String> = ledger_files
             .iter()
             .chain(governance_files.iter())
@@ -1889,23 +1980,66 @@ impl Gate for NoFloatMoneyGate {
             &[&float_ty],
         ));
 
-        // THE #44 EXEMPTION HOLDS. A float in the card-build boundary (cost/rate.rs) is PERMITTED —
-        // it is the one decimal-to-integer conversion — so the gate stays GREEN. A gate that flagged
-        // its own permitted boundary would force the float off the boundary, which #44 forbids.
-        let mut ov = Overlay::new();
-        match Edit::Append(format!(
-            "\npub fn extra_boundary_rate(m: {float_ty}) -> u64 {{ (m * 1000.0) as u64 }}\n"
-        ))
-        .apply(cx, CARD_BUILD_BOUNDARY_REL, &mut ov)
-        {
-            Ok(()) => report.push(Case {
-                name: "a float in the #44 card-build boundary stays green (exempt)".to_string(),
+        // ── THE CARD-BUILD FILE (`cost/rate.rs`, #44) IS SCANNED; ITS CONVERSION FNS ARE NOT ────
+        //
+        // The file used to be dropped from the ledger walk whole, as "the card build", while it
+        // also holds the u128 accumulation (`nanos_sum`), the card digest and the runtime price
+        // reads (`fee_of`, `fee_unit_price_nanos`, `nanos_per_unit`). A float in any of those read
+        // GREEN for any amount of float (audit xtask-X3 finding 1). Four cases: a float in the
+        // accumulation, a float in a price read and a new float fn beside the conversion are each
+        // RED; a float inside the named conversion fn stays green.
+        for (what, boundary, stmt) in [
+            (
+                "u128 accumulation (`nanos_sum`)",
+                "nanos_sum",
+                format!("let _planted_sum = (q as {float_ty} * r as {float_ty}) as u128;"),
+            ),
+            (
+                "runtime price read (`fee_of`)",
+                "fee_of",
+                format!("let _planted_fee = self.fee as {float_ty} * 1.5;"),
+            ),
+        ] {
+            match body_plant(cx, CARD_BUILD_FILE, boundary, &stmt) {
+                Ok(ov) => report.push(prove_red(
+                    cx,
+                    self,
+                    format!("a float in the card-build file's {what} is flagged"),
+                    &[ROW_NO_FLOAT],
+                    ov,
+                    &[&float_ty, "cost/rate.rs"],
+                )),
+                Err(e) => report.note_infra_failure(format!(
+                    "no-float-money selftest: could not plant inside `fn {boundary}` ({e})"
+                )),
+            }
+        }
+        report.push(plant(
+            cx,
+            self,
+            "a new float fn beside the card-build conversion is flagged (the file is not exempt)",
+            &[ROW_NO_FLOAT],
+            CARD_BUILD_FILE,
+            Edit::Append(format!(
+                "\npub fn extra_boundary_rate(m: {float_ty}) -> u64 {{ (m * 1000.0) as u64 }}\n"
+            )),
+            &[&float_ty, "cost/rate.rs"],
+        ));
+        match body_plant(
+            cx,
+            CARD_BUILD_FILE,
+            "nano_rate",
+            &format!("let _planted_micro: {float_ty} = micro_per_unit * 1.0;"),
+        ) {
+            Ok(ov) => report.push(Case {
+                name: "a float INSIDE the named card-build conversion `nano_rate` stays green"
+                    .to_string(),
                 covers: vec![ROW_NO_FLOAT.to_string()],
                 expected: crate::gates::Expect::Green,
                 got: verdict_expect(self, &cx.with_overlay(ov)),
             }),
             Err(e) => report.note_infra_failure(format!(
-                "no-float-money selftest: could not plant into the card-build boundary ({e})"
+                "no-float-money selftest: could not plant inside `fn nano_rate` ({e})"
             )),
         }
 
@@ -1985,7 +2119,7 @@ impl Gate for NoFloatMoneyGate {
         // is "a float here goes red": the file is scanned, the boundary's own body is not, the
         // boundary has to still be where the table says, and what comes out of it has to be an
         // integer.
-        let second = &MONEY_INTAKE[1];
+        let second = intake_row("card_from_config");
 
         // 1. A FLOAT IN THE INTAKE'S FILE BUT OUTSIDE ITS BOUNDARY IS FLAGGED. THE HOLE: this file
         //    was in no scan set at all, so no amount of float in the repricer that appends the card
@@ -2040,10 +2174,10 @@ impl Gate for NoFloatMoneyGate {
         }
 
         // 4. AND A BOUNDARY THAT HANDS BACK A FLOAT IS A FLOAT THAT SURVIVED THE CONVERSION.
-        //    Planted on the #44 boundary specifically, because that file is exempt WHOLE: the
-        //    return-type rule is the only rule that can red it, so this case proves that rule
+        //    Planted on the #44 boundary's own declaration line, which sits inside its exempt span:
+        //    the return-type rule is the only rule that can red it, so this case proves that rule
         //    ALONE and could not be passing on a neighbour's finding.
-        let first = &MONEY_INTAKE[0];
+        let first = intake_row("nano_rate");
         match cx.read(first.file) {
             Ok(text) => {
                 let mut ov = Overlay::new();
@@ -2075,7 +2209,7 @@ impl Gate for NoFloatMoneyGate {
             )),
         }
 
-        // ── THE MONEY-EGRESS BOUNDARY (`metrics/money.rs` :: `set_gauge`, item 24) ─────────────
+        // ── THE MONEY-EGRESS BOUNDARY (`snapshot/money.rs` :: `set_gauge`, item 24) ─────────────
         //
         // Six claims, one case each: the file is scanned and a float outside the boundary goes red;
         // a SECOND conversion under another name goes red; the boundary's own body does not; the
@@ -2094,7 +2228,7 @@ impl Gate for NoFloatMoneyGate {
             Edit::Append(format!(
                 "\npub fn planted_spend(cents: i64) -> {float_ty} {{ cents as {float_ty} / 100.0 }}\n"
             )),
-            &[&float_ty, "metrics/money.rs"],
+            &[&float_ty, "snapshot/money.rs"],
         ));
 
         // 2. A SECOND BOUNDARY — the same conversion under another name — IS FLAGGED. One named
@@ -2108,7 +2242,7 @@ impl Gate for NoFloatMoneyGate {
             Edit::Append(format!(
                 "\npub(super) fn set_gauge_too(gauge: metrics::Gauge, value: i64) {{\n    gauge.set(value as {float_ty});\n}}\n"
             )),
-            &[&float_ty, "metrics/money.rs"],
+            &[&float_ty, "snapshot/money.rs"],
         ));
 
         // 3. A FLOAT INSIDE THE BOUNDARY'S OWN BODY STAYS GREEN — that is the one conversion the
@@ -2189,7 +2323,7 @@ impl Gate for NoFloatMoneyGate {
             "the money-egress file dropping out of the tree is refused",
             &[ROW_SCAN_FLOOR],
             ov,
-            &["metrics/money.rs"],
+            &["snapshot/money.rs"],
         ));
 
         // A FLOAT UNDER A `/tests/` DIRECTORY IS A FIXTURE'S NUMBER, not the money path's.
@@ -2386,11 +2520,11 @@ impl Gate for NoFloatMoneyGate {
         // THE INSTRUMENT: the root that reads as empty. A ledger crate that moved or was renamed must
         // be REFUSED, not scanned as zero hits and printed green.
         let mut ov = Overlay::new();
-        match cx.walk(&WalkSpec::new([LEDGER_SRC]).ext("rs").exclude([
-            EXCLUDE_TESTS_DIR,
-            EXCLUDE_TESTS_FILE,
-            CARD_BUILD_BOUNDARY,
-        ])) {
+        match cx.walk(
+            &WalkSpec::new([LEDGER_SRC])
+                .ext("rs")
+                .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE]),
+        ) {
             Ok(files) => {
                 for f in &files {
                     ov.remove(&f.rel);
@@ -2438,9 +2572,18 @@ impl Gate for NoFloatMoneyGate {
     }
 }
 
-/// The `/`-prefixed-substring boundary constant re-expressed as the actual repo-relative path an
-/// `Edit` writes to (the exclude fragment omits the leading `crates/`-less prefix nuance).
-const CARD_BUILD_BOUNDARY_REL: &str = "crates/busbar-kernel-ledger/src/cost/rate.rs";
+/// THE LEDGER'S CARD-BUILD FILE (#44). Walked with the rest of the ledger; its conversion items are
+/// rows of [`MONEY_INTAKE`], and nothing else in it is exempt.
+const CARD_BUILD_FILE: &str = "crates/busbar-kernel-ledger/src/cost/rate.rs";
+
+/// The [`MONEY_INTAKE`] row naming `boundary`. Panics on a name the table does not hold: a
+/// selftest that plants against a row which is not there is a broken selftest, not a skipped case.
+fn intake_row(boundary: &str) -> &'static MoneyIntake {
+    MONEY_INTAKE
+        .iter()
+        .find(|i| i.boundary == boundary)
+        .unwrap_or_else(|| panic!("MONEY_INTAKE names no `{boundary}`"))
+}
 
 /// An overlay that puts `stmt` INSIDE an intake boundary's measured body, on its own line just
 /// before the line the body closes on. Textual, like the scan it is planted for: the point is where
@@ -2564,6 +2707,15 @@ mod tests {
             let text = cx
                 .read(intake.file)
                 .unwrap_or_else(|e| panic!("{}: {e}", intake.file));
+            if intake.item == IntakeItem::DecimalRecord {
+                assert!(
+                    !record_spans(&text, intake.boundary).is_empty(),
+                    "{}: `struct {}` was not found",
+                    intake.file,
+                    intake.boundary
+                );
+                continue;
+            }
             let b = find_boundary(&text, intake.boundary).unwrap_or_else(|| {
                 panic!("{}: `fn {}` was not found", intake.file, intake.boundary)
             });
@@ -2612,7 +2764,7 @@ mod tests {
     #[test]
     fn the_exempt_span_is_the_boundary_and_not_the_file() {
         let cx = cx();
-        let intake = &MONEY_INTAKE[1];
+        let intake = intake_row("card_from_config");
         let text = cx.read(intake.file).expect("the second intake's file");
         let b = find_boundary(&text, intake.boundary).expect("the second intake's boundary");
         let lines: Vec<&str> = text.lines().collect();
@@ -2659,7 +2811,7 @@ mod tests {
     /// conversion, and every caller of it is runtime money path.
     #[test]
     fn a_boundary_that_returns_a_float_is_a_finding() {
-        let intake = &MONEY_INTAKE[0];
+        let intake = intake_row("nano_rate");
         let b = find_boundary(
             "fn nano_rate(micro: f64) -> f64 {\n    micro * 1000.0\n}\n",
             "nano_rate",
@@ -2869,3 +3021,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/no_float_money_tests.rs"]
+mod no_float_money_tests;

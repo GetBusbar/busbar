@@ -211,43 +211,9 @@ impl LegacyRows for SummedRows {
     }
 }
 
-/// What the previous release's chain head looked like when the migration read it.
-///
-/// An EMPTY head is a legitimate answer, not a failure. A deployment whose store keeps nothing
-/// across a restart has no head to read, and an older store that does not know how to answer says
-/// so. Both seal a migration at a zero opening balance and the node serves — a refusal there would
-/// mean a configuration that worked yesterday stops working on upgrade, which is the one outcome a
-/// migration may not produce.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyHead {
-    /// The last sequence number the previous release's chain reached, if any.
-    pub seq: Option<u64>,
-    /// The hash at that point, if any.
-    pub hash: Option<String>,
-    /// The opening balance per bucket, as the previous release's rows hold it.
-    pub balances: Vec<(String, i128)>,
-    /// How many rows were read to arrive at those balances.
-    pub cells_read: u64,
-}
-
-impl LegacyHead {
-    /// The answer a store with nothing to say gives.
-    pub fn empty() -> Self {
-        LegacyHead::default()
-    }
-
-    /// Whether there was anything there.
-    pub fn is_empty(&self) -> bool {
-        self.seq.is_none() && self.balances.is_empty()
-    }
-}
-
-/// Reads the previous release's chain head and balances at migration time.
-pub trait LegacyMigrationSource {
-    /// The head and balances. An implementation that cannot answer returns an empty head rather
-    /// than an error, and the migration seals a zero opening balance.
-    fn read_head(&self) -> LegacyHead;
-}
+/// The head the migration reads and the seam it reads it through: the contract's, because the
+/// store adapter implements the seam on the other side of it.
+pub use busbar_contract::migration::{LegacyHead, LegacyMigrationSource};
 
 /// The opening entries a migration seals: one per bucket, at the named card version.
 #[derive(Debug, Clone, PartialEq, Eq)]

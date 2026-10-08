@@ -629,6 +629,12 @@ impl AuthInstance {
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
+        drop(blobs);
+        // READY, as boot runs it for every door instance (`boot::open_ready`): what the instance
+        // must do on the network before it serves (an IdP's discovery and key warm-up through its
+        // declared needs), awaited on a ticket; a door that states none is not called. A refusal
+        // refuses the open in the plugin's words.
+        plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
         Ok(Self {
             shared: Arc::new(Shared {
                 plugin,
@@ -671,6 +677,14 @@ impl AuthCalls for AuthInstance {
 
     fn facts(&self) -> u32 {
         self.facts.facts
+    }
+
+    fn credential_kinds(&self) -> Vec<String> {
+        self.facts.credential_kinds.clone()
+    }
+
+    fn carriers(&self) -> Vec<String> {
+        self.facts.carriers.clone()
     }
 
     fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {

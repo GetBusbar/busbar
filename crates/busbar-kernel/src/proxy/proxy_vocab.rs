@@ -5,7 +5,7 @@
 //! `busbar-llm` crate (1.6.0 money-path Phase 3-4 C). Everything here is dialect-blind: the capped
 //! upstream-body read, the tight upstream-buffer cap, the hook-content ceiling knob, the fire-and-
 //! forget STAGE usage-tap primitives, and the agnostic ingress-error shaper. Core's own staying call
-//! sites (`egress_auth`, `egress::seam`, `preflight`, `auth`, `config`, `appbuild`) name these at
+//! sites (`egress::seam`, `preflight`, `auth`, `config`, `appbuild`) name these at
 //! their historical `crate::proxy::*` paths (re-exported from `proxy/mod.rs`), and the relocated
 //! engine names them across the crate boundary as `busbar_kernel::proxy::*` — neither reaches for a
 //! dialect, so the plane can be dropped from the build without taking any of this with it.
@@ -114,7 +114,7 @@ impl<'a> StageShape<'a> {
 pub fn fire_stage_taps(
     taps: &[crate::hooks::TapEntry],
     shape: &StageShape<'_>,
-    stage: crate::hooks::wire::HookStageProjection<'_>,
+    stage: busbar_contract::hook_wire::HookStageProjection<'_>,
     // The stage's declared catalog signals, computed by the caller behind `requested.wants(_)`.
     // An empty bag adds no key to the wire.
     signals: busbar_contract::signal::SignalBag,
@@ -134,7 +134,7 @@ pub fn fire_stage_taps(
 pub fn fire_stage_taps_where(
     taps: &[crate::hooks::TapEntry],
     shape: &StageShape<'_>,
-    stage: crate::hooks::wire::HookStageProjection<'_>,
+    stage: busbar_contract::hook_wire::HookStageProjection<'_>,
     signals: busbar_contract::signal::SignalBag,
     fires: &dyn Fn(&[String]) -> bool,
 ) {

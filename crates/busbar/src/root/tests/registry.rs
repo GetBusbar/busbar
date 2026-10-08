@@ -28,16 +28,17 @@ fn linked_rows() -> Vec<Registered> {
 
 /// The registry the seal fills: the folded transports, then every linked plane and the core one.
 fn linked_registry() -> Registry {
-    let transports: Vec<Arc<dyn Transport>> = linked_fold().into_iter().map(|(_, t)| t).collect();
-    register_all(&transports, crate::LINKED.claims).expect("nothing collides on a key")
+    let (rows, transports): (Vec<Registered>, Vec<Arc<dyn Transport>>) =
+        linked_fold().into_iter().unzip();
+    register_all(&rows, &transports, crate::LINKED.claims).expect("nothing collides on a key")
 }
 
 /// The shipped transport fold (`<wire key> <composed over, or ->` rows, in build order), as data.
 const TRANSPORT_FOLD: &str = include_str!("fixtures/transport_fold.txt");
 
-/// The sealed walk over the fifty-one declared claims, most specific first. The decisions plane's two
-/// exact paths (item 251) sit among the other exact paths, ahead of every pattern that could also
-/// describe them.
+/// The sealed walk over the forty-five declared claims, most specific first. The decisions plane's
+/// claim is its door snapshot's (FLIP-DECISIONS), mounted by the serve fold, as the MCP plane's are
+/// (FLIP-MCP), so neither is here.
 ///
 /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
 /// the test that reads it for what a change to this snapshot means. The rows are fixture DATA
@@ -70,9 +71,6 @@ fn fixture_rows(text: &str) -> Vec<String> {
         .map(str::to_string)
         .collect()
 }
-
-/// Whether this build carries the decisions plane — its registry row and its two claims (item 251).
-const DECISION: bool = cfg!(feature = "plane-decisions");
 
 /// Every transport and every plane goes into one registry, and both counts are what the design
 /// says they are. This is the half of the seal that does not depend on the claims.
@@ -115,19 +113,9 @@ fn six_transports_and_five_planes_register() {
         registry.count(PluginKind::Plane),
         "a registered plane claims nothing, or a claimed plane is not registered: {claimed:?}"
     );
-    // The decisions plane is registered exactly when its crate edge is in the build. The key is the
-    // crate's own, so it can only be named on a build that links the crate; on a build without it,
-    // the plane count above (no fifth row beyond voice) is the statement that nothing registered.
-    #[cfg(feature = "plane-decisions")]
-    assert!(
-        registry
-            .resolve(
-                PluginKind::Plane,
-                <busbar_plane_decisions::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY
-            )
-            .is_some(),
-        "the decision plane is linked and not registered"
-    );
+    // The decisions plane is not on this table: it registers through its door (`plane-door` axis),
+    // whose Statement the kernel folds into its row, and its claim is its door snapshot's
+    // (FLIP-DECISIONS).
     // The voice plane and its transport are present exactly together: neither is a thing this
     // root registers without the other.
     assert_eq!(
@@ -146,7 +134,7 @@ fn six_transports_and_five_planes_register() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_planes_declare_fifty_one_claims() {
+fn the_planes_declare_forty_five_claims() {
     let claims = linked_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     // One `<plane key> <claims>` row per plane, pinned as fixture DATA so this source names none.
@@ -157,7 +145,9 @@ fn the_planes_declare_fifty_one_claims() {
             (key.to_string(), n.parse().expect("a claim count"))
         })
         .collect();
-    assert_eq!(pinned.len(), 6, "six planes are pinned: {pinned:?}");
+    // Four rows: FLIP-MCP and FLIP-DECISIONS each took a plane's claims out of the linked table
+    // (its door's snapshot claims them, mounted by the serve fold), so six rows became four.
+    assert_eq!(pinned.len(), 4, "four planes are pinned: {pinned:?}");
     for (key, n) in &pinned {
         assert_eq!(
             count(key),
@@ -166,17 +156,17 @@ fn the_planes_declare_fifty_one_claims() {
             count(key)
         );
     }
-    // The decisions plane's key is its crate's own, so it is also asserted by that name.
+    // The decisions plane's claim is its door snapshot's (FLIP-DECISIONS), not this table's.
     assert_eq!(
         count(<busbar_plane_decisions::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY),
-        2
+        0
     );
     assert_eq!(
         pinned.iter().map(|(_, n)| n).sum::<usize>(),
         claims.len(),
         "every claim belongs to a pinned plane"
     );
-    assert_eq!(claims.len(), 51);
+    assert_eq!(claims.len(), 45);
 }
 
 /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -190,11 +180,16 @@ fn the_planes_declare_fifty_one_claims() {
 /// 65 without ever answering "disjoint" for a pair one arrival satisfies, and naming the audio
 /// surface one path at a time rather than as a prefix took it from 65 to 63. Joining the decision
 /// plane (item 251) added one more — its `/v1/models` against the llm plane's tail pattern — for 64.
+/// FLIP-MCP took the MCP plane's four claims out of the linked table (its door's snapshot claims
+/// them, mounted by the serve fold behind the data listener's guest list): 100 cross-family became
+/// 90; the 64 same-family pairs were unchanged. FLIP-DECISIONS took the decisions plane's two claims
+/// out of it too (its door's snapshot claims `POST /v1/systemone` alone, mounted by the serve fold):
+/// ten cross-family pairs and one same-family pair more, so 80 and 63.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(linked_every_plane)]
 #[test]
-fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
+fn one_hundred_and_forty_three_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
 
     let claims = linked_claims();
@@ -212,14 +207,11 @@ fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
             }
         }
     }
-    // The decisions plane's two exact paths add ten cross-family pairs (a header claim can be true
-    // of the same arrival) and one path-family pair: `/v1/models` inside the llm plane's
-    // `v1/models/<tail>` pattern.
-    assert_eq!(cross_family, 100);
-    assert_eq!(same_family, 64);
+    assert_eq!(cross_family, 80);
+    assert_eq!(same_family, 63);
 }
 
-/// What the 64 path-family overlaps that remain actually ARE, one class at a time.
+/// What the 63 path-family overlaps that remain actually ARE, one class at a time.
 ///
 /// A count alone cannot say whether an overlap is a real shape or a gap in the reasoning, and
 /// that distinction is the whole reason to tighten a grammar rather than to relax a check. So
@@ -269,12 +261,14 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
             }
         }
     }
-    assert_eq!(tail, 24);
+    // The decisions plane's `/v1/models` against the llm plane's tail pattern left with its claims
+    // (FLIP-DECISIONS).
+    assert_eq!(tail, 23);
     assert_eq!(variable, 24);
     assert_eq!(fragments, 16);
 }
 
-/// **The finding, answered.** Every one of those 164 overlaps is settled by the sealed order,
+/// **The finding, answered.** Every one of those 143 overlaps is settled by the sealed order,
 /// and none of them is a refusal.
 ///
 /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
@@ -289,7 +283,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
 
-    assert_eq!(sealed.resolved.len(), 164);
+    assert_eq!(sealed.resolved.len(), 143);
     assert!(
         sealed.refused.is_empty(),
         "the declared claims do not seal: {:?}",
@@ -315,7 +309,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// The sealed order of the fifty-one, written out.
+/// The sealed order of the forty-five, written out.
 ///
 /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
 /// against is the thing this file produces, and a change to it is a change to which plane
@@ -326,7 +320,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_sealed_order_of_the_fifty_one_claims_is_pinned() {
+fn the_sealed_order_of_the_forty_five_claims_is_pinned() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
@@ -504,14 +498,17 @@ fn the_shipped_transport_stack_composes() {
             .expect("registered")
             .composed_over
     };
-    // The transport whose `new()` yields something that refuses every connection is the one that
-    // must be built through `over`, and the rows say it was. `grpc` is a door that frames the
-    // host's socket: it is built over nothing.
+    // NO TRANSPORT NAMES ANOTHER (ARCHITECT Q128 U7; TRANSPORT-STACK (2), :4721): every row is
+    // built over nothing, the carrier being the connector's choice from the target's scheme, and
+    // `sse` is a claim of the http entry, served by its wire, not a layer over it.
     if session_linked() {
-        assert_eq!(composed_over("ws"), Some("http"));
+        assert_eq!(composed_over("ws"), None);
     }
     assert_eq!(composed_over("grpc"), None);
-    assert_eq!(composed_over("sse"), Some("http"));
+    assert_eq!(composed_over("sse"), None);
+    for row in &rows {
+        assert!(row.composes_over.is_empty(), "`{}` names a layer", row.key);
+    }
 }
 
 /// The other direction of the composition rule: a transport built over a layer it does not
@@ -624,8 +621,8 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default())
         .expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), 51);
-    assert_eq!(sealed.precedence.len(), 51);
+    assert_eq!(sealed.claims.len(), 45);
+    assert_eq!(sealed.precedence.len(), 45);
 }
 
 /// The operator's request-body cap reaches every linked transport.
@@ -689,10 +686,11 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 }
 
 /// THE FOLD IS BOTTOM-UP, AND `COMPOSES_OVER` IS THE COMPOSITION ORDER. The shipped rows build in
-/// the order they register — every wire after every layer it declares — and each composed wire is
-/// built over the first layer it declares: `sse` and `ws` over `http`, the four that open their
-/// own socket or frame the host's over nothing. The same rows handed over in the reverse order build
-/// the same stack, because the order is the declarations' and not the table's.
+/// the order they register — every wire after every layer it declares — and each entry's claims
+/// past its own register right after it (`sse`, the http entry's). No shipped wire declares a
+/// layer (no transport names another), so every row is built over nothing. The same rows handed
+/// over in the reverse order build the same stack, because the order is the declarations' and not
+/// the table's.
 // THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
 // (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
 // cell gates on the transport-door axis, read off the linked table.
@@ -700,7 +698,11 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 #[test]
 fn the_fold_builds_bottom_up_in_composes_over_order() {
     let rows = linked_rows();
-    let linked: Vec<&str> = crate::LINKED.transports.iter().map(|r| r.key).collect();
+    let linked: Vec<&str> = crate::LINKED
+        .transports
+        .iter()
+        .flat_map(|r| (r.claims)())
+        .collect();
     let shipped: Vec<(&str, Option<&str>)> = TRANSPORT_FOLD
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -846,6 +848,7 @@ fn dropped_doors() -> &'static [DroppedDoor] {
             .into_iter()
             .map(|(plugin, key)| DroppedDoor {
                 key,
+                claims: vec![key],
                 composes_over: Vec::new(),
                 wire: crate::root::doors::host_wire(
                     plugin,
@@ -870,6 +873,8 @@ fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
         key: wire.key,
         composes_over: &[],
         build: |_, _| dropped_doors()[0].wire.clone(),
+        claims: || vec![dropped_doors()[0].key],
+        upgrades: Vec::new,
     }
 }
 
@@ -989,4 +994,25 @@ fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
         "{dropped}"
     );
     assert_eq!(dropped.to_string(), linked.to_string());
+}
+
+/// THE UPGRADE LINES ARE THE LINKED CLAIMS THAT OPEN AT AN UPGRADE, read off the door Statements
+/// (ARCHITECT ruling Q128 U7; never a layer list): the session plane's wire, where this build links
+/// it, and nothing else. (RED, at the loader: a claim row stating any other trigger is no line,
+/// `an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade`.)
+#[test]
+fn the_upgrade_lines_are_read_off_the_door_statements() {
+    let lines = crate::root::serve::upgrade_carriers(crate::LINKED.transports);
+    if session_linked() {
+        assert_eq!(
+            lines,
+            ["ws"],
+            "the session wire's claim opens at the upgrade"
+        );
+    } else {
+        assert!(
+            lines.is_empty(),
+            "no session wire, no upgrade line: {lines:?}"
+        );
+    }
 }

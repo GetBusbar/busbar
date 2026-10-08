@@ -27,9 +27,12 @@ path = "src/lib.rs"
 # THE TEST-LINKED PLANES (SEAM-T, N02 ruling): the dev-dependency plane crates the cross-plane
 # integration tests install and loop. build.rs emits `$OUT_DIR/test_linked.rs` from this list and
 # `tests/linked/mod.rs` includes it, so the tests' sources name none of these crates; they address a
-# plane by what its declaration states, read back from the registry.
+# plane by what its declaration states, read back from the registry. A `door:` row is a plane crate
+# served through its memory-ABI door only: build.rs emits its `plane_door::door` and
+# `tests/linked/mod.rs` folds its registry row from its Statement, as the composition root does
+# (`root::linked::door_rows`). The list is the install order (the planes' layering order).
 [package.metadata.busbar]
-test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+test-linked = ["busbar-llm", "busbar-a2a"]
 
 [dependencies]
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
@@ -82,9 +85,7 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 # carried three races the unit had already fixed. The unit depends only on `busbar-contract`, so the
 # edge is acyclic and kernel -> kernel, exactly as the ledger and audit edges above.
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
-# THE EGRESS-AUTH UNIT (DECISIONS #40(b), #83a SD-2b): a protocol's DECLARED egress scheme is
-# presented by `busbar_kernel_identity::egress_auth` under a `Grant<Sign>` the teller mints, so the
-# credential is written onto the request kernel-side and never passes through a plane. The unit
+# THE AUTHENTICATE UNIT (the identity chain, the operator credential, the caller reference). The unit
 # depends only on `busbar-contract`, so the edge is acyclic and kernel -> kernel, exactly as the
 # ledger, audit and breaker edges above.
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
@@ -101,7 +102,7 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # plane crates turns on for this crate's own tests). Renamed to the role they play: no source here
 # names the plugin.
 fixture-store = { package = "busbar-store-memory", path = "../store-memory", optional = true }
-fixture-hook = { package = "busbar-hooks-ranking", path = "../hooks-ranking", optional = true }
+fixture-hook = { workspace = true, optional = true }
 # The shipped secret sources' own `resolve`, the stand-in secret axis (`test_support::secrets`).
 fixture-secret-env = { workspace = true, optional = true }
 fixture-secret-file = { workspace = true, optional = true }
@@ -134,8 +135,9 @@ zeroize = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 metrics = { workspace = true }
-metrics-exporter-prometheus = { workspace = true }
-metrics-util = { workspace = true }
+# The observation source (`metrics/source.rs`) is built on the facade's generational registry and
+# summary storage (`recency` = the registry's generations; it implies `registry` and `storage`).
+metrics-util = { workspace = true, features = ["recency"] }
 http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -251,7 +253,7 @@ jsonrpc-ingress = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
-openapi-schema = ["dep:schemars", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-llm/openapi-schema", "busbar-a2a/openapi-schema"]
 loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
@@ -276,7 +278,6 @@ sha2 = { workspace = true }
 # crate's own `--lib` App-tests run there too (v2 resolver feature unification) — the mechanism that
 # keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
-busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 # THE a2a CODEC'S EDGE IS GONE WITH THE CRATE (#39). Its batteries did not go with it: the RFC 8785
 # canonicalization vectors and the anomaly cells are `busbar-plane-a2a`'s now and are UNCONDITIONAL
 # there (a plane is featureless on purpose), so `cargo test --workspace` runs them without any edge
@@ -294,16 +295,19 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # kernel names no export module; its tests need one on the axis). Pulled from its own repo at the SAME
 # pinned rev the composition root links.
 busbar-export-prometheus = { workspace = true }
+# 1.5.5's recorder, as the REFERENCE the observation source is proven against byte for byte
+# (`tests/metrics_source_tests.rs`). A test edge only: the kernel ships no exposition renderer.
+metrics-exporter-prometheus = { workspace = true }
 # The REAL token-verifying auth module `auth/tests/plugin_chain_tests.rs` loads through the dropped-in
 # door (R-FIX2; the owner's FIXTURES ruling: real plugins are the proofs): GetBusbar/busbar-auth-oidc's cdylib
 # crate at the SAME pinned rev the composition root's tests use. Nothing links it; this edge is what
 # makes `cargo test -p busbar-kernel` build its cdylib (under `deps/`, hashed), which the tests sign
 # into a temp `plugins/` directory and drive with JWTs a local issuer signs.
 busbar-auth-oidc-plugin = { workspace = true }
-# ...and the issuer those tokens come from: the module's OWN test issuer (its logic crate's `testkit`
-# feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the module
-# trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
-busbar-auth-oidc = { workspace = true, features = ["testkit"] }
+# ...and its LOGIC crate at the SAME rev, for the name its door's Statement states (the identity the
+# chain reports). The issuer those tokens come from is the loader's `test_issuer` (`test-support`),
+# reached through the loader's `https_conns` connection table: the module holds no socket and no TLS.
+busbar-auth-oidc = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }

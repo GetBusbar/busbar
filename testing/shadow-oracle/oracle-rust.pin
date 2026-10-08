@@ -237,8 +237,65 @@
 # (c7de1ab) lacks dev's engine fixes and is NOT pinned. promote.yml RELEASE_REF moves to the same sha in the
 # same commit, so CI and lane proofs run ONE engine.
 #
+# 2026-10-05 (P6 ORACLE-STRICT, ARCHITECT rulings 2026-10-05): moved on to 99780d72d1ae (busbar-release
+# `p6-engine-oracle`, PR #158 into dev, cut from dev 4a7a7bba2c (the pin above), which carries the 1.6 mock allowlist and
+# the store baseline). 4b212f4: a skipped cell of an unwritable variant still resets the config for the
+# next cell (the admin.ops PostGroups/PostConfigApply reds were overlay left by earlier cells). 6a9cbe5:
+# a capture cell that addresses its own mock by `localhost` has that name allowlisted, for that cell
+# only (wire.tls|client-hello|*). 99780d7: the precise single-header acceptance (no register entry uses
+# it yet). Feature branch head; re-pin to the merge commit when #158 lands.
+#
+# 2026-10-05: re-pinned 99780d72d1ae -> 5e82e8bc1e6d, the merge of #158 into busbar-release dev (the same
+# three commits; CI green incl. "baseline reproduces its golden (x2)").
+#
+# 2026-10-05: moved 5e82e8bc1e6d -> f288a2c13d94, the merge of busbar-release #159 into dev: the precise header
+# acceptance gains ORDER specs (a named header's exact position in a header_order list), which register
+# entry S-16b uses for the relayed upstream server/date.
+#
+# 2026-10-05: moved f288a2c13d94 -> edd17921e320, the merge of busbar-release #163 into dev: the corpus
+# generator gains ops.scrape|reload|sink-removed (cells.json 2509 -> 2510 in the same busbar commit range; its
+# golden recorded from the published 1.5.5 by golden-add).
+#
+# 2026-10-06 (ARCHITECT Q1; RELEASE_REF coordination: 0ede76aea9 or newer): moved edd17921e320 -> 2119a67a6fef,
+# the merge of busbar-release #164 into dev, which descends 0ede76aea9 (P5 #484's ref: #157 + #161). #164: an
+# unreleased line's plugins are built from the commit busbar pins (the `src:` rows in plugin-digests.tsv), signed
+# by a throwaway per-run oracle key and trusted only by the candidate configs that stage them.
+#
+# 2026-10-06: moved 2119a67a6fef -> 5b89bdf67326, the merge of busbar-release #166 into dev (descends 0ede76aea9):
+# a staging config that states its own plugins.trust keeps every word and the run's publisher joins its publishers
+# list (BOOT-W23 now validates the tampered plugin as UNVERIFIED, as 1.5.5 does).
+#
+# 2026-10-06: moved 5b89bdf67326 -> f0ca9f1f1a76, the merge of busbar-release #167 into dev (descends 5b89bdf67326,
+# so 0ede76aea9 too): recorder::plugin_build signs a source-built plugin with --former-name for each 1.5.5 manifest
+# name the tree under test's plugins.yaml (former_names) or the recipe states, so a renamed fleet plugin answers its
+# 1.5.5 name (busbar #508; the 52 webrequest cells re-record once both are in).
+#
+# 2026-10-06 (pin rule: a pin never moves backwards): moved f0ca9f1f1a76 -> 1869c0032ecf, the busbar-release dev tip,
+# the merge of #168 (p3-flip-streaming-plan: the build-test plan drops the voice runtime row; #503's pin). It descends
+# f0ca9f1f1a76 (#167), 4a7a7bba2c (predev's pin, #464's) and 0ede76aea9, so whichever of #493/#503 lands second keeps
+# every engine change of the other.
+#
+# 2026-10-05 (P5 extraction, busbar #484): moved 4a7a7bba2cef -> 0ede76aea912, the merge of busbar-release
+# #157 into dev: the build-test plan drops the rows naming crates P5 moves out or deletes (the dropped-in
+# sigv4 row: its proof is GetBusbar/busbar-auth-sigv4's own conformance leg; the example plane's dlopen
+# build, re-pointed at the loader's plane_door_plugin). It descends from edd17921e320 (P6 ORACLE-STRICT's
+# pin: #158, #159, #163) and carries #161; promote.yml RELEASE_REF moves to the same sha.
+#
+# 2026-10-06: moved 0ede76aea912 -> 1869c0032ecf, busbar-release dev's head (the merge of #168): it contains every
+# earlier pin (predev's 4a7a7bba2cef, oracle-strict's edd17921e320, #157's 0ede76aea912, #493's 5b89bdf67326), so
+# no lane's engine moves backwards when this lands.
+#
+# 2026-10-07 (ARCHITECT ruling on #536, option b; HEADROOM-REMOVE precedent Q-SO2/Q-SO3): moved 1869c0032ecf ->
+# 4d52f387c4d1 (busbar-release dev, the merge of #177; its tree is #177's head 0ff118af56f5 byte for byte; it descends
+# 1869c0032ecf, 2119a67a6f and 4a7a7bba2c).
+# The generator emits the ABI-o1 cell, whose `capture.plugins_line: "1.5"` changed its input, under the NEW id
+# plugins.abi|json-contract|store-sqlite@1.5-line. The old id is retired whole in golden/1.5.5/retired.tsv, and the new
+# one is golden-added from the published 1.5.5 (busbar-release oracle-rerecord run 37606248051 at 0ff118af56f5).
+# promote.yml RELEASE_REF does not move: the pin and RELEASE_REF have moved apart since 4a7a7bba (#493 moves only
+# this pin).
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=4a7a7bba2cef472ab4078ab3b50afc5b99c2c4ac
+release_ref=4d52f387c4d1622226e3863e503793ed8568f482
 crate=busbar-release-oracle
 bin=busbar-oracle

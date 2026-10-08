@@ -39,6 +39,8 @@ struct Provider {
     secrets: Mutex<Vec<String>>,
     /// Every `disk.append` that reached the provider: the destination and the bytes.
     appended: Mutex<Vec<(DiskDest, Vec<u8>)>>,
+    /// Whether `snapshot.read` answers NOT READY (the recorder is not installed).
+    snapshot_not_ready: std::sync::atomic::AtomicBool,
 }
 
 impl Provider {
@@ -137,6 +139,70 @@ impl HostServices for Provider {
     fn trust_due(&self, c: &Caller) -> Stored {
         self.saw(c, "trust.due", b"");
         Stored::ready(0)
+    }
+
+    /// Records `<counterparty>/<item> <digest>`; answers a new sighting.
+    fn trust_sight_item(&self, c: &Caller, counterparty: &str, item: &str, digest: &str) -> Stored {
+        let arg = format!("{counterparty}/{item} {digest}");
+        self.saw(c, "trust.sight_item", arg.as_bytes());
+        Stored::ready(svc::TRUST_NEW)
+    }
+
+    /// Records `<counterparty>/<item>@<digest>`; answers that it serves.
+    fn trust_serves(
+        &self,
+        c: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        let arg = format!(
+            "{counterparty}/{}@{}",
+            item.unwrap_or("-"),
+            digest.unwrap_or("-")
+        );
+        self.saw(c, "trust.serves", arg.as_bytes());
+        Stored::ready(svc::DISTRUST_NONE)
+    }
+
+    /// Records `<counterparty>/<item>@<expected> <approve>`; answers serving.
+    fn trust_decide(
+        &self,
+        c: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        let arg = format!(
+            "{}/{}@{} {approve}",
+            key.counterparty,
+            key.item.unwrap_or("-"),
+            expected.unwrap_or("-")
+        );
+        self.saw(c, "trust.decide", arg.as_bytes());
+        Stored::ready(svc::TRUST_DECIDED_SERVING)
+    }
+
+    /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same.
+    fn trust_state(&self, c: &Caller, counterparty: &str) -> Stored {
+        self.saw(c, "trust.state", counterparty.as_bytes());
+        let value = b"drifted\0d1\0d2";
+        let mut stored = Stored::ready(svc::KEY_SAME);
+        stored.bytes = [&b"t"[..], value].concat();
+        stored.spans = vec![ItemSpan {
+            key: Span { offset: 0, len: 1 },
+            value: Span {
+                offset: 1,
+                len: value.len() as u32,
+            },
+        }];
+        stored
+    }
+
+    /// The last verdict, never a sighting: `TRUST_SAME`.
+    fn trust_unreached(&self, c: &Caller, counterparty: &str) -> Stored {
+        self.saw(c, "trust.unreached", counterparty.as_bytes());
+        Stored::ready(svc::TRUST_SAME)
     }
 
     /// Answers the payload's length as the verdict, and the counterparty as the bytes.
@@ -304,6 +370,14 @@ impl HostServices for Provider {
             .stored(),
         );
         Ran::Later
+    }
+
+    fn snapshot_read(&self, c: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        self.saw(c, "snapshot.read", scope.to_string().as_bytes());
+        if self.snapshot_not_ready.load(Ordering::Relaxed) {
+            return busbar_contract::services::Snapshot::NotReady;
+        }
+        busbar_contract::services::Snapshot::Families(snapshot_families())
     }
 }
 
@@ -494,14 +568,38 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.trust_verify,
         HOST_SLOTS.records_secret,
         HOST_SLOTS.disk_append,
+        HOST_SLOTS.snapshot_read,
+        HOST_SLOTS.trust_sight_item,
+        HOST_SLOTS.trust_serves,
+        HOST_SLOTS.trust_decide,
+        HOST_SLOTS.trust_state,
+        HOST_SLOTS.session_emit,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
+    // The room a READ service is handed, so its well-formed call can be answered whole.
+    let (mut read_buf, mut read_spans) = ([0u8; 64], [NO_SPAN; 4]);
     for (service, f) in (0..SERVICES).zip(slots) {
         // The largest `in` in the table, all zero past its head: every `in` fits it.
         let mut raw = [0u64; 32];
         let h = head(service, Ticket::NONE, 0, size_of_val(&raw));
         // SAFETY: the head fits the buffer's start.
         unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
+        // A read that answers into the caller's buffers is handed a WELL-FORMED `in` (a named
+        // counterparty, room for its items): the slot is served as any other is. Its all-zero
+        // `in` is a short answer of its own (`an_all_zero_trust_state_in_is_a_short_answer`).
+        if service == op::TRUST_STATE {
+            let well_formed = svc::TrustStateIn {
+                head: h,
+                counterparty: text("peer"),
+                into: bufs(&mut read_buf, &mut read_spans),
+            };
+            // SAFETY: a `TrustStateIn` fits the buffer's start.
+            unsafe {
+                raw.as_mut_ptr()
+                    .cast::<svc::TrustStateIn>()
+                    .write_unaligned(well_formed)
+            };
+        }
         let mut o = blank();
         let ret = f.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
         if may_pend(service) {
@@ -515,10 +613,23 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 busbar_contract::conn::ConnError::UndeclaredNeed.text(),
                 "service {service}"
             );
+        } else if service == op::TRUST_STATE {
+            // Its well-formed call, answered whole into the room it named.
+            assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
+        } else if service == op::SESSION_EMIT {
+            // An emit naming no session and nothing to write is refused before the provider.
+            assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
+            assert_eq!(error(&o), EMIT_NOTHING, "service {service}");
         } else if service == op::VERIFY_STORE {
             // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), NO_VERIFY_KEY, "service {service}");
+        } else if matches!(
+            service,
+            op::TRUST_SIGHT_ITEM | op::TRUST_SERVES | op::TRUST_DECIDE
+        ) {
+            // Served, with no ticket: the zeroed `in` names empty texts, which reach the kernel.
+            assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
         } else {
             assert!(
                 matches!(
@@ -529,6 +640,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                         | op::ENTITLEMENT_CHECK
                         | op::RANDOM_FILL
                         | op::TRUST_VERIFY
+                        | op::SNAPSHOT_READ
                 ),
                 "service {service}"
             );
@@ -1721,4 +1833,285 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     assert_eq!(error(&o), "No such file or directory");
     assert!(svc::check_disk_append(&i, ret, &o).is_ok());
     assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
+}
+
+/// `trust.sight` WITH `TRUST_UNREACHABLE` (ARCHITECT 2026-10-06): the plane could not reach the
+/// counterparty; the kernel answers its last verdict and nothing is sighted (the hash is unread,
+/// and may be empty). RED: an outcome the vocabulary does not hold is FAULT, and reaches nothing.
+#[test]
+fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fault() {
+    let d = double();
+    let sight = |outcome: u32| svc::TrustSightIn {
+        head: head(op::TRUST_SIGHT, TICKET, 0, size_of::<svc::TrustSightIn>()),
+        counterparty: text("peer"),
+        catalogue_hash: text(""),
+        outcome,
+        _outcome_reserved: 0,
+    };
+    let call = |i: &svc::TrustSightIn| {
+        let mut o = blank();
+        let ret = HOST_SLOTS.trust_sight.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+        (ret, o)
+    };
+    let unreached = sight(svc::TRUST_UNREACHABLE);
+    let (ret, o) = call(&unreached);
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::TRUST_SAME));
+    assert!(svc::check_trust_sight(&unreached, ret, &o).is_ok());
+    let (ret, _) = call(&sight(svc::TRUST_UNREACHABLE + 1));
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![("double".to_string(), "trust.unreached", b"peer".to_vec())]
+    );
+}
+
+/// The handle of an unticketed op's `seq`th service call.
+const fn unticketed(seq: u32) -> CompletionHandle {
+    CompletionHandle {
+        ticket: Ticket::NONE,
+        seq,
+        _reserved: 0,
+    }
+}
+
+/// `trust.decide` OVER THE SDK (ARCHITECT 2026-10-06): the key, the expected fingerprint and the
+/// decision reach the kernel as the caller's, with no ticket; RED: a decision the vocabulary does
+/// not hold is FAULT and reaches nothing.
+#[test]
+fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
+    let d = double();
+    let s = sdk(&d);
+    assert_eq!(
+        s.trust_decide(unticketed(0), "peer", Some("t"), Some("d1"), true),
+        Ok(svc::TRUST_DECIDED_SERVING)
+    );
+    assert_eq!(
+        s.trust_decide(unticketed(1), "peer", None, None, false),
+        Ok(svc::TRUST_DECIDED_SERVING)
+    );
+    let bad = svc::TrustDecideIn {
+        head: head(
+            op::TRUST_DECIDE,
+            Ticket::NONE,
+            0,
+            size_of::<svc::TrustDecideIn>(),
+        ),
+        counterparty: text("peer"),
+        item: text(""),
+        expected: text(""),
+        decision: svc::TRUST_DECIDE_REVOKE + 1,
+        _reserved: 0,
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_decide.unwrap()(d.ctx, std::ptr::from_ref(&bad).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "double".to_string(),
+                "trust.decide",
+                b"peer/t@d1 true".to_vec()
+            ),
+            (
+                "double".to_string(),
+                "trust.decide",
+                b"peer/-@- false".to_vec()
+            ),
+        ]
+    );
+}
+
+/// `trust.state` OVER THE SDK: the counterparty's state and its items, read through the
+/// caller's buffers under the short-buffer rule (a short buffer is `Short`, the re-call on the same
+/// handle reads the stored answer), and the kernel was asked once.
+#[test]
+fn the_sdk_trust_state_reads_the_kernels_items_under_the_short_buffer_rule() {
+    use busbar_contract::abi::sdk::{ServiceError, TrustItem};
+    let d = double();
+    let s = sdk(&d);
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 4]);
+    assert!(matches!(
+        s.trust_state(ticketed(0), "peer", &mut buf, &mut spans),
+        Err(ServiceError::Short { .. })
+    ));
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 4]);
+    let state = s
+        .trust_state(ticketed(0), "peer", &mut buf, &mut spans)
+        .expect("the stored answer");
+    assert_eq!(state.state, svc::KEY_SAME);
+    assert_eq!(
+        state.items().collect::<Vec<_>>(),
+        vec![TrustItem {
+            item: "t",
+            state: "drifted",
+            approved: Some("d1"),
+            seen: Some("d2"),
+        }]
+    );
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![("double".to_string(), "trust.state", b"peer".to_vec())]
+    );
+}
+
+/// `trust.state` WITH AN ALL-ZERO `in`: it names no room, so the item the kernel answers is a
+/// SHORT answer, FAILED with the full size named (the short-buffer rule), never READY.
+#[test]
+fn an_all_zero_trust_state_in_is_a_short_answer() {
+    let d = double();
+    let mut raw = [0u64; 32];
+    let h = head(op::TRUST_STATE, Ticket::NONE, 0, size_of_val(&raw));
+    // SAFETY: the head fits the buffer's start.
+    unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_state.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert!(
+        o.needed_bytes > 0 && o.needed_items == 1,
+        "the full size is named"
+    );
+}
+
+/// The families the double's `snapshot.read` answers: every shape the scrape layout carries (a
+/// labelled histogram's legs, a family with help and unit, one with neither, one with no samples).
+fn snapshot_families() -> Vec<busbar_contract::export_calls::Family> {
+    use busbar_contract::abi::export::{
+        SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE, SCRAPE_KIND_HISTOGRAM,
+    };
+    use busbar_contract::export_calls::{Family, Sample};
+    let sample = |name: &str, labels: &[(&str, &str)], value: &str| Sample {
+        name: name.into(),
+        labels: labels
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+        value: value.into(),
+    };
+    vec![
+        Family {
+            name: "x_requests_total".into(),
+            help: None,
+            unit: None,
+            kind: SCRAPE_KIND_COUNTER,
+            samples: vec![sample(
+                "x_requests_total",
+                &[("hook", "a\\\"b"), ("ok", "1")],
+                "3",
+            )],
+        },
+        Family {
+            name: "x_depth".into(),
+            help: Some("queue depth".into()),
+            unit: Some("items".into()),
+            kind: SCRAPE_KIND_GAUGE,
+            samples: Vec::new(),
+        },
+        Family {
+            name: "x_seconds".into(),
+            help: Some(String::new()),
+            unit: None,
+            kind: SCRAPE_KIND_HISTOGRAM,
+            samples: vec![
+                sample("x_seconds_bucket", &[("le", "0.5")], "1"),
+                sample("x_seconds_bucket", &[("le", "+Inf")], "2"),
+                sample("x_seconds_sum", &[], "0.75"),
+                sample("x_seconds_count", &[], "2"),
+            ],
+        },
+    ]
+}
+
+/// THE HOST SNAPSHOT SERVICE through the SDK, ticketless as an export `serve` calls it: a short
+/// buffer earns the bytes the layout needs; the re-call reads every family back exactly as the
+/// kernel answered it, the scope reaching the kernel as the caller's; NOT READY is `None`, never an
+/// empty snapshot.
+#[test]
+fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
+    use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
+    use busbar_contract::abi::sdk::ServiceError;
+    let d = double();
+    let none = CompletionHandle {
+        ticket: Ticket::NONE,
+        seq: 0,
+        _reserved: 0,
+    };
+    let services = sdk(&d);
+    let mut small = [0u64; 4];
+    let needed = match services.snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut small) {
+        Err(ServiceError::Short { bytes, items: 0 }) => bytes,
+        other => panic!("a short buffer earns its size: {other:?}"),
+    };
+    let mut buf = vec![0u64; usize::try_from(needed).unwrap().div_ceil(8)];
+    let read = services
+        .snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut buf)
+        .expect("the re-call reads");
+    assert_eq!(read, Some(snapshot_families()), "read back exactly");
+    d.route
+        .provider
+        .snapshot_not_ready
+        .store(true, Ordering::Relaxed);
+    assert_eq!(
+        services.snapshot_read(none, SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        Ok(None),
+        "not ready is NONE, never an empty success"
+    );
+    let seen: Vec<_> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(i, w, a)| (i.clone(), *w, String::from_utf8_lossy(a).into_owned()))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("double".to_string(), "snapshot.read", "1".to_string()),
+            ("double".to_string(), "snapshot.read", "1".to_string()),
+            ("double".to_string(), "snapshot.read", "0".to_string()),
+        ]
+    );
+}
+
+/// RED: an unknown scope, or a buffer without the layout's alignment, is FAULT before the kernel
+/// is asked.
+#[test]
+fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
+    use busbar_contract::abi::host::service::{SnapshotReadIn, SNAPSHOT_SCOPES};
+    let d = double();
+    let mut words = [0u64; 512];
+    let at = words.as_mut_ptr().cast::<u8>();
+    let call = |scope: u32, buf: *mut u8, cap: usize| {
+        let i = SnapshotReadIn {
+            head: head(
+                op::SNAPSHOT_READ,
+                Ticket::NONE,
+                0,
+                size_of::<SnapshotReadIn>(),
+            ),
+            scope,
+            _reserved: 0,
+            into: ServiceBufs {
+                buf,
+                cap,
+                spans: std::ptr::null_mut(),
+                spans_cap: 0,
+            },
+        };
+        let mut o = blank();
+        HOST_SLOTS.snapshot_read.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o).outcome()
+    };
+    assert_eq!(call(SNAPSHOT_SCOPES, at, 4096), Outcome::Fault);
+    assert_eq!(call(0, at.wrapping_add(1), 4095), Outcome::Fault);
+    assert_eq!(call(0, at, 4096), Outcome::Ready);
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().len(),
+        1,
+        "only the well-formed call reached the kernel"
+    );
 }

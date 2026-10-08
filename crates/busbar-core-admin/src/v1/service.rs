@@ -22,7 +22,7 @@ use busbar_kernel::diagnostics::{
 };
 use busbar_kernel::state::App;
 
-use busbar_kernel::admin::v1::contract::{
+use crate::v1::contract::{
     AdminAuthView, AdminError, AuthView, BuildInfo, ClassUsage, ConfigValidateView,
     EffectiveConfigView, GroupView, HookHealthView, HookTransportView, HookView, InfoView,
     KeyUsageView, ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
@@ -153,6 +153,20 @@ fn metered_row<'a>(
             .collect(),
         b.requests,
         classes,
+    )
+}
+
+/// **WHETHER A METERING ROW'S USAGE VIEW CARRIES `classes`.** Only a row a non-pools plane metered
+/// (its `provider` column is that plane's registry key, as [`row_lane`] reads it): the classes that
+/// plane declares are new 1.6.0 surface (the FLIP-A2A ruling). A pools-plane row keeps 1.5.5's
+/// usage shape, the token split alone, though the budget book holds an open class for it (a
+/// rerank's `search_units`, a provider-stated total's `unitemized_tokens`, LEDGER-100): that count
+/// stays ledgered and priced into the row's `spend_micros`, and the read does not itemize it. The
+/// signed LEDGER-SIMPLE entry pins that read byte for byte, and 1.5.5's usage rows had no such field.
+pub(crate) fn row_carries_classes(provider: &str) -> bool {
+    matches!(
+        busbar_kernel::plane::registry::plane_decl_for(provider),
+        Some(decl) if !decl.fallback
     )
 }
 
@@ -453,6 +467,8 @@ pub mod read_path_money {
         derive_spend_micros_row, derive_spend_micros_row_at_card, derive_spend_micros_row_classes,
         derive_spend_micros_row_classes_at_card, row_lane, row_priced_at_ms,
     };
+    /// The usage row the derivations above read, through the same door.
+    pub use crate::v1::contract::UsageBreakdown;
 }
 /// Process start instant, for the `info` uptime read. Stamped ONCE at startup by `mark_start()`.
 /// A missing value (never stamped — e.g. a unit test that skips `main`) yields a `None` uptime
@@ -682,17 +698,20 @@ mod catalog_scan_test_hooks {
 /// for both `info`'s build proof and the `plugins?type=auth` catalog. `keys` (the built-in
 /// signed-key verifier) is engine-handled and always present; every other entry is an auth row the
 /// build LINKS onto the auth axis (the operator credential's, in the default build — its packaging
-/// feature is the composition root's).
-fn auth_modules_compiled_in() -> Vec<&'static str> {
+/// feature is the composition root's). Public so the composition root's tests can hold the shipped
+/// build to 1.5.5's answer over the rows it really links.
+pub fn auth_modules_compiled_in() -> Vec<&'static str> {
     let mut modules = vec![busbar_kernel::config::KEYS_MODULE];
-    modules.extend(busbar_kernel::preflight::linked_auth_names());
+    modules.extend(busbar_kernel::preflight::inbound_auth_names(
+        busbar_kernel::preflight::linked_auth_rows(),
+    ));
     modules
 }
 
 /// The removable hook plugins COMPILED INTO this binary (feature-gated). Excludes the always-present,
 /// non-removable weighted SWRR floor, which is reported separately (as `weighted_floor` / the
 /// `weighted` compiled-in entry).
-fn hook_plugins_compiled_in() -> Vec<&'static str> {
+pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
     [
         #[cfg(feature = "hooks-ranking")]
         "ranking",
@@ -734,7 +753,7 @@ fn validate_plugin_filename(file: &str) -> Result<String, AdminError> {
             ));
         }
     }
-    if !busbar_plugin_loader::tarball::is_plugin_tarball(file) {
+    if !busbar_kernel::plugin_admission::tarball::is_plugin_tarball(file) {
         return Err(AdminError::Validation(
             "plugin filename must be a `.tar.gz` (or `.tgz`) signed plugin tarball".into(),
         ));
@@ -1158,7 +1177,7 @@ fn manifest_schema_url_and_error(
     };
     let url = Some(format!(
         "{}/plugins/{name}/schema",
-        busbar_kernel::admin::v1::contract::ADMIN_PREFIX
+        crate::v1::contract::ADMIN_PREFIX
     ));
     match serde_json::from_str::<serde_json::Value>(s) {
         Ok(_) => (url, None),

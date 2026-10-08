@@ -149,13 +149,34 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
     );
 }
 
+/// `GET /api/v1/admin/info` `build.auth_modules` in the shipped build is 1.5.5's answer,
+/// `["keys", "admin-tokens"]` (oracle cell `admin.ops|GetInfo|ok`): the build also links the
+/// OUTBOUND-ONLY header auth plugin on the auth axis (ARCHITECT Q-L1-AUTH (A)), and a row that
+/// declares no inbound capability is not an auth-chain module an operator can name, so it is not
+/// listed. RED before the fix: `["keys", "admin-tokens", "busbar-auth-header"]`.
+#[cfg(feature = "auth-header")]
+#[test]
+fn the_info_auth_modules_are_the_inbound_rows_only() {
+    link();
+    let linked = busbar_kernel::preflight::linked_auth_names();
+    assert!(
+        linked.len() > 1,
+        "the default build links an outbound-only auth row beside the operator credential's: {linked:?}"
+    );
+    assert_eq!(
+        busbar_core_admin::v1::service::auth_modules_compiled_in(),
+        vec!["keys", config::operator_provider()],
+        "only inbound auth-chain modules are listed (linked rows: {linked:?})"
+    );
+}
+
 /// THE PROBE EXT-AUTHADMIN ran, over the row the root links: every carrier combination answers as
 /// 1.5.5 did — the operator token on EITHER carrier admits, a wrong one on either refuses with the
 /// frozen 401 body, and a request carrying both is judged on both (the right header admits past a
 /// wrong Bearer, and past a Bearer in another scheme's grammar).
 #[tokio::test]
 async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let cases: [(Option<&str>, Option<&str>, u16); 9] = [
@@ -184,7 +205,7 @@ async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
 /// an opaque candidate that IS addressed to it and wrong, so the arm behind it never admits that.
 #[tokio::test]
 async fn the_chain_reaches_the_arm_behind_the_operator_credential_only_on_a_foreign_grammar() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let chain = [op, "any-credential"];
@@ -214,7 +235,7 @@ async fn the_chain_reaches_the_arm_behind_the_operator_credential_only_on_a_fore
 /// to answer it.
 #[tokio::test]
 async fn without_the_root_row_the_operator_token_is_refused() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let op = op();
     let with_row = app(&[op], Vec::new());
     // What `busbar_kernel::auth::open_operator` answers when the registry holds no row under the operator
@@ -379,7 +400,7 @@ fn cfg_with_credentials(
 #[test]
 fn admin_token_secret_ref_re_resolves_on_apply() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-high7-token-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let token_path = dir.join("admin.token");
@@ -439,7 +460,7 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
 #[test]
 fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-high7-signing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let token_path = dir.join("admin.token");
@@ -518,7 +539,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
 #[test]
 fn blank_admin_token_refuses_to_start() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-blank-admin-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let key_path = dir.join("signing.key");
@@ -578,7 +599,7 @@ fn blank_admin_token_refuses_to_start() {
 #[tokio::test]
 async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_credential() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-op-by-module-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (token_path, key_path) = (dir.join("admin.token"), dir.join("signing.key"));
@@ -618,7 +639,7 @@ async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_creden
 /// the name ran the operator credential instead and never asked the configured module.
 #[tokio::test]
 async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let op = op();
     // `admin_auth: [<op>]` with `<op>: { module: any-credential }`, as the build resolves it: the
     // provider is recorded as backed by that module, and the module is opened under its name.
@@ -691,7 +712,7 @@ fn through_the_loop(
     bearer: Option<&str>,
     header: Option<&str>,
 ) -> (u16, String) {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(Answers200),
         crate::root::units_admin::live_admin_door(Arc::clone(handle)),
@@ -790,7 +811,7 @@ fn an_external_admin_module_is_consulted_by_the_loop() {
 #[test]
 fn a_swapped_admin_chain_is_the_loops_next_door() {
     link();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-live-door-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (token_path, key_path) = (dir.join("admin.token"), dir.join("signing.key"));
@@ -866,18 +887,15 @@ async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
         "data-door".to_string(),
         door,
     )]));
-    let cache = Arc::new(busbar_kernel::auth_cache::CredentialCache::new());
     let judged = |token: Option<&str>, head: bool| {
         let headers = token.map(bearer).unwrap_or_default();
         let head = match head {
             true => ChainHead::of_parts("POST", "/v1/chat/completions", &headers),
             false => ChainHead::default(),
         };
-        let (auth, cache) = (auth.clone(), cache.clone());
+        let auth = auth.clone();
         let token = token.map(str::to_string);
-        async move {
-            AuthMiddleware::run_chain_on_request_path(&auth, &cache, token, head, None, None).await
-        }
+        async move { AuthMiddleware::run_chain_on_request_path(&auth, token, head, None, None).await }
     };
     match judged(Some(TOKEN), true).await {
         ChainVerdict::Identified { module, .. } => assert_eq!(module, "data-door"),

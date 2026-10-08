@@ -74,8 +74,7 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, ResourceLocator, ScopeFacts, Unit, UnitEnd,
-    UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -555,22 +554,6 @@ impl Plane for StreamingPlane {
         }
     }
 
-    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        let mut resources = busbar_contract::bounded::BoundedVec::new();
-        let _ = resources.push(ResourceLocator {
-            kind: "streaming_operation",
-            name: u.op().as_str(),
-        });
-        ScopeFacts { resources }
-    }
-
-    fn admit<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        // No client-located lane name and no client response ceiling on a duplex session: the lane
-        // is this plane's own configuration (`Upstream::lane`), and the response is unbounded audio,
-        // not a single JSON body the kernel would clamp.
-        AdmitFacts::default()
-    }
-
     fn route<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {
         // `verify` already named the one destination this unit reaches; there is no second leg.
         RoutePlan::default()
@@ -718,28 +701,40 @@ impl SessionPlane for StreamingPlane {
 /// `busbar-plane-admin`'s own table): the caller learns the CLASS of refusal and nothing about why
 /// this node reached it.
 fn refusal_render(reason: busbar_contract::unit::RefusalReason) -> (&'static str, &'static str) {
-    use busbar_contract::unit::RefusalReason as R;
-    match reason {
-        R::BodyTooLarge | R::DecodeFailed | R::SchemeNotDeclared | R::SecretPlaceholder => {
-            ("invalid_request", "the request could not be read")
-        }
-        R::CredentialRejected | R::SessionUnbound | R::CredentialBudget => {
-            ("unauthorized", "the session did not carry usable authority")
-        }
-        R::ScopeMissing | R::Vetoed | R::Revoked | R::PoolNotPermitted => (
+    use busbar_contract::abi::plane::{class_of_refusal, RefusalClass as C};
+    // A class-to-wire table over the one classification (the P-item "refusal-reason collapse").
+    // There is no `_` arm: this table used to end in one that answered every reason it did not
+    // name as "internal", so a spent budget, a frozen group, a replayed key or a deadline told the
+    // caller the node had broken, and the caller retried the wrong thing. Only a node fault is
+    // "internal" now; every other class is a refusal the caller is told the class of.
+    match class_of_refusal(reason) {
+        C::Unreadable | C::TooLarge => ("invalid_request", "the request could not be read"),
+        C::Rejected => (
+            "invalid_request",
+            "the session could not be opened at this time",
+        ),
+        C::Unauthenticated => ("unauthorized", "the session did not carry usable authority"),
+        C::Forbidden => (
             "forbidden",
             "the caller may not open a session for this operation",
         ),
-        R::RateLimited | R::InFlightCap | R::OpenSlotBusy | R::SessionBudget => {
-            ("rate_limited", "too many sessions at once")
-        }
-        R::NoDestination | R::DestinationUnreachable | R::BreakerOpen | R::Drain => (
+        C::Throttled | C::Busy => ("rate_limited", "too many sessions at once"),
+        C::QuotaExhausted => (
+            "rate_limited",
+            "the session could not be opened at this time",
+        ),
+        C::NotFound | C::Unreachable => (
             "unavailable",
             "no provider is reachable for this session right now",
         ),
-        // Everything else is this node saying no for a reason that is this node's own — the money,
-        // the buckets, the journal. A caller is told it failed here and nothing more.
-        _ => ("internal", "the session could not be opened at this time"),
+        C::Unavailable | C::Timeout => (
+            "unavailable",
+            "the session could not be opened at this time",
+        ),
+        // The node's own fault. A caller is told it failed here and nothing more.
+        C::PlaneFault | C::NodeFault => {
+            ("internal", "the session could not be opened at this time")
+        }
     }
 }
 

@@ -194,6 +194,42 @@ impl<'r> ExportRows<'r> {
         }
     }
 
+    /// The `module:` words (aliases) of the export rows this build LINKS, in registration order.
+    #[must_use]
+    pub fn linked_modules(&self) -> Vec<String> {
+        self.registry
+            .linked()
+            .iter()
+            .filter(|p| p.manifest.kind == SECTION)
+            .map(|p| p.manifest.alias.clone())
+            .collect()
+    }
+
+    /// Whether `module`'s row states the `one_instance` mark (at most one instance may be
+    /// configured): read off its Statement at bind. A row that will not load here states
+    /// none.
+    #[must_use]
+    pub fn one_instance(&self, module: &str) -> bool {
+        let Some(row) = self.row(module) else {
+            return false;
+        };
+        self.load(row, &label(module), None)
+            .is_ok_and(|p| p.context::<ExportFacts>().is_some_and(|f| f.one_instance))
+    }
+
+    /// The routes `module`'s row declares, read off its Statement at bind (no instance opens). A
+    /// row that will not load here declares none.
+    #[must_use]
+    pub fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
+        let Some(row) = self.row(module) else {
+            return Vec::new();
+        };
+        self.load(row, &label(module), None)
+            .ok()
+            .and_then(|p| p.context::<ExportFacts>().map(|f| f.routes.clone()))
+            .unwrap_or_default()
+    }
+
     /// The sink's own checks across `instances` of `module` at `phase`; `None` when `module` is
     /// not an export row.
     #[must_use]
@@ -258,6 +294,13 @@ impl<'r> ExportRows<'r> {
         // settings give it, and `disk.append` serves the instance those only.
         p.grant_destinations(&row.manifest.declares.destinations);
         let opened = ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?;
+        // DISCOVERY AT BOOT (`abi::mechanism::lifecycle` READY, the one optional lifecycle op): an
+        // export door that states `ready` is awaited once its instance is open over the host's
+        // tables, before it is served, as a store's and an auth door's are. Only this, the open that
+        // delivers, asks it: the instance `check` opens to judge a configuration has no connector.
+        opened
+            .plugin()
+            .ready(&self.dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
         Ok(Arc::new(opened))
     }
 

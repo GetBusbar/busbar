@@ -656,8 +656,11 @@ impl Registration {
 /// pass the slowest legitimate case and would then miss the uniform regression that actually costs
 /// the shard its hour. The slowest case is printed beside the total, because that is what a reader
 /// needs in order to act on it.
-/// Everything not named below. The most expensive gate that is NOT named measured 2 811 units, so
-/// this is about three times the dearest ordinary self-test in the registry.
+/// Everything not named below. The most expensive gate that is NOT named measured 5 012 units
+/// (`response-header`; `duplex-ws-default-edge` 5 009) at the sitting in [`TAKEN`], so this is 1.8x
+/// the dearest ordinary self-test: above the ruler's measured spread of 1.43x ([`BUDGET_SLACK`]),
+/// and every gate that measured above 9 000 / 1.6 = 5 625 has an entry of its own below rather than
+/// sharing this one.
 const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 
 /// The gates whose self-tests legitimately cost more, each with its MEASURED cost and the reason.
@@ -668,28 +671,49 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// and I/O, so the proxy drifts a little with the machine; and the failure being caught is a rule
 /// that grew a whole-tree scan per plant, which is a factor of ten. A budget tight enough to flap
 /// is a budget somebody raises without reading it.
+/// WHAT A UNIT IS: units = this case's wall clock ÷ one single-thread ruler pass, same worker.
+/// (ARCHITECT 2026-10-07: wall clock, not work, because runner wall-minutes are what is paid for.)
 /// WHEN AND ON WHAT EVERY MEASUREMENT BELOW WAS TAKEN. One constant, because they were taken in one
 /// sitting on one tree — and because a re-baseline that moves the numbers and not the date is the
 /// failure this whole shape exists to make impossible.
-const TAKEN: &str = "2026-09-10 b6f66e929";
+///
+/// RE-MEASURED 2026-10-07 FOR THE OPT-LEVEL CHANGE (ARCHITECT-approved measured re-measure,
+/// p6-selftest-memo). xtask is now built at opt-level 2 in every dev build (the workspace
+/// `Cargo.toml`, `[profile.dev.package.xtask]`), and the RULER is xtask code: its fixed arithmetic
+/// ran about 10.6 ms per unit at opt-level 0 (`construction`: 352.4 s / 33 096 units at the
+/// 2026-09-10 sitting) and runs 1.0 ms per unit at opt-level 2 (43.5 s / 41 969 units here), while
+/// the gates themselves sped up by less than that (regex and I/O, which the opt-level does not
+/// touch). So the same work reads as more units, and every measurement below was taken again, by
+/// the same method as every sitting before it: `xtask selftest <gate> --jobs 1`, each gate alone,
+/// the units read off the self-test's own cost line, on one box (Latchkey large, 8 cores), on one
+/// tree. Nothing was loosened beyond that: the slack is the same 1.6x, the default is the same
+/// 9 000, and the gates whose re-measurement put them above 9 000 / 1.6 got entries of their own
+/// instead of a raised default. The opt-level 0 measurements these replace are in each constant's
+/// note. Every per-case verdict line of all 64 batteries (1 290 lines) was byte-identical at
+/// opt-level 0 and opt-level 2 on that tree.
+const TAKEN: &str = "2026-10-07 214678af59";
 
 // THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
-// self-test's own cost line. Constants rather than literals inside the table so that a re-baseline
-// is a diff a reviewer can read as a list of numbers that moved.
-const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
-const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
-const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
-const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
-                                             // RE-ARMED 2026-10-03 (lane-predev-all, run 37150144473's no-default-features shard). #454's crate
-                                             // EXTRACTIONS (`busbar-transport-ws` befd20dc37, and the http/tcp/grpc/a2a wires that are pinned git
-                                             // deps `crates/` no longer holds) grew the per-plant whole-tree scan: more selftest cases now PLANT
-                                             // OR REMOVE a crate — each invalidates the derived-vocabulary matrix memo and forces a full re-scan —
-                                             // so the battery's measured unit count rose. The counts are machine-independent (plants x scan size)
-                                             // and were read off the DENY run's own cost lines; the slack below (1.6x) carries the per-box spread.
-const MEASURED_KIND_ISOLATION: f64 = 319_876.0; // 240 cases; #454 extractions grew the per-plant scan
-const MEASURED_KIND_ISOLATION_SHIP: f64 = 199_904.0; // 137 cases; same cause
-/// The two kind-isolation batteries were re-measured on #454's tree, not the 2026-09-10 sitting.
-const TAKEN_KIND_ISOLATION: &str = "2026-10-03 9c479c0fe9";
+// self-test's own cost line, xtask at opt-level 2. Constants rather than literals inside the table
+// so that a re-baseline is a diff a reviewer can read as a list of numbers that moved. The note on
+// each is the opt-level 0 figure it replaces, and where that was taken.
+const MEASURED_PLANE_PURITY: f64 = 65_100.0; // 25 cases, 64.9 s (opt 0: 27 923, 2026-09-10 b6f66e929)
+const MEASURED_PLANE_PURITY_STRICT: f64 = 26_155.0; // 12 cases, 26.2 s (opt 0: 19 435, same sitting)
+const MEASURED_STRUCTURE_LINT: f64 = 39_110.0; // 42 cases, 39.0 s (opt 0: 7 938, same sitting)
+const MEASURED_CONSTRUCTION: f64 = 41_969.0; // 36 cases, 43.5 s (opt 0: 33 096, same sitting)
+const MEASURED_KIND_ISOLATION: f64 = 711_866.0; // 238 cases, 782.2 s (opt 0: 319 876, 2026-10-03 9c479c0fe9)
+const MEASURED_KIND_ISOLATION_SHIP: f64 = 536_090.0; // 141 cases, 539.4 s (opt 0: 199 904, same)
+const MEASURED_SHIP_READY: f64 = 23_918.0; // 17 cases, 23.6 s (opt 0: under the default)
+const MEASURED_DESIGN_BINDINGS: f64 = 15_089.0; // 22 cases, 15.0 s (opt 0: under the default)
+const MEASURED_PLANE_TRANSPORT_NEUTRALITY: f64 = 12_959.0; // 9 cases, 12.9 s (opt 0: under the default)
+const MEASURED_TELLER_STEPS: f64 = 12_382.0; // 15 cases, 12.5 s (opt 0: under the default)
+const MEASURED_CONFIG_SCHEMA: f64 = 11_917.0; // 69 cases, 11.9 s (opt 0: under the default)
+const MEASURED_SEAL_WITNESS: f64 = 11_332.0; // 6 cases, 14.2 s (opt 0: under the default)
+const MEASURED_NO_DEFERRAL_STRICT_DONE: f64 = 10_704.0; // 16 cases, 10.6 s (opt 0: under the default)
+const MEASURED_UNCONSTRUCTED: f64 = 10_238.0; // 14 cases, 10.4 s (opt 0: under the default)
+const MEASURED_NO_DEFERRAL: f64 = 9_648.0; // 15 cases, 9.6 s (opt 0: under the default)
+const MEASURED_ABI_LOCATION: f64 = 7_490.0; // 7 cases, 7.7 s (opt 0: under the default)
+const MEASURED_SEGREGATION: f64 = 5_905.0; // 9 cases, 6.1 s (opt 0: under the default)
 
 // `audit-ledger` IS STRUCK AGAIN, AND THE EXPLANATION IT WAS RE-BASELINED ON WAS WRONG.
 //
@@ -781,6 +805,9 @@ pub struct Budget {
 /// It is deliberately TIGHTER than the three it replaces. Three times a measurement that was itself
 /// three times stale is how `construction` came to sit at 93 per cent of a budget its own note said
 /// it used a third of.
+///
+/// The slack was calibrated serially, and an over-budget reading under contention is re-taken
+/// serially before it counts ([`budget_verdict`]).
 pub const BUDGET_SLACK: f64 = 1.6;
 
 // THE SLACK IS CHECKED WHERE IT IS WRITTEN, at compile time, because it is a constant and a
@@ -826,15 +853,94 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "kind-isolation",
         measured: MEASURED_KIND_ISOLATION,
         allowed: MEASURED_KIND_ISOLATION * BUDGET_SLACK,
-        taken: TAKEN_KIND_ISOLATION,
-        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it. RE-MEASURED on #454's tree: its wire extractions (busbar-transport-ws et al.) turned more cases into crate-planting ones, raising the count.",
+        taken: TAKEN,
+        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it. #454's wire extractions (busbar-transport-ws et al.) turned more cases into crate-planting ones, raising the count.",
     },
     Budget {
         gate: "kind-isolation-ship",
         measured: MEASURED_KIND_ISOLATION_SHIP,
         allowed: MEASURED_KIND_ISOLATION_SHIP * BUDGET_SLACK,
-        taken: TAKEN_KIND_ISOLATION,
-        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input. RE-MEASURED on #454's tree for the same cause as its non-ship twin.",
+        taken: TAKEN,
+        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input. It grew on #454's tree for the same cause as its non-ship twin.",
+    },
+    // THE ENTRIES BELOW WERE UNDER THE DEFAULT AT OPT-LEVEL 0 and are above 9 000 / 1.6 at
+    // opt-level 2 (see [`TAKEN`]): the same work, read on a ruler that sped up more than it did.
+    Budget {
+        gate: "ship-ready",
+        measured: MEASURED_SHIP_READY,
+        allowed: MEASURED_SHIP_READY * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Almost all of it is ONE case, `run() reaches the end and emits every owed row`, which drives the whole ship-ready gate over the real tree end to end. Not analysed further here; the entry is the measurement.",
+    },
+    Budget {
+        gate: "design-bindings",
+        measured: MEASURED_DESIGN_BINDINGS,
+        allowed: MEASURED_DESIGN_BINDINGS * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Twenty-two cases, each re-reading the spec's bindings and every citation they name across the tree. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
+    },
+    Budget {
+        gate: "plane-transport-neutrality",
+        measured: MEASURED_PLANE_TRANSPORT_NEUTRALITY,
+        allowed: MEASURED_PLANE_TRANSPORT_NEUTRALITY * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Nine cases, each scanning every plane and transport crate for the other side's vocabulary. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
+    },
+    Budget {
+        gate: "teller-steps",
+        measured: MEASURED_TELLER_STEPS,
+        allowed: MEASURED_TELLER_STEPS * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Fifteen cases over the teller-step table and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+    },
+    Budget {
+        gate: "config-schema",
+        measured: MEASURED_CONFIG_SCHEMA,
+        allowed: MEASURED_CONFIG_SCHEMA * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Sixty-nine cases, the most of any battery under a minute; each is cheap and the count is what costs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
+    },
+    Budget {
+        gate: "seal-witness",
+        measured: MEASURED_SEAL_WITNESS,
+        allowed: MEASURED_SEAL_WITNESS * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Six cases, each a whole-gate run over the sealed crates. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+    },
+    Budget {
+        gate: "no-deferral-strict-done",
+        measured: MEASURED_NO_DEFERRAL_STRICT_DONE,
+        allowed: MEASURED_NO_DEFERRAL_STRICT_DONE * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The strict twin of no-deferral: sixteen cases, each scanning the whole tree's text for the banned markers. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
+    },
+    Budget {
+        gate: "unconstructed",
+        measured: MEASURED_UNCONSTRUCTED,
+        allowed: MEASURED_UNCONSTRUCTED * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Fourteen cases, each reading every crate for types declared and never built. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
+    },
+    Budget {
+        gate: "no-deferral",
+        measured: MEASURED_NO_DEFERRAL,
+        allowed: MEASURED_NO_DEFERRAL * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Fifteen cases, each scanning the whole tree's text for the banned markers and their waivers. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
+    },
+    Budget {
+        gate: "abi-location",
+        measured: MEASURED_ABI_LOCATION,
+        allowed: MEASURED_ABI_LOCATION * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Seven cases, each walking the whole tree for ABI shapes outside busbar-contract/src/abi/. Under the default, but within the ruler's spread of it, so it carries its own measured entry.",
+    },
+    Budget {
+        gate: "segregation",
+        measured: MEASURED_SEGREGATION,
+        allowed: MEASURED_SEGREGATION * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Nine cases over the shadow-oracle tree and every crate's manifest. Under the default, but within the ruler's spread of it, so it carries its own measured entry.",
     },
     // `audit-ledger` HAS NO ENTRY HERE. It had one, set from 8 779 units and justified by a
     // register-growth story that measurement refuted; the cost was 128 `rev-list` processes per
@@ -907,7 +1013,8 @@ fn work_unit_here() -> std::time::Duration {
     ruler_once()
 }
 
-fn selftest_budget(gate: &str) -> f64 {
+/// The budget of `gate`'s self-test, in work units: its entry's, else the default.
+pub fn selftest_budget(gate: &str) -> f64 {
     SELFTEST_BUDGETS
         .iter()
         .find(|b| b.gate == gate)
@@ -1970,20 +2077,160 @@ pub fn execute_strict(gate: &dyn Gate, cx: &Ctx) -> Verdict {
 /// The single exception is DECLARED, NAMED and stale-checked: [`Gate::informational`] rows are
 /// PASS by construction, so they are held to being exercised rather than to going red, and a
 /// declaration that no longer names an owed row is itself refused.
+///
+/// VERDICT AND COVERAGE ONLY (ARCHITECT 2026-10-07, ruling (a)). This is the judge every test that
+/// runs a gate's self-test uses, and a test runs inside `cargo test` / nextest, where the cores are
+/// shared with every other test process: a timing budget read there is a flake by construction
+/// (Law 8: an instrument must not report by noise). The work-unit BUDGET is judged in exactly one
+/// place, `cargo xtask selftest` ([`verify_selftest`]), where scheduling is controlled and an
+/// over-budget contended reading is re-taken serially.
 pub fn verify_report(gate: &dyn Gate, report: &Report<'_>) -> Result<(), Vec<String>> {
+    judge_report(gate, report, None)
+}
+
+/// THE BUDGET'S VERDICT ON ONE BATTERY, AND AN OVER-BUDGET CONTENDED READING RE-TAKEN SERIALLY
+/// (ARCHITECT 2026-10-07). The budget is measured serially ([`BUDGET_SLACK`]); a battery taken
+/// across the cores that comes in over it is taken once more at `--jobs 1`, and the SERIAL reading
+/// is the verdict — the same rule the harness applies to a red case. Over at `--jobs 1` too, it is
+/// red; there is no third try.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BudgetVerdict {
+    /// The battery's budget, in work units.
+    pub budget: f64,
+    /// What it spent as taken, at `jobs`.
+    pub contended: f64,
+    /// The jobs it was taken at.
+    pub jobs: usize,
+    /// The serial re-take's reading, when the contended one was over budget at more than one job.
+    pub serial: Option<f64>,
+}
+
+impl BudgetVerdict {
+    /// The reading that is the verdict: the serial re-take's when there was one.
+    #[must_use]
+    pub fn spent(&self) -> f64 {
+        self.serial.unwrap_or(self.contended)
+    }
+
+    /// Whether the battery is over its budget.
+    #[must_use]
+    pub fn over(&self) -> bool {
+        self.spent() > self.budget
+    }
+
+    /// `contended X → serial Y` when the battery was re-taken.
+    #[must_use]
+    pub fn retake_line(&self) -> Option<String> {
+        self.serial.map(|y| {
+            format!(
+                "contended {:.0} → serial {y:.0} work units (budget {:.0}; --jobs {} re-taken at --jobs 1)",
+                self.contended, self.budget, self.jobs
+            )
+        })
+    }
+}
+
+/// [`BudgetVerdict`] of a battery that spent `contended` units at `jobs` against `budget`;
+/// `serial` re-takes it at `--jobs 1` and is called only when the contended reading is over and
+/// `jobs` is more than one.
+pub fn budget_verdict(
+    budget: f64,
+    contended: f64,
+    jobs: usize,
+    serial: impl FnOnce() -> f64,
+) -> BudgetVerdict {
+    let retake = contended > budget && jobs > 1;
+    BudgetVerdict {
+        budget,
+        contended,
+        jobs,
+        serial: retake.then(serial),
+    }
+}
+
+/// THE BUDGET'S READING OF `report`, `gate`'s self-test as just taken over `cx`, with an
+/// over-budget contended battery re-taken once at `--jobs 1` ([`budget_verdict`]). Read by
+/// `cargo xtask selftest` alone ([`verify_selftest`]); no test judges the budget.
+pub fn budget_reading(gate: &dyn Gate, report: &Report<'_>, cx: &Ctx) -> BudgetVerdict {
+    budget_reading_within(gate, report, cx, selftest_budget(gate.name()))
+}
+
+/// [`budget_reading`] against `budget` rather than the table's.
+pub fn budget_reading_within(
+    gate: &dyn Gate,
+    report: &Report<'_>,
+    cx: &Ctx,
+    budget: f64,
+) -> BudgetVerdict {
+    let jobs = report.jobs();
+    let reading = budget_verdict(budget, report.units(), jobs, || {
+        println!(
+            "  ...over budget at --jobs {jobs} ({:.0} work units): re-taking the battery at \
+             --jobs 1 to read it as the budget was measured",
+            report.units()
+        );
+        set_selftest_jobs(1);
+        let started = std::time::Instant::now();
+        let watchdog = Watchdog::arm(
+            gate.name(),
+            gate.owed(),
+            selftest_ceiling_from_env(gate.name()),
+        );
+        let serial = gate.selftest(cx);
+        let _ = serial.cases();
+        drop(watchdog);
+        set_selftest_jobs(jobs);
+        println!(
+            "  ...the serial re-take took {:.1}s",
+            started.elapsed().as_secs_f64()
+        );
+        serial.units()
+    });
+    if let Some(line) = reading.retake_line() {
+        println!("  budget: {line}");
+    }
+    reading
+}
+
+/// THE `cargo xtask selftest` JUDGE: [`verify_report`]'s verdict and coverage, AND the work-unit
+/// budget read through [`budget_reading`], so an over-budget contended reading is re-taken serially
+/// before it counts. The one place the budget is judged.
+pub fn verify_selftest(gate: &dyn Gate, report: &Report<'_>, cx: &Ctx) -> Result<(), Vec<String>> {
+    verify_report_with(gate, report, &budget_reading(gate, report, cx))
+}
+
+/// [`verify_report`] with the budget judged by `reading` ([`budget_verdict`]).
+pub fn verify_report_with(
+    gate: &dyn Gate,
+    report: &Report<'_>,
+    reading: &BudgetVerdict,
+) -> Result<(), Vec<String>> {
+    judge_report(gate, report, Some(reading))
+}
+
+/// The verdict, the coverage and, with a `reading`, the budget.
+fn judge_report(
+    gate: &dyn Gate,
+    report: &Report<'_>,
+    reading: Option<&BudgetVerdict>,
+) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
 
     // THE BUDGET. See [`SELFTEST_BUDGETS`]: an unmeasured selftest is one that grows until the
     // runner kills it, and a killed job is neither green nor red.
-    let budget = selftest_budget(gate.name());
-    let spent = report.units();
-    if spent > budget {
+    if let Some(reading) = reading.filter(|r| r.over()) {
+        let budget = reading.budget;
+        let spent = reading.spent();
         let slowest = report
             .slowest()
             .map(|(n, t)| format!(" Slowest case: `{n}`, {:.1}s.", t.as_secs_f64()))
             .unwrap_or_default();
+        let retaken = reading
+            .retake_line()
+            .map(|l| format!(" Re-taken serially and still over: {l}."))
+            .unwrap_or_default();
         errs.push(format!(
-            "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (one unit is {:.1}ms on this box right now, so {:.0}s of wall clock here). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}",
+            "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (one unit is {:.1}ms on this box right now, so {:.0}s of wall clock here). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}{retaken}",
             gate.name(),
             report.unit().as_secs_f64() * 1000.0,
             report.total().as_secs_f64()
@@ -3640,6 +3887,10 @@ mod parallel_tests {
 }
 
 #[cfg(test)]
+#[path = "tests/budget_retake_tests.rs"]
+mod budget_retake_tests;
+
+#[cfg(test)]
 mod posture_tests {
     use super::*;
     use crate::ledger::Row;
@@ -3719,6 +3970,32 @@ mod posture_tests {
                 "{key} is keyed by a row the posture does not name"
             );
         }
+    }
+
+    /// THE KIND-ISOLATION POSTURE DOES NOT HOLD OVER A RED IT CANNOT READ (X5 finding 10). A
+    /// listed row that goes red with a plain-sentence detail carries no finding the snapshot can
+    /// key, so it used to hold vacuously; over the real committed snapshot it is now scored, and
+    /// so is a reconciliation problem about a listed row (a row that emitted nothing).
+    #[test]
+    fn the_kind_isolation_posture_scores_a_listed_red_it_cannot_parse() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let stopped = Row::fail(
+            "kind-isolation:deps",
+            "the dependency graph could not be read",
+            "cargo metadata exited 101: the lock file could not be read",
+        );
+        assert!(
+            excused_from_all("kind-isolation", &cx, &verdict(vec![stopped])).is_none(),
+            "a listed red whose detail parses to no finding was excused by the snapshot"
+        );
+        let mut silent = verdict(Vec::new());
+        silent
+            .problems
+            .push("kind-isolation:deps: owed but not emitted (DID NOT RUN)".to_string());
+        assert!(
+            excused_from_all("kind-isolation", &cx, &silent).is_none(),
+            "a listed row that emitted nothing was excused by the snapshot"
+        );
     }
 
     /// THE CONSTRUCTION POSTURE, WHICH USED TO BE `Excused::Whole` — no fact-check, no expiry, no

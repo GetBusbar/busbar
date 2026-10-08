@@ -258,7 +258,7 @@ async fn rig_billed(fixture: Fixture) -> Rig {
 
 async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     // Enough for every failover hop the walk may take; a delivered fixture consumes one.

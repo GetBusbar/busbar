@@ -33,6 +33,11 @@
 //! with `busbar-plugin-loader = { git = …, rev = <the pin>, features = ["conformance"] }` as a
 //! dev-dependency. The macro emits the suite's tests; `plugin-ci.yml` runs them under `--release`.
 //!
+//! A plugin whose declared needs reach a far end (an IdP's JWKS or token endpoint) names those far
+//! ends in its inputs, `"far_ends": [{ "url", "cert_pem", "status", "body" }, ...]`: each instance
+//! the suite opens is bound to a connection table serving them, as the host's connector carries
+//! the plugin's requests ([`Subject::far_ends`]); the plugin holds no socket and no TLS.
+//!
 //! WHAT ONE RUN PROVES, for the kind the door states:
 //!
 //! * the dropped-in library states exactly the linked door's Statement (the signed manifest's
@@ -103,6 +108,8 @@ use crate::tcp_conns::TcpConns;
 
 mod auth;
 mod export;
+
+pub use auth::{red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte};
 mod hook;
 mod plane;
 mod secret;
@@ -319,6 +326,33 @@ impl Subject {
         }
     }
 
+    /// THE FAR ENDS the plugin's needs reach (`inputs.far_ends`), as a framed connection table
+    /// ([`crate::https_conns::HttpsConns`]): each `{ "url", "cert_pem", "status", "body" }` is served
+    /// at its exact URL, to a need trusting `cert_pem` (its `trust_from`), or to any need when
+    /// `cert_pem` is `null` (a far end chaining to the public roots); every other URL is refused as
+    /// unreachable. `None` when the inputs name none (the instance is handed no table).
+    ///
+    /// # Panics
+    /// When a far end names no `url`.
+    #[must_use]
+    pub fn far_ends(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        let ends = self.inputs.get("far_ends")?.as_array()?;
+        let table = crate::https_conns::HttpsConns::new();
+        for e in ends {
+            let url = e["url"]
+                .as_str()
+                .expect("conformance.json: every far end names its url");
+            let body = match &e["body"] {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            let status = u32::try_from(e["status"].as_u64().unwrap_or(200)).unwrap_or(200);
+            table.serve(url, e["cert_pem"].as_str(), status, &body);
+        }
+        Some(Arc::new(table))
+    }
+
     /// The kind's own inputs (`inputs.<kind>`), `Null` when absent.
     #[must_use]
     pub fn kind_inputs(&self, kind: &str) -> &serde_json::Value {
@@ -522,6 +556,19 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
         conns: ConnTable::NoNeeds,
+    }
+}
+
+/// [`Subject::bind`], the instance bound to a connection table serving the subject's far ends
+/// ([`Subject::far_ends`]) when its inputs name any: the plugin's declared needs reach them there,
+/// as the host's connector would carry them. Naming none, the leg's own table ([`Subject::conns`]).
+pub fn bind_far(d: &Dispatcher, instance: &str, s: &Subject) -> Bind {
+    match s.far_ends() {
+        Some(table) => Bind {
+            conns: ConnTable::Host(table),
+            ..bind(d, instance)
+        },
+        None => s.bind(d, instance),
     }
 }
 
@@ -765,6 +812,61 @@ pub fn called(c: &Called) -> String {
     format!("{:?} lease={} {text}", c.outcome, c.lease != 0)
 }
 
+/// THE HOST'S SECRET LENDING, as the suite's host does it: each key the plugin's Statement names as a
+/// secret reference (`Plugin::secret_refs`, a `.`-separated settings path) has its value lent in
+/// `open`/`refresh`'s `secrets`, in the Statement's order: a string's bytes (the suite's test
+/// material stands in for the material the kernel would resolve the reference to); an absent or
+/// non-string value lends empty bytes, which the plugin refuses. `keep`: the key stays in the
+/// settings, as the secret kind's host (`secret_calls`) leaves it; otherwise it is taken out, as
+/// the boot's and the auth axis's hosts take it (`boot::resolve_secrets`,
+/// `auth_door::split_secrets`). Settings with no such key pass through unchanged.
+#[must_use]
+pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, Vec<Vec<u8>>) {
+    if refs.is_empty() {
+        return (settings.to_vec(), Vec::new());
+    }
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(settings) else {
+        return (settings.to_vec(), vec![Vec::new(); refs.len()]);
+    };
+    let secrets = refs
+        .iter()
+        .map(|path| {
+            let (parent, last) = match path.rsplit_once('.') {
+                Some((head, last)) => (head.split('.').try_fold(&mut v, |v, k| v.get_mut(k)), last),
+                None => (Some(&mut v), path.as_str()),
+            };
+            let object = parent.and_then(serde_json::Value::as_object_mut);
+            let value = if keep {
+                object.and_then(|o| o.get(last).cloned())
+            } else {
+                object.and_then(|o| o.remove(last))
+            };
+            match value {
+                Some(serde_json::Value::String(s)) => s.into_bytes(),
+                _ => Vec::new(),
+            }
+        })
+        .collect();
+    if keep {
+        return (settings.to_vec(), secrets);
+    }
+    (v.to_string().into_bytes(), secrets)
+}
+
+/// The blobs `open`/`refresh` lend over `secrets`.
+fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
+    use busbar_contract::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
+    secrets
+        .iter()
+        .map(|s| Blob {
+            ptr: s.as_ptr(),
+            len: s.len(),
+            fmt: BLOB_OCTETS,
+            flags: BLOB_SECRET,
+        })
+        .collect()
+}
+
 /// `validate` over `settings`.
 pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     let mut err = [0_u8; 512];
@@ -779,15 +881,24 @@ pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// `open` is `PlaneOpenIn`/`PlaneOpenOut` (its `out` carries the first generation's snapshot, and
 /// the kind's check FAULTs an `open` whose `out` cannot hold it); every other kind's is the
 /// lifecycle's `OpenIn`/`OpenOut`.
+///
+/// The keys the Statement names as secret references are taken out of the settings and their
+/// material lent in `secrets` ([`lend_secrets`]), as the host lends them.
 pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
+    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let blobs = secret_blobs(&secrets);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
-        f.input.open.settings = json(settings);
+        f.input.open.settings = json(&settings);
+        f.input.open.secrets = blobs.as_ptr();
+        f.input.open.secrets_len = blobs.len();
         f.input.open.generation = 1;
         return p.call(life::OPEN, &mut f);
     }
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
-    f.input.settings = json(settings);
+    f.input.settings = json(&settings);
+    f.input.secrets = blobs.as_ptr();
+    f.input.secrets_len = blobs.len();
     f.input.generation = 1;
     p.call(life::OPEN, &mut f)
 }
@@ -797,14 +908,20 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// it answers; the frame [`open`]'s.
 pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
     let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
+    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let blobs = secret_blobs(&secrets);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
-        f.input.open.settings = json(settings);
+        f.input.open.settings = json(&settings);
+        f.input.open.secrets = blobs.as_ptr();
+        f.input.open.secrets_len = blobs.len();
         f.input.open.generation = 1;
         return on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline);
     }
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
-    f.input.settings = json(settings);
+    f.input.settings = json(&settings);
+    f.input.secrets = blobs.as_ptr();
+    f.input.secrets_len = blobs.len();
     f.input.generation = 1;
     on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline)
 }
@@ -858,8 +975,12 @@ const OPEN_DEADLINE: Duration = Duration::from_secs(30);
 
 /// `refresh` over `settings`, generation 2.
 pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
+    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let blobs = secret_blobs(&secrets);
     let mut f: Frame<RefreshIn, OutHead> = Frame::new(input(), output());
-    f.input.settings = json(settings);
+    f.input.settings = json(&settings);
+    f.input.secrets = blobs.as_ptr();
+    f.input.secrets_len = blobs.len();
     f.input.generation = 2;
     p.call(life::REFRESH, &mut f)
 }
@@ -1371,17 +1492,26 @@ pub fn declared_needs_are(declares: &str, statement: &[String]) -> Result<(), St
 }
 
 /// The repo's declares file, found from the plugin crate's manifest dir: `declares.json` at the
-/// workspace root (the crate dir's parent) or one directory below it; `None` when there is none
-/// (plugin-ci's declares step refuses a plugin repo without one; a crate inside busbar's own tree
-/// has none).
+/// workspace root (the crate dir's parent, holding the plugin repo's `Cargo.toml`) or one directory
+/// below it; `None` when there is none (plugin-ci's declares step refuses a plugin repo without
+/// one).
+///
+/// A crate whose parent is no workspace root (a crate inside busbar's own tree, under `crates/`)
+/// is in no plugin repo: its declares file is its own `declares.json` when it holds one, and a
+/// sibling crate's is that crate's, never this one's.
 ///
 /// # Panics
 /// More than one is found.
 #[must_use]
 pub fn declares_file(manifest_dir: &str) -> Option<PathBuf> {
-    let root = Path::new(manifest_dir)
+    let crate_dir = Path::new(manifest_dir);
+    let Some(root) = crate_dir
         .parent()
-        .unwrap_or_else(|| Path::new(manifest_dir));
+        .filter(|p| p.join("Cargo.toml").is_file())
+    else {
+        let own = crate_dir.join("declares.json");
+        return own.is_file().then_some(own);
+    };
     let mut found: Vec<PathBuf> = std::iter::once(root.to_path_buf())
         .chain(
             std::fs::read_dir(root)
@@ -1483,6 +1613,27 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_failing_ready_refuses_the_boot() {
             $crate::conformance::red_ready(&__busbar_conformance_subject());
+        }
+
+        /// RED: an outbound auth door writing one wrong field byte fails the outbound script
+        /// (nothing to plant for a door with no outbound family).
+        #[test]
+        fn red_an_outbound_field_byte_off_is_refused() {
+            $crate::conformance::red_outbound_wrong_byte(&__busbar_conformance_subject());
+        }
+
+        /// RED: an outbound auth door whose `fields` writes nothing fails the outbound script
+        /// (nothing to plant for a door with no outbound family).
+        #[test]
+        fn red_an_outbound_door_writing_no_field_is_refused() {
+            $crate::conformance::red_outbound_writes_nothing(&__busbar_conformance_subject());
+        }
+
+        /// RED: an outbound auth door fetching its token twice fails the outbound script
+        /// (nothing to plant for a door whose styles mint no token).
+        #[test]
+        fn red_a_second_token_fetch_is_refused() {
+            $crate::conformance::red_outbound_double_fetch(&__busbar_conformance_subject());
         }
 
         /// RED: a networked door bound to serve with no connection table is refused by name.

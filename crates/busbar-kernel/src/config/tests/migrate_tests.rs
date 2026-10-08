@@ -1242,13 +1242,7 @@ pools: {}
     let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(webhooks(&deploy.export), 1);
-    assert!(
-        export.recorder.is_some()
-            && export
-                .plugins
-                .iter()
-                .any(|p| p.def.module == crate::config::EXPORT_MODULE_OTLP)
-    );
+    assert!(export.recorder.is_some() && export.plugins.iter().any(|p| p.def.module == "otlp"));
 
     // IDEMPOTENT: re-migrating the already-new document moves nothing more, and the TREE is stable.
     let (out2, doc2) = migrate_to_value(&migrated_yaml);
@@ -2648,7 +2642,7 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
 // full config is the only thing that proves the migrator is comprehensive: a code read of what it
 // "thinks" it handles is not enough.
 //
-// MOVED to `tests/config_migrate_cross_plane.rs` (A6/HostCtx dev-dependency-cycle cleanup): the
+// MOVED to `crates/busbar/tests/config_migrate_cross_plane.rs` (A6/HostCtx dev-dependency-cycle cleanup): the
 // fixture's `tools:`/`agents:` blocks need the REAL `busbar_mcp`/`busbar_a2a` planes registered to
 // resolve past `resolve`'s "compiled without the plane that owns it" refusal — a neutral fake plane
 // cannot stand in, since the assertions below read `cfg.tool_pools`/`cfg.agent_pools`, which only
@@ -2734,14 +2728,14 @@ fn migrate_never_invents_a_keyless_api_key() {
 /// `busbar-export-webhook` plugin), which this test binary has no axis for.
 fn webhooks(defs: &crate::config::ExportDefs) -> usize {
     defs.values()
-        .filter(|d| d.module.trim() == crate::config::EXPORT_MODULE_REQUEST_LOG_WEBHOOK)
+        .filter(|d| d.module.trim() == "request-log-webhook")
         .count()
 }
 
 /// `defs` without its `request-log-webhook` instances — what this test binary can resolve.
 fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
     defs.iter()
-        .filter(|(_, d)| d.module.trim() != crate::config::EXPORT_MODULE_REQUEST_LOG_WEBHOOK)
+        .filter(|(_, d)| d.module.trim() != "request-log-webhook")
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
 }

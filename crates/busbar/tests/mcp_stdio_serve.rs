@@ -12,9 +12,11 @@
 //!   chain with no `BUSBAR_MCP_STDIO_CREDENTIAL`, or with one the admission refuses, **exits
 //!   nonzero without serving a single frame** — the stdio spelling of the HTTP door's `401`;
 //! * a GOVERNED SESSION end to end: the credential — a JWT a local issuer signed — is verified by a
-//!   REAL token-verifying auth plugin (GetBusbar/busbar-auth-oidc, against the issuer's JWKS on a
-//!   certificate-verified loopback endpoint) loaded over the REAL plugin pipeline, `role_bindings` binds the session to a
-//!   budget-capped group,
+//!   REAL token-verifying auth plugin (GetBusbar/busbar-auth-oidc, on the auth kind's door) loaded
+//!   over the REAL plugin pipeline, the issuer's JWKS on a certificate-verified loopback endpoint
+//!   fetched for it by the child's OWN connector over the plugin's declared need (the plugin holds
+//!   no socket and no TLS; `advanced.allow_destinations` lets the loopback through the destination
+//!   guard), `role_bindings` binds the session to a budget-capped group,
 //!   the operator's `ask_caller` is driven as LIVE `elicitation/create` requests over the pipes,
 //!   and **the call over budget is refused with the budget named** — governance applied to a
 //!   child process, watched from outside it;
@@ -30,11 +32,11 @@
 // the flag falls through to the listener path (main.rs, "a build without MCP falls through to its
 // listener path"), so the spawned child is a normal HTTP server that never emits a stdio frame and
 // never exits on stdin EOF. These end-to-end tests drive that stdio channel, so they belong to the
-// same feature as the mode they exercise — matching the binary's own `#[cfg(feature = "plane-mcp")]`
-// on the serve block.
-// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
-// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
-#![cfg(linked_axis_stdio_serve)]
+// build that links the plane that serves it.
+// The plane under test is the door `plane-mcp` carries, served on the root's line carrier (SEAM-S1)
+// through the stdio claim its door states; gated on `linked_section_tools`, set exactly when the
+// linked door declaring `tools:` is in the build.
+#![cfg(linked_section_tools)]
 
 mod common;
 
@@ -75,15 +77,70 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// THE LOCAL ISSUER, one per test process: the auth module's OWN test issuer (its logic crate's
-/// `testkit` feature) — an ES256 key, its JWKS served over a certificate-verified loopback endpoint
-/// the module trusts through `ca_cert_pem`, and genuinely signed tokens. The child `busbar` process's
-/// dropped-in module does the whole fetch and the whole verification.
-fn issuer() -> &'static busbar_auth_oidc::testkit::Issuer {
-    static ONE: std::sync::OnceLock<busbar_auth_oidc::testkit::Issuer> = std::sync::OnceLock::new();
+/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`: an ES256 key, its JWKS and
+/// genuinely signed tokens), its JWKS served over a certificate-verified loopback TLS endpoint
+/// ([`serve_jwks`]) the module trusts through `ca_cert_pem`. The child `busbar` process's OWN
+/// connector fetches the JWKS over the dropped-in module's declared need, and the module does the
+/// whole verification.
+fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
+        std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        busbar_auth_oidc::testkit::Issuer::start("https://issuer.e2e.invalid", "e2e-issuer")
+        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(
+            "https://issuer.e2e.invalid",
+            "e2e-issuer",
+        );
+        let (url, cert_pem) = serve_jwks(issuer.jwks().to_string());
+        issuer.served_at(&url, &cert_pem)
     })
+}
+
+/// Serve `jwks` over TLS on a fresh loopback port for the life of the process, under a self-signed
+/// certificate for `127.0.0.1`: the JWKS URL and the certificate's PEM. One background thread
+/// answers every request with the document.
+fn serve_jwks(jwks: String) -> (String, String) {
+    use std::io::{Read as _, Write as _};
+    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
+        .expect("mint a self-signed certificate");
+    let cert_pem = cert.cert.pem();
+    let private = rustls_pki_types::PrivateKeyDer::Pkcs8(
+        rustls_pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
+    );
+    let config = std::sync::Arc::new(
+        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.cert.der().clone()], private)
+        .expect("server certificate"),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let url = format!(
+        "https://{}/jwks",
+        listener.local_addr().expect("local addr")
+    );
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let (Ok(socket), Ok(session)) = (socket, rustls::ServerConnection::new(config.clone()))
+            else {
+                continue;
+            };
+            let mut stream = rustls::StreamOwned::new(session, socket);
+            let _ = stream.read(&mut [0u8; 4096]);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{jwks}",
+                jwks.len()
+            );
+            let _ = stream.flush();
+            stream.conn.send_close_notify();
+            let _ = stream.flush();
+        }
+    });
+    (url, cert_pem)
 }
 
 /// A JWT for principal `e2e` with role `tester`, bound to `aud` and signed by the local issuer —
@@ -154,7 +211,8 @@ fn record_skip(reason: &str) {
 
 /// Package the REAL `busbar-auth-oidc-plugin` cdylib (GetBusbar/busbar-auth-oidc, a pinned git
 /// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into an
-/// unsigned `kind: auth` tarball in the fixture's plugins dir. `false` when the cdylib is not built —
+/// unsigned `kind: auth` tarball in the fixture's plugins dir, its manifest stating the door's
+/// Statement as the pack tool renders it. `false` when the cdylib is not built —
 /// a skip locally, a hard failure under CI, the same posture busbar-kernel's
 /// `auth/tests/plugin_chain_tests.rs` takes for the same artifact.
 fn install_auth_plugin(dir: &Path) -> bool {
@@ -164,6 +222,21 @@ fn install_auth_plugin(dir: &Path) -> bool {
     };
     let mut m = common::plugins::manifest("auth", "e2e-idp-module", "e2e");
     m.alias = "e2e-idp".into();
+    // One staging file PER CALL: the scenarios run as threads of one process, and rewriting a
+    // library another thread still has mapped (dlopened for its Statement) truncates it under
+    // that mapping — SIGBUS on Linux.
+    static STAGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "busbar-stdio-idp-{}-{}{}",
+        std::process::id(),
+        STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::write(&path, &lib).expect("stage the library");
+    m.statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
+        .expect("the auth-oidc cdylib states its door")
+        .map(hex::encode);
+    let _ = std::fs::remove_file(&path);
     let bytes = common::plugins::seal(m, &lib);
     std::fs::write(dir.join("plugins").join("e2e-idp-module.tar.gz"), bytes).unwrap();
     true
@@ -648,5 +721,59 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
 
     let code = child.eof_and_wait();
     assert_eq!(code, 0, "EOF with a live subscription still exits promptly");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SEAM-S1 RED ARM, THE GRANT PER CALL ON THE LINE CARRIER: every line is its own unit with its own
+/// scope check, so a principal whose role reaches only another pool (never this server) is refused
+/// EACH `tools/call` it sends,
+/// in the data listener's words (`not_granted`), while the session goes on serving what it may.
+#[test]
+fn an_ungranted_tool_is_refused_per_call_on_the_line() {
+    let dir = fixture_dir("ungranted");
+    if !install_auth_plugin(&dir) {
+        return;
+    }
+    let token = token_for(canonical());
+    write_configs(
+        &dir,
+        &governed_config(
+            &dir,
+            r#"  role_bindings:
+    idp:
+      tester: { allowed_pools: [elsewhere] }
+tools:
+  ws:
+    url: "http://127.0.0.1:9/rpc"
+    allow_private: true
+    pin: { mechanism: cert_spki, key: "sha256/UNUSED=" }
+    tools_allow:
+      read: { schema_hash: "sha256:0000" }
+"#,
+        ),
+    );
+    let mut child = spawn(&dir, Some(&token));
+    for i in 0..2 {
+        child.send(&serde_json::json!({
+            "jsonrpc": "2.0", "id": format!("call-{i}"), "method": "tools/call",
+            "params": { "_meta": meta(), "name": "ws_read", "arguments": {} }
+        }));
+        let line = child.recv();
+        assert_eq!(line["id"], format!("call-{i}"), "{line}");
+        assert_eq!(
+            line.pointer("/error/data/reason").and_then(|v| v.as_str()),
+            Some("not_granted"),
+            "each call is refused on its own scope check: {line}"
+        );
+    }
+    // The session still serves what the principal may: the refusals ended their units, not it.
+    child.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": "list", "method": "tools/list", "params": { "_meta": meta() }
+    }));
+    let list = child.recv();
+    assert_eq!(list["id"], "list", "{list}");
+    assert!(list.get("result").is_some(), "{list}");
+    let code = child.eof_and_wait();
+    assert_eq!(code, 0, "EOF on stdin is a clean shutdown");
     let _ = std::fs::remove_dir_all(&dir);
 }

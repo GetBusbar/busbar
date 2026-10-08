@@ -80,7 +80,7 @@ models:
 /// codecs) the build carries. The empty `providers:`/`models:` pair is written only when the plane
 /// that owns `models:` is linked (`linked_axis_body_ingress`): a plane the build does not link
 /// requires nothing (Law 7).
-#[cfg(linked_axis_stdio_serve)]
+#[cfg(linked_section_tools)]
 fn write_tools_only_configs(dir: &Path, extra: &str) {
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
     let catalog = if cfg!(linked_axis_body_ingress) {
@@ -974,13 +974,13 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
 /// typed (`publish_as: foo_bar` versus server `foo`'s tool `bar`). A check that compared overrides
 /// only to each other would exit 0 here and look correct doing it.
 ///
-/// GATED ON the linked `stdio-serve` axis (`linked_axis_stdio_serve`, emitted by build.rs from
-/// `[package.metadata.busbar.linked-axes]`): the collision check lives in the plane that owns
-/// `tools:`, the linked row carrying that axis, and is compiled out with it — a binary without that
+/// GATED ON `linked_section_tools`, set exactly when the linked door declaring `tools:` is in the
+/// build (the `linked-section` row; the linked row that once carried a `stdio-serve` axis is gone): the collision check lives in that
+/// plane and is compiled out with it — a binary without that
 /// plane has no `tools:` to collide in, so `--validate` exiting 0 there is the correct answer, not the
 /// missed refusal this test exists to pin. The config configures that plane and nothing else (no
 /// provider, no model), so the test runs on every build that links it, whatever else is linked.
-#[cfg(linked_axis_stdio_serve)]
+#[cfg(linked_section_tools)]
 #[test]
 fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     let dir = fixture_dir("publish-as-collision");
@@ -1384,7 +1384,8 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 //
 // `providers.yaml`'s `protocol:` selects the WIRE dialect (`anthropic`/`openai`/…/`jev`); a `mock`
 // provider on `protocol: jev` is what a genuine decisions deployment configures — the decision
-// plane's own `PlaneCfg::known_dialects` (`root/plane_decisions.rs`) is unioned into the provider
+// plane's door states it as its one dialect and consumes `providers:`, so its folded section's
+// `PlaneCfg::known_dialects` (`busbar_kernel::plane::door`) is unioned into the provider
 // wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
 // is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
 
@@ -1564,6 +1565,40 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE SECTION IS JUDGED BY THE PLANE'S OWN DOOR (FLIP-DECISIONS): the plane's registry row is its
+/// door's Statement, folded, and its section parses through the door's `validate`. A `decisions:`
+/// that is a scalar where a mapping belongs, or that carries a member the plane does not declare,
+/// fails `--validate` naming the block, rather than landing as an untyped capture that does
+/// nothing. The control is `validate_ok_on_a_good_decisions_config`.
+#[cfg(feature = "plane-decisions")]
+#[test]
+fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
+    for (case, block, member) in [
+        ("scalar", "decisions: \"hello\"\n", None),
+        (
+            "typo",
+            "decisions:\n  modles:\n    verdicts:\n      provider: mock\n",
+            Some("modles"),
+        ),
+    ] {
+        let dir = fixture_dir(&format!("decisions-door-{case}"));
+        write_decisions_configs(&dir, &decision_dialect(), block);
+        let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 1, "{case}: the door refuses the block: {stderr}");
+        assert!(
+            stderr.contains("decisions"),
+            "{case}: the refusal names the block: {stderr}"
+        );
+        if let Some(member) = member {
+            assert!(
+                stderr.contains(member),
+                "{case}: the refusal names the member: {stderr}"
+            );
+        }
+    }
+}
+
 // ── LAW 7: AN UNCONFIGURED PLANE CONTRIBUTES NO PROVIDER DIALECT (oracle cell BOOT-020) ───────────
 //
 // The provider protocol check is unioned with the dialects of the planes a config CONFIGURES, not
@@ -1690,40 +1725,42 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
     .unwrap();
 }
 
-/// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` names a dropped-in plugin's stated facts and whether the
-/// configuration selects it, read off its signed manifest — WITHOUT opening it: the library bytes
-/// are not a library, so a `dlopen` would refuse the run.
+/// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` reads a dropped-in plugin's stated facts off its
+/// signed manifest and selects it WITHOUT opening it (the library bytes are not a library, so a
+/// `dlopen` would refuse the run) — and its report is 1.5.5's bytes: the stage report is debug
+/// logging, never a `plugin: … — selected as …` line (ARCHITECT 2026-10-06; oracle
+/// `plugins.store-persist|store-sqlite`).
 #[cfg(linked_axis_body_ingress)]
 #[test]
-fn validate_names_a_dropped_plugins_stated_facts_without_opening_it() {
+fn validate_selects_a_dropped_plugin_without_opening_it_and_reports_in_1_5_5s_words() {
     use busbar_contract::abi::mechanism::KindCode;
     let dir = fixture_dir("stated");
     let abi = KindCode::Store.abi_version();
     write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
-    write_configs(
-        &dir,
-        &format!(
+    for config in [
+        format!(
             "{}store:\n  module: stated\n",
             plugins_block(&dir, true, true)
         ),
-    );
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(
-        stdout.contains(&format!(
-            "    plugin: busbar-store-stated (store, ABI {abi}) — selected as store"
-        )),
-        "got {stdout}"
-    );
-    // Not named by the configuration: listed, not selected.
-    write_configs(&dir, &plugins_block(&dir, true, true));
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(
-        stdout.contains("busbar-store-stated (store, ABI")
-            && stdout.contains("not used by this config"),
-        "got {stdout}"
-    );
+        // Not named by the configuration.
+        plugins_block(&dir, true, true),
+    ] {
+        write_configs(&dir, &config);
+        let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        assert_eq!(code, 0, "stderr={stderr}");
+        assert!(
+            stdout.contains("  plugins:   enabled — 1 validated, 0 skipped (untrusted) in '"),
+            "got {stdout}"
+        );
+        for out in [&stdout, &stderr] {
+            assert!(
+                !out.contains("plugin: busbar-store-stated")
+                    && !out.contains("selected as")
+                    && !out.contains("not used by this config"),
+                "--validate printed a line 1.5.5 never printed: {out}"
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1752,4 +1789,60 @@ fn validate_refuses_a_selected_plugin_built_for_another_host() {
         "got {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE MINT ENDPOINT'S SCHEME, AT `--validate` (ARCHITECT ruling D1 2026-10-05, MINT CLASS (B); RED):
+/// the token endpoint need is operator-infrastructure, so the connector would dial plaintext, and
+/// the 1.5.5 rule is `--validate`'s to keep: an `http` `token_url` on a PUBLIC host is refused (it
+/// would POST the client secret in clear), and on a loopback host it is not, as in 1.5.5.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_refuses_an_http_token_url_on_a_public_host() {
+    let run = |token_url: &str| {
+        let dir = fixture_dir("mint-scheme");
+        std::fs::write(
+            dir.join("providers.yaml"),
+            r#"entra:
+  protocol: openai
+  base_url: "https://res.example.com"
+  api_key_env: MOCK_KEY
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("config.yaml"),
+            format!(
+                r#"listen: "127.0.0.1:0"
+store: {{module: memory}}
+providers:
+  entra:
+    api_key: {{ env: MOCK_KEY }}
+    auth: oauth-client-credentials
+    token_url: "{token_url}"
+    scope: "api://x/.default"
+models:
+  test-model:
+    provider: entra
+"#
+            ),
+        )
+        .unwrap();
+        let out = run_busbar(&dir, &["--validate"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    };
+    let refused = |stdout: &str, stderr: &str| {
+        format!("{stdout}{stderr}").contains("token_url must use https for a public host")
+    };
+    let (code, stdout, stderr) = run("http://token.example.com/oauth2/token");
+    assert_ne!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        refused(&stdout, &stderr),
+        "an http token_url on a public host is refused at --validate: stdout={stdout} stderr={stderr}"
+    );
+    let (_, stdout, stderr) = run("http://127.0.0.1:9/oauth2/token");
+    assert!(
+        !refused(&stdout, &stderr),
+        "an http token_url on loopback is 1.5.5's to allow: stdout={stdout} stderr={stderr}"
+    );
 }
