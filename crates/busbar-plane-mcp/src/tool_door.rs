@@ -2866,8 +2866,7 @@ slot!(
                                 // and nothing more of it is kept.
                                 if relay.far.len().saturating_add(bytes.len()) > REPLY_MAX {
                                     relay.far = Vec::new();
-                                    relay.status = 0;
-                                    relay.sse = false;
+                                    (relay.status, relay.sse) = (0, false);
                                     over = Some(crate::call::upstream_failed(
                                         &relay.admitted,
                                         REPLY_OVER_BOUND,
