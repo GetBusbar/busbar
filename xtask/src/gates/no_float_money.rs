@@ -38,8 +38,8 @@
 //! * `busbar-kernel-ledger/src/cost/rate.rs` — the card-build arithmetic itself (#44): `nano_rate`
 //!   and the four constructor fns that hand a configured decimal to it, plus `TierRates`, the
 //!   record of configured decimals they read. **THE FILE IS NOT EXEMPT.** It used to be dropped
-//!   from the ledger walk whole as "the card build", while it also holds the `u128` accumulation
-//!   (`nanos_sum`), the card digest and the runtime price reads (`fee_of`, `fee_unit_price_nanos`,
+//!   from the ledger walk whole as "the card build", while it also holds the lane resolution
+//!   (`lane_pricing`), the card digest and the runtime price reads (`fee_of`, `fee_unit_price_nanos`,
 //!   `nanos_per_unit`): a float in any of those read GREEN for any amount of float (audit xtask-X3
 //!   finding 1). It is walked with the rest of the ledger now, and only the named items are exempt.
 //! * `crates/busbar/src/root/kernel.rs` :: `card_from_config` — **THE SECOND INTAKE, AND IT WAS
@@ -1987,16 +1987,17 @@ impl Gate for NoFloatMoneyGate {
         // ── THE CARD-BUILD FILE (`cost/rate.rs`, #44) IS SCANNED; ITS CONVERSION FNS ARE NOT ────
         //
         // The file used to be dropped from the ledger walk whole, as "the card build", while it
-        // also holds the u128 accumulation (`nanos_sum`), the card digest and the runtime price
-        // reads (`fee_of`, `fee_unit_price_nanos`, `nanos_per_unit`). A float in any of those read
-        // GREEN for any amount of float (audit xtask-X3 finding 1). Four cases: a float in the
-        // accumulation, a float in a price read and a new float fn beside the conversion are each
-        // RED; a float inside the named conversion fn stays green.
+        // also holds the lane resolution (`lane_pricing`; the never-constructed u128 accumulation
+        // `nanos_sum` is deleted), the card digest and the runtime price reads (`fee_of`,
+        // `fee_unit_price_nanos`, `nanos_per_unit`). A float in any of those read GREEN for any
+        // amount of float (audit xtask-X3 finding 1). Four cases: a float in the lane resolution, a
+        // float in a price read and a new float fn beside the conversion are each RED; a float
+        // inside the named conversion fn stays green.
         for (what, boundary, stmt) in [
             (
-                "u128 accumulation (`nanos_sum`)",
-                "nanos_sum",
-                format!("let _planted_sum = (q as {float_ty} * r as {float_ty}) as u128;"),
+                "the one lane resolution (`lane_pricing`)",
+                "lane_pricing",
+                format!("let _planted_lane = lane.len() as {float_ty} * 2.5;"),
             ),
             (
                 "runtime price read (`fee_of`)",
