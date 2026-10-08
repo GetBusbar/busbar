@@ -898,6 +898,8 @@ pub struct TestApp {
     on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
     hook_registry: std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: Vec<String>,
+    /// Resolve `global_hooks` into the App's global decision gates at build, as production does.
+    resolve_global_gates: bool,
     base_hook_names: std::collections::HashSet<String>,
     groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
     base_group_names: std::collections::HashSet<String>,
@@ -1031,6 +1033,7 @@ impl TestApp {
             on_exhausted_cfgs: std::collections::HashMap::new(),
             hook_registry: std::collections::HashMap::new(),
             global_hooks: Vec::new(),
+            resolve_global_gates: false,
             base_hook_names: std::collections::HashSet::new(),
             groups_registry: std::collections::BTreeMap::new(),
             base_group_names: std::collections::HashSet::new(),
@@ -1266,6 +1269,14 @@ impl TestApp {
     /// Add a name to the `global_hooks:` list (globally-wired hooks).
     pub fn global_hook(mut self, name: &str) -> Self {
         self.global_hooks.push(name.into());
+        self
+    }
+    /// Resolve the `global_hooks:` list into the App's global DECISION gates at build, through the
+    /// one resolver production's build uses (`hooks::resolve_gate_hooks`) over this fixture's own
+    /// `hooks:` registry and hook env. Off by default: the read-surface fixtures name global hooks
+    /// they never fire.
+    pub fn resolve_global_gates(mut self) -> Self {
+        self.resolve_global_gates = true;
         self
     }
     pub fn lane(mut self, spec: LaneSpec) -> Self {
@@ -1802,6 +1813,12 @@ impl TestApp {
                 global_default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
                 reasoning_budgets: [1024, 4096, 8192, 16384],
                 default_failover: Some(default_failover),
+                // The test build's auth axis: the kind-neutral outbound double
+                // (`test_support::outbound_auth`), so a lane's credential binds without naming a
+                // plugin.
+                auths: Some(busbar_kernel::plane_host::AuthReach(
+                    crate::test_support::outbound_auth::axis(),
+                )),
             };
             let slot = build_runtime(&build_input as &dyn std::any::Any, None);
             plane_slots.insert(fallback_runtime_key, slot);
@@ -1885,6 +1902,11 @@ impl TestApp {
             }
             m
         };
+        let global_gates = if self.resolve_global_gates {
+            crate::hooks::resolve_gate_hooks(&self.hook_registry, &self.global_hooks, &hook_env, 0)
+        } else {
+            Vec::new()
+        };
         let app = std::sync::Arc::new(crate::state::App {
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
@@ -1929,7 +1951,7 @@ impl TestApp {
             tap_hooks_candidate: Vec::new(),
             tap_hooks_routing: Vec::new(),
             tap_hooks_response: Vec::new(),
-            global_gates: Vec::new(),
+            global_gates,
             // The pool-hook facade maps (money-path Phase 3-4 C): the resolved per-pool routing policy /
             // decision gates / rewrite chains the relocated engine reads via `App::pool_*`. Populated by
             // the policy-exercising fixtures through `.pool_policy_resolved(...)` etc.; empty otherwise.
@@ -2237,6 +2259,8 @@ pub mod tokens;
 
 /// The export axis a test binary's configurations resolve against (K9b).
 pub mod export_axis;
+/// The kind-neutral outbound auth double a test build binds lane credentials on.
+pub mod outbound_auth;
 /// The stand-in secret axis a test build installs in place of the root's.
 pub mod secrets;
 pub use secrets::SecretsStandIn;
@@ -2316,16 +2340,6 @@ pub fn install_operator_auth_row(door: AuthDoor) {
 pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
-
-/// The SigV4 helpers a test signs an inbound request with, named once here because the
-/// `busbar_kernel::sigv4` re-export path is gone (D3).
-pub mod sigv4 {
-    pub use busbar_contract::redacted::sha256_hex;
-    pub use busbar_kernel_identity::{
-        egress_auth::sigv4::{format_amz_time, uri_encode_path},
-        ingress_sigv4::{sign_v4, CLOCK_SKEW_SECS, X_AMZ_CONTENT_SHA256, X_AMZ_DATE},
-    };
-}
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
 /// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.

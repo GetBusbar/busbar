@@ -3,20 +3,14 @@
 
 //! The auth acceptance suite: black-box pins for 1.5.5 auth behaviour that the scattered
 //! unit suites (`tests.rs`, `plugin_chain_tests.rs`, `self_keys_tests.rs`, `token_tests.rs`,
-//! the identity crate's `operator_tests` and `ingress_sigv4_tests`,
-//! `egress_auth::tests::*`) do not directly assert. This file does not re-port behaviour those
+//! the identity crate's `operator_tests`, and each auth plugin's own suite) do not directly assert. This file does not re-port behaviour those
 //! suites already pin byte-for-byte against v1.5.5 (fail-closed mapping, warn-once latch, chain
-//! semantics, carrier precedence, dual-carrier operator fold, SigV4 constant-time/body-hash-rebind,
-//! byte-for-byte header handling). It targets the two genuine gaps an inventory of those suites
-//! found:
+//! semantics, carrier precedence, dual-carrier operator fold, byte-for-byte header handling). It
+//! targets the genuine gap an inventory of those suites found:
 //!
 //! 1. The nine auth fault/saturation diagnostic identities (`auth/mod.rs:14-18`) have NO test
 //!    anywhere asserting their (code, slug) or that they actually fire on their documented trigger
 //!    — a silent rename or a dropped `diag_*!` call at a refactor would go unnoticed.
-//! 2. The pre-mint "`READY` with zero fields" -> no auth header (which sends the caller into the
-//!    upstream's ordinary 401, per 1.5.5 `egress_auth/mod.rs:150-200`) was exercised only inside the
-//!    `NoCredential` unit itself, never proven reachable through the public `resolve()` entry point
-//!    the boot path actually calls.
 //!
 //! Every test here goes through a public (or `pub(crate)`, crate-internal-but-not-implementation-
 //! private) entry point, never a store internal type. The inbound credential cache lives in the
@@ -485,50 +479,6 @@ fn the_door_path_diagnostics_warn_once_then_debug_as_1_5_5() {
 }
 
 // ───────────────────────── 2. pre-mint READY-with-zero-fields -> no auth header ───────────────
-
-/// **Public entry point, not the unit**: `egress_auth::resolve()` — the SAME function the boot path
-/// calls to pick a lane's egress credential — for `jwt-bearer`/`oauth-client-credentials` returns a
-/// credential that emits NO auth header at all rather than a self-minted token synchronously (those
-/// mint asynchronously at boot via a separate special-cased path; reaching `resolve` with one of
-/// these styles means that wiring was bypassed). Zero header bytes on the wire is exactly what turns
-/// into the upstream's OWN ordinary 401 — no busbar-side header is emitted for the upstream to
-/// reject on shape, and no raw secret material is sent as a bogus bearer either. Pins v1.5.5
-/// `crates/busbar/src/egress_auth/mod.rs:150-200` via the
-/// CURRENT public surface, not by reaching into `NoCredential` directly.
-#[test]
-fn ready_credential_with_no_fields_emits_no_auth_header_through_public_resolve() {
-    use crate::config::ProviderAuth;
-    use crate::egress_auth::resolve;
-    use crate::proto::SigningContext;
-
-    for style in [
-        ProviderAuth::JwtBearer,
-        ProviderAuth::OAuthClientCredentials,
-    ] {
-        let cred = resolve("anthropic", Some(style));
-        // `NoCredential` IS lane-constant — it is constantly nothing, so freezing it at boot is
-        // sound (unlike a real self-minting credential, which never reaches this arm: it is
-        // special-cased at boot into its own async mint path before `resolve` is ever called).
-        assert!(
-            cred.is_lane_constant(),
-            "the fail-closed no-header stand-in is context-independent by construction"
-        );
-        let ctx = SigningContext {
-            host: "h.example.com",
-            canonical_uri: "/v1/messages",
-            body: b"",
-            timestamp_epoch: 0,
-            upstream_creds: busbar_contract::config::UpstreamCreds::Own,
-        };
-        let headers = cred.headers_for("should-be-ignored", &ctx);
-        assert!(
-            headers.is_empty(),
-            "resolve() reaching a self-minting style outside its async boot path must emit ZERO \
-             auth header bytes (upstream sees its own ordinary 401), never the raw key verbatim: \
-             got {headers:?}"
-        );
-    }
-}
 
 /// THE ADMIN CREDENTIAL NEVER REACHES A LOG LINE (ARCHITECT ruling 2026-09-30, AUTH-DOOR: admin
 /// requests terminate locally and the verify answer's strips are not applied there, so nothing the

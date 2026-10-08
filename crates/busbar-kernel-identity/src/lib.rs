@@ -15,6 +15,9 @@
 //! - **The chain.** Config order. The first module to identify admits. A reject stops the chain. A
 //!   pass continues. The door is open only when the chain declares no module **and** no keys arm.
 //!   All-pass with a keys arm runs the keys arm; all-pass without one denies.
+//! - **No credential cache.** A verified credential is cached by the auth plugin that verified it,
+//!   inside itself, and dropped on its `refresh` (BUSBAR-1.6.0.md THE DESIGN §11.11 R3, Q-INCACHE);
+//!   the unit keeps none.
 //! - **Anonymous.** The anonymous principal has no bucket and renders its actor id as the literal
 //!   word `anonymous` on every surface.
 //! - **Revocation.** Gates NEW units only. A unit already in flight runs to its end.
@@ -22,9 +25,9 @@
 //!
 //! ## What the kernel supplies
 //!
-//! The crate takes nothing from the kernel: anything that would have pulled in an HTTP stack or a
-//! clock arrives as a trait: [`KeyVerifier`] for the built-in signed-key arm, and [`RevocationView`]
-//! for the revocation set the kernel derives from the journal tail.
+//! Anything that would have pulled in an HTTP stack or a clock arrives as a trait: [`KeyVerifier`]
+//! for the built-in signed-key arm, and [`RevocationView`] for the revocation set the kernel derives
+//! from the journal tail.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -35,9 +38,7 @@ pub mod admin;
 pub mod caller_ref;
 pub mod chain;
 pub mod challenge;
-pub mod egress_auth;
 pub mod exchange;
-pub mod ingress_sigv4;
 pub mod module;
 pub mod operator;
 pub mod principal;

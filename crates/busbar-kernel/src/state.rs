@@ -502,6 +502,23 @@ pub struct App {
 }
 
 impl App {
+    /// THE ADMIN CACHE FLUSH: every data-chain position and every external admin module (or only
+    /// the one `module` names) refreshed, so each auth plugin drops the verified credentials it
+    /// caches inside itself; the sum of the entries they report (THE DESIGN 11.11 R3). The
+    /// operator credential caches nothing.
+    pub fn flush_verified_credentials(&self, module: Option<&str>) -> u64 {
+        let admin: u64 = self
+            .admin_modules
+            .modules
+            .iter()
+            .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
+            .map(|(_, m)| m.calls.refresh().unwrap_or(0))
+            .sum();
+        self.auth.flush_verified(module) + admin
+    }
+}
+
+impl App {
     /// LAW 7, the ONE generic check: is this linked plane configured in this generation? The fallback
     /// plane always is; any other only when its declared `config_section` is present. Core names no plane.
     pub fn plane_configured(&self, decl: &crate::plane::registry::PlaneDeclaration) -> bool {

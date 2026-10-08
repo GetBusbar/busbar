@@ -19,13 +19,6 @@ use crate::diagnostics::{
 };
 use crate::state::App;
 use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest};
-use busbar_kernel_identity::{
-    egress_auth::sigv4::SIGV4_ALGORITHM,
-    ingress_sigv4::{
-        parse_authorization_header, verify_inbound_sigv4, InboundRequest, X_AMZ_CONTENT_SHA256,
-        X_AMZ_DATE,
-    },
-};
 
 /// The two non-`Authorization` headers that native vendor SDKs use to carry their API key:
 /// the Anthropic SDK sends `x-api-key`, the Gemini SDK sends `x-goog-api-key`. busbar accepts
@@ -67,10 +60,10 @@ pub const ADMIN_PATH: &str = "/api";
 /// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
 /// default and must explicitly carve out a weaker class if it ever wants one.
 const ADMIN_PATH_PREFIX: &str = "/api/";
-/// Fixed dummy secret used when an inbound SigV4 AccessKeyId is unknown: we still run the
-/// full HMAC verification so the timing is indistinguishable from a bad-signature rejection
-/// (no AccessKeyId-enumeration oracle). The SigV4 verifier's tests reference this via
-/// `crate::auth::DUMMY_SECRET` rather than maintaining a separate copy.
+/// The fixed dummy secret `records.secret` answers for an unknown host-held credential
+/// ([`crate::governance::GovState::credential_secret`]): the verifying auth plugin still runs its
+/// full verification over it, so the timing is indistinguishable from a bad-signature rejection
+/// (no identifier-enumeration oracle).
 pub const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
 
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
@@ -145,6 +138,27 @@ pub struct AuthMiddleware {
     /// referenced, and what a successful `Identify` reports as [`ChainVerdict::Identified::module`]
     /// — and the `kind: auth` instance the auth axis opened for it ([`ChainEntry`]).
     chain: Vec<ChainEntry>,
+    /// THE HOST-HELD CREDENTIALS' VERIFIERS (THE DESIGN §6, "Auth points and guest lists": core's
+    /// `keys` verifies the credential that style yields, through the same handle): the auth rows
+    /// whose Statement states they read host-held credentials, opened when the chain names `keys`.
+    /// Called on a request whose dialect declares a signed ingress and which carries one of the
+    /// verifier's own carrier lines; the kernel names no credential line itself.
+    readers: Vec<CredentialReader>,
+}
+
+/// ONE HOST-HELD CREDENTIAL'S VERIFIER: the opened instance, the credential kinds it reads through
+/// `records.secret` (opaque words), and the carrier lines its credential sits on (its own words).
+struct CredentialReader {
+    calls: std::sync::Arc<dyn AuthCalls>,
+    kinds: Vec<String>,
+    carriers: Vec<HeaderName>,
+}
+
+impl CredentialReader {
+    /// Whether `headers` carry one of this verifier's carrier lines.
+    fn carried(&self, headers: &HeaderMap) -> bool {
+        self.carriers.iter().any(|c| headers.contains_key(c))
+    }
 }
 
 /// ONE DATA-PLANE CHAIN POSITION (AUTH-CHAIN-SWITCH; THE DESIGN 11.6, "Auth is on the memory ABI"):
@@ -355,7 +369,7 @@ fn admin_verdict_of(answer: VerifyAnswer, faulted: bool) -> AuthVerdict {
 /// How a chain run reaches each position's verifier.
 #[derive(Debug, Clone, Copy)]
 enum Reach {
-    /// On the caller's own thread, for a SYNC caller (`run_chain`, `run_chain_at`): each position
+    /// On the caller's own thread, for a SYNC caller (`run_chain`, `run_chain_with`): each position
     /// on the spot, and a door that must wait awaited where the caller polls.
     Inline,
     /// On the request path: each position's `verify` admitted on the data-plane budget, submitted
@@ -468,7 +482,6 @@ impl AdminModule {
 
 pub use busbar_kernel_identity::{
     caller_ref::CallerRefKey,
-    egress_auth::sigv4::uri_encode_path,
     operator::{Operator, OperatorCredential},
 };
 
@@ -502,34 +515,6 @@ pub(crate) fn auth_refusal(
         "serve as an auth module",
         module,
     )
-}
-
-/// THE INBOUND CACHE FLUSH (`POST /api/v1/admin/auth/cache/flush`): the plugins hold the inbound
-/// credential caches (THE DESIGN 11.11 R3), so the flush refreshes every opened `kind: auth`
-/// instance of `app` — the data-plane chain's positions and the admin chain's external modules —
-/// named `module` (a provider name), or all of them, and answers how many entries they dropped, as
-/// each reported it ([`AuthCalls::refresh`]). The operator credential holds no cache and is not
-/// flushed. A refresh that did not answer drops nothing it can report: it counts `0`.
-pub fn flush_inbound_caches(app: &App, module: Option<&str>) -> u64 {
-    let data = app
-        .auth
-        .chain
-        .iter()
-        .map(|e| (e.provider.as_str(), &e.calls));
-    let admin = app
-        .admin_modules
-        .modules
-        .iter()
-        .map(|(name, m)| (name.as_str(), &m.calls));
-    data.chain(admin)
-        .filter(|(name, _)| module.is_none_or(|m| m == *name))
-        .map(|(name, calls)| {
-            calls.refresh().unwrap_or_else(|e| {
-                tracing::debug!(provider = name, error = %e, "auth cache flush: refresh did not answer");
-                0
-            })
-        })
-        .sum()
 }
 
 impl fmt::Debug for AdminAuthChain {
@@ -740,9 +725,44 @@ impl AuthMiddleware {
             );
         }
 
+        // THE HOST-HELD CREDENTIALS' VERIFIERS, opened only when the chain names `keys` (a credential
+        // busbar minted and holds IS a `keys` credential). FAIL-CLOSED: a verifier that will not
+        // open is a hard boot error, like any other chain position.
+        let mut readers = Vec::new();
+        if keys_in_chain {
+            let axis = match axis {
+                Some(axis) => Some(axis),
+                None => crate::preflight::auth_axis(registry.clone()),
+            };
+            for module in axis.iter().flat_map(|a| a.credential_readers()) {
+                let calls = axis
+                    .as_ref()
+                    .map(|a| a.open(&module, &module, &serde_json::json!({})))
+                    .transpose()
+                    .map_err(|e| {
+                        format!(
+                            "auth.chain names `keys`, and the `kind: auth` plugin '{module}' that \
+                             verifies the credentials it holds could not be loaded: {e}"
+                        )
+                    })?;
+                if let Some(calls) = calls {
+                    readers.push(CredentialReader {
+                        kinds: calls.credential_kinds(),
+                        carriers: calls
+                            .carriers()
+                            .iter()
+                            .filter_map(|c| HeaderName::from_bytes(c.as_bytes()).ok())
+                            .collect(),
+                        calls,
+                    });
+                }
+            }
+        }
+
         Ok(Self {
             keys_in_chain,
             chain,
+            readers,
         })
     }
 
@@ -788,7 +808,7 @@ impl AuthMiddleware {
     /// matched a presented credential) denies — fail-closed for a configured chain. Constant-time
     /// within each module; the loop order is config order.
     pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
-        self.run_chain_at(candidate, None, busbar_kernel::store::now(), None)
+        self.run_chain_with(candidate, None, busbar_kernel::store::now(), None)
     }
 
     /// [`run_chain`] at the instant `now`, the `keys` engine arm verifying against `gov`. The
@@ -799,10 +819,13 @@ impl AuthMiddleware {
     /// different). It is threaded here rather than read from a handler because the check belongs to
     /// the VERIFIER: a route added to an audience-bound plane later inherits it and cannot forget.
     ///
+    /// No verdict is cached here: an auth plugin that caches its verdicts does so inside itself,
+    /// and drops them on its `refresh` (THE DESIGN 11.11 R3, Q-INCACHE).
+    ///
     /// `now` is taken as an explicit clock, not read internally, for the same reason
     /// [`crate::governance::GovState::verify_token`] does: a TTL boundary is untestable against the
     /// live wall clock without sleeping, and one chain run reasons about one instant.
-    pub fn run_chain_at(
+    pub fn run_chain_with(
         &self,
         candidate: Option<&str>,
         gov: Option<&crate::governance::GovState>,
@@ -870,8 +893,21 @@ impl AuthMiddleware {
         ChainVerdict::Denied
     }
 
+    /// THE CACHE FLUSH (`POST /admin/auth/cache/flush`): every chain position's instance (or only
+    /// the provider `module`'s) `refresh`ed with unchanged settings, so each auth plugin drops the
+    /// verified credentials it caches inside itself (THE DESIGN 11.11 R3); the sum of the entries
+    /// they report dropping (1.5.5's `{"flushed": N}`). A position that will not refresh reports
+    /// none.
+    pub fn flush_verified(&self, module: Option<&str>) -> u64 {
+        self.chain
+            .iter()
+            .filter(|e| module.is_none_or(|m| m == e.provider))
+            .map(|e| e.calls.refresh().unwrap_or(0))
+            .sum()
+    }
+
     /// THE REQUEST-PATH ENTRY POINT for the data-plane auth chain — the one place `auth_middleware`
-    /// calls it, and the reason it is not just `run_chain_at`.
+    /// calls it, and the reason it is not just `run_chain_with`.
     ///
     /// Each position is called on the auth kind's memory ABI (AUTH-CHAIN-SWITCH): a door's `verify`
     /// is SUBMITTED on a dispatcher ticket and awaited through its reply's waker, so no thread is
@@ -992,7 +1028,7 @@ async fn judge(entry: &ChainEntry, request: VerifyRequest, reach: Reach) -> Auth
     }
 }
 
-/// The built-in `keys` ENGINE-ARM verdict for one request (see `run_chain_at`). Verifies a
+/// The built-in `keys` ENGINE-ARM verdict for one request (see `run_chain_with`). Verifies a
 /// busbar-MINTED signed virtual key against governance and, on success, hands back the ENFORCED
 /// [`VirtualKey`] in [`ChainVerdict::Identified::resolved`] — the one place a data-plane verdict
 /// carries a resolved key (a plugin module never can). Outcomes, preserving today's behavior:
@@ -1982,95 +2018,84 @@ pub(crate) async fn auth_middleware(
         });
     }
 
-    // INGRESS via inbound AWS SigV4 request-signing is a real INGRESS-PROTOCOL PRE-STEP (not a fork
-    // on the admin token): it needs the BUFFERED BODY to bind the payload hash, which the chain ABI
-    // cannot take. It runs ONLY when the running chain names `keys` (a busbar-minted SigV4 credential
-    // IS a `keys` credential) AND the ingress protocol authenticates with SigV4 AND the request
-    // actually carries an `AWS4-HMAC-SHA256` Authorization header. Gating on `keys_in_chain` keeps an
-    // OPEN `chain:[]` open even for a SigV4-shaped request (pure anonymous). On success it yields the
-    // same `Identified { resolved: Some(key) }` the bearer keys arm produces, feeding the SINGLE
-    // match below. The "which protocol uses SigV4" decision is a DECLARED protocol fact
-    // (`ProtocolDecl::ingress_auth`), NOT a name-branch on any one protocol — and reading it no
-    // longer costs the reader/writer pair the old vtable predicate had to allocate to ask.
+    // INGRESS via a SIGNED REQUEST (a dialect whose clients sign each request with a credential
+    // busbar minted and holds) is a real INGRESS-PROTOCOL PRE-STEP: it needs the BUFFERED BODY to
+    // bind the payload hash. The signature is the verifying AUTH PLUGIN's to judge (THE DESIGN §6,
+    // "Inbound verify": the host-held credential read through `records.secret`, the dummy-secret
+    // timing equivalence for an unknown identifier); the kernel makes ONE `verify` call at
+    // `HeadBody` and resolves the identity it answers to the governance key. It runs ONLY when the
+    // running chain names `keys` AND the ingress dialect declares a signed ingress AND the request
+    // carries one of the verifier's own carrier lines (the kernel names no credential line). Gating
+    // on `keys_in_chain` keeps an OPEN `chain:[]` open. A credential that is not the verifier's
+    // (it PASSes) takes the unchanged token path below. The "which dialect signs" decision is a
+    // DECLARED protocol fact (`ProtocolDecl::ingress_auth`), never a name-branch.
     let ingress_signed = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
         ingress_for_path(&app, &path),
     ))
     .is_some_and(|d| d.uses_sigv4_ingress_auth());
-    // The SigV4 pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An
-    // audience-bound plane admits bearer tokens only: SigV4 signs a request with a busbar key's
-    // secret and produces an identity with no audience anywhere in it, so allowing it here would be
-    // a second door into an audience-bound plane that the RFC 8707 check does not stand behind. An
-    // audience-bound plane has no SigV4 dialect to be compatible with, so nothing is lost by closing
-    // it.
-    let verdict = if admission.is_none()
-        && app.auth.keys_in_chain
-        && ingress_signed
-        && has_sigv4_authorization(&req)
-    {
-        // STRUCTURAL GATE, before buffering: require the Authorization header to actually parse
-        // as SigV4 (`has_sigv4_authorization` only checked the algorithm-token prefix) and the
-        // `x-amz-content-sha256`/`x-amz-date` headers to be present. This is a HOIST of work
-        // `verify_sigv4_ingress_credential` already does below (its own parse, and its own presence checks
-        // on these same two headers) — a reordering, not a new check — so it removes the trivial
-        // `AWS4-HMAC-SHA256 x` attacker (who reaches the buffer today) before a single body byte
-        // is read. All three conditions are STRUCTURAL and attacker-known (the attacker can
-        // trivially satisfy all three), so this is not an oracle: it never depends on whether an
-        // AccessKeyId is valid — gating on that would leak validity through a read/no-read signal
-        // and reintroduce the enumeration oracle `verify_sigv4_ingress_credential` spends a dummy secret to
-        // avoid.
-        let auth_value = req
-            .headers()
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let structurally_valid = parse_authorization_header(auth_value).is_ok()
-            && req.headers().contains_key(X_AMZ_CONTENT_SHA256)
-            && req.headers().contains_key(X_AMZ_DATE);
-        if !structurally_valid {
-            return Err(unauthorized_response(&app, &path, door.as_ref()));
+    // The pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An audience-bound
+    // plane admits bearer tokens only: a signed request produces an identity with no audience
+    // anywhere in it, so allowing it here would be a second door into an audience-bound plane that
+    // the RFC 8707 check does not stand behind.
+    let reader = (admission.is_none() && app.auth.keys_in_chain && ingress_signed)
+        .then(|| app.auth.readers.iter().find(|r| r.carried(req.headers())))
+        .flatten();
+    let signed = match reader {
+        None => None,
+        Some(reader) => {
+            // BODY INTEGRITY: the verifier re-hashes the bytes received and confirms they match the
+            // signed payload hash. Buffer the body HERE, then reconstruct the request from the SAME
+            // bytes so the downstream handler receives the payload intact. A buffering failure (a
+            // truncated/aborted body) is itself a failed request — the same opaque auth error.
+            //
+            // CAP the buffer at the SAME knob (`limits.request_body_max_bytes`) that drives the
+            // inbound `DefaultBodyLimit` layer: this runs BEFORE authentication is confirmed and is
+            // reachable from attacker-controlled headers alone, so the cap is enforced here, not
+            // assumed of the layer stack.
+            let (parts, body) = req.into_parts();
+            let Ok(body_bytes) =
+                axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
+            else {
+                return Err(unauthorized_response(&app, &path, door.as_ref()));
+            };
+            let request = signed_request(&parts, &body_bytes);
+            req = Request::from_parts(parts, Body::from(body_bytes));
+            match reader.calls.verify(request).await.verified {
+                Verified::Pass => None,
+                Verified::Identity(id) => {
+                    // The identity names the credential it verified; the governance key that holds
+                    // it is the identity busbar admits. Governance is always constructed (RAM by
+                    // default); absent, there is no store to resolve against → fail closed.
+                    let now = busbar_kernel::store::now();
+                    let key = app.governance.as_deref().and_then(|gov| {
+                        reader.kinds.iter().find_map(|kind| {
+                            let (key, cred) = gov.lookup_credential(kind, &id.subject)?;
+                            (key.enabled && cred.meta.is_live(now) && !gov.is_revoked(&key.id))
+                                .then(|| (*key).clone())
+                        })
+                    });
+                    match key {
+                        Some(key) => Some(ChainVerdict::Identified {
+                            module: crate::config::KEYS_MODULE.to_string(),
+                            principal: principal_from_vkey(&key),
+                            resolved: Some(std::sync::Arc::new(key)),
+                        }),
+                        None => return Err(unauthorized_response(&app, &path, door.as_ref())),
+                    }
+                }
+                // EVERY failure (malformed signature, unknown identifier, expired date, a body whose
+                // bytes don't match the signed hash, a verifier that did not answer) maps to the
+                // identical native auth error: there is no oracle.
+                Verified::Reject | Verified::Failed | Verified::Overloaded => {
+                    return Err(unauthorized_response(&app, &path, door.as_ref()))
+                }
+            }
         }
-        // BODY INTEGRITY: a SigV4 signature only binds the payload if we re-hash the actual bytes
-        // and confirm they match the signed `x-amz-content-sha256` (which the signature covers).
-        // Verifying the signature alone leaves a MitM free to tamper the body in transit while the
-        // request still authenticates. Buffer the body HERE so the verifier can compare
-        // `sha256_hex(body)` to the declared hash, then reconstruct the request from the SAME bytes
-        // so the downstream handler receives the payload intact (no consumption bug). A buffering
-        // failure (e.g. a truncated/aborted body) is itself a failed request — collapse it to the
-        // same opaque auth error so it leaks nothing about why it failed.
-        //
-        // CAP the buffer at the SAME knob (`limits.request_body_max_bytes`) that drives the inbound
-        // `DefaultBodyLimit` layer, rather than `usize::MAX`. This auth middleware runs BEFORE
-        // authentication is confirmed and the SigV4 branch is reachable from attacker-controlled
-        // headers alone (a fabricated AccessKeyId still reaches here), so relying on the body-limit
-        // layer being present and ordered ahead of us is a stack assumption, not enforcement. An
-        // in-code cap means a never-terminating / oversized body cannot exhaust the heap even if
-        // the layer is absent or misconfigured (defense-in-depth).
-        let (parts, body) = req.into_parts();
-        let Ok(body_bytes) =
-            axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
-        else {
-            return Err(unauthorized_response(&app, &path, door.as_ref()));
-        };
-        req = Request::from_parts(parts, Body::from(body_bytes.clone()));
-        // Governance is always constructed (RAM by default); if somehow absent there is no store
-        // to resolve the SigV4 credential against → fail closed.
-        match app.governance.as_deref() {
-            Some(gov) => match verify_sigv4_ingress_credential(gov, &req, &body_bytes) {
-                Ok(key) => ChainVerdict::Identified {
-                    module: crate::config::KEYS_MODULE.to_string(),
-                    principal: principal_from_vkey(&key),
-                    resolved: Some(std::sync::Arc::new(key)),
-                },
-                // EVERY failure (missing/malformed header, unknown AccessKeyId, expired date,
-                // signed-headers mismatch, bad signature, OR a body whose bytes don't match the
-                // signed x-amz-content-sha256) maps to the identical native auth error — the
-                // distinction is logged inside the verifier, never surfaced, so there is no oracle.
-                Err(()) => return Err(unauthorized_response(&app, &path, door.as_ref())),
-            },
-            None => return Err(unauthorized_response(&app, &path, door.as_ref())),
-        }
+    };
+    let verdict = if let Some(verdict) = signed {
+        verdict
     } else {
-        // Not `run_chain_at` directly: that blocks its caller's thread on a door that must wait. The
+        // Not `run_chain_with` directly: that blocks its caller's thread on a door that must wait. The
         // `keys` engine arm (inside the chain run) needs the governance handle to verify a
         // busbar-signed key; pass `app.governance` in PER-REQUEST (governance is built AFTER
         // `AuthMiddleware::new`, so the arm takes it as a call parameter, never a struct field).
@@ -2223,234 +2248,40 @@ pub fn resolve_data_plane_identity(
     }
 }
 
-/// Does the request carry an inbound AWS SigV4 `Authorization` header (`AWS4-HMAC-SHA256 ...`)? Cheap
-/// pre-check so the SigV4 verify path is entered ONLY for genuine SigV4 requests; everything else
-/// (bearer, x-api-key, x-goog-api-key, or no Authorization) takes the unchanged token path. The full
-/// structural parse/validation happens inside the verifier — this only gates entry.
-fn has_sigv4_authorization(req: &Request<Body>) -> bool {
-    req.headers()
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.trim_start().starts_with(SIGV4_ALGORITHM))
-        .unwrap_or(false)
-}
-
-/// Canonicalize the request query string for SigV4: split into key=value pairs, sort by (encoded)
-/// key then (encoded) value, and join with `&`. An empty/absent query yields `""`. A bare key
-/// (`?foo`) canonicalizes to `foo=` (AWS signs a missing value as empty).
-///
-/// Deliberately does NOT run each key/value through an AWS URI-encoder. `query` here is the RAW
-/// wire query string — i.e. already percent-encoded exactly once by whatever HTTP client/SDK sent
-/// the request, since a compliant SigV4 client uses the SAME single URI-encoding pass to build both
-/// the CanonicalQueryString it signs AND the query string it puts on the wire (AWS "Create a
-/// canonical request for Signature Version 4": CanonicalQueryString is built by URI-encoding each
-/// parameter name/value ONCE — unlike CanonicalURI, which for non-S3 services is deliberately
-/// double-encoded; see `uri_encode_path`'s caller in `proxy/egress.rs` and its mirror at the
-/// `canonical_uri` line above for that asymmetric, INTENTIONAL case). Running the already
-/// once-encoded wire text through an AWS URI-encoder again would double-encode it (e.g. a client's
-/// correct `a%2Fb` becomes `a%252Fb`), producing a CanonicalQueryString that diverges from the one
-/// the client actually signed — every request with a query parameter needing escaping would fail
-/// verification. Sorting is done on the RAW (already-encoded) bytes, which is equivalent to sorting
-/// on the encoded key/value per the AWS spec, since the wire bytes ARE the encoded form.
-fn canonical_query_string(query: Option<&str>) -> String {
-    let Some(q) = query.filter(|q| !q.is_empty()) else {
-        return String::new();
-    };
-    let mut pairs: Vec<(&str, &str)> = q
-        .split('&')
-        .filter(|p| !p.is_empty())
-        .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
-        .collect();
-    pairs.sort();
-    pairs
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("&")
-}
-
-/// Verify an inbound AWS SigV4 request-signing credential against the governance virtual-key store. On success
-/// returns the resolved, ENABLED `VirtualKey` (so the caller attaches its `GovCtx`); on ANY failure
-/// returns `Err(())` — the SINGLE opaque failure the caller maps to the native auth error, with no
-/// distinction reaching the wire (the specific `VerifyError` is logged here for operators only).
-///
-/// Indistinguishability / no enumeration oracle: an UNKNOWN AccessKeyId does NOT short-circuit. We
-/// still run the full constant-time signature verification against a fixed DUMMY secret, so the
-/// unknown-key path and the wrong-signature path do the same work and reject identically. A DISABLED
-/// key likewise still verifies before rejecting, so "disabled" is not distinguishable from "bad sig".
-fn verify_sigv4_ingress_credential(
-    gov: &crate::governance::GovState,
-    req: &Request<Body>,
-    body: &[u8],
-) -> Result<crate::governance::VirtualKey, ()> {
-    // Parse the Authorization header. (has_sigv4_authorization already confirmed the algorithm token,
-    // but re-parse fully here — a malformed-but-AWS4-prefixed header still rejects.)
-    let auth_value = req
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let parsed = match parse_authorization_header(auth_value) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::debug!(reason = ?e, "inbound SigV4 rejected: unparseable Authorization");
-            return Err(());
-        }
-    };
-
-    // Gather the signed-header VALUES from the request (every name the client listed in SignedHeaders;
-    // the verifier rejects if any is missing). Lowercase the names to match the signer.
-    //
-    // PREFILTER: `verify_inbound_sigv4` consumes ONLY the headers named in `SignedHeaders` (plus the
-    // payload-hash and amzdate it reads from struct fields, both of which are themselves signed
-    // headers). Lowercasing + allocating EVERY inbound header — many of them irrelevant — is wasted
-    // work on every request. Restrict to the signed subset BEFORE allocating, matching names
-    // case-insensitively against the signer's list. Semantics are unchanged: the verifier's signed-set
-    // selection (step 3) sees exactly the same {name→value} mapping it would have found in the full
-    // list; an unsigned `x-amz-content-sha256`/`x-amz-date` would not have been bound by the signature
-    // anyway, so omitting it here is the same fail-closed outcome the verifier already produces.
-    let signed_names: std::collections::HashSet<String> = parsed
-        .signed_headers
-        .split(';')
-        .map(|h| h.trim().to_ascii_lowercase())
-        .filter(|h| !h.is_empty())
-        .collect();
-    let headers: Vec<(String, String)> = req
-        .headers()
-        .iter()
-        .filter_map(|(name, value)| {
-            let lname = name.as_str().to_ascii_lowercase();
-            if !signed_names.contains(&lname) {
-                return None;
-            }
-            value.to_str().ok().map(|v| (lname, v.to_string()))
-        })
-        .collect();
-
-    // The payload hash the client signed is its `x-amz-content-sha256` header value. We verify the
-    // signature against that DECLARED hash (it is itself a signed header, so the signature binds it).
-    // A request that omits the header cannot have signed it, so reject — there is nothing to feed the
-    // canonical request.
-    let Some(payload_hash) = headers
-        .iter()
-        .find(|(k, _)| k == X_AMZ_CONTENT_SHA256)
-        .map(|(_, v)| v.clone())
-    else {
-        tracing::debug!("inbound SigV4 rejected: missing x-amz-content-sha256");
-        return Err(());
-    };
-
-    // BODY INTEGRITY (the real bind): the signature only proves the client signed `payload_hash`; it
-    // does NOT prove the bytes we actually received hash to that value. Without this check a MitM who
-    // cannot forge the signature can still tamper the body in transit and the request authenticates —
-    // the signature stops binding the payload. Re-hash the buffered body and require it to equal the
-    // signed declared hash (lowercase-hex, constant-time compare to avoid leaking a prefix-match
-    // length via timing). `UNSIGNED-PAYLOAD` is the AWS sentinel for "I did not hash my body"; for
-    // this governed ingress we REQUIRE a signed payload, so reject it outright (it can never equal a
-    // real sha256 digest anyway — the explicit reject documents the decision and avoids a future
-    // signer that hashes the literal string "UNSIGNED-PAYLOAD" sneaking past). On ANY mismatch reject
-    // with the SAME opaque `Err(())` every other failure returns — the reason is logged here only, so
-    // the wire cannot tell "body tampered" from "bad signature".
-    const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
-    if payload_hash.eq_ignore_ascii_case(UNSIGNED_PAYLOAD) {
-        tracing::debug!(
-            "inbound SigV4 rejected: UNSIGNED-PAYLOAD not permitted for governed ingress"
-        );
-        return Err(());
-    }
-    let actual_body_hash = busbar_contract::redacted::sha256_hex(body);
-    if !AuthMiddleware::constant_time_eq(&actual_body_hash, &payload_hash.to_ascii_lowercase()) {
-        tracing::debug!(
-            "inbound SigV4 rejected: request body does not match signed x-amz-content-sha256"
-        );
-        return Err(());
-    };
-    let Some(amzdate) = headers
-        .iter()
-        .find(|(k, _)| k == X_AMZ_DATE)
-        .map(|(_, v)| v.clone())
-    else {
-        tracing::debug!("inbound SigV4 rejected: missing x-amz-date");
-        return Err(());
-    };
-
-    let canonical_uri = uri_encode_path(req.uri().path());
-    let canonical_qs = canonical_query_string(req.uri().query());
-    let method = req.method().as_str().to_string();
-
-    let inbound = InboundRequest {
-        method: &method,
-        canonical_uri: &canonical_uri,
-        canonical_querystring: &canonical_qs,
-        headers: &headers,
-        payload_hash: &payload_hash,
-        amzdate: &amzdate,
-    };
-
-    // Resolve (kind="sigv4", AccessKeyId) to (key, credential). On an UNKNOWN AccessKeyId, verify
-    // against a fixed dummy secret so the work — and the timing/response — is indistinguishable
-    // from a wrong-signature rejection (no AccessKeyId-enumeration oracle). The dummy is a
-    // constant, never a real secret.
-    let now = busbar_kernel::store::now();
-    let (secret, resolved): (String, Option<(crate::governance::VirtualKey, bool)>) =
-        match gov.lookup_credential("sigv4", &parsed.access_key_id) {
-            Some((key, cred)) => {
-                let live = cred.meta.is_live(now);
-                // `plaintext()` strips the "v1:plain:" envelope — HMAC verification needs the exact
-                // raw bytes the client signed with, never the versioned-envelope string itself. An
-                // unrecognized scheme (e.g. a future at-rest-encrypted form reached through the wrong
-                // path) falls back to the dummy secret, same treatment as an unknown AccessKeyId — it
-                // must never surface as a distinguishable rejection reason.
-                let secret = cred
-                    .plaintext()
+/// The one `verify` request for a signed ingress, at `HeadBody`: every field line as presented, the
+/// whole (bounded) body, the method, the authority, the raw path and query, and the time read once.
+fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequest {
+    use busbar_contract::redacted::Redacted;
+    VerifyRequest {
+        point: busbar_contract::abi::auth::AuthPoint::HeadBody,
+        lines: parts
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_string(),
+                    Redacted::new(value.as_bytes().to_vec()),
+                )
+            })
+            .collect(),
+        body: Some(body.to_vec()),
+        method: parts.method.as_str().to_string(),
+        authority: parts
+            .uri
+            .authority()
+            .map(|a| a.as_str().to_string())
+            .or_else(|| {
+                parts
+                    .headers
+                    .get(axum::http::header::HOST)
+                    .and_then(|h| h.to_str().ok())
                     .map(str::to_string)
-                    .unwrap_or_else(|| DUMMY_SECRET.to_string());
-                (secret, Some(((*key).clone(), live)))
-            }
-            None => (DUMMY_SECRET.to_string(), None),
-        };
-
-    let verify = verify_inbound_sigv4(&parsed, &inbound, &secret, now);
-
-    // Decide admission. The signature must verify; the resolved key must exist AND be enabled; the
-    // resolved CREDENTIAL itself must be live (not revoked, not expired — independent of the key,
-    // per CredentialMeta::is_live: this is what lets a leaked SigV4 secret be killed via
-    // revoke_credential without touching the key's bearer token or re-minting anything); AND the
-    // subject not on the KEY-level revocation denylist. All conditions are evaluated, and only the
-    // combined success admits — a failure in any one rejects with the same opaque `Err(())`. An
-    // unknown AccessKeyId has `resolved == None`, so even a (cryptographically impossible)
-    // signature match against the dummy secret cannot admit.
-    //
-    // The denylist clause mirrors the signed-token path (`verify_token`), which consults
-    // `denylist.contains(&claims.sub)` before resolving. A dual-credential key (signed token +
-    // SigV4) is bound to ONE subject id; `revoke` denylists that id but deliberately preserves
-    // `enabled` for history — so WITHOUT this check the SigV4 credential of a revoked key would keep
-    // authenticating even though its signed token is rejected. Gating here closes that bypass.
-    match (verify, resolved) {
-        (Ok(()), Some((key, true))) if key.enabled && !gov.is_revoked(&key.id) => Ok(key),
-        (Ok(()), Some((key, true))) if key.enabled => {
-            tracing::debug!(id = %key.id, "inbound SigV4 rejected: subject is revoked");
-            Err(())
-        }
-        (Ok(()), Some((_key, true))) => {
-            tracing::debug!("inbound SigV4 rejected: virtual key disabled");
-            Err(())
-        }
-        (Ok(()), Some((key, false))) => {
-            tracing::debug!(id = %key.id, "inbound SigV4 rejected: this credential is revoked or expired");
-            Err(())
-        }
-        (Ok(()), None) => {
-            // Signature "verified" against the dummy secret but the AccessKeyId is unknown — this is
-            // not reachable for a real signer (it would need to have signed with the dummy secret) but
-            // is handled explicitly so an unknown key can NEVER authenticate.
-            tracing::debug!("inbound SigV4 rejected: unknown access key id");
-            Err(())
-        }
-        (Err(e), _) => {
-            tracing::debug!(reason = ?e, "inbound SigV4 rejected");
-            Err(())
-        }
+            })
+            .unwrap_or_default(),
+        path: parts.uri.path().to_string(),
+        query: parts.uri.query().map(str::to_string),
+        timestamp: busbar_kernel::store::now(),
+        ..VerifyRequest::default()
     }
 }
 
@@ -2472,6 +2303,7 @@ impl AuthMiddleware {
         Self {
             keys_in_chain: false,
             chain,
+            readers: Vec::new(),
         }
     }
 }

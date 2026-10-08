@@ -92,7 +92,7 @@ fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
                     token: TOKEN,
                     aud: None,
                 };
-                let verdict = c.run_chain_cached(Some(TOKEN), Some(&keys), 1000, None);
+                let verdict = c.run_chain_with(Some(TOKEN), Some(&keys), 1000, None);
                 assert_eq!(
                     verdict,
                     ChainVerdict::Denied,
@@ -117,7 +117,7 @@ fn a_rejection_is_re_asked_every_time() {
 
     for i in 1..=5 {
         assert_eq!(
-            c.run_chain_cached(Some("bad"), None, 1000, None),
+            c.run_chain_with(Some("bad"), None, 1000, None),
             ChainVerdict::Denied
         );
         assert_eq!(
@@ -146,7 +146,7 @@ fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
         let c = AuthChain::new(chain, false);
         assert!(!c.is_open(), "len={len}");
         assert_eq!(
-            c.run_chain_cached(Some("cred"), None, 1000, None),
+            c.run_chain_with(Some("cred"), None, 1000, None),
             ChainVerdict::Denied,
             "len={len}: every module said 'not mine', which is not an admission"
         );
@@ -155,14 +155,14 @@ fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
     let arm_only = AuthChain::new(Vec::new(), true);
     assert!(!arm_only.is_open());
     assert_eq!(
-        arm_only.run_chain_cached(Some("cred"), None, 1000, None),
+        arm_only.run_chain_with(Some("cred"), None, 1000, None),
         ChainVerdict::Denied
     );
     // And the one shape that opens.
     let unconfigured = AuthChain::new(Vec::new(), false);
     assert!(unconfigured.is_open());
     assert_eq!(
-        unconfigured.run_chain_cached(Some("cred"), None, 1000, None),
+        unconfigured.run_chain_with(Some("cred"), None, 1000, None),
         ChainVerdict::Open
     );
 }
@@ -192,7 +192,7 @@ fn a_revoked_identification_is_withdrawn_for_a_new_unit_and_not_for_one_in_fligh
 
     // In flight: the walk answers, and the gate is never consulted at all.
     assert!(matches!(
-        c.run_chain_cached(Some("alice-cred"), None, 1000, None),
+        c.run_chain_with(Some("alice-cred"), None, 1000, None),
         ChainVerdict::Identified { .. }
     ));
     assert!(

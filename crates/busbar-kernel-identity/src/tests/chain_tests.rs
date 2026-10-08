@@ -147,7 +147,7 @@ fn test_keys_arm_runs_after_every_module_and_identifies() {
         )],
         true,
     );
-    match c.run_chain_cached(Some("vk-token"), Some(&verifier), 1000, None) {
+    match c.run_chain_with(Some("vk-token"), Some(&verifier), 1000, None) {
         ChainVerdict::Identified {
             module,
             principal,
@@ -170,12 +170,12 @@ fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     };
     let c = chain(Vec::new(), true);
     assert_eq!(
-        c.run_chain_cached(Some("vk-token"), Some(&verifier), 1000, None),
+        c.run_chain_with(Some("vk-token"), Some(&verifier), 1000, None),
         ChainVerdict::Denied,
         "a token carrying an audience is inadmissible where none is expected"
     );
     assert!(matches!(
-        c.run_chain_cached(
+        c.run_chain_with(
             Some("vk-token"),
             Some(&verifier),
             1000,
@@ -193,7 +193,7 @@ fn test_governance_rejects_empty_token_even_if_a_verifier_exists() {
     };
     let c = chain(Vec::new(), true);
     assert_eq!(
-        c.run_chain_cached(Some(""), Some(&verifier), 1000, None),
+        c.run_chain_with(Some(""), Some(&verifier), 1000, None),
         ChainVerdict::Denied,
         "an empty credential is no credential"
     );
@@ -203,7 +203,7 @@ fn test_governance_rejects_empty_token_even_if_a_verifier_exists() {
 fn test_keys_arm_with_no_verifier_denies() {
     let c = chain(Vec::new(), true);
     assert_eq!(
-        c.run_chain_cached(Some("vk-token"), None, 1000, None),
+        c.run_chain_with(Some("vk-token"), None, 1000, None),
         ChainVerdict::Denied
     );
 }
@@ -297,7 +297,7 @@ fn keys_arm_verify_token_order_matches_pb_92_on_full_success() {
     let verifier = OrderRecordingVerifier::new(None);
     let c = chain(Vec::new(), true);
     assert!(matches!(
-        c.run_chain_cached(Some("tok"), Some(&verifier), 1000, None),
+        c.run_chain_with(Some("tok"), Some(&verifier), 1000, None),
         ChainVerdict::Identified { .. }
     ));
     assert_eq!(
@@ -318,7 +318,7 @@ fn keys_arm_verify_token_short_circuits_at_the_failing_step() {
         let verifier = OrderRecordingVerifier::new(Some(fail_at));
         let c = chain(Vec::new(), true);
         assert_eq!(
-            c.run_chain_cached(Some("tok"), Some(&verifier), 1000, None),
+            c.run_chain_with(Some("tok"), Some(&verifier), 1000, None),
             ChainVerdict::Denied,
             "a failure at {fail_at} denies"
         );
@@ -355,7 +355,7 @@ fn revocation_gates_new_units_only() {
     );
     // The same walk without the gate — the in-flight unit's path — still identifies.
     assert!(matches!(
-        c.run_chain_cached(Some("cred"), None, 1000, None),
+        c.run_chain_with(Some("cred"), None, 1000, None),
         ChainVerdict::Identified { .. }
     ));
 }
@@ -378,7 +378,7 @@ fn an_open_door_is_not_revoked_by_a_colliding_string() {
     // The open front door: no boxed modules and no keys arm.
     let c = chain(Vec::new(), false);
     assert_eq!(
-        c.run_chain_cached(Some("some-header-value"), None, 1000, None),
+        c.run_chain_with(Some("some-header-value"), None, 1000, None),
         ChainVerdict::Open,
         "the fixture must really be the open door, or the assertion below proves nothing"
     );

@@ -95,7 +95,7 @@ impl Auth {
         // 3. The chain.
         let verdict = self
             .chain
-            .run_chain_cached(req.candidate, keys, req.now, req.expected_aud);
+            .run_chain_with(req.candidate, keys, req.now, req.expected_aud);
 
         // 4. Revocation gates NEW units only, and only an identification. A revocation is a
         //    statement about a credential the chain resolved to somebody; applied to whatever

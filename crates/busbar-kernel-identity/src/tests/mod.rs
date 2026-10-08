@@ -28,6 +28,7 @@ impl Canned {
         Canned {
             name,
             outcome,
+            cacheable: false,
             calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
@@ -41,6 +42,9 @@ impl AuthModule for Canned {
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.outcome.clone()
+    }
+    fn cacheable(&self) -> bool {
+        self.cacheable
     }
 }
 

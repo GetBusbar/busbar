@@ -14,7 +14,7 @@ use crate::challenge::{Challenge, ChallengeBounds};
 use crate::module::AuthOutcome;
 
 // ---------------------------------------------------------------------------------------------
-// The chain's own accessors.
+// The chain's own accessors and its cacheability gate.
 // ---------------------------------------------------------------------------------------------
 
 /// The two chain-shape accessors answer about the chain they were built over, in BOTH directions.

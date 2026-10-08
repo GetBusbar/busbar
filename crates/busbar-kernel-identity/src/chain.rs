@@ -15,9 +15,9 @@
 //!
 //! It runs after every boxed module, because a module that positively identified has already
 //! returned. It is not boxed because the module answer type can only hand back a principal, and the
-//! keys arm resolves a whole enforced key — a thing the module contract has no shape for. It is
-//! also never cached: revocation on that path is a per-request verification plus a short denylist
-//! sync.
+//! keys arm resolves a whole enforced key — a thing the module contract has no shape for. Its
+//! verdict is never cached: revocation on that path is a per-request verification plus a short
+//! denylist sync.
 
 use crate::module::{AuthModule, AuthOutcome};
 use crate::principal::Principal;
@@ -153,11 +153,13 @@ impl AuthChain {
     /// Run the chain with no key verifier — the thin form for callers that only need the shape of
     /// the verdict.
     pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
-        self.run_chain_cached(candidate, None, 0, None)
+        self.run_chain_with(candidate, None, 0, None)
     }
 
-    /// Run the chain: every module is consulted on every call, in config order.
-    pub fn run_chain_cached(
+    /// Run the chain: config order, the first module to identify admits, a reject stops the walk, a
+    /// pass continues; then the built-in signed-key arm. No verdict is cached here: a module that
+    /// caches its verdicts does so inside itself (BUSBAR-1.6.0.md THE DESIGN §11.11 R3).
+    pub fn run_chain_with(
         &self,
         candidate: Option<&str>,
         keys: Option<&dyn KeyVerifier>,
@@ -171,7 +173,6 @@ impl AuthChain {
             return ChainVerdict::Open;
         }
         for entry in &self.chain {
-            let provider = entry.provider.as_str();
             match entry.module.authenticate(candidate) {
                 AuthOutcome::Identify(principal) => {
                     // No per-module role filter here: the nested role-binding table IS the
@@ -179,7 +180,7 @@ impl AuthChain {
                     // binds it. A boxed module never resolves a key, because its answer cannot
                     // carry one.
                     return ChainVerdict::Identified {
-                        module: provider.to_string(),
+                        module: entry.provider.clone(),
                         principal,
                         resolved: None,
                     };
@@ -208,7 +209,7 @@ impl AuthChain {
         expected_aud: Option<&str>,
         revocations: Option<&dyn RevocationView>,
     ) -> ChainVerdict {
-        let verdict = self.run_chain_cached(candidate, keys, now, expected_aud);
+        let verdict = self.run_chain_with(candidate, keys, now, expected_aud);
         // ONLY AN `Identified` VERDICT ASKS THE REVOCATION QUESTION. A revocation is a statement
         // about a credential the chain resolved to SOMEBODY; applied to whatever string arrived it
         // answers two questions nobody asked. An `Open` (anonymous front door) or `Denied` verdict

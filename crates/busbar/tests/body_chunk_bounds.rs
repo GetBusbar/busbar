@@ -89,14 +89,19 @@ fn the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session(
         .filter(|row| !row.session)
         .map(|row| row.key)
         .collect();
-    // Both one-shot wires of the shipped table are linked in every build (their rows ride required
-    // edges), so the two are always here to drive.
+    // The one-shot wire of the shipped table is linked in every build (its row rides a required
+    // edge), so it is always here to drive. (`sse` is a claim of the same http entry, ONE ENTRY PER
+    // PLUGIN, not a row of its own.)
     assert_eq!(
         one_shot.len(),
         shipped.iter().filter(|(_, session)| !session).count(),
         "a one-shot wire of the shipped table is not linked"
     );
-    assert_eq!(one_shot.len(), 2, "the two wires that carry no session");
+    assert_eq!(
+        one_shot.len(),
+        1,
+        "the one wire row that carries no session"
+    );
 
     let table = InFlight::new(8);
     let scheduler = Scheduler::default();

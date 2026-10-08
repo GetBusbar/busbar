@@ -11757,3 +11757,18 @@ fn free_open_units() -> serde_json::Value {
         .collect::<serde_json::Map<_, _>>()
         .into()
 }
+
+/// `build.auth_modules` (and the `plugins?type=auth` catalog behind it) lists the INBOUND auth-chain
+/// modules only, by their linked alias, as 1.5.5 did: an inbound row is listed under its key. The
+/// outbound-only half (a linked row that declares no inbound capability is NOT listed) is proven in
+/// the composition root over the rows the shipped build links
+/// (`crates/busbar/src/root/tests/linked_auth.rs`), where the outbound plugin is a dependency.
+#[test]
+fn auth_modules_list_inbound_rows_only() {
+    let inbound: busbar_kernel::preflight::LinkedAuth =
+        ("admin-tokens", busbar_auth_admin_tokens_plugin::door::door);
+    assert_eq!(
+        busbar_kernel::preflight::inbound_auth_names(&[inbound]),
+        vec!["admin-tokens"]
+    );
+}

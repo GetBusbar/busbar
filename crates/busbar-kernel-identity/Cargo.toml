@@ -4,8 +4,8 @@
 # exactly one token for the length of one call. If it could name the kernel it could reach past the
 # token; if it could name a transport it would grow a second opinion about what a credential is. So
 # the only edge out of this crate is `busbar-caps`, which is where the token and the answer type
-# live. Everything the chain needs from the outside — the key verifier,
-# the revocation set — arrives as a trait the caller implements.
+# live. Everything the chain needs from the outside — the key verifier, the revocation set —
+# arrives as a trait the caller implements.
 [package]
 name = "busbar-kernel-identity"
 version = "1.6.0"
@@ -21,18 +21,9 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-# `hex` is needed by the folded `egress_auth` sigv4 signer and the ingress sigv4 verifier.
+# The caller reference (`caller_ref`): its HKDF/HMAC on the one crypto backend, rendered as hex.
 hex = { workspace = true }
-# The caller reference (`caller_ref`) HKDF/HMAC and the sigv4 signer's SHA-256/HMAC-SHA256, all on
-# the one crypto backend.
 ring = { workspace = true }
-# The OAuth token response's tolerant `expires_in` parse (`egress_auth::deserialize_expires_in`) is a
-# serde deserializer. A leaf already in this crate's closure through `busbar-contract`.
-serde = { workspace = true }
-# `report_unpresented` logs a credential a declared scheme could not present, in the line its
-# scheme's builder always logged (operator logs are frozen text); the diagnostic emit macros it
-# writes them through expand to `tracing`.
-tracing = { workspace = true }
 
 [features]
 # The operator credential's kind-neutral stand-in words (`operator::STAND_IN`) for a TEST build that
