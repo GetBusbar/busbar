@@ -36,7 +36,7 @@
 //! ## DURABILITY
 //!
 //! The served engine's registry was in-process: a restart lost every task. Here THE TASK STORE IS
-//! HOST RECORDS (THE DESIGN §2, the mcp bullet): the handle is the kernel's (durable, scoped to the
+//! HOST RECORDS (THE DESIGN, the mcp bullet): the handle is the kernel's (durable, scoped to the
 //! instance and the principal); a live task's state — its status, its `inputRequests`, the answers
 //! it holds, the upstream ask it is parked on — is written to the plane's own records in chunks
 //! ([`live_parts`]) by every unit that moves it; and a terminal task's result likewise
@@ -47,7 +47,7 @@
 //! Every live task is indexed under its caller in the plane's records with its run's LEASE
 //! ([`Lease`]). A task-creating call settles, `cancelled`, every live task of its caller no process
 //! holds whose lease lapsed or that nothing moved past the abandonment ceiling: the handles a
-//! process that is gone left behind never exhaust the bound of live work (§1, "Admission bounds
+//! process that is gone left behind never exhaust the bound of live work (THE DESIGN, "Admission bounds
 //! live work; nothing evicts it").
 //!
 //! What IS honoured unconditionally is STRONG CONSISTENCY: the creating unit holds the task before

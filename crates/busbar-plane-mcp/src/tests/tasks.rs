@@ -481,7 +481,7 @@ fn a_task_parked_on_its_upstreams_ask_hands_the_answers_back_once() {
     assert_eq!(gone.take_relay(), None);
 }
 
-/// THE TASK STORE IS HOST RECORDS (BUSBAR-1.6.0.md §2, the mcp bullet): a live task's state — its
+/// THE TASK STORE IS HOST RECORDS (BUSBAR-1.6.0.md, the mcp bullet): a live task's state — its
 /// status, its `inputRequests` in order, its answers, the round of its own asks and the upstream
 /// ask it is parked on — reads back from its records into the task its row makes, and answers the
 /// same `tasks/get`.

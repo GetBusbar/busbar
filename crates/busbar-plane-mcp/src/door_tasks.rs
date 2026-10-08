@@ -28,14 +28,15 @@
 //!   key is answered the update nests a NEW continuation ([`continuation_asked`], the retry): it
 //!   presents the state, which is opened, matched and spent once, binds the handle and sends the
 //!   call back to the SAME member with the caller's answers and the upstream's own state.
-//! * THE TASK STORE IS HOST RECORDS (THE DESIGN §2, the mcp bullet): `tasks/get` is `work.find`
-//!   plus the task's live state, or its result, in the plane's records — the same answer on every
+//! * THE TASK STORE IS HOST RECORDS (THE DESIGN, the mcp bullet): `tasks/get` is `work.find` plus
+//!   the task's live state, or its result, in the plane's records — the same answer on every
 //!   node and across a restart; `tasks/update` delivers input, writes the state it leaves, and nests
 //!   the run that continues; `tasks/cancel` settles the handle `cancelled`, which a running
 //!   continuation observes when it settles.
 //! * A SETTLE THAT DOES NOT LAND is owed: its task is held unsettled and the next create's sweep
 //!   settles it again, until it lands. The same sweep settles the live tasks of its caller a process
-//!   that is gone left behind ([`tasks::Lease`]), so they never exhaust the bound of live work (§1).
+//!   that is gone left behind ([`tasks::Lease`]), so they never exhaust the bound
+//!   of live work (THE DESIGN: admission bounds live work; nothing evicts it).
 
 use std::task::Poll;
 
@@ -420,8 +421,8 @@ fn owe(plane: &McpDoor, task: &Task) {
     });
 }
 
-/// THE TASK'S LIVE STATE AS ITS RECORDS (THE DESIGN §2: the task store is host records): its live
-/// chunks, any this instance wrote past them struck, and — `until` given — its caller's index row,
+/// THE TASK'S LIVE STATE AS ITS RECORDS (THE DESIGN, the mcp bullet: the task store is
+/// host records): its live chunks, any this instance wrote past them struck, and — `until` given — its caller's index row,
 /// its run's lease `until` (`0`: no run holds it).
 fn live_records(plane: &McpDoor, task: &Task, until: Option<u64>) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out = tasks::live_parts(&task.id, &task.live());
@@ -650,8 +651,8 @@ fn creating(
             }
         });
     }
-    // THE TASKS LEFT BEHIND (§1: admission bounds live work; nothing evicts it): this caller's live
-    // tasks no unit here runs whose run's lease lapsed — the process running it is gone — or
+    // THE TASKS LEFT BEHIND (THE DESIGN: admission bounds live work; nothing evicts it): this
+    // caller's live tasks no unit here runs whose run's lease lapsed — the process running it is gone — or
     // that nothing moved past the abandonment ceiling, read from the plane's records and settled
     // `cancelled` before the handle is opened, so the handles an earlier process left never exhaust
     // `work.open`. From a submit, never a read or a timer.
@@ -1773,8 +1774,8 @@ fn verbing(
     step
 }
 
-/// The task `task_id` names FOR THIS CALLER, from the host's rows (THE DESIGN §2: the task store is
-/// host records): `work.find` (scoped to the instance and the principal; every denial alike); a
+/// The task `task_id` names FOR THIS CALLER, from the host's rows (THE DESIGN, the mcp bullet: the
+/// task store is host records): `work.find` (scoped to the instance and the principal; every denial alike); a
 /// live handle's live state in the plane's records; a settled one's row and the result written
 /// there (or the result this instance holds, when it holds one the records could not). The
 /// instance's own halves of the task are kept beside what the host says.
