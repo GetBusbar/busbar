@@ -783,16 +783,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
     // section key: each door plane's section carries its own pools (DoorPools), captured before
     // `cfg` is consumed.
-    let door_pools = [
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            cfg.tool_pools.clone(),
-        ),
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            cfg.agent_pools.clone(),
-        ),
-    ];
+    let door_pools = root::serve::door_pools(&cfg.tool_pools, &cfg.agent_pools);
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]

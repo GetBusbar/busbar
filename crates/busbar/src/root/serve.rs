@@ -559,6 +559,9 @@ impl DoorApply {
     /// A plane that will not refresh keeps serving its current generation, logged.
     pub fn apply(&self, app: &busbar_kernel::state::App) {
         let now = self.current();
+        // THE SECTION AS BOOT BUILDS IT (audit root-R1 leftover C1): the slot's section as written,
+        // with the generation's unified pools at its reserved `pools` key ([`with_pools`]); the plane
+        // is handed it with the core-owned `work:` struck ([`handed_settings`]).
         let section = applied_section(app, &self.facts.plane, self.served_facts.section, &now);
         match self.refreshed(&section, now.generation + 1, &*app.secret_resolver) {
             Ok(next) => {
@@ -590,7 +593,7 @@ impl DoorApply {
         let settings = if section.is_null() {
             Vec::new()
         } else {
-            serde_json::to_vec(&plane_settings(section)).map_err(|e| format!("its section: {e}"))?
+            handed_settings(section)?
         };
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
@@ -637,9 +640,10 @@ impl DoorApply {
 
 /// THE SECTION A CONFIG APPLY REFRESHES A DOOR PLANE ONTO: the plane's slot in the generation `app`
 /// installed (its section as written), carrying the unified pools that generation resolved for the
-/// plane's section `section_key` ([`pools_into`], read off the generic per-plane pool map
-/// `App::plane_pools` under the plane `plane`'s key), as the boot composition carries them
-/// ([`with_pools`]); a generation with no slot for the plane keeps the section it serves now.
+/// plane's section `section_key` ([`installed_door_pools`]: the `tools` pools off `App::tool_pools`,
+/// the `agents` pools off the generic per-plane pool map `App::plane_pools`), as the boot
+/// composition carries them ([`with_pools`]); a generation with no slot for the plane keeps the
+/// section it serves now.
 #[must_use]
 pub fn applied_section(
     app: &busbar_kernel::state::App,
@@ -654,13 +658,7 @@ pub fn applied_section(
     else {
         return now.section.clone();
     };
-    let mut section = slot.section.value.clone();
-    let pools = busbar_kernel::plane::registry::plane_decl_for_config_section(section_key)
-        .and_then(|decl| app.plane_pools(decl.key));
-    if let Some(pools) = pools {
-        pools_into(&mut section, pools);
-    }
-    section
+    section_with_pools(section_key, &slot.section.value, &installed_door_pools(app))
 }
 
 /// EVERY SERVED DOOR PLANE'S APPLY, kept when the planes move into the data routes, for the
@@ -966,6 +964,75 @@ pub fn with_pools(
         }
     }
     sections
+}
+
+/// The unified pools each door section carries at its reserved `pools` key, by section key.
+pub type DoorPoolsByKey = [(
+    &'static str,
+    BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+); 2];
+
+/// The door sections' unified pools as the generation `tools`/`agents` resolved them, by section
+/// key: the one table boot ([`with_pools`]) and a config apply ([`applied_section`]) both inject
+/// from, so a door plane's section is built the same way on both paths (audit root-R1 leftover C1).
+#[must_use]
+pub fn door_pools(
+    tools: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    agents: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+) -> DoorPoolsByKey {
+    [
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+            tools.clone(),
+        ),
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+            agents.clone(),
+        ),
+    ]
+}
+
+/// [`door_pools`] read off an installed generation: the pools a config apply resolved.
+#[must_use]
+pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
+    let none = BTreeMap::new();
+    let agents = busbar_kernel::plane::registry::plane_decl_for_config_section(
+        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+    )
+    .and_then(|decl| app.plane_pools(decl.key))
+    .unwrap_or(&none);
+    door_pools(&app.tool_pools, agents)
+}
+
+/// The section a config apply refreshes the door plane serving `key` onto: the section as
+/// written, with the generation's unified pools injected exactly as boot injects them
+/// ([`with_pools`]).
+fn section_with_pools(
+    key: &str,
+    written: &serde_yaml::Value,
+    pools: &[(
+        &'static str,
+        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    )],
+) -> serde_yaml::Value {
+    let mut section = written.clone();
+    for (owner, stated) in pools {
+        if *owner == key {
+            pools_into(&mut section, stated);
+        }
+    }
+    section
+}
+
+/// THE BYTES A DOOR PLANE IS HANDED for its section: [`plane_settings`] as JSON, with the
+/// core-owned `work:` bounds struck (the kernel reads them; the plane never sees them). The one
+/// rule `open` and a config apply's refresh both apply (audit root-R1 leftover C1).
+fn handed_settings(section: &serde_yaml::Value) -> Result<Vec<u8>, String> {
+    let mut section = plane_settings(section);
+    if let Some(map) = section.as_mapping_mut() {
+        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
+    }
+    serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))
 }
 
 /// `stated`, a named-definition section's unified pools, written into `section` at its reserved
@@ -1355,11 +1422,7 @@ fn open(
     owned: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
-    let mut section = plane_settings(section);
-    if let Some(map) = section.as_mapping_mut() {
-        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
-    }
-    let settings = serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))?;
+    let settings = handed_settings(section)?;
     let owned = if owned.is_empty() {
         Vec::new()
     } else {
