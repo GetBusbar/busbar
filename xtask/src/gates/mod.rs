@@ -706,7 +706,14 @@ const MEASURED_KIND_ISOLATION_SHIP: f64 = 536_090.0; // 141 cases, 539.4 s (opt 
 const MEASURED_SHIP_READY: f64 = 23_918.0; // 17 cases, 23.6 s (opt 0: under the default)
 const MEASURED_DESIGN_BINDINGS: f64 = 15_089.0; // 22 cases, 15.0 s (opt 0: under the default)
 const MEASURED_PLANE_TRANSPORT_NEUTRALITY: f64 = 12_959.0; // 9 cases, 12.9 s (opt 0: under the default)
-const MEASURED_TELLER_STEPS: f64 = 12_382.0; // 15 cases, 12.5 s (opt 0: under the default)
+/// RE-MEASURED for the decision plane's seven gating rig cells (ARCHITECT Q12(a): raise the measure to
+/// the measured units and keep the case). The battery grew from 15 to 22 cases (the derived roster's
+/// plants and the `jev.rig|<check>` resolver plant), and the serial re-take read 21 803 units on
+/// Latchkey large; the 12 382 it replaces is the 15-case figure taken at [`TAKEN`].
+const MEASURED_TELLER_STEPS: f64 = 21_803.0; // 22 cases, --jobs 1 re-take (was 12 382, 15 cases)
+/// Where [`MEASURED_TELLER_STEPS`] was taken: the jev rig cells' head, `xtask selftest teller-steps`
+/// re-taken at `--jobs 1`, Latchkey large (job cli-d72bc289).
+const TAKEN_TELLER_STEPS: &str = "2026-10-07 75ebf74496";
 const MEASURED_CONFIG_SCHEMA: f64 = 11_917.0; // 69 cases, 11.9 s (opt 0: under the default)
 const MEASURED_SEAL_WITNESS: f64 = 11_332.0; // 6 cases, 14.2 s (opt 0: under the default)
 const MEASURED_NO_DEFERRAL_STRICT_DONE: f64 = 10_704.0; // 16 cases, 10.6 s (opt 0: under the default)
@@ -890,8 +897,8 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "teller-steps",
         measured: MEASURED_TELLER_STEPS,
         allowed: MEASURED_TELLER_STEPS * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "Fifteen cases over the teller-step table and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+        taken: TAKEN_TELLER_STEPS,
+        why: "Twenty-two cases over the teller-step table, its roster derived from the tree, the jev rig's declared checks and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
     },
     Budget {
         gate: "config-schema",
