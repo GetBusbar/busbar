@@ -1371,8 +1371,8 @@ pub fn door_declared_diagnostics(
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
     let mut declared = Vec::new();
     for (name, _, json) in doors {
-        let declares: crate::root::loader::sign::Declares =
-            serde_json::from_str(json).map_err(|e| {
+        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
+            .map_err(|e| {
                 format!("plugin '{name}' states a `declares` section that does not read: {e}")
             })?;
         let held: Vec<_> = taken.iter().chain(&declared).copied().collect();
