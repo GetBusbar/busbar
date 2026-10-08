@@ -7,8 +7,8 @@
 //!
 //! ## The conversion table
 //!
-//! The existing codec reaches state in twelve places. Written out in full, because "the store reads
-//! became legs" is the kind of sentence that is true of ten out of twelve.
+//! The existing codec reaches state in eleven places. Written out in full, because "the store reads
+//! became legs" is the kind of sentence that is true of most of them and not all.
 //!
 //! | what the codec does today | what it becomes |
 //! |---|---|
@@ -23,7 +23,6 @@
 //! | keeps the per-caller roots generation in memory, so a restart forgets it | a `settings` leg, operation `put` |
 //! | keeps the long-running tasks in a process-local map | a `task` leg, so a restart no longer loses a task a caller is waiting on |
 //! | keeps a subscription's cursor in memory for the life of one stream | stays in memory: a subscription IS the life of one stream, and a stream does not survive a restart |
-//! | keeps the sampling spend in a process-local counter | an `approval` leg, because a spend that a restart forgets is a cap that a restart lifts |
 //!
 //! And the reaches that are NOT records, because they were never this plane's to hold:
 //!
@@ -34,7 +33,6 @@
 //! | asks a breaker whether to proceed, and settles it | the breaker unit |
 //! | asks governance whether the caller may spend | the admission unit |
 //! | fires a gate hook, or a rewrite hook | the hook seats |
-//! | asks the engine to synthesize a completion for an upstream's request | a nested unit of the other plane, reached as a nested destination |
 //! | resolves a credential for an outbound hop | the egress-auth unit; the plane names the scheme and never sees the secret |
 //!
 //! ## Two of the schemas are the codec's own names

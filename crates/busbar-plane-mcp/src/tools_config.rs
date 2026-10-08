@@ -42,10 +42,10 @@
 //!
 //! ## The server-initiated grants are DENY-BY-DEFAULT, and that is a `Default` impl, not a comment
 //!
-//! `sampling`, `elicitation` and `roots` are grants on the registry entry — an upstream must not be
-//! able to induce busbar to spend busbar's own authority (a model completion on busbar's pools and
-//! budget, a user prompt, a filesystem-root disclosure) that the operator never granted it.
-//! Absent means denied, and it means denied because [`ServerRequestGrants::default`] is three
+//! `sampling`, `elicitation` and `roots` are grants on the registry entry — whether the operator lets
+//! an upstream put that ask (a model completion, a user prompt, a filesystem-root disclosure) to
+//! busbar's callers. A granted ask is relayed to the caller, who answers it; busbar answers none
+//! (Law 11). Absent means denied, and it means denied because [`ServerRequestGrants::default`] is three
 //! `false`s — a field an operator forgets to write is a field that grants nothing.
 //!
 //! ## `publish_as` moves ONE invariant from construction to validation, and pays for it
@@ -396,10 +396,10 @@ pub type AskRoundCfg = indexmap::IndexMap<String, AskEntryCfg>;
 ///
 /// ## This is busbar asking, not busbar forwarding, and the distinction is the whole point
 ///
-/// An upstream's `InputRequiredResult` TERMINATES at busbar (the engine's `super::inputreq`) — busbar either
-/// satisfies it under a grant the operator gave that server, or fails the call. It is never handed
-/// onward. What this grammar declares is different in kind: a demand busbar makes IN ITS OWN NAME,
-/// composed from the operator's literal bytes.
+/// An upstream's `InputRequiredResult` is RELAYED to the caller under a grant the operator gave that
+/// server (or refused without one); busbar answers none of it (Law 11). What this grammar declares
+/// is different in kind: a demand busbar makes IN ITS OWN NAME, composed from the operator's literal
+/// bytes.
 ///
 /// **There is no templating and no substitution here, and that is structural rather than a
 /// convention.** [`params`](Self::params) is cloned verbatim onto the wire. The moment a value could
@@ -582,21 +582,21 @@ pub struct ResourceTemplateAllowCfg {
 /// DENY-BY-DEFAULT is this type's `Default`, not a rule written down somewhere else. Under revision
 /// `2026-07-28` a server cannot initiate a request at all; the ask arrives as an
 /// `InputRequiredResult` in the RESULT of a call busbar made, and these three grants are consulted
-/// at busbar's decision to satisfy it — on EVERY retry, because there is no handshake to consult
+/// at busbar's decision to relay it to the caller — on EVERY retry, because there is no handshake to consult
 /// them once — a revocation has to bite on the NEXT retry, not at the end of a conversation that
 /// has no end.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerRequestGrants {
-    /// May this server induce busbar to run a model completion on busbar's pools and budget? When
-    /// granted, that completion rides the SAME admission/budget/metering/audit plane as any other
-    /// model request — never a free side channel.
+    /// May this server ask busbar's caller for a model completion (`sampling/createMessage`)? When
+    /// granted, the ask is relayed to the caller, who runs the completion or not; busbar runs none
+    /// on its behalf (Law 11).
     #[serde(default)]
     pub sampling: bool,
-    /// May this server ask busbar to solicit user input?
+    /// May this server ask busbar's caller to solicit user input? Relayed, as `sampling`.
     #[serde(default)]
     pub elicitation: bool,
-    /// May this server ask busbar to disclose filesystem roots?
+    /// May this server ask busbar's caller to disclose filesystem roots? Relayed, as `sampling`.
     #[serde(default)]
     pub roots: bool,
 }
@@ -864,7 +864,7 @@ pub struct McpServerDefCfg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_exchange: Option<TokenExchangeCfg>,
     /// The cap on input-required rounds per logical dispatch. Absent ⇒
-    /// [`DEFAULT_MAX_INPUT_REQUIRED_ROUNDS`]. `0` is legal and means "never satisfy one".
+    /// [`DEFAULT_MAX_INPUT_REQUIRED_ROUNDS`]. `0` is legal and means "never relay one".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_input_required_rounds: Option<u32>,
     /// The cap on rounds busbar may ask ITS OWN CALLER for, per capability of this server. Absent ⇒
