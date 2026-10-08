@@ -12,6 +12,12 @@
 #   capable          implements the mechanism; not externally validated
 #   evidence-only    busbar supplies audit EVIDENCE; never busbar's own cert
 #
+# `plane` names the shipped plane a suite judges (`crates/busbar-plane-<key>` in qa/construction.toml
+# `[gate.plugin_kinds].plane`). Every shipped plane owes at least one suite here, and no suite may
+# name a plane the build does not ship: the gate refuses the registry otherwise, so removing a
+# plane's suite cannot shrink the MUST set. A suite that judges no plane (a transport, the auth
+# server, the supply chain) carries no `plane`.
+#
 # A green suite may render only AT OR BELOW its ceiling. Adding a suite is one block here plus the
 # suite's own verdict artifact — nothing on the README is hand-edited; it is rendered from this
 # registry and those artifacts.
@@ -25,6 +31,7 @@ plan = "official a2aproject/a2a-tck + a2a-harness + a2a-go reference peer"
 tier = "conformant"
 label = "A2A"
 verdict = "conformance-verdict-a2a"
+plane = "a2a"
 public = "true"
 
 [[suite]]
@@ -34,6 +41,7 @@ plan = "spec battery vs pinned vendor OpenAPI"
 tier = "spec-conformant"
 label = "LLM Anthropic"
 verdict = "conformance-verdict-llm-anthropic"
+plane = "llm"
 public = "true"
 
 [[suite]]
@@ -43,6 +51,7 @@ plan = "spec battery vs pinned botocore models"
 tier = "spec-conformant"
 label = "LLM Bedrock"
 verdict = "conformance-verdict-llm-bedrock"
+plane = "llm"
 public = "true"
 
 [[suite]]
@@ -52,6 +61,7 @@ plan = "spec battery vs pinned vendor OpenAPI"
 tier = "spec-conformant"
 label = "LLM Cohere"
 verdict = "conformance-verdict-llm-cohere"
+plane = "llm"
 public = "true"
 
 [[suite]]
@@ -61,6 +71,7 @@ plan = "spec battery vs pinned discovery document"
 tier = "spec-conformant"
 label = "LLM Gemini"
 verdict = "conformance-verdict-llm-gemini"
+plane = "llm"
 public = "true"
 
 [[suite]]
@@ -70,6 +81,7 @@ plan = "spec battery vs pinned vendor OpenAPI"
 tier = "spec-conformant"
 label = "LLM OpenAI"
 verdict = "conformance-verdict-llm-openai"
+plane = "llm"
 public = "true"
 
 [[suite]]
@@ -79,6 +91,7 @@ plan = "spec battery vs pinned vendor OpenAPI"
 tier = "spec-conformant"
 label = "LLM Responses"
 verdict = "conformance-verdict-llm-responses"
+plane = "llm"
 public = "true"
 
 [[suite]]
@@ -88,6 +101,7 @@ plan = "official modelcontextprotocol TCK + in-house battery"
 tier = "conformant"
 label = "MCP"
 verdict = "conformance-verdict-mcp"
+plane = "mcp"
 public = "true"
 
 [[suite]]
@@ -97,6 +111,7 @@ plan = "spec battery + replay"
 tier = "spec-conformant"
 label = "Voice Gemini Live"
 verdict = "conformance-verdict-voice-gemini-live"
+plane = "streaming"
 public = "true"
 
 [[suite]]
@@ -106,6 +121,7 @@ plan = "spec battery + replay"
 tier = "spec-conformant"
 label = "Voice OpenAI Realtime"
 verdict = "conformance-verdict-voice-openai-realtime"
+plane = "streaming"
 public = "true"
 
 # ── PLANNED for 1.6.0 (no verdict yet → not-run → renders NOTHING) ────────────────────────────────
@@ -123,7 +139,7 @@ not_run_reason = "planned 1.6.0 — PAR/DPoP/client-assertion wiring in flight; 
 [[suite]]
 id = "h2"
 standard = "HTTP/2 (RFC 9113)"
-plan = "h2spec against busbar-transport-http"
+plan = "h2spec over TLS (ALPN h2) against the tls: listener"
 tier = "conformant"
 label = "HTTP/2"
 verdict = "conformance-verdict-h2"
@@ -137,6 +153,7 @@ plan = "plane battery + served POST /v1/systemone on a booted busbar (systemone 
 tier = "spec-conformant"
 label = "jev"
 verdict = "conformance-verdict-jev"
+plane = "decisions"
 public = "true"
 not_run_reason = "no verdict artifact: `cargo xtask conformance record --suite jev` writes conformance/verdicts/jev.json"
 
