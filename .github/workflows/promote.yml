@@ -6,9 +6,11 @@ name: Promote
 # predev lands through GitHub's merge queue (OWNER 2026-10-02): `merge_group` runs the same two
 # required jobs on the queue's merge commit, judged no worse than the base the queue built it on.
 on: [pull_request, merge_group]
-# The predev->dev PR's head IS predev, so every predev merge re-runs its hop: that run is never
-# cancelled (it is the 6-hourly measurement), only the newest pending one waits behind it. A merge-queue
-# run is never cancelled either: a cancelled queue run re-runs whole (owner money, 2026-10-03).
+# R5 (busbar-release gate.rs, OWNER 2026-10-08): no run is ever cancelled in progress. A pull request
+# has at most one run running and one pending, and each newer push replaces the pending one, so the
+# pending run is always the newest head. A merge-queue run is its own group (a cancelled queue run
+# re-runs whole, owner money 2026-10-03). The preflight holds this line to the one compiled into
+# busbar-release: any drift is RED.
 concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: false }
 permissions: { contents: read }
 env:
@@ -21,7 +23,10 @@ jobs:
     if: github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    outputs: { runner: "${{ steps.pre.outputs.runner }}", one_runner: "${{ steps.pre.outputs.one_runner }}", needs_release_artifact: "${{ steps.pre.outputs.needs_release_artifact }}" }
+    # THE RUN GATE reads GitHub (open pull requests, the merge queue, this head's promote runs) with
+    # this job's actions read.
+    permissions: { contents: read, actions: read }
+    outputs: { runner: "${{ steps.pre.outputs.runner }}", one_runner: "${{ steps.pre.outputs.one_runner }}", needs_release_artifact: "${{ steps.pre.outputs.needs_release_artifact }}", run: "${{ steps.pre.outputs.run }}", reason: "${{ steps.pre.outputs.reason }}" }
     steps:
       # Full history: the pre-flight reads the pull request's diff against BASE_SHA to choose one runner or the matrix.
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v7
@@ -31,11 +36,14 @@ jobs:
       # when the crates its diff affects are estimated within 20 min, else the shard matrix; OWNER-LOCKED
       # 2026-10-06), whether this run reads the release artifact (needs_release_artifact=: the rung runs
       # the oracle or conformance; predev runs neither), and runs every pre-flight check against the
-      # candidate. Built with no default
-      # features (no GitHub client), as the CLI documents for this job.
+      # candidate. Built with no default features, as the CLI documents for this job. FIRST it is THE
+      # RUN GATE (OWNER 2026-10-08): run=1|0 and reason= from facts only (R1 STACK, R2 queued, R3
+      # superseded, R4 duplicate head, R5/R6 this file's wiring); run=0 means nothing in this run
+      # builds, and a RED rule fails here.
       # package-selector: busbar-release-cli -- .github/workflows/promote.yml -- the package lives in the busbar-release checkout at RELEASE_REF (working-directory busbar-release), not in this workspace
       - id: pre
         working-directory: busbar-release
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release -- ci preflight
   # The release artifact the slsa-verifier conformance rig judges, built ONCE, in the merge group: the
   # commit it judges is the commit the queue lands, and the ladder fast-forwards that sha to dev, where
@@ -43,7 +51,7 @@ jobs:
   # minted from `base64-subjects` by the pinned slsa-github-generator once the owner rules on R14 (the
   # generator must be referenced by tag); until then the suite is not-run, a standing red here.
   slsa-build:
-    if: github.event_name == 'merge_group'
+    if: github.event_name == 'merge_group' && needs.preflight.outputs.run == '1'
     needs: preflight
     permissions: { contents: read }
     runs-on: ${{ needs.preflight.outputs.runner }}
@@ -77,7 +85,7 @@ jobs:
     name: "hop shard ${{ matrix.shard }}"
     strategy: { fail-fast: false, matrix: { shard: [1, 2, 3, 4] } }
     needs: [preflight]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && (github.event_name == 'merge_group' || github.base_ref == 'dev' || needs.preflight.outputs.one_runner != 'true') }}
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.run == '1' && (github.event_name == 'merge_group' || github.base_ref == 'dev' || needs.preflight.outputs.one_runner != 'true') }}
     permissions: { contents: read, actions: read }
     runs-on: ${{ needs.preflight.outputs.runner }}
     timeout-minutes: 330
@@ -100,8 +108,11 @@ jobs:
       # No debuginfo in the dev/test builds: build_test's all-features, feature-matrix and test builds plus
       # the oracle's release build filled the runner's ~41 GiB free disk with debuginfo (ENOSPC, no log).
       # Base and candidate build alike, so the no-worse-than-base verdict is unchanged.
+      # GITHUB_TOKEN (contents read) is for hop.sh's R3 re-check alone (`ci preflight --recheck`: is this
+      # merge group still a current queue entry's head?), which runs before any candidate code and
+      # unsets it; a superseded group's shard builds nothing.
       - run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/hop.sh"
-        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", SHARD: "${{ matrix.shard }}/4" }
+        env: { GITHUB_TOKEN: "${{ github.token }}", R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", SHARD: "${{ matrix.shard }}/4" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}-shard${{ matrix.shard }}", path: "artifacts/", if-no-files-found: warn } } # v7.0.1
   # `hop` (the required check) is the hop's ONE verdict. In a merge group and on the predev->dev pull
   # request it folds the shards: BOARD only when every shard reported and boarded and slsa-build is
@@ -120,6 +131,15 @@ jobs:
     timeout-minutes: ${{ (github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true') && 330 || 30 }}
     env: { ONE_RUNNER: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true' }}" }
     steps:
+      # THE RUN GATE said run=0 (neutral: the merge queue, or another run of this head, judges it).
+      # Nothing was built, so this run does NOT JUDGE the head: the required check fails here, never
+      # passes by skipping (a skipped required check counts as success and would land an unjudged
+      # merge group). The preflight writes one_runner=false on run=0, so nothing below builds either.
+      - if: needs.preflight.outputs.run != '1'
+        env: { REASON: "${{ needs.preflight.outputs.reason }}" }
+        run: |
+          echo "::error title=NOT JUDGED::not judged by this run (run=0): $REASON. Not a verdict on the code."
+          exit 1
       - if: env.ONE_RUNNER == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0, persist-credentials: false }
@@ -156,15 +176,17 @@ jobs:
             ci turnstile merge --sha "$SHA" --shards 4 --dir "$GITHUB_WORKSPACE/merge" --out "$GITHUB_WORKSPACE/artifacts/turnstile-report.json" \
             --shard-jobs "$GITHUB_WORKSPACE/shard-jobs.json" --needs "slsa-build=$SLSA_BUILD"
       # The durable verdict (verdict/), from the folded report and every shard's step logs: the artifact publish reads.
-      - { if: always(), run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/verdict.sh" }
-      - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "verdict-${{ env.SHA }}", path: "verdict/", retention-days: 90, if-no-files-found: warn } } # v7.0.1
+      - { if: "always() && needs.preflight.outputs.run == '1'", run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/verdict.sh" }
+      - { if: "always() && needs.preflight.outputs.run == '1'", uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "verdict-${{ env.SHA }}", path: "verdict/", retention-days: 90, if-no-files-found: warn } } # v7.0.1
   # The only job with a write token. It never checks out the candidate: busbar-release at RELEASE_REF,
   # and the hop's verdict artifact. The sticky PR comment and the branch health issue (publish.sh); a
   # hop whose runner was lost or timed out wrote no verdict, so fallback.sh records the job and step
-  # conclusions the API keeps after the logs are purged.
+  # conclusions the API keeps after the logs are purged, and the run gate's reason when it refused the
+  # run (STACK, wiring drift). A run the gate held neutral (run=0, preflight green) posts nothing: the
+  # queue or another run judges that head.
   publish:
     needs: [preflight, hop]
-    if: always() && needs.preflight.result != 'skipped'
+    if: always() && needs.preflight.result != 'skipped' && (needs.preflight.result != 'success' || needs.preflight.outputs.run == '1')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: { contents: read, actions: read, checks: read, pull-requests: write }
@@ -176,4 +198,4 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}", HEALTH_BRANCHES: none }
       - if: needs.preflight.result != 'success' || needs.hop.result != 'success'
         run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/fallback.sh"
-        env: { GH_TOKEN: "${{ github.token }}", PR_NUMBER: "${{ github.event.pull_request.number }}", PREFLIGHT_RESULT: "${{ needs.preflight.result }}", HOP_RESULT: "${{ needs.hop.result }}", HEALTH_BRANCHES: none }
+        env: { GH_TOKEN: "${{ github.token }}", PR_NUMBER: "${{ github.event.pull_request.number }}", PREFLIGHT_RESULT: "${{ needs.preflight.result }}", PREFLIGHT_REASON: "${{ needs.preflight.outputs.reason }}", HOP_RESULT: "${{ needs.hop.result }}", HEALTH_BRANCHES: none }
