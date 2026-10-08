@@ -10,7 +10,7 @@
 # strings ... the MONEY VIEW computes Σ count × rate" at READ time).
 #
 # THE CLASSES ARE NOT A CHOICE THIS SCRIPT MAKES. This plane declares TWO and names both in
-# constants (`crates/busbar-plane-mcp/src/meta.rs:33-52`):
+# constants (`crates/busbar-plane-mcp/src/tool_meta.rs:33-52`):
 #
 #   tool_calls   family `count`, direction Response, default_divisor 1
 #   bytes        family `byte`,  direction Response, default_divisor 1
@@ -34,16 +34,29 @@
 # THREE THINGS MUST HOLD FOR THE PRICE LINE TO MEAN ANYTHING, asked separately so a red says WHICH
 # one fell:
 #   (1) THE CARD MUST BE ABLE TO NAME THE CLASSES. If it cannot, `rate(tool_calls)` is not a number
-#       any operator can set and the product is unreachable for everyone, forever.
+#       any operator can set and the product is unreachable for everyone, forever. Asked of the
+#       binary's own boot: this leg's node boots WITH the card, and a card that cannot name them is
+#       refused at boot (#77(5)).
 #   (2) THE PLANE MUST REPORT COUNTS. #71 gives the plane exactly one obligation and this is it. A
 #       count of zero for a call that happened is not a price of zero, it is a MEASUREMENT THAT DID
 #       NOT HAPPEN.
 #   (3) THE PRICE MUST BE THE PRODUCT. Not independently checkable while either factor is missing, so
 #       it is reported as BLOCKED BY the ones that fell, never as passed.
 #
+# WHERE THE COUNTS AND THE PRICE ARE READ: the `/admin/usage` row's `classes` object (new in 1.6.0,
+# FLIP-A2A ruling), each plane-declared class's `{count, cost}`, cost in micro-units and priced by the
+# card in force at the row's instant. Not the LLM token columns: `tool_calls` and `bytes` are not
+# tokens, and a reader that summed token columns could only ever see zero here.
+#
+# THE CARD IS THIS LEG'S OWN: `tools.rate_card` (#47) prices `tool_calls` at 2 and `bytes` at 3
+# micro-units per unit. The lib's default card prices both at an explicit 0 (#77(5)), against which
+# "price = Σ count × rate" would hold for any count at all; non-zero, distinct rates make the product
+# answerable. Integer rates and a divisor of one leave nothing to round (#44).
+#
 # THE CONTROL, so that a red here is a finding and not a broken probe: the same read must show the
-# metering row EXISTS and carries the flat fee exactly. That row exists only because the rig's config
-# now carries `rate_card:`, so the control also witnesses the billing switch itself.
+# metering row EXISTS and carries one request, and the key's own spend reads the flat fee: 1 cent,
+# because the classes add 2 + 3 × bytes micro-units, which is far below the one cent the single
+# truncation to whole cents would need to move (`derive_spend_cents`, kernel-ledger cost/project.rs).
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=h2-lib.sh
@@ -57,7 +70,18 @@ H2_GROUPS_YAML="groups:
     limits:
       - { budget: 1000000, per: day }"
 
-h2_boot "$WORK" "$H2_GROUPS_YAML" || { echo "FAIL	boot failed, see $WORK/busbar.log" ; exit 1; }
+# The rates, in micro-units per unit, and the card that carries them.
+RATE_TOOL_CALLS=2
+RATE_BYTES=3
+FEE_MICROS=10000 # tools.fees.per_request: 1 cent, lifted by the one scale (1 cent = 10000 micros)
+export H2_RATE_CARD_YAML="  rate_card:
+    probe_ping: { units: { tool_calls: ${RATE_TOOL_CALLS}, bytes: ${RATE_BYTES} } }"
+
+# ── (1) THE CARD MUST BE ABLE TO NAME THE CLASSES ─────────────────────────────────────────────────
+h2_boot "$WORK" "$H2_GROUPS_YAML" || {
+  echo "FAIL	(1) a node whose tools.rate_card prices this plane's declared classes 'tool_calls' and 'bytes' did not boot: $(grep -v '^\s*$' "$WORK/busbar.log" 2>/dev/null | tail -1 | cut -c1-300)"
+  exit 1
+}
 
 failures=0
 detail=""
@@ -74,38 +98,48 @@ sleep 2
 row_requests="$(h2_meter_row_field "probe_ping" "mcp" requests)"
 [ "$row_requests" = "1" ] || { failures=$((failures+1)); detail="${detail}metering row for (probe_ping, mcp) reports requests=${row_requests}(want 1 -- with no such row the rig is not reading a billing-ON node at all); "; }
 key_spend="$(h2_usage_field "$kid" spend_cents)"
-[ "$key_spend" -eq 1 ] || { failures=$((failures+1)); detail="${detail}the key's own spend reads ${key_spend}(want 1, the flat fee -- if this is wrong the rig is not reading money correctly and the reds below cannot be trusted); "; }
-
-# ── (1) THE CARD MUST BE ABLE TO NAME THE CLASSES ─────────────────────────────────────────────────
-# Asked of the binary, not of a script's opinion of the grammar: `--validate` runs the exact
-# load → resolve → validate that boot runs.
-card_verdict="$(h2_validate_card '  rate_card:
-    probe_ping: { units: { tool_calls: 2, bytes: 3 } }')"
-if [ "$card_verdict" != "ok" ]; then
-  failures=$((failures+1))
-  detail="${detail}(1) a rate card naming this plane's declared classes 'tool_calls' and 'bytes' does not resolve: ${card_verdict}; "
-fi
+h2_int_is "$key_spend" -eq 1 || { failures=$((failures+1)); detail="${detail}the key's own spend reads ${key_spend}(want 1, the flat fee -- the classes add well under a cent, and if this is wrong the rig is not reading money correctly and the reds below cannot be trusted); "; }
 
 # ── (2) THE PLANE MUST REPORT COUNTS ──────────────────────────────────────────────────────────────
-# Every quantity column the money surface exposes for this row, summed. The request COUNT is
-# deliberately excluded: a request is not a quantity, it is what #44's flat fee prices.
-quantity="$(h2_meter_row_quantity "probe_ping" "mcp")"
-# Asked through h2_int_is so ANY read that is not a positive integer -- `-` (no row), 0, empty,
-# non-numeric -- is a failure. The old `[ "$quantity" -le 0 ] 2>/dev/null` errored silently on
-# every shape but `-` and 0 and let the leg pass (item 499).
-if ! h2_int_is "$quantity" -gt 0; then
+# Each declared class's count off the row's `classes` object. Asked through h2_int_is so ANY read
+# that is not a positive integer -- `-` (no row), 0 (the class absent from the row), empty,
+# non-numeric -- is a failure (item 499).
+tc_count="$(h2_meter_row_class "probe_ping" "mcp" tool_calls count)"
+by_count="$(h2_meter_row_class "probe_ping" "mcp" bytes count)"
+if ! h2_int_is "$tc_count" -gt 0; then
   failures=$((failures+1))
-  detail="${detail}(2) the served call reported quantity=${quantity} under this plane's declared classes 'tool_calls'/'bytes' (want > 0: one call is one tool_call, and the upstream answered with a document); "
+  detail="${detail}(2) the served call reported classes.tool_calls.count=${tc_count} (want > 0: one call is one tool_call); "
+fi
+if ! h2_int_is "$by_count" -gt 0; then
+  failures=$((failures+1))
+  detail="${detail}(2) the served call reported classes.bytes.count=${by_count} (want > 0: the upstream answered with a document); "
 fi
 
 # ── (3) THE PRICE MUST BE THE PRODUCT ─────────────────────────────────────────────────────────────
+tc_cost="$(h2_meter_row_class "probe_ping" "mcp" tool_calls cost)"
+by_cost="$(h2_meter_row_class "probe_ping" "mcp" bytes cost)"
 spend_micros="$(h2_meter_row_field "probe_ping" "mcp" spend_micros)"
 if [ "$failures" -ne 0 ]; then
-  detail="${detail}(3) price = Σ count × rate is BLOCKED BY the above; the row charged spend_micros=${spend_micros}, which is the flat per-request fee (1 cent = 10000 micro-units) and nothing else; "
+  detail="${detail}(3) price = Σ count × rate is BLOCKED BY the above (classes.tool_calls.cost=${tc_cost}, classes.bytes.cost=${by_cost}, row spend_micros=${spend_micros}); "
+else
+  want_tc=$((tc_count * RATE_TOOL_CALLS))
+  want_by=$((by_count * RATE_BYTES))
+  if ! h2_int_is "$tc_cost" -eq "$want_tc"; then
+    failures=$((failures+1))
+    detail="${detail}(3) classes.tool_calls.cost=${tc_cost} micro-units (want ${tc_count} × ${RATE_TOOL_CALLS} = ${want_tc}); "
+  fi
+  if ! h2_int_is "$by_cost" -eq "$want_by"; then
+    failures=$((failures+1))
+    detail="${detail}(3) classes.bytes.cost=${by_cost} micro-units (want ${by_count} × ${RATE_BYTES} = ${want_by}); "
+  fi
+  if ! h2_int_is "$spend_micros" -eq $((FEE_MICROS + want_tc + want_by)); then
+    failures=$((failures+1))
+    detail="${detail}(3) the row charged spend_micros=${spend_micros} (want the fee ${FEE_MICROS} + Σ count × rate ${want_tc} + ${want_by} = $((FEE_MICROS + want_tc + want_by))); "
+  fi
 fi
 
 if [ "$failures" -eq 0 ]; then
-  h2_verdict PASS "one served tools/call reported non-zero counts under the declared classes, a card can price them, and the row charged Σ count × rate + fee"
+  h2_verdict PASS "one served tools/call reported tool_calls=${tc_count} and bytes=${by_count} under the declared classes, the card priced them at ${tc_cost} + ${by_cost} micro-units (Σ count × rate), and the row charged that + the fee = ${spend_micros}"
 else
   h2_verdict FAIL "$detail"
 fi

@@ -3240,7 +3240,7 @@ pub(crate) fn admit(
 /// the unit's decision, from its own closed table, and not this step's.
 pub(crate) fn route(
     binding: &AdminBinding,
-    store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+    store: crate::root::kernel::VerbStoreHandle,
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     token: &Pass<Route>,
     ctx: &UnitCtx,
@@ -3311,7 +3311,7 @@ pub(crate) fn route(
                     None => bound::ReplayCache::new(),
                 })
             }))),
-            StoreRef(store),
+            store,
             ArrivalNonce(request.at),
             PackedReplay,
             CONFIG_CLASS_RULES,
@@ -3874,7 +3874,7 @@ impl RegisteredUnits for AdminPlane {
     ) -> SeatVerdict<Route> {
         route(
             &root.admin,
-            Arc::clone(&root.store),
+            root.store.clone(),
             &root.admin_token,
             token,
             ctx,
@@ -3936,52 +3936,6 @@ trait TapAdmin: Sized {
 }
 
 impl<S: busbar_contract::caps::Step> TapAdmin for SeatVerdict<S> {}
-
-/// The store the verbs unit is handed, behind the published ABI.
-///
-/// A thin newtype rather than a second implementation: the adapter the loader already builds is what
-/// answers, and this exists only because the unit takes its store by value while the root holds one
-/// for the whole node.
-struct StoreRef(Arc<dyn busbar_contract::verb_store::Store + Send + Sync>);
-
-impl busbar_contract::verb_store::Store for StoreRef {
-    fn chain_break(
-        &self,
-        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.chain_break(admin)
-    }
-
-    fn store_restore(
-        &self,
-        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.store_restore(admin, backup_ref)
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.reseal_epoch_floor(admin)
-    }
-
-    fn replay_new_verb(
-        &self,
-        key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        self.0.replay_new_verb(key)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        key: &(String, String),
-        response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.commit_new_verb_replay(key, response)
-    }
-}
 
 /// The nonce a one-time secret is bound to.
 ///

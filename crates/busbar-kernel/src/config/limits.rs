@@ -90,8 +90,7 @@ pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
 pub const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize =
     crate::proxy::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
 /// Default cap on a single `plugins.fetch:` download (bytes). Mirrors the same defense the
-/// token-endpoint reads already apply (`egress_auth::read_capped_token_response`,
-/// `proxy::wire::read_capped`): a mistyped or compromised `plugins.fetch` URL serving a multi-GB
+/// upstream reads already apply (`proxy::wire::read_capped`): a mistyped or compromised `plugins.fetch` URL serving a multi-GB
 /// body must NOT be buffered whole into memory via an unbounded `resp.bytes()` read — that OOMs
 /// busbar on boot (`fatal_on_miss`) or on `POST /plugins/reload`. 256 MiB comfortably holds any
 /// legitimate signed plugin tarball while bounding the worst case; the download is aborted with a
