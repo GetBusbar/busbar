@@ -298,6 +298,13 @@ impl SessionTable {
         self.bounds
     }
 
+    /// Whether `id` names a session the table still holds, whoever owns it (state kept beside a
+    /// session is dropped once this is false).
+    #[must_use]
+    pub fn holds(&self, id: &str) -> bool {
+        self.sessions.contains_key(id)
+    }
+
     /// Live sessions (expired ones not yet swept included).
     #[must_use]
     pub fn len(&self) -> usize {
@@ -485,7 +492,13 @@ impl SessionTable {
             }
             freed += f;
         }
-        self.hold_bytes(owner, cost - freed);
+        // Trimming to fit can free more than this event cost (one older large event, or this
+        // event itself past `max_session_bytes`): the owner is then charged less, never negative.
+        if freed > cost {
+            self.release_bytes(owner, freed - cost);
+        } else {
+            self.hold_bytes(owner, cost - freed);
+        }
         self.enforce(owner, id);
         Some(event_id(stream, seq))
     }

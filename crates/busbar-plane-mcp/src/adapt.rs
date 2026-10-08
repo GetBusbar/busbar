@@ -13,7 +13,9 @@
 //! What a session client is allowed to reach is decided here too ([`session_method`]): the methods
 //! the session revisions define. The stateless revision's own methods (`server/discover`,
 //! `subscriptions/listen`, the tasks extension) are never offered to a session client, whether it
-//! asks for them by name or reads the capabilities `initialize` answered with.
+//! asks for them by name or reads the capabilities `initialize` answered with. The session's own
+//! verbs (`resources/subscribe`, `resources/unsubscribe`, `logging/setLevel`) stay for the old
+//! revisions (THE DESIGN section 2, the mcp bullet) and are answered from the session's state.
 //!
 //! The `2024-11-05` event-stream framing lives here as values ([`frame`], [`endpoint_event`]);
 //! writing them to a connection is the caller's.
@@ -96,6 +98,8 @@ pub enum SessionMethod {
     Dispatch,
     /// `ping`, answered here with an empty result.
     Ping,
+    /// A verb of the session's own state: answered from it, never dispatched.
+    Session,
     /// A notification or a response from the client: accepted (202) and not answered.
     Accept,
     /// Not a method of the session revisions: `-32601`.
@@ -114,6 +118,13 @@ const SESSION_DISPATCHED: &[&str] = &[
     "completion/complete",
 ];
 
+/// The verbs a session's own state answers (subscribe stays for the old revisions).
+const SESSION_STATE_VERBS: &[&str] = &[
+    "resources/subscribe",
+    "resources/unsubscribe",
+    "logging/setLevel",
+];
+
 /// Classifies one session message. `method` is `None` for a client's response to a request.
 #[must_use]
 pub fn session_method(method: Option<&str>, has_id: bool) -> SessionMethod {
@@ -122,6 +133,7 @@ pub fn session_method(method: Option<&str>, has_id: bool) -> SessionMethod {
         Some(_) if !has_id => SessionMethod::Accept,
         Some(METHOD_PING) => SessionMethod::Ping,
         Some(m) if SESSION_DISPATCHED.contains(&m) => SessionMethod::Dispatch,
+        Some(m) if SESSION_STATE_VERBS.contains(&m) => SessionMethod::Session,
         Some(_) => SessionMethod::NotFound,
     }
 }
@@ -232,8 +244,10 @@ pub fn lower_result(result: &mut Value) -> Result<(), NotExpressible> {
 /// Only the capability groups the session revisions define are carried, and only when discovery
 /// declared them for this caller: `tools`, `prompts`, `resources` and (from `2025-06-18`)
 /// `completions`. `listChanged` is `list_changed` for all three lists, the caller's statement of
-/// whether it delivers those notifications on the session's stream. Resource subscription is never
-/// declared: the session revisions reach it by methods this plane does not offer a session.
+/// whether it delivers those notifications on the session's stream. Resource subscription and
+/// `logging` are declared on every session revision: subscribe stays for the old revisions, and the
+/// session's own state answers both (an upstream's `notifications/resources/updated` reaches the
+/// session's stream, and its `notifications/message` past the session's floor).
 #[must_use]
 pub fn initialize_result(discovery: &Value, revision: Revision, list_changed: bool) -> Value {
     let declared = discovery.get("capabilities");
@@ -246,6 +260,12 @@ pub fn initialize_result(discovery: &Value, revision: Revision, list_changed: bo
                 serde_json::json!({ "listChanged": list_changed }),
             );
         }
+    }
+    if let Some(resources) = caps.get_mut("resources").and_then(Value::as_object_mut) {
+        resources.insert("subscribe".into(), Value::Bool(true));
+    }
+    if has("logging") {
+        caps.insert("logging".into(), Value::Object(Map::new()));
     }
     if has("completions") && revision != Revision::R2024_11_05 {
         caps.insert("completions".into(), Value::Object(Map::new()));

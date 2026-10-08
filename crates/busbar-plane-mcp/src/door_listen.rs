@@ -74,7 +74,7 @@ pub(super) struct Listening {
 }
 
 /// A frame of the stream: its head (status, fields and the request's fee unit) with the first.
-fn frame(bytes: Vec<u8>, done: bool, headed: bool) -> Pending {
+pub(super) fn frame(bytes: Vec<u8>, done: bool, headed: bool) -> Pending {
     let (fields, units) = if headed {
         (Vec::new(), Vec::new())
     } else {
@@ -340,12 +340,15 @@ pub(super) fn drive(
     input: Lent<'_, PlaneDriveIn>,
     out: &mut Out<'_, PlaneDriveOut>,
 ) -> Outcome {
-    let due: Vec<u64> = plane.listens.with_all(|m| {
+    let mut due: Vec<u64> = plane.listens.with_all(|m| {
         m.iter()
             .filter(|(_, l)| l.due)
             .map(|(stream, _)| *stream)
             .collect()
     });
+    // The session revisions' held streams owe their collections on the same driver ticket.
+    let streams = super::door_sessions::due_streams(plane);
+    due.extend(&streams);
     let mut buf = input.sessions_buf();
     for stream in &due {
         buf.push(*stream);
@@ -362,6 +365,7 @@ pub(super) fn drive(
             }
         }
     });
+    super::door_sessions::taken(plane, &streams);
     Outcome::Ready
 }
 
@@ -373,7 +377,7 @@ pub(super) fn cancelled(plane: &McpDoor, ticket: Ticket) {
 }
 
 /// Name the instance's driver ticket (as its last tick handed it): a held subscription owes a step.
-fn wake_driver(plane: &McpDoor) {
+pub(super) fn wake_driver(plane: &McpDoor) {
     let driver = plane.driver.get(&()).map(|(ticket, _)| ticket);
     if let (Some(wake), Some(ticket)) = (plane.wake, driver) {
         if ticket != Ticket::NONE {

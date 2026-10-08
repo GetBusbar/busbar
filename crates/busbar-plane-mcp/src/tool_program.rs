@@ -17,9 +17,12 @@
 //!   notification brings verify-on-call forward; every other notification is passed over; `ping`,
 //!   an unknown method and an UNGRANTED authority ask are ANSWERED (the empty result, `-32601`, the
 //!   operator's refusal), once per child generation whichever exchange read it first
-//!   ([`Peer::claim`]). A GRANTED authority ask is busbar's caller's to answer (Law 11): the
-//!   exchange relaying a call takes it ([`Correlator::asks`]) and busbar writes nothing back; an
-//!   exchange of the door's own leaves it for the call it belongs to. At most
+//!   ([`Peer::claim`]). A GRANTED authority ask is busbar's caller's to answer (Law 11), and only
+//!   the caller whose call it serves: calls whose asks may be relayed reach a child ONE AT A TIME,
+//!   in arrival order (the door's line), so the ask is the call's first in line ([`first_in_line`],
+//!   fixed by the first exchange to read it, [`Peer::owner`]); that call's exchange takes it
+//!   ([`Correlator::asks`]) and busbar writes nothing back, every other exchange passes it over,
+//!   and an ask raised while no such call is open is refused on the child's input, once. At most
 //!   [`MAX_INTERLEAVED_MESSAGES`] such messages per exchange.
 //! * `initialize` runs ONCE PER GENERATION of the child (the generation each lease's head names):
 //!   an exchange that opens on a generation the door has not greeted greets it first
@@ -94,10 +97,20 @@ pub enum Message {
 }
 
 /// THE CHILD'S MESSAGES, out of its frames however the host's buffer cut them: whole JSON values,
-/// read as they complete; the rest kept for the next piece.
+/// back to back (the stdio framer hands each line without its newline). Each byte is scanned ONCE
+/// for where a value ends (its nesting depth, outside strings) and a value is parsed only once it is
+/// whole, so a message read in many pieces costs its size, never its size per piece (the design's
+/// no-blocking rule: bounded work on the worker).
 #[derive(Debug, Default)]
 pub struct Frames {
     buf: Vec<u8>,
+    /// How far `buf` is scanned.
+    seen: usize,
+    /// Where the value being read starts in `buf`, once its first byte came.
+    start: Option<usize>,
+    depth: usize,
+    in_string: bool,
+    escaped: bool,
 }
 
 impl Frames {
@@ -105,23 +118,58 @@ impl Frames {
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Message> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
-        let mut read = serde_json::Deserializer::from_slice(&self.buf).into_iter::<Value>();
-        loop {
-            match read.next() {
-                Some(Ok(value)) => out.push(Message::Value(value)),
-                Some(Err(e)) if e.is_eof() => break,
-                Some(Err(_)) => {
-                    // Not JSON: what is held cannot be resynchronised, so it is handed on whole.
-                    let rest = self.buf.split_off(read.byte_offset());
-                    self.buf.clear();
-                    out.push(Message::NotJson(rest));
-                    return out;
+        let mut used = 0;
+        while let Some(&b) = self.buf.get(self.seen) {
+            let at = self.seen;
+            self.seen += 1;
+            let Some(start) = self.start else {
+                match b {
+                    b' ' | b'\t' | b'\r' | b'\n' => used = self.seen,
+                    b'{' | b'[' => {
+                        self.start = Some(at);
+                        self.depth = 1;
+                    }
+                    _ => {
+                        // Not a message: what is held cannot be resynchronised, so it is handed on
+                        // whole.
+                        let rest = self.buf.split_off(at);
+                        *self = Frames::default();
+                        out.push(Message::NotJson(rest));
+                        return out;
+                    }
                 }
-                None => break,
+                continue;
+            };
+            if self.in_string {
+                match b {
+                    _ if self.escaped => self.escaped = false,
+                    b'\\' => self.escaped = true,
+                    b'"' => self.in_string = false,
+                    _ => {}
+                }
+                continue;
+            }
+            match b {
+                b'"' => self.in_string = true,
+                b'{' | b'[' => self.depth += 1,
+                b'}' | b']' => {
+                    self.depth -= 1;
+                    if self.depth == 0 {
+                        let whole = &self.buf[start..self.seen];
+                        out.push(match serde_json::from_slice(whole) {
+                            Ok(value) => Message::Value(value),
+                            Err(_) => Message::NotJson(whole.to_vec()),
+                        });
+                        self.start = None;
+                        used = self.seen;
+                    }
+                }
+                _ => {}
             }
         }
-        let used = read.byte_offset();
         self.buf.drain(..used);
+        self.seen -= used;
+        self.start = self.start.map(|s| s - used);
         out
     }
 
@@ -139,9 +187,46 @@ pub trait Peer {
     /// Whether this exchange is the first to read the request `id` of the child of `generation`,
     /// and so answers it.
     fn claim(&mut self, generation: u64, id: &Value) -> bool;
+    /// WHOSE the child's GRANTED ask `id` of `generation` is, fixed by the first exchange to read
+    /// it ([`first_in_line`]) and the same for every exchange after.
+    fn owner(&mut self, generation: u64, id: &Value) -> AskOwner;
     /// The child said its lists changed: verify-on-call is brought forward.
     fn notice(&mut self);
+    /// The child announced that its resource `uri` changed (`notifications/resources/updated`):
+    /// the sessions watching it are told. A peer that holds no session hears nothing.
+    fn announced(&mut self, uri: &str) {
+        let _ = uri;
+    }
 }
+
+/// Whose one of a child's granted asks is, as the exchange reading it is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskOwner {
+    /// The call relayed under this id: the call first in the child's line when the ask was first
+    /// read. Its exchange takes the ask for its caller; every other passes it over.
+    Call(u64),
+    /// No call of the child's: this exchange read it first, and refuses it on the child's input.
+    Refuse,
+    /// No call of the child's, and an exchange that read it first refused it.
+    Refused,
+}
+
+/// THE CALL A CHILD'S ASK BELONGS TO (finding 5). A request over stdio names no call it serves
+/// (MCP carries no related-request id on the wire, a call's progress token is its own and is never
+/// echoed on an ask, and the child numbers its own requests), so the door makes the answer
+/// unambiguous instead: calls whose asks may be relayed reach a child one at a time, in arrival
+/// order, and the ask is the call FIRST in that line. `line` is the child's member's calls in
+/// arrival order, each its id and the generation its lease reached (`0` before its head, which
+/// counts on every generation). An empty line, or one whose first call is on another generation's
+/// child, is `None`: the ask is refused, never handed to whichever exchange reads first (Law 11:
+/// relayed down the session it belongs to, as-is).
+pub fn first_in_line(line: impl IntoIterator<Item = (u64, u64)>, generation: u64) -> Option<u64> {
+    let (call, on) = line.into_iter().next()?;
+    (on == 0 || on == generation).then_some(call)
+}
+
+/// The audit word a child's ask that no call owns is refused under.
+pub const UNATTRIBUTED: &str = "ask_unattributed";
 
 /// ONE EXCHANGE'S READING of a child's messages: its answer by id, the replies it owes the child,
 /// and the progress it relays.
@@ -289,8 +374,13 @@ impl Correlator {
         let reply = match message {
             ServerMessage::Notification(n) => {
                 match n.effect() {
-                    NotificationEffect::BringRefreshForward
-                    | NotificationEffect::RelayResourceUpdate => peer.notice(),
+                    NotificationEffect::BringRefreshForward => peer.notice(),
+                    NotificationEffect::RelayResourceUpdate => {
+                        peer.notice();
+                        if let Some(uri) = value.pointer("/params/uri").and_then(Value::as_str) {
+                            peer.announced(uri);
+                        }
+                    }
                     NotificationEffect::RelayProgress => {
                         let token = format!("busbar-{wait}");
                         if value
@@ -306,21 +396,38 @@ impl Correlator {
                 None
             }
             ServerMessage::UnknownNotification(_) => None,
-            // A GRANTED AUTHORITY ASK is the caller's (Law 11): the exchange relaying the call takes
-            // it, and one of the door's own leaves it unclaimed for that exchange to read.
+            // A GRANTED AUTHORITY ASK is the caller's (Law 11), and only the caller whose call it
+            // serves: the exchange relaying the call first in the child's line takes it, every
+            // other passes it over, and one raised while no call is open is refused once.
             ServerMessage::Request { id, verb }
-                if verb.ask().is_some_and(|ask| peer.grants().allows(ask)) =>
+                if verb.ask().is_some_and(|a| peer.grants().allows(a)) =>
             {
-                if self.relays && peer.claim(generation, &id) {
-                    let mut request = value.as_object().cloned().unwrap_or_default();
-                    request.remove("jsonrpc");
-                    request.remove("id");
-                    self.asks.push(ChildAsk {
-                        id,
-                        request: Value::Object(request),
-                    });
+                match peer.owner(generation, &id) {
+                    AskOwner::Call(call) if self.relays && call == wait => {
+                        let mut request = value.as_object().cloned().unwrap_or_default();
+                        request.remove("jsonrpc");
+                        request.remove("id");
+                        self.asks.push(ChildAsk {
+                            id,
+                            request: Value::Object(request),
+                        });
+                        None
+                    }
+                    AskOwner::Refuse => {
+                        let kind = verb.ask().map(|a| a.key()).unwrap_or_default();
+                        Some(crate::client::peer::refused(
+                            &id,
+                            UNATTRIBUTED,
+                            format!(
+                                "server `{member}` asked for `{kind}` while busbar was relaying it \
+                                 no call, and a request over stdio names no call it serves, so the \
+                                 ask has no caller to go to; it is refused rather than put to \
+                                 another caller."
+                            ),
+                        ))
+                    }
+                    AskOwner::Call(_) | AskOwner::Refused => None,
                 }
-                None
             }
             ServerMessage::Request { id, verb } => peer
                 .claim(generation, &id)

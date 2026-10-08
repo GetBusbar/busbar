@@ -480,3 +480,85 @@ fn a_task_parked_on_its_upstreams_ask_hands_the_answers_back_once() {
     assert_eq!(gone.status(), Status::Cancelled);
     assert_eq!(gone.take_relay(), None);
 }
+
+/// THE TASK STORE IS HOST RECORDS (BUSBAR-1.6.0.md, the mcp bullet): a live task's state — its
+/// status, its `inputRequests` in order, its answers, the round of its own asks and the upstream
+/// ask it is parked on — reads back from its records into the task its row makes, and answers the
+/// same `tasks/get`.
+#[test]
+fn a_live_tasks_state_reads_back_from_its_records() {
+    let row = WorkRow {
+        status: Status::Working,
+        created_ms: T0,
+        updated_ms: T0,
+        digest: "d1".into(),
+    };
+    let mut own = task("k");
+    own.park(vec![elicitation("b"), elicitation("a")], T0 + 1);
+    assert!(own.deliver(&serde_json::from_value(json!({"z": 1})).unwrap(), T0 + 2));
+    own.asked = Some((1, json!({"name": "fs_x"})));
+    let mut relayed = task("k");
+    let requests: Map<String, Value> =
+        serde_json::from_value(json!({"r": {"method": "roots/list"}})).unwrap();
+    relayed.park_relay(&requests, "sealed".into(), json!({"name": "fs_x"}), T0 + 3);
+    for held in [own, relayed] {
+        let parts = live_parts(&held.id, &held.live());
+        assert!(parts
+            .iter()
+            .all(|(k, _)| k.starts_with(&live_prefix(&held.id))));
+        let bytes: Vec<u8> = parts.iter().flat_map(|(_, v)| v.clone()).collect();
+        let mut read = Task::from_row(&held.id, "k", 7, &row, None);
+        read.take_live(&read_live(&bytes).expect("a live document"));
+        assert_eq!(read.detailed(), held.detailed());
+        assert_eq!(read.answers(), held.answers());
+        assert_eq!(read.asked, held.asked);
+        assert_eq!(read.relayed(), held.relayed());
+        assert_eq!(read.take_relay(), held.clone().take_relay());
+    }
+}
+
+/// A SHORTER STATE WRITTEN OVER A LONGER ONE reads back as itself: the longer one's chunks past it
+/// are not read.
+#[test]
+fn a_live_state_reads_back_whole_over_an_earlier_longer_one() {
+    let short = json!({"status": "working", "updated": 1});
+    let long = json!({"status": "input_required", "updated": 0, "pad": "x".repeat(2000)});
+    let mut stored: BTreeMap<Vec<u8>, Vec<u8>> = live_parts("t", &long).into_iter().collect();
+    stored.extend(live_parts("t", &short));
+    let bytes: Vec<u8> = stored.values().flatten().copied().collect();
+    assert_eq!(read_live(&bytes), Some(short));
+}
+
+/// THE INDEX ROW of a live task: a run's lease that lapsed, or nothing moving it past the
+/// abandonment ceiling, leaves it behind; a task parked on its caller is not left behind by time
+/// short of that ceiling.
+#[test]
+fn a_task_is_left_behind_once_its_runs_lease_lapses_or_it_is_abandoned() {
+    let run = Lease {
+        until_ms: T0 + 10,
+        updated_ms: T0,
+    };
+    assert_eq!(Lease::read(&run.bytes()), Some(run));
+    assert!(!run.left_behind(T0 + 10));
+    assert!(run.left_behind(T0 + 11));
+    let parked = Lease {
+        until_ms: 0,
+        updated_ms: T0,
+    };
+    assert!(!parked.left_behind(T0 + ACTIVE_TASK_ABANDON_MS));
+    assert!(parked.left_behind(T0 + ACTIVE_TASK_ABANDON_MS + 1));
+    assert_eq!(Lease::read(b"l1|1"), None);
+    assert!(index_key("k", "t").starts_with(&index_prefix("k")));
+    assert_ne!(index_prefix("k"), index_prefix("j"));
+}
+
+/// Finding 24 [LOW]: `tasks/update` on a terminal task changes nothing — no answer is kept and its
+/// last update stands.
+#[test]
+fn an_update_to_a_terminal_task_changes_nothing() {
+    let mut t = task("k");
+    assert!(t.complete(json!({"content": []}), T0 + 1));
+    let before = t.clone();
+    assert!(t.deliver(&serde_json::from_value(json!({"a": 1})).unwrap(), T0 + 9));
+    assert_eq!(t, before);
+}

@@ -9,17 +9,46 @@
 //! refusal test it is given, so every test here that asserts a refusal also asserts the walk
 //! reached the field, and one test pins the visited counts exactly.
 
-use super::{guard, ArgRefusal, ArgWhy, SsrfPolicy};
+use super::{guard, ArgRefusal, ArgWhy};
+use busbar_contract::abi::host::service::{
+    DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_OBFUSCATED,
+};
+use busbar_contract::net::{
+    dns_name_is_internal, host_ip, host_is_cloud_metadata, ip_is_internal,
+    is_alternate_ipv4_encoding,
+};
 use serde_json::{json, Value};
 
-fn public() -> SsrfPolicy {
-    SsrfPolicy::default()
+/// A STAND-IN HOST'S `dest.judge`, over the contract's address predicates: what the walk is judged
+/// by in these tests. `refuse_private` is `DEST_REFUSE_PRIVATE` (a registration with no private
+/// reach). The deployment's real judge answering a served call is proven in the root crate
+/// (`root::tests::door_steps`).
+fn judge(refuse_private: bool) -> impl FnMut(&str) -> Option<u64> {
+    move |dest: &str| {
+        let host = dest
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(dest);
+        Some(if host_is_cloud_metadata(host) {
+            DEST_METADATA
+        } else if is_alternate_ipv4_encoding(host) {
+            DEST_OBFUSCATED
+        } else if refuse_private
+            && (dns_name_is_internal(host) || host_ip(host).is_some_and(|ip| ip_is_internal(&ip)))
+        {
+            DEST_INTERNAL
+        } else {
+            DEST_ALLOWED
+        })
+    }
 }
 
-fn private_ok() -> SsrfPolicy {
-    SsrfPolicy {
-        allow_private: true,
-    }
+fn public() -> impl FnMut(&str) -> Option<u64> {
+    judge(true)
+}
+
+fn private_ok() -> impl FnMut(&str) -> Option<u64> {
+    judge(false)
 }
 
 /// A schema whose `uri` field sits two levels down inside nested objects — the shape a real
