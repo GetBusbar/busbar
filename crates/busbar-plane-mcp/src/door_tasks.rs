@@ -1022,7 +1022,7 @@ pub(super) fn continuation_answered(
             run.far_bytes = run.far_bytes.saturating_add(far);
         }
         run.end = Some(match leg {
-            Leg::Done(value) => End::Completed(crate::sanitize::normalise_json(&value)),
+            Leg::Done(value) => End::Completed(value),
             Leg::Failed(reason) => End::Failed(format!("the MCP upstream call failed: {reason}")),
             Leg::Asked => End::Failed(
                 serde_json::from_slice::<Value>(body)
@@ -1323,7 +1323,7 @@ fn running(
                     .get(&run.reference)
                     .map(|t| t.answers().clone())
                     .unwrap_or_default();
-                match call(&held, unit, run, &answers) {
+                match call(services, ticket, &held, unit, run, &answers) {
                     // THE RUN'S LEASE, renewed as its call goes out: the task's live state and its
                     // index row ride the request.
                     Ok(Step::Write) => {
@@ -1419,8 +1419,11 @@ fn running(
 /// THE CALL, sent to the member the continuation's walk picked: the arguments as admitted with the
 /// task's answers merged in (`answers`), judged again by the argument guard on what is actually
 /// about to be dispatched (the answers were never screened), a pool's twin taken as the synchronous
-/// path takes it. `Err` = the task ends here, in the engine's words.
+/// path takes it. Every host the arguments name is asked of `dest.judge` on `ticket`. `Err` = the
+/// task ends here, in the engine's words.
 fn call(
+    services: Services,
+    ticket: Ticket,
     held: &Held,
     unit: &mut CallUnit,
     run: &mut Run,
@@ -1443,14 +1446,11 @@ fn call(
         .input_schema
         .clone()
         .unwrap_or_else(|| json!({ "type": "object" }));
-    let policy = crate::argguard::SsrfPolicy {
-        allow_private: held
-            .section
-            .servers
-            .get(&entry.server)
-            .is_some_and(|d| d.allow_private),
-    };
-    if let Err(refused) = crate::argguard::guard(&schema, &arguments, policy) {
+    let judged = crate::argguard::guard(&schema, &arguments, |dest| {
+        let h = handle(ticket, &mut unit.issued, &mut None);
+        super::dest_verdict(services, h, held, &entry, dest)
+    });
+    if let Err(refused) = judged {
         return Err(End::Failed(refused.to_string()));
     }
     let Some(member) = unit.member.clone() else {

@@ -70,6 +70,17 @@ fn red_no_stateless_only_method_reaches_a_session_client() {
         SessionMethod::Accept
     );
     assert_eq!(session_method(None, true), SessionMethod::Accept);
+    for m in [
+        "resources/subscribe",
+        "resources/unsubscribe",
+        "logging/setLevel",
+    ] {
+        assert_eq!(
+            session_method(Some(m), true),
+            SessionMethod::Session,
+            "{m}: subscribe stays for the old revisions"
+        );
+    }
 }
 
 #[test]
@@ -123,8 +134,15 @@ fn red_initialize_declares_no_stateless_only_capability() {
     let caps = r["capabilities"].as_object().unwrap();
     let mut keys: Vec<&str> = caps.keys().map(String::as_str).collect();
     keys.sort_unstable();
-    assert_eq!(keys, ["completions", "prompts", "resources", "tools"]);
-    assert_eq!(caps["resources"], json!({"listChanged": false}));
+    assert_eq!(
+        keys,
+        ["completions", "logging", "prompts", "resources", "tools"]
+    );
+    assert_eq!(
+        caps["resources"],
+        json!({"listChanged": false, "subscribe": true}),
+        "subscribe stays for the old revisions"
+    );
     assert!(r.get("methods").is_none());
 
     let old = initialize_result(&discovery, Revision::R2024_11_05, true);

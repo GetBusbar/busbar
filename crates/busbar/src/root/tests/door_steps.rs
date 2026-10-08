@@ -1300,9 +1300,12 @@ pub(crate) mod tool_door {
             ) -> busbar_kernel::test_support::TestApp,
         ) -> Self {
             // THE CONNECTOR, over every linked transport door (the default distribution links the
-            // http framer's door), its dials judged by a destination guard that admits loopback.
+            // http framer's door), its dials judged by a destination guard that admits loopback. The
+            // same guard is the kernel's `dest.judge` (as `root::serve::kernel_services` composes
+            // it), and the deployment blocks one extra host ([`BLOCKED_HOST`]).
             let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
                 block_private_addresses: footing.guarded,
+                blocked: vec![BLOCKED_HOST.to_string()],
                 ..Default::default()
             })
             .expect("the guard");
@@ -1346,7 +1349,12 @@ pub(crate) mod tool_door {
             };
             let clock = Arc::new(std::sync::atomic::AtomicU64::new(0));
             let wall = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let (late, store) = records_composed(footing.ledger, Arc::clone(&gov), (&clock, &wall));
+            let (late, store) = records_composed(
+                footing.ledger,
+                Arc::clone(&gov),
+                (&clock, &wall),
+                Arc::clone(&judge) as Arc<dyn busbar_kernel::host_services::DestJudge>,
+            );
             let dispatcher = Arc::new(Dispatcher::with_services(
                 DispatchConfig::default(),
                 Arc::new(Clocked {
@@ -1599,8 +1607,8 @@ pub(crate) mod tool_door {
 
     /// The kernel's host services composed whole for a door plane that writes records: a record store
     /// (an in-memory store: its typed record rows and its plane-record slots, where a chained kind's
-    /// journal persists), the runtime's blocking pool the store calls run on, installed as the
-    /// process's late services.
+    /// journal persists), the runtime's blocking pool the store calls run on, and `dest`, the
+    /// deployment's one destination judge, installed as the process's late services.
     fn records_composed(
         ledger: Ledger,
         signer: Arc<GovState>,
@@ -1608,6 +1616,7 @@ pub(crate) mod tool_door {
             &Arc<std::sync::atomic::AtomicU64>,
             &Arc<std::sync::atomic::AtomicU64>,
         ),
+        dest: Arc<dyn busbar_kernel::host_services::DestJudge>,
     ) -> (
         Arc<crate::root::serve::LateServices>,
         Arc<busbar_kernel::governance::MemoryStore>,
@@ -1616,6 +1625,7 @@ pub(crate) mod tool_door {
         let (origin, ahead) = (std::time::Instant::now(), Arc::clone(clock));
         let wall_ahead = Arc::clone(wall);
         let kernel = busbar_kernel::host_services::KernelServices::new()
+            .with_dest_judge(dest)
             .with_mono_clock(Arc::new(move || {
                 u64::try_from(origin.elapsed().as_nanos())
                     .unwrap_or(u64::MAX)
@@ -1923,6 +1933,11 @@ pub(crate) mod tool_door {
             }
         }
     }
+
+    /// A public-looking host the rig's deployment refuses by its own rules alone
+    /// (`security.blocked_metadata_hosts`): no address rule refuses it, so only the deployment's
+    /// destination judge can.
+    pub(crate) const BLOCKED_HOST: &str = "blocked.example";
 
     /// The record store a rig's host services bind.
     pub(crate) enum Ledger {
@@ -2744,6 +2759,98 @@ pub(crate) mod tool_door {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+
+    /// A `tools/call` of the rig's one tool whose undeclared `fetch` argument carries `url`.
+    fn fetching(url: &str) -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 32, "method": "tools/call",
+            "params": {
+                "name": "fs_read_file",
+                "arguments": { "path": "notes.txt", "fetch": url },
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": protocol_version(),
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        })
+        .to_string()
+    }
+
+    /// Each URL in `urls`, carried in a call's arguments, is refused before the call is sent, with
+    /// the argument guard's bytes (403, JSON-RPC -32000, `tool_argument_refused`); then a public
+    /// URL in the same field is served.
+    async fn refused_in_the_arguments(instance: &'static str, urls: &[&str]) {
+        let (port, mut heard) = tool_server().await;
+        let rig = Rig::new(instance, port, None);
+        for url in urls {
+            let (status, body) = send(&rig.router, Some(&rig.token), &fetching(url)).await;
+            let shown = String::from_utf8_lossy(&body);
+            assert_eq!(status.as_u16(), 403, "`{url}` must be refused: {shown}");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+            assert_eq!(body["error"]["code"], -32000, "`{url}`: {body}");
+            assert_eq!(
+                body["error"]["data"]["reason"], "tool_argument_refused",
+                "`{url}`: {body}"
+            );
+        }
+        let mut wire = Vec::new();
+        while let Ok(r) = heard.try_recv() {
+            wire.push(r);
+        }
+        assert!(
+            wire.iter().all(|r| !r.contains("\"tools/call\"")),
+            "no refused call reached the wire: {wire:?}"
+        );
+        let (status, body) = send(
+            &rig.router,
+            Some(&rig.token),
+            &fetching("https://docs.example.com/notes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+
+    /// THE ARGUMENT GUARD ASKS THE KERNEL'S `dest.judge` (THE DESIGN §11 host services B.3 item
+    /// 11): a host the deployment's own egress rules refuse ([`BLOCKED_HOST`], a
+    /// `security.blocked_metadata_hosts` entry no address rule would refuse) is refused when a
+    /// call's arguments name it. A guard deciding in the plane admits it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_host_the_deployment_refuses_is_refused_in_the_arguments() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-destjudge-blocked";
+        let _published = Published(instance);
+        let (plain, secure) = (
+            format!("http://{BLOCKED_HOST}/x"),
+            format!("https://{BLOCKED_HOST}:8443/y"),
+        );
+        refused_in_the_arguments(instance, &[&plain, &secure]).await;
+    }
+
+    /// The addresses the connector's guard refuses as internal are refused in a call's arguments
+    /// too, by that same judgement (`dest.judge`, private reach refused for a registration that
+    /// was granted none): benchmarking, IETF protocol assignments, "this network", the mapped,
+    /// scoped and link-local IPv6 spellings, multicast and broadcast.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_internal_address_the_guard_refuses_is_refused_in_the_arguments() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-destjudge-internal";
+        let _published = Published(instance);
+        refused_in_the_arguments(
+            instance,
+            &[
+                "http://198.18.0.1/x",
+                "http://192.0.0.8/x",
+                "http://0.1.2.3/x",
+                "http://[::ffff:198.18.0.1]/x",
+                "http://[::1%25lo]/x",
+                "http://[fe80::1%25eth0]/x",
+                "http://224.0.0.1/x",
+                "http://255.255.255.255/x",
+                "http://[ff02::1]/x",
+            ],
+        )
+        .await;
     }
 
     /// A UNIT THE PLANE ANSWERS ITSELF (ARCHITECT Q-L3B-LOCAL): a keyed `tools/list` names no entry,
