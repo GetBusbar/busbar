@@ -98,6 +98,47 @@ DEFAULT_BATTERY_DIR="testing/mcp-conformance"
 say() { printf '%s\n' "$*"; }
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
+# THE SUITE'S NODE. @modelcontextprotocol/conformance imports fs.globSync, which exists from Node 22;
+# on Node 20 the suite dies at import, enumerates zero scenarios, and every row it owes reads as a
+# failure. promote.yml runs Node 22, so this script provisions the same major itself rather than
+# relying on whatever the runner image ships: a pinned release from nodejs.org, checked against a
+# sha256 this file commits, unpacked under target/ and put first on PATH. A runner that already has
+# Node >= 22 is left alone. The hash is checked BEFORE the archive is unpacked, and a mismatch, a
+# platform with no pin, or a failed download is a refusal, never a fall-back to the old node.
+NODE_PIN_VERSION="v22.23.3"
+node_pin_sha256() {  # $1 = <os>-<arch> as nodejs.org names them
+  case "$1" in
+    linux-x64)    echo "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af" ;;
+    linux-arm64)  echo "5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2" ;;
+    darwin-x64)   echo "8a677b0219178efd6eb0e475457c4afb452b521a92f6e67845a73bd85727f2a8" ;;
+    darwin-arm64) echo "23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53" ;;
+    *) return 1 ;;
+  esac
+}
+ensure_node22() {
+  local have os arch plat want dir tgz got
+  have="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  if [ "$have" -ge 22 ] 2>/dev/null; then return 0; fi
+  case "$(uname -s)" in Linux) os=linux ;; Darwin) os=darwin ;; *) die "no pinned Node for $(uname -s)" ;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=x64 ;; aarch64|arm64) arch=arm64 ;; *) die "no pinned Node for $(uname -m)" ;; esac
+  plat="$os-$arch"
+  want="$(node_pin_sha256 "$plat")" || die "no pinned Node for $plat"
+  dir="$PWD/target/node-pin/node-$NODE_PIN_VERSION-$plat"
+  if [ ! -x "$dir/bin/node" ]; then
+    mkdir -p "$PWD/target/node-pin"
+    tgz="$PWD/target/node-pin/node-$NODE_PIN_VERSION-$plat.tar.gz"
+    curl -fsSL --retry 3 -o "$tgz" "https://nodejs.org/dist/$NODE_PIN_VERSION/node-$NODE_PIN_VERSION-$plat.tar.gz" \
+      || die "could not download Node $NODE_PIN_VERSION ($plat)"
+    if command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$tgz" | cut -d' ' -f1)"; else got="$(shasum -a 256 "$tgz" | cut -d' ' -f1)"; fi
+    [ "$got" = "$want" ] || { rm -f "$tgz"; die "Node $NODE_PIN_VERSION ($plat) sha256 $got is not the pinned $want"; }
+    tar -xzf "$tgz" -C "$PWD/target/node-pin" || die "could not unpack $tgz"
+  fi
+  export PATH="$dir/bin:$PATH"
+  have="$(node -p 'process.versions.node' 2>/dev/null || echo none)"
+  case "$have" in "${NODE_PIN_VERSION#v}") ;; *) die "provisioned node reports $have, wanted ${NODE_PIN_VERSION#v}" ;; esac
+  say "node: provisioned $NODE_PIN_VERSION ($plat), sha256 verified"
+}
+
 # The subject-boot harness: build-from-this-commit, boot on loopback, obtain a real audience-bound
 # credential, and PROVE the plane boundary is intact before any verdict is believed. Sourced rather
 # than inlined because it is a substantial piece of reasoning of its own; sourced AFTER `say`/`die`
@@ -1022,10 +1063,10 @@ printf "{}" >reports/differential.json; exit 0'
 }
 
 case "${1:---help}" in
-  --official-control) official_control ;;
-  --official-subject) official_subject ;;
-  --battery-control)  battery_control ;;
-  --battery-subject)  battery_subject ;;
+  --official-control) ensure_node22; official_control ;;
+  --official-subject) ensure_node22; official_subject ;;
+  --battery-control)  ensure_node22; battery_control ;;
+  --battery-subject)  ensure_node22; battery_subject ;;
   --selftest)         selftest ;;
   --help|-h)          usage ;;
   *) die "unknown mode: $1 (try --help)" ;;
