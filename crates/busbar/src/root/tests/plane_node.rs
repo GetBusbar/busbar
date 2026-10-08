@@ -4893,8 +4893,8 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
 /// line of it at all.
 #[test]
 fn the_exit_arm_seals_no_money_figure_into_the_record() {
-    use busbar_contract::caps::{Admittance, Exit, Hold, Posted, UnitEnd, Usage, WriteMoney};
-    use busbar_kernel::test_support::tokens::{grant, origin, pass};
+    use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
+    use busbar_kernel::test_support::tokens::{end, grant, origin, pass};
 
     let node = Node::new();
     let durability = crate::root::durability::build(
@@ -4915,7 +4915,7 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
     let posted = Posted::settle(hold, u128::from(MONEY), &usage, &grant::<WriteMoney>());
     assert_eq!(posted.settled(), MONEY, "the posting moved money");
     let ended = Ended::Settled {
-        end: UnitEnd::seal(&grant::<Exit>(), Outcome::Completed, Ok(posted)),
+        end: end(Outcome::Completed, Ok(posted)),
         requests: 0,
         fee: 0,
     };
