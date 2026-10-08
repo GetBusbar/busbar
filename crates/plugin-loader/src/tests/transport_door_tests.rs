@@ -16,7 +16,7 @@ use crate::sign::validate_structure;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::abi::transport::ROLE_FRAMER;
+use busbar_contract::abi::transport::ROLE_CARRIER;
 
 /// The test-only HOT carrier the conformance and stack witnesses below drive.
 #[path = "mem_carrier.rs"]
@@ -111,7 +111,10 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
     assert_eq!(entries.doors.len(), 1);
     let door = &entries.doors[0];
     let facts = door.context::<TransportFacts>().expect("its tail");
-    assert_eq!(facts.role, ROLE_FRAMER);
+    assert_eq!(
+        facts.role, ROLE_CARRIER,
+        "the neutral door carries its byte stream as itself"
+    );
     assert_eq!(facts.claims, [door.name()], "one claim: its own");
     assert!(
         facts.composes_over.is_empty(),
