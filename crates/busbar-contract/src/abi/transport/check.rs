@@ -23,8 +23,8 @@ use super::{
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
-    bits, code, fault, first, index, listed, range, result, results, text, texts, within, Dim,
-    MAX_BYTES,
+    bits, bounded, code, fault, first, index, listed, range, result, results, text, texts, within,
+    Dim, MAX_BYTES,
 };
 
 /// The most frame pieces one framer answer may produce.
@@ -404,6 +404,12 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
     listed(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to")?;
     listed(t.status_rows, t.status_rows_len, "tail.status_rows")?;
     listed(t.settings, t.settings_len, "tail.settings")?;
+    // Every tail list is bounded and aligned before a reader builds a slice over it.
+    bounded(t.composes_over, t.composes_over_len, "tail.composes_over")?;
+    bounded(t.claim_rows, t.claim_rows_len, "tail.claim_rows")?;
+    bounded(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to")?;
+    bounded(t.status_rows, t.status_rows_len, "tail.status_rows")?;
+    bounded(t.settings, t.settings_len, "tail.settings")?;
     text(t.handoff_from, "tail.handoff_from")?;
     text(t.handoff_to, "tail.handoff_to")?;
     text(t.handoff_binding_fact, "tail.handoff_binding_fact")?;

@@ -50,6 +50,7 @@ extern "C" {
 #define BB_MECH_SPAN_ABSENT UINT32_C(0xffffffff) /* [`span`]: no bytes; the span's length is then `0`. */
 #define BB_MECH_MAX_BYTES UINT64_C(0xffffffff) /* The largest byte count any answer may state (written or needed). */
 #define BB_MECH_HARD_MAX_BYTES UINT64_C(0x1000000) /* The largest blob, or byte `needed`, one answer of the secret, hook or export kind may state */
+#define BB_MECH_STATEMENT_LIST_MAX ((size_t)1024) /* The most entries one Statement list (or one list a kind's tail states) may hold. A count above */
 #define BB_MECH_FAMILY_COUNTER UINT8_C(0) /* [`MetricFamily::kind`]: a counter. */
 #define BB_MECH_FAMILY_GAUGE UINT8_C(1) /* [`MetricFamily::kind`]: a gauge. */
 #define BB_MECH_FAMILY_HISTOGRAM UINT8_C(2) /* [`MetricFamily::kind`]: a histogram. */
