@@ -496,6 +496,15 @@ pub(crate) async fn browser(State(handle): State<Arc<AppHandle>>, req: Request<B
     // `.await` (axum's `Body` is not `Sync`, so the handler future would not be `Send`).
     let params = parse_query(req.uri().query().unwrap_or(""));
     let cookie_raw = read_cookie(&req);
+    // Whether this navigation came from busbar's OWN page (the key-issued page's "Refresh key"
+    // link). Browsers set `Sec-Fetch-Site` themselves and a page cannot forge it; `cross-site` is a
+    // link from another site, `none` a typed, bookmarked or mail-app URL, and an absent header an
+    // old browser or a non-browser. Only `same-origin` may rotate.
+    let same_origin = req
+        .headers()
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        == Some("same-origin");
     drop(req);
     let get = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
 
@@ -510,7 +519,13 @@ pub(crate) async fn browser(State(handle): State<Arc<AppHandle>>, req: Request<B
     }
     match get("method") {
         // `?refresh=1` marks a ROTATE ("Refresh key"): the completing handler mints with refresh=true.
-        Some(method) => begin(&app, &method, get("refresh").as_deref() == Some("1")).await,
+        // Honoured only from busbar's own page: a rotate revokes the user's key, and any other site
+        // can navigate a signed-in user here (the IdP approves silently), so a cross-site, typed or
+        // header-less `refresh=1` is a plain issue that re-shows the key.
+        Some(method) => {
+            let refresh = same_origin && get("refresh").as_deref() == Some("1");
+            begin(&app, &method, refresh).await
+        }
         None => chooser(&app),
     }
 }
