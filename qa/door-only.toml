@@ -111,56 +111,6 @@ item = "busbar_plane_llm"
 
 [[finding]]
 rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/codec/handler.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/codec/invoke.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/codec/mod.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/codec/subscribe.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/lib.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/mcp/envelope.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/mcp/method.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/mcp/mod.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/mcp/sampling.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/mcp/subscribe.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
 file = "crates/busbar-voice/src/bin/voice-conform.rs"
 item = "busbar_plane_streaming"
 

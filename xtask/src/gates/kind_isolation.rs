@@ -360,10 +360,12 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["busbar-export-"],
     },
+    // `=busbar-mcp` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the mcp plane
+    // is `busbar-plane-mcp`, a `plane` crate (`legacy-retired` asked for exactly this strike).
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-a2a", "=busbar-voice"],
+        matchers: &["=busbar-llm", "=busbar-a2a", "=busbar-voice"],
     },
 ];
 
@@ -424,8 +426,9 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     // class the design grants ahead of the tree lands here.
 ];
 
-/// The retiring 1.5.x crates, named so the ratchet can check they still exist.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+/// The retiring 1.5.x crates, named so the ratchet can check they still exist. `busbar-mcp` retired
+/// at P3 DEL-MCP (ARCHITECT 2026-10-05) and is struck, as `legacy-retired` requires.
+const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-a2a", "busbar-voice"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -733,7 +736,18 @@ const ARCHITECTURE_TCB: &[(&str, &str)] = &[
 ];
 
 /// The verdict a `[[dep]]` row must carry, and the whole vocabulary of them.
-const DEP_VERDICTS: &[&str] = &["allowed", "tcb", "not-allowed", "owner-ruling-pending"];
+const DEP_VERDICTS: &[&str] = &[
+    "allowed",
+    "tcb",
+    "not-allowed",
+    "owner-ruling-pending",
+    TEST_LINKED_DOOR_VERDICT,
+];
+
+/// A TEST-LINKED DOOR's verdict ([`test_linked_door_edges`]; ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1); ported from lane-dg-mcp dd0d4438ba at P3 DEL-MCP): a row claims it only for such
+/// an edge, and such an edge's row claims nothing else.
+const TEST_LINKED_DOOR_VERDICT: &str = "test-linked-door";
 
 /// The two halves of the build graph a `[[dep]]` or `[[question]]` row can be about.
 const DEP_HALVES: &[&str] = &["shipped", "test"];
@@ -861,6 +875,18 @@ const BATTERY_MARKER: &str = "testkit";
 
 /// A per-crate battery file matches this, under the crate's own `tests/`.
 const CONFORMANCE_MARKER: &str = "conformance";
+
+/// THE PUBLISHED CONFORMANCE SUITE'S INVOCATION. A plugin runs busbar's published suite (OWNER
+/// 2026-10-03: plugins test themselves against busbar's published suite) by invoking
+/// `busbar_plugin_loader::conformance_suite!` in its `tests/conformance.rs`, and the macro expands
+/// to the suite's `#[test]` entries (`crates/plugin-loader/src/conformance/mod.rs`). The file
+/// itself spells no `#[test]`, so a counter that reads only attributes scored a running battery as
+/// one with no entry.
+const PUBLISHED_SUITE_MACRO: &str = "conformance_suite!";
+
+/// The key an invocation of [`PUBLISHED_SUITE_MACRO`] names its subject with. An invocation that
+/// names no `door:` expands to no entry against any subject, so it is not counted.
+const PUBLISHED_SUITE_SUBJECT: &str = "door:";
 
 // ------------------------------------------------------------------------------------------------
 // the vocabulary bans
@@ -1666,6 +1692,15 @@ fn precedence(matcher: &str) -> u8 {
     }
 }
 
+/// The PLUGIN kind a package name resolves to — one of the seven ([`truths::PLUGIN_KINDS`]) — or
+/// `None` for an infra crate, an unknown name, or a name two kinds claim at once. The audit ledger
+/// asks this of every `git+` package in `Cargo.lock` to decide which pinned checkouts are a kind's
+/// crates (`crate::audit_pinned`), so it resolves names through this table and never a second one.
+pub fn plugin_kind(name: &str) -> Option<&'static str> {
+    let (kind, _, ambiguous) = resolve_kind(name);
+    kind.filter(|k| ambiguous.is_empty() && truths::PLUGIN_KINDS.contains(k))
+}
+
 /// Resolve a crate name to its kind. THE MOST SPECIFIC BAND WINS, and two kinds in that band is the
 /// fusion refusal rather than a coin toss.
 fn resolve_kind(name: &str) -> (Option<&'static str>, Vec<String>, Vec<&'static str>) {
@@ -1818,6 +1853,50 @@ pub fn plane_kind_src_roots(cx: &Ctx) -> Result<Vec<String>, String> {
         return Err(
             "no crate under crates/ resolves to a plane-family kind — the plane population is \
              empty, and an empty population is the passing answer to every ban"
+                .to_string(),
+        );
+    }
+    Ok(out)
+}
+
+/// ONE CRATE OF KIND `plane`, as the census reads it — for a sibling gate that owes something per
+/// plane crate and must not keep its own list of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaneKindCrate {
+    /// The package name from `[package] name = …`.
+    pub name: String,
+    /// The manifest's own path, so a finding can name the file.
+    pub manifest: String,
+    /// The keys its `impl PlaneMeta for …` blocks declare (`const KEY: &'static str = "…";`) — the
+    /// plane the crate IS, read off its source rather than its name.
+    pub declared_keys: Vec<String>,
+}
+
+/// THE PLANE-KIND CRATES, DERIVED FROM THE CENSUS: every manifest anywhere in the tree whose crate
+/// resolves to the `plane` kind (the `busbar-plane-` matcher, after any `[[registered]]` override)
+/// and is not an [`OFF_TREE_MANIFESTS`] entry.
+///
+/// The `legacy` kind is NOT in it, although it shares [`Family::Plane`] with `plane` and
+/// [`plane_kind_src_roots`] scans it: a legacy crate is a retiring pre-unification ENGINE matched by
+/// exact name (a closed list no new crate can join), not a plane crate. The plane it serves is
+/// declared by its `busbar-plane-<key>` successor, which is in this population.
+///
+/// `Err` when no crate resolves to `plane`: an empty population is the passing answer to every rule
+/// over it.
+pub fn plane_kind_crates(cx: &Ctx) -> Result<Vec<PlaneKindCrate>, String> {
+    let out: Vec<PlaneKindCrate> = census(cx)?
+        .into_iter()
+        .filter(|c| c.kind == Some("plane"))
+        .map(|c| PlaneKindCrate {
+            name: c.name,
+            manifest: c.manifest,
+            declared_keys: c.declared_keys,
+        })
+        .collect();
+    if out.is_empty() {
+        return Err(
+            "no crate in the tree resolves to the `plane` kind — the plane-crate population is \
+             empty, and an empty population is the passing answer to every rule over it"
                 .to_string(),
         );
     }
@@ -2481,6 +2560,13 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         Half::Shipped => BTreeSet::new(),
     };
     let measured = measure_edges_granting(crates, half, &granted);
+    // A TEST-LINKED DOOR (`test_linked_door_edges`) is a test edge with its own verdict; the shipped
+    // half excuses nothing.
+    let doors = match half {
+        Half::Test => test_linked_door_edges(cx, crates, reg),
+        Half::Shipped => BTreeSet::new(),
+    };
+    let is_door = |from: &str, to: &str| doors.contains(&(from.to_owned(), to.to_owned()));
     // A ROW REFUSED AT LOAD IS REPORTED, NOT DROPPED. A table that quietly skips what it cannot
     // understand is a table that says yes to it, and the row it skipped is the one somebody wrote
     // to get an edge past this rule. Only the shipped row carries them, so one bad row is one
@@ -2690,6 +2776,10 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 if witness.contains(&(e.from.clone(), e.to.clone())) {
                     continue;
                 }
+                // A TEST-LINKED DOOR is excused on the test half only (`doors` is empty shipped).
+                if is_door(&e.from, &e.to) {
+                    continue;
+                }
                 // THE DRAIN IS THE ONE EDGE THAT IS SUPPOSED TO BE NEW.
                 //
                 // A `[[transitional]]` row is not a `[[dep]]` row wearing a different hat, and the
@@ -2830,8 +2920,27 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         // A ROW MAY NOT GRANT ITSELF AN EDGE THE ARCHITECTURE DOES NOT. `allowed` and `tcb` are
         // readings of the architecture, not opinions a row is entitled to hold: the class tables
         // are in this file precisely so the ledger cannot edit them.
-        let implied = verdict_for(&e.class);
+        let implied = if is_door(&e.from, &e.to) {
+            TEST_LINKED_DOOR_VERDICT
+        } else {
+            verdict_for(&e.class)
+        };
         match row.verdict.as_str() {
+            v if v == TEST_LINKED_DOOR_VERDICT && implied != TEST_LINKED_DOOR_VERDICT => offenders
+                .push(format!(
+                    "unsupported-verdict\t{} -> {}\tthe row claims `{TEST_LINKED_DOOR_VERDICT}`, \
+                     and the edge is not a test-linked door: a [dev-dependencies] edge on a plane \
+                     crate the crate's `test-linked` list names as `door:<crate>`, never shipped, \
+                     whose row states the drain `{TEST_LINKED_DOOR_DRAIN}` (the architecture \
+                     implies `{implied}`).",
+                    e.from, e.to
+                )),
+            v if v != TEST_LINKED_DOOR_VERDICT && implied == TEST_LINKED_DOOR_VERDICT => offenders
+                .push(format!(
+                    "unsupported-verdict\t{} -> {}\tthe edge is a test-linked door and the row \
+                     calls it `{v}`: its verdict is `{TEST_LINKED_DOOR_VERDICT}`.",
+                    e.from, e.to
+                )),
             "allowed" if implied != "allowed" => offenders.push(format!(
                 "unsupported-verdict\t{} -> {}\tthe row claims `allowed`, and the architecture \
                  grants no {} -> {} edge (it implies `{implied}`). A ledger row cannot grant an \
@@ -3974,7 +4083,7 @@ struct SourceIndex {
     /// dirs that export a door through the SDK door macro (`export_door!(..)` on a production line
     /// of their `src/` or `examples/`). See [`door_carries`].
     door_exports: BTreeSet<String>,
-    /// dirs whose shipped source builds a door with an SDK door builder. See [`builds_door`].
+    /// dirs whose shipped source builds a door with an SDK door builder. See [`door_macro_calls`] and [`door_builders`].
     door_builders: BTreeSet<String>,
     /// dir -> the kinds whose memory ABI its shipped source names. See [`door_kind_marks`].
     door_kinds: BTreeMap<String, BTreeSet<&'static str>>,
@@ -4007,7 +4116,10 @@ fn live_battery_entries(text: &str) -> (usize, usize) {
     let is_attr = |l: &String| l.trim_start().starts_with("#[");
     let (mut live, mut ignored) = (0usize, 0usize);
     for (i, l) in lines.iter().enumerate() {
-        if !l.trim_start().starts_with("#[test]") {
+        // An async entry is an entry: `#[tokio::test]` (with or without its runtime arguments) is a
+        // test `cargo test` runs exactly as it runs `#[test]`.
+        let t = l.trim_start();
+        if !(t.starts_with("#[test]") || t.starts_with("#[tokio::test")) {
             continue;
         }
         let mut lo = i;
@@ -4024,7 +4136,66 @@ fn live_battery_entries(text: &str) -> (usize, usize) {
             live += 1;
         }
     }
+    live += published_suite_invocations(&lines);
     (live, ignored)
+}
+
+/// How many invocations of the published suite ([`PUBLISHED_SUITE_MACRO`]) a battery file makes
+/// that name a subject — each one is the suite's entries run against that subject.
+///
+/// Read off the BLANKED lines, so the macro's name in prose or in a string is not an invocation.
+/// The invocation runs from the macro's name to the delimiter that closes the one it opened, and it
+/// counts only if that span names [`PUBLISHED_SUITE_SUBJECT`]: `conformance_suite! {}` expands to
+/// nothing and stays a file with no entry. A file that DEFINES its own `macro_rules!
+/// conformance_suite` is not invoking the published suite, whatever its invocation looks like, so
+/// none of its invocations count.
+fn published_suite_invocations(lines: &[String]) -> usize {
+    let shadowed = lines.iter().any(|l| {
+        l.contains("macro_rules!") && l.contains(PUBLISHED_SUITE_MACRO.trim_end_matches('!'))
+    });
+    if shadowed {
+        return 0;
+    }
+    let mut count = 0usize;
+    for (i, l) in lines.iter().enumerate() {
+        let Some(at) = l.find(PUBLISHED_SUITE_MACRO) else {
+            continue;
+        };
+        // The macro's name must be a path's last segment, not the tail of a longer identifier.
+        let before = l[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let mut span = String::new();
+        let mut depth = 0i32;
+        let mut opened = false;
+        'walk: for (j, line) in lines[i..].iter().enumerate() {
+            let text = if j == 0 {
+                &line[at + PUBLISHED_SUITE_MACRO.len()..]
+            } else {
+                line.as_str()
+            };
+            for ch in text.chars() {
+                match ch {
+                    '{' | '(' | '[' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' | ')' | ']' => depth -= 1,
+                    _ => {}
+                }
+                span.push(ch);
+                if opened && depth <= 0 {
+                    break 'walk;
+                }
+            }
+            span.push('\n');
+        }
+        if span.contains(PUBLISHED_SUITE_SUBJECT) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// The `<…>` immediately after `impl`, skipped as a BALANCED group: `impl<S: CellStore>` and
@@ -4164,6 +4335,7 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(MIN_SOURCES))
         .map_err(|e| e.to_string())?;
+    let builders = door_builders(cx)?;
     let mut idx = SourceIndex {
         skeleton: BTreeMap::new(),
         impls: BTreeMap::new(),
@@ -4212,7 +4384,7 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         if facts.door_tails > 0 {
             *idx.doors.entry(dir.clone()).or_default() += facts.door_tails;
         }
-        if facts.builds_door {
+        if facts.door_macros.iter().any(|m| builders.contains(m)) {
             idx.door_builders.insert(dir.clone());
         }
         if !facts.door_kinds.is_empty() {
@@ -4220,6 +4392,30 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
                 .entry(dir.clone())
                 .or_default()
                 .extend(facts.door_kinds.iter().copied());
+        }
+    }
+    // A PLUGIN REPO IS ITS LOGIC CRATE AND ITS `-plugin` TWIN (spec §9, "Each plugin repo is a
+    // logic crate plus a plugin crate"; #31 topology; the R-FIX1 door per real plugin; ARCHITECT
+    // 2026-10-07). The census reads a pinned repo's logic crate, and the twin is where that repo
+    // EXPORTS its door (`export_door!`) and RUNS its battery (`tests/conformance.rs`). Those two
+    // facts are read off the twin onto the logic crate's entry; nothing else of the twin is, so the
+    // edge, closure and vocabulary rules still read the logic crate alone.
+    for (dir, sub, text) in pinned::twin_files(cx) {
+        if sub.starts_with("tests/") && sub.contains(CONFORMANCE_MARKER) && sub.ends_with(".rs") {
+            if let Some(live) = source_facts(&format!("{dir}/{sub}"), &dir, &text).live {
+                if live > 0 {
+                    idx.conformance.insert(dir.clone());
+                    idx.conformance_dead.remove(&dir);
+                } else if !idx.conformance.contains(&dir) {
+                    idx.conformance_dead.insert(dir.clone());
+                }
+            }
+        }
+        if (sub.starts_with("src/") || sub.starts_with("examples/"))
+            && sub.ends_with(".rs")
+            && (exports_door(&text) || links_door(&text))
+        {
+            idx.door_exports.insert(dir.clone());
         }
     }
     Ok(idx)
@@ -4293,8 +4489,8 @@ struct SourceFacts {
     door_tails: usize,
     /// Whether it exports a door through the SDK door macro. See [`exports_door`].
     exports_door: bool,
-    /// Whether it builds a door with an SDK door builder, when shipped. See [`builds_door`].
-    builds_door: bool,
+    /// The `*_door!` macros it invokes, when shipped. See [`door_macro_calls`].
+    door_macros: Vec<String>,
     /// The kinds whose memory ABI it names, when shipped. See [`door_kind_marks`].
     door_kinds: Vec<&'static str>,
 }
@@ -4337,10 +4533,10 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
     let mut mods = None;
     let mut heads = Vec::new();
     let mut tails = 0;
-    let mut builds = false;
+    let mut builds = Vec::new();
     let mut kinds = Vec::new();
     if shipped {
-        builds = builds_door(text);
+        builds = door_macro_calls(text);
         kinds = door_kind_marks(text);
         if rel == format!("{dir}/src/lib.rs") {
             let mut found = Vec::new();
@@ -4367,7 +4563,7 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
         heads,
         door_tails: tails,
         exports_door: exports,
-        builds_door: builds,
+        door_macros: builds,
         door_kinds: kinds,
     });
     memo.lock()
@@ -4509,16 +4705,68 @@ fn links_door(text: &str) -> bool {
     })
 }
 
-/// The SDK's door BUILDERS: the macros that build a kind's door table (`plugin_door!` for any kind,
-/// and the kinds' safe-layer builders). `export_door!` only exports a door some builder made.
-const DOOR_BUILDERS: &[&str] = &["plugin_door!", "store_door!(", "auth_verify_door!("];
+/// The `*_door` macros busbar-contract defines that are NOT builders: `export_door!` only exports
+/// a door some builder made, and `__register_door!` is the SDK's internal registration step.
+const NOT_DOOR_BUILDERS: &[&str] = &["export_door", "__register_door"];
 
-/// Whether a file builds a door: a production line invoking one of [`DOOR_BUILDERS`] (a builder's
-/// own `macro_rules!` definition is not an invocation).
-fn builds_door(text: &str) -> bool {
-    scan::production_lines(text).into_iter().any(|(_, code)| {
-        !code.contains("macro_rules!") && DOOR_BUILDERS.iter().any(|b| code.contains(b))
-    })
+/// THE SDK'S DOOR BUILDERS, READ OFF THE CONTRACT (Law 8: a roster is derived from the instances'
+/// own declarations, never kept by hand; ARCHITECT 2026-10-07). Every `macro_rules! <name>` in
+/// busbar-contract's source whose name ends `_door`, minus [`NOT_DOOR_BUILDERS`]. The hand list
+/// this replaced lacked `hook_door!`, so the hook kind's doors read as no door. An empty answer is
+/// a refusal: a gate that knows no builder cannot see any door.
+fn door_builders(cx: &Ctx) -> Result<BTreeSet<String>, String> {
+    let files = cx
+        .walk(&WalkSpec::new(["crates/busbar-contract/src"]).ext("rs"))
+        .map_err(|e| e.to_string())?;
+    let mut out = BTreeSet::new();
+    for f in &files {
+        for (_, code) in scan::production_lines(&f.text) {
+            let Some(rest) = code.trim_start().strip_prefix("macro_rules!") else {
+                continue;
+            };
+            let name: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.ends_with("_door") && !NOT_DOOR_BUILDERS.contains(&name.as_str()) {
+                out.insert(name);
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(
+            "no door builder (`macro_rules! *_door`) is defined in crates/busbar-contract/src, so \
+             no door could be read as built"
+                .to_string(),
+        );
+    }
+    Ok(out)
+}
+
+/// Every `<name>_door!` macro a file invokes on a production line (a `macro_rules!` definition is
+/// not an invocation). Which of them BUILD a door is [`door_builders`]' answer, read off the
+/// contract, so this reading stays a pure function of the file's bytes.
+fn door_macro_calls(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (_, code) in scan::production_lines(text) {
+        if code.contains("macro_rules!") {
+            continue;
+        }
+        let mut rest = code.as_str();
+        while let Some(at) = rest.find("_door!") {
+            let head = &rest[..at];
+            let start = head
+                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .map_or(0, |i| i + 1);
+            let name = format!("{}_door", &head[start..]);
+            if !out.contains(&name) {
+                out.push(name);
+            }
+            rest = &rest[at + "_door!".len()..];
+        }
+    }
+    out
 }
 
 /// Each door-bearing kind and the module of `busbar_contract::abi` that is its memory ABI: the
@@ -4561,7 +4809,7 @@ fn door_kind_marks(text: &str) -> Vec<&'static str> {
 /// THE DOOR IS THE KIND'S IMPLEMENTATION (ARCHITECT ruling GRPC-DOOR 2026-10-02, widened to every
 /// kind; spec §11, owner-locked 2026-09-27: a plugin talks to busbar ONLY through its memory-ABI
 /// door table, and compiled in = dropped in = the same table). A crate of kind K whose shipped
-/// source BUILDS a door with an SDK builder ([`builds_door`]) over K's memory ABI
+/// source BUILDS a door with an SDK builder ([`door_builders`]) over K's memory ABI
 /// ([`door_kind_marks`]) AND exports it through the SDK door macro ([`exports_door`], in `src/` or
 /// `examples/`) implements its kind through that door, not through an in-process `impl K`.
 ///
@@ -5490,6 +5738,60 @@ const COLD_WITNESS_KINDS: &[(&str, &str)] = &[
     ("secret", "secret"),
 ];
 
+/// The drain a test-linked door's test edge must state (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)).
+pub const TEST_LINKED_DOOR_DRAIN: &str =
+    "moves to the plugin repo in W4 (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC)";
+
+/// The `(from, to)` TEST edges that are a TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)): a crate's harness folds a plane door's Statement into its registry, which links
+/// the door's crate into the test binary and nothing else. Exempt from `new-forbidden-edge` only
+/// when ALL hold: the crate's `[package.metadata.busbar] test-linked` list names `door:<to>`; `to`
+/// is a `[dev-dependencies]` entry and NOT a shipped one; `to` is of kind `plane`; and a `[[dep]]`
+/// row for exactly that edge, half `test`, states the drain [`TEST_LINKED_DOOR_DRAIN`]. The shipped
+/// half excuses nothing: there is no production edge.
+fn test_linked_door_edges(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &KindRegistry,
+) -> BTreeSet<(String, String)> {
+    let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut out = BTreeSet::new();
+    for c in crates {
+        let Ok(manifest) = cx.read(&c.manifest) else {
+            continue;
+        };
+        let doors: Vec<String> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("test-linked") && l.contains('='))
+            .flat_map(|l| {
+                l.split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .filter_map(|e| e.strip_prefix("door:"))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for door in doors {
+            let dev = c.dev_deps.iter().any(|d| d.pkg == door);
+            let shipped = c.deps.iter().any(|d| d.pkg == door);
+            let plane = by_name.get(door.as_str()).and_then(|t| t.kind) == Some("plane");
+            let row = reg.dep_edges.iter().any(|r| {
+                r.from == c.name
+                    && r.to == door
+                    && r.half == "test"
+                    && r.drain.contains(TEST_LINKED_DOOR_DRAIN)
+            });
+            if dev && !shipped && plane && row {
+                out.insert((c.name.clone(), door));
+            }
+        }
+    }
+    out
+}
+
 /// The `(from, to)` TEST edges that are a cold kind's both-ways witness, and so are not a
 /// `new-forbidden-edge`: a `plugin-tooling` crate's `[dev-dependencies]` edge to EXACTLY the crate
 /// its own `[package.metadata.busbar.both-ways]` table names for a cold kind, that crate being of
@@ -5582,6 +5884,16 @@ fn witness_file(kind: Option<&str>) -> Option<&'static str> {
 /// it always was, and a dev-edge any other file uses (a unit test, a second integration test, a
 /// bench) is a plugin testing against the host, not a witness of its doors.
 fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+    conformance_witness_edges_with(cx, crates, true)
+}
+
+/// [`conformance_witness_edges`], each file's code read through [`code_only_memo`] when `memo`,
+/// else afresh (the full walk the matrix memo is held equal to).
+fn conformance_witness_edges_with(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    memo: bool,
+) -> BTreeSet<(String, String)> {
     let loader_is_tooling = crates
         .iter()
         .any(|c| c.name == CONFORMANCE_LOADER && c.kind == Some(WIRE_FIXTURE_KIND));
@@ -5605,7 +5917,13 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
         let witness = format!("{}/{file}", c.dir);
         let users: Vec<String> = files
             .iter()
-            .filter(|f| code_only(&f.text).contains(path.as_str()))
+            .filter(|f| {
+                if memo {
+                    code_only_memo(&f.text).contains(path.as_str())
+                } else {
+                    code_only(&f.text).contains(path.as_str())
+                }
+            })
             .map(|f| f.rel_str())
             .collect();
         if users.is_empty() || users.iter().any(|u| *u != witness) {
@@ -5619,6 +5937,14 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
     out
 }
 
+/// Whether [`is_witness_hit`] can say yes to a hit of `kind` in `krate` at all: it is a
+/// `plugin-tooling` hit in a crate [`conformance_witness_edges`] grants. Every other hit is counted
+/// without reading its line.
+fn witness_may_apply(granted: &BTreeSet<(String, String)>, krate: &CrateInfo, kind: &str) -> bool {
+    kind == WIRE_FIXTURE_KIND
+        && granted.contains(&(krate.name.clone(), CONFORMANCE_LOADER.to_string()))
+}
+
 /// Whether a vocabulary hit is the granted witness naming its loader: a `plugin-tooling` hit in a
 /// crate [`conformance_witness_edges`] grants, in its witness file ([`witness_file`]), or on the
 /// manifest line that declares the loader. Every other column is still counted in both files.
@@ -5629,9 +5955,7 @@ fn is_witness_hit(
     rel: &str,
     line: &str,
 ) -> bool {
-    if kind != WIRE_FIXTURE_KIND
-        || !granted.contains(&(krate.name.clone(), CONFORMANCE_LOADER.to_string()))
-    {
+    if !witness_may_apply(granted, krate, kind) {
         return false;
     }
     if witness_file(krate.kind).is_some_and(|file| rel == format!("{}/{file}", krate.dir)) {
@@ -5658,6 +5982,32 @@ fn code_only(text: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// [`code_only`], memoised on the text: it is a pure function of it, and the witness reading runs it
+/// over every source file of every plugin crate on every measurement of every planted case.
+fn code_only_memo(text: &str) -> std::sync::Arc<String> {
+    type Memo = std::sync::Mutex<BTreeMap<u64, std::sync::Arc<String>>>;
+    static MEMO: std::sync::OnceLock<Memo> = std::sync::OnceLock::new();
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        h.finish()
+    };
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the code-only memo mutex is never poisoned")
+        .get(&key)
+    {
+        return std::sync::Arc::clone(found);
+    }
+    let code = std::sync::Arc::new(code_only(text));
+    memo.lock()
+        .expect("the code-only memo mutex is never poisoned")
+        .insert(key, std::sync::Arc::clone(&code));
+    code
 }
 
 /// Whether `text` names `ident` as a whole identifier (`use …::hook_fixture as fixture` counts;
@@ -7118,6 +7468,62 @@ impl Gate for KindIsolationGate {
                     "busbar-transport-stdio -> busbar-plane-llm",
                     "never introduce one",
                 ],
+            ));
+
+            // A TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4 Q-L3B-GATES (1)) is exempt
+            // only while its row states the drain and its crate's `test-linked` list names the
+            // door: the kernel's row with its drain struck, or the kernel no longer naming the door,
+            // is the edge's own verdict again, and red. The tree has no test-linked door since the
+            // kernel's plane tests moved to the composition root (ARCHITECT: core names zero plane
+            // types, its tests included), so each case plants the whole shape — the kernel's
+            // `door:` row, its `[dev-dependencies]` edge and its `[[dep]]` row — and then breaks
+            // one part of it.
+            let kernel = "crates/busbar-kernel/Cargo.toml";
+            let door_drain = "test-only: the test-linked door moves to the plugin repo in W4 \
+                              (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge";
+            let planted_door = |linked_row: &str, drain: &str| {
+                let manifest = cx.read(kernel).unwrap_or_default();
+                let manifest = manifest
+                    .replacen(
+                        "test-linked = [\"busbar-llm\", \"busbar-a2a\"]",
+                        &format!("test-linked = [\"busbar-llm\", \"{linked_row}\", \"busbar-a2a\"]"),
+                        1,
+                    )
+                    .replacen(
+                        "[dev-dependencies]\n",
+                        "[dev-dependencies]\nbusbar-plane-mcp = { path = \"../busbar-plane-mcp\" }\n",
+                        1,
+                    );
+                let registry = format!(
+                    "{}\n\n[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-plane-mcp\"\n\
+                     half    = \"test\"\ncount   = \"1\"\nverdict = \"{TEST_LINKED_DOOR_VERDICT}\"\n\
+                     cite    = \"ARCHITECT 2026-10-03 L3B-MCP round 4 Q-L3B-GATES (1)\"\n\
+                     why     = \"busbar-kernel names busbar-plane-mcp: declared dev in the test \
+                     graph (dev-dependencies), 1 declaration(s) at this commit.\"\n\
+                     drain   = \"{drain}\"\n",
+                    cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+                );
+                let mut ov = Overlay::new();
+                ov.set(kernel, manifest);
+                ov.set(REGISTRY_FILE, registry);
+                ov
+            };
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a test-linked door's row that states no drain is not a test-linked door",
+                &[ROW_TEST_DEPS],
+                planted_door("door:busbar-plane-mcp", "none"),
+                &["unsupported-verdict", "busbar-kernel -> busbar-plane-mcp"],
+            ));
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plane crate the kernel's `test-linked` list does not name as a door is no \
+                 test-linked door",
+                &[ROW_TEST_DEPS],
+                planted_door("busbar-plane-mcp", door_drain),
+                &["unsupported-verdict", "busbar-kernel -> busbar-plane-mcp"],
             ));
 
             // THE COLD KINDS' BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-STORE queue). The
@@ -9132,16 +9538,18 @@ impl Gate for KindIsolationGate {
 
         // A PLANE THAT DOES NOT RUN A STEP. The plant removes one step's implementation from a data
         // plane by replacing the file that holds it; the step list is read off the kernel's own
-        // table, so the finding names the step the loop expected.
+        // table, so the finding names the step the loop expected. The subject is a plane with the
+        // legacy face only: a plane that also serves through its door (the flipped ones) is judged
+        // by its door's slots instead, so removing its legacy file leaves the door face standing.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-mcp/src/plane.rs");
+        ov.remove("crates/busbar-plane-streaming/src/plane.rs");
         report.push(prove_rows_red(
             cx,
             subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
             ov,
-            &["missing-step", "busbar-plane-mcp"],
+            &["missing-step", "busbar-plane-streaming"],
         ));
 
         // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
@@ -9943,6 +10351,81 @@ impl Gate for KindIsolationGate {
             &["battery-ignored", "busbar-store-ignored"],
         ));
 
+        // THE PUBLISHED SUITE IS A BATTERY. A plugin's `tests/conformance.rs` that invokes
+        // `busbar_plugin_loader::conformance_suite!` over its door runs the suite's entries — the
+        // macro expands to them — and spells no `#[test]` of its own. It is a live battery, and the
+        // row must not call it ignored.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-suite",
+            "busbar-store-suite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-suite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-suite/tests/conformance.rs",
+            "busbar_plugin_loader::conformance_suite! {\n    door: busbar_store_suite::door,\n    \
+             cdylib: \"store_suite_door\",\n    inputs: include_str!(\"conformance.json\"),\n}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a battery that invokes the published suite over its door is a live battery",
+            &[ROW_TESTKIT],
+            ov,
+        ));
+
+        // AN INVOCATION THAT EXPANDS TO NOTHING IS NOT A BATTERY. The same file with the subject
+        // taken out names the published macro and runs no entry against anything.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-emptysuite",
+            "busbar-store-emptysuite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-emptysuite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-emptysuite/tests/conformance.rs",
+            "busbar_plugin_loader::conformance_suite! {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a published-suite invocation that names no subject is a file with no entry",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-store-emptysuite"],
+        ));
+
+        // A LOCAL MACRO BY THE SAME NAME IS NOT THE PUBLISHED SUITE. A file that defines its own
+        // `conformance_suite` to expand to nothing, then invokes it with a subject, runs nothing.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-shadowsuite",
+            "busbar-store-shadowsuite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-shadowsuite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-shadowsuite/tests/conformance.rs",
+            "macro_rules! conformance_suite {\n    ($($t:tt)*) => {};\n}\n\
+             conformance_suite! {\n    door: busbar_store_shadowsuite::door,\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a file-local conformance_suite macro is not the published suite",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-store-shadowsuite"],
+        ));
+
         // A BATTERY WITH NO SUBJECT. The same crate, with a live battery and no implementor of its
         // kind's trait anywhere in shipped source: the file compiles, the battery passes, and it is
         // evidence about nothing this crate ships.
@@ -9966,6 +10449,107 @@ impl Gate for KindIsolationGate {
             &[ROW_TESTKIT],
             ov,
             &["no-implementor", "busbar-store-subjectless", "Store"],
+        ));
+
+        // A PINNED REPO'S DOOR AND BATTERY ARE ITS `-plugin` TWIN'S (spec §9; ARCHITECT
+        // 2026-10-07). The real export-file twin exports the door and runs the published suite,
+        // so the logic crate reads green; each plant below takes one of those two facts away and
+        // the row says so, and a repo with no twin at all reads exactly as it did before twins
+        // were read.
+        let twin = pinned::twin_dir("busbar-export-file");
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{twin}/tests/conformance.rs"),
+            "#[test]\n#[ignore = \"not yet\"]\nfn the_suite() {}\n",
+        );
+        let mut ov_async = Overlay::new();
+        ov_async.set(
+            format!("{twin}/tests/conformance.rs"),
+            "#[tokio::test(flavor = \"multi_thread\")]\nasync fn the_suite() {}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a pinned repo whose twin's battery is an async test runs its battery",
+            &[ROW_TESTKIT],
+            ov_async,
+        ));
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pinned repo whose twin's battery is all ignored is battery-ignored",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-export-file"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(format!("{twin}/src/lib.rs"), "pub fn nothing() {}\n");
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pinned repo whose twin exports no door has no implementor",
+            &[ROW_TESTKIT],
+            ov,
+            &["no-implementor", "busbar-export-file"],
+        ));
+        let mut ov = Overlay::new();
+        for f in pinned::twin_files(cx)
+            .into_iter()
+            .filter(|(dir, _, _)| dir == "crates/busbar-export-file")
+        {
+            ov.remove(format!("{twin}/{}", f.1));
+        }
+        // THE HOOK KIND BUILDS ITS DOOR WITH `hook_door!`, and the pinned hook-ranking repo's
+        // logic crate does exactly that: with its builder line taken out, the door it exports is
+        // built by nothing and the crate has no implementor again.
+        let hook_door = "crates/busbar-hook-ranking/src/door.rs";
+        if cx.read(hook_door).is_ok_and(|t| t.contains("hook_door!")) {
+            let mut ov_hook = Overlay::new();
+            ov_hook.set(
+                hook_door,
+                cx.read(hook_door)
+                    .unwrap_or_default()
+                    .replace("hook_door!", "hook_door_planted_away!"),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a hook plugin whose door no builder builds has no implementor",
+                &[ROW_TESTKIT],
+                ov_hook,
+                &["no-implementor", "busbar-hook-ranking"],
+            ));
+        }
+        // …AND A BUILDER THE CONTRACT ADDS IS A BUILDER, WITH NO EDIT TO THIS GATE. The roster is
+        // read off the contract's `macro_rules! *_door` (Law 8): the same pinned door built by a
+        // `widget_door!` the contract newly defines is a built door again.
+        if cx.read(hook_door).is_ok_and(|t| t.contains("hook_door!")) {
+            let mut ov_widget = Overlay::new();
+            ov_widget.set(
+                hook_door,
+                cx.read(hook_door)
+                    .unwrap_or_default()
+                    .replace("hook_door!", "widget_door!"),
+            );
+            ov_widget.set(
+                "crates/busbar-contract/src/planted_widget_door.rs",
+                "#[macro_export]\nmacro_rules! widget_door {\n    ($($t:tt)*) => {};\n}\n",
+            );
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "a door builder the contract newly defines is read as a builder with no gate edit",
+                &[ROW_TESTKIT],
+                ov_widget,
+            ));
+        }
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pinned repo with no twin carries neither the door nor the battery",
+            &[ROW_TESTKIT],
+            ov,
+            &["no-implementor", "busbar-export-file"],
         ));
 
         // ── THE THREE SHIP FINDINGS WITH NO CASE ─────────────────────────────────────────────────
@@ -11572,12 +12156,11 @@ mod plant_tests {
     /// The door's kind is the memory ABI it names, and a builder's definition is not a door.
     #[test]
     fn a_door_is_read_with_its_kind() {
-        assert!(builds_door(
-            "busbar_contract::plugin_door! {\n    ops: Ops,\n}\n"
-        ));
-        assert!(!builds_door(
-            "macro_rules! plugin_door {\n    () => {};\n}\n"
-        ));
+        assert_eq!(
+            door_macro_calls("busbar_contract::plugin_door! {\n    ops: Ops,\n}\n"),
+            vec!["plugin_door".to_string()]
+        );
+        assert!(door_macro_calls("macro_rules! plugin_door {\n    () => {};\n}\n").is_empty());
         assert_eq!(
             door_kind_marks("use busbar_contract::abi::transport::{Ops, TransportTail};\n"),
             vec!["transport"]

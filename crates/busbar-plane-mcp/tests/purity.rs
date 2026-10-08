@@ -192,9 +192,9 @@ fn the_decode_step_is_deterministic() {
     // Only the methods a CALLER sends. A method an upstream sends back is refused on the ingress
     // side by design, and a test that fed one in would be asserting the refusal rather than the
     // determinism.
-    let bodies: Vec<Vec<u8>> = busbar_plane_mcp::ops::METHODS
+    let bodies: Vec<Vec<u8>> = busbar_plane_mcp::tool_ops::METHODS
         .iter()
-        .filter(|r| r.sender == busbar_plane_mcp::ops::Sender::Client)
+        .filter(|r| r.sender == busbar_plane_mcp::tool_ops::Sender::Client)
         .map(|row| {
             format!(
                 r#"{{"jsonrpc":"2.0","id":5,"method":"{}","params":{{"id":"t1"}}}}"#,
