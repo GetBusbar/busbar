@@ -149,6 +149,27 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
     );
 }
 
+/// `GET /api/v1/admin/info` `build.auth_modules` in the shipped build is 1.5.5's answer,
+/// `["keys", "admin-tokens"]` (oracle cell `admin.ops|GetInfo|ok`): the build also links the
+/// OUTBOUND-ONLY header auth plugin on the auth axis (ARCHITECT Q-L1-AUTH (A)), and a row that
+/// declares no inbound capability is not an auth-chain module an operator can name, so it is not
+/// listed. RED before the fix: `["keys", "admin-tokens", "busbar-auth-header"]`.
+#[cfg(feature = "auth-header")]
+#[test]
+fn the_info_auth_modules_are_the_inbound_rows_only() {
+    link();
+    let linked = busbar_kernel::preflight::linked_auth_names();
+    assert!(
+        linked.len() > 1,
+        "the default build links an outbound-only auth row beside the operator credential's: {linked:?}"
+    );
+    assert_eq!(
+        busbar_core_admin::v1::service::auth_modules_compiled_in(),
+        vec!["keys", config::operator_provider()],
+        "only inbound auth-chain modules are listed (linked rows: {linked:?})"
+    );
+}
+
 /// THE PROBE EXT-AUTHADMIN ran, over the row the root links: every carrier combination answers as
 /// 1.5.5 did — the operator token on EITHER carrier admits, a wrong one on either refuses with the
 /// frozen 401 body, and a request carrying both is judged on both (the right header admits past a
@@ -866,18 +887,15 @@ async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
         "data-door".to_string(),
         door,
     )]));
-    let cache = Arc::new(busbar_kernel::auth_cache::CredentialCache::new());
     let judged = |token: Option<&str>, head: bool| {
         let headers = token.map(bearer).unwrap_or_default();
         let head = match head {
             true => ChainHead::of_parts("POST", "/v1/chat/completions", &headers),
             false => ChainHead::default(),
         };
-        let (auth, cache) = (auth.clone(), cache.clone());
+        let auth = auth.clone();
         let token = token.map(str::to_string);
-        async move {
-            AuthMiddleware::run_chain_on_request_path(&auth, &cache, token, head, None, None).await
-        }
+        async move { AuthMiddleware::run_chain_on_request_path(&auth, token, head, None, None).await }
     };
     match judged(Some(TOKEN), true).await {
         ChainVerdict::Identified { module, .. } => assert_eq!(module, "data-door"),

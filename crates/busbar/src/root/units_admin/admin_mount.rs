@@ -307,23 +307,34 @@ pub(crate) fn door_answer() -> AdminAnswer {
 ///
 /// The vocabulary is the previous release's admin envelope and nothing here invents a status: each
 /// arm is a reason the loop can end on paired with the status that release already gave the same
-/// condition. `forbidden` stays the answer for the two authorization endings AND for an ending this
-/// table does not name, so an ending nobody has mapped cannot quietly become a new status on a
+/// condition. `forbidden` stays the answer for the authorization endings and for every class the
+/// previous release gave no status of its own, so no ending can quietly become a new status on a
 /// surface a caller has pinned.
 #[cfg(feature = "root-admin")]
 pub(crate) fn answer_for(outcome: Outcome) -> AdminAnswer {
+    use busbar_contract::abi::plane::{class_of, RefusalClass};
     let (status, code) = match outcome {
-        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => match reason {
+        // A class-to-wire table over the one classification
+        // (`busbar_contract::abi::plane::RefusalClass`; the P-item "refusal-reason collapse").
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => match class_of(reason) {
             // A body or a verb the plane could not read is a bad request, not a denied one.
-            ReasonCode::DecodeFailed => (400, "invalid_request"),
+            RefusalClass::Unreadable => (400, "invalid_request"),
             // Nothing on this surface answers that method and path.
-            ReasonCode::NoDestination => (404, "not_found"),
+            RefusalClass::NotFound => (404, "not_found"),
             // The caller is inside its rights and the node is over a limit.
-            ReasonCode::OverBudget | ReasonCode::InFlightCap => (429, "rate_limited"),
+            RefusalClass::QuotaExhausted | RefusalClass::Busy => (429, "rate_limited"),
             // The node cannot record what the operation would do, so it does not do it. An
             // administrative write that cannot be journalled is unavailability, not refusal.
-            ReasonCode::DurabilityUnavailable | ReasonCode::StaleSlice => (503, "unavailable"),
-            _ => (403, "forbidden"),
+            RefusalClass::Unavailable => (503, "unavailable"),
+            RefusalClass::Rejected
+            | RefusalClass::Unauthenticated
+            | RefusalClass::Forbidden
+            | RefusalClass::TooLarge
+            | RefusalClass::Throttled
+            | RefusalClass::Unreachable
+            | RefusalClass::Timeout
+            | RefusalClass::PlaneFault
+            | RefusalClass::NodeFault => (403, "forbidden"),
         },
         _ => (403, "forbidden"),
     };
