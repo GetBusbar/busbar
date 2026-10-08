@@ -78,6 +78,35 @@ pub const WORK_MAX_LIVE_KEY: &str = "max_live";
 /// How long a settled work handle is retained, in seconds, inside [`RESERVED_WORK_KEY`].
 pub const WORK_RETAIN_S_KEY: &str = "retain_s";
 
+/// THE RESERVED PER-ENTRY `timeout:` of any plane's section (ARCHITECT timeout ruling; R2-G: "PoolSpec
+/// carries ... per-member tier and timeout"): an entry's wall-clock bound on ONE attempt to reach it,
+/// `<n><s|m|h|d>`. Core-owned: the kernel judges it ([`entry_timeout_ms`]) and holds every attempt
+/// its walk makes to that entry's member to it (`Member::attempt_timeout_ms`), for every plane alike;
+/// a plane names none of it. An entry that writes none is bounded by its walk's own budget.
+pub const ENTRY_TIMEOUT_KEY: &str = "timeout";
+
+/// [`ENTRY_TIMEOUT_KEY`] as written, in milliseconds: THE ONE READING of the value, the kernel's
+/// judgement and every reader's. `0` is refused rather than read as "no deadline": a zero budget
+/// would refuse every call before it was sent, and there is deliberately no spelling for
+/// "unlimited" (an attempt that cannot time out holds a concurrency slot for as long as the far end
+/// chooses).
+///
+/// # Errors
+///
+/// The sentence after the entry's path: the value does not parse, or it is zero.
+pub fn entry_timeout_ms(written: &str) -> Result<u64, String> {
+    let secs = crate::duration::parse_duration_secs(written)
+        .map_err(|e| format!("`{ENTRY_TIMEOUT_KEY}:` {e}"))?;
+    if secs == 0 {
+        return Err(format!(
+            "`{ENTRY_TIMEOUT_KEY}: {written}` is zero, which would refuse every call to this entry \
+             before it was sent. There is no spelling for an unlimited deadline: an attempt that \
+             cannot time out holds a concurrency slot for as long as the far end chooses."
+        ));
+    }
+    Ok(secs.saturating_mul(1000))
+}
+
 /// THE RESERVED `models` MAP of a model-serving plane's section (the uniform model-serving map,
 /// owner config-model ruling 2026-09-19): where present, its keys are the section's entries.
 pub const RESERVED_MODELS_KEY: &str = "models";
@@ -92,6 +121,15 @@ pub const MODEL_PROTOCOL_KEYS: &[&str] = &["protocol", "dialect"];
 
 /// A pool's member list, inside its [`RESERVED_POOLS_KEY`] entry.
 pub const POOL_MEMBERS_KEY: &str = "members";
+
+/// A member written as an object inside a pool's [`POOL_MEMBERS_KEY`] list: the entry it names.
+pub const POOL_MEMBER_NAME_KEY: &str = "name";
+
+/// A member's TIER inside a pool's [`POOL_MEMBERS_KEY`] list (`{name, tier}`), the core-owned
+/// per-member `tier` (`BUSBAR-1.6.0.md` l.4196 (b), l.4202; R2-G l.4285): an unsigned integer,
+/// the walk taking the lowest tier that can take the request. Core-owned: the kernel reads it and a
+/// plane is handed the member's bare name.
+pub const POOL_MEMBER_TIER_KEY: &str = "tier";
 
 /// THE MEMBER-TARGET PATH of a need's `target_from` (ARCHITECT Q-L3B-ROUTES: a door plane's member
 /// routes come from its own section): `settings.*.<key>`, where `*` stands for EACH registration of

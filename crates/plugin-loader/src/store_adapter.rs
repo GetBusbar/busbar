@@ -77,18 +77,16 @@
 //! database is the previous release's supported shape and must keep booting.
 
 use busbar_contract::caps::{AdminVerb, Grant};
+use busbar_contract::migration::{
+    LegacyCapDimension, LegacyFamily, LegacyFigure, LegacyFigures, LegacyHead, LegacyLedgerRows,
+    LegacyMigrationSource, MigrationError, MigrationMarker, MigrationRecords,
+};
 use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
     RecordStoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 use busbar_contract::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
 use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
-use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
-use busbar_kernel_ledger::migration::{
-    LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows, MigrationError, MigrationMarker,
-    MigrationRecords,
-};
-use busbar_kernel_ledger::totals::CapDimension;
 use busbar_kernel_wal::{Record, ShipError, Shipper};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -438,7 +436,7 @@ impl StoreAdapter {
                         continue;
                     }
                     cells.cells_read += 1;
-                    let mut push = |lane: &str, dimension: CapDimension, amount: u64| {
+                    let mut push = |lane: &str, dimension: LegacyCapDimension, amount: u64| {
                         if amount != 0 {
                             cells.figures.push(LegacyFigure {
                                 family: LegacyFamily::Window,
@@ -451,15 +449,19 @@ impl StoreAdapter {
                             });
                         }
                     };
-                    push("", CapDimension::Requests, ledger.requests);
+                    push("", LegacyCapDimension::Requests, ledger.requests);
                     push(
                         "",
-                        CapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                        LegacyCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
                         ledger.billable_requests,
                     );
                     for model in &ledger.models {
                         for (unit, count) in &model.usage_units {
-                            push(&model.model, CapDimension::Class(unit.clone()), *count);
+                            push(
+                                &model.model,
+                                LegacyCapDimension::Class(unit.clone()),
+                                *count,
+                            );
                         }
                     }
                     // The bucket's balance comes from the ENFORCEMENT ledger alone. The metering
@@ -484,7 +486,7 @@ impl StoreAdapter {
                 Ok(rows) => {
                     for row in rows {
                         cells.cells_read += 1;
-                        let mut push = |dimension: CapDimension, amount: u64| {
+                        let mut push = |dimension: LegacyCapDimension, amount: u64| {
                             if amount != 0 {
                                 cells.figures.push(LegacyFigure {
                                     family: LegacyFamily::Meter,
@@ -497,9 +499,9 @@ impl StoreAdapter {
                                 });
                             }
                         };
-                        push(CapDimension::Requests, row.requests);
+                        push(LegacyCapDimension::Requests, row.requests);
                         push(
-                            CapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                            LegacyCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
                             row.billable_requests,
                         );
                         for (unit, amount) in [
@@ -508,7 +510,7 @@ impl StoreAdapter {
                             (UNIT_CACHE_READ, row.tokens_cache_read),
                             (UNIT_CACHE_WRITE, row.tokens_cache_write),
                         ] {
-                            push(CapDimension::Class(unit.to_string()), amount);
+                            push(LegacyCapDimension::Class(unit.to_string()), amount);
                         }
                     }
                 }

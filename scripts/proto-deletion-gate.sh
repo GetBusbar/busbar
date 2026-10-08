@@ -30,7 +30,8 @@
 #                    the build.
 #   CONTROL     — the DEFAULT build (every feature on) accepts the deleted dialect's config, proving
 #                 the gate measures the feature edge and not a broken fixture.
-#   MCP LEG     — the MCP protocol crate (busbar-mcp, its codec half), on its own feature axis:
+#   MCP LEG     — the MCP plane (its door crate, busbar-plane-mcp; the engine crate busbar-mcp is
+#                 deleted, P3 DEL-MCP), on its own feature axis:
 #                 `default minus plane-mcp` must build and BOOT and SERVE. This is a distinct axis
 #                 from level 2's --no-default-features (which drops every optional feature at once),
 #                 and it is what proves the protocol crates are independently droppable rather than
@@ -304,7 +305,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # rename reds the self-test too, not only the run, and names which path went.
   for st_root in "${CORE_SRC_ROOTS[@]}" \
                  crates/busbar-kernel/src/ir \
-                 crates/busbar-kernel/src/handlers crates/busbar-mcp/src crates/busbar-plane-mcp/src; do
+                 crates/busbar-kernel/src/handlers crates/busbar-plane-mcp/src; do
     if ( require_scan_dir "$st_root" "a live scan root" ) >/dev/null 2>&1; then
       note "self-test ROOT(3): live scan root present — $st_root"
     else
@@ -594,10 +595,10 @@ llm_dialect_refused() {
 #      own level-3a refusal, because ONE plugin now carries SIX dialects and all six must go
 # THE FEATURES EVERY DELETED BUILD KEEPS. `auth-admin-tokens` and `hooks-ranking` are not protocols,
 # and `transport-tcp` is the wire under the data door: the tcp wire's LINKED ROW behind a default-on
-# switch (9f98bb888, spec #3: a transport is compiled in OR dropped in). With the row off and no tcp
-# tarball in `plugins/`, `http` composes over nothing and the composition root refuses to seal — the
-# DESIGNED refusal, pinned by crates/busbar/tests/transport_dropped_in_serves.rs:258-273 — so a
-# `--no-default-features` build that drops it is an unbootable binary, not a protocol deletion.
+# switch (9f98bb888, spec #3: a transport is compiled in OR dropped in). It is kept so a deleted build
+# differs from the shipped one by protocols alone; no layer composes over it any more (ARCHITECT
+# ruling Q128 U7: no transport names another, the carrier is the connector's choice), so dropping it
+# would no longer refuse the seal, but it would no longer be a protocol deletion either.
 BASE_KEEP="auth-admin-tokens,hooks-ranking,transport-tcp"
 
 run_gate() {
@@ -744,42 +745,28 @@ run_gate "anthropic" "proto-llm" "plane-mcp" \
 require_scan_dir crates/busbar-kernel/src/handlers "core's protocol-handler module — the MCP built-in's old home"
 [ ! -e crates/busbar-kernel/src/handlers/mcp.rs ] \
   || die "crates/busbar-kernel/src/handlers/mcp.rs still exists: MCP the protocol has not left core"
-# The declaration is asserted BY CONTENT over the MCP protocol crates rather than at one fixed
-# path. The codec fold moved it twice — `busbar-mcp-codec` took it from core, then dissolved (#39),
-# leaving the `ProtocolDecl` with the ENGINE at `crates/busbar-mcp/src/codec/` and the protocol KEY
-# with the PLANE at `crates/busbar-plane-mcp/src/lib.rs`. A path-pinned `grep -q` over a file that no
-# longer exists does not read as "the protocol left the crate", it reads as a gate erroring on a
-# missing file. What the leg actually claims is that a crate OUTSIDE core names this protocol, so
-# that is what is read: the protocol's own key, and a `ProtocolDecl` built with it.
-# BOTH trees are REQUIRED, not "whichever of the two survives". The old form took whatever `ls -d`
-# returned and only refused an EMPTY result, so losing one crate would have narrowed the scan
-# silently and left the surviving grep to carry a claim about two crates. Today the two needles live
-# one in each tree (`PLANE_KEY` in busbar-plane-mcp, the `ProtocolDecl` in busbar-mcp), so each root
-# is asserted present on its own — same `require_scan_dir` rule as the core roots.
-require_scan_dir crates/busbar-mcp/src "the MCP protocol crate (its ProtocolDecl lives here)"
-require_scan_dir crates/busbar-plane-mcp/src "the MCP plane crate (its PLANE_KEY lives here)"
-MCP_DECL_SRC="crates/busbar-mcp/src crates/busbar-plane-mcp/src"
-# shellcheck disable=SC2086
-grep -rq 'PLANE_KEY: &str = "mcp"' $MCP_DECL_SRC \
-  || die "the MCP protocol crates must declare the mcp protocol key (PLANE_KEY = \"mcp\")"
-# shellcheck disable=SC2086
-grep -rq 'ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY)' $MCP_DECL_SRC \
-  || die "the MCP protocol crates must build their ProtocolDecl over that key (ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY))"
-# REGISTERED BY THE COMPOSITION ROOT, through its linked table: the root's source names no
-# plugin, so the registration is DATA in its manifest — `plane-mcp` maps to `busbar-mcp` in
-# `[package.metadata.busbar.linked]`, the feature's `linked-axes` row puts it on the `protocols` axis,
-# and the crate's `linked` entry module exports its ProtocolDecl on that axis (`linked::PROTOCOLS`).
-# A crate present in the tree but not wired — no linked row, or not on the protocols axis — is RED
-# here, which is the property the old main.rs grep held.
+# P3 DEL-MCP (ARCHITECT Q1, 2026-10-05): the engine crate `busbar-mcp` is DELETED and the plane is
+# served through its memory-ABI door alone (`busbar-plane-mcp`, the `plane-mcp-door` row `plane-mcp`
+# carries). The door declares NO `ProtocolDecl` (its words reach the root through its Statement, its
+# tail and its `declares.json`, Q1b), so what this leg claims statically is now: the plane's key is
+# declared by the door crate, OUTSIDE core; no crate builds a `ProtocolDecl` over it (a row that came
+# back would be a second, un-doored path for the plane); and the composition root links the door
+# behind the one `plane-mcp` switch, as DATA in its manifest.
+require_scan_dir crates/busbar-plane-mcp/src "the MCP plane's door crate (its PLANE_KEY lives here)"
+grep -rq 'PLANE_KEY: &str = "mcp"' crates/busbar-plane-mcp/src \
+  || die "the MCP door crate must declare the mcp plane key (PLANE_KEY = \"mcp\")"
+if grep -rq 'ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY)' crates --include='*.rs'; then
+  die "a crate builds a ProtocolDecl over the mcp key: the plane is served through its door alone (P3 DEL-MCP)"
+fi
 MCP_ROOT_MANIFEST=crates/busbar/Cargo.toml
 manifest_table() { awk -v h="[$1]" '$0 == h {t=1; next} /^\[/ {t=0} t' "$MCP_ROOT_MANIFEST"; }
-manifest_table package.metadata.busbar.linked | grep -q '^plane-mcp = "busbar-mcp"' \
-  || die "the composition root must link busbar-mcp behind the plane-mcp feature ([package.metadata.busbar.linked] in $MCP_ROOT_MANIFEST)"
-manifest_table package.metadata.busbar.linked-axes | grep -Eq '^plane-mcp = "(.* )?protocols( .*)?"' \
-  || die "the composition root must register busbar-mcp on the protocols axis ([package.metadata.busbar.linked-axes] in $MCP_ROOT_MANIFEST)"
-grep -q 'pub static PROTOCOLS: .*PROTO_DECL' crates/busbar-mcp/src/lib.rs \
-  || die "busbar-mcp's linked entry must export its ProtocolDecl on the protocols axis (linked::PROTOCOLS = [&PROTO_DECL])"
-note "mcp-a static: mcp declared by the crate, absent from core, registered by the composition root"
+manifest_table package.metadata.busbar.linked | grep -q '^plane-mcp-door = "busbar-plane-mcp"' \
+  || die "the composition root must link the MCP door crate on its door row ([package.metadata.busbar.linked] plane-mcp-door in $MCP_ROOT_MANIFEST)"
+manifest_table package.metadata.busbar.linked-axes | grep -Eq '^plane-mcp-door = "(.* )?plane-door( .*)?"' \
+  || die "the MCP door row must ride the plane-door axis ([package.metadata.busbar.linked-axes] in $MCP_ROOT_MANIFEST)"
+manifest_table features | grep -Eq '^plane-mcp = \[.*"plane-mcp-door"' \
+  || die "the one plane-mcp switch must carry the door row (features.plane-mcp in $MCP_ROOT_MANIFEST)"
+note "mcp-a static: mcp declared by its door crate, absent from core, no protocol row, linked by the composition root"
 
 # ── mcp-b: the MCP protocol crate is independently droppable, and the binary still SERVES ────────
 # `default minus plane-mcp` — a real, separate feature axis, and the per-crate BUILD+BOOT proof

@@ -22,9 +22,9 @@
   "checks_by_kind": {
    "gate": 9,
    "lint": 5,
-   "oracle-cell": 65,
+   "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 455
+   "test": 435
   }
  },
  "dropped_since_last_write": [],
@@ -602,7 +602,7 @@
    "surface": "plugin trust and ABI windows",
    "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin at its kind's ONE current version (THE DESIGN §11.8 \"No legacy loading\", ruling C21/ABI-o1, superseding the 1.5.5 floors: store [4], auth [3], hook [2], export [3], secret [1]); `supported_abi(kind)` REPORTS that version — boot, `--validate` and `POST /plugins/inspect` print `v4..=v4` for a store; a published 1.5.5 JSON-contract plugin (store 2, auth 2, hook 1, export 2) and a newer-than-host one are refused at boot (accepted difference ABI-o1, `breaking`); `plugin-pack --abi-version` defaults to the current version; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest at any other version is refused with `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max}): rebuild the plugin against the 1.6.0 SDK` printing the CURRENT version, never `PluginAbiTooOld`",
    "inventory": "config, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
-   "note": "Resolved 2026-10-02 by THE DESIGN 11.8 (ruling C21/ABI-o1): the loader accepts one version per kind; registry_tests.rs supported_abi_is_one_version_per_kind pins the windows and a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild the refusal; the oracle cell plugins.abi|json-contract|store-sqlite records 1.5.5 serving the published plugin (accepted difference ABI-o1).",
+   "note": "Resolved 2026-10-02 by THE DESIGN 11.8 (ruling C21/ABI-o1): the loader accepts one version per kind; registry_tests.rs supported_abi_is_one_version_per_kind pins the windows and a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild the refusal; the oracle cell plugins.abi|json-contract|store-sqlite@1.5-line records 1.5.5 serving the published plugin (accepted difference ABI-o1).",
    "status": "mapped",
    "checks": [
     {
@@ -1778,42 +1778,21 @@
     },
     {
      "kind": "test",
-     "ref": "verdict_rules_and_expiry",
-     "proves": "Identify TTL clamp, Pass TTL, Reject never cached",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "bounded_eviction",
-     "proves": "the MAX_ENTRIES cap",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "module_partitions_and_flush",
-     "proves": "the cache is keyed per module and flush counts",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "crates/busbar-kernel/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache",
-     "proves": "run_chain_cached caches nothing for a denied chain",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
      "ref": "test_admin_v1_credential_cache_and_flush_endpoint",
      "proves": "POST /auth/cache/flush returns a real flushed count",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "admin.ops|PostAuthCacheFlush|ok",
+     "proves": "the flush's {\"flushed\": N} diffed against the 1.5.5 binary",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:verdict_rules_and_expiry, test:bounded_eviction, test:module_partitions_and_flush, test:crates/busbar-kernel/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache, test:test_admin_v1_credential_cache_and_flush_endpoint"
+   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:test_admin_v1_credential_cache_and_flush_endpoint, oracle-cell:admin.ops|PostAuthCacheFlush|ok"
   },
   {
    "id": "PB-36",
@@ -3003,50 +2982,22 @@
    "status": "mapped",
    "checks": [
     {
-     "kind": "test",
-     "ref": "crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry",
-     "proves": "REFRESH_SKEW_SECS and MIN_SLEEP_SECS",
+     "kind": "oracle-cell",
+     "ref": "egress.auth|oauth-cc|mint-refresh",
+     "proves": "the client-credentials mint and refresh bytes, through the oauth auth plugin, diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "headers_for_emits_nothing_before_first_mint",
-     "proves": "no header before the first mint",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "is_ready_false_before_first_mint_true_after",
-     "proves": "is_ready is false pre-mint so the prober skips the lane",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "cached_token_new_omits_header_for_bytes_invalid_in_a_header_value",
-     "proves": "an unencodable credential omits the header",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "headers_for_reflects_prebuilt_header_after_a_refresh",
-     "proves": "the header is built once at mint",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent",
-     "proves": "expires_in defaults to 3600",
+     "kind": "oracle-cell",
+     "ref": "egress.auth|jwt-bearer|mint-refresh",
+     "proves": "the RFC 7523 assertion mint and refresh bytes, through the oauth auth plugin, diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry, test:headers_for_emits_nothing_before_first_mint, test:is_ready_false_before_first_mint_true_after, test:cached_token_new_omits_header_for_bytes_invalid_in_a_header_value, test:headers_for_reflects_prebuilt_header_after_a_refresh, test:crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent"
+   "verdict_detail": "oracle-cell:egress.auth|oauth-cc|mint-refresh, oracle-cell:egress.auth|jwt-bearer|mint-refresh"
   },
   {
    "id": "PB-65",
@@ -3071,15 +3022,15 @@
     },
     {
      "kind": "test",
-     "ref": "a_declared_static_header_follows_the_credential_verbatim",
+     "ref": "crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim",
      "proves": "anthropic-version follows the credential verbatim",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "each_declared_scheme_presents_what_its_dialect_builder_wrote",
-     "proves": "each declared scheme presents what its dialect's builder wrote",
+     "ref": "crates/busbar/src/root/tests/declared_credentials.rs::each_declared_scheme_presents_what_its_dialect_builder_wrote",
+     "proves": "each declared scheme presents, through the linked auth plugins, what its dialect's builder wrote",
      "source": "curated",
      "status": "mapped"
     },
@@ -3105,16 +3056,16 @@
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "the_family_table_decides_first_and_the_mode_decides_the_rest",
-     "proves": "the key-prefix disambiguation: the family table decides first",
+     "kind": "oracle-cell",
+     "ref": "egress.auth|cred-identity|anthropic",
+     "proves": "the key-prefix disambiguation and the anthropic credential bytes, diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "a_static_scheme_presents_the_header_its_table_names",
-     "proves": "an oauth token is presented only as Authorization: Bearer",
+     "kind": "oracle-cell",
+     "ref": "egress.auth|sigv4|session-token",
+     "proves": "the SigV4 session-token signature bytes, diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     },
@@ -3141,7 +3092,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:egress_scheme_is_the_declared_credential_family_table, test:a_declared_static_header_follows_the_credential_verbatim, test:each_declared_scheme_presents_what_its_dialect_builder_wrote, test:anthropic_egress_carries_exactly_the_declared_headers, test:every_egress_request_declares_the_pinned_api_version, test:with_no_static_header_declared_the_version_header_is_absent, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:a_static_scheme_presents_the_header_its_table_names, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:a_misconfigured_or_unsendable_signing_credential_signs_nothing"
+   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:egress_scheme_is_the_declared_credential_family_table, test:crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim, test:crates/busbar/src/root/tests/declared_credentials.rs::each_declared_scheme_presents_what_its_dialect_builder_wrote, test:anthropic_egress_carries_exactly_the_declared_headers, test:every_egress_request_declares_the_pinned_api_version, test:with_no_static_header_declared_the_version_header_is_absent, oracle-cell:egress.auth|cred-identity|anthropic, oracle-cell:egress.auth|sigv4|session-token, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:a_misconfigured_or_unsendable_signing_credential_signs_nothing"
   },
   {
    "id": "PB-66",
@@ -4340,8 +4291,8 @@
     },
     {
      "kind": "test",
-     "ref": "the_family_table_decides_first_and_the_mode_decides_the_rest",
-     "proves": "passthrough vs own picks one header for a credential in no family",
+     "ref": "crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim",
+     "proves": "passthrough vs own picks one header for a credential in no family, through the linked auth plugins",
      "source": "curated",
      "status": "mapped"
     },
@@ -4361,7 +4312,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_passthrough_forwards_caller_token, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:override_present_runs_full_lookup, test:golden_migrate_auth_upstream_credentials_moves_to_pools"
+   "verdict_detail": "test:test_passthrough_forwards_caller_token, test:crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim, test:override_present_runs_full_lookup, test:golden_migrate_auth_upstream_credentials_moves_to_pools"
   },
   {
    "id": "PB-95",
@@ -4544,37 +4495,9 @@
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "least_busy_prefers_most_headroom",
-     "proves": "least_busy native",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "least_busy_all_saturated_ranks_by_idx",
-     "proves": "least_busy never abstains",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "cheapest_all_unknown_abstains",
-     "proves": "cheapest abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "usage_all_unknown_abstains",
-     "proves": "usage abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "fastest_orders_by_latency",
-     "proves": "fastest native",
+     "kind": "oracle-cell",
+     "ref": "route.cheapest|card-swap",
+     "proves": "a ranking native on the shipped binary: cheapest serves the cheaper lane first and re-ranks after a rate-card swap, diffed against 1.5.5 (the natives' unit tests moved with the crate to GetBusbar/busbar-hook-ranking)",
      "source": "curated",
      "status": "mapped"
     },
@@ -4601,7 +4524,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, test:least_busy_prefers_most_headroom, test:least_busy_all_saturated_ranks_by_idx, test:cheapest_all_unknown_abstains, test:usage_all_unknown_abstains, test:fastest_orders_by_latency, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
+   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, oracle-cell:route.cheapest|card-swap, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
   },
   {
    "id": "PB-99",
@@ -4796,29 +4719,15 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "test_verify_sigv4_ingress_credential_unsigned_payload_rejected",
-     "proves": "UNSIGNED-PAYLOAD is refused",
+     "ref": "crates/busbar/tests/sigv4_both_ways.rs::sigv4_is_verified_inbound_and_signed_outbound",
+     "proves": "on the shipped binary, through the linked sigv4 auth plugin's verify over records.secret: a signed request is admitted, a tampered body and an unknown AccessKeyId are refused byte-identically (the dummy-secret path)",
      "source": "curated",
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits",
-     "proves": "the pre-buffer structural gate admits a matching body",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_verify_sigv4_ingress_credential_tampered_body_rejected",
-     "proves": "a tampered body is refused",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch",
-     "proves": "DUMMY_SECRET constant-time reject",
+     "kind": "oracle-cell",
+     "ref": "llm|bedrock|bedrock|request|unauthenticated",
+     "proves": "the bedrock ingress refusal diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     },
@@ -4866,7 +4775,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_verify_sigv4_ingress_credential_unsigned_payload_rejected, test:test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits, test:test_verify_sigv4_ingress_credential_tampered_body_rejected, test:test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
+   "verdict_detail": "test:crates/busbar/tests/sigv4_both_ways.rs::sigv4_is_verified_inbound_and_signed_outbound, oracle-cell:llm|bedrock|bedrock|request|unauthenticated, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
   },
   {
    "id": "PB-102",
