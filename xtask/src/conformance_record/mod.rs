@@ -271,9 +271,14 @@ fn absolute(root: &Path, p: &str) -> PathBuf {
     }
 }
 
-/// Tracked files that differ from HEAD, outside the verdict directories this run writes. A
+/// Tracked files that differ from HEAD, outside what this command itself writes: the verdict
+/// directories, and the manifest and README badge block [`reconcile_manifest`] renders from them. A
 /// non-empty answer means HEAD does not name the tree the rigs would judge.
-fn tracked_drift(root: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
+///
+/// The reconcile's own outputs are excluded because they are DERIVED from the verdicts (no rig
+/// reads them): one `--suite` run per rig in one checkout (the split a per-job time limit forces)
+/// otherwise found the manifest the first run reconciled and wrote every later suite `not-run`.
+pub fn tracked_drift(root: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
     let out_rel = out_dir
         .strip_prefix(root)
         .ok()
@@ -284,7 +289,9 @@ fn tracked_drift(root: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
         .filter_map(|l| l.get(3..))
         .map(str::to_string)
         .filter(|p| {
-            !p.starts_with(&format!("{}/", render::VERDICT_DIR))
+            p != render::MANIFEST_PATH
+                && p != render::README_PATH
+                && !p.starts_with(&format!("{}/", render::VERDICT_DIR))
                 && out_rel
                     .as_deref()
                     .is_none_or(|o| o.is_empty() || !p.starts_with(&format!("{o}/")))
