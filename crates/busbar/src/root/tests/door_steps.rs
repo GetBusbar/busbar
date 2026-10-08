@@ -151,6 +151,61 @@ fn the_grant_is_judged_over_the_named_pool_then_its_fallback() {
     );
 }
 
+/// THE MEMBER'S TIER (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b), R2-G
+/// l.4285): read off a member written `{name, tier}`, `0` for a bare name, for one with no tier, and
+/// for a tier that is no unsigned integer; a pool's entries are its members' names either way.
+#[test]
+fn a_pool_members_tier_is_read_off_its_member() {
+    let p = pools(
+        "a: {}\nb: {}\nc: {}\npools:\n  t:\n    members: [{name: b, tier: 2}, a, {name: c}]\n\
+         \x20 u:\n    members: [{name: a, tier: minus}]",
+    );
+    assert_eq!(
+        routed(&p, ROUTE_POOL, Some("t")),
+        owned("t", &["b", "a", "c"])
+    );
+    assert_eq!((p.tier("t", 0), p.tier("t", 1), p.tier("t", 2)), (2, 0, 0));
+    assert_eq!(p.tier("u", 0), 0);
+    assert_eq!(p.tier("absent", 0), 0);
+}
+
+/// A NAMED-DEFINITION SECTION'S POOLS, AS THE ROOT HANDS THEM: each member written `{name, tier}`,
+/// its tier its declared index (the pool is ORDERED, its first member the primary), so the walk
+/// takes the members in the order declared; the plane is handed each member's bare name (the tier
+/// is core-owned). RED before the tier: every member written bare, all at tier `0`, rotated.
+#[test]
+fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_names() {
+    let stated: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [(
+        "twins".to_string(),
+        busbar_kernel::failover::CandidatePoolCfg {
+            members: vec!["b".to_string(), "a".to_string()],
+            repeatable: vec!["read".to_string()],
+        },
+    )]
+    .into();
+    let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
+    crate::root::serve::pools_into(&mut section, &stated);
+    let p = DoorPools::of(&section);
+    assert_eq!(
+        routed(&p, ROUTE_POOL, Some("twins")),
+        owned("twins", &["b", "a"])
+    );
+    assert_eq!((p.tier("twins", 0), p.tier("twins", 1)), (0, 1));
+    let handed = crate::root::serve::plane_settings(&section);
+    let pool = &handed["pools"]["twins"];
+    assert_eq!(
+        pool["members"],
+        serde_yaml::from_str::<serde_yaml::Value>("[b, a]").expect("yaml"),
+        "the plane is handed bare names"
+    );
+    assert_eq!(
+        pool["repeatable"],
+        serde_yaml::from_str::<serde_yaml::Value>("[read]").expect("yaml")
+    );
+    assert_eq!(pool["member_granted"], serde_yaml::Value::Bool(true));
+    assert_eq!(handed["a"], section["a"], "every other key as written");
+}
+
 /// AN ANONYMOUS UNIT NEVER REACHES A BILLED PATH (ARCHITECT P3 (a)): with no key it is admitted only
 /// on an open line, and then as anonymous (a zero hold, no money); every other unkeyed unit is
 /// refused; a keyed unit is the only one admitted onto the book.
@@ -343,7 +398,7 @@ fn resolve_over(
     resolve_upgrading(section, providers, served, Vec::new())
 }
 
-/// [`resolve_over`], with `upgrades` the linked framers composed over the data carrier.
+/// [`resolve_over`], with `upgrades` the linked claims that open at an upgrade.
 fn resolve_upgrading(
     section: &str,
     providers: &[(&str, super::ProviderRoute)],
@@ -715,7 +770,7 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer() {
     use busbar_contract::abi::host::conn::connector::{
-        DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED,
+        DIRECTION_OUTBOUND, EGRESS_OPERATOR_INFRASTRUCTURE,
     };
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
@@ -776,10 +831,11 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
     assert!(
         table.declared.lock().unwrap().contains(&(
             0,
-            EGRESS_LOOPBACK_ALLOWED,
+            EGRESS_OPERATOR_INFRASTRUCTURE,
             Some(TOKEN_URL.to_string())
         )),
-        "the plugin's mint need, pinned to the provider's token_url: {:?}",
+        "the plugin's operator-infrastructure need (ARCHITECT D1 2026-10-05, MINT CLASS (B)), \
+         pinned to the provider's token_url: {:?}",
         table.declared.lock().unwrap()
     );
 

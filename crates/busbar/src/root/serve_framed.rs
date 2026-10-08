@@ -27,16 +27,17 @@ use tokio::sync::oneshot;
 
 use super::{refusal_status, stated, IngressCaller, Stated};
 
-/// The framer that frames a stream on `carrier`, where one does: the framer answering it, unless
-/// that framer is the data listener's own (it answers `data_carrier` too), which frames the
-/// connection already.
+/// The framer that frames a stream on `carrier`, where one does: the framer answering it, when its
+/// own claim rows state that `carrier` rides a stream (an upgrade or a session, `DoorFacts::duplex`;
+/// ARCHITECT ruling Q128 U7). A claim stating neither is a request and its answer, served on the
+/// data listener's own route, which frames the connection already. Judged per claim from the
+/// Statement, never by a transport's name.
 pub(super) fn stream_framer(
     carrier: &str,
-    data_carrier: &str,
     framer_for: impl Fn(&str) -> Option<Arc<dyn FramerDoor>>,
 ) -> Option<Arc<dyn FramerDoor>> {
     let door = framer_for(carrier)?;
-    (!door.facts().claims.contains(&data_carrier)).then_some(door)
+    door.facts().duplex.contains(&carrier).then_some(door)
 }
 
 /// The stream, shared by the unit's caller side and the answer that may refuse it; `None` once
