@@ -625,7 +625,7 @@ fn an_address_the_connector_guard_refuses_is_refused_in_an_argument_too() {
     // ARCHITECT ruling: the transition tunnels are judged by the IPv4 address they deliver to,
     // in both predicates.
     for v6 in ["2002:c0a8:101::", "2001:0:4136:e378:8000:63bf:f5ff:fffe"] {
-        let ip: std::net::Ipv6Addr = v6.parse().expect("parses");
+        let ip: core::net::Ipv6Addr = v6.parse().expect("parses");
         assert!(
             busbar_contract::net::host_is_private_or_loopback(v6),
             "`{v6}` must be private to the plaintext predicate too"
@@ -682,7 +682,7 @@ fn the_internal_range_table_is_pinned() {
         "2001:0:4136:e378:8000:63bf:f7f7:f7f7",
     ];
     for addr in internal {
-        let ip: std::net::IpAddr = addr.parse().expect("table entry parses");
+        let ip: core::net::IpAddr = addr.parse().expect("table entry parses");
         assert!(
             busbar_contract::net::ip_is_internal(&ip),
             "`{addr}` must be internal"
@@ -702,7 +702,7 @@ fn the_internal_range_table_is_pinned() {
         );
     }
     for addr in not_internal {
-        let ip: std::net::IpAddr = addr.parse().expect("table entry parses");
+        let ip: core::net::IpAddr = addr.parse().expect("table entry parses");
         assert!(
             !busbar_contract::net::ip_is_internal(&ip),
             "`{addr}` must not be internal"
