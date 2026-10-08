@@ -91,7 +91,7 @@ fn tts_instructions_prefix_the_prompt_not_language_code() {
     let ir = crate::codec::ir::audio::SpeechReq {
         model: "gemini-2.5-flash-preview-tts".into(),
         input: "hello there".into(),
-        voice: "Kore".into(),
+        timbre: "Kore".into(),
         instructions: Some("speak cheerfully".into()),
         ..Default::default()
     };

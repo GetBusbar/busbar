@@ -454,7 +454,7 @@ pub struct InstanceFacts {
     pub scope_kinds: Vec<String>,
     /// Its chained record kinds, as its tail declares them (`PlaneTail::record_chains`, each `kind`
     /// an index into [`InstanceFacts::record_kinds`]): a record write of one is appended to the
-    /// kernel's journal, never put.
+    /// kernel's journal ([`crate::host_chains`]), never put.
     pub record_chains: Vec<busbar_contract::abi::plane::RecordChain>,
 }
 
@@ -505,7 +505,12 @@ impl std::error::Error for AdmitRefused {}
 struct Records {
     reads: Arc<dyn RecordRows>,
     claims: Arc<dyn RecordStore>,
+    /// The same store narrowed to its plane-record slots: where a chained kind's journal persists.
+    plane: Arc<dyn crate::plane::store::PlaneStore>,
 }
+
+/// Every admitted instance's chained record kinds, by `(label, kind)`.
+type Chains = HashMap<(Arc<str>, String), Arc<crate::host_chains::ChainedKind>>;
 
 /// The wall clock, in milliseconds since the Unix epoch.
 pub type WallMs = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -537,6 +542,9 @@ pub struct KernelServices {
     /// The monotonic clock, where one was given; else the time since [`Self::origin`].
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
+    /// Every admitted instance's chained record kinds, by `(label, kind)`; kept across a
+    /// re-admission so a chain's positions are never reset.
+    chains: Mutex<Chains>,
     records: OnceLock<Records>,
     pool: OnceLock<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
@@ -562,9 +570,34 @@ pub struct KernelServices {
     nested: Arc<crate::pump::NestedPool>,
     /// The bounded disk lane `disk.append` runs on (THE DESIGN §11.11 R4).
     disk: crate::host_disk::DiskLane,
+    /// THE OPEN CARRIER SESSIONS (`session.emit`), by number: the instance each serves, its
+    /// verified principal and the writer its unsolicited output goes to.
+    sessions: Mutex<HashMap<u64, CarrierSession>>,
     /// The verify cache behind `verify.*`.
     verify: crate::host_verify::VerifyBook,
 }
+
+/// ONE OPEN CARRIER SESSION: a carrier the root holds open for one caller (a process's own
+/// stdin/stdout), whose arrivals are each their own unit, and on which the instance serving it may
+/// write unsolicited output (`session.emit`).
+struct CarrierSession {
+    /// The label of the instance whose claim the session is served on.
+    instance: Arc<str>,
+    /// The principal the session was bound to once, at its open.
+    principal: String,
+    /// The session's writer: `false` once the carrier can take nothing more.
+    sink: CarrierSink,
+}
+
+/// Where a carrier session's unsolicited output is written: one whole write; `false` once the
+/// carrier is gone.
+pub type CarrierSink = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
+/// The action word a carrier session's unsolicited write is audited under (`session.emit`).
+pub const SESSION_EMIT_ACTION: &str = "session.emit";
+
+/// `session.emit`'s refusal of a session that is not open, or not the calling instance's.
+pub const SESSION_NOT_OPEN: &str = "no such carrier session is open for this instance";
 
 /// The durable demotion record, and the instance its unprefixed rows belong to.
 struct Demotions {
@@ -596,6 +629,7 @@ impl KernelServices {
             wall_ms: Arc::new(system_wall_ms),
             mono_ns: None,
             instances: Mutex::default(),
+            chains: Mutex::default(),
             records: OnceLock::new(),
             pool: OnceLock::new(),
             pending: Arc::default(),
@@ -615,8 +649,38 @@ impl KernelServices {
                 NEST_DEPTH_MAX as usize + 1,
             )),
             disk: crate::host_disk::DiskLane::default(),
+            sessions: Mutex::default(),
             verify: crate::host_verify::VerifyBook::default(),
         }
+    }
+
+    /// OPEN A CARRIER SESSION for `instance` (the label of the instance whose claim it is served
+    /// on), bound to `principal`, its unsolicited output written through `sink`: the session's
+    /// number, which its arrivals name (`abi::host::service::CARRIER_SESSION_FIELD`) and
+    /// `session.emit` takes. Numbers are never reused within a process.
+    pub fn open_carrier_session(&self, instance: &str, principal: &str, sink: CarrierSink) -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                number,
+                CarrierSession {
+                    instance: Arc::from(instance),
+                    principal: principal.to_string(),
+                    sink,
+                },
+            );
+        number
+    }
+
+    /// CLOSE carrier session `session`: an emit on it is refused from now on.
+    pub fn close_carrier_session(&self, session: u64) {
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session);
     }
 
     /// THE NESTED-DISPATCH SEAM, attached late by the root once its door routes exist (see
@@ -695,7 +759,14 @@ impl KernelServices {
     /// late, once: the configured store is opened after the services are installed (the composition
     /// root's late attach). `false` when a record store was already bound.
     pub fn attach_records(&self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> bool {
-        self.records.set(Records { reads, claims }).is_ok()
+        let plane = crate::plane::store::PlaneStoreView::narrow(Arc::clone(&claims));
+        self.records
+            .set(Records {
+                reads,
+                claims,
+                plane,
+            })
+            .is_ok()
     }
 
     /// Run every store call on `pool`, never on the calling thread. Without it the services that
@@ -832,6 +903,24 @@ impl KernelServices {
         });
         self.trust
             .admit(&key, facts.trust.iter().cloned(), replayed);
+        {
+            let mut chains = self
+                .chains
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for chain in &facts.record_chains {
+                let Some(kind) = facts.record_kinds.get(chain.kind as usize) else {
+                    continue;
+                };
+                let slot = (Arc::clone(&key), kind.as_str().to_string());
+                if chains.contains_key(&slot) {
+                    continue;
+                }
+                if let Some(chained) = crate::host_chains::ChainedKind::new(kind.as_str(), chain) {
+                    chains.insert(slot, Arc::new(chained));
+                }
+            }
+        }
         self.trust.admit_decided(instance, &decided);
         instances.insert(key, Arc::new(facts));
         Ok(())
@@ -1012,6 +1101,17 @@ impl KernelServices {
         acked: Acked,
     ) -> Result<(), &'static str> {
         let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
+        if let Some(chain) = self.chained(caller, kind) {
+            // A CHAINED KIND: appended to its journal on the pool, durable before `acked` hears
+            // so; never put through the write-behind (a put keyed by scope would overwrite).
+            let store = Arc::clone(&records.plane);
+            let instance = Arc::clone(&caller.instance);
+            let (key, content) = (key.to_vec(), value.as_slice().to_vec());
+            pool.run(Box::new(move || {
+                acked(chain.append(&store, &instance, &key, content));
+            }));
+            return Ok(());
+        }
         let pending = &self.pending;
         let started = self.batcher.push_with(|| {
             let seq = pending.enqueue(&caller.instance, kind, key, value.as_slice().to_vec());
@@ -1030,6 +1130,15 @@ impl KernelServices {
             None => return Err(QUEUE_FULL),
         }
         Ok(())
+    }
+
+    /// The chained kind `kind` of the caller, when its tail declares that kind chained.
+    fn chained(&self, caller: &Caller, kind: &str) -> Option<Arc<crate::host_chains::ChainedKind>> {
+        self.chains
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(Arc::clone(&caller.instance), kind.to_string()))
+            .cloned()
     }
 
     /// The caller's record kind at `index` of its tail ([`RecordWrite::kind`] indexes it).
@@ -1572,6 +1681,32 @@ impl HostServices for KernelServices {
         }
     }
 
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        let open = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session)
+            .filter(|s| *s.instance == *caller.instance)
+            .map(|s| (Arc::clone(&s.sink), s.principal.clone()));
+        let Some((sink, principal)) = open else {
+            return Stored::refused(SESSION_NOT_OPEN);
+        };
+        if !sink(bytes) {
+            self.close_carrier_session(session);
+            return Stored::refused(SESSION_NOT_OPEN);
+        }
+        // AUDITED AS A SESSION EVENT, under the session's verified principal: the write is the
+        // instance's, unsolicited, and nothing bills it.
+        crate::audit::auditlog::emit_admin_hostless_now(
+            SESSION_EMIT_ACTION,
+            &format!("session:{session}"),
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            &principal,
+        );
+        Stored::ready(0)
+    }
+
     fn random_fill(&self, len: u64) -> Stored {
         if len == 0 || len > svc::MAX_RANDOM_FILL {
             return Stored::refused(FILL_OUT_OF_RANGE);
@@ -1625,6 +1760,40 @@ impl HostServices for KernelServices {
                 Err(TrustRefused::Store(_)) => return failed(DECISION_UNKEPT),
             },
         )
+    }
+
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let rows: Vec<KeyRow> = self
+            .trust
+            .rows()
+            .into_iter()
+            .filter(|r| *r.instance == *caller.instance && r.counterparty == counterparty)
+            .collect();
+        let Some(whole) = rows.iter().find(|r| r.item.is_none()) else {
+            return Stored::refused(if self.facts(caller).is_some() {
+                NOT_A_COUNTERPARTY
+            } else {
+                NOT_ADMITTED
+            });
+        };
+        let mut stored = Stored::ready(key_code(whole.state));
+        let cap = usize::try_from(MAX_SPANS).unwrap_or(usize::MAX);
+        for row in rows.iter().filter(|r| r.item.is_some()).take(cap) {
+            let item = row.item.as_deref().unwrap_or_default();
+            let value = format!(
+                "{}\0{}\0{}",
+                row.state.word(),
+                row.approved.as_deref().unwrap_or_default(),
+                row.seen.as_deref().unwrap_or_default()
+            );
+            let off = stored.bytes.len();
+            stored.bytes.extend_from_slice(item.as_bytes());
+            stored.bytes.extend_from_slice(value.as_bytes());
+            stored
+                .spans
+                .push(span(off, item.len(), off + item.len(), value.len()));
+        }
+        stored
     }
 
     fn trust_sight_item(
@@ -2103,6 +2272,18 @@ pub fn decided_code(state: KeyState) -> u64 {
         KeyState::Same | KeyState::Approved => svc::TRUST_DECIDED_SERVING,
         KeyState::New => svc::TRUST_DECIDED_PENDING,
         KeyState::Drifted | KeyState::Quarantined => svc::TRUST_DECIDED_QUARANTINED,
+    }
+}
+
+/// The `KEY_*` value (`trust.state`) a [`KeyState`] is answered as.
+#[must_use]
+pub fn key_code(state: KeyState) -> u64 {
+    match state {
+        KeyState::New => svc::KEY_NEW,
+        KeyState::Same => svc::KEY_SAME,
+        KeyState::Drifted => svc::KEY_DRIFTED,
+        KeyState::Quarantined => svc::KEY_QUARANTINED,
+        KeyState::Approved => svc::KEY_APPROVED,
     }
 }
 

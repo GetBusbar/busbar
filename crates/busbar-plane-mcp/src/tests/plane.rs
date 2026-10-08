@@ -2,7 +2,7 @@
 //! measures implementation and nothing else; still a direct child module, so `use
 //! super::*` reaches the private items it always did.
 
-use super::{finish_of, member_of, refusal_render, sampling_destination, Codec};
+use super::{finish_of, member_of, refusal_words, sampling_destination, Codec};
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::unit::{AbortBy, FailureReason, RefusalReason, Step, UnitEnd};
 
@@ -15,7 +15,7 @@ fn verify_and_route_reach_one_declared_sampling_destination() {
     assert_eq!(
         sampling_destination(),
         DestinationFacts::NestedPlane {
-            op: crate::meta::SAMPLING_OP,
+            op: crate::tool_meta::SAMPLING_OP,
         }
     );
     let DestinationFacts::NestedPlane { op } = sampling_destination() else {
@@ -29,8 +29,8 @@ fn verify_and_route_reach_one_declared_sampling_destination() {
 /// Totality is the point: a reason with no row would be a caller who is told nothing, and the
 /// contract's reason list is closed precisely so this can be checked rather than hoped for.
 /// EVERY reason the kernel closes a unit for, so a new variant cannot be added without deciding what
-/// this dialect answers it with. Exhaustive against `busbar_contract::unit::RefusalReason` (42
-/// variants); `refusal_render`'s own match is `_`-free, so the two lists are kept in step on purpose.
+/// this dialect answers it with. Exhaustive against `busbar_contract::unit::RefusalReason` (43
+/// variants); `refusal_words`'s own match is `_`-free, so the two lists are kept in step on purpose.
 const ALL_REFUSAL_REASONS: [RefusalReason; 43] = [
     RefusalReason::InFlightCap,
     RefusalReason::CursorBudget,
@@ -80,7 +80,7 @@ const ALL_REFUSAL_REASONS: [RefusalReason; 43] = [
 #[test]
 fn every_refusal_reason_has_an_answer() {
     for reason in ALL_REFUSAL_REASONS {
-        let (code, message) = refusal_render(reason);
+        let (code, message) = refusal_words(reason);
         assert!(
             crate::jsonrpc::CODES.contains(&code),
             "{reason:?} renders unknown code {code}"
@@ -114,7 +114,7 @@ fn no_operational_refusal_is_answered_as_an_internal_fault() {
         RefusalReason::Superseded,
         RefusalReason::DeadlineExceeded,
     ] {
-        let (code, _) = refusal_render(reason);
+        let (code, _) = refusal_words(reason);
         assert_ne!(
             code,
             crate::jsonrpc::CODE_INTERNAL,
@@ -133,7 +133,7 @@ fn a_refusal_leaks_nothing_about_the_money() {
         RefusalReason::OverdraftCeiling,
         RefusalReason::StaleSlice,
     ] {
-        let (_, message) = refusal_render(reason);
+        let (_, message) = refusal_words(reason);
         for leak in ["budget", "bucket", "frozen", "price", "slice", "overdraft"] {
             assert!(
                 !message.to_ascii_lowercase().contains(leak),
@@ -259,4 +259,37 @@ fn the_codec_state_counts() {
     codec.events_read = codec.events_read.saturating_add(1);
     codec.rounds_asked = codec.rounds_asked.saturating_add(1);
     assert_eq!((codec.events_read, codec.rounds_asked), (1, 1));
+}
+
+/// P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, "All P-item behaviours match 1.5.5"; drive
+/// log P2, commit 470351a480; TODO L-ENG9). 1.5.5's one surface gave every limit reason its own
+/// status and kind and answered none of them as an internal error (v1.5.5
+/// `crates/busbar/src/ingress/mod.rs:237-305`). On this plane: a reason renders as the internal
+/// code exactly when its class is a node fault, and every reason of one class renders the same
+/// answer, so the reason-to-family decision is the one classification's
+/// (`busbar_contract::abi::plane::RefusalCode::class`) and never this plane's own.
+#[test]
+fn p_item_refusal_reason_collapse_only_a_node_fault_is_internal_and_one_class_one_answer() {
+    use busbar_contract::abi::plane::{reason_of, RefusalClass, RefusalCode};
+    let mut answers: Vec<(RefusalClass, (i64, &'static str))> = Vec::new();
+    for code in RefusalCode::ALL {
+        // Two codes are the kernel's own money verdicts and never reach a plane (`reason_of`).
+        let Some(reason) = reason_of(code.code()) else {
+            continue;
+        };
+        let class = code.class();
+        let answer = refusal_words(busbar_contract::unit::RefusalReason::from(reason));
+        assert_eq!(
+            answer.0 == crate::jsonrpc::CODE_INTERNAL,
+            class.is_node_fault(),
+            "{code:?} (class {class:?}) renders {answer:?}"
+        );
+        match answers.iter().find(|(c, _)| *c == class) {
+            Some((_, first)) => assert_eq!(
+                *first, answer,
+                "{code:?} answers differently from the rest of {class:?}"
+            ),
+            None => answers.push((class, answer)),
+        }
+    }
 }

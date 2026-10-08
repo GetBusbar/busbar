@@ -6,7 +6,6 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
     "crates/busbar-llm",
-    "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-contract",
@@ -84,24 +83,27 @@ fixture-secret-file = { package = "busbar-secret-file", git = "https://github.co
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "ed1e9b7719bfce7df3bf6ddef8a2132c3c7a6e57" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
-busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "5607182ed5d28da20a6e1699aad512909d24142e" }
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "a5140eee3e608e03bae21486c1feb27eafb06b7c" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "1c6a67f010728c96fe9041e41817fb69c8e4fd05" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "f8ba71d25945dcf1145501d7a9aa14d430931045" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "86987e4030e6ed3ccae51f547964e4e94ff902c2" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "86987e4030e6ed3ccae51f547964e4e94ff902c2" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4af9e2ca8bc164d0066e6d107024ba416192a4ba" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4af9e2ca8bc164d0066e6d107024ba416192a4ba" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "6ede2a5b1a27e6a265e3a76db7e5749cb5abce8a" }
-# THE OAUTH MINTING STYLES (kind: auth): a dev edge only — the root's door_steps tests mint a member's
-# credential through the real plugin's door. One pin.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "b7d15c7137e890072a4968abc544b0bbfc107f67" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "84b3fc400c2f63fe7bf9ad87dae3ac35d970defe" }
+# THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
+# `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "98fb861d14914982fdba6f8666681fb62ba1d6b1" }
+# THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
+# `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "c22578acc927269f27e25dcef41ff7a4d91403ee" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
 # axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
 # build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
@@ -259,31 +261,8 @@ proptest = "1"
 # DER minting on ring only. `pem` (and its base64 0.23) is a test-only need: the members whose tests
 # write PEM add the feature on their dev/test-support declaration.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
-# ── MCP, from the specification authors' own crate ─────────────────────────────────────────────
-# `rmcp` implements the stable `2026-07-28` revision — precisely the one busbar targets — while
-# staying compatible with `2025-11-25` and earlier.
-#
-# `default-features = false` is LOAD-BEARING here, unlike `oauth-as` above where the crate's default
-# set is already empty. rmcp's defaults pull `server`, `macros`, `schemars`, `base64`, `uuid` and
-# `transport-async-rw`; what busbar wants is the protocol VOCABULARY and nothing else. Features are
-# turned on per member, one at a time, each with a reason.
-#
-# THE TWO FAMILIES THAT MUST NEVER BE ENABLED — stated here because a feature list is exactly where
-# this slips in unnoticed:
-#   auth, auth-client-credentials-jwt
-#       a SECOND OAuth implementation, beside `oauth_as/` and the `PlaneAdmission` verifier. Two
-#       implementations of one security concern that can disagree is the class behind three of this
-#       release's security defects. rmcp's auth is client-side helper code written for an agent
-#       author; busbar is a resource server AND an authorization server. Different problems.
-#   reqwest*, transport-streamable-http-*, transport-child-process, transport-io
-#       a second HTTP client and a second transport, both of which bypass the dispatch-time
-#       resolve-then-pin in busbar's own — one DNS resolution per hop, every returned address
-#       judged, the connection made to the address that was judged. Same objection recorded against
-#       `a2a-client-lf`, same answer.
-#
-# Cost, measured with `cargo tree -e normal`: +18 crate names in the lock, **+3 in the binary**
-# (`rmcp`, `chrono`, `pastey`).
-rmcp = { version = "3.1.2", default-features = false }
+# `rmcp` (MCP's protocol-vocabulary crate) is STRUCK: its one member, `busbar-mcp`, is deleted (P3
+# DEL-MCP, ARCHITECT 2026-10-05), and `workspace-deps:no-orphans` refuses a pin nothing inherits.
 # THE LINE COUNTER'S PARSER, and the only reason either of these is a direct dependency of anything
 # in this workspace. `cargo xtask loc` is the ONE instrument that answers "how many lines of
 # production Rust is this tree", and the three wrong answers it replaces were each a regex or a

@@ -37,12 +37,14 @@ pub const FRAME_MAGIC: [u8; 4] = *b"BWAL";
 /// flags, identity, part numbers and the payload length. It is what tells a TORN write from a
 /// COMPLETE frame whose bytes changed afterwards: a write that stopped inside the header fails the
 /// header check, while a frame whose header checks and whose digest does not was written whole and
-/// then altered — which is never cut silently (see `crate::recover`). Version-1 frames (written
-/// before the check existed) are still read, under the rule they were written under.
+/// then altered — which is never cut silently (see `crate::recover`).
+///
+/// It is the ONLY version this build reads. Version 1 (the layout before the header check) was
+/// never released — 1.5.5 had no log at all — so no segment in the field holds it, and reading it
+/// would only give an attacker a downgrade: a version-2 frame relabelled 1 skips its header check
+/// and has its digest failure cut as a torn tail. A version-1 frame is an unknown layout, which
+/// recovery quarantines rather than cuts.
 pub const FRAME_VERSION: u16 = 2;
-
-/// The layout version before the header check: still read, never written.
-pub const FRAME_VERSION_LEGACY: u16 = 1;
 
 /// How many leading header bytes the header check covers: magic, version, flags, node, node_seq,
 /// part index, part count and payload length.
@@ -170,9 +172,8 @@ pub enum FrameError {
         /// The claimed count.
         count: u32,
     },
-    /// The digest over the frame's own bytes is not the digest stored in it. On a version-1 frame
-    /// either the frame was half written, or it was edited; a version-2 frame reports this only once
-    /// its header check has passed, so the frame was written whole and then altered.
+    /// The digest over the frame's own bytes is not the digest stored in it. Reported only once the
+    /// frame's header check has passed, so the frame was written whole and then altered.
     DigestMismatch,
     /// A version-2 frame's header check does not match its header. When nothing was written past
     /// the check, the write stopped inside the header, which is what a torn write looks like; a
@@ -186,7 +187,7 @@ impl FrameError {
     /// write, wherever it sits.
     #[must_use]
     pub fn is_altered_whole_frame(self, version: u16) -> bool {
-        version >= FRAME_VERSION && self == FrameError::DigestMismatch
+        version == FRAME_VERSION && self == FrameError::DigestMismatch
     }
 }
 
@@ -252,21 +253,14 @@ fn encode_frame(
     frame
 }
 
-/// TEST ONLY: frame a record under the LEGACY layout (version 1, no header check), as a build before
-/// the check wrote it — the shape an existing segment on disk still holds.
+/// TEST ONLY: re-seal a frame whose header fields a test edited — its header check and its digest
+/// recomputed over the bytes as they now stand — so the field bounds behind both checks are reached.
 #[cfg(test)]
-pub(crate) fn encode_legacy(record: &Record) -> Vec<[u8; FRAME_BYTES]> {
-    record
-        .encode()
-        .into_iter()
-        .map(|mut frame| {
-            frame[4..6].copy_from_slice(&FRAME_VERSION_LEGACY.to_le_bytes());
-            frame[HEADER_CHECK_OFFSET..HEADER_CHECK_OFFSET + 4].fill(0);
-            let digest = frame_digest(&frame);
-            frame[DIGEST_OFFSET..DIGEST_OFFSET + 32].copy_from_slice(&digest);
-            frame
-        })
-        .collect()
+pub(crate) fn reseal(frame: &mut [u8; FRAME_BYTES]) {
+    let check = header_check(frame);
+    frame[HEADER_CHECK_OFFSET..HEADER_CHECK_OFFSET + 4].copy_from_slice(&check);
+    let digest = frame_digest(frame);
+    frame[DIGEST_OFFSET..DIGEST_OFFSET + 32].copy_from_slice(&digest);
 }
 
 /// The header check a version-2 frame carries over its fixed header fields.
@@ -284,8 +278,8 @@ pub fn frame_version(frame: &[u8; FRAME_BYTES]) -> u16 {
 }
 
 /// The header of a frame whose header CHECK passes, whatever its digest says — the identity and the
-/// part numbers of a whole frame that was altered after it was written. `None` for a version-1
-/// frame (it has no header check) and for anything whose header does not check.
+/// part numbers of a whole frame that was altered after it was written. `None` for a frame of any
+/// other layout version and for anything whose header does not check.
 #[must_use]
 pub fn checked_header(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])> {
     if frame[0..4] != FRAME_MAGIC || frame_version(frame) != FRAME_VERSION {
@@ -306,27 +300,22 @@ pub fn checked_header(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])>
 /// (its digest alone is 32 bytes that are never all zero). So a frame whose header does not check
 /// — its magic gone, a header field changed — but which answers yes here was acknowledged and then
 /// altered, and is never a torn tail.
-///
-/// A version-1 frame keeps the rule it was written under: it has no header check to tell a tear in
-/// its header from an edit, so this is `false` for it whatever its bytes say.
 #[must_use]
 pub fn written_whole(frame: &[u8; FRAME_BYTES]) -> bool {
-    frame_version(frame) != FRAME_VERSION_LEGACY
-        && frame[HEADER_CHECK_OFFSET + 4..].iter().any(|&b| b != 0)
+    frame[HEADER_CHECK_OFFSET + 4..].iter().any(|&b| b != 0)
 }
 
-/// The header of a version-2 frame that was [`written_whole`] but whose header does not check, read
-/// as the bytes now stand; `None` for anything else.
+/// The header of a frame that was [`written_whole`] but whose header does not check, read as the
+/// bytes now stand; `None` for anything else. Whatever layout version it now claims: the damaged
+/// byte may be the version itself (a frame relabelled to a layout this build does not read is still
+/// an acknowledged record, and its identity is still taken).
 ///
 /// The identity and payload are UNVERIFIED — the damaged byte may sit in them — so they are good
 /// for one thing only: naming, conservatively, what a quarantine set aside. The payload length is
 /// clamped to the payload area, because the damaged byte may be the length itself.
 #[must_use]
 pub fn unchecked_whole(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])> {
-    if frame_version(frame) != FRAME_VERSION
-        || !written_whole(frame)
-        || checked_header(frame).is_some()
-    {
+    if !written_whole(frame) || checked_header(frame).is_some() {
         return None;
     }
     let payload_len = u16::from_le_bytes([frame[32], frame[33]]);
@@ -394,14 +383,12 @@ pub fn decode_frame(frame: &[u8; FRAME_BYTES]) -> Result<(FrameHeader, &[u8]), F
         return Err(FrameError::NotAFrame);
     }
     let version = frame_version(frame);
-    if version != FRAME_VERSION && version != FRAME_VERSION_LEGACY {
+    if version != FRAME_VERSION {
         return Err(FrameError::UnknownVersion { found: version });
     }
-    // THE HEADER CHECK FIRST, on a version-2 frame: a write that stopped inside the header is a torn
-    // write, and is told apart from a whole frame that was altered (which fails only its digest).
-    if version == FRAME_VERSION
-        && header_check(frame)[..] != frame[HEADER_CHECK_OFFSET..HEADER_CHECK_OFFSET + 4]
-    {
+    // THE HEADER CHECK FIRST: a write that stopped inside the header is a torn write, and is told
+    // apart from a whole frame that was altered (which fails only its digest).
+    if header_check(frame)[..] != frame[HEADER_CHECK_OFFSET..HEADER_CHECK_OFFSET + 4] {
         return Err(FrameError::HeaderMismatch);
     }
     let (header, payload_len) = read_header(frame)?;
