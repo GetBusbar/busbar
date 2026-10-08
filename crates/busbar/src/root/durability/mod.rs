@@ -2269,7 +2269,9 @@ pub fn build_with_cards(
         // Not `Ledger::new()`. The reconciliation identity and rollback both require the dual
         // write, and both are release requirements rather than deployment choices.
         ledger: Ledger::dual_writing(legacy_rows),
-        record: AuditChain::new(),
+        // Every record this book seals names this node (THE DESIGN §1: "when (wall + monotonic,
+        // node)"): the node half of every op id the kernel mints in this process.
+        record: AuditChain::new().sealing_as(busbar_kernel::door::node()),
         checkpoints: Vec::new(),
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
