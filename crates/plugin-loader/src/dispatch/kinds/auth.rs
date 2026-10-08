@@ -95,17 +95,21 @@ pub struct OutboundStyle {
     pub points: u32,
 }
 
-/// Whether the auth plugin behind `door` DECLARES an inbound capability (`CAP_INBOUND` in its
-/// Statement's auth tail): it verifies a caller's credential, so an operator can name it in an auth
-/// chain. An outbound-only plugin (style presentation for an upstream credential) states none. A
-/// door whose Statement does not read as an auth Statement declares nothing: `false`. Reads the
-/// door's `'static` Statement only; nothing is opened.
+/// Whether the auth plugin behind `door` is an AUTH-CHAIN MODULE an operator names in `auth.chain`
+/// / `admin_auth`: its Statement's auth tail declares an inbound capability (`CAP_INBOUND`: it
+/// verifies a caller's credential) and is not a host-held credentials' verifier
+/// (`FACT_READS_CREDENTIALS`: its `verify` serves the `keys` entry, opened when the chain names
+/// `keys`, and is never named on its own). An outbound-only plugin (style presentation for an
+/// upstream credential) states no inbound capability. A door whose Statement does not read as an
+/// auth Statement is none: `false`. Reads the door's `'static` Statement only; nothing is opened.
 #[must_use]
-pub fn declares_inbound(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
+pub fn declares_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
     crate::dispatch::load::validate::<Auth>(door)
         .ok()
         .and_then(|v| facts(&v.statement).ok())
-        .is_some_and(|f| f.caps & auth::CAP_INBOUND != 0)
+        .is_some_and(|f| {
+            f.caps & auth::CAP_INBOUND != 0 && f.facts & auth::FACT_READS_CREDENTIALS == 0
+        })
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
