@@ -227,10 +227,12 @@ const CREDENTIAL_BLOCK: &str = "upstream_credentials";
 /// [`CREDENTIAL_MAPS`], [`CREDENTIAL_BLOCK`]). `url`, `command`, `args`, `cwd` and `token_url` are
 /// never one: they keep the load-time interpolation.
 fn is_credential(path: &[Seg]) -> bool {
-    let key = |s: &Seg| match s {
-        Seg::Key(k) => Some(k.as_str()),
-        Seg::Index(_) => None,
-    };
+    fn key(s: &Seg) -> Option<&str> {
+        match s {
+            Seg::Key(k) => Some(k.as_str()),
+            Seg::Index(_) => None,
+        }
+    }
     if path
         .iter()
         .filter_map(key)
