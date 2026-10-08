@@ -163,7 +163,7 @@ async fn mint(handle: &Arc<AppHandle>, name: &str, group: Option<&str>) -> Statu
         State(handle.clone()),
         anon(),
         HeaderMap::new(),
-        None,
+        axum::Extension(std::sync::Arc::new(crate::keys::KeyReplayCache::new())),
         axum::body::Bytes::from(body.to_string()),
     )
     .await
