@@ -3972,6 +3972,32 @@ mod posture_tests {
         }
     }
 
+    /// THE KIND-ISOLATION POSTURE DOES NOT HOLD OVER A RED IT CANNOT READ (X5 finding 10). A
+    /// listed row that goes red with a plain-sentence detail carries no finding the snapshot can
+    /// key, so it used to hold vacuously; over the real committed snapshot it is now scored, and
+    /// so is a reconciliation problem about a listed row (a row that emitted nothing).
+    #[test]
+    fn the_kind_isolation_posture_scores_a_listed_red_it_cannot_parse() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let stopped = Row::fail(
+            "kind-isolation:deps",
+            "the dependency graph could not be read",
+            "cargo metadata exited 101: the lock file could not be read",
+        );
+        assert!(
+            excused_from_all("kind-isolation", &cx, &verdict(vec![stopped])).is_none(),
+            "a listed red whose detail parses to no finding was excused by the snapshot"
+        );
+        let mut silent = verdict(Vec::new());
+        silent
+            .problems
+            .push("kind-isolation:deps: owed but not emitted (DID NOT RUN)".to_string());
+        assert!(
+            excused_from_all("kind-isolation", &cx, &silent).is_none(),
+            "a listed row that emitted nothing was excused by the snapshot"
+        );
+    }
+
     /// THE CONSTRUCTION POSTURE, WHICH USED TO BE `Excused::Whole` — no fact-check, no expiry, no
     /// list. `gate --all` exited 0 however red construction got, so a real regression on a keep
     /// branch was indistinguishable from the standing red. All three arms of the replacement:
