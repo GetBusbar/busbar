@@ -1417,13 +1417,21 @@ fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
     assert!(!line_serve_requested(&[planted], args(&["busbar"])));
 }
 
-/// The composition root's own source spells no plane's line-serve flag.
+/// The composition root's own source spells no flag a linked plane declares (its `Flags:` rows,
+/// read here as the root reads them, so this cell names no plane either).
 #[test]
 fn the_root_spells_no_planes_line_serve_flag() {
     let main = include_str!("../main.rs");
-    let flag = ["--", "mcp", "-stdio"].concat();
-    assert!(
-        !main.contains(&format!("\"{flag}\"")),
-        "main.rs spells a plane's flag as a literal"
-    );
+    let flags: Vec<&str> = crate::root::cli::help_rows()
+        .iter()
+        .flat_map(|rows| rows.iter())
+        .filter(|(slot, _)| *slot == "flag")
+        .filter_map(|(_, lines)| lines.split_whitespace().next())
+        .collect();
+    for flag in flags {
+        assert!(
+            !main.contains(&format!("\"{flag}\"")),
+            "main.rs spells the plane flag {flag} as a literal"
+        );
+    }
 }
