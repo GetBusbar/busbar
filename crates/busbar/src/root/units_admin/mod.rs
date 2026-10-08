@@ -3193,12 +3193,12 @@ pub(crate) fn route(
     let Some(verb) = kernel_verb(&resolved) else {
         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
     };
-    let granted = binding
-        .units
-        .granted(ctx.key)
-        .unwrap_or(scope_as_verb_scope(
-            busbar_kernel_scope::admin_required_scope(&request.method, &request.path),
-        ));
+    // THE GRANT APPROVE RECORDED, and nothing in its place. Approve refuses a caller holding none
+    // and records the grant of every caller it admits, so a unit here without one skipped that
+    // step: it is refused, never handed the endpoint's own required scope as if it held it.
+    let Some(granted) = binding.units.granted(ctx.key) else {
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+    };
 
     // THE ONE PLACE THE CHOICE IS MADE. Route is this plane's destination, and a destination is
     // where a composition says which of the unit's entry points an operation reaches. Written as a
