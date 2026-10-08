@@ -2,7 +2,9 @@
 //! (`StoreCalls::record_put` / `record_get` / `record_scan`), over a map the test holds, so two books
 //! built over one `RecordSlots` are one deployment restarted over one store. It counts the puts it
 //! took and can be told to REFUSE them, which is how a store that has the slots but will not take a
-//! write is posed. Every other slot answers FAILED: the journal must not reach them.
+//! write is posed. It keeps the single-use claims `redeem_plane_token` takes (the one atomic step a
+//! minting boot races on), and a test can redeem one first as another node would. Every other slot
+//! answers FAILED: the journal must not reach them.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -19,10 +21,14 @@ use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 /// The rows the double keeps: `(schema, key)` to the bytes.
 type Rows = BTreeMap<(String, Vec<u8>), RecordBytes>;
 
+/// The single-use claims the double has taken: `(kind, token)` to the instant each lapses.
+type Claims = BTreeMap<(String, String), u64>;
+
 /// The double. Cheap to clone; every clone is the same store.
 #[derive(Clone, Default)]
 pub(crate) struct RecordSlots {
     rows: Arc<Mutex<Rows>>,
+    claims: Arc<Mutex<Claims>>,
     refusing: Arc<AtomicBool>,
     puts: Arc<AtomicUsize>,
 }
@@ -58,6 +64,24 @@ impl RecordSlots {
             *last ^= 0xff;
         }
         rows.insert(at, RecordBytes::new(edited).expect("the same length"));
+    }
+
+    /// Redeem the single-use claim `(kind, token)` as another node would, until `expires_at`:
+    /// `true` when this was its first redemption.
+    pub(crate) fn redeem(&self, kind: &str, token: &str, expires_at: u64, now: u64) -> bool {
+        let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
+        claims.retain(|_, lapses| *lapses > now);
+        claims
+            .insert((kind.to_string(), token.to_string()), expires_at)
+            .is_none()
+    }
+
+    /// Keep `value` at `(schema, key)` as another node's write would.
+    pub(crate) fn put_row(&self, schema: &str, key: &[u8], value: &[u8]) {
+        self.rows.lock().unwrap_or_else(|p| p.into_inner()).insert(
+            (schema.to_string(), key.to_vec()),
+            RecordBytes::new(value.to_vec()).expect("a test row fits a slot"),
+        );
     }
 
     /// How many rows the store holds under `schema`.
@@ -199,12 +223,13 @@ impl StoreCalls for RecordSlots {
     }
     fn redeem_plane_token<'a>(
         &'a self,
-        _: &'a str,
-        _: &'a str,
-        _: u64,
-        _: u64,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
     ) -> StoreCall<'a, bool> {
-        not_this()
+        let first = self.redeem(kind, token, expires_at, now);
+        Box::pin(async move { Ok(first) })
     }
     fn plane_token_live<'a>(
         &'a self,

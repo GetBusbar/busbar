@@ -17,7 +17,8 @@
 //! The host is the operating system's host name ([`host_identity`]). A deployment whose host name
 //! changes on every restart therefore mints a new identity each time, and its predecessor's chain
 //! stays in the store under the old one, readable and verified by `/admin/verify`
-//! ([`walk_stored_chains`]) but not resumed.
+//! ([`walk_stored_chains`]) but not resumed: the holds that chain left open are not recovered
+//! (a known limit, ARCHITECT 2026-10-07).
 //!
 //! ## The deployment keyset
 //!
@@ -26,6 +27,25 @@
 //! node with no data directory mints it once and reads it back on every boot, so `/admin/verify`
 //! verifies the records a predecessor signed; with a data directory the file beside the journal is a
 //! cache of the same key (see `root::keyset`).
+//!
+//! ## Minting races on the store's one atomic step
+//!
+//! The store ABI has no compare-and-set. Its one atomic step is `redeem_plane_token`, a single-use
+//! TEST-AND-SET: exactly one caller is told it was first (the construction `oauth_as`'s store and
+//! the kernel's own claims use). So two first boots racing on an empty store never keep two
+//! keysets or two ids for one host (ARCHITECT 2026-10-07 H3 ruling):
+//!
+//! * Minting the deployment keyset, and minting a host's node id, each REDEEMS a claim first
+//!   ([`MINT_CLAIM_KIND`]). Only the boot the store answers `true` mints and keeps; every other
+//!   boot waits for the winner's write and takes it ([`MINT_WAIT`]), and refuses if it has not
+//!   appeared.
+//! * A node id is claimed for good before it is kept, so no two hosts can hold one id.
+//! * A minting claim LAPSES ([`MINT_CLAIM_SECS`]): a boot that won it and died before keeping
+//!   what it minted leaves the store with nothing, and a boot after the claim lapsed claims again.
+//!   That is liveness, bounded by the claim's life; the only window left is a winner that keeps
+//!   its write longer than the claim's life, past a second claimant's.
+
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
@@ -44,6 +64,77 @@ const KEYSET_KEY: &[u8] = b"deployment";
 
 /// The most registry rows one scan reads.
 const REGISTRY_LIMIT: u32 = 1 << 16;
+
+/// The kind every minting claim is redeemed under (`redeem_plane_token`).
+pub(super) const MINT_CLAIM_KIND: &str = "busbar.mint.v1";
+
+/// How long a minting claim stands before a later boot may claim again, in seconds.
+pub(super) const MINT_CLAIM_SECS: u64 = 120;
+
+/// How long a boot that lost a minting claim waits for the winner's write before it refuses.
+#[cfg(not(test))]
+pub(super) const MINT_WAIT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+pub(super) const MINT_WAIT: Duration = Duration::from_millis(400);
+
+/// How often a waiting boot reads the store again.
+const MINT_POLL: Duration = Duration::from_millis(20);
+
+/// The most candidate node ids one boot tries to claim before it refuses.
+const ID_ATTEMPTS: usize = 16;
+
+/// The claim on minting the deployment keyset.
+pub(super) const KEYSET_CLAIM: &str = "keyset:deployment";
+
+/// The claim on minting `host`'s node id.
+pub(super) fn host_claim(host: &str) -> String {
+    format!("host:{host}")
+}
+
+/// The claim that holds node id `id` for the one host that took it, for good.
+fn id_claim(id: u64) -> String {
+    format!("node-id:{id:016x}")
+}
+
+/// Now, in whole Unix seconds.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// REDEEM the single-use minting claim `token`, standing until `expires_at`: `true` when this call
+/// was its first redemption, so this boot is the one that mints.
+///
+/// # Errors
+///
+/// The store refused or failed the redemption.
+fn claim(calls: &dyn StoreCalls, token: &str, expires_at: u64) -> Result<bool, String> {
+    wait_for(calls.redeem_plane_token(MINT_CLAIM_KIND, token, expires_at, now_secs()))
+        .map_err(|f| format!("the store would not answer the minting claim `{token}`: {f}"))
+}
+
+/// A boot that lost the claim on minting `what`: the winner's write, read back as soon as it is
+/// there, for at most [`MINT_WAIT`].
+///
+/// # Errors
+///
+/// The read failed, or nothing was kept in time: this boot refuses rather than mint a second one.
+fn take_winners<T>(what: &str, read: impl Fn() -> Result<Option<T>, String>) -> Result<T, String> {
+    let deadline = Instant::now() + MINT_WAIT;
+    loop {
+        if let Some(kept) = read()? {
+            return Ok(kept);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "another boot holds the store's claim to mint {what} and has not kept it; this boot \
+                 refuses rather than mint a second one (the claim lapses within {MINT_CLAIM_SECS} s)"
+            ));
+        }
+        std::thread::sleep(MINT_POLL);
+    }
+}
 
 /// This host's name, as the node registry keys it: `HOSTNAME`, else the kernel's host name, else
 /// `/etc/hostname`, else empty (one identity for every such host).
@@ -82,13 +173,15 @@ fn id_of(value: &RecordBytes) -> Option<u64> {
     Some(u64::from_be_bytes(bytes)).filter(|&id| id != 0)
 }
 
-/// THIS HOST'S NODE ID: the one the registry holds for `host`, or one minted now, kept, and read
-/// back (a concurrent first boot of the same host that kept its own first wins, and both take it).
-/// Never zero, and never an id the registry already gives another host.
+/// THIS HOST'S NODE ID: the one the registry holds for `host`, or one minted now and kept. Only the
+/// boot that wins the store's claim on minting this host's id mints it; a concurrent first boot of
+/// the same host takes the winner's. The minted id is claimed for good before it is kept, so it is
+/// never zero and never an id another host holds.
 ///
 /// # Errors
 ///
-/// The store refused or failed a read or the write, or did not keep what it took.
+/// The store refused or failed a read, a claim or the write, did not keep what it took, or another
+/// boot holds the claim and kept nothing in time.
 pub fn node_id(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
     let key = host_key(host);
     let get = || -> Result<Option<u64>, String> {
@@ -99,17 +192,35 @@ pub fn node_id(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
     if let Some(id) = get()? {
         return Ok(id);
     }
+    // ONE MINTER PER HOST: the boot the store answers first mints; every other takes its id.
+    if !claim(
+        calls,
+        &host_claim(host),
+        now_secs().saturating_add(MINT_CLAIM_SECS),
+    )? {
+        return take_winners("this host's node id", get);
+    }
+    // A boot whose claim outlived an earlier claimant's lapsed one finds that claimant's id kept.
+    if let Some(id) = get()? {
+        return Ok(id);
+    }
     let taken: Vec<u64> = registered(calls)?.into_iter().map(|(_, id)| id).collect();
-    let id = loop {
+    let mut minted = None;
+    for _ in 0..ID_ATTEMPTS {
         let mut raw = [0u8; 8];
         getrandom::fill(&mut raw).map_err(|_| {
             "the operating system's random source gave no bytes for a node id".to_string()
         })?;
         let id = u64::from_be_bytes(raw);
-        if id != 0 && !taken.contains(&id) {
-            break id;
+        // ONE HOST PER ID: the id is claimed for good before it is kept.
+        if id != 0 && !taken.contains(&id) && claim(calls, &id_claim(id), u64::MAX)? {
+            minted = Some(id);
+            break;
         }
-    };
+    }
+    let id = minted.ok_or_else(|| {
+        format!("the store granted none of {ID_ATTEMPTS} node ids this boot tried to claim")
+    })?;
     let value = RecordBytes::new(id.to_be_bytes().to_vec())
         .map_err(|n| format!("a {n}-byte node id is over the slot's bound"))?;
     wait_for(calls.record_put(NODE_SCHEMA, &key, &value))
@@ -145,13 +256,29 @@ pub fn stored_keyset(calls: &dyn StoreCalls) -> Result<Option<String>, String> {
         .map(|value| value.and_then(|v| String::from_utf8(v.as_slice().to_vec()).ok()))
 }
 
-/// Keep the deployment keyset's seed in the store, then read back what it holds: a concurrent first
-/// boot that kept its own first is the one every node takes.
+/// THE DEPLOYMENT KEYSET, minted once: the seed the store keeps, or `seed_hex` kept now by the
+/// boot that wins the store's claim on minting it. A concurrent first boot that lost the claim
+/// takes the winner's, so every node on the store signs with one key.
 ///
 /// # Errors
 ///
-/// The store refused or failed the write or the read, or kept nothing.
+/// The store refused or failed a read, the claim or the write, kept nothing, or another boot holds
+/// the claim and kept nothing in time.
 pub fn keep_keyset(calls: &dyn StoreCalls, seed_hex: &str) -> Result<String, String> {
+    if let Some(held) = stored_keyset(calls)? {
+        return Ok(held);
+    }
+    if !claim(
+        calls,
+        KEYSET_CLAIM,
+        now_secs().saturating_add(MINT_CLAIM_SECS),
+    )? {
+        return take_winners("the deployment keyset", || stored_keyset(calls));
+    }
+    // A boot whose claim outlived an earlier claimant's lapsed one finds that claimant's key kept.
+    if let Some(held) = stored_keyset(calls)? {
+        return Ok(held);
+    }
     let value = RecordBytes::new(seed_hex.as_bytes().to_vec())
         .map_err(|n| format!("a {n}-byte keyset is over the slot's bound"))?;
     wait_for(calls.record_put(KEYSET_SCHEMA, KEYSET_KEY, &value))
