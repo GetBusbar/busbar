@@ -680,6 +680,60 @@ fn a_granted_roots_ask_is_relayed_to_the_caller_as_it_came() {
     }
 }
 
+/// LAW 11 (BUSBAR-1.6.0 lines 2127-2132, the relay-only ruling at 418-422): a granted SAMPLING ask
+/// is relayed to the caller exactly as the upstream sent it. busbar runs no completion for it on any
+/// plane; the caller answers it. A pin: predev already relays on this path, and this holds it there.
+#[test]
+fn a_granted_sampling_ask_is_relayed_to_the_caller_unchanged() {
+    let section = section();
+    let mut def = section.servers.get("fs").expect("fs").clone();
+    def.grants.sampling = true;
+    let far = r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"s":{"method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"hi"}}],"maxTokens":5}}},"requestState":"opaque"}}"#;
+    match settle_call(&admitted(), Some(&def), 200, far.as_bytes(), false, 0) {
+        Settled::Relay {
+            result,
+            round,
+            child,
+        } => {
+            assert_eq!(round, 0);
+            assert_eq!(child, None);
+            let sent: Value = serde_json::from_str(far).expect("json");
+            assert_eq!(
+                result, sent["result"],
+                "the upstream's sampling ask, byte for byte"
+            );
+        }
+        other => panic!("relayed: {other:?}"),
+    }
+}
+
+/// LAW 11 (finding 20): what the caller reads about an upstream's ask says what the code does — the
+/// ask is RELAYED to the caller, or not relayed under the operator's policy. It never says busbar
+/// satisfies an ask, or that an ask terminates at busbar.
+#[test]
+fn an_ask_refusal_tells_the_caller_the_ask_is_relayed_never_satisfied() {
+    let ungranted = settle_far(
+        r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"s":{"method":"sampling/createMessage"}}}}"#,
+    );
+    let mixed =
+        settle_far(r#"{"jsonrpc":"2.0","id":0,"result":{"content":[],"requestState":"x"}}"#);
+    for settled in [ungranted, mixed] {
+        let (status, body, _) = answer_of(settled);
+        assert_eq!(status, 403);
+        let message = body["error"]["message"].as_str().expect("message");
+        for stale in ["satisf", "terminates at busbar", "never forwarded"] {
+            assert!(
+                !message.contains(stale),
+                "the caller-visible text says `{stale}`: {message}"
+            );
+        }
+        assert!(
+            message.contains("relayed"),
+            "the caller-visible text names the relay: {message}"
+        );
+    }
+}
+
 /// An ask mixing a granted kind with an ungranted one is refused naming the ungranted one: the
 /// most privileged kind alone does not decide a map whose lesser entries are ungranted.
 #[test]
