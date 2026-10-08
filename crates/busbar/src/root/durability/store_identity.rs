@@ -40,10 +40,14 @@
 //!   boot waits for the winner's write and takes it ([`MINT_WAIT`]), and refuses if it has not
 //!   appeared.
 //! * A node id is claimed for good before it is kept, so no two hosts can hold one id.
-//! * A minting claim LAPSES ([`MINT_CLAIM_SECS`]): a boot that won it and died before keeping
-//!   what it minted leaves the store with nothing, and a boot after the claim lapsed claims again.
-//!   That is liveness, bounded by the claim's life; the only window left is a winner that keeps
-//!   its write longer than the claim's life, past a second claimant's.
+//! * A minting claim is a claim FOR ONE PERIOD ([`MINT_CLAIM_SECS`]): its token names the period
+//!   it was redeemed in. A boot that won it and died before keeping what it minted leaves the
+//!   store with nothing until the period ends; the next period's claim is a new token, so a boot
+//!   then claims again. (A losing redemption cannot push the claim out: a store may re-stamp a
+//!   token's expiry on every redemption, and the period's token is never redeemed after it ends.)
+//!   That is liveness, bounded by one period. The window left is two first boots that both win
+//!   because they straddle a period boundary within the milliseconds between a claim and its
+//!   write; each reads back what the store holds after its own write.
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -68,8 +72,12 @@ const REGISTRY_LIMIT: u32 = 1 << 16;
 /// The kind every minting claim is redeemed under (`redeem_plane_token`).
 pub(super) const MINT_CLAIM_KIND: &str = "busbar.mint.v1";
 
-/// How long a minting claim stands before a later boot may claim again, in seconds.
-pub(super) const MINT_CLAIM_SECS: u64 = 120;
+/// The period a minting claim is for, in seconds: a claim nobody kept a value for is free again
+/// once its period ends.
+#[cfg(not(test))]
+pub(super) const MINT_CLAIM_SECS: u64 = 60;
+#[cfg(test)]
+pub(super) const MINT_CLAIM_SECS: u64 = 2;
 
 /// How long a boot that lost a minting claim waits for the winner's write before it refuses.
 #[cfg(not(test))]
@@ -83,12 +91,21 @@ const MINT_POLL: Duration = Duration::from_millis(20);
 /// The most candidate node ids one boot tries to claim before it refuses.
 const ID_ATTEMPTS: usize = 16;
 
-/// The claim on minting the deployment keyset.
-pub(super) const KEYSET_CLAIM: &str = "keyset:deployment";
+/// The claim on minting the deployment keyset, for the period `now` falls in.
+pub(super) fn keyset_claim(now: u64) -> String {
+    format!("keyset:deployment@{}", now / MINT_CLAIM_SECS)
+}
 
-/// The claim on minting `host`'s node id.
-pub(super) fn host_claim(host: &str) -> String {
-    format!("host:{host}")
+/// The claim on minting `host`'s node id, for the period `now` falls in.
+pub(super) fn host_claim(host: &str, now: u64) -> String {
+    format!("host:{host}@{}", now / MINT_CLAIM_SECS)
+}
+
+/// When a claim redeemed at `now` may be dropped: after the end of the period after its own.
+fn claim_lapses(now: u64) -> u64 {
+    (now / MINT_CLAIM_SECS)
+        .saturating_add(2)
+        .saturating_mul(MINT_CLAIM_SECS)
 }
 
 /// The claim that holds node id `id` for the one host that took it, for good.
@@ -129,7 +146,8 @@ fn take_winners<T>(what: &str, read: impl Fn() -> Result<Option<T>, String>) -> 
         if Instant::now() >= deadline {
             return Err(format!(
                 "another boot holds the store's claim to mint {what} and has not kept it; this boot \
-                 refuses rather than mint a second one (the claim lapses within {MINT_CLAIM_SECS} s)"
+                 refuses rather than mint a second one (the claim is free again within \
+                 {MINT_CLAIM_SECS} s)"
             ));
         }
         std::thread::sleep(MINT_POLL);
@@ -193,14 +211,11 @@ pub fn node_id(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
         return Ok(id);
     }
     // ONE MINTER PER HOST: the boot the store answers first mints; every other takes its id.
-    if !claim(
-        calls,
-        &host_claim(host),
-        now_secs().saturating_add(MINT_CLAIM_SECS),
-    )? {
+    let now = now_secs();
+    if !claim(calls, &host_claim(host, now), claim_lapses(now))? {
         return take_winners("this host's node id", get);
     }
-    // A boot whose claim outlived an earlier claimant's lapsed one finds that claimant's id kept.
+    // A boot that claimed a later period than a slow earlier claimant finds that claimant's id.
     if let Some(id) = get()? {
         return Ok(id);
     }
@@ -268,14 +283,11 @@ pub fn keep_keyset(calls: &dyn StoreCalls, seed_hex: &str) -> Result<String, Str
     if let Some(held) = stored_keyset(calls)? {
         return Ok(held);
     }
-    if !claim(
-        calls,
-        KEYSET_CLAIM,
-        now_secs().saturating_add(MINT_CLAIM_SECS),
-    )? {
+    let now = now_secs();
+    if !claim(calls, &keyset_claim(now), claim_lapses(now))? {
         return take_winners("the deployment keyset", || stored_keyset(calls));
     }
-    // A boot whose claim outlived an earlier claimant's lapsed one finds that claimant's key kept.
+    // A boot that claimed a later period than a slow earlier claimant finds that claimant's key.
     if let Some(held) = stored_keyset(calls)? {
         return Ok(held);
     }
