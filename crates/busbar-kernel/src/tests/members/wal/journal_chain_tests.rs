@@ -25,7 +25,7 @@ use super::fixtures::{durability_token, KeepingShipper, TempDir};
 #[derive(Debug, Default)]
 struct RefusingShipper;
 
-impl Shipper for RefusingShipper {
+impl Shipper<busbar_kernel_wal::record::Record> for RefusingShipper {
     fn ship(&mut self, _records: &[busbar_kernel_wal::record::Record]) -> Result<(), ShipError> {
         Err(ShipError::Unavailable("the store is not answering".into()))
     }

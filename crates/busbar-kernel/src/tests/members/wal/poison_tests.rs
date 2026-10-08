@@ -424,7 +424,7 @@ fn a_failed_roll_leaves_no_hole_in_the_chain() {
 #[test]
 fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
     struct Refuses;
-    impl busbar_kernel_wal::ship::Shipper for Refuses {
+    impl busbar_kernel_wal::ship::Shipper<busbar_kernel_wal::record::Record> for Refuses {
         fn ship(
             &mut self,
             _records: &[busbar_kernel_wal::record::Record],
@@ -474,7 +474,7 @@ fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
 fn a_store_that_refuses_a_memory_buffered_batch_is_a_durability_loss() {
     // With no data directory the store IS the durability, so its refusal is the loss.
     struct Refuses;
-    impl busbar_kernel_wal::ship::Shipper for Refuses {
+    impl busbar_kernel_wal::ship::Shipper<busbar_kernel_wal::record::Record> for Refuses {
         fn ship(
             &mut self,
             _records: &[busbar_kernel_wal::record::Record],
@@ -518,7 +518,7 @@ impl RefusesOnce {
     }
 }
 
-impl busbar_kernel_wal::ship::Shipper for RefusesOnce {
+impl busbar_kernel_wal::ship::Shipper<busbar_kernel_wal::record::Record> for RefusesOnce {
     fn ship(
         &mut self,
         records: &[busbar_kernel_wal::record::Record],
@@ -636,7 +636,7 @@ fn a_memory_buffered_retry_after_a_refusal_does_not_write_the_records_twice() {
 fn a_store_that_refuses_an_on_disk_batch_does_not_fail_the_commit() {
     // With a data directory the local log is the record and shipping is catch-up work.
     struct Refuses;
-    impl busbar_kernel_wal::ship::Shipper for Refuses {
+    impl busbar_kernel_wal::ship::Shipper<busbar_kernel_wal::record::Record> for Refuses {
         fn ship(
             &mut self,
             _records: &[busbar_kernel_wal::record::Record],

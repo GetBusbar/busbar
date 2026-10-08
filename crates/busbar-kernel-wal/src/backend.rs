@@ -447,15 +447,15 @@ impl DirectoryFactory {
     /// this type is already the decision to write to a disk. A node with no data directory never
     /// builds one, which is why it leaves no files behind.
     ///
-    /// The creation is made DURABLE here, through [`crate::durable::create_dir_all`], rather than
-    /// left to `std::fs::create_dir_all`, which leaves every new directory ENTRY unfsynced: a power
+    /// The creation is made DURABLE here, through [`create_dir_durably`], rather than left to
+    /// `std::fs::create_dir_all`, which leaves every new directory ENTRY unfsynced: a power
     /// loss right after the first group commit could then take the directory with it — or an
     /// ancestor this call created, and the directory under it — segments included, even though
     /// every segment's own `sync` returned success. Every directory created gets the fsync of the
     /// directory holding it, and a failed fsync is this call's error.
     pub fn new(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
-        crate::durable::create_dir_all(&dir)?;
+        create_dir_durably(&dir)?;
         Ok(DirectoryFactory { dir })
     }
 
@@ -494,7 +494,7 @@ impl SegmentFactory for DirectoryFactory {
         let path = self.segment_path(index);
         let (segment, created) = FileSegment::open_reporting(&path)?;
         if created {
-            if let Err(e) = crate::durable::sync_holding_dir(&path) {
+            if let Err(e) = sync_holding_dir(&path) {
                 drop(segment);
                 // The fsync's error is the one returned; a removal that fails too leaves an empty
                 // file the next open reads as a segment with nothing in it.
@@ -577,7 +577,83 @@ impl SegmentFactory for DirectoryFactory {
         file.write_all(bytes)?;
         // The full sync, not the data sync: the file is new, and its length is metadata.
         file.sync_all()?;
-        crate::durable::sync_holding_dir(&path)?;
+        sync_holding_dir(&path)?;
         Ok(Some(path))
     }
+}
+
+// ── Directory durability ─────────────────────────────────────────────────────────────────────────
+// The rule the loader's `durable` module states for every other file busbar publishes, kept here
+// for the log's own segment files and quarantine copies: this crate takes no edge onto the loader
+// (lane-gb-loader-wal-edge), so the log keeps its own copy of the one rule rather than a dependency.
+
+/// The directory whose ENTRY creating or removing `path` changes. A relative `path` with no parent
+/// resolves to ".", where it actually lives.
+fn holding_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+/// fsync the directory that holds `path`, so creating it is itself durable.
+///
+/// A failure is the caller's error: opening the directory, or fsyncing it, failing means the entry
+/// is NOT durable, and a segment or a quarantine copy reported made would be a durability the
+/// medium did not give. The one exception is a filesystem that says the operation is not supported
+/// on a directory (`EINVAL`, or an error the platform reports as unsupported): it cannot promise
+/// more than it does, and refusing every segment on it would leave no log at all.
+fn sync_holding_dir(path: &Path) -> io::Result<()> {
+    match sync_dir(holding_dir(path)) {
+        Err(e) if fsync_unsupported(&e) => Ok(()),
+        other => other,
+    }
+}
+
+/// fsync `dir` itself, every failure reported. [`sync_holding_dir`] decides which are the caller's.
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    crate::tests::hooks::parent_fsync(dir)?;
+    #[cfg(unix)]
+    {
+        std::fs::File::open(dir)?.sync_all()
+    }
+    // There is no directory-entry barrier to reach for on this platform.
+    #[cfg(not(unix))]
+    {
+        let _no_barrier = dir;
+        Ok(())
+    }
+}
+
+/// Whether `e` is a filesystem saying a directory cannot be fsynced at all, as opposed to failing to
+/// do it.
+fn fsync_unsupported(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput
+    )
+}
+
+/// DURABLY create `path` and any missing ancestors: each directory actually created has its PARENT
+/// fsynced, so the new entry itself survives a power loss, shallowest first. Directories that
+/// already exist are left alone. A directory fsync that fails is this call's error.
+fn create_dir_durably(path: &Path) -> io::Result<()> {
+    let mut missing: Vec<&Path> = Vec::new();
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if p.as_os_str().is_empty() || p.exists() {
+            break;
+        }
+        missing.push(p);
+        cur = p.parent();
+    }
+    for dir in missing.iter().rev() {
+        match std::fs::create_dir(dir) {
+            Ok(()) => sync_holding_dir(dir)?,
+            // A concurrent creator won the race; the entry is theirs to make durable.
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }

@@ -154,7 +154,7 @@ pub type Clock = fn() -> u64;
 pub struct Wal {
     factory: Box<dyn SegmentFactory>,
     clock: Clock,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<Record>>,
     mode: Mode,
     segment: Segment,
     ceiling: u64,
@@ -202,7 +202,7 @@ impl Wal {
     ///
     /// A node built this way cannot create a file even by mistake, because the only thing that
     /// knows how to open one is the directory factory and this log does not hold one.
-    pub fn memory_buffered_to(shipper: Box<dyn Shipper>, clock: Clock) -> Self {
+    pub fn memory_buffered_to(shipper: Box<dyn Shipper<Record>>, clock: Clock) -> Self {
         Wal::with_parts(
             Box::new(MemoryFactory::new()),
             shipper,
@@ -220,7 +220,7 @@ impl Wal {
     /// [`Wal::memory_buffered_to`] and never reaches this function.
     pub fn in_directory(
         dir: impl AsRef<std::path::Path>,
-        shipper: Box<dyn Shipper>,
+        shipper: Box<dyn Shipper<Record>>,
         clock: Clock,
     ) -> Result<Self, OpenError> {
         let factory = DirectoryFactory::new(dir.as_ref())?;
@@ -241,7 +241,7 @@ impl Wal {
     /// for which segment that is and what the seeding does and does not cover.
     pub fn with_parts(
         mut factory: Box<dyn SegmentFactory>,
-        shipper: Box<dyn Shipper>,
+        shipper: Box<dyn Shipper<Record>>,
         mode: Mode,
         ceiling: u64,
         clock: Clock,
@@ -425,7 +425,7 @@ impl Wal {
     }
 
     /// The shipper, so a caller can look at what was handed over.
-    pub fn shipper(&self) -> &dyn Shipper {
+    pub fn shipper(&self) -> &dyn Shipper<Record> {
         self.shipper.as_ref()
     }
 

@@ -219,7 +219,7 @@ impl KeepingShipper {
     }
 }
 
-impl busbar_kernel_wal::ship::Shipper for KeepingShipper {
+impl busbar_kernel_wal::ship::Shipper<Record> for KeepingShipper {
     fn ship(&mut self, records: &[Record]) -> Result<(), busbar_kernel_wal::ship::ShipError> {
         self.records.lock().unwrap().extend_from_slice(records);
         Ok(())

@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A directory fsync that fails is an error, wherever directory durability is made.
+//! A directory fsync that fails is an error, wherever the log makes directory durability.
 //!
 //! The entry a creation, a rename or an unlink changes is only durable once the directory holding
 //! it is fsynced. Swallowing that fsync's failure hands the caller a success the medium did not
 //! give: a publish reported durable whose rename a power loss can undo, a segment handed out whose
 //! name a power loss can take with every acknowledged record in it, a quarantine copy reported kept
 //! while recovery cuts the only other copy of the bytes. The one failure that is not the caller's
-//! is a filesystem saying it does not support the operation at all.
+//! is a filesystem saying it does not support the operation at all. (The same rule for every other
+//! file busbar publishes is the loader's `durable` module's, and its cases are there.)
 
 use std::path::{Path, PathBuf};
 
 use crate::backend::{DirectoryFactory, SegmentFactory};
-use crate::durable;
 use crate::record::{Record, FRAME_BYTES};
 use crate::recover::QuarantineKept;
 use crate::segment::SEGMENT_BYTES;
@@ -23,8 +23,6 @@ use crate::wal::{Mode, Wal};
 
 /// Linux and macOS share this value. Injected via `from_raw_os_error`.
 const EIO: i32 = 5;
-/// `EINVAL`: what `fsync(2)` answers for a descriptor that does not support synchronization.
-const EINVAL: i32 = 22;
 
 /// A scratch path under the system temp directory, removed on drop. Not created: a test that wants
 /// it to exist creates it.
@@ -56,63 +54,6 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
-}
-
-/// **A PUBLISH WHOSE DIRECTORY FSYNC FAILS IS AN ERROR.** RED before the fix: the failure was
-/// swallowed and `write` answered `Ok` over a rename a power loss could still undo.
-#[test]
-fn a_publish_whose_directory_fsync_fails_is_an_error() {
-    let scratch = Scratch::made("publish");
-    let target = scratch.path().join("overlay.json");
-    fault_reset();
-    fault_arm(FaultStep::DirSync, EIO);
-    let err = durable::write(&target, b"new contents")
-        .expect_err("a directory fsync that failed is not a durable publish");
-    assert_eq!(
-        err.raw_os_error(),
-        Some(EIO),
-        "the fsync's own error surfaces"
-    );
-    // The contract says what an error from the last step means: the rename happened, and it is
-    // the entry's durability that was not given.
-    assert_eq!(std::fs::read(&target).unwrap(), b"new contents");
-}
-
-/// **A REMOVAL WHOSE DIRECTORY FSYNC FAILS IS AN ERROR.** RED before the fix: `remove` answered
-/// `Ok` once the unlink succeeded, whatever the fsync after it said.
-#[test]
-fn a_removal_whose_directory_fsync_fails_is_an_error() {
-    let scratch = Scratch::made("remove");
-    let target = scratch.path().join("plugin.tar.gz");
-    std::fs::write(&target, b"artifact").unwrap();
-    fault_reset();
-    fault_arm(FaultStep::DirSync, EIO);
-    let err = durable::remove(&target).expect_err("the removal was not made durable");
-    assert_eq!(err.raw_os_error(), Some(EIO));
-}
-
-/// **A DIRECTORY CREATED WHOSE PARENT'S FSYNC FAILS IS AN ERROR.** RED before the fix: the walk
-/// fsynced each new directory's parent and ignored the answer.
-#[test]
-fn a_created_directory_whose_parent_fsync_fails_is_an_error() {
-    let scratch = Scratch::made("mkdir");
-    fault_reset();
-    fault_arm(FaultStep::DirSync, EIO);
-    let err = durable::create_dir_all(&scratch.path().join("plugins"))
-        .expect_err("the new directory's entry was not made durable");
-    assert_eq!(err.raw_os_error(), Some(EIO));
-}
-
-/// A filesystem that does not support fsyncing a directory is not refused: there is nothing more
-/// it can promise, and refusing every publish on it would leave no durability at all.
-#[test]
-fn a_directory_fsync_the_filesystem_does_not_support_is_not_an_error() {
-    let scratch = Scratch::made("unsupported");
-    let target = scratch.path().join("state.json");
-    fault_reset();
-    fault_arm(FaultStep::DirSync, EINVAL);
-    durable::write(&target, b"contents").expect("an unsupported directory fsync is not a failure");
-    assert_eq!(std::fs::read(&target).unwrap(), b"contents");
 }
 
 /// **A SEGMENT WHOSE DIRECTORY FSYNC FAILS IS NOT HANDED OUT, AND NOT LEFT BEHIND.** RED before the

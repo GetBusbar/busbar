@@ -3,9 +3,10 @@
 
 //! The ONE durable-write choke point. Every durable file publish in busbar goes through here:
 //! `temp → write → flush → fsync(file) → rename → fsync(parent)`, with RAII tmp cleanup on EVERY
-//! error path. It is also the ONE home of directory durability — the parent fsync that makes a
-//! created, renamed or removed entry survive a power loss — which the log's own segment files and
-//! quarantine copies go through as well. There is no other durable-write path: the `A-persistence`
+//! error path. It is also the home of directory durability — the parent fsync that makes a
+//! created, renamed or removed entry survive a power loss. The log's own segment files and
+//! quarantine copies keep a copy of the same rule in `busbar-kernel-wal`'s backend, which takes no
+//! edge onto this crate. There is no other durable-write path: the `A-persistence`
 //! row of the `structure-lint` gate (`xtask/src/gates/structure_lint/choke_points.rs`) refuses a
 //! hand-rolled `fs::rename(` publish, a hand-rolled `sync_all`/`sync_data`, or an
 //! `fs::create_dir_all(` anywhere outside the files that row ledgers, so a call site that tries to
@@ -74,9 +75,9 @@ pub(crate) fn holding_dir(path: &Path) -> &Path {
 
 /// fsync the directory that holds `path`, so a creation, rename or unlink of it is itself durable.
 ///
-/// THE one home of directory durability in this crate: the publish below, [`remove`],
-/// [`create_dir_all`], and the log's own segment files and quarantine copies
-/// (`crate::backend::DirectoryFactory`) all go through it.
+/// THE one home of directory durability in this crate: the publish below, [`remove`] and
+/// [`create_dir_all`] all go through it (the log's segment files keep the same rule in
+/// `busbar-kernel-wal`'s `backend::DirectoryFactory`).
 ///
 /// A failure is the caller's error. Opening the directory, or fsyncing it, failing with an I/O error
 /// means the entry is NOT durable, and a caller that reported success would be reporting a
@@ -105,7 +106,7 @@ pub(crate) fn sync_holding_dir(path: &Path) -> io::Result<()> {
 /// fsync `dir` itself, every failure reported. [`sync_holding_dir`] decides which are the caller's.
 fn sync_dir(dir: &Path) -> io::Result<()> {
     #[cfg(test)]
-    crate::tests::hooks::parent_fsync(dir)?;
+    crate::durable::hooks::parent_fsync(dir)?;
     #[cfg(unix)]
     {
         std::fs::File::open(dir)?.sync_all()
@@ -228,7 +229,7 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
     // embeds a pid + an atomic sequence, so no test can predict it from the outside -- which is why
     // the `exclusive` anti-wedge pre-removal below had no test at all until this existed.
     #[cfg(test)]
-    crate::tests::hooks::plant_decoy_if_armed(&tmp);
+    crate::durable::hooks::plant_decoy_if_armed(&tmp);
 
     // RAII: the temp is removed on EVERY early return (every `?` below, and any future `?` an editor
     // adds) UNLESS we disarm after a successful rename. There is no manual cleanup to forget, so the
@@ -293,7 +294,7 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
 #[cfg(test)]
 macro_rules! fault_point {
     ($step:expr) => {
-        if let Some(err) = crate::tests::hooks::fault_take_if($step) {
+        if let Some(err) = crate::durable::hooks::fault_take_if($step) {
             return Err(err);
         }
     };
@@ -305,4 +306,14 @@ macro_rules! fault_point {
 use fault_point;
 
 #[cfg(test)]
-use crate::tests::hooks::FaultStep;
+use crate::durable::hooks::FaultStep;
+
+/// The test side of the `#[cfg(test)]` hook points above: the armed faults, the recorded fsyncs and
+/// the decoy switch.
+#[cfg(test)]
+#[path = "tests/durable_hooks.rs"]
+pub(crate) mod hooks;
+
+#[cfg(test)]
+#[path = "tests/durable_tests.rs"]
+mod tests;

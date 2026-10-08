@@ -4,7 +4,6 @@
 //! The batteries.
 
 mod dir_fsync;
-mod durable_tests;
 mod fixtures;
 pub(crate) mod hooks;
 mod journal_chain;

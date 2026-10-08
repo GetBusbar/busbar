@@ -85,9 +85,9 @@ use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
     RecordStoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
+use busbar_contract::ship::{ShipError, ShippedRecord, Shipper};
 use busbar_contract::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
 use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
-use busbar_kernel_wal::{Record, ShipError, Shipper};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -362,7 +362,7 @@ impl StoreAdapter {
 
     /// The log's shipping seam. Boxed by value because the log owns its shipper; every box is the
     /// same shim, so two logs shipping through one adapter share a count rather than forking one.
-    pub fn shipper(&self) -> Box<dyn Shipper> {
+    pub fn shipper<R: ShippedRecord>(&self) -> Box<dyn Shipper<R>> {
         Box::new(self.clone())
     }
 
@@ -877,12 +877,12 @@ impl VerbStore for StoreAdapter {
     }
 }
 
-impl Shipper for StoreAdapter {
+impl<R: ShippedRecord> Shipper<R> for StoreAdapter {
     /// Acknowledge a batch. Always `Ok`: the store has nowhere to put it and a refusal here is a
     /// durability failure the deployment does not actually have — its durability is the legacy
     /// rows'. The records are not retained (the log's own buffer already holds them); the count and
     /// the last identity are.
-    fn ship(&mut self, records: &[Record]) -> Result<(), ShipError> {
+    fn ship(&mut self, records: &[R]) -> Result<(), ShipError> {
         if records.is_empty() {
             return Ok(());
         }

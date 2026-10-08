@@ -799,7 +799,7 @@ impl KeepingShipper {
     }
 }
 
-impl busbar_kernel_wal::Shipper for KeepingShipper {
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for KeepingShipper {
     fn ship(
         &mut self,
         records: &[busbar_kernel_wal::Record],
@@ -1018,7 +1018,7 @@ fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
 #[derive(Clone, Default)]
 struct CountingShipper(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
 
-impl busbar_kernel_wal::Shipper for CountingShipper {
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for CountingShipper {
     fn ship(
         &mut self,
         records: &[busbar_kernel_wal::Record],
@@ -1461,7 +1461,7 @@ fn a_hold_survives_a_kill_9() {
 #[test]
 fn a_posting_the_journal_lost_is_unreconciled_until_the_log_confirms_it() {
     struct Flaky(std::sync::Arc<std::sync::atomic::AtomicBool>);
-    impl busbar_kernel_wal::Shipper for Flaky {
+    impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for Flaky {
         fn ship(
             &mut self,
             _records: &[busbar_kernel_wal::Record],

@@ -1032,7 +1032,7 @@ fn a_restart_after_a_roll_prices_every_posting_at_the_card_in_force_when_it_arri
 /// A store that takes nothing: a memory-buffered journal over it refuses every append.
 struct RefusingShipper;
 
-impl busbar_kernel_wal::Shipper for RefusingShipper {
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for RefusingShipper {
     fn ship(
         &mut self,
         _records: &[busbar_kernel_wal::Record],
@@ -1091,7 +1091,7 @@ fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
 /// batch and re-offers it on the next append; answering, the retained batch lands.
 struct SwitchShipper(Arc<std::sync::atomic::AtomicBool>);
 
-impl busbar_kernel_wal::Shipper for SwitchShipper {
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for SwitchShipper {
     fn ship(
         &mut self,
         _records: &[busbar_kernel_wal::Record],
