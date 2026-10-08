@@ -35,7 +35,9 @@ use busbar_contract::auth::{
 };
 use busbar_contract::auth_calls::{AuthCalls, LoginCallback};
 
-use super::self_keys::{issue_key, resolve_exchange, DeterministicEd25519Keys, HandleProvisioner};
+use super::self_keys::{
+    issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError, HandleProvisioner,
+};
 use super::ChainVerdict;
 use crate::config::AuthCfg;
 use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
@@ -889,10 +891,19 @@ async fn issue_and_render(
     // Auto-provision the `user:<sub>` leaf under `team` (from the team's `child_default`) before the
     // mint, so the browser-issued key is usable immediately (no 429 MissingGroup).
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
+    let keys =
+        DeterministicEd25519Keys::new(gov, module_name.to_string(), team, pools, provisioner);
     let issued =
         match issue_key(&keys, principal, ttl, refresh).await {
             Ok(k) => k,
+            // The subject's key is disabled, or another identity provider minted it: the same
+            // refusal page as an identity with no grant.
+            Err(ExchangeError::Unbound) => return error_page(
+                StatusCode::FORBIDDEN,
+                "No access yet",
+                "Your account isn't granted a self-serve key yet. Ask your Busbar admin to assign \
+                 you a role.",
+            ),
             Err(_) => return error_page(
                 StatusCode::BAD_GATEWAY,
                 "Couldn't issue your key",

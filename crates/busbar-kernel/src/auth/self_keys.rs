@@ -42,14 +42,19 @@ pub(crate) struct IssuedKey {
 /// The self-serve key scheme, isolated behind a trait so the exchange endpoint is scheme-agnostic.
 /// ASYNC because the ONE production impl auto-provisions the personal budget group through the
 /// async config-mutation choke point (`crate::config::transaction::config_transaction`) before it
-/// mints.
+/// mints. A refusal comes back as its typed [`ExchangeError`] (`Unbound`), a failure as `MintFailed`.
 #[async_trait]
 pub(crate) trait SelfServeKeys: Send + Sync {
     /// Issue the ONE key for `principal` (idempotent: a re-login returns the same key, only the
     /// token's `exp` refreshed). `ttl` is the token lifetime.
-    async fn issue(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String>;
+    async fn issue(&self, principal: &Principal, ttl: Duration)
+        -> Result<IssuedKey, ExchangeError>;
     /// ROTATE the key for `principal` (the "Refresh" action): the prior token stops verifying.
-    async fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String>;
+    async fn refresh(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+    ) -> Result<IssuedKey, ExchangeError>;
 }
 
 /// AUTO-PROVISION the personal budget bucket a self-serve key charges through. Behind a trait so the
@@ -83,6 +88,9 @@ pub(crate) trait SelfGroupProvisioner: Send + Sync {
 /// The concrete, GovState-backed scheme: deterministic ed25519 signed tokens ("Model B").
 pub(crate) struct DeterministicEd25519Keys {
     gov: Arc<GovState>,
+    /// The identity-provider instance that asserted the principal (the verdict's identifying
+    /// module). Recorded on the binding; another provider asserting the same subject is refused.
+    provider: String,
     /// The TEAM group the principal's role binds to (`role_bindings.<module>.<role>.group`) — the
     /// PARENT under which the per-user `user:<sub>` leaf is auto-provisioned. Resolved by
     /// [`resolve_exchange`] (guaranteed present: a self key must charge through a group).
@@ -97,12 +105,14 @@ pub(crate) struct DeterministicEd25519Keys {
 impl DeterministicEd25519Keys {
     pub(crate) fn new(
         gov: Arc<GovState>,
+        provider: String,
         team: String,
         allowed_pools: Option<Vec<String>>,
         provisioner: Arc<dyn SelfGroupProvisioner>,
     ) -> Self {
         Self {
             gov,
+            provider,
             team,
             allowed_pools,
             provisioner,
@@ -126,12 +136,13 @@ impl DeterministicEd25519Keys {
         principal: &Principal,
         ttl: Duration,
         op: crate::governance::SelfMintOp,
-    ) -> Result<IssuedKey, String> {
+    ) -> Result<IssuedKey, ExchangeError> {
         let now = busbar_kernel::store::now();
         let exp = now.saturating_add(ttl.as_secs());
         self.provisioner
             .ensure_leaf(&Self::self_group(principal), &self.team)
-            .await?;
+            .await
+            .map_err(ExchangeError::MintFailed)?;
         // Offloaded: `issue_self` / `refresh_self` hold a std::sync::Mutex across synchronous
         // store I/O, so request-path callers must never invoke them directly on the reactor. See
         // `governance::mint_self_offloaded`.
@@ -139,12 +150,18 @@ impl DeterministicEd25519Keys {
             self.gov.clone(),
             op,
             principal.id.clone(),
+            self.provider.clone(),
             self.allowed_pools.clone(),
             exp,
             now,
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| match e {
+            // A disabled binding, or one another provider minted: 1.5.5's nearest refusal, the
+            // 403 "no self-serve grant for this identity".
+            crate::governance::SelfMintError::Refused(_) => ExchangeError::Unbound,
+            crate::governance::SelfMintError::Store(e) => ExchangeError::MintFailed(e.to_string()),
+        })?;
         Ok(IssuedKey {
             secret: busbar_contract::redacted::Redacted::new(token),
             key_id: binding.id,
@@ -156,12 +173,20 @@ impl DeterministicEd25519Keys {
 
 #[async_trait]
 impl SelfServeKeys for DeterministicEd25519Keys {
-    async fn issue(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
+    async fn issue(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+    ) -> Result<IssuedKey, ExchangeError> {
         self.mint(principal, ttl, crate::governance::SelfMintOp::Issue)
             .await
     }
 
-    async fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
+    async fn refresh(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+    ) -> Result<IssuedKey, ExchangeError> {
         self.mint(principal, ttl, crate::governance::SelfMintOp::Refresh)
             .await
     }
@@ -248,7 +273,8 @@ pub(crate) enum ExchangeError {
     /// and the disabled-mint policy is not disclosed to the unauthenticated.
     SelfMintDisabled,
     /// Identified, but no role of the principal is bound under the identifying module, or the bound
-    /// role has no `group` to charge through → 403.
+    /// role has no `group` to charge through, or the subject's self-serve binding is disabled or was
+    /// minted by another identity provider → 403.
     Unbound,
     /// The principal id is not a safe self-serve subject (reserved/ambiguous) → 403.
     BadSubject,
@@ -368,12 +394,11 @@ pub(crate) async fn issue_key(
     ttl: Duration,
     refresh: bool,
 ) -> Result<IssuedKey, ExchangeError> {
-    let r = if refresh {
+    if refresh {
         keys.refresh(principal, ttl).await
     } else {
         keys.issue(principal, ttl).await
-    };
-    r.map_err(ExchangeError::MintFailed)
+    }
 }
 
 #[cfg(test)]
