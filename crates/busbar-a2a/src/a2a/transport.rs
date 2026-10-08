@@ -74,7 +74,7 @@ use std::time::Duration;
 
 use busbar_kernel::egress::seam;
 
-use super::fetch::{FetchPolicy, HttpResponse, Pin, Resolver, Transport};
+use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
 use super::relay::{ChunkFlow, RelayTransport, SendFailure, StreamHead};
 use super::verify::CardTransports;
 
@@ -326,9 +326,8 @@ pub(crate) fn pem_certificates(pem: &str) -> Vec<Vec<u8>> {
 /// green.
 struct Hop<'a> {
     url: &'a url::Url,
-    /// The address the guard judged, with the reach it was judged under. The socket goes HERE; see
-    /// the pin below.
-    pin: Pin,
+    /// The address the guard judged. The socket goes HERE; see the pin below.
+    addr: IpAddr,
     headers: &'a [(String, String)],
     body: Option<Vec<u8>>,
 }
@@ -351,7 +350,7 @@ impl ReqwestTransport {
         &self,
         verb: &'a str,
         url: &'a str,
-        pin: Pin,
+        addr: IpAddr,
         headers: &'a [(String, String)],
         body: &'a [u8],
         timeout: Duration,
@@ -372,9 +371,7 @@ impl ReqwestTransport {
             client_identity_ref: self.client_identity_ref,
             trust_anchor_ref: self.trust_anchor_ref,
             timeout,
-            addr: pin.addr,
-            allow_private: pin.allow_private,
-            allow_plaintext: pin.allow_plaintext,
+            addr,
         }
     }
 
@@ -387,13 +384,13 @@ impl ReqwestTransport {
     ) -> Result<HttpResponse, SendFailure> {
         let Hop {
             url,
-            pin,
+            addr,
             headers,
             body,
         } = hop;
         let cap = self.max_body_bytes.saturating_add(1);
         let body = body.unwrap_or_default();
-        let hop = self.pinned_hop(method.as_str(), url.as_str(), pin, headers, &body, timeout);
+        let hop = self.pinned_hop(method.as_str(), url.as_str(), addr, headers, &body, timeout);
 
         // THE HOP, over the HOSTLESS egress seam. The host owns the socket, the pinned client (its own
         // refusing resolver), the verified handshake and the capped read; it hands back the status, the
@@ -428,13 +425,13 @@ impl ReqwestTransport {
 }
 
 impl Transport for ReqwestTransport {
-    fn get(&self, url: &url::Url, pin: Pin) -> Result<HttpResponse, String> {
+    fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String> {
         self.execute(
             "agent card fetch",
             http::Method::GET,
             Hop {
                 url,
-                pin,
+                addr,
                 headers: &[],
                 body: None,
             },
@@ -454,7 +451,7 @@ impl RelayTransport for ReqwestTransport {
         &self,
         http_method: &str,
         url: &url::Url,
-        pin: Pin,
+        addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, SendFailure> {
@@ -472,7 +469,7 @@ impl RelayTransport for ReqwestTransport {
             method,
             Hop {
                 url,
-                pin,
+                addr,
                 headers,
                 body,
             },
@@ -489,7 +486,7 @@ impl RelayTransport for ReqwestTransport {
     fn post_stream(
         &self,
         url: &url::Url,
-        pin: Pin,
+        addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
         on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
@@ -498,7 +495,7 @@ impl RelayTransport for ReqwestTransport {
         let hop = self.pinned_hop(
             "POST",
             url.as_str(),
-            pin,
+            addr,
             headers,
             body,
             RELAY_STREAM_TIMEOUT,

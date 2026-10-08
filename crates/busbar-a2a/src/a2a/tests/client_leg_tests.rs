@@ -799,11 +799,7 @@ fn both_http_bindings_discover_the_card_at_the_well_known_path() {
     #[derive(Default)]
     struct Seen(RefCell<Vec<(String, IpAddr)>>);
     impl crate::a2a::fetch::Transport for Seen {
-        fn get(
-            &self,
-            url: &url::Url,
-            crate::a2a::fetch::Pin { addr, .. }: crate::a2a::fetch::Pin,
-        ) -> Result<HttpResponse, String> {
+        fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String> {
             self.0.borrow_mut().push((url.to_string(), addr));
             Ok(HttpResponse {
                 status: 200,

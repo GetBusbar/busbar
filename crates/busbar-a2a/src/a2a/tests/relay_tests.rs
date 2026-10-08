@@ -601,7 +601,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
             &self,
             _m: &str,
             _u: &url::Url,
-            _a: crate::a2a::fetch::Pin,
+            _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
         ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
@@ -610,7 +610,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
         fn post_stream(
             &self,
             _u: &url::Url,
-            _a: crate::a2a::fetch::Pin,
+            _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
             _c: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
@@ -866,7 +866,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             &self,
             _m: &str,
             _u: &url::Url,
-            _a: crate::a2a::fetch::Pin,
+            _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
         ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
@@ -875,7 +875,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
         fn post_stream(
             &self,
             _u: &url::Url,
-            _a: crate::a2a::fetch::Pin,
+            _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
             _c: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
@@ -1047,7 +1047,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             &self,
             _m: &str,
             _u: &url::Url,
-            _a: crate::a2a::fetch::Pin,
+            _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
         ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
@@ -1062,7 +1062,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
         fn post_stream(
             &self,
             _u: &url::Url,
-            _a: crate::a2a::fetch::Pin,
+            _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
             _c: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),

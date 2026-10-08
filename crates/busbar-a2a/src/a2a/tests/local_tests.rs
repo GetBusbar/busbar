@@ -426,7 +426,7 @@ fn seam() -> std::sync::Arc<dyn super::super::relay::RelaySeam> {
             &self,
             _http_method: &str,
             _url: &url::Url,
-            _addr: crate::a2a::fetch::Pin,
+            _addr: IpAddr,
             _headers: &[(String, String)],
             _body: &[u8],
         ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
@@ -435,7 +435,7 @@ fn seam() -> std::sync::Arc<dyn super::super::relay::RelaySeam> {
         fn post_stream(
             &self,
             _url: &url::Url,
-            _addr: crate::a2a::fetch::Pin,
+            _addr: IpAddr,
             _headers: &[(String, String)],
             _body: &[u8],
             _on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),

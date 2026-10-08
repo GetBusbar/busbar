@@ -87,6 +87,8 @@
 //! the response-side sibling of the request reader both ingresses share — and an answer that names
 //! a different request is [`RelayRefusal::Uncorrelated`], never a result.
 
+use std::net::IpAddr;
+
 use super::creds::{Lease, LeaseError};
 use super::fetch::{FetchPolicy, FetchRefusal, HttpResponse, Resolver};
 use super::task::TaskState;
@@ -110,7 +112,7 @@ pub(crate) trait RelayTransport: Send + Sync {
         &self,
         http_method: &str,
         url: &url::Url,
-        pin: super::fetch::Pin,
+        addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, SendFailure>;
@@ -125,7 +127,7 @@ pub(crate) trait RelayTransport: Send + Sync {
     fn post_stream(
         &self,
         url: &url::Url,
-        pin: super::fetch::Pin,
+        addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
         on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
@@ -1780,7 +1782,7 @@ fn relay_once(
     let sent = seam.transport().send(
         request.http_method,
         &url,
-        super::fetch::Pin::judged(pin.addr(), call.policy.guard()),
+        pin.addr(),
         &request.headers,
         &request.body,
     );
@@ -2294,7 +2296,7 @@ fn relay_stream_once(
         };
         let streamed = seam.transport().post_stream(
             &url,
-            super::fetch::Pin::judged(pin.addr(), call.policy.guard()),
+            pin.addr(),
             &request.headers,
             &request.body,
             &mut on_chunk,

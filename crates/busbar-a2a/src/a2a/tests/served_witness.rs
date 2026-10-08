@@ -163,7 +163,7 @@ impl RelayTransport for NeverDialled {
         &self,
         _m: &str,
         _u: &url::Url,
-        _a: crate::a2a::fetch::Pin,
+        _a: IpAddr,
         _h: &[(String, String)],
         _b: &[u8],
     ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
@@ -172,7 +172,7 @@ impl RelayTransport for NeverDialled {
     fn post_stream(
         &self,
         _u: &url::Url,
-        _a: crate::a2a::fetch::Pin,
+        _a: IpAddr,
         _h: &[(String, String)],
         _b: &[u8],
         _c: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),

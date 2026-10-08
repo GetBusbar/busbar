@@ -124,7 +124,7 @@ fn a_mutual_tls_peer_refuses_a_card_fetch_that_presents_no_client_certificate() 
         .trusting_root(server_ca.as_bytes())
         .get(
             &url("https", addr.port(), "/.well-known/agent-card.json"),
-            super::transport_tests::reaching(LOOPBACK),
+            LOOPBACK,
         )
         .expect_err(
             "a peer that demands a client certificate must not serve a card to a client \
@@ -161,7 +161,7 @@ fn a_mutual_tls_peer_accepts_the_card_fetch_when_the_registration_names_a_client
         .presenting(identity)
         .get(
             &url("https", addr.port(), "/.well-known/agent-card.json"),
-            super::transport_tests::reaching(LOOPBACK),
+            LOOPBACK,
         )
         .expect("the peer demands a client certificate and the registration names one");
 
@@ -297,7 +297,7 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
     for (agent, at) in [("planner", &planner_url), ("payments", &payments_url)] {
         let resp = live
             .for_agent(agent)
-            .get(at, super::transport_tests::reaching(LOOPBACK))
+            .get(at, LOOPBACK)
             .expect("a registration's own certificate is accepted by its own peer");
         assert_eq!(resp.status, 200);
     }
@@ -306,7 +306,7 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
     for (agent, at) in [("planner", &payments_url), ("payments", &planner_url)] {
         let _err = live
             .for_agent(agent)
-            .get(at, super::transport_tests::reaching(LOOPBACK))
+            .get(at, LOOPBACK)
             .expect_err("a registration's certificate must not authenticate at another's peer");
     }
 
@@ -314,7 +314,7 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
     // mTLS peer that is a refusal, which is the honest outcome the first test in this file pins.
     let _err = live
         .for_agent("an-agent-that-named-no-identity")
-        .get(&planner_url, super::transport_tests::reaching(LOOPBACK))
+        .get(&planner_url, LOOPBACK)
         .expect_err(
             "no identity means no certificate to present, and a mutual-TLS peer refuses that",
         );

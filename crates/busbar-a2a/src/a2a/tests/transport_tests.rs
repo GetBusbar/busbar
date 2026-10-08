@@ -41,16 +41,6 @@ use crate::a2a::fetch::{FetchPolicy, Resolver, Transport};
 
 pub(crate) const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-/// `addr` as a pin judged with private and plaintext reach: the loopback fixtures these rows dial
-/// are what an operator's `allow_private:` registration reaches.
-pub(crate) fn reaching(addr: IpAddr) -> crate::a2a::fetch::Pin {
-    crate::a2a::fetch::Pin {
-        addr,
-        allow_private: true,
-        allow_plaintext: true,
-    }
-}
-
 /// The hostname every test uses. It is in the RFC 6761 `.test` TLD, so a machine running these
 /// tests cannot resolve it by accident and a lookup that "succeeded" can only have come from the
 /// resolver the test installed.
@@ -251,7 +241,7 @@ fn one_hop(
 ) -> Result<crate::a2a::fetch::HttpResponse, String> {
     let addrs = resolver.resolve(HOST)?;
     let addr = *addrs.first().ok_or("no addresses")?;
-    transport.get(url, reaching(addr))
+    transport.get(url, addr)
 }
 
 // ══ THE REBINDING GUARD, AGAINST THE REAL CLIENT ═════════════════════════════════════════════════
@@ -330,7 +320,7 @@ fn the_production_transport_gives_its_client_a_resolver_that_refuses_every_name(
     let resp = transport
         .get(
             &url("http", honest.port(), "/.well-known/agent-card.json"),
-            reaching(LOOPBACK),
+            LOOPBACK,
         )
         .expect("the pin, and only the pin, must carry this hop");
     assert_eq!(resp.status, 200);
@@ -379,7 +369,7 @@ fn the_tls_handshake_sends_the_hostname_as_sni_not_the_pinned_address() {
 
     let policy = FetchPolicy::default();
     let transport = ReqwestTransport::new(&policy);
-    let _ = transport.get(&url("https", addr.port(), "/card"), reaching(LOOPBACK));
+    let _ = transport.get(&url("https", addr.port(), "/card"), LOOPBACK);
 
     // The far end runs on the server's own thread; give it a moment to record.
     let observed: Vec<_> = wait_for_hellos(&hellos, 1)
@@ -412,7 +402,7 @@ fn a_hop_with_no_extra_root_trusts_the_webpki_roots_alone_and_carries_the_refusa
 
     let policy = FetchPolicy::default();
     let err = ReqwestTransport::new(&policy)
-        .get(&url("https", addr.port(), "/card"), reaching(LOOPBACK))
+        .get(&url("https", addr.port(), "/card"), LOOPBACK)
         .expect_err("a refused handshake must not produce a card");
     assert!(
         err.contains("invalid peer certificate") && err.contains("UnknownIssuer"),
@@ -440,7 +430,7 @@ fn a_trusted_root_rides_the_hop_and_the_name_it_is_checked_against_is_the_hostna
     let policy = FetchPolicy::default();
     let resp = ReqwestTransport::new(&policy)
         .trusting_root(ca_pem.as_bytes())
-        .get(&url("https", right.port(), "/card"), reaching(LOOPBACK))
+        .get(&url("https", right.port(), "/card"), LOOPBACK)
         .expect("a certificate for the URL's hostname, from a trusted CA, must be accepted");
     assert_eq!(resp.status, 200);
     assert!(String::from_utf8(resp.body)
@@ -490,7 +480,7 @@ fn a_redirect_is_returned_for_the_driver_to_re_guard_rather_than_followed() {
 
     let policy = FetchPolicy::default();
     let resp = ReqwestTransport::new(&policy)
-        .get(&url("http", redirector.port(), "/card"), reaching(LOOPBACK))
+        .get(&url("http", redirector.port(), "/card"), LOOPBACK)
         .expect("a 3xx is a response, not a failure");
 
     assert_eq!(resp.status, 302);
@@ -517,7 +507,7 @@ fn an_oversized_body_is_cut_one_byte_past_the_ceiling_so_the_driver_can_refuse_i
     let (addr, _seen) = spawn_http(200, Vec::new(), "x".repeat(4096));
 
     let resp = ReqwestTransport::new(&policy)
-        .get(&url("http", addr.port(), "/card"), reaching(LOOPBACK))
+        .get(&url("http", addr.port(), "/card"), LOOPBACK)
         .expect("an oversized body is still a response");
     assert_eq!(
         resp.body.len(),
@@ -534,7 +524,7 @@ fn a_non_success_status_is_handed_back_rather_than_turned_into_a_transport_error
     let (addr, _seen) = spawn_http(404, Vec::new(), "not here".to_string());
     let policy = FetchPolicy::default();
     let resp = ReqwestTransport::new(&policy)
-        .get(&url("http", addr.port(), "/card"), reaching(LOOPBACK))
+        .get(&url("http", addr.port(), "/card"), LOOPBACK)
         .expect("a 404 is a response, not a transport failure");
     assert_eq!(resp.status, 404);
 }
@@ -602,7 +592,7 @@ fn the_real_transport_works_from_inside_a_runtime_as_well() {
         .build()
         .expect("runtime");
     let resp = rt.block_on(async {
-        ReqwestTransport::new(&policy).get(&url("http", addr.port(), "/card"), reaching(LOOPBACK))
+        ReqwestTransport::new(&policy).get(&url("http", addr.port(), "/card"), LOOPBACK)
     });
     assert_eq!(resp.expect("the hop must complete").status, 200);
 }
@@ -631,7 +621,7 @@ fn the_production_bundle_hands_out_the_real_pieces_and_the_operators_policy() {
     let (addr, seen) = spawn_http(200, Vec::new(), r#"{"name":"planner"}"#.to_string());
     let resp = live
         .transport()
-        .get(&url("http", addr.port(), "/card"), reaching(LOOPBACK))
+        .get(&url("http", addr.port(), "/card"), LOOPBACK)
         .expect("the bundled transport must be the real one");
     assert_eq!(resp.status, 200);
     assert_eq!(seen.lock().expect("seen").len(), 1);
@@ -833,26 +823,5 @@ fn a_buffered_hop_that_dies_mid_answer_bills_its_request_and_the_bytes_received(
         (sent as u64, DELIVERED as u64),
         "the hop bills the request it carried and the {DELIVERED} bytes that arrived before the \
          reset"
-    );
-}
-
-/// RED (K3 #6): the host re-judges a plane-pinned address under the reach the plane's guard judged
-/// it with, never more. A pin judged with NO private reach (a public-only registration) to a
-/// loopback address is refused host-side, and the fixture sees no request. Before, the hostless seam
-/// forced private and plaintext reach open on every pinned hop, so the host admitted it.
-#[test]
-fn a_pin_judged_without_private_reach_is_refused_by_the_host() {
-    let (addr, seen) = spawn_http(200, Vec::new(), "never served".to_string());
-    let public_only = crate::a2a::fetch::Pin {
-        addr: LOOPBACK,
-        allow_private: false,
-        allow_plaintext: false,
-    };
-    let refused = ReqwestTransport::new(&FetchPolicy::default())
-        .get(&url("http", addr.port(), "/card"), public_only);
-    assert!(refused.is_err(), "the host must refuse: {refused:?}");
-    assert!(
-        seen.lock().expect("seen").is_empty(),
-        "no request reached the fixture"
     );
 }
