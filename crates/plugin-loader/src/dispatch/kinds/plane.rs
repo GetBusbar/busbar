@@ -62,9 +62,10 @@ use crate::dispatch::{
     Frame, InFrame, Kind, OutFrame,
 };
 
-/// The plane tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
-/// GROWTH RULE, `abi::mechanism::door::tail_read_len`).
-const PLANE_TAIL_FROZEN: usize = std::mem::size_of::<PlaneTail>();
+/// The plane tail's last frozen size (THE KIND TAIL GROWTH RULE,
+/// `abi::mechanism::door::tail_read_len`): the tail before `stream_ceiling_secs` was appended, so a
+/// tail that ends there loads and states no ceiling.
+const PLANE_TAIL_FROZEN: usize = std::mem::offset_of!(PlaneTail, stream_ceiling_secs);
 
 /// The plane kind.
 #[derive(Debug, Clone, Copy)]
@@ -169,6 +170,9 @@ pub struct ServedFacts {
     pub caller_credential_refusal: &'static str,
     /// The tail's `TAIL_*` flags (the fallback catch-all, probes, the gate-first hook order).
     pub tail_flags: u32,
+    /// The tail's `stream_ceiling_secs`: how long a unit whose `arrive` states `ROUTE_STREAM` may
+    /// run once its route is known; `0` = no ceiling.
+    pub stream_ceiling_secs: u64,
 }
 
 /// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
@@ -325,6 +329,7 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .collect(),
             caller_credential_refusal: kept(tail.caller_credential_refusal),
             tail_flags: tail.flags,
+            stream_ceiling_secs: tail.stream_ceiling_secs,
         },
     })
 }

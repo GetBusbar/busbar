@@ -290,6 +290,7 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     admin_routes: std::ptr::null(),
     admin_routes_len: 0,
     admin_openapi: NO_BLOB,
+    stream_ceiling_secs: 0,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {

@@ -7,7 +7,7 @@
 //! gets with the ONE auth call's fields after the plane's, the success recorded and its budget unit
 //! spent); the step-24 Disposition (529 fails over with its Retry-After, 401 takes the member down,
 //! a caller fault is relayed); the exhaustion terminal's Retry-After floor; the attempt cap; the
-//! unit deadline stamped from the pool's request timeout.
+//! unit deadline stamped from the plane's stated stream ceiling.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -519,6 +519,7 @@ fn rig(
         pools: HashMap::from([(POOL.to_string(), pool)]),
         routes,
         stream_ceiling_secs: 600,
+        stated_ceiling_secs: 0,
         error_body_max: DEFAULT_ERROR_BODY_MAX,
     };
     Rig {
@@ -902,24 +903,43 @@ async fn the_attempt_cap_and_a_refused_dial_fail_over() {
     );
 }
 
-/// Q5: the unit's deadline is stamped from the pool's request timeout (non-zero), and from the
-/// stream ceiling for a streamed answer.
+/// THE UNIT'S DEADLINE IS THE PLANE'S STATED STREAM CEILING ALONE (ARCHITECT ruling 2026-10-07,
+/// STREAM-CEILING, superseding Q5's pool timeout, which production never stamped): a streamed answer
+/// on a plane that states a ceiling is bounded by it from the moment the route is known, and through
+/// the far end the driver reads it from; a buffered answer, and any answer on a plane that states
+/// none, has no unit deadline (the walk's budget and the deployment's stream ceiling bound the far
+/// end's reads, as before). RED: the pool's request timeout stamped every unit, and a plane's
+/// stated ceiling was read nowhere.
 #[test]
-fn the_unit_deadline_is_the_pools_request_timeout() {
-    let r = rig(&[("a.test", Script::Silent)], OnExhausted::Status503, None);
+fn the_unit_deadline_is_the_planes_stated_stream_ceiling_alone() {
+    let mut r = rig(&[("a.test", Script::Silent)], OnExhausted::Status503, None);
     let now = 5_000_000_000;
-    assert_eq!(
-        r.egress.deadline_ns(&route(), now),
-        now + 30 * 1_000_000_000
-    );
     let streamed = UnitRoute {
         wants_stream: true,
         ..route()
     };
+    assert_eq!(r.egress.deadline_ns(&route(), now), 0, "a buffered answer");
+    assert_eq!(
+        r.egress.deadline_ns(&streamed, now),
+        0,
+        "a plane that states no ceiling: no deadline, as the previous release"
+    );
+    r.egress.stated_ceiling_secs = 600;
+    assert_eq!(
+        r.egress.deadline_ns(&route(), now),
+        0,
+        "still none unbuffered"
+    );
     assert_eq!(
         r.egress.deadline_ns(&streamed, now),
         now + 600 * 1_000_000_000
     );
+    assert_eq!(
+        FarEnd::deadline_ns(&r.egress.unit(streamed), now),
+        now + 600 * 1_000_000_000,
+        "the far end states it to the driver"
+    );
+    assert_eq!(FarEnd::deadline_ns(&r.egress.unit(route()), now), 0);
 }
 
 /// THE HEAD WORDS (P1 HEAD-FIELDS): the plane's verb and the joined path, its query kept, reach the

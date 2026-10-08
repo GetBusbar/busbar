@@ -1270,6 +1270,9 @@ pub(crate) fn compose_planes_over(
         )
         .map_err(|e| format!("{instance}: {e}"))?
         .map(|b| b.bench_below_trip_threshold);
+        // THE PLANE'S STATED STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING), off its
+        // tail: the deadline of its streamed units once their route is known; `0` = none.
+        facts.stream_ceiling_secs = served_facts.stream_ceiling_secs;
         let pools = DoorPools::of(section);
         // THE EGRESS, SEALED (THE DESIGN §6 steps 2-3): each member's route resolved and its
         // credential bound by the auth plugin serving its style, over the connector its needs were
@@ -2729,6 +2732,9 @@ impl<'d> DoorFar<'d, '_> {
                     pool: egress_pool(self.steps.plane(), &routed),
                     caller_credential: self.credential.clone(),
                     once: self.steps.once(),
+                    // The plane's `ROUTE_STREAM`: the stream ceiling bounds the send, and the
+                    // plane's stated one, if any, is the unit's deadline.
+                    wants_stream: self.steps.streamed(),
                     ..UnitRoute::default()
                 }))
             })
@@ -2745,6 +2751,10 @@ fn spent() -> Pick {
 }
 
 impl FarEnd for DoorFar<'_, '_> {
+    fn deadline_ns(&self, now_ns: u64) -> u64 {
+        self.far().map_or(0, |far| far.deadline_ns(now_ns))
+    }
+
     /// The route the unit named, as its in-session hooks are scoped: the pool the walk is keyed by
     /// (its label, or a direct route's lane) and the entry its hooks are filed under (the label, or
     /// the direct route's member).
@@ -3044,7 +3054,12 @@ impl IngressReply {
                 let whole = collect(body, unit).await;
                 return stated(unlengthed(h), Body::from(whole));
             }
-            Ok(Some(h)) => return stated(h, Body::new(ReplyBody(body, Some(unit), trailers))),
+            // A STREAMED ANSWER: the unit runs on, on its own task, once its head is stated
+            // (ARCHITECT ruling 2026-10-07, STREAM-CEILING); the body only drains what it writes.
+            Ok(Some(h)) => {
+                let running = Running(tokio::spawn(unit));
+                return stated(h, Body::new(ReplyBody(body, Some(running), trailers)));
+            }
             Ok(None) => unit.await,
             Err(rendered) => match head.try_recv() {
                 // The unit ended in the poll that stated its head: a whole answer is every piece it
@@ -3145,12 +3160,26 @@ fn stated((status, fields): Head, body: Body) -> Response {
     response
 }
 
+/// A UNIT RUNNING ON ITS OWN TASK after its head (ARCHITECT ruling 2026-10-07, STREAM-CEILING): it
+/// is driven whether or not its body is read, so a caller that stops reading with its socket open
+/// leaves the unit's own deadline able to fire (a plane's stated stream ceiling) instead of freezing
+/// it until the socket closes. Dropping it aborts the task, which drops the unit there: the reply's
+/// body was dropped, so its caller is gone, and the unit ends on the driver's client-drop path as
+/// it did when the body owned it.
+struct Running(tokio::task::JoinHandle<Option<Rendered>>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// The response body: the pieces the unit writes, in order, until its caller side is dropped; the
-/// unit itself, driven as the body is read, while it runs; and the trailers a framer's close
-/// rendered, after the last piece, where the answer has them.
+/// unit's task, which the body outlives no further than the unit's own end; and the trailers a
+/// framer's close rendered, after the last piece, where the answer has them.
 struct ReplyBody(
     mpsc::Receiver<Bytes>,
-    Option<DrivenUnit>,
+    Option<Running>,
     Option<oneshot::Receiver<axum::http::HeaderMap>>,
 );
 
@@ -3163,17 +3192,23 @@ impl http_body::Body for ReplyBody {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
         let this = self.get_mut();
-        if let Some(unit) = &mut this.1 {
-            if unit.as_mut().poll(cx).is_ready() {
-                this.1 = None;
-            }
-        }
         match this.0.poll_recv(cx) {
             std::task::Poll::Ready(Some(bytes)) => {
                 std::task::Poll::Ready(Some(Ok(http_body::Frame::data(bytes))))
             }
             std::task::Poll::Pending => std::task::Poll::Pending,
             std::task::Poll::Ready(None) => {
+                // The caller side is gone with the unit: the body ends once the unit's task has,
+                // and a unit that panicked panics here, where the body that drove it used to.
+                if let Some(running) = &mut this.1 {
+                    match std::future::Future::poll(std::pin::Pin::new(&mut running.0), cx) {
+                        std::task::Poll::Pending => return std::task::Poll::Pending,
+                        std::task::Poll::Ready(Err(e)) if e.is_panic() => {
+                            std::panic::resume_unwind(e.into_panic())
+                        }
+                        std::task::Poll::Ready(_) => this.1 = None,
+                    }
+                }
                 let Some(trailers) = &mut this.2 else {
                     return std::task::Poll::Ready(None);
                 };

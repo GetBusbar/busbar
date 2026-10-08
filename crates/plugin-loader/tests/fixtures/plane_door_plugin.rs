@@ -123,6 +123,7 @@ const TAIL: &PlaneTail = &PlaneTail {
         fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
         flags: 0,
     },
+    stream_ceiling_secs: 0,
 };
 
 /// Every generation's claims: the request door, and with a public URL the session door.

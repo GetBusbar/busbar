@@ -2559,6 +2559,7 @@ struct bb_plane_PlaneTail {
     const bb_plane_AdminRoute *admin_routes;
     size_t admin_routes_len;
     bb_mech_Blob admin_openapi;
+    uint64_t stream_ceiling_secs;
 };
 
 /* One path the built plane answers on. One route — a verb, a target and whether the target is */
@@ -4872,7 +4873,7 @@ BB_ASSERT(offsetof(bb_plane_TrustKey, flags) == 20, "bb_plane_TrustKey.flags: of
 BB_ASSERT(offsetof(bb_plane_TrustKey, default_) == 24, "bb_plane_TrustKey.default_: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms) == 40, "bb_plane_TrustKey.mechanisms: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms_len) == 48, "bb_plane_TrustKey.mechanisms_len: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneTail) == 400, "bb_plane_PlaneTail: size");
+BB_ASSERT(sizeof(bb_plane_PlaneTail) == 408, "bb_plane_PlaneTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneTail) == 8, "bb_plane_PlaneTail: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, head) == 0, "bb_plane_PlaneTail.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, flags) == 8, "bb_plane_PlaneTail.flags: offset");
@@ -4915,6 +4916,7 @@ BB_ASSERT(offsetof(bb_plane_PlaneTail, caller_credential_refusal) == 344, "bb_pl
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_routes) == 360, "bb_plane_PlaneTail.admin_routes: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_routes_len) == 368, "bb_plane_PlaneTail.admin_routes_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_openapi) == 376, "bb_plane_PlaneTail.admin_openapi: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, stream_ceiling_secs) == 400, "bb_plane_PlaneTail.stream_ceiling_secs: offset");
 BB_ASSERT(sizeof(bb_plane_Claim) == 56, "bb_plane_Claim: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_Claim) == 8, "bb_plane_Claim: alignment");
 BB_ASSERT(offsetof(bb_plane_Claim, verb) == 0, "bb_plane_Claim.verb: offset");
