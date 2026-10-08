@@ -210,3 +210,43 @@ fn a_module_no_row_answers_is_not_on_the_axis() {
     };
     assert_eq!(refused, "no `kind: export` plugin answers to 'nothing'");
 }
+
+/// DISCOVERY AT BOOT ON THE EXPORT AXIS (`abi::mechanism::lifecycle` READY): an export door that
+/// states `ready` is awaited when its instance is opened to deliver, as a store's and an auth door's
+/// are. A refusal refuses the open with the plugin's own text; a READY answer opens it. The instance
+/// `check` opens to judge a configuration (it has no connector) is never asked.
+#[test]
+fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
+    use crate::dispatch::ready::ready_plugins::export::{door, NAME, READIES};
+    use std::sync::atomic::Ordering;
+    let registry = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
+        .expect("the linked witness admits");
+    let rows =
+        ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
+    let refused = serde_json::json!({ "ready": "err:the target is refused" });
+    let before = READIES.load(Ordering::SeqCst);
+    let _ = rows.check(
+        NAME,
+        CHECK_PHASE_INSTANCES,
+        &[("audit".into(), refused.clone())],
+    );
+    assert_eq!(
+        READIES.load(Ordering::SeqCst),
+        before,
+        "check's instance is never asked"
+    );
+    let failed = rows
+        .open(NAME, "export.audit", &refused)
+        .err()
+        .expect("a refused ready refuses the open");
+    assert!(failed.contains("the target is refused"), "{failed}");
+    assert_eq!(READIES.load(Ordering::SeqCst), before + 1);
+    rows.open(
+        NAME,
+        "export.audit",
+        &serde_json::json!({ "ready": "fine" }),
+    )
+    .expect("a READY ready opens the sink");
+    assert_eq!(READIES.load(Ordering::SeqCst), before + 2);
+}

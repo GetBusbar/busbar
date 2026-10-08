@@ -160,7 +160,7 @@ impl SegmentBackend for MemorySegment {
 
     fn sync(&mut self) -> io::Result<()> {
         // Nothing underneath to flush to. Saying so plainly is better than pretending: a
-        // memory-buffered log's durability is whatever the store it ships to provides.
+        // memory-buffered log is not durable; what outlives the process is only what its shipper keeps.
         Ok(())
     }
 

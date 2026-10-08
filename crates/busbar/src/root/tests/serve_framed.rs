@@ -140,6 +140,63 @@ async fn a_final_status_the_claims_numbering_does_not_have_never_reaches_the_fra
     assert!(t.get("frame-message").is_none(), "no final status crossed");
 }
 
+/// A framer door that answers `lp` and is never crossed: what [`super::serve_framed::stream_framer`]
+/// judges is its Statement's facts alone.
+struct Uncrossed(busbar_core_connector::framer::DoorFacts);
+
+impl busbar_core_connector::framer::FramerDoor for Uncrossed {
+    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+        &self.0
+    }
+
+    fn cross(
+        &self,
+        _call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        unreachable!("judging which framer frames a stream crosses nothing")
+    }
+}
+
+/// A door answering `lp`, its claim rows stating a stream on each claim in `duplex`.
+fn lp_door(
+    duplex: Vec<&'static str>,
+) -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
+    std::sync::Arc::new(Uncrossed(busbar_core_connector::framer::DoorFacts {
+        name: "lp".into(),
+        claims: vec!["lp"],
+        role: busbar_contract::abi::transport::ROLE_FRAMER,
+        composes_over: Vec::new(),
+        status_rows: Vec::new(),
+        duplex,
+    }))
+}
+
+/// WHICH CLAIM IS STREAM-FRAMED IS JUDGED PER CLAIM OFF THE STATEMENT (ARCHITECT ruling on Q128 U7
+/// over 4l, 2026-10-07), never by a transport's name: a claim whose carrier has a framer but whose
+/// rows state no upgrade and no session is a request and its answer, served on the data listener's
+/// own route, so it is NOT stream-framed; the same framer whose rows state the claim a stream frames
+/// it. RED: judged by whether a framer answers the carrier alone, the first arm frames it.
+#[test]
+fn a_claim_stating_no_stream_is_not_stream_framed_though_its_carrier_has_a_framer() {
+    let plain = lp_door(Vec::new());
+    assert!(
+        super::serve_framed::stream_framer("lp", |c| (c == "lp").then(|| plain.clone())).is_none(),
+        "a claim stating neither an upgrade nor a session is the data listener's to frame"
+    );
+    let streamed = lp_door(vec!["lp"]);
+    let framer =
+        super::serve_framed::stream_framer("lp", |c| (c == "lp").then(|| streamed.clone()));
+    assert!(
+        framer.is_some_and(|d| std::sync::Arc::ptr_eq(&d, &streamed)),
+        "a claim its framer's rows state a stream is framed by that framer"
+    );
+    assert!(
+        super::serve_framed::stream_framer("other", |c| (c == "lp").then(|| streamed.clone()))
+            .is_none(),
+        "a carrier no framer answers is framed by none"
+    );
+}
+
 /// THE LINE CARRIER IS NEVER FRAMED (SEAM-4l regression): a claim over the root's own line carrier
 /// is served as the line arrived, even where a framer claims that carrier's name (the stdio
 /// transport's framer does), while any other carrier such a framer answers is still framed by it.
@@ -161,12 +218,14 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
     let door: Arc<dyn FramerDoor> = Arc::new(Claims(DoorFacts {
         name: "claims-the-line".into(),
         claims: vec![line, "framed"],
+        role: busbar_contract::abi::transport::ROLE_FRAMER,
         composes_over: Vec::new(),
         status_rows: Vec::new(),
+        duplex: vec![line, "framed"],
     }));
     let any = |_: &str| Some(Arc::clone(&door));
     assert!(
-        super::serve_framed::stream_framer(line, super::DATA_CARRIER, any).is_some(),
+        super::serve_framed::stream_framer(line, any).is_some(),
         "the hazard exists: a framer claims the line carrier's name"
     );
     assert!(
