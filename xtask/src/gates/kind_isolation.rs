@@ -1692,6 +1692,15 @@ fn precedence(matcher: &str) -> u8 {
     }
 }
 
+/// The PLUGIN kind a package name resolves to — one of the seven ([`truths::PLUGIN_KINDS`]) — or
+/// `None` for an infra crate, an unknown name, or a name two kinds claim at once. The audit ledger
+/// asks this of every `git+` package in `Cargo.lock` to decide which pinned checkouts are a kind's
+/// crates (`crate::audit_pinned`), so it resolves names through this table and never a second one.
+pub fn plugin_kind(name: &str) -> Option<&'static str> {
+    let (kind, _, ambiguous) = resolve_kind(name);
+    kind.filter(|k| ambiguous.is_empty() && truths::PLUGIN_KINDS.contains(k))
+}
+
 /// Resolve a crate name to its kind. THE MOST SPECIFIC BAND WINS, and two kinds in that band is the
 /// fusion refusal rather than a coin toss.
 fn resolve_kind(name: &str) -> (Option<&'static str>, Vec<String>, Vec<&'static str>) {
@@ -1844,6 +1853,50 @@ pub fn plane_kind_src_roots(cx: &Ctx) -> Result<Vec<String>, String> {
         return Err(
             "no crate under crates/ resolves to a plane-family kind — the plane population is \
              empty, and an empty population is the passing answer to every ban"
+                .to_string(),
+        );
+    }
+    Ok(out)
+}
+
+/// ONE CRATE OF KIND `plane`, as the census reads it — for a sibling gate that owes something per
+/// plane crate and must not keep its own list of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaneKindCrate {
+    /// The package name from `[package] name = …`.
+    pub name: String,
+    /// The manifest's own path, so a finding can name the file.
+    pub manifest: String,
+    /// The keys its `impl PlaneMeta for …` blocks declare (`const KEY: &'static str = "…";`) — the
+    /// plane the crate IS, read off its source rather than its name.
+    pub declared_keys: Vec<String>,
+}
+
+/// THE PLANE-KIND CRATES, DERIVED FROM THE CENSUS: every manifest anywhere in the tree whose crate
+/// resolves to the `plane` kind (the `busbar-plane-` matcher, after any `[[registered]]` override)
+/// and is not an [`OFF_TREE_MANIFESTS`] entry.
+///
+/// The `legacy` kind is NOT in it, although it shares [`Family::Plane`] with `plane` and
+/// [`plane_kind_src_roots`] scans it: a legacy crate is a retiring pre-unification ENGINE matched by
+/// exact name (a closed list no new crate can join), not a plane crate. The plane it serves is
+/// declared by its `busbar-plane-<key>` successor, which is in this population.
+///
+/// `Err` when no crate resolves to `plane`: an empty population is the passing answer to every rule
+/// over it.
+pub fn plane_kind_crates(cx: &Ctx) -> Result<Vec<PlaneKindCrate>, String> {
+    let out: Vec<PlaneKindCrate> = census(cx)?
+        .into_iter()
+        .filter(|c| c.kind == Some("plane"))
+        .map(|c| PlaneKindCrate {
+            name: c.name,
+            manifest: c.manifest,
+            declared_keys: c.declared_keys,
+        })
+        .collect();
+    if out.is_empty() {
+        return Err(
+            "no crate in the tree resolves to the `plane` kind — the plane-crate population is \
+             empty, and an empty population is the passing answer to every rule over it"
                 .to_string(),
         );
     }
@@ -4043,9 +4096,6 @@ struct SourceIndex {
     conformance_dead: BTreeSet<String>,
 }
 
-/// The published conformance suite's macro, as a plugin's battery file invokes it.
-const SUITE_MACRO: &str = "conformance_suite!";
-
 /// `(live, ignored)` `#[test]` entries in a battery file.
 ///
 /// A BATTERY THAT DOES NOT RUN IS NOT A BATTERY. The rule keyed on the file EXISTING and on a
@@ -4057,27 +4107,14 @@ const SUITE_MACRO: &str = "conformance_suite!";
 /// Attributes are read off the BLANKED line, so `#[ignore]` inside a string in the file's own prose
 /// is not an attribute, and an entry's attribute block is the contiguous run of `#[…]` lines around
 /// it — which is where rustfmt puts `#[ignore]`, above or below the `#[test]`.
-///
-/// THE PUBLISHED SUITE IS A BATTERY. A plugin that runs busbar's published conformance suite
-/// invokes [`SUITE_MACRO`] (`busbar_plugin_loader::conformance_suite! { door, cdylib, inputs }`),
-/// which expands to the suite's `#[test]` entries — its both-ways arm and its RED arms, none of them
-/// ignorable from the plugin's side. Each invocation in code (not a comment, not a string) is a live
-/// entry; a file holding none and no live `#[test]` is still a file, not a battery.
 fn live_battery_entries(text: &str) -> (usize, usize) {
     let mut lex = scan::LexState::default();
     let lines: Vec<String> = text
         .lines()
-        .map(|l| {
-            let (blanked, comment_at) = scan::blank_code_marking(l, &mut lex);
-            match comment_at {
-                Some(at) => blanked.chars().take(at).collect(),
-                None => blanked,
-            }
-        })
+        .map(|l| scan::blank_code(l, &mut lex))
         .collect();
     let is_attr = |l: &String| l.trim_start().starts_with("#[");
     let (mut live, mut ignored) = (0usize, 0usize);
-    live += lines.iter().filter(|l| l.contains(SUITE_MACRO)).count();
     for (i, l) in lines.iter().enumerate() {
         // An async entry is an entry: `#[tokio::test]` (with or without its runtime arguments) is a
         // test `cargo test` runs exactly as it runs `#[test]`.

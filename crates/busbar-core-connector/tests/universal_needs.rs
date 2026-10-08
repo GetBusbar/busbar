@@ -165,6 +165,12 @@ fn open_stated(
                 composes_over: stated.composes_over,
                 ported: stated.ported,
                 status_rows: stated.status_rows,
+                duplex: stated
+                    .upgrades
+                    .iter()
+                    .chain(&stated.sessions)
+                    .copied()
+                    .collect(),
             },
             plugin,
         }),

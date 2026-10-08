@@ -78,6 +78,11 @@ pub struct DoorFacts {
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has; a stream's final status is judged against its claim's ([`crate::framed_stream`]).
     pub status_rows: Vec<(u32, u32, u32)>,
+    /// THE DUPLEX CLAIMS: the ones a stream rides, read off the claim rows of its Statement
+    /// (ARCHITECT ruling Q128 U7): each whose unit 0 opens at an UPGRADE (`UNIT0_UPGRADE`) or that
+    /// carries a session (`session`). A claim that states neither is a request and its answer, which
+    /// the listener it arrived on frames already; a stream on one of these is this entry's to frame.
+    pub duplex: Vec<&'static str>,
 }
 
 /// A transport entry's table, as the host reaches it: a framer's ops ([`FramerDoor::cross`]) and a
