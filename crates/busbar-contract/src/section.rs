@@ -122,6 +122,15 @@ pub const MODEL_PROTOCOL_KEYS: &[&str] = &["protocol", "dialect"];
 /// A pool's member list, inside its [`RESERVED_POOLS_KEY`] entry.
 pub const POOL_MEMBERS_KEY: &str = "members";
 
+/// A member written as an object inside a pool's [`POOL_MEMBERS_KEY`] list: the entry it names.
+pub const POOL_MEMBER_NAME_KEY: &str = "name";
+
+/// A member's TIER inside a pool's [`POOL_MEMBERS_KEY`] list (`{name, tier}`), the core-owned
+/// per-member `tier` (`BUSBAR-1.6.0.md` l.4196 (b), l.4202; R2-G l.4285): an unsigned integer,
+/// the walk taking the lowest tier that can take the request. Core-owned: the kernel reads it and a
+/// plane is handed the member's bare name.
+pub const POOL_MEMBER_TIER_KEY: &str = "tier";
+
 /// THE MEMBER-TARGET PATH of a need's `target_from` (ARCHITECT Q-L3B-ROUTES: a door plane's member
 /// routes come from its own section): `settings.*.<key>`, where `*` stands for EACH registration of
 /// the section, names every member's own target — its registration's `<key>` — rather than one
