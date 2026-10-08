@@ -36,11 +36,20 @@
 #            here instead of silent.
 #
 #   ARM 2 -- BILLING ON with a card that does not price the class the call hits. This plane declares
-#            exactly one class, `bytes` (`crates/busbar-plane-a2a/src/meta.rs:33-42`), and the card
-#            carries no entry for it -- it cannot, since `rate_card:` keys are validated against
-#            `models:` (see h2-class-price.sh, which asks that question directly). So EVERY served
-#            a2a call on a billing-ON node hits an unpriced class, and #42 says every one of them
-#            must be refused rather than billed zero for what it moved.
+#            exactly one class, `bytes` (`crates/busbar-plane-a2a/src/meta.rs:33-42`), and arm 2's
+#            card names the agent's lane and NO `bytes` entry. #42 says such a node must not bill the
+#            class zero for what it moved; #77(5) says it refuses at BOOT, and that is what 1.6.0
+#            does ("agents.rate_card does not configure billable unit(s) bytes declared by this
+#            plane; add them (0 to make them free)").
+#
+#            CORRECTED (FLIP-A2A, against the coordinator's rule: a rig dispute is settled by the
+#            published v1.5.5 binary). Since 5305ad6ff0 the rigs' DEFAULT card is the plane's own and
+#            names `bytes` at an explicit 0 -- a price, "0 to make them free" -- and arm 2 still booted
+#            on it, so it asked an unpriced-class question of a node whose class was priced, and read
+#            the served 200 as a defect. v1.5.5 (sha256 84bde0a0...aaf80e7) cannot answer for this
+#            plane at all: it refuses this rig's config at boot, "unknown field `agents`" -- 1.5.5
+#            shipped no agent plane -- so what decides arm 2 is #42/#77(5), and arm 2 now boots the
+#            card that leaves the class out.
 #
 # WHY THE UNPRICED-CLASS REFUSAL IS NOT THE ONE h2-admit-refusal.sh ALREADY PROVES. That leg refuses
 # a caller who is over a `requests: 1/day` COUNT budget -- a quantity the node HAS and has exhausted.
@@ -74,8 +83,10 @@ arm_off="$(
 )"
 
 # ── ARM 2: BILLING ON, class unpriced ─────────────────────────────────────────────────────────────
+# The card names the agent's lane and leaves its one declared class, `bytes`, out (not at 0).
 arm_on="$(
-  bash -c '
+  H2_RATE_CARD_YAML='  rate_card:
+    agent:probe: { units: {} }' bash -c '
     set -uo pipefail
     here="$1"; work="$2"
     source "${here}/h2-lib.sh"
