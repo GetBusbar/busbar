@@ -928,6 +928,7 @@ ops.scrape|metrics|key
 ops.scrape|metrics|no-ledger-series
 ops.scrape|metrics|none
 ops.scrape|metricshooks|key
+ops.scrape|reload|sink-removed
 ops.scrape|stats|key
 ops.scrape|stats|none
 ops.scrape|v1betamodels
@@ -936,7 +937,7 @@ ops.scrape|v1models|none
 ops.scrape|v1models|openai-fp
 ops.scrape|v1models|x-api-key
 ops.scrape|v1modelsid|retrieve
-plugins.abi|json-contract|store-sqlite
+plugins.abi|json-contract|store-sqlite@1.5-line
 plugins.load|auth-github
 plugins.load|auth-ldap
 plugins.load|auth-oidc

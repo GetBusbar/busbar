@@ -14,7 +14,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use serde_json::Value;
 
-use super::{open, sessions, sessions_contract, Carried, Session};
+use super::{cancel, drive, open, sessions, sessions_contract, Carried, Session};
 use crate::conformance::{
     crossings, dispatcher, exact, load, perturbed, same, Fold, Leg, Recorder, Subject,
 };
@@ -23,15 +23,16 @@ use crate::dispatch::kinds::plane::Plane;
 const PUBLIC_URL: &str = "https://node.example/base";
 
 const SESSIONS: &str = r#"[
-  { "name": "live", "unit": 40, "stream": 40, "claim": 1, "steps": [
+  { "name": "live", "unit": 40, "stream": 40, "claim": 1, "ticket": true, "steps": [
     { "label": "upgrade", "arrive": { "method": "GET", "target": "/upgrade", "body": "hi" },
-      "want": { "outcome": "Ready", "route": { "class": "pool", "entry": "" } } },
+      "want": { "outcome": "Ready", "route_flags": ["session"],
+                "route": { "class": "pool", "entry": "" } } },
     { "label": "uplink", "piece": { "from": "caller", "bytes": "hello" },
       "want": { "outcome": "Ready", "emitted": "", "to_far_end": false, "units": [] } },
-    { "label": "drive", "drive": true, "want": { "outcome": "Ready", "streams": [40] } },
+    { "label": "drive", "drive": true, "want": { "outcome": "Ready", "ready": [40] } },
     { "label": "collect", "piece": { "from": "kernel" },
       "want": { "outcome": "Ready", "emitted": "ping", "done": false } },
-    { "label": "drive again", "drive": true, "want": { "outcome": "Ready", "streams": [] } },
+    { "label": "drive again", "drive": true, "want": { "outcome": "Ready", "ready": [] } },
     { "label": "answer head",
       "piece": { "from": "far_end", "status": 200, "fields": [["x-up", "1"]], "bytes": "abc" },
       "want": { "outcome": "Ready", "emitted": "abc", "status": 200, "done": false,
@@ -43,7 +44,13 @@ const SESSIONS: &str = r#"[
                  "bytes": [{ "repeat": "x", "times": 3 }], "short": "units" },
       "want": { "outcome": "Ready", "emitted": "xxx", "done": true, "units": [[0, 3]] } },
     { "label": "project", "project": { "target": "/upgrade", "body": "hi" },
-      "want": { "outcome": "Ready", "rewritten": false, "body_has": ["hi"] } } ] },
+      "want": { "outcome": "Ready", "rewritten": false, "body_has": ["hi"] } },
+    { "label": "tick", "tick": { "now_ns": 1000 },
+      "want": { "outcome": "Ready", "next": 1001000 } },
+    { "label": "uplink again", "piece": { "from": "caller", "bytes": "again" },
+      "want": { "outcome": "Ready", "to_far_end": false } },
+    { "label": "cancel", "cancel": true, "want": { "outcome": "Ready", "disposition": 3 } },
+    { "label": "drive after cancel", "drive": true, "want": { "outcome": "Ready", "ready": [] } } ] },
   { "name": "request", "unit": 41, "reply_cap": 4, "steps": [
     { "label": "attempt", "piece": { "from": "kernel", "attempt": 1 },
       "want": { "outcome": "Ready", "emitted": "m1", "to_far_end": true, "verb": "POST",
@@ -185,14 +192,14 @@ fn wanting(label: &str, edit: impl Fn(&mut Value)) -> Value {
 }
 
 /// RED: a step that answers otherwise than its want states fails the contract, naming the step:
-/// another count, another outcome, another stream, another body.
+/// another count, another outcome, another ready stream, another body.
 #[test]
 fn red_a_session_step_answering_otherwise_than_wanted_is_refused() {
     let f = fold(&subject(), Leg::Linked);
     for (label, key, v) in [
         ("live answer head", "units", serde_json::json!([[0, 4]])),
         ("live uplink", "outcome", serde_json::json!("Refused")),
-        ("live drive", "streams", serde_json::json!([41])),
+        ("live drive", "ready", serde_json::json!([41])),
         ("live project", "body_has", serde_json::json!(["bye"])),
         ("request attempt", "verb", serde_json::json!("GET")),
         (
@@ -200,6 +207,10 @@ fn red_a_session_step_answering_otherwise_than_wanted_is_refused() {
             "route",
             serde_json::json!({"class": "direct", "entry": "e"}),
         ),
+        ("live upgrade", "route_flags", serde_json::json!(["once"])),
+        ("live tick", "next", serde_json::json!(1000)),
+        ("live cancel", "disposition", serde_json::json!(2)),
+        ("live drive after cancel", "ready", serde_json::json!([40])),
     ] {
         let all = wanting(label, |w| w[key] = v.clone());
         let text = panics(|| sessions_contract(&f, &all));
@@ -345,4 +356,63 @@ mod pieces_on_tickets {
             assert!(st.resumes >= 1, "{label} was never resumed: {}", st.answer);
         }
     }
+}
+
+/// RED: the cancel ends the session only because it names the ticket the session's pieces crossed
+/// on: a session cancelled naming no ticket still has output to collect.
+#[test]
+fn red_a_cancel_naming_no_session_ticket_ends_nothing() {
+    let s = subject();
+    let d = dispatcher();
+    let p = load::<Plane>(&s, Leg::Linked, s.bind(&d, "plane")).expect("the plane fixture loads");
+    let mut r = Recorder::new(crossings(&p));
+    r.line("open", 1, || open(&p, b"{}", Some(PUBLIC_URL.as_bytes())));
+    let all: Value = serde_json::from_str(
+        r#"[{ "name": "bare", "unit": 50, "stream": 50, "claim": 1, "steps": [
+              { "label": "uplink", "piece": { "from": "caller", "bytes": "x" },
+                "want": { "outcome": "Ready" } } ] }]"#,
+    )
+    .expect("JSON");
+    let carried = Carried {
+        member: b"m1".to_vec(),
+        pool: None,
+        caller_ref: None,
+    };
+    let driver = d.driver(&p, 0);
+    sessions(&mut r, (&p, &d, driver), &Session::all(&all), &carried);
+    r.line("cancel", 1, || {
+        cancel(&p, busbar_contract::abi::mechanism::ticket::Ticket::NONE)
+    });
+    r.line("drive", 1, || {
+        let (c, ready) = drive(&p, driver);
+        format!("{} ready={ready:?}", crate::conformance::called(&c))
+    });
+    let f = r.fold();
+    exact(&f).unwrap_or_else(|e| panic!("{e}"));
+    assert!(f[3].answer.ends_with("ready=[50]"), "{}", f[3].answer);
+}
+
+/// RED: a session that cancels but crosses on no ticket of its own is refused at once: its cancel
+/// would name no op.
+#[test]
+fn red_a_cancel_in_a_session_with_no_ticket_is_refused() {
+    let mut all: Value = serde_json::from_str(SESSIONS).expect("the inputs are JSON");
+    all[0]["ticket"] = Value::Bool(false);
+    assert!(panics(|| {
+        Session::all(&all);
+    })
+    .contains("cancels on its ticket"));
+}
+
+/// RED: a tick the inputs say wakes its driver ticket, on a door whose tick wakes nothing, crosses
+/// once where two (the tick and the `drive` the wake calls) are pinned.
+#[test]
+fn red_a_tick_pinned_to_wake_that_wakes_nothing_is_refused() {
+    let s = subject();
+    let mut all: Value = serde_json::from_str(SESSIONS).expect("the inputs are JSON");
+    all[0]["steps"][9]["tick"]["wakes"] = Value::Bool(true);
+    assert_eq!(all[0]["steps"][9]["label"], "tick");
+    let f = fold_over(&s, Leg::Linked, Some(PUBLIC_URL), &all);
+    let e = exact(&f).expect_err("one crossing where two are pinned");
+    assert!(e.contains("live tick") && e.contains("pinned 2"), "{e}");
 }
