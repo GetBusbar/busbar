@@ -18,18 +18,22 @@ fn the_stdio_era_verbs_are_answered_here_and_others_go_to_the_dispatch() {
     assert_eq!(answer["result"]["protocolVersion"], PROTOCOL_VERSION);
     let ping = json!({ "jsonrpc": "2.0", "id": "p", "method": "ping" });
     assert_eq!(era(&ping), Era::Answer(result(&json!("p"), json!({}))));
-    let level = json!({ "jsonrpc": "2.0", "id": 1, "method": "logging/setLevel", "params": { "level": "info" } });
-    assert!(matches!(era(&level), Era::Level(l, _) if l == "info"));
-    let no_level = json!({ "jsonrpc": "2.0", "id": 1, "method": "logging/setLevel", "params": {} });
-    assert!(matches!(era(&no_level), Era::Answer(v) if v["error"]["code"] == INVALID_PARAMS));
-    let sub = json!({ "jsonrpc": "2.0", "id": 1, "method": "resources/subscribe", "params": { "uri": "file:///a" } });
-    assert_eq!(era(&sub), Era::Subscribe("file:///a".to_string()));
-    let long = "x".repeat(MAX_RESOURCE_SUB_URI_BYTES + 1);
-    let sub_long = json!({ "jsonrpc": "2.0", "id": 1, "method": "resources/subscribe", "params": { "uri": long } });
-    assert!(
-        matches!(era(&sub_long), Era::Answer(_)),
-        "a uri past the ceiling is refused"
-    );
+    for (method, params) in [
+        ("logging/setLevel", json!({ "level": "info" })),
+        ("logging/setLevel", json!({})),
+        ("resources/subscribe", json!({ "uri": "file:///a" })),
+        ("resources/unsubscribe", json!({ "uri": "file:///a" })),
+    ] {
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+        let Era::Answer(refusal) = era(&req) else {
+            panic!("{method} is refused here, never dispatched or acknowledged");
+        };
+        assert_eq!(refusal["error"]["code"], -32601, "{method}");
+        assert!(
+            refusal.get("result").is_none(),
+            "{method} is not acknowledged"
+        );
+    }
     let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
     assert_eq!(era(&list), Era::Dispatch);
     // A notification is not a stdio-era request.
@@ -107,22 +111,33 @@ fn a_live_round_issues_its_asks_in_order_and_its_retry_carries_the_answers_and_t
 }
 
 #[test]
-fn the_session_floor_fills_only_the_slot_the_request_left_empty() {
-    let bare = json!({ "params": { "_meta": {} } });
-    assert_eq!(
-        with_level(bare, Some("info"))["params"]["_meta"][META_LOGGING_LEVEL],
-        "info"
-    );
-    let own = json!({ "params": { "_meta": { META_LOGGING_LEVEL: "error" } } });
-    assert_eq!(
-        with_level(own, Some("info"))["params"]["_meta"][META_LOGGING_LEVEL],
-        "error"
-    );
+fn initialize_advertises_neither_subscribe_nor_logging() {
+    let answer = initialize_result(&json!(1));
+    let caps = &answer["result"]["capabilities"];
+    assert!(caps["resources"].get("subscribe").is_none());
+    assert!(caps.get("logging").is_none());
+}
+
+#[test]
+fn a_live_ask_lapses_at_its_timeout_and_a_request_is_livened_a_bounded_number_of_times() {
+    let result = json!({
+        "resultType": "input_required",
+        "inputRequests": { "a": { "method": "roots/list", "params": {} } },
+        "requestState": "sealed"
+    });
+    let mut ask = LiveAsk::of("p", json!({}), b"{}".to_vec(), &result, 0).expect("a round");
+    ask.issue(1).expect("the ask");
+    assert!(!ask.lapsed(u64::MAX), "an ask never armed has no deadline");
+    ask.arm(1_000);
+    assert!(!ask.lapsed(1_000 + ASK_TIMEOUT_NS - 1));
+    assert!(ask.lapsed(1_000 + ASK_TIMEOUT_NS));
+    assert!(may_liven(MAX_LIVE_ASK_ROUNDS - 1));
+    assert!(!may_liven(MAX_LIVE_ASK_ROUNDS));
 }
 
 /// `initialize` naming a session revision this plane carries is answered in it (THE DESIGN section 2,
-/// the mcp bullet: revision by negotiation); naming none, or the stateless one, keeps the stateless
-/// answer.
+/// the mcp bullet: revision by negotiation), and the carrier still declares neither `subscribe` nor
+/// `logging` in it; naming none, or the stateless one, keeps the stateless answer.
 #[test]
 fn initialize_negotiates_a_session_revision() {
     let init = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } });
@@ -131,6 +146,9 @@ fn initialize_negotiates_a_session_revision() {
     };
     assert_eq!(revision, crate::revision::Revision::R2025_06_18);
     assert_eq!(answer["result"]["protocolVersion"], "2025-06-18");
+    let caps = &answer["result"]["capabilities"];
+    assert!(caps["resources"].get("subscribe").is_none());
+    assert!(caps.get("logging").is_none());
     let stateless = json!({ "jsonrpc": "2.0", "id": 2, "method": "initialize", "params": { "protocolVersion": "2026-07-28" } });
     assert_eq!(era(&stateless), Era::Answer(initialize_result(&json!(2))));
 }

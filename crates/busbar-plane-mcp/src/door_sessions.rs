@@ -90,6 +90,8 @@ const STATUS_ACCEPTED: u32 = 202;
 
 /// The most resource subscriptions one owner holds across its sessions.
 const MAX_OWNER_SUBSCRIPTIONS: usize = 256;
+/// The ceiling on one retained subscription uri, in bytes.
+const MAX_RESOURCE_SUB_URI_BYTES: usize = 2048;
 /// The most announced updates a session holds until its stream collects them; past it, the oldest
 /// gives way.
 const MAX_PENDING_UPDATES: usize = 64;
@@ -684,7 +686,7 @@ fn here(
             let Some(uri) = uri else {
                 return invalid("`params.uri` is required: the resource to watch.");
             };
-            if uri.len() > crate::line::MAX_RESOURCE_SUB_URI_BYTES {
+            if uri.len() > MAX_RESOURCE_SUB_URI_BYTES {
                 return invalid(
                     "`params.uri` is longer than a session retains: a subscription is held for \
                      the session, so it is bounded.",
