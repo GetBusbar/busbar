@@ -381,7 +381,19 @@ xtask_gates_invoked_are_registered() {  # $1 = file to scan
 # number is part of the assertion: a test deleted out of the set is as red as a test that failed.
 filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
   local want="$1"; shift
-  local out rc got
+  local out rc got listed
+  if [ "$want" = "auto" ]; then
+    # The expected count is DERIVED, never hard-coded: ask the same cargo argv to LIST the tests its
+    # filter selects (`-- --list`, one "<name>: test" line each) and require the run to pass exactly
+    # that many. A filter that selects nothing lists zero and is still RED (below), so the
+    # vacuity guard keeps its teeth; a test added to the set no longer turns the step red by itself.
+    listed="$("$@" -- --list 2>/dev/null | grep -c ': test$')"
+    if [ "${listed:-0}" -lt 1 ]; then
+      printf 'VACUITY: the filter lists no tests at all, so a green run would prove nothing.\n'
+      return 1
+    fi
+    want="$listed"
+  fi
   out="$("$@" 2>&1)"; rc=$?
   if [ "$rc" -ne 0 ]; then printf '%s\n' "$out"; return "$rc"; fi
   got="$(printf '%s\n' "$out" \
@@ -1243,7 +1255,8 @@ else
       echo "(scripts/plane-delete-test.sh --all reports this same gap as an informational yellow note, never red — see report_coverage)"
       exit 1
     fi
-    echo "all $(printf '%s' "$PLANE_KEYS_LOCKED" | wc -w | tr -d ' ') locked plane(s) are reachable on disk"
+    set -- $PLANE_KEYS_LOCKED
+    echo "all $# locked plane(s) are reachable on disk"
   '
 fi
 end_group
@@ -1259,13 +1272,12 @@ if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   # with the admin service (1.6.0; W4.a absorbed busbar-core into busbar-kernel, and #37 folded
   # busbar-plane-admin + busbar-admin into busbar-core-admin), so `-p busbar-core-admin` is REQUIRED:
   # `-p busbar -p busbar-kernel` alone selects just 1 test (busbar-kernel's
-  # `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the expected 23 — a
-  # vacuity the count check catches. With busbar-core-admin added the `openapi` filter runs the real
-  # set (22 in busbar-core-admin + 1 in busbar-kernel = 23), so the oracle's byte-identity check is
-  # real. Thread-count-independent: every busbar-core-admin openapi
+  # `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the listed set — a
+  # vacuity the count check catches. The expected count is the number of tests `-- --list` shows
+  # for the filter, and a run that passes fewer, or a filter that lists none, is RED. Thread-count-independent: every busbar-core-admin openapi
   # test installs the plane seam before reading `openapi_doc()` (see `openapi_doc_seamed` in that
   # crate's json tests), so no `--test-threads=1` pin is needed for determinism.
-  step "openapi.json goldens match committed file"  filtered_cargo_test 23 cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --quiet openapi
+  step "openapi.json goldens match committed file"  filtered_cargo_test auto cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --quiet openapi
   step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-kernel --quiet resolved_billing_and_limits_config_is_byte_stable
   # The six `*_round_trip_byte_exact` oracles live in busbar-plane-llm's folded-in `codec` module
   # (crates/busbar-plane-llm/src/codec/tests/proto/same_proto_fidelity_tests.rs; owner ruling R7,
@@ -1713,6 +1725,11 @@ if [ -f qa/teller-steps.json ]; then
   # row run, a leg that enumerated nothing, and --rebaseline refusing on red / writing on green.
   # The refusals stay refusals: a missing script or a missing release binary is a REFUSAL, not a
   # skip. Nothing ran, so nothing is proven.
+  # The MCP and A2A legs are armed from target/release/busbar, so this arm builds it here rather than
+  # reading its absence as a gap. A symlink is still refused below: it is built over nothing.
+  if [ ! -L target/release/busbar ] && [ ! -x target/release/busbar ]; then
+    step "build target/release/busbar (the rigs' subject)" cargo build --release --locked -p busbar
+  fi
   if [ ! -x testing/shadow-oracle/rigs-ledger.sh ]; then
     absent_step "the rig suites the matrix cites RUN and pass" \
       "testing/shadow-oracle/rigs-ledger.sh — the plane-rigs bridge that folds the MCP / A2A / voice rigs into one ledger. Restore it (git show fa15cd661:testing/shadow-oracle/rigs-ledger.sh); it is NOT coming from busbar-release, which ruled it out of the oracle port by name (PORT-REMAINING.md:67)."
