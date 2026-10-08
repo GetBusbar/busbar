@@ -27,7 +27,7 @@
     },
     {
       "claim": null,
-      "plan": "h2spec against busbar-transport-http",
+      "plan": "h2spec over TLS (ALPN h2) against the tls: listener",
       "public": true,
       "reason": "planned 1.6.0 — h2spec leg not yet green (MATRIX-RULING B-tier report card)",
       "standard": "HTTP/2 (RFC 9113)",
