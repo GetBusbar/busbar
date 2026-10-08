@@ -83,8 +83,8 @@ pub(crate) struct Sessions {
 struct Inner {
     /// session id -> (subject, when it expires)
     live: HashMap<String, (String, Instant)>,
-    /// session id -> the answers staked for it: each key (`client_id\u{1f}scope`, or
-    /// [`pushed_key`] for a pushed request) with `true` for an approval and `false` for a refusal.
+    /// session id -> the answers staked for it: each key ([`request_key`], or [`pushed_key`] for a
+    /// pushed request) with `true` for an approval and `false` for a refusal.
     staked: HashMap<String, Vec<(String, bool)>>,
 }
 
@@ -164,33 +164,28 @@ impl Sessions {
     }
 }
 
-/// What an approval is FOR: one client, one exact scope set. Two different scope sets are two
-/// different approvals, so an approval for `read` cannot be spent on a request for `read write`.
-fn approval_key(client_id: &str, scope: &oauth_as::scope::ScopeSet) -> String {
-    // The scope tokens in their own order, joined with a space, which is what the consent
-    // ROUTE reconstructs from the pending request's query string. `ScopeSet` has no `as_str`,
-    // and re-serialising it here rather than sorting means the two sides only agree if the
-    // request that was shown is the request that is being approved.
-    format!(
-        "{client_id}\u{1f}{}",
-        scope
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-            .join(" ")
-    )
+/// What an approval is FOR: one client, one exact authorization request — the request the screen
+/// showed, keyed by the path and query `/authorize` received, byte for byte. The consent route
+/// stakes under the very `return` target it hands the browser back to, and `/authorize` spends under
+/// the URI that browser then requests, so the two keys are one string by construction: no scope
+/// text is re-read on either side, and `oauth-as`'s normalisation of the scope (sorted, deduplicated,
+/// the registered default when absent) can never make an approval unspendable. Two different
+/// requests are two different approvals, so an approval for `read` cannot be spent on `read write`.
+/// The `\u{1d}` keeps this key space apart from [`pushed_key`]'s.
+pub(crate) fn request_key(client_id: &str, target: &str) -> String {
+    format!("{client_id}\u{1f}\u{1d}{target}")
 }
 
 /// What an answer on a PUSHED request (RFC 9126) is for: one client, one `request_uri`. The handle
 /// is single use and bound to the client that pushed it, so it names exactly one request, scope
 /// included; the scope is not in the authorization URL to key on. The `\u{1e}` keeps this key
-/// space apart from [`approval_key`]'s, whose scope tokens can never carry a control character.
+/// space apart from [`request_key`]'s, which carries `\u{1d}` where this one carries `\u{1e}`.
 pub(crate) fn pushed_key(client_id: &str, request_uri: &str) -> String {
     format!("{client_id}\u{1f}\u{1e}{request_uri}")
 }
 
 /// The key an answer on this authorization request is staked under: [`pushed_key`] when the
-/// request names a `request_uri`, [`approval_key`] otherwise.
+/// request names a `request_uri`, [`request_key`] otherwise.
 fn staked_key(request: &ApprovalRequest<'_>) -> String {
     let request_uri = request.uri.query().and_then(|q| {
         super::routes::form_urlencoded_pairs(q)
@@ -200,7 +195,10 @@ fn staked_key(request: &ApprovalRequest<'_>) -> String {
     });
     match request_uri {
         Some(handle) => pushed_key(request.client_id.as_str(), &handle),
-        None => approval_key(request.client_id.as_str(), request.scope),
+        None => request_key(
+            request.client_id.as_str(),
+            request.uri.path_and_query().map_or("", |p| p.as_str()),
+        ),
     }
 }
 
