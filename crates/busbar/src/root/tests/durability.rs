@@ -2874,14 +2874,22 @@ fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("after the epoch")
         .as_secs();
-    // A winner that died before it kept anything: its claim stands until `now + 1`.
-    assert!(slots.redeem(MINT_CLAIM_KIND, KEYSET_CLAIM, now + 1, now));
+    // A winner that died before it kept anything: its claim stands until `now + 2`, so the boot below
+    // (well inside that second) finds it standing whatever second boundary it crosses.
+    assert!(slots.redeem(MINT_CLAIM_KIND, KEYSET_CLAIM, now + 2, now));
     let mine = "c".repeat(64);
     let refused = keep_keyset(slots.calls().as_ref(), &mine).expect_err("no second key");
     assert!(refused.contains("claim"), "{refused}");
     assert_eq!(stored_keyset(slots.calls().as_ref()).expect("read"), None);
     // The claim lapses; the next boot claims it and mints.
-    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    while std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs()
+        < now + 2
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert_eq!(
         keep_keyset(slots.calls().as_ref(), &mine).expect("minted"),
         mine
