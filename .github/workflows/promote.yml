@@ -12,7 +12,7 @@ on: [pull_request, merge_group]
 concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' }}" }
 permissions: { contents: read }
 env:
-  RELEASE_REF: e00d97f659a92bfeb73f43426cb0947da471eb59
+  RELEASE_REF: 636e82e0d44b5f10ff5dba0976e95b6991ce4b12
   SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
   TO: ${{ github.base_ref || github.event.merge_group.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
@@ -104,7 +104,7 @@ jobs:
   hop:
     needs: [preflight, hop-shard]
     if: ${{ !cancelled() && needs.preflight.result == 'success' }}
-    permissions: { contents: read }
+    permissions: { contents: read, actions: read }
     runs-on: ${{ (github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true') && needs.preflight.outputs.runner || 'ubuntu-latest' }}
     timeout-minutes: ${{ (github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true') && 330 || 30 }}
     env: { ONE_RUNNER: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true' }}" }
@@ -126,8 +126,14 @@ jobs:
         with: { pattern: "turnstile-report-${{ env.SHA }}-shard*", path: shards }
       - name: Fold the shards
         if: env.ONE_RUNNER != 'true'
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           mkdir -p merge artifacts
+          # The run's own job list: a shard with no report is INFRA:platform when its job was never
+          # created (GitHub dropped it, as in the 2026-10-07 16:52-17:01Z Actions outage), else
+          # INFRA:ours. A list that cannot be read leaves plain INFRA; the hop is never green on it.
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            >"$GITHUB_WORKSPACE/shard-jobs.json" || true
           for k in 1 2 3 4; do
             d="shards/turnstile-report-$SHA-shard$k"
             mkdir -p "merge/shard-$k" "artifacts/shard-$k"
@@ -136,7 +142,8 @@ jobs:
           done
           cd busbar-release
           cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release -- \
-            ci turnstile merge --sha "$SHA" --shards 4 --dir "$GITHUB_WORKSPACE/merge" --out "$GITHUB_WORKSPACE/artifacts/turnstile-report.json"
+            ci turnstile merge --sha "$SHA" --shards 4 --dir "$GITHUB_WORKSPACE/merge" --out "$GITHUB_WORKSPACE/artifacts/turnstile-report.json" \
+            --shard-jobs "$GITHUB_WORKSPACE/shard-jobs.json"
       # The durable verdict (verdict/), from the folded report and every shard's step logs: the artifact publish reads.
       - { if: always(), run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/verdict.sh" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "verdict-${{ env.SHA }}", path: "verdict/", retention-days: 90, if-no-files-found: warn } } # v7.0.1
