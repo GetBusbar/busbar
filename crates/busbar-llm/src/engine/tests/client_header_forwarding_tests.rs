@@ -381,12 +381,13 @@ async fn no_client_header_leaves_egress_unchanged() {
 #[tokio::test]
 async fn anthropic_egress_carries_exactly_the_declared_headers() {
     crate::testkit::install_test_seams();
-    for (key, x_api_key, authorization) in [
-        ("sk-ant-api03-e2e", Some("sk-ant-api03-e2e"), None),
-        ("  sk-ant-api03-e2e", Some("sk-ant-api03-e2e"), None),
-        ("sk-ant-oat01-e2e", None, Some("Bearer sk-ant-oat01-e2e")),
-        ("opaque-lane-key", Some("opaque-lane-key"), None),
-    ] {
+    // The lane's credential is bound on the auth plugin serving its dialect's declared scheme; in
+    // this test build that is the kind-neutral outbound double (`authorization: Bearer <key>`),
+    // each style's real bytes being proven through the linked plugins in the composition root
+    // (`root/tests/declared_credentials.rs`). What this pins is the WIRE: the bound credential and
+    // the dialect's declared static header both reach the upstream, and nothing else credential-
+    // shaped does.
+    for key in ["sk-ant-api03-e2e", "sk-ant-oat01-e2e", "opaque-lane-key"] {
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -406,8 +407,12 @@ async fn anthropic_egress_carries_exactly_the_declared_headers() {
             .build();
         drive(&app, "anthropic", anthropic_body(), collect(&[])).await;
         let seen = |name: &str| state.get_last_request_header(name);
-        assert_eq!(seen("x-api-key").as_deref(), x_api_key, "{key:?}");
-        assert_eq!(seen("authorization").as_deref(), authorization, "{key:?}");
+        assert_eq!(seen("x-api-key"), None, "{key:?}");
+        assert_eq!(
+            seen("authorization"),
+            Some(format!("Bearer {key}")),
+            "{key:?}: the bound credential"
+        );
         assert_eq!(
             seen("anthropic-version").as_deref(),
             Some("2023-06-01"),

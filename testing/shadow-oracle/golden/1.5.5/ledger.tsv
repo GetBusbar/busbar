@@ -2289,7 +2289,6 @@ ops.scrape|v1models|anthropic-fp	PASS	HTTP 200; usage Δ {}
 ops.scrape|v1models|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1models|openai-fp	PASS	HTTP 200; usage Δ {}	
 ops.scrape|v1models|x-api-key	PASS	HTTP 200; usage Δ {}	
-plugins.abi|json-contract|store-sqlite	PASS	capture	
 plugins.load|auth-github	PASS	script plugin-list.sh: status 0	
 plugins.load|auth-ldap	PASS	script plugin-list.sh: status 0	
 plugins.load|auth-oidc	PASS	script plugin-list.sh: status 0	
@@ -2414,3 +2413,4 @@ hooks|unhooked-pool|ok@hooks-webrequest	PASS	HTTP 200; usage Δ {"requests":1,"s
 boot.refusal|BOOT-102|validate	PASS	exit 1; 	
 boot.refusal|BOOT-103|validate	PASS	exit 1; 	
 ops.scrape|reload|sink-removed	PASS	script scrape-after-reload.sh: status 200	
+plugins.abi|json-contract|store-sqlite@1.5-line	PASS	capture	
