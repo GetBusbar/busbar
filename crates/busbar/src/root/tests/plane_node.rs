@@ -1270,6 +1270,85 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     rig.server.shutdown().await;
 }
 
+/// AUDIT-CHAIN, THE LLM PLANE: every unit the node answers, served (a dispatched completion) or
+/// refused (a body the arrival step cannot read), seals ONE record on the node's audit chain, the
+/// second linked to the first; the chain walks clean, and a record altered after its seal (the
+/// served unit re-told as refused) breaks the walk. RED: a loop whose audit door's pass is never
+/// handed back to the node seals nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain(
+) {
+    let rig = rig(Fixture::BufferedOk).await;
+    let node = Node::new();
+    let book = crate::root::durability::node_book();
+    node.bind_book(Arc::clone(&book.durability));
+    let answer = |fixture: Fixture| {
+        let arrival = plane::WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto: PROTO,
+            operation: busbar_contract::operation::OpVerb::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            query: None,
+            body: fixture.body(),
+            path: None,
+        };
+        node.answer(plane::handed(arrival, None))
+    };
+
+    let served = answer(Fixture::BufferedOk).await;
+    assert_eq!(served.status(), StatusCode::OK, "the completion is served");
+    let _ = axum::body::to_bytes(served.into_body(), usize::MAX)
+        .await
+        .expect("the served body drains");
+    let refused = answer(Fixture::Malformed).await;
+    assert!(
+        refused.status().is_client_error(),
+        "the unreadable body is refused: {}",
+        refused.status()
+    );
+    let _ = axum::body::to_bytes(refused.into_body(), usize::MAX)
+        .await
+        .expect("the refusal drains");
+    rig.server.shutdown().await;
+
+    let durability = book.durability.lock().expect("unpoisoned");
+    let records = durability.audit_records.clone();
+    assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+    let (served, refused) = (&records[0], &records[1]);
+    assert_eq!(
+        served.outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed,
+        "the dispatch is chained as served"
+    );
+    assert!(
+        matches!(
+            refused.outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(..)
+        ),
+        "the refusal is chained as one: {:?}",
+        refused.outcome
+    );
+    assert_eq!(refused.seq, served.seq + 1, "contiguous");
+    assert_eq!(
+        refused.prev_hash, served.hash,
+        "linked to the record before"
+    );
+    assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
+    assert!(
+        durability.retained_audit_findings().is_empty(),
+        "the node's own verify finds nothing"
+    );
+
+    let mut forged = records.clone();
+    forged[0].outcome.unit_end = refused.outcome.unit_end;
+    assert!(
+        busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
+        "a record altered after its seal breaks the chain"
+    );
+}
+
 /// THE FLAT FEE IS A CLIENT'S FEE, and this plane reads which it has off the sealed origin.
 ///
 /// One unit, driven once and then asked the same question under two origins. The delivered
