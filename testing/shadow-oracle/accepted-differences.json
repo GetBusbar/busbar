@@ -2489,6 +2489,120 @@
         "by": "2026-12-31"
       },
       "rationale": "OWNER RULED Q-STORE = (B) (2026-09-27, docs/design/BUSBAR-1.6.0.md): 1.6.0 refuses a config with no `store:` block, and `busbar --migrate-config` inserts `store: {module: memory}`, the store 1.5.5 ran such a config on (v1.5.5 GOVERNANCE_STORE_MEMORY via default_governance_store, config/mod.rs:3026/3061). Q-STEP7-a (1.6.0-QUESTIONS.md, answered by the owner 2026-10-04): D1, approved, makes the oracle's run-time inputs name that store (busbar-release recorder/store_baseline.rs: the configs the engine writes and boots, each capture cell's config, the admin config-apply/validate bodies and every script cell's config via `upgrade-config`; no stored cell definition is edited, no golden re-recorded), so every other 1.5.5 golden stays the 1.5.5 answer. D2, signed as #46, is this entry: the cells that move BECAUSE of the ruling are exactly the 78 `config.migrate|<tag>|migrate` cells, since every corpus config lacks `store:` and none carries a 1.4.x `governance:`. The migrated document (body) gains `store:\\n  module: memory` as its last root key, and stderr gains `  - store: inserted `store: {module: memory}` (1.6.0 requires a `store:` block; ...)` under CHANGES: the header appears on the 9 cells whose 1.5.5 golden printed none, and the count is +1 on the other 69 (goldens print 1,2,3,4,6,9,29,31,32). The transform removes exactly that block and that line and decrements the count (ascending, so no count is rewritten twice); the cell then scores ACCEPTED, never PASS, and anything else that moved stays red. The 78 `validate-migrated` cells do not move (the migrated config validates). PREMISE (evaluated): the v1.5.5 corpus config's migrated body names the memory store, so a build that does not insert the block withholds the entry. kind=breaking: a 1.5.5 config with no store block no longer boots unchanged. COUNT RULES BOUND TO THE STORE LINE (2026-10-06, relayed ARCHITECT/oracle-strict ruling): the engine applies a `transform` to BOTH sides, so a bare `CHANGES (N)` -> `(N-1)` rule also decremented the GOLDEN's count and 45 cells could never match. Each count rule now matches only a `CHANGES (N):` header followed, in the same text, by the inserted `store:` bullet (`CHANGES \\\\(N\\\\):((?s:.*?)<store bullet>)` -> `CHANGES (N-1):\\\\1`), so the golden, which has no such bullet, is never rewritten; the bullet itself is removed after the counts. The regex scope, the cells and the reach are unchanged."
+    },
+    {
+      "id": "Q133 a wedged hook is quarantined and comes back through a timed trial call",
+      "kind": "improvement",
+      "changelog": "A hook that wedged is no longer lost until restart: it is quarantined, backed off from 1 s doubling to 30 s, and then given one trial call on a fresh instance, and a successful trial returns it to service. 1.5.5 had no quarantine to exit.",
+      "by": "owner (Matthew Jackson), 2026-10-07 in-session signature of Q133 (R2 quarantine exit)",
+      "cells": "^hooks\\|wedged\\|quarantine-exit@hooks-webrequest$",
+      "expected_cells": 0,
+      "classes": [
+        "body",
+        "effects.stderr",
+        "effects.metrics"
+      ],
+      "rationale": "R2 (THE DESIGN 11.11) ruled the timed-probe exit from a hook's quarantine: a wedged hook instance is quarantined, backed off from 1 s doubling to 30 s, and then given ONE trial call on a fresh instance; a successful trial returns it to service (crates/busbar-contract/src/hook_calls.rs). 1.5.5 had no quarantine, so a wedged hook stayed wedged until restart. What a cell would see differ is the hook's status and health bodies while it is quarantined, the quarantine and recovery log lines, and the hook metrics; the request outcome under the hook's on_error is unchanged, so no status class is accepted (kind improvement). CELL OWED: no corpus cell wedges a hook (every hooks|* cell drives the published webrequest hook healthy), and none can be recorded against 1.5.5 without a wedging hook built for both lines, so `cells` names the owed cell id and expected_cells is 0, the way HOOK-Q1 and AUTH-ROW write theirs; the entry forgives nothing until hooks|wedged|quarantine-exit@hooks-webrequest is recorded. A `classes` scope with no `cells` was not used: with no `cells` the differ reads `.`, so it would forgive these classes on all 2518 cells. The premise probes the one real hook-serving cell: the hook still serves as 1.5.5 did.",
+      "premise": {
+        "cell": "hooks|hooked-pool|ok@hooks-webrequest",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-07",
+        "ruling": "2026-10-07 OWNER SIGNED in-session: Q133 quarantine-exit (docs/design/1.6.0-QUESTIONS.md Q133, R2); signed by owner 2026-10-07"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "Q134 503 when an auth verifier's max_inflight is full",
+      "kind": "breaking",
+      "changelog": "1.6.0 Breaking: when an auth plugin's `max_inflight` is full, a data-plane request is answered `503` with `Retry-After: 1` instead of 1.5.5's `401`.",
+      "by": "owner (Matthew Jackson), 2026-10-07 in-session signature of Q134 (R8 503 on auth-verify overload): 503 chosen over keeping 401 or waiting for a slot",
+      "cells": "^concurrency\\|auth-verify-overloaded\\|data-plane$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "rationale": "R8 (THE DESIGN 11.11) accepted a 503 when auth verify is overloaded; the owner signed it on 2026-10-07 (Q134), choosing 503 over 1.5.5's 401 and over waiting for a slot. An auth door's `verify` past its instance's `max_inflight` is not queued: it answers Verified::Overloaded (plugin-loader auth_door_tests a_verify_past_max_inflight_is_overloaded_and_never_queued). The data-plane auth middleware now answers that request 503 with `Retry-After: 1` and the gateway's at-capacity body, the bytes the inbound cap already sheds with (limits::admission), where it used to fold the overload into a reject and answer the 401 (crates/busbar-kernel/src/auth/mod.rs). Pinned RED-then-GREEN by busbar-kernel auth tests a_data_plane_door_without_a_verdict_answers_the_1_5_5_401_and_an_overloaded_one_503 and the_data_plane_walk_hands_an_overloaded_door_back_apart. Unchanged: a bad credential, a pass and a door with no verdict are still 1.5.5's 401; the admin plane, the /auth/token exchange and a plane's inbound identity admission still deny an overloaded verifier; a cold position's own offload bound is 1.5.5's saturated offload, still its 401. The 503 is a new status, body and Retry-After header against 1.5.5's 401 envelope, so status, body and headers are accepted (kind breaking). CELL OWED: no corpus cell fills an auth verifier's max_inflight (1.5.5 had no door and no such bound), so `cells` names the owed cell id and expected_cells is 0, as HOOK-Q1 and AUTH-ROW do. The premise pins that a bad credential on the data plane still earns 1.5.5's 401.",
+      "premise": {
+        "cell": "llm|openai|openai|request|unauthenticated",
+        "status": 401
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-07",
+        "ruling": "2026-10-07 OWNER SIGNED in-session: Q134 = 503 when the auth verify max_inflight is full, chosen over keeping 401 or waiting for a slot (docs/design/1.6.0-QUESTIONS.md Q134, R8); signed by owner 2026-10-07"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "NEUT-U-models the models.<name> unknown-key refusal lists `protocol`",
+      "kind": "additive",
+      "text_list_growth": true,
+      "transform": {
+        "candidate": [
+          [
+            "^(\\[error\\]|\\[warn\\]|warning:) BUSBAR-\\d{4}: ",
+            "\\1 "
+          ]
+        ]
+      },
+      "changelog": "1.6.0 Added: a model entry takes `protocol`, an optional override of the dialect its provider's `protocol` sets.",
+      "by": "owner (Matthew Jackson), 2026-10-07 in-session signature: NEUT-U-models protocol (optional per-model override per decision #51); entry staged by DECISIONS-FIX (coordinator Q11)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-07",
+        "ruling": "2026-10-07 OWNER SIGNED in-session: NEUT-U-models protocol, an optional per-model override per decision #51; omitted means the provider's catalog default"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^neutrality\\|NEUT-U-models\\|validate$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.stderr"
+      ],
+      "premise": {
+        "cell": "neutrality|NEUT-U-models|validate",
+        "status": 1
+      },
+      "rationale": "BASIS: BUSBAR-1.6.0.md (BEDROCK-INVOKE: \"ModelCfg += protocol + error_map overrides (#51 exact)\") and decision #51 (a model's dialect is its override, else its provider's protocol); coordinator ruling Q11 keeps the field on the shared ModelCfg; the owner signed it 2026-10-07. The key is optional; an omitted key resolves the model's dialect from its provider, as 1.5.5 did. A config with an unknown key under models.<name> is refused as in 1.5.5, exit 1 and the same sentence; the only stderr difference is the expected-key list. 1.5.5: \"models.m-anthropic: unknown field `bogus_key`, expected one of `max_requests`, `provider`, `max_concurrent`, `default_max_tokens`, `upstream_model`, `attempt_timeout_ms`, `reasoning`, `prompt_caching` at line 57 column 5\". 1.6.0: the same sentence with `protocol` appended after `prompt_caching` (ModelCfg's field order, crates/busbar-contract/src/config.rs, branch lane-dec-dialects). kind=additive with text_list_growth: the runner proves the backtick list only GREW. The transform strips the D-1 diagnostic code from the line, as D-1 does. PREMISE: exit status 1, as in 1.5.5. The field ships with lane-dec-dialects; until it lands the cell is identical to 1.5.5 and this entry forgives nothing."
+    },
+    {
+      "id": "EGRESS-WIDEN the one destination guard also judges a2a peer fetches, streaming upstreams and duplex dials",
+      "kind": "breaking",
+      "changelog": "1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.",
+      "by": "owner (Matthew Jackson), 2026-10-07 in-session signature: egress widening (one guard for every dial); staged by the ARCHITECT 2026-10-07T23:05Z (E1 parity)",
+      "cells": "^egress\\.guard\\|(a2a-peer-fetch|streaming-upstream|duplex-dial)\\|private$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "rationale": "The OWNER DESTINATION GUARD ruling (2026-10-02, BUSBAR-1.6.0.md \"Destination guard — ONE check for every outbound connection\") puts every outbound connection through the one guard in the connector, and the owner signed its 1.5.5 default for provider and IdP hosts then. The ARCHITECT's E1 parity work (2026-10-07T23:05Z) staged the remaining widening for the owner, unsigned: the same guard, with its private, loopback and cloud-metadata refusal, also covers an A2A peer's agent-card and task fetches, a streaming upstream and a duplex or WebSocket dial. The owner signed it in-session on 2026-10-07 (\"egress widening, one guard for every dial\"). As for a private provider host, the configuration is the escape hatch (`advanced.allow_destinations`; an A2A registration's own `allow_private` for its private or loopback reach), and cloud metadata is refused whatever `block_private_addresses` says unless an IP or CIDR allowlist entry names it. A refused dial is a refused exchange, so status and body are accepted (kind breaking). CELLS: none moves. The a2a fence and streams cells reach their loopback capture mocks, and every 1.6-line oracle run is handed `advanced.allow_destinations: [\"127.0.0.1\"]` (oracle-rust.pin, owner-approved 2026-10-04), so those dials are allowlisted exactly as a private provider host would be; the egress.* cells are provider and IdP dials the 2026-10-02 signature already covers. No 1.5.5 cell dials a private A2A peer, streaming upstream or duplex target, so `cells` names the owed cell ids and expected_cells is 0 (HOOK-Q1, AUTH-ROW). A `classes` scope with no `cells` was not used: the differ would read `.` and forgive status and body on all 2518 cells. The premise pins that an allowlisted loopback provider is still reached and answers as 1.5.5 did.",
+      "premise": {
+        "cell": "llm|openai|openai|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-07",
+        "ruling": "2026-10-07 OWNER SIGNED in-session: egress widening (one guard for every dial), the unsigned accepted difference the ARCHITECT staged 2026-10-07T23:05Z (E1 parity)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }
