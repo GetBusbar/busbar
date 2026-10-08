@@ -285,8 +285,17 @@
 # earlier pin (predev's 4a7a7bba2cef, oracle-strict's edd17921e320, #157's 0ede76aea912, #493's 5b89bdf67326), so
 # no lane's engine moves backwards when this lands.
 #
+# 2026-10-07 (ARCHITECT ruling on #536, option b; HEADROOM-REMOVE precedent Q-SO2/Q-SO3): moved 1869c0032ecf ->
+# 4d52f387c4d1 (busbar-release dev, the merge of #177; its tree is #177's head 0ff118af56f5 byte for byte; it descends
+# 1869c0032ecf, 2119a67a6f and 4a7a7bba2c).
+# The generator emits the ABI-o1 cell, whose `capture.plugins_line: "1.5"` changed its input, under the NEW id
+# plugins.abi|json-contract|store-sqlite@1.5-line. The old id is retired whole in golden/1.5.5/retired.tsv, and the new
+# one is golden-added from the published 1.5.5 (busbar-release oracle-rerecord run 37606248051 at 0ff118af56f5).
+# promote.yml RELEASE_REF does not move: the pin and RELEASE_REF have moved apart since 4a7a7bba (#493 moves only
+# this pin).
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=1869c0032ecf2cdad8b1153ccf25311cb6baad75
+release_ref=4d52f387c4d1622226e3863e503793ed8568f482
 crate=busbar-release-oracle
 bin=busbar-oracle

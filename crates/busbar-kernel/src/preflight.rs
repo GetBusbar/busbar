@@ -14,10 +14,10 @@ use crate::diagnostics::{
 
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
-    core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, net_guard, oauth_as, observability, operation, plane,
-    plugin_routes, profile, proto, proxy, snapshot, state, store, telemetry, tls, transport, trust,
+    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
+    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
+    net_guard, oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy,
+    snapshot, state, store, telemetry, tls, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -194,13 +194,14 @@ pub use busbar_kernel_identity::operator::{
 };
 
 /// The names of the INBOUND auth-chain modules among `rows`: those whose Statement declares an
-/// inbound capability. `build.auth_modules` lists what an operator can name in `auth.chain` /
+/// inbound capability and is not a host-held credentials' verifier (that one serves the `keys`
+/// entry). `build.auth_modules` lists what an operator can name in `auth.chain` /
 /// `admin_auth`, by alias, as 1.5.5 did; a row that only presents an upstream credential (outbound
 /// styles) is not an auth-chain module. Decided from what the plugin declares, never from its name.
 #[must_use]
 pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
     rows.iter()
-        .filter(|r| busbar_plugin_loader::dispatch::kinds::auth::declares_inbound(r.1))
+        .filter(|r| busbar_plugin_loader::dispatch::kinds::auth::declares_chain_module(r.1))
         .map(|r| r.0)
         .collect()
 }
@@ -224,8 +225,14 @@ pub(crate) fn auth_axis(
     registry: Arc<PluginRegistry>,
 ) -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
     #[cfg(feature = "test-support")]
-    let _ = AUTH_AXIS.set(busbar_plugin_loader::auth_axis::stand_in);
+    let _ = AUTH_AXIS.set(crate::test_support::outbound_auth::stand_in);
     AUTH_AXIS.get().map(|open| open(registry))
+}
+
+/// This build's auth axis over its LINKED rows alone (no plugins directory): what `--validate`
+/// asks a style's plugin to judge a credential through.
+pub(crate) fn linked_auth_axis() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
+    auth_axis(Arc::new(linked().ok()?))
 }
 
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's

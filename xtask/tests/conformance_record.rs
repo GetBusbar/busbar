@@ -79,6 +79,7 @@ fn suite(id: &str) -> Suite {
         verdict: format!("conformance-verdict-{id}"),
         public: true,
         not_run_reason: None,
+        plane: None,
     }
 }
 
@@ -572,6 +573,11 @@ fn the_verdicts_the_producer_writes_rebuild_the_manifest_in_process() {
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
     std::fs::copy(repo_root().join("conformance/registry.toml"), &registry)
         .expect("the tree's registry copies into the fixture");
+    // The registry's plane floor is derived from the planes the build ships.
+    let roster = repo.join("qa/construction.toml");
+    std::fs::create_dir_all(roster.parent().unwrap()).unwrap();
+    std::fs::copy(repo_root().join("qa/construction.toml"), &roster)
+        .expect("the tree's plane roster copies into the fixture");
     let suites = xtask::gates::conformance_sync::render::parse_registry(
         &xtask::ctx::Ctx::new(&repo).expect("a context over the fixture"),
     )
@@ -602,4 +608,27 @@ fn the_verdicts_the_producer_writes_rebuild_the_manifest_in_process() {
     xtask::conformance_record::reconcile_manifest(&repo).expect("the manifest is rewritten");
     assert_eq!(manifest_drift(&repo), xtask::ledger::Status::Pass);
     let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn the_records_own_reconciled_outputs_are_not_drift_but_any_other_tracked_edit_is() {
+    let repo = fixture_repo("record-drift");
+    std::fs::create_dir_all(repo.join("conformance/verdicts")).unwrap();
+    std::fs::write(repo.join("conformance/manifest.json"), "{}\n").unwrap();
+    std::fs::write(repo.join("README.md"), "readme\n").unwrap();
+    git(&repo, &["add", "conformance/manifest.json", "README.md"]);
+    git(&repo, &["commit", "-q", "-m", "manifest"]);
+    let out = repo.join("conformance/verdicts");
+    let drift = |r: &Path| xtask::conformance_record::tracked_drift(r, &out).expect("git status");
+
+    // What one `conformance record --suite <id>` writes: a verdict, the reconciled manifest and
+    // the README badge block. A second `--suite` run in the same checkout must still judge HEAD.
+    std::fs::write(out.join("mcp.json"), "{}\n").unwrap();
+    std::fs::write(repo.join("conformance/manifest.json"), "{\"suites\": []}\n").unwrap();
+    std::fs::write(repo.join("README.md"), "readme, badges re-rendered\n").unwrap();
+    assert_eq!(drift(&repo), Vec::<String>::new());
+
+    // Any other tracked edit means HEAD does not name the judged tree.
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    assert_eq!(drift(&repo), vec!["a.txt".to_string()]);
 }
