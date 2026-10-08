@@ -1049,6 +1049,25 @@ impl Durability {
         &self.refused
     }
 
+    /// **THE BALANCES THAT HAVE NO FIGURE (#42)**, each named once: one entry per balance, window,
+    /// lane and refusal among the refused rows, in that order.
+    ///
+    /// The refusal is per balance and window, and so is this list. A read that serves many balances
+    /// (the ledger views, `GET /admin/verify`) answers every other balance and names each of these
+    /// rather than refusing whole: one refused row is a hole in ONE balance, and a read that went
+    /// dark over it would hide every other figure and finding for the life of the journal, since a
+    /// refused row is rebuilt from the chain at every boot. The same entry is what
+    /// [`Durability::settled_read`] refuses with for that balance.
+    #[must_use]
+    pub fn refused_balances(&self) -> Vec<RefusedCounts> {
+        self.refused
+            .iter()
+            .map(RefusedCounts::of)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     /// **THE BOOK'S SETTLED FIGURE FOR ONE BALANCE AND WINDOW — or the refusal (#42).**
     ///
     /// `settled` read together with `unreconciled` (a posting the log has not confirmed has not left
@@ -1069,16 +1088,7 @@ impl Durability {
             .iter()
             .find(|row| row.key == *key && row.window == window)
         {
-            return Err(Box::new(RefusedCounts {
-                key: row.key.clone(),
-                window: row.window,
-                lane: row
-                    .counts
-                    .as_ref()
-                    .map(|c| c.lane.clone())
-                    .unwrap_or_default(),
-                refusal: row.refusal.clone().unwrap_or_default(),
-            }));
+            return Err(Box::new(RefusedCounts::of(row)));
         }
         let figures = self.ledger.book().get(key, window);
         Ok(figures.settled.saturating_add(figures.unreconciled))
@@ -1498,7 +1508,7 @@ pub fn price_counts(
 }
 
 /// A read that met a counts row the card refused to price (#42). Never a figure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RefusedCounts {
     /// The balance the row sits on.
     pub key: TotalsKey,
@@ -1508,6 +1518,23 @@ pub struct RefusedCounts {
     pub lane: String,
     /// Why the pricing refused.
     pub refusal: String,
+}
+
+impl RefusedCounts {
+    /// What one refused row says about its balance: where it sits, the lane that served the unit,
+    /// and why the pricing refused.
+    fn of(row: &Posting) -> Self {
+        Self {
+            key: row.key.clone(),
+            window: row.window,
+            lane: row
+                .counts
+                .as_ref()
+                .map(|c| c.lane.clone())
+                .unwrap_or_default(),
+            refusal: row.refusal.clone().unwrap_or_default(),
+        }
+    }
 }
 
 impl std::fmt::Display for RefusedCounts {

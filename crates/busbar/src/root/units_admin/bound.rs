@@ -100,14 +100,14 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 
 /// `GET /api/v1/admin/verify` — everything that has to be true of this node's ledger, checked.
 ///
-/// A node whose book holds a refused counts row is refused whole (`Store`), exactly as the ledger
-/// views beside it are: an identity measured over a book with a hole in it is not a measurement.
+/// A balance whose book holds a refused counts row (#42) is a FINDING, named with its window, lane
+/// and refusal, and its row is withheld from the identity exactly as the ledger views beside it
+/// withhold it: an identity measured over a balance with no figure is not a measurement. Every
+/// other check still runs and every other finding is still reported — one refused row is a hole
+/// in one balance, and a verify that went dark over it would hide everything else it found.
 pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, GovernanceError> {
     use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, AllWindowsOpen, Finding};
 
-    if ledger.has_refused_rows() {
-        return Err(GovernanceError::Store);
-    }
     let (checkpoints, book, anchored) = ledger.verify_snapshot_anchored();
     let mut findings: Vec<Finding> = Vec::new();
     for checkpoint in &checkpoints {
@@ -133,13 +133,23 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         }
         _ => false,
     };
-    let (ledger_rows, legacy_rows) = ledger
+    let (mut ledger_rows, mut legacy_rows) = ledger
         .identity_snapshot()
         .map_err(|_| GovernanceError::Store)?;
+    // Asked AFTER the rows are read: see `LedgerView::refused_balances`.
+    let refused = ledger.refused_balances();
+    super::withhold_refused(&mut ledger_rows, &refused);
+    super::withhold_refused(&mut legacy_rows, &refused);
     let discrepancies = crate::root::ledger_identity::reconcile(&ledger_rows, &legacy_rows)
         .map_err(|_| GovernanceError::Store)?;
     let identity_holds = discrepancies.is_empty();
     let mut findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    // EVERY BALANCE WITH NO FIGURE (#42): its balance, window, lane and refusal, in words.
+    findings.extend(
+        refused
+            .iter()
+            .map(|balance| format!("refused counts: {balance}")),
+    );
     // WHAT THE BOOT RECONCILIATION FOUND: a journal record the chain could not read, or a balance
     // the book and a second replay disagree on. A settled figure edited on disk is caught here; the
     // boot logs it and serves on, and this is where an operator asking reads it.
