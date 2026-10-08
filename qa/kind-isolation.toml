@@ -1316,7 +1316,7 @@ half    = "test"
 count   = "1"
 verdict = "tcb"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140-1141): the repo holds busbar-contract (\"the shapes and the author SDK\") and busbar-plugin-loader; the loader is the trusted computing base and names the contract the ABI lives in (ARCHITECTURE_TCB plugin-tooling -> contract)."
-why     = "busbar-plugin-loader names busbar-contract: declared dev in the test graph (features test-seal), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-plugin-loader names busbar-contract: declared dev in the test graph (features test-seal, services-double), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while busbar-plugin-loader is the loader TCB; the row records the edge so a NEW plugin-tooling -> contract coupling is visible on the landing that adds it."
 
 [[dep]]
@@ -1644,3 +1644,386 @@ verdict = "allowed"
 cite    = "ARCHITECTURE_ALLOWED root -> auth (ARCHITECT INTEGRATION U17, 2026-09-30); BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
 why     = "busbar names busbar-auth-oidc: declared dev in the test graph with its `testkit` feature, the local issuer the dropped-in auth proofs verify against (the module's own ES256 key and JWKS endpoint), at the SAME rev as the -plugin cdylib edge. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+# ------------------------------------------------------------------------------------------------
+# [[law0]] — THE DoD HARD CLAUSE, ARMED AT TODAY'S NUMBER (Law 9; ARCHITECT 2026-10-07, Q128 route)
+# ------------------------------------------------------------------------------------------------
+#
+# Every core-neutral crate (BUSBAR-1.6.0.md:1994-1999: the kernel and its workflow crates, the
+# contract, the loader, the cleanliness crates, the composition root) names ZERO plugin-instance
+# vocabulary at DEV-GREEN. `kind-isolation:law0` holds each crate and axis to the count below,
+# measured on predev f830faa691, re-armed at 41f2dc1f78 for the five cells predev grew meanwhile: a rise or a new cell is RED on both twins, a fall must lower the
+# row in the same commit. scripts/verify-1.6.0-done.sh reads these rows: DONE is every count at 0.
+# Sum today: 4463 hit(s) over 62 cell(s).
+
+[[law0]]
+crate = "busbar"
+axis  = "auth"
+count = "42"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "export"
+count = "15"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "hooks"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "instance:auth"
+count = "22"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "instance:export"
+count = "33"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "instance:secret"
+count = "34"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "instance:store"
+count = "2"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "plane"
+count = "798"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "secret"
+count = "2"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "transport"
+count = "215"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar"
+axis  = "vendor"
+count = "43"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-contract"
+axis  = "auth"
+count = "4"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-contract"
+axis  = "export"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-contract"
+axis  = "instance:auth"
+count = "3"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-contract"
+axis  = "instance:export"
+count = "14"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-contract"
+axis  = "instance:secret"
+count = "128"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-contract"
+axis  = "plane"
+count = "210"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-contract"
+axis  = "secret"
+count = "8"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-contract"
+axis  = "transport"
+count = "226"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "auth"
+count = "8"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "export"
+count = "4"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "hooks"
+count = "4"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "instance:auth"
+count = "15"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "instance:export"
+count = "31"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "instance:hooks"
+count = "3"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "instance:secret"
+count = "52"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "instance:store"
+count = "21"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "plane"
+count = "51"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-admin"
+axis  = "transport"
+count = "11"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-connector"
+axis  = "export"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-connector"
+axis  = "instance:secret"
+count = "3"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-connector"
+axis  = "transport"
+count = "68"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-core-oauth2"
+axis  = "instance:secret"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "auth"
+count = "76"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "export"
+count = "33"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "hooks"
+count = "22"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "instance:auth"
+count = "11"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "instance:export"
+count = "68"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "instance:secret"
+count = "117"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "instance:store"
+count = "2"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "plane"
+count = "1193"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "secret"
+count = "15"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "store"
+count = "4"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel"
+axis  = "transport"
+count = "288"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-breaker"
+axis  = "plane"
+count = "2"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-breaker"
+axis  = "transport"
+count = "134"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-egress"
+axis  = "instance:secret"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-egress"
+axis  = "plane"
+count = "5"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-egress"
+axis  = "transport"
+count = "2"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-identity"
+axis  = "auth"
+count = "8"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-identity"
+axis  = "instance:secret"
+count = "2"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-ledger"
+axis  = "plane"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-scope"
+axis  = "plane"
+count = "6"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-kernel-wal"
+axis  = "instance:secret"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-plugin-loader"
+axis  = "auth"
+count = "5"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-plugin-loader"
+axis  = "export"
+count = "31"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-plugin-loader"
+axis  = "instance:auth"
+count = "9"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-plugin-loader"
+axis  = "instance:export"
+count = "2"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-plugin-loader"
+axis  = "instance:secret"
+count = "111"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-plugin-loader"
+axis  = "plane"
+count = "53"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-plugin-loader"
+axis  = "secret"
+count = "2"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+
+[[law0]]
+crate = "busbar-plugin-loader"
+axis  = "transport"
+count = "185"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
