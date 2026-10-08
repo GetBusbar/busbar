@@ -139,6 +139,9 @@ fn routes() -> Vec<AdminRouteSpec> {
     vec![AdminRouteSpec::new("GET", "/door/status", 0)]
 }
 
+/// The one name every generation lists.
+pub const LISTED: &str = "door-listed";
+
 /// The settings `validate` refuses.
 pub const BAD_SETTINGS: &[u8] = b"bad";
 
@@ -164,6 +167,7 @@ impl Plane {
         SnapshotSpec {
             claims: claims(self.public),
             admin_routes: if refreshed { routes() } else { Vec::new() },
+            listed: vec![LISTED.to_string()],
             ..SnapshotSpec::default()
         }
     }

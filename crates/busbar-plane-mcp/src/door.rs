@@ -755,6 +755,7 @@ pub fn snapshot_spec_with(
         resource_facts: facts.filter(|_| audience.is_some()),
         audience,
         resource_metadata,
+        listed: Vec::new(),
     }
 }
 

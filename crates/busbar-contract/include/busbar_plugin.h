@@ -2594,6 +2594,8 @@ struct bb_plane_PlaneSnapshot {
     bb_mech_AbiStr audience;
     bb_mech_AbiStr resource_metadata;
     bb_mech_Blob resource_facts;
+    const bb_mech_AbiStr *listed;
+    size_t listed_len;
 };
 
 /* The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL. */
@@ -4932,7 +4934,7 @@ BB_ASSERT(offsetof(bb_plane_AdminRoute, target) == 16, "bb_plane_AdminRoute.targ
 BB_ASSERT(offsetof(bb_plane_AdminRoute, flags) == 32, "bb_plane_AdminRoute.flags: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, _reserved) == 36, "bb_plane_AdminRoute._reserved: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, audit_verb) == 40, "bb_plane_AdminRoute.audit_verb: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 128, "bb_plane_PlaneSnapshot: size");
+BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 144, "bb_plane_PlaneSnapshot: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneSnapshot) == 8, "bb_plane_PlaneSnapshot: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, size) == 0, "bb_plane_PlaneSnapshot.size: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, _reserved) == 4, "bb_plane_PlaneSnapshot._reserved: offset");
@@ -4945,6 +4947,8 @@ BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, openapi) == 48, "bb_plane_PlaneSnapsh
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, audience) == 72, "bb_plane_PlaneSnapshot.audience: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_metadata) == 88, "bb_plane_PlaneSnapshot.resource_metadata: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_facts) == 104, "bb_plane_PlaneSnapshot.resource_facts: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed) == 128, "bb_plane_PlaneSnapshot.listed: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed_len) == 136, "bb_plane_PlaneSnapshot.listed_len: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneOpenIn) == 200, "bb_plane_PlaneOpenIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneOpenIn) == 8, "bb_plane_PlaneOpenIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, open) == 0, "bb_plane_PlaneOpenIn.open: offset");

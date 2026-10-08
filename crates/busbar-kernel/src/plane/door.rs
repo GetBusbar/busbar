@@ -536,6 +536,42 @@ fn admission<const I: usize>(slot: &dyn std::any::Any) -> Option<super::PlaneAdm
     })
 }
 
+/// THE NAMES THE DOOR PLANES' GENERATIONS LIST that `key` may see (THE DESIGN section 2:
+/// `/v1/models` appends each plane generation's listed names), read off each folded door's slot in
+/// `slots`, in fold order and then the door's own order. A name is visible as the door's admission
+/// judges a direct route to it: ungoverned (`key` `None`) or a door that states no scope kind scopes
+/// nothing; otherwise the key's grant of the door's first scope kind names it. No door lists any
+/// name: empty.
+pub fn listed<'a>(
+    slots: &'a std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+    key: Option<&busbar_contract::records::VirtualKey>,
+) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for d in DOORS.iter().filter_map(OnceLock::get) {
+        let Some(slot) = slots
+            .get(d.reg.key)
+            .and_then(|s| s.downcast_ref::<DoorSlot>())
+        else {
+            continue;
+        };
+        let kind = d.reg.scope_kinds.first();
+        out.extend(
+            slot.facing
+                .listed
+                .iter()
+                .map(String::as_str)
+                .filter(|name| match (key, kind) {
+                    (Some(key), Some(kind)) => key.scope_allowed(kind, name),
+                    _ => true,
+                }),
+        );
+    }
+    out
+}
+
 /// The generation's slot of the door at `I`, off the neutral slot seam.
 fn slot_of<const I: usize>(
     slots: &dyn crate::plane_host::PlaneSlots,

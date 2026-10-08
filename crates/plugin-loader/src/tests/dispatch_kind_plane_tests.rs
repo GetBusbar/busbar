@@ -387,6 +387,38 @@ fn open_green_and_red_on_its_snapshot() {
     );
 }
 
+/// RED, THE APPEND RULE AT THE HOST: a plugin built before `PlaneSnapshot::listed` was appended
+/// publishes a snapshot whose `size` ends before it. The host accepts it and reads its list as none,
+/// never the bytes past that `size` (here garbage: a count over a dangling pointer).
+#[test]
+fn a_snapshot_from_before_listed_reads_as_listing_none() {
+    let mut i: PlaneOpenIn = z();
+    i.open.generation = 7;
+    let mut older = snap(7);
+    older.size = std::mem::offset_of!(PlaneSnapshot, listed) as u32;
+    older.listed = NonNull::<AbiStr>::dangling().as_ptr();
+    older.listed_len = 5;
+    let mut o: PlaneOpenOut = z();
+    o.snapshot = &older;
+    assert_eq!(
+        Plane::check(&answer(life::OPEN, Outcome::Ready, &i, &o)),
+        Ok(()),
+        "a snapshot of the size before the append is this host's to read"
+    );
+    let copied = crate::dispatch::kinds::plane::copy_snapshot(&older, 4)
+        .expect("the older snapshot is copied");
+    assert!(copied.listed.is_empty(), "{:?}", copied.listed);
+    let names = [AbiStr {
+        ptr: b"listed-one".as_ptr(),
+        len: 10,
+    }];
+    let mut newer = snap(7);
+    newer.listed = names.as_ptr();
+    newer.listed_len = 1;
+    let copied = crate::dispatch::kinds::plane::copy_snapshot(&newer, 4).expect("copied");
+    assert_eq!(copied.listed, vec!["listed-one".to_string()]);
+}
+
 #[test]
 fn refresh_green_and_red_on_its_snapshot() {
     let mut i: RefreshIn = z();
