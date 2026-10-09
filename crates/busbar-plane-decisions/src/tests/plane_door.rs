@@ -51,16 +51,15 @@ fn exactly_one_model_claims_systemone_and_nothing_else_claims_anything() {
 
 #[test]
 fn a_generation_lists_every_configured_model_in_name_order() {
-    let two = read_settings(
-        br#"{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}"#,
-    )
-    .expect("the section reads");
+    let two =
+        read_settings(br#"{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}"#)
+            .expect("the section reads");
     let spec = generation_spec(&two);
     assert_eq!(spec.listed, vec!["a".to_string(), "b".to_string()]);
     assert_eq!(spec.claims, snapshot_spec(2).claims);
 
-    let one = read_settings(br#"{"models":{"jev":{"provider":"typesafe"}}}"#)
-        .expect("the section reads");
+    let one =
+        read_settings(br#"{"models":{"jev":{"provider":"typesafe"}}}"#).expect("the section reads");
     let spec = generation_spec(&one);
     assert_eq!(spec.listed, vec!["jev".to_string()]);
     assert_eq!(spec.claims, snapshot_spec(1).claims);
