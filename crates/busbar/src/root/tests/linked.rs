@@ -67,7 +67,9 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
 #[test]
 fn a_linked_export_declares_stating_needs_boots() {
     let doors = crate::LINKED.export_doors;
-    let first = doors.first().expect("an export door is linked under the axis");
+    let first = doors
+        .first()
+        .expect("an export door is linked under the axis");
     // Every row as linked, restated with `needs`.
     let restated = |needs: &str| -> Vec<crate::root::linked::LinkedDoorExport> {
         doors
