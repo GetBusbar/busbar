@@ -655,3 +655,37 @@ fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused()
         "distinct words coexist"
     );
 }
+
+/// THE SETTINGS NEVER PRINT. An opened instance keeps the settings bytes it was opened over (a
+/// resolved bag) to re-open a fresh instance on a quarantine trial; its `Debug` names the instance
+/// and nothing else, so `{:?}` in a log line, a `tracing` field or a panic cannot carry them.
+#[test]
+fn an_instance_debug_never_shows_its_settings() {
+    let rows = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).expect("linked");
+    let c = rows.find(NAME).expect("the fixture's row").clone();
+    let bind = {
+        let (c, dispatcher) = (c.clone(), Arc::clone(&rows.dispatcher));
+        move || {
+            HookRows::bind(
+                &c,
+                &dispatcher,
+                "hooks.gate",
+                Arc::new(super::NoSink),
+                super::ConnTable::NoNeeds,
+            )
+        }
+    };
+    let settings = br#"{"reject_over_messages": 3}"#;
+    let opened = super::HookInstance::open(
+        bind().expect("the fixture binds"),
+        Arc::clone(&rows.dispatcher),
+        settings,
+        bind,
+    )
+    .expect("the fixture opens over its settings");
+    let shown = format!("{opened:?}");
+    assert!(shown.contains(NAME), "the name names the instance: {shown}");
+    for leak in ["reject_over_messages", "3}"] {
+        assert!(!shown.contains(leak), "`{leak}` printed: {shown}");
+    }
+}

@@ -46,6 +46,15 @@
 //! continuing where it stopped. A framer that answers any byte or piece twice is wrong. A framer op
 //! never pends.
 //!
+//! A STREAM'S OWN BACKPRESSURE. A framer that queues a stream's emitted bytes until the far end is
+//! ready for them (a multiplexed wire whose peer grants room stream by stream) answers an `emit`
+//! that brings the queue to its high-water mark with [`YIELD_STREAM_FULL`]: the bytes were taken,
+//! and the host emits nothing more on that stream, holding whatever feeds it (not-ready, with a
+//! wake), until the framer hands a [`PIECE_WRITABLE`] piece on the stream (its queue drained below
+//! the low-water mark) or the stream's end or failure piece. A host that keeps emitting past the
+//! mark is the framer's to bound: it may fail the stream. This is the stream's, never the
+//! connection's: [`YIELD_MORE`] still means only that a host buffer filled.
+//!
 //! STREAMS END BY PIECE. A frame is one or more pieces on one stream; the last carries
 //! [`PIECE_END_OF_FRAME`]. A stream's frames END with an EMPTY piece (length `0`) carrying
 //! [`PIECE_END_OF_FRAME`]; a stream that FAILED ends instead with a piece carrying
@@ -417,6 +426,11 @@ pub const PIECE_CONTINUED: u16 = 32;
 /// it into `FrameMeta::text`, the bit's one home above the ABI.
 pub const PIECE_TEXT: u16 = 64;
 
+/// [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with
+/// [`YIELD_STREAM_FULL`] drained below the framer's low-water mark, and the host may emit on the
+/// stream again. Always an EMPTY piece, with no other flag: it ends no frame and no stream.
+pub const PIECE_WRITABLE: u16 = 256;
+
 /// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
 /// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
@@ -428,6 +442,9 @@ pub const YIELD_ENDED: u32 = 1;
 pub const YIELD_MORE: u32 = 2;
 /// [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then.
 pub const YIELD_HAS_DEADLINE: u32 = 4;
+/// [`FramerYield::flags`], on `emit` only: the bytes were taken and the stream's queue is at its
+/// high-water mark; emit nothing more on it until a [`PIECE_WRITABLE`] piece or its last piece.
+pub const YIELD_STREAM_FULL: u32 = 8;
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 

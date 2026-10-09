@@ -130,7 +130,7 @@ fn every_field_of_a_length_framed_preimage_is_preceded_by_its_own_eight_byte_len
     let mut d = Digest::new(Framing::LengthPrefixed);
     d.text("").text("a").text("bar|inside").num(u64::MAX);
 
-    let buf = d.bytes().to_vec();
+    let buf = d.into_framed();
     let mut at = 0usize;
     let mut fields: Vec<Vec<u8>> = Vec::new();
     while at < buf.len() {
@@ -170,8 +170,8 @@ fn every_field_of_a_length_framed_preimage_is_preceded_by_its_own_eight_byte_len
     let mut as_text = Digest::new(Framing::LengthPrefixed);
     as_text.text("7");
     assert_ne!(
-        as_num.bytes(),
-        as_text.bytes(),
+        as_num.into_framed(),
+        as_text.into_framed(),
         "an integer framed as its decimal text"
     );
 }
