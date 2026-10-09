@@ -490,7 +490,11 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
             "the bound is the open's timeout_ms from the open"
         );
         // Held off while the head is read: no load on the runner puts the head past it.
-        set_due(&c, id, std::time::Instant::now() + Duration::from_secs(3600));
+        set_due(
+            &c,
+            id,
+            std::time::Instant::now() + Duration::from_secs(3600),
+        );
         assert_eq!(generation(&c, id).await, 1, "the head is served at once");
         assert!(due(&c, id).is_some(), "the head does not spend the bound");
         let mut buf = [0_u8; 64];
@@ -516,7 +520,11 @@ fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
         let mut buf = [0_u8; 64];
 
         let id = open_bounded(&c, "echo");
-        set_due(&c, id, std::time::Instant::now() + Duration::from_secs(3600));
+        set_due(
+            &c,
+            id,
+            std::time::Instant::now() + Duration::from_secs(3600),
+        );
         assert_eq!(generation(&c, id).await, 1);
         let piece = read(&c, id, &mut buf).await.expect("the answer");
         assert_eq!(piece.kind, PieceKind::Body);
@@ -524,7 +532,11 @@ fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
         c.close(OWNER, id).unwrap();
 
         let id = open_bounded(&c, "echo");
-        set_due(&c, id, std::time::Instant::now() + Duration::from_secs(3600));
+        set_due(
+            &c,
+            id,
+            std::time::Instant::now() + Duration::from_secs(3600),
+        );
         generation(&c, id).await;
         set_due(&c, id, std::time::Instant::now());
         assert_eq!(
