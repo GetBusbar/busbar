@@ -15,9 +15,9 @@ use std::sync::Mutex;
 use std::task::Poll;
 
 use crate::abi::auth::{
-    check_fields, slot, AuthPoints, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, NamedValue, Ops,
-    OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, RequestFacts, VerifyIn,
-    CAP_INBOUND, CAP_OUTBOUND, MODE_OWN, POINT_HEAD, VERDICT_IDENTITY,
+    check_fields, slot, AuthPoints, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, NamedValue,
+    OpenOutboundIn, OpenOutboundOut, Ops, OutboundReadyIn, OutboundReadyOut, RequestFacts,
+    VerifyIn, CAP_INBOUND, CAP_OUTBOUND, MODE_OWN, POINT_HEAD, VERDICT_IDENTITY,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Envelope, InHead, Op as RawOp, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT,

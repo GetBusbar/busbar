@@ -39,8 +39,8 @@ use zeroize::Zeroizing;
 
 use crate::abi::auth::{
     AuthPoint, AuthPoints, AuthTail, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, OpenOutboundIn,
-    OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StyleDecl, VerifyIn, EXT_SCOPE, FIELD_QUERY,
-    FIELD_SENSITIVE, MODE_OWN, MODE_PASSTHROUGH,
+    OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StyleDecl, VerifyIn, EXT_SCOPE,
+    FIELD_QUERY, FIELD_SENSITIVE, MODE_OWN, MODE_PASSTHROUGH,
 };
 use crate::abi::mechanism::call::{Blob, Outcome, Span, BLOB_ABSENT};
 use crate::abi::mechanism::door::KindTailHead;
