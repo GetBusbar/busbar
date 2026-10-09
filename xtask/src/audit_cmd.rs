@@ -171,7 +171,11 @@ fn ids(scopes: &[Json]) -> Vec<String> {
 }
 
 fn cmd_sync(git: &Git, register: &std::path::Path, write: bool) -> i32 {
-    let derived = audit::derive_scopes(git.repo());
+    let mounted = match git.mounted_at("HEAD") {
+        Ok(m) => m,
+        Err(e) => return die(e),
+    };
+    let derived = audit::derive_scopes(git.repo(), &mounted);
     let existing = read_scopes(register);
     let derived_ids = ids(&derived);
     let existing_ids = ids(&existing);
@@ -252,7 +256,7 @@ fn cmd_status(git: &Git, register: &std::path::Path, report: &std::path::Path) -
         "-".repeat(92),
     ];
     for r in &rows {
-        out.push(format!(
+        let mut line = format!(
             "{:<46} {:<11} {:<12} {:>5} {:>6} {:>7}",
             r.id,
             r.kind,
@@ -260,7 +264,11 @@ fn cmd_status(git: &Git, register: &std::path::Path, report: &std::path::Path) -
             dash(r.scope.get("round").as_i64()),
             dash(r.age),
             r.loc
-        ));
+        );
+        if let Some(pin) = &r.pin {
+            line.push_str(&format!("  {pin}"));
+        }
+        out.push(line);
     }
     let prod = audit::production(&rows);
     out.push(String::new());
@@ -353,8 +361,14 @@ fn write_report(
                 .get("report")
                 .as_str()
                 .map_or_else(|| "-".to_string(), |p| format!("`{p}`"));
+            // A PINNED SCOPE SAYS SO, on its own row and nowhere else: every row of the tree itself
+            // stays byte-for-byte what it was.
+            let pinned = r
+                .pin
+                .as_ref()
+                .map_or_else(String::new, |p| format!(" ({p})"));
             md.push(format!(
-                "| `{}` | {} | {} | {} | {} | {res} | {auditor} | {rep} |",
+                "| `{}`{pinned} | {} | {} | {} | {} | {res} | {auditor} | {rep} |",
                 r.id,
                 r.status,
                 dash(sc.get("round").as_i64()),
@@ -1270,7 +1284,11 @@ fn cmd_move(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
         Err(e) => return die(e),
     };
 
-    let derived = audit::derive_scopes(git.repo());
+    let mounted = match git.mounted_at("HEAD") {
+        Ok(m) => m,
+        Err(e) => return die(e),
+    };
+    let derived = audit::derive_scopes(git.repo(), &mounted);
     let derived_ids: Vec<&str> = derived
         .iter()
         .filter_map(|s| s.get("id").as_str())
@@ -1514,27 +1532,24 @@ impl CheckFindings {
 /// round for the answer that is already known.
 type TreeCache = BTreeMap<String, Result<BTreeMap<String, String>, String>>;
 
-/// The hash `rec`'s scope's files ACTUALLY had at the commit `rec` names, through the cache.
-fn stamped_hash(
-    git: &Git,
-    trees: &mut TreeCache,
-    sc: &Json,
-    rec: &Json,
-) -> Result<Option<String>, String> {
+/// The hash `rec`'s scope's files ACTUALLY had at the commit `rec` names.
+///
+/// ONE `ls-tree` PER COMMIT, not one per record: [`Git::tracked_at`] memoises every full commit id
+/// (which is what `record` stamps), and a pinned checkout is read once per pin. Only the pins the
+/// scope's own paths reach are mounted ([`Git::scope_files_at`]), so a record about one crate is
+/// never held hostage to another pin of the same commit — while a record about a pinned crate whose
+/// checkout cannot be produced fails here, naming the package and the commit.
+fn stamped_hash(git: &Git, sc: &Json, rec: &Json) -> Result<Option<String>, String> {
     let Some(at) = audit::record_at(rec) else {
         return Err("the record names no audited_at commit".to_string());
     };
-    let files = trees
-        .entry(at.to_string())
-        .or_insert_with(|| git.files_at(at));
-    match files {
-        // UNDER THE PATHS THE RECORD'S DIGEST IS ACTUALLY OVER. For every record that has not been
-        // through `ledger move` those are the scope's own paths and this reads exactly as it always
-        // did; for a round carried across a rename it is the path the round read, so the rule still
-        // recomputes the round's claim against the tree the round named. See [`audit::hashed_scope`].
-        Ok(files) => Ok(audit::tree_hash(audit::hashed_scope(sc, rec), files)),
-        Err(e) => Err(e.clone()),
-    }
+    // UNDER THE PATHS THE RECORD'S DIGEST IS ACTUALLY OVER. For every record that has not been
+    // through `ledger move` those are the scope's own paths and this reads exactly as it always
+    // did; for a round carried across a rename it is the path the round read, so the rule still
+    // recomputes the round's claim against the tree the round named. See [`audit::hashed_scope`].
+    let under = audit::hashed_scope(sc, rec);
+    let files = git.scope_files_at(under, at)?;
+    Ok(audit::tree_hash(under, &files))
 }
 
 /// The whole `--check` computation, once, for both the printer and the gate.
@@ -1553,7 +1568,8 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
     // THE TREE IMPLIES SCOPES THE REGISTER DOES NOT CARRY. A new crate is uncovered the moment it
     // lands, and this is the line that says so.
     let have: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-    f.missing = audit::derive_scopes(git.repo())
+    let mounted = git.mounted_at("HEAD")?;
+    f.missing = audit::derive_scopes(git.repo(), &mounted)
         .iter()
         .filter_map(|d| d.get("id").as_str().map(str::to_string))
         .filter(|i| !have.contains(i))
@@ -1576,11 +1592,6 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
             ));
         }
     }
-
-    // ONE `ls-tree` PER COMMIT, not one per record. 150 scopes carrying 236 rounds name a couple of
-    // dozen distinct commits between them, and re-resolving each one per round is the difference
-    // between a check and a coffee break.
-    let mut trees: TreeCache = BTreeMap::new();
 
     // ONE REACHABILITY ANSWER PER COMMIT, and the pins read once. `merge-base --is-ancestor` is a
     // process; 150 scopes carrying 236 rounds name a couple of dozen distinct commits between them.
@@ -1696,7 +1707,7 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
                 f.unreachable
                     .push(format!("{label}  audited_at {short} {why}"));
             }
-            match stamped_hash(git, &mut trees, sc, rec) {
+            match stamped_hash(git, sc, rec) {
                 Ok(actual) if actual.as_deref() == rec.get("tree_hash").as_str() => {}
                 Ok(_) => f.stamped.push(format!("{label}  audited_at {short}")),
                 // FAILING TO RESOLVE THE COMMIT IS THE FINDING, not the absence of one. A rule whose

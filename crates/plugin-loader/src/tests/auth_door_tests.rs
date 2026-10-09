@@ -465,6 +465,44 @@ fn a_statement_secret_ref_is_handed_to_open_as_a_secret_not_a_setting() {
     assert!(err.contains("no service credential"), "{err}");
 }
 
+/// THE SETTINGS AND THE SECRETS NEVER PRINT. An instance holds the settings bytes it was opened
+/// over (a resolved bag: a DSN with its password) and its service credentials, and re-sends both on
+/// `refresh`; its `Debug` names the plugin and the label and nothing else, so `{:?}` of an instance
+/// in a log line, a `tracing` field or a panic cannot carry them.
+#[test]
+fn an_instance_debug_never_shows_its_settings_or_secrets() {
+    use crate::auth_door::{AuthInstance, AuthSink};
+    use crate::dispatch::{load_linked, Bind, LinkedRow};
+    let d = dispatcher();
+    let sink = AuthSink::new("keyed");
+    let bind = Bind {
+        instance: Arc::from("keyed-a"),
+        max_inflight_cap: 8,
+        sink: sink.bind(),
+        dispatcher: d.adopter(),
+        conns: crate::dispatch::ConnTable::NoNeeds,
+    };
+    let row = LinkedRow::of(keyed::door).unwrap();
+    let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
+    let a = AuthInstance::open(
+        p,
+        sink,
+        d.clone(),
+        "keyed-a",
+        br#"{"dsn":"db://svc:pw-in-the-settings@db/auth"}"#,
+        vec![b"s3cret".to_vec()],
+    )
+    .expect("the keyed plugin opens over its credential");
+    let shown = format!("{a:?}");
+    assert!(
+        shown.contains("keyed-a"),
+        "the label names the instance: {shown}"
+    );
+    for leak in ["pw-in-the-settings", "db://", "dsn", "s3cret"] {
+        assert!(!shown.contains(leak), "`{leak}` printed: {shown}");
+    }
+}
+
 /// A linked auth plugin whose Statement states one alias rewrite.
 mod aliased {
     use super::*;

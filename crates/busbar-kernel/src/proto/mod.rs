@@ -27,7 +27,6 @@ pub use crate::breaker::StatusClass;
 //   terminator a dialect's writer emits.
 // - `HDR_AUTHORIZATION`   — the canonical lowercase `Authorization` header name.
 // - `IrError`             — the IR-level error alias (`breaker::CanonicalSignal`).
-// - `bearer_auth_headers` — the shared `Authorization: Bearer <key>` builder (warn+OMIT on bad bytes).
 
 // Signal the RESPONSE-side dialect-specific metadata that an egress protocol carries and no ingress
 // protocol can express, so it does not vanish from a translated response with nothing in the logs.
@@ -132,7 +131,7 @@ pub fn residual_default_dialect() -> Option<&'static str> {
 // Per-request signing context. RELOCATED DOWN to the neutral `busbar_kernel::proto` leaf so the
 // substrate `ProtocolDecl`'s `egress_auth_headers` builder names it without depending on
 // `busbar-core`; re-exported here at its historical `busbar_kernel::proto::SigningContext` path so
-// every in-core / plugin caller (`egress_auth`, `proxy::egress`, `health`, the walk/engine forward
+// every in-core / plugin caller (`bound_credential`, `proxy::egress`, `health`, the walk/engine forward
 // paths, the netted dialect writers) is unchanged. Its only non-primitive field is
 // `busbar_contract::config::UpstreamCreds`, so the move carries no core-only machinery.
 
