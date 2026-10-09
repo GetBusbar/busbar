@@ -11681,6 +11681,84 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
     handle.abort();
 }
 
+/// **A MINT THAT HAS NOT ANSWERED IS REFUSED TO A RETRY HOWEVER OLD ITS SENTINEL.** A mint or
+/// rotate stuck past the replay window (a slow store, an unreachable signer) still holds its
+/// in-flight sentinel; a retry with the same `Idempotency-Key` must get the in-flight 409, never a
+/// fresh reservation and a SECOND credential. This drives the served `POST /keys` and
+/// `POST /keys/{id}/rotate` with sentinels placed at unix second 1 (ten minutes is far behind it) by
+/// a first request that never answered.
+#[tokio::test]
+async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() {
+    busbar_kernel::snapshot::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov.clone()).build();
+    let cache = app.idempotency_cache.clone();
+    let router = crate::build_router(app);
+    let (addr, handle, client) = spin_up(router).await;
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+
+    let created: serde_json::Value = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "rotated"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    let generation = || {
+        gov.all_keys()
+            .unwrap()
+            .into_iter()
+            .find(|k| k.id == id)
+            .map(|k| k.generation_hash)
+    };
+    let before = generation();
+    {
+        let mut c = cache.lock().unwrap();
+        for key in [
+            ("admin".to_string(), "stuck-mint".to_string()),
+            ("admin".to_string(), crate::verbs::rotate_replay_key(&id, "stuck-rotate")),
+        ] {
+            c.insert(key, (1, serde_json::Value::Null));
+        }
+    }
+
+    let mint = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .header("idempotency-key", "stuck-mint")
+        .body(serde_json::json!({"name": "k"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        mint.status().as_u16(),
+        409,
+        "the retry of a mint still in flight is refused, not minted a second time"
+    );
+    let rotate = client
+        .post(format!("{keys_url}/{id}/rotate"))
+        .header("x-admin-token", "admintok")
+        .header("idempotency-key", "stuck-rotate")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        rotate.status().as_u16(),
+        409,
+        "the retry of a rotate still in flight is refused, not rotated a second time"
+    );
+    assert_eq!(gov.all_keys().unwrap().len(), 1, "the retried mint minted nothing");
+    assert_eq!(generation(), before, "the retried rotate issued no new credential");
+
+    handle.abort();
+}
+
 /// Every open class the fallback plane (the pools plane a `rate_card` lane falls through to)
 /// declares, at 0 (owner LEDGER-100: each reported count is a declared class, and a present card
 /// configures every one, Q29/Q35), read off the plane's own declaration; the plane is found among the
