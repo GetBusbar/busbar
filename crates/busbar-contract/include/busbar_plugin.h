@@ -50,6 +50,7 @@ extern "C" {
 #define BB_MECH_SPAN_ABSENT UINT32_C(0xffffffff) /* [`span`]: no bytes; the span's length is then `0`. */
 #define BB_MECH_MAX_BYTES UINT64_C(0xffffffff) /* The largest byte count any answer may state (written or needed). */
 #define BB_MECH_HARD_MAX_BYTES UINT64_C(0x1000000) /* The largest blob, or byte `needed`, one answer of the secret, hook or export kind may state */
+#define BB_MECH_STATEMENT_LIST_MAX ((size_t)1024) /* The most entries one Statement list (or one list a kind's tail states) may hold. A count above */
 #define BB_MECH_FAMILY_COUNTER UINT8_C(0) /* [`MetricFamily::kind`]: a counter. */
 #define BB_MECH_FAMILY_GAUGE UINT8_C(1) /* [`MetricFamily::kind`]: a gauge. */
 #define BB_MECH_FAMILY_HISTOGRAM UINT8_C(2) /* [`MetricFamily::kind`]: a histogram. */
@@ -507,10 +508,12 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_FIELDS UINT16_C(16) /* [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers), */
 #define BB_TRANSPORT_PIECE_CONTINUED UINT16_C(32) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier */
 #define BB_TRANSPORT_PIECE_TEXT UINT16_C(64) /* [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire */
+#define BB_TRANSPORT_PIECE_WRITABLE UINT16_C(256) /* [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
 #define BB_TRANSPORT_YIELD_ENDED UINT32_C(1) /* [`FramerYield::flags`]: no frame follows on this connection. */
 #define BB_TRANSPORT_YIELD_MORE UINT32_C(2) /* [`FramerYield::flags`]: a buffer filled; call the same op again once drained. */
 #define BB_TRANSPORT_YIELD_HAS_DEADLINE UINT32_C(4) /* [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then. */
+#define BB_TRANSPORT_YIELD_STREAM_FULL UINT32_C(8) /* [`FramerYield::flags`], on `emit` only: the bytes were taken and the stream's queue is at its */
 #define BB_TRANSPORT_METHOD_GET UINT32_C(1) /* `GET`. */
 #define BB_TRANSPORT_METHOD_HEAD UINT32_C(2) /* `HEAD`. */
 #define BB_TRANSPORT_METHOD_POST UINT32_C(4) /* `POST`. */
@@ -2557,6 +2560,7 @@ struct bb_plane_PlaneTail {
     const bb_plane_AdminRoute *admin_routes;
     size_t admin_routes_len;
     bb_mech_Blob admin_openapi;
+    uint64_t stream_ceiling_secs;
 };
 
 /* One path the built plane answers on. One route — a verb, a target and whether the target is */
@@ -2591,6 +2595,8 @@ struct bb_plane_PlaneSnapshot {
     bb_mech_AbiStr audience;
     bb_mech_AbiStr resource_metadata;
     bb_mech_Blob resource_facts;
+    const bb_mech_AbiStr *listed;
+    size_t listed_len;
 };
 
 /* The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL. */
@@ -3306,7 +3312,7 @@ struct bb_hconn_StreamIn {
     uint64_t stream;
 };
 
-/* [`service::READ`]'s and [`service::WRITE`]'s `in`. The buffer is the plugin's and stays valid */
+/* [`service::READ`]'s and [`service::WRITE`]'s `in`. The buffer is the plugin's, lent for the */
 struct bb_hconn_IoIn {
     bb_hsvc_ServiceHead head;
     uint64_t stream;
@@ -4870,7 +4876,7 @@ BB_ASSERT(offsetof(bb_plane_TrustKey, flags) == 20, "bb_plane_TrustKey.flags: of
 BB_ASSERT(offsetof(bb_plane_TrustKey, default_) == 24, "bb_plane_TrustKey.default_: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms) == 40, "bb_plane_TrustKey.mechanisms: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms_len) == 48, "bb_plane_TrustKey.mechanisms_len: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneTail) == 400, "bb_plane_PlaneTail: size");
+BB_ASSERT(sizeof(bb_plane_PlaneTail) == 408, "bb_plane_PlaneTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneTail) == 8, "bb_plane_PlaneTail: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, head) == 0, "bb_plane_PlaneTail.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, flags) == 8, "bb_plane_PlaneTail.flags: offset");
@@ -4913,6 +4919,7 @@ BB_ASSERT(offsetof(bb_plane_PlaneTail, caller_credential_refusal) == 344, "bb_pl
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_routes) == 360, "bb_plane_PlaneTail.admin_routes: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_routes_len) == 368, "bb_plane_PlaneTail.admin_routes_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_openapi) == 376, "bb_plane_PlaneTail.admin_openapi: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, stream_ceiling_secs) == 400, "bb_plane_PlaneTail.stream_ceiling_secs: offset");
 BB_ASSERT(sizeof(bb_plane_Claim) == 56, "bb_plane_Claim: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_Claim) == 8, "bb_plane_Claim: alignment");
 BB_ASSERT(offsetof(bb_plane_Claim, verb) == 0, "bb_plane_Claim.verb: offset");
@@ -4928,7 +4935,7 @@ BB_ASSERT(offsetof(bb_plane_AdminRoute, target) == 16, "bb_plane_AdminRoute.targ
 BB_ASSERT(offsetof(bb_plane_AdminRoute, flags) == 32, "bb_plane_AdminRoute.flags: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, _reserved) == 36, "bb_plane_AdminRoute._reserved: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, audit_verb) == 40, "bb_plane_AdminRoute.audit_verb: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 128, "bb_plane_PlaneSnapshot: size");
+BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 144, "bb_plane_PlaneSnapshot: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneSnapshot) == 8, "bb_plane_PlaneSnapshot: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, size) == 0, "bb_plane_PlaneSnapshot.size: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, _reserved) == 4, "bb_plane_PlaneSnapshot._reserved: offset");
@@ -4941,6 +4948,8 @@ BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, openapi) == 48, "bb_plane_PlaneSnapsh
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, audience) == 72, "bb_plane_PlaneSnapshot.audience: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_metadata) == 88, "bb_plane_PlaneSnapshot.resource_metadata: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_facts) == 104, "bb_plane_PlaneSnapshot.resource_facts: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed) == 128, "bb_plane_PlaneSnapshot.listed: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed_len) == 136, "bb_plane_PlaneSnapshot.listed_len: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneOpenIn) == 200, "bb_plane_PlaneOpenIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneOpenIn) == 8, "bb_plane_PlaneOpenIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, open) == 0, "bb_plane_PlaneOpenIn.open: offset");

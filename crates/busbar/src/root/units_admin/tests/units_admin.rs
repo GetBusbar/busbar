@@ -3062,6 +3062,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             ArrivalNonce(1),
             PackedReplay,
             CONFIG_CLASS_RULES,
+            Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
         let packed = verbs
             .execute(
@@ -3104,6 +3105,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
         ArrivalNonce(1),
         PackedReplay,
         CONFIG_CLASS_RULES,
+        Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );
     assert!(verbs
         .execute(
@@ -3179,7 +3181,10 @@ fn a_sealed_chain() -> SealedChain {
 
     let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]);
     let mut keys = busbar_kernel_audit::AuditKeySet::new();
-    keys.insert_signer(&signer);
+    keys.insert(
+        busbar_kernel_audit::AuditVerifyingKey::from_hex(&signer.public_key_hex())
+            .expect("a public key"),
+    );
     let mut chain = busbar_kernel_audit::AuditChain::new().signing_with(signer);
 
     let token = an_audit_pass();
@@ -5898,4 +5903,61 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
     checkpoint
         .verify_seal(&crate::root::durability::KeySetVerifier::new(keys))
         .expect("the signed checkpoint verifies against the served key");
+}
+
+/// ROUTE IS FAIL-CLOSED ON AN ABSENT GRANT (audit root-R1 M7).
+///
+/// Approve records the caller's grant before Route reads it, and refuses a caller holding none. A
+/// unit that reaches Route with no grant on record has skipped that step, and the answer is a
+/// refusal: Route used to read the endpoint's own required scope in its place, which is the grant
+/// the caller would have needed and not one it holds.
+#[test]
+#[cfg(feature = "root-admin")]
+fn route_refuses_a_unit_whose_grant_was_never_recorded() {
+    struct Sealed;
+    impl PostureView for Sealed {
+        fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
+            Some((
+                PostureCtx {
+                    operator: busbar_core_admin::OperatorState::Set([0u8; 32]),
+                    dual_control: busbar_core_admin::DualControl::Single,
+                },
+                ApprovalState::NotYetApproved,
+            ))
+        }
+    }
+
+    let seal = busbar_kernel::test_support::tokens::seal();
+    let admin = crate::root::kernel::new_kernel().admin_token();
+    let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+        .with_posture_view(Arc::new(Sealed));
+    let key = UnitKey::new(1);
+    let mut request = a_request();
+    request.method = "POST".to_string();
+    request.path = "/api/v1/admin/chain-break".to_string();
+    binding.units.open(key, request);
+    let ctx = UnitCtx {
+        key,
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: true,
+        kernel_verb_only: true,
+    };
+    decode(
+        &binding,
+        &busbar_kernel::test_support::tokens::pass::<Decode>(),
+        &ctx,
+    )
+    .into_result(&seal)
+    .expect("the plane's table declares this operation");
+    // No `set_granted`: the Approve step never ran for this unit.
+    let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
+    let outcome = route(&binding, None, &admin, &token, &ctx).into_result(&seal);
+    binding.units.close(key);
+    assert_eq!(
+        outcome.map(|_| ()).map_err(|refusal| refusal.reason()),
+        Err(ReasonCode::ScopeDenied),
+        "a unit with no recorded grant reached the verb"
+    );
 }
