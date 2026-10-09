@@ -3,7 +3,7 @@
 
 //! Plugin **manifest, signing input, structural validation, and trust evaluation** for busbar.
 //!
-//! A PLUGIN IS A PLUGIN: store, auth, and hook plugins share ONE manifest format and ONE trust
+//! A PLUGIN IS A PLUGIN: plugins of every kind share ONE manifest format and ONE trust
 //! model, discriminated only by the manifest `kind` field. Every plugin ships as a signed tarball
 //! containing exactly the cdylib and this manifest; identity comes from the SIGNED manifest, never
 //! from the filename.
@@ -11,9 +11,9 @@
 //! The manifest carries:
 //!
 //! - **identity**: `name` (canonical, e.g. `busbar-store-valkey-plugin`), `alias` (the short config name,
-//!   e.g. `valkey`), `kind` (`store` | `auth` | `hook` | `secret`), `version` (semver);
+//!   e.g. `valkey`), `kind` (`store` | `auth` | `hook` | `secret` | `export` | `plane` | `transport`), `version` (semver);
 //! - **binding + compat**: `sha256` (of the library bytes, pinning the manifest to that exact
-//!   binary) and `abi_version` (which busbar C ABI the cdylib exports for its `kind`);
+//!   binary) and `abi_version` (its `kind`'s one memory-ABI version, the only version fact admission reads);
 //! - **authenticity**: `publisher` + `signature` over the *canonical whole manifest*;
 //! - **display**: `description`, `homepage`, `license` (all signed, so they cannot be spoofed).
 //!
@@ -72,7 +72,7 @@ pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", 
 /// This binary's own host identity — the value [`Manifest::host`] must match (or omit) to load.
 /// `busbar` names the OSS engine. A sibling product (e.g. `busbar-ui`) that reuses this exact
 /// manifest/signing/ABI machinery stamps its own plugins `host: busbar-ui`; those manifests are
-/// STRUCTURALLY VALID (same six-symbol C ABI, same signed-manifest shape, same `kind` vocabulary)
+/// STRUCTURALLY VALID (same memory ABI, same signed-manifest shape, same `kind` vocabulary)
 /// but semantically foreign — a `busbar-ui` `store` plugin persists tenants/deployments, not the
 /// keys/denylists an engine `store` plugin implements. Same `kind` string, incompatible contracts,
 /// so `host` is what disambiguates them structurally rather than trusting `kind` alone.
@@ -111,7 +111,7 @@ pub struct Manifest {
     /// Short config alias, e.g. `valkey` - what `governance.store:` may reference. Lowercase
     /// `[a-z0-9-]+`. May equal `name`.
     pub alias: String,
-    /// Plugin category: `store` | `secret` | `auth` | `hook`. Selects the C ABI the cdylib exports and the
+    /// Plugin category (see [`KNOWN_KINDS`]). Selects the kind's door the cdylib exports and the
     /// engine subsystem that consumes it; everything else about the plugin machinery is shared.
     pub kind: String,
     /// The plugin's release version (semver, e.g. `1.5.0`).
@@ -297,12 +297,10 @@ pub struct Declares {
     /// before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "EgressPolicy::is_default")]
     pub egress: EgressPolicy,
-    /// The CONTRACT-ABI RANGE the plugin supports for its kind: the payload-schema versions
-    /// (`abi_version`'s axis) it speaks. A plugin repo states it in its `declares` file, the packer
-    /// signs it into the manifest, and admission ([`validate_abi`]) REFUSES a plugin whose range
-    /// shares no version with this binary's [`crate::supported_abi`] range, naming both. Absent on
-    /// every manifest packed before the field existed, which keep loading on `abi_version` alone
-    /// and keep their canonical bytes (the field is left off the wire when absent).
+    /// SUPERSEDED contract-ABI range (THE DESIGN §2 table, §11.2: a kind has one ABI version, the
+    /// manifest's `abi_version`, and that is the only version fact admission reads). Still PARSED
+    /// and carried, so a tarball signed while the range existed keeps its canonical bytes and its
+    /// signature; [`validate_abi`] no longer reads it, and nothing newly packed states it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract_abi: Option<ContractAbiRange>,
     /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
@@ -324,8 +322,8 @@ pub struct BreakerDecl {
     pub bench_below_trip_threshold: bool,
 }
 
-/// An inclusive `min..=max` range of contract-ABI (payload-schema) versions, as a plugin declares it
-/// in `declares.contract_abi`.
+/// The superseded `declares.contract_abi` range, kept so an already-signed manifest carrying it
+/// still parses and its signed bytes are unchanged. Admission ignores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContractAbiRange {
@@ -970,7 +968,7 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
     // HOST identity gate: an ABSENT `host` means `busbar` (backward compatible with every manifest
     // packed before this field existed). An EXPLICIT `host` that is not the caller's own identity
     // is a hard structural reject — not a silent ignore — because a sibling product (busbar-ui)
-    // reuses the identical six-symbol ABI and signed-manifest shape, so a foreign-host manifest
+    // reuses the identical memory ABI and signed-manifest shape, so a foreign-host manifest
     // would otherwise pass the ABI handshake and go on to answer `kind`-matched calls (e.g.
     // `store`) with an incompatible payload contract. This check runs in phase 1 (structural),
     // independent of trust/signature, so even a validly-signed foreign-host manifest is refused.
@@ -997,37 +995,11 @@ pub fn validate_abi(
     supported_abi: &dyn Fn(&str) -> &'static [u32],
 ) -> Result<(), String> {
     // `supported_abi` returns a CONTIGUOUS `[floor, max]` inclusive range (its endpoints) of the
-    // PAYLOAD-schema versions the binary speaks for this kind. Negotiate the manifest's declared
+    // ABI versions the binary speaks for this kind (the kind's ONE version, THE DESIGN §11.2; a
+    // legacy `declares.contract_abi` range is parsed but never consulted). Negotiate the manifest's declared
     // `abi_version` against it: in range → ok; below floor / above max → refuse LOUD naming both.
     // An empty slice means the kind is unsupported (already caught by KNOWN_KINDS, but fail-closed).
     let supported = supported_abi(&m.kind);
-    // The plugin's OWN declared range first, so a refusal names both ranges: a range sharing no
-    // version with this binary's is a plugin built for another contract, whatever its stamp says.
-    if let (Some(r), Some(&floor), Some(&max)) =
-        (m.declares.contract_abi, supported.first(), supported.last())
-    {
-        if r.min > r.max {
-            return Err(format!(
-                "plugin '{}' declares an empty contract-ABI range v{}..=v{} for kind '{}'",
-                m.name, r.min, r.max, m.kind
-            ));
-        }
-        if r.max < floor || r.min > max {
-            return Err(format!(
-                "plugin '{}' supports contract ABI v{}..=v{} for kind '{}', and this binary \
-                 supports v{floor}..=v{max}: the ranges share no version, refusing to load it; \
-                 rebuild the plugin against the 1.6.0 SDK",
-                m.name, r.min, r.max, m.kind
-            ));
-        }
-        if m.abi_version < r.min || m.abi_version > r.max {
-            return Err(format!(
-                "manifest abi_version {} is outside the contract-ABI range v{}..=v{} plugin '{}' \
-                 declares for kind '{}'",
-                m.abi_version, r.min, r.max, m.name, m.kind
-            ));
-        }
-    }
     match (supported.first(), supported.last()) {
         (Some(&floor), Some(&max)) if m.abi_version >= floor && m.abi_version <= max => {}
         (Some(&floor), Some(&max)) => {

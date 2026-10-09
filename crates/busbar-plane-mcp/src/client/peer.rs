@@ -144,9 +144,9 @@ pub enum ServerNotification {
 pub enum ServerRequestVerb {
     /// Liveness. The only one that is not gated — see the module header.
     Ping,
-    /// `roots/list`: disclose busbar's filesystem roots.
+    /// `roots/list`: disclose the caller's filesystem roots, if it answers.
     RootsList,
-    /// `sampling/createMessage`: run an LLM completion on busbar's pools.
+    /// `sampling/createMessage`: an LLM completion, which the caller runs if it answers.
     SamplingCreateMessage,
     /// `elicitation/create`: solicit user input.
     ElicitationCreate,
@@ -305,9 +305,8 @@ pub enum AskOutcome {
 
 /// DECIDE an authority ask against the operator's per-server grants.
 ///
-/// Takes the grants as a VALUE read at the moment of the decision rather than a captured one, for
-/// the reason `super::jsonrpc::InputRequiredLoop::may_satisfy` takes them as a parameter: there is
-/// no handshake to authorise once, so a revocation has to bite on the next message and not at the
+/// Takes the grants as a VALUE read at the moment of the decision rather than a captured one: there
+/// is no handshake to authorise once, so a revocation has to bite on the next message and not at the
 /// end of a stream that has no end.
 pub fn decide_ask(ask: super::jsonrpc::ServerAsk, grants: &ServerRequestGrants) -> AskOutcome {
     if grants.allows(ask) {

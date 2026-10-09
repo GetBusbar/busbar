@@ -82,9 +82,7 @@ use busbar_contract::conn::{
 };
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_contract::ids::StreamId;
-use busbar_contract::services::{
-    Caller, DiskDest, DiskReport, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
-};
+use busbar_contract::services::{DiskDest, DiskReport, Later, Ran};
 use busbar_contract::transport::ConnFacts;
 
 use super::*;
@@ -235,10 +233,6 @@ impl EnvelopeSink for Tape {
     }
 }
 
-/// The host-service refusal of every service but `disk.append`: this binary's host serves the
-/// disk lane only.
-const NO_SERVICE: &str = "this test host serves disk.append only";
-
 /// THE HOST'S DISK LANE, as this binary serves it: `disk.append` appends to the file the loader
 /// bound for the caller's destination key, rotating by rename first when the file already holds
 /// `rotate_at` bytes and keeping `keep` archives ([`crate::host::rotate`]), then opening it for
@@ -252,7 +246,7 @@ impl DiskHost {
             .rotate_at
             .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
         let (rotated, failed) = if due {
-            crate::host::rotate(&dest.path, dest.keep)
+            crate::host::rotate(std::path::Path::new(&dest.path), dest.keep)
         } else {
             (false, Vec::new())
         };
@@ -283,95 +277,12 @@ impl DiskHost {
     }
 }
 
-impl HostServices for DiskHost {
-    fn now(&self) -> Reading {
-        Reading {
-            wall_ns: 0,
-            mono_ns: 0,
-        }
-    }
-    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
-        Ran::Now(Stored::refused(NO_SERVICE))
-    }
-    fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
-        Ran::Now(Stored::refused(NO_SERVICE))
-    }
-    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
-        Ran::Now(Stored::refused(NO_SERVICE))
-    }
-    fn records_claim(&self, _: &Caller, _: &str, _: &[u8], _: u64, _: Later) -> Ran {
-        Ran::Now(Stored::refused(NO_SERVICE))
-    }
-    fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
-        Stored::refused(NO_SERVICE)
-    }
-    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
-        Ran::Now(Stored::refused(NO_SERVICE))
-    }
-    fn trust_due(&self, _: &Caller) -> Stored {
-        Stored::refused(NO_SERVICE)
-    }
-    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
-        Stored::refused(NO_SERVICE)
-    }
-    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
-        Stored::refused(NO_SERVICE)
-    }
-    fn random_fill(&self, _: u64) -> Stored {
-        Stored::refused(NO_SERVICE)
-    }
-    fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
-        Ran::Now(Stored::refused(NO_SERVICE))
-    }
+/// This binary's host serves the disk lane only: every other service answers as the contract's
+/// shared double does, REFUSED as unserved, and the clock reads zero.
+impl busbar_contract::services::double::ServicesDouble for DiskHost {
     fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
         later(Self::append(dest, &bytes).stored());
         Ran::Later
-    }
-
-    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
-        Ran::Now(Stored::refused("no nested units here"))
-    }
-
-    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
-        Ran::Now(Stored::refused("no work book here"))
-    }
-
-    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
-        Ran::Now(Stored::refused("no work book here"))
-    }
-
-    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Later) -> Ran {
-        Ran::Now(Stored::refused("no work book here"))
-    }
-
-    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
-        Ran::Now(Stored::refused("no work book here"))
-    }
-
-    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
-        Ran::Now(Stored::refused("no verify cache here"))
-    }
-
-    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
-        Stored::refused("no verify cache here")
-    }
-
-    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
-        Ran::Now(Stored::refused("no hook stage here"))
-    }
-
-    fn hook_call(
-        &self,
-        _: &Caller,
-        _: Option<u64>,
-        _: busbar_contract::services::HookAsk,
-        _: Later,
-    ) -> Ran {
-        Ran::Now(Stored::refused("no hook stage here"))
-    }
-
-    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
-        busbar_contract::services::Snapshot::Refused(NO_SERVICE)
     }
 }
 
@@ -1956,15 +1867,16 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     )
     .expect("a plugins.logs block");
     // As the dispatcher binds every door: the host's observability before the binder's log sink.
+    let log_sink = Arc::new(
+        logs.sink(
+            "export.tail",
+            busbar_contract::abi::mechanism::KindCode::Export,
+            Arc::new(crate::dispatch::NoSink),
+        )
+        .expect("a log sink"),
+    );
     let behind = crate::observe::EnvelopeObserver::before(
-        Arc::new(
-            logs.sink(
-                "export.tail",
-                busbar_contract::abi::mechanism::KindCode::Export,
-                Arc::new(crate::dispatch::NoSink),
-            )
-            .expect("a log sink"),
-        ),
+        log_sink.clone(),
         "busbar-export-file",
         busbar_contract::abi::mechanism::kind::EXPORT,
         Vec::new(),
@@ -1976,6 +1888,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         text: b"request-log file open failed; this log was dropped",
     });
     let folds = crate::observe::testing::folds();
+    log_sink.flush();
     let logged: String = std::fs::read_dir(&dir)
         .expect("the log dir")
         .filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok())
