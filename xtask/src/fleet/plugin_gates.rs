@@ -2013,7 +2013,9 @@ mod tests {
             }
             let reason = row.get("reason").as_str().unwrap_or("");
             if !reason.starts_with("TESTS ONLY:") {
-                out.push(format!("{name}: its reason does not start with `TESTS ONLY:`"));
+                out.push(format!(
+                    "{name}: its reason does not start with `TESTS ONLY:`"
+                ));
             }
             if str_list(row.get("repos")).is_empty() {
                 out.push(format!("{name}: its repos is empty"));
