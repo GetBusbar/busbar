@@ -129,6 +129,20 @@ pub trait DestJudge: Send + Sync {
     ///
     /// The refusal of the first refused address.
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal>;
+    /// The name arm for a `host` the kernel's own client is about to dial under `class`, before any
+    /// resolution: an IP literal judged as its own answer, a metadata, blocked or `localhost` name
+    /// decided here ([`Self::judge_name`]'s judgement, with the guard's sentence when it has one).
+    ///
+    /// # Errors
+    ///
+    /// The refusal.
+    fn judge_host(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
+        self.judge_name(host, class, false)
+            .map_err(|verdict| DestRefusal {
+                verdict,
+                reason: format!("host `{host}` was refused by the destination guard"),
+            })
+    }
     /// A config commit: the deployment's destinations are now `d`. A judge that re-reads its
     /// metadata lists at every commit (as 1.5.5 did) takes them from here; the default keeps what
     /// it was built with. Raised through the egress-trust capability the root installs the

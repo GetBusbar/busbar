@@ -504,14 +504,19 @@ fn a_result_that_asks_for_something_is_a_turn() {
     }
 }
 
-/// An envelope with a real result is billed complete exactly once; one with neither result nor
-/// error is not billed complete.
+/// P-ITEM: EMPTY REPLY / UNARY-EMPTY TERMINALITY (spec DONE item 2, "All P-item behaviours match
+/// 1.5.5"; the drive log's P4, commit 470351a480, which the money briefs name "mcp bills empty
+/// answer as complete"). An envelope with a real result is billed complete exactly once; one with
+/// neither result nor error is billed `Partial`, never complete.
 ///
 /// This is a money boundary. A JSON-RPC answer carries exactly one of `result` or `error`; a
 /// document with NEITHER used to fall through to `Complete` and charge the caller for a full answer
 /// that never came. A genuine result closes the unit `Complete`; an empty envelope is `Partial`.
+/// The 1.5.5 behaviour this plane matches is its one surface's (the llm surface; owner correction
+/// 2026-09-28): a response the caller cannot use is not billed as a delivered one (v1.5.5
+/// `crates/busbar/src/proxy/response_body.rs:415-440`).
 #[test]
-fn only_a_real_result_bills_complete() {
+fn p_item_empty_reply_only_a_real_result_bills_complete() {
     let plane = McpPlane::EMPTY;
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
@@ -540,10 +545,10 @@ fn only_a_real_result_bills_complete() {
         .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
         .expect("an empty envelope decodes")
     {
-        Progress::Terminal { r, .. } => assert_ne!(
+        Progress::Terminal { r, .. } => assert_eq!(
             r.finish,
-            busbar_contract::unit::FinishClass::Complete,
-            "an empty envelope must not bill complete"
+            busbar_contract::unit::FinishClass::Partial,
+            "an empty envelope must bill what arrived (Partial), never complete"
         ),
         other => panic!("an empty envelope decoded as {other:?}"),
     }
