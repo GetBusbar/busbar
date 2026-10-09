@@ -194,11 +194,7 @@ fn every_op_of_the_sequence_is_exactly_one_crossing_on_the_compiled_in_door() {
 
 #[test]
 fn the_dropped_in_door_makes_the_same_crossings_and_answers_the_same() {
-    let Some(dropped) = dropped_in() else {
-        eprintln!("skip: the store's cdylib is not built in this scoped run");
-        return;
-    };
-    let (linked, dropped) = (run(&compiled_in()), run(&dropped));
+    let (linked, dropped) = (run(&compiled_in()), run(&dropped_in()));
     if let Err(e) = exact(&counts(&dropped), &EXPECTED) {
         panic!("dropped in: {e}");
     }
