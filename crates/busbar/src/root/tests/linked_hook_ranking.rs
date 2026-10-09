@@ -18,7 +18,7 @@ use busbar_contract::abi::host::hook::{DecideFrame, DecideView};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
 use busbar_contract::abi::mechanism::rendering;
-use busbar_contract::hook_calls::{Answered, HookAxis};
+use busbar_contract::hook_calls::{Answered, HookAxis, HookFacts};
 use busbar_contract::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
 use busbar_kernel::config::{
     parse_strategy, PoolPolicy, DEFAULT_POLICY_TIMEOUT_MS, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
@@ -330,11 +330,15 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
     for word in hook_words(&real) {
         let settings = serde_json::json!({ "policy": word });
         let facts = |axis: &Arc<dyn HookAxis>| axis.probe(&word, &word, &settings);
-        assert_eq!(
-            facts(&doubled),
-            facts(&linked),
-            "the tail's facts, `{word}`"
-        );
+        // The door's facts, its Statement name read as the double's own (C1).
+        let want = facts(&linked).map(|(stated, problems)| {
+            let stated = stated.map(|f| HookFacts {
+                name: ranking_double::NAME.to_string(),
+                ..f
+            });
+            (stated, problems)
+        });
+        assert_eq!(facts(&doubled), want, "the tail's facts, `{word}`");
     }
     for settings in [
         serde_json::json!({}),
