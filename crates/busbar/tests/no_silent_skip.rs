@@ -98,7 +98,9 @@ fn is_ident(c: char) -> bool {
 fn word_at(text: &[char], i: usize, word: &str) -> bool {
     starts(text, i, word)
         && (i == 0 || !is_ident(text[i - 1]))
-        && !text.get(i + word.chars().count()).is_some_and(|c| is_ident(*c))
+        && !text
+            .get(i + word.chars().count())
+            .is_some_and(|c| is_ident(*c))
 }
 
 /// The index of the bracket closing the one opened at `open`, any of `()[]{}` counted.
@@ -297,7 +299,11 @@ fn no_root_crate_test_passes_by_skipping_its_subject() {
     for path in &files {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("the scan reads {}: {e}", path.display()));
-        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for (line, rule) in findings(&src) {
             found.push(format!("{rel}:{line}: {rule}"));
         }

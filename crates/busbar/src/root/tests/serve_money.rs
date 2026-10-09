@@ -59,11 +59,7 @@ const TEST_PLANE: &str = "plane-driver-test-plane";
 
 /// [`governed`], the key bound to a group whose all-time budget is `budget` cents, the test plane
 /// charging one cent per request (`None`: no group, no fee).
-fn governed_with(
-    instance: &'static str,
-    keys_chain: bool,
-    budget: Option<u64>,
-) -> Governed {
+fn governed_with(instance: &'static str, keys_chain: bool, budget: Option<u64>) -> Governed {
     governed_full(instance, keys_chain, budget, Screen::Nothing, None)
 }
 
@@ -835,8 +831,8 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
 /// loader's `neutral_frame_door` example), dropped in and opened through the one door, for its own
 /// claim alone. Not built is a failure in every run, never a skip.
 pub(super) fn neutral_framers() -> super::StreamFramers {
-    use busbar_core_connector::framer::FramerDoor;
     use crate::root::test_plugins::{missing, neutral_frame_door, BUILD_LOADER_EXAMPLES};
+    use busbar_core_connector::framer::FramerDoor;
     static DOOR: std::sync::OnceLock<Arc<dyn FramerDoor>> = std::sync::OnceLock::new();
     let door = DOOR
         .get_or_init(|| {
