@@ -2408,8 +2408,14 @@ fn build_inner(
         // write, and both are release requirements rather than deployment choices.
         ledger: Ledger::dual_writing(legacy_rows),
         // Every record this book seals names this node (THE DESIGN §1: "when (wall + monotonic,
-        // node)"): the node half of every op id the kernel mints in this process.
-        record: AuditChain::new().sealing_as(busbar_kernel::door::node()),
+        // node)"). On a chain the store keeps, that is the id the store assigned this host, the one
+        // the chain is keyed by and walked under, which every boot of the host shares; otherwise it
+        // is the node half of every op id the kernel mints in this process.
+        record: AuditChain::new().sealing_as(if resumed {
+            node
+        } else {
+            busbar_kernel::door::node()
+        }),
         checkpoints: Vec::new(),
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
