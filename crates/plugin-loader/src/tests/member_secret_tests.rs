@@ -8,8 +8,8 @@
 //! its registration NO MEMBER: nothing of it reaches the connection table, and the plugin's open
 //! naming that member reaches it as the table's FIXED-CLASS refusal (`ConnError::Refused`, its
 //! static text), never the source's own words (the variable's name, the reference as written,
-//! "environment variable ... is unset"). The source's refusal is the real one: `busbar-secret-env`,
-//! the linked `env` source.
+//! "environment variable ... is unset"). The source's refusal is the real one: the linked `env`
+//! source, the kind's both-ways fixture.
 //!
 //! The table here holds the connector's contract for member programs (an open naming a member the
 //! declaration did not name is refused, `busbar-core-connector`'s

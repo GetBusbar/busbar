@@ -32,8 +32,8 @@ use crate::root::door_steps::tests::tool_door::{
 };
 use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
-/// The words a secret source's own refusal is phrased in (`busbar-secret-env`,
-/// `busbar-secret-file`, the OS's), matched without case.
+/// The words a secret source's own refusal is phrased in (the linked `env` and `file` sources',
+/// the OS's), matched without case.
 const SOURCE_WORDS: [&str; 4] = [
     "environment variable",
     "secret file",
@@ -147,16 +147,16 @@ fn program_section(secret: &SecretRef) -> serde_yaml::Value {
             crate::root::door_steps::tests::program_member::script().into(),
         ]),
     );
-    let mut env = serde_yaml::Mapping::new();
-    env.insert(
-        "TOKEN".into(),
-        serde_yaml::to_value(serde_json::json!({
-            "module": secret.module,
-            "settings": secret.settings,
-        }))
-        .expect("a reference"),
-    );
-    fs.insert("env".into(), serde_yaml::Value::Mapping(env));
+    let reference = serde_json::json!({
+        "module": secret.module,
+        "settings": secret.settings,
+    });
+    let environment: serde_yaml::Mapping =
+        serde_yaml::from_str(&format!("{{ env: {{ TOKEN: {reference} }} }}"))
+            .expect("a reference");
+    for (key, value) in environment {
+        fs.insert(key, value);
+    }
     fs.insert(
         "pin".into(),
         serde_yaml::from_str("{ mechanism: pinned_pubkey, key: \"sha256/K=\" }").expect("a pin"),

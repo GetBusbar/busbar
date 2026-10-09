@@ -1585,15 +1585,16 @@ fn an_upgrades_verify_off_reaches_the_table_and_a_v1_in_reads_none() {
     assert_eq!(*table.verify_offs.lock().unwrap(), vec![true, false, false]);
 }
 
-/// An `env` secret reference's value, as the linked `env` secret plugin (`busbar-secret-env`, the
-/// real source) resolves it, its refusal the source's own text; any other module does not resolve.
+/// An `env` secret reference's value, as the linked `env` secret plugin (the kind's both-ways
+/// fixture, the real source) resolves it, its refusal the source's own text; any other module does
+/// not resolve.
 /// Every test of this binary installs this one ([`crate::dispatch::install_member_secrets`]: the
 /// first install holds).
 fn env_reference(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
     if r.module != busbar_contract::secret_ref::SECRET_MODULE_ENV {
         return Err(format!("{} does not resolve", r.describe()));
     }
-    let bytes = busbar_secret_env::resolve(&r.settings).map_err(|e| e.message)?;
+    let bytes = crate::both_ways::secret_fixture::resolve(&r.settings).map_err(|e| e.message)?;
     String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8", r.describe()))
 }
 

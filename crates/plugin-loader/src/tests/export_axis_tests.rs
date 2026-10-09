@@ -67,14 +67,15 @@ busbar_request_duration_seconds_count 2
 /// whole sentence, and renders the recorder snapshot back byte for byte — the same either way.
 #[test]
 fn the_scrape_sink_answers_the_same_through_either_door() {
+    let cdylib = "busbar_export_prometheus_plugin";
     let Some(doors) = both(
         "busbar-export-prometheus",
         busbar_export_prometheus::door::door,
-        "busbar_export_prometheus_plugin",
+        cdylib,
     ) else {
         eprintln!(
             "skip: the prometheus sink's cdylib is not built: run `{}`",
-            crate::both_ways::build_command("busbar_export_prometheus_plugin")
+            crate::both_ways::build_command(cdylib)
         );
         return;
     };
@@ -121,14 +122,11 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
 /// connector; the shipped binary's both-doors proof posts them (`traces_stream_both_doors`).
 #[test]
 fn the_trace_sink_answers_the_same_through_either_door() {
-    let Some(doors) = both(
-        "busbar-export-otlp",
-        busbar_export_otlp::door::door,
-        "busbar_export_otlp_plugin",
-    ) else {
+    let cdylib = "busbar_export_otlp_plugin";
+    let Some(doors) = both("busbar-export-otlp", busbar_export_otlp::door::door, cdylib) else {
         eprintln!(
             "skip: the OTLP sink's cdylib is not built: run `{}`",
-            crate::both_ways::build_command("busbar_export_otlp_plugin")
+            crate::both_ways::build_command(cdylib)
         );
         return;
     };
@@ -161,14 +159,11 @@ fn the_trace_sink_answers_the_same_through_either_door() {
 /// same either way. Its POSTs ride the host's connector over the `http` framer.
 #[test]
 fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
-    let Some(doors) = both(
-        "busbar-export-webhook",
-        busbar_export_webhook::door,
-        "busbar_export_webhook_plugin",
-    ) else {
+    let cdylib = "busbar_export_webhook_plugin";
+    let Some(doors) = both("busbar-export-webhook", busbar_export_webhook::door, cdylib) else {
         eprintln!(
             "skip: the webhook sink's cdylib is not built: run `{}`",
-            crate::both_ways::build_command("busbar_export_webhook_plugin")
+            crate::both_ways::build_command(cdylib)
         );
         return;
     };
