@@ -11720,7 +11720,10 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     let before = generation();
     for key in [
         ("admin".to_string(), "stuck-mint".to_string()),
-        ("admin".to_string(), crate::idempotency::rotate_replay_key(&id, "stuck-rotate")),
+        (
+            "admin".to_string(),
+            crate::idempotency::rotate_replay_key(&id, "stuck-rotate"),
+        ),
     ] {
         match cache.probe(key, 1) {
             crate::idempotency::Probe::Reserved(r) => r.leak(),
@@ -11754,8 +11757,16 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
         409,
         "the retry of a rotate still in flight is refused, not rotated a second time"
     );
-    assert_eq!(gov.all_keys().unwrap().len(), 1, "the retried mint minted nothing");
-    assert_eq!(generation(), before, "the retried rotate issued no new credential");
+    assert_eq!(
+        gov.all_keys().unwrap().len(),
+        1,
+        "the retried mint minted nothing"
+    );
+    assert_eq!(
+        generation(),
+        before,
+        "the retried rotate issued no new credential"
+    );
 
     handle.abort();
 }
