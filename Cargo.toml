@@ -105,10 +105,10 @@ busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", re
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
 busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "c22578acc927269f27e25dcef41ff7a4d91403ee" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
-# axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
-# build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
+# axis (feature `hooks-ranking`). The root alone takes it: the kernel's test build links its in-crate
+# R-FIX3 double (`busbar_kernel::test_support::ranking_double`) instead, and the root's
+# `linked_hook_ranking` tests prove the double states what this door states.
 busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
-fixture-hook = { package = "busbar-hook-ranking", git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all

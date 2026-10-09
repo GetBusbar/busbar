@@ -1063,10 +1063,10 @@ fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused(
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The linked hook's Statement name, as this test build links it (the stand-in hook door).
+/// The linked hook's Statement name, as this test build links it (the ranking double).
 #[cfg(feature = "hooks-ranking")]
 fn linked_hook_name() -> &'static str {
-    fixture_hook::NAME
+    crate::test_support::ranking_double::NAME
 }
 
 /// K5b (3c) exit test, on the hook door: the built-in ranking strategies are the HOOK WORDS of ONE

@@ -1488,3 +1488,7 @@ mod auth_tests;
 #[cfg(all(test, linked_every_plane))]
 #[path = "tests/linked_protocols.rs"]
 mod linked_protocols;
+
+#[cfg(all(test, feature = "hooks-ranking"))]
+#[path = "tests/linked_hook_ranking.rs"]
+mod linked_hook_ranking;
