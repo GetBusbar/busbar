@@ -1038,8 +1038,8 @@ mod both_ways {
     /// reason-to-class table of its own (the unserved `Plane` impl's `refusal_words` is deleted,
     /// plane-mcp finding 12).
     #[test]
-    fn p_item_refusal_reason_collapse_the_door_answers_every_reason_at_the_kernels_status_never_internal()
-    {
+    fn p_item_refusal_reason_collapse_the_door_answers_every_reason_at_the_kernels_status_never_internal(
+    ) {
         use busbar_contract::abi::plane::{reason_of, RefusalCode};
         let d = Dispatcher::new(DispatchConfig::default());
         let p = linked(&d);
