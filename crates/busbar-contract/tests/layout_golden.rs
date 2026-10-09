@@ -1718,7 +1718,8 @@ fn compute_layout() -> String {
             caller_credential_refusal,
             admin_routes,
             admin_routes_len,
-            admin_openapi
+            admin_openapi,
+            stream_ceiling_secs
         ]
     );
     record!(
@@ -1745,7 +1746,9 @@ fn compute_layout() -> String {
             openapi,
             audience,
             resource_metadata,
-            resource_facts
+            resource_facts,
+            listed,
+            listed_len
         ]
     );
     record!(s, pkind::PlaneOpenIn, [open, public_url, owned]);
