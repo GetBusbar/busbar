@@ -170,31 +170,19 @@ fn linked(sink: Arc<Recorder>) -> Plugin<TestKind> {
     load_linked::<TestKind>(&row(), bind(sink)).expect("the linked door loads")
 }
 
-/// The example `cdylib` `name` in this target dir (`cargo test` builds examples). Under CI a
-/// missing artifact is a failure, never a skip.
-pub(crate) fn example_cdylib(name: &str) -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let profile = exe.parent()?.parent()?;
-    let path = profile.join("examples").join(format!(
-        "{}{name}{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
-    let found = path.exists().then_some(path);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the {name} example cdylib is not built under CI; a both-ways proof must not skip"
-    );
-    found
+/// The example `cdylib` `name` in this target dir; absent, a hard failure naming the command that
+/// builds it, never a skip.
+pub(crate) fn example_cdylib(name: &str) -> std::path::PathBuf {
+    crate::both_ways::example_cdylib(name)
 }
 
-fn dropped_path() -> Option<std::path::PathBuf> {
+fn dropped_path() -> std::path::PathBuf {
     example_cdylib("dispatch_test_plugin")
 }
 
-fn dropped(sink: Arc<Recorder>) -> Option<Plugin<TestKind>> {
-    let path = dropped_path()?;
-    Some(load_dropped::<TestKind>(&path, &stated(), bind(sink)).expect("the dropped door loads"))
+fn dropped(sink: Arc<Recorder>) -> Plugin<TestKind> {
+    let path = dropped_path();
+    load_dropped::<TestKind>(&path, &stated(), bind(sink)).expect("the dropped door loads")
 }
 
 /// A `tick` frame whose extensions blob names the test op.
@@ -648,11 +636,8 @@ const EXPECTED: &[&str] = &[
 /// THE BOTH-WAYS PROOF: the same script, LINKED and DROPPED, byte-identical, and what the rules say.
 #[test]
 fn one_script_linked_and_dropped_is_byte_identical() {
-    let Some(_) = dropped_path() else {
-        return;
-    };
     let linked_run = script(&|s| linked(s));
-    let dropped_run = script(&|s| dropped(s).expect("the dropped door"));
+    let dropped_run = script(&|s| dropped(s));
     assert_eq!(linked_run, dropped_run, "LINKED and DROPPED diverge");
     assert_eq!(
         linked_run, EXPECTED,
@@ -1102,25 +1087,22 @@ fn red_a_statement_other_than_the_stated_one_is_refused_at_admit() {
         Some(LoadError::StatementMismatch)
     );
     assert!(load_linked::<TestKind>(&row(), bind(quiet())).is_ok());
-    if let Some(path) = dropped_path() {
-        assert_eq!(
-            load_dropped::<TestKind>(&path, &lying, bind(quiet())).err(),
-            Some(LoadError::StatementMismatch)
-        );
-        assert!(load_dropped::<TestKind>(&path, &stated(), bind(quiet())).is_ok());
-    }
+    let path = dropped_path();
+    assert_eq!(
+        load_dropped::<TestKind>(&path, &lying, bind(quiet())).err(),
+        Some(LoadError::StatementMismatch)
+    );
+    assert!(load_dropped::<TestKind>(&path, &stated(), bind(quiet())).is_ok());
 }
 
 /// THE PACK-TIME RENDERING: the dropped `cdylib`'s own door renders the same Statement the linked
 /// `rlib`'s door does (what the pack tool signs); a library with no door states none.
 #[test]
 fn the_pack_time_rendering_of_a_library_is_its_door_s() {
-    if let Some(path) = dropped_path() {
-        assert_eq!(
-            crate::dispatch::rendering_of_library(&path).unwrap(),
-            Some(stated())
-        );
-    }
+    assert_eq!(
+        crate::dispatch::rendering_of_library(&dropped_path()).unwrap(),
+        Some(stated())
+    );
     #[cfg(target_os = "macos")]
     let libc = "/usr/lib/libSystem.B.dylib";
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -1139,7 +1121,7 @@ fn panic_child() {
         return;
     };
     let p = if origin == "dropped" {
-        dropped(quiet()).expect("the dropped door")
+        dropped(quiet())
     } else {
         linked(quiet())
     };
@@ -1153,12 +1135,9 @@ fn panic_child() {
 /// A panic that escapes a hand-written slot ABORTS the process — in both origins.
 #[test]
 fn red_a_panic_in_a_hand_written_slot_aborts() {
-    let origins: &[&str] = if dropped_path().is_some() {
-        &["linked", "dropped"]
-    } else {
-        &["linked"]
-    };
-    for origin in origins {
+    // An absent dropped door fails here, naming its build command, not in the child.
+    dropped_path();
+    for origin in ["linked", "dropped"] {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -1501,11 +1480,8 @@ fn red_the_host_zeroes_the_whole_out_before_a_crossing() {
 fn an_unload_runs_on_the_reaper_never_under_a_worker_lock() {
     use crate::dispatch::load::UNLOADS;
     use std::sync::atomic::Ordering::SeqCst;
-    if dropped_path().is_none() {
-        return;
-    }
     let d = Dispatcher::new(config());
-    let p = dropped(quiet()).expect("the dropped door");
+    let p = dropped(quiet());
     assert_eq!(open(&d, &p, 0), Outcome::Ready);
     let drv = d.driver(&p, 0).unwrap();
     let gone = std::sync::Arc::downgrade(&p.inner);
