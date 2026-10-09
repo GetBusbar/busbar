@@ -107,7 +107,14 @@ fn literal_end(b: &[u8], i: usize) -> Option<usize> {
             let hashes = j - i - 1;
             j += 1;
             while j < b.len() {
-                if b[j] == b'"' && b[j + 1..].iter().take(hashes).filter(|&&c| c == b'#').count() == hashes {
+                if b[j] == b'"'
+                    && b[j + 1..]
+                        .iter()
+                        .take(hashes)
+                        .filter(|&&c| c == b'#')
+                        .count()
+                        == hashes
+                {
                     return Some(j + 1 + hashes);
                 }
                 j += 1;

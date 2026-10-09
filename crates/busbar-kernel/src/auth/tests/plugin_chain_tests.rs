@@ -232,12 +232,7 @@ fn auth_manifest_with_root_secret_schema(
 
 /// Write an UNSIGNED auth-oidc tarball whose manifest declares `audience` as a ROOT-LEVEL
 /// `x-busbar-secret` field (see [`auth_manifest_with_root_secret_schema`]).
-fn write_auth_plugin_with_root_secret_schema(
-    dir: &Path,
-    file: &str,
-    name: &str,
-    alias: &str,
-) {
+fn write_auth_plugin_with_root_secret_schema(dir: &Path, file: &str, name: &str, alias: &str) {
     let lib = std::fs::read(auth_cdylib()).expect("read the auth-oidc cdylib");
     let tarball = unsigned_tarball(
         auth_manifest_with_root_secret_schema(name, alias, "acme", "audience"),
