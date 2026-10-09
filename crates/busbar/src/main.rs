@@ -1589,14 +1589,9 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) = root::listener::serve_admitted(
-                listener,
-                router,
-                Some(security),
-                shutdown,
-                balancer,
-            )
-            .await
+            if let Err(e) =
+                root::listener::serve_admitted(listener, router, Some(security), shutdown, balancer)
+                    .await
             {
                 die(format!("server error on '{label}': {e}"));
             }

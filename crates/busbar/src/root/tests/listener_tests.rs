@@ -313,13 +313,17 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
     // The "accepted config that is already serving": the historical defaults (30s inter-frame).
     // Itself guarded so this test leaks nothing to the rest of the binary.
-    let _baseline = busbar_kernel::config::limits::InstallGuard::install(&busbar_kernel::config::LimitsResolved::default());
+    let _baseline = busbar_kernel::config::limits::InstallGuard::install(
+        &busbar_kernel::config::LimitsResolved::default(),
+    );
     {
         // A candidate config whose build then FAILS. Its limits are live while the build runs…
-        let _rejected = busbar_kernel::config::limits::InstallGuard::install(&busbar_kernel::config::LimitsResolved {
-            request_body_read_timeout_secs: 1,
-            ..busbar_kernel::config::LimitsResolved::default()
-        });
+        let _rejected = busbar_kernel::config::limits::InstallGuard::install(
+            &busbar_kernel::config::LimitsResolved {
+                request_body_read_timeout_secs: 1,
+                ..busbar_kernel::config::LimitsResolved::default()
+            },
+        );
         assert_eq!(
             busbar_kernel::limits::request_body_read_timeout_secs(),
             1,
@@ -392,8 +396,9 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
     // `uninstalled_accessors_return_historical_defaults` asserts against the UNINSTALLED state.
     // That it currently passes is an accident of the values happening to equal the defaults; the
     // guard makes it a property instead of a coincidence.
-    let _limits_guard =
-        busbar_kernel::config::limits::InstallGuard::install(&busbar_kernel::config::LimitsResolved::default());
+    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(
+        &busbar_kernel::config::LimitsResolved::default(),
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -472,8 +477,9 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
     // Through the RAII guard, not the bare setter — see the note in
     // `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`.
-    let _limits_guard =
-        busbar_kernel::config::limits::InstallGuard::install(&busbar_kernel::config::LimitsResolved::default());
+    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(
+        &busbar_kernel::config::LimitsResolved::default(),
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -836,11 +842,19 @@ fn the_kernel_serves_no_http() {
     let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../busbar-kernel/src"));
     let mut files = Vec::new();
     walk(root, &mut files);
-    assert!(!files.is_empty(), "no kernel sources under {}", root.display());
+    assert!(
+        !files.is_empty(),
+        "no kernel sources under {}",
+        root.display()
+    );
     let mut hits = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file).expect("read kernel source");
-        for needle in ["hyper_util::server", "TowerToHyperService", "GracefulShutdown"] {
+        for needle in [
+            "hyper_util::server",
+            "TowerToHyperService",
+            "GracefulShutdown",
+        ] {
             if text.contains(needle) {
                 hits.push(format!("{}: {needle}", file.display()));
             }
