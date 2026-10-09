@@ -43,9 +43,11 @@
 //! ## The ROOT LEG column — the same matrix, judged a second time over the loop
 //!
 //! Every plane now also runs through the composition root — `root-llm` (the node, behind
-//! `proto-llm`) / `root-admin` behind their features, `root-mcp` / `root-a2a` / `root-voice` on the kernel-loop rider those planes are served
-//! through (`root/gauntlet_kernel.rs`, the voice leg on its session rider, gated by `plane-mcp` /
-//! `plane-a2a` / `plane-streaming`, the features that link them). A capability proven where the plane crate serves it and
+//! `proto-llm`) / `root-admin` behind their features, `root-mcp` through the MCP plane's memory-ABI
+//! door on the kernel's plane driver (`root/serve.rs`, its cells in the `#[path]` test file
+//! `root/tests/serve_tests.rs`, gated by `plane-mcp`), `root-a2a` / `root-voice` on the kernel-loop
+//! rider those planes are served through (`root/gauntlet_kernel.rs`, the voice leg on its session
+//! rider, gated by `plane-a2a` / `plane-streaming`, the features that link them). A capability proven where the plane crate serves it and
 //! unwitnessed where the root drives it is the same silent half-answer this file exists to refuse,
 //! so the ledger carries a SECOND verdict per cell (`root`) and this gate runs the matrix ONCE PER
 //! LEG: for each declared leg, every cell in that leg's ledger columns is checked against the leg's
@@ -477,6 +479,63 @@ fn sibling_tests_file(file: &str) -> String {
     }
 }
 
+/// The files `file` (a repo-relative `.rs`) declares as modules through `#[path = "<rel>"]`, each
+/// resolved against `file`'s own directory as rustc resolves it: the test files a leg's module
+/// carries one file further down (`#[cfg(test)] #[path = "tests/serve_tests.rs"] mod door_tests;`).
+/// Only a `#[path]` ATTRIBUTE counts: a line that merely mentions one in a comment declares nothing.
+fn path_declarations(root: &Path, file: &str) -> Vec<String> {
+    let Ok(src) = std::fs::read_to_string(root.join(file)) else {
+        return Vec::new();
+    };
+    let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
+    src.lines()
+        .filter_map(|l| l.trim().strip_prefix("#[path = \""))
+        .filter_map(|rest| rest.split_once("\"]").map(|(rel, _)| rel))
+        .map(|rel| {
+            let mut parts: Vec<&str> = dir.split('/').filter(|p| !p.is_empty()).collect();
+            for seg in rel.split('/') {
+                match seg {
+                    ".." => {
+                        parts.pop();
+                    }
+                    "." | "" => {}
+                    seg => parts.push(seg),
+                }
+            }
+            parts.join("/")
+        })
+        .collect()
+}
+
+/// THE MODULE THAT DECLARES a leg's file, as the composition root's `mod.rs` names it: the file's
+/// own stem when it sits in [`ROOT_DIR`]; the module directory it lives under (`units_admin/…`);
+/// or, for a `#[path]` test file in `root/tests/`, the stem of the root file whose `#[path]`
+/// declares it. `None` when no root file declares it.
+fn declaring_module(root: &Path, file: &str) -> Option<String> {
+    let rel = file.strip_prefix(ROOT_DIR)?;
+    let stem = |f: &str| {
+        Path::new(f)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+    };
+    match rel.split_once('/') {
+        None => stem(rel),
+        Some((dir, _)) if dir != "tests" => Some(dir.to_string()),
+        Some(_) => std::fs::read_dir(root.join(ROOT_DIR))
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|name| name.ends_with(".rs"))
+            .find(|name| {
+                path_declarations(root, &format!("{ROOT_DIR}{name}"))
+                    .iter()
+                    .any(|d| d == file)
+            })
+            .and_then(|name| stem(&name)),
+    }
+}
+
 fn named_fn_exists(root: &Path, id: &str, test: &str) -> Result<(), String> {
     named_test_is_real(root, id, test, "root cell")
 }
@@ -633,18 +692,24 @@ fn verify_root(
                         )
                     })?;
                 let want = leg_file.get(leg).unwrap();
-                // The leg's own file OR the test file that file declares. The tree's test-locality
+                // The leg's own file OR a test file that file declares. The tree's test-locality
                 // rule puts a `foo.rs` body in `tests/foo_tests.rs` and leaves `foo.rs` holding the
-                // `#[path]` declaration, so the cells are still the leg's own — same module, same
-                // `use super::*`, one file further down. Both spellings are accepted and nothing
-                // else is: evidence from a SIBLING leg's file still fails, which is what this
-                // check is for.
-                if !test.starts_with(&format!("{want}::"))
-                    && !test.starts_with(&format!("{}::", sibling_tests_file(want)))
-                {
+                // `#[path]` declaration, so the cells are still the leg's own — same module, one
+                // file further down; and a leg file may carry more than one such file
+                // (`serve.rs`'s `#[path = "tests/serve_tests.rs"] mod door_tests;`), each read off
+                // the leg file's own `#[path]` attributes. Those are accepted and nothing else is:
+                // evidence from a file the leg does not declare — a SIBLING leg's file, or any
+                // other — still fails, which is what this check is for.
+                let declared = path_declarations(root, want);
+                let owned = std::iter::once(want.clone())
+                    .chain(std::iter::once(sibling_tests_file(want)))
+                    .chain(declared.iter().cloned())
+                    .any(|f| test.starts_with(&format!("{f}::")));
+                if !owned {
                     return Err(format!(
                         "cell `{id}`'s root evidence {test:?} does not live in `{leg}`'s own file \
-                         {want} (nor in its declared {}). A leg is proven by its own cells.",
+                         {want} (nor in its declared {}, nor in a file it declares through \
+                         `#[path]`: {declared:?}). A leg is proven by its own cells.",
                         sibling_tests_file(want)
                     ));
                 }
@@ -953,12 +1018,17 @@ fn the_root_leg_matrix_runs_once_per_leg() {
         .expect("`root_legs` is an object");
     for leg in &compiled {
         let file = legs_obj[*leg]["file"].as_str().expect("a leg names a file");
-        leg_module_declared(&root, &mod_rs, file).unwrap_or_else(|e| {
-            panic!(
-                "leg `{leg}` is COMPILED INTO this build, but {e}. A leg whose feature is on and \
-                 whose module the root does not carry proves cells this binary cannot run."
-            )
+        // The module that DECLARES the leg's file is the one the root must carry: the file's own
+        // when it sits in the root, else the root file whose `#[path]` declares it.
+        let module = declaring_module(&root, file).unwrap_or_else(|| {
+            panic!("leg `{leg}`'s file {file} is declared by no module of the composition root")
         });
+        assert!(
+            mod_rs.contains(&format!("pub mod {module};")),
+            "leg `{leg}` is COMPILED INTO this build, but crates/busbar/src/root/mod.rs declares no \
+             `pub mod {module};`. A leg whose feature is on and whose module the root does not carry \
+             proves cells this binary cannot run."
+        );
         assert!(
             s.per_leg[*leg].0 > 0
                 || legs_obj[*leg]["columns"]
@@ -975,77 +1045,6 @@ fn the_root_leg_matrix_runs_once_per_leg() {
         root_legs().len(),
         compiled
     );
-}
-
-/// WHETHER THE COMPOSITION ROOT CARRIES A LEG'S FILE: `crates/busbar/src/root/tests/<m>.rs` is
-/// carried when the root declares `pub mod <m>;` (the leg's file is that module's test body), OR
-/// when a module the root declares (`pub mod <owner>;`, `crates/busbar/src/root/<owner>.rs`) declares
-/// the file as one of its own test modules through `#[path = "tests/<m>.rs"]` (ARCHITECT 2026-10-05
-/// Q1: a door plane's leg lives in the serving module's test file, e.g. `serve.rs`'s
-/// `tests/serve_tests.rs`). Anything else is refused, naming the file.
-fn leg_module_declared(root: &Path, mod_rs: &str, file: &str) -> Result<(), String> {
-    let path = Path::new(file);
-    let module = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| format!("its file {file} has no module name"))?;
-    if mod_rs.contains(&format!("pub mod {module};")) {
-        return Ok(());
-    }
-    let base = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| format!("its file {file} has no file name"))?;
-    let attr = format!("#[path = \"tests/{base}\"]");
-    let owners: Vec<&str> = mod_rs
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("pub mod "))
-        .filter_map(|l| l.strip_suffix(';'))
-        .collect();
-    let carried = owners.iter().any(|owner| {
-        std::fs::read_to_string(root.join(format!("crates/busbar/src/root/{owner}.rs")))
-            .is_ok_and(|src| src.contains(&attr))
-    });
-    if carried && file.starts_with(ROOT_DIR) && file.contains("/tests/") {
-        return Ok(());
-    }
-    Err(format!(
-        "crates/busbar/src/root/mod.rs declares no `pub mod {module};` and no module it declares \
-         carries `{attr}`, so {file} is no module of the composition root"
-    ))
-}
-
-/// THE LEG-FILE RULE, BOTH WAYS: a test file a declared root module carries through `#[path]` is a
-/// leg file (the streaming door's `serve.rs` -> `tests/serve_tests.rs`); a file no declared module
-/// carries is refused. RED: the rule read `pub mod <stem>;` alone and refused the first.
-#[test]
-fn selftest_a_leg_file_is_a_module_or_a_declared_modules_path_test_file() {
-    let root = repo_root();
-    let mod_rs = std::fs::read_to_string(root.join("crates/busbar/src/root/mod.rs"))
-        .expect("the composition root's mod.rs");
-    assert_eq!(
-        leg_module_declared(
-            &root,
-            &mod_rs,
-            "crates/busbar/src/root/tests/serve_tests.rs"
-        ),
-        Ok(())
-    );
-    assert_eq!(
-        leg_module_declared(
-            &root,
-            &mod_rs,
-            "crates/busbar/src/root/tests/gauntlet_kernel.rs"
-        ),
-        Ok(())
-    );
-    let refused = leg_module_declared(
-        &root,
-        &mod_rs,
-        "crates/busbar/src/root/tests/no_such_leg_file.rs",
-    )
-    .expect_err("an undeclared file is no leg file");
-    assert!(refused.contains("no_such_leg_file.rs"), "{refused}");
 }
 
 /// The constants above ARE the doctrine; a refactor that widened `verify`'s parameters must not be
@@ -1665,6 +1664,67 @@ fn selftest_root_evidence_that_vanished_or_came_from_another_leg_is_red() {
     for r in [root, root2] {
         let _ = std::fs::remove_dir_all(&r);
     }
+}
+
+/// A leg's evidence may live in a test file the leg file DECLARES through `#[path]` (`serve.rs`'s
+/// `#[path = "tests/serve_tests.rs"] mod door_tests;`), and only there: the same test in a file the
+/// leg does not declare — or one merely NAMED in a comment of the leg file — is refused.
+#[test]
+fn selftest_root_evidence_in_a_path_declared_test_file_is_the_legs_and_no_other_is() {
+    let root = scratch("root-path-declared");
+    let mut doc = root_fixture(&root);
+    let dir = root.join(ROOT_DIR);
+    std::fs::create_dir_all(dir.join("tests")).unwrap();
+    std::fs::write(
+        dir.join("units_a.rs"),
+        format!(
+            "{GREEN_ROOT_FIXTURE_LEG}\n// see #[path = \"tests/mentioned.rs\"]\n\
+             #[cfg(test)]\n#[path = \"tests/declared_door.rs\"]\nmod door_tests;\n"
+        ),
+    )
+    .unwrap();
+    for f in ["declared_door.rs", "undeclared_door.rs", "mentioned.rs"] {
+        std::fs::write(
+            dir.join("tests").join(f),
+            "use super::*;\n\n#[test]\nfn the_door_cell() {\n    assert_eq!(meter(), 7);\n}\n",
+        )
+        .unwrap();
+    }
+    doc["cells"][0]["root"]["test"] =
+        "crates/busbar/src/root/tests/declared_door.rs::the_door_cell".into();
+    verify_root(&doc, &root, &FIXTURE_LEGS, 1)
+        .expect("a test file the leg declares through #[path] is the leg's own evidence");
+    assert_eq!(
+        declaring_module(&root, "crates/busbar/src/root/tests/declared_door.rs").as_deref(),
+        Some("units_a"),
+        "the declaring module is the leg file's"
+    );
+
+    // RED: a file the leg does not declare, and one its comment merely names.
+    for f in ["undeclared_door.rs", "mentioned.rs"] {
+        doc["cells"][0]["root"]["test"] =
+            format!("crates/busbar/src/root/tests/{f}::the_door_cell").into();
+        let err = verify_root(&doc, &root, &FIXTURE_LEGS, 1)
+            .expect_err("evidence from a file the leg does not declare is refused");
+        assert!(err.contains("proven by its own cells"), "{f}: {err}");
+    }
+    // RED: the SIBLING leg's declared file is not this leg's.
+    doc["cells"][0]["root"]["test"] =
+        "crates/busbar/src/root/tests/undeclared_door.rs::the_door_cell".into();
+    std::fs::write(
+        dir.join("units_b.rs"),
+        format!("{GREEN_ROOT_FIXTURE_LEG}\n#[cfg(test)]\n#[path = \"tests/undeclared_door.rs\"]\nmod d;\n"),
+    )
+    .unwrap();
+    let err = verify_root(&doc, &root, &FIXTURE_LEGS, 1)
+        .expect_err("another leg's declared file is another leg's evidence");
+    assert!(err.contains("proven by its own cells"), "{err}");
+    assert_eq!(
+        declaring_module(&root, "crates/busbar/src/root/tests/nobody.rs"),
+        None,
+        "a file no root module declares has no declaring module"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// A cell with NO second verdict, and a `none` with no argument. R-16: name the gap, never paper it

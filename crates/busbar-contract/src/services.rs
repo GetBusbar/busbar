@@ -131,6 +131,14 @@ pub trait HostServices: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
+    /// `trust.state`: the kernel's trust state of `counterparty` and its items (a `KEY_*` value;
+    /// one span per item, its value `<word>\0<approved>\0<seen>`). Never pends. Unserved by
+    /// default.
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let _ = (caller, counterparty);
+        Stored::refused(UNSERVED)
+    }
+
     /// `trust.serves`: THE KERNEL'S APPROVE as a query: whether `counterparty` serves `item`
     /// (`None` = the counterparty as a whole) at `digest` (`None` = its last sighting). READY
     /// with `DISTRUST_NONE` or the `DISTRUST_*` that refuses it. Never pends. Unserved by default.
@@ -164,6 +172,15 @@ pub trait HostServices: Send + Sync {
     /// serves, `None` for a crossing that serves none) is entitled to `target`,
     /// `"<scope_kind>:<name>"`. READY `ENTITLED` or `NOT_ENTITLED`. Never pends.
     fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored;
+
+    /// `session.emit`: write `bytes`, unsolicited, on the open carrier session `session`, outside
+    /// any unit: READY with nothing written back. A session that is not open, or not `caller`'s,
+    /// is REFUSED. Unbilled; the host audits it as a session event under the session's verified
+    /// principal. Never pends. A host that holds no carrier session refuses every one.
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        let _ = (caller, session, bytes);
+        Stored::refused(UNSERVED)
+    }
 
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.
@@ -430,6 +447,14 @@ pub fn merge_list(
         .take(limit)
         .collect()
 }
+
+// THE SHARED TEST DOUBLE IS NOT IN A RELEASE BUILD: [`HostServices`] with a refusing default per
+// service, kept in step with the trait here. Compiled for this crate's own tests and, through the
+// dev-only `services-double` feature, for a plugin's dev-dependency edge;
+// `tests/test_seal_is_dev_only.rs` refuses any non-dev edge that enables it.
+#[cfg(any(test, feature = "services-double"))]
+#[path = "services_double.rs"]
+pub mod double;
 
 #[cfg(test)]
 #[path = "tests/services_tests.rs"]

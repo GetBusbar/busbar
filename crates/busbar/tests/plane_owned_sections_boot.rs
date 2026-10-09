@@ -29,10 +29,16 @@ fn owning_planes() -> Vec<&'static PlaneDecl> {
         .iter()
         .filter(|d| !d.owned_config_sections.is_empty())
         .collect();
+    // Non-vacuity, against the doctrine: with every plane compiled in, some linked plane owns a
+    // section exactly when the doctrine pins an `owned-section` row. It pins none since FLIP-MCP and
+    // FLIP-STREAMING: both section-owning planes are door planes, whose sections their doors'
+    // Statements declare (DECL-FOLD), not a linked PlaneDecl.
     #[cfg(linked_every_plane)]
-    assert!(
-        !owning.is_empty(),
-        "non-vacuity: with every plane compiled in, some linked plane owns a section"
+    assert_eq!(
+        owning.is_empty(),
+        common::doctrine_rows("owned-section").is_empty(),
+        "non-vacuity: with every plane compiled in, the linked planes own a section exactly when \
+         the doctrine pins one"
     );
     owning
 }

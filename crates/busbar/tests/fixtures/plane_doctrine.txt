@@ -30,7 +30,8 @@ root-leg root-decisions plane-decisions
 # crate <crates/busbar-<suffix>> <ledger column>...: the columns each workspace plane crate answers
 # to (both halves of every plane; plane-streaming is the plane voice is a dialect of).
 crate llm llm
-crate mcp mcp-client mcp-server
+# (`crate mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: crates/busbar-mcp is deleted; the mcp plane is
+# `plane-mcp` below.)
 crate a2a a2a-client a2a-server
 crate plane-llm llm
 crate plane-mcp mcp-client mcp-server
@@ -46,11 +47,17 @@ crate plane-decisions decisions
 # column(s) it answers to. The streaming plane is not on it since FLIP-STREAMING: it is served only
 # through its memory-ABI door (`plane-door` axis), which has no linked PlaneDecl to compare.
 installed llm llm
-installed mcp mcp-client mcp-server
+# (`installed mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: the mcp plane is served through its
+# memory-ABI door alone and installs no PlaneDecl, so it is not on the reflected axis; its columns are
+# still answered by the `root-mcp` leg.)
 installed a2a a2a-client a2a-server
 #
 # owned-section <plane key> <declaring section> <owned section>...: the linked planes that own the
-# grammar of a top-level section, and those sections (plane_owned_sections_boot.rs). `streams:` is
-# the streaming door's, folded from its Statement into the kernel registry (DECL-FOLD, ARCHITECT
-# Q-DEL-A2A-DECL; spec #49), not a linked plane's.
-owned-section mcp tools mcp
+# grammar of a top-level section, and those sections (plane_owned_sections_boot.rs).
+# (`owned-section mcp tools mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: these rows pin the LINKED
+# PlaneDecl planes' owned sections, and the mcp plane installs no PlaneDecl any more. Its `tools` /
+# `mcp` sections are declared by its door's Statement, which the config-schema gate reads as a
+# door-only plane's declaration (xtask/src/gates/config_schema/declared.rs).)
+# (`owned-section streaming streams streams` STRUCK, FLIP-STREAMING: `streams:` is the streaming
+# door's, folded from its Statement into the kernel registry (DECL-FOLD, ARCHITECT Q-DEL-A2A-DECL;
+# spec #49), not a linked plane's. No linked plane owns a section now.)

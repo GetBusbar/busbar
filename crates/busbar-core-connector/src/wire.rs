@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A FRAMER ENTRY OVER HOST SOCKETS: [`HostWire`] serves one transport entry that frames directly
-//! over the host's socket (an empty `composes_over`) through the connector's own host-side surface,
-//! or one that COMPOSES OVER another layer ([`HostWire::composed`], SEAM-4f: a framer over the stream
-//! a lower layer hands up, e.g. a message framer over an upgraded http connection), which dials the
-//! host's socket itself — its `begin` writes the opening the lower layer would have — and adopts a
-//! stream the lower layer detached.
+//! A TRANSPORT ENTRY OVER HOST SOCKETS: [`HostWire`] serves one transport entry over the host's
+//! socket through the connector's own host-side surface, a carrier as itself or a framer over the
+//! carrier the connector chose. No entry composes over another (`BUSBAR-1.6.0.md` TRANSPORT-STACK
+//! (2), :4721: every entry states an EMPTY `composes_over`, and the carrier is the connector's
+//! choice from the target's scheme); a stream another entry handed up is ADOPTED by the entry the
+//! connector picks for it ([`HostWire::adopt_from`]), never by a list the entry states.
 //! The connector is core and presents no plugin face; the composition root adapts this surface to
 //! the kernel's legacy transport seam, so the kernel's listeners, accept loop and upgrades drive it
 //! the way they drive any transport.
@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT, SIDE_DIAL};
+use busbar_contract::abi::transport::{CLOSE_NORMAL, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL};
 use busbar_contract::transport::wire::{
     ArrivalRecord, CloseReason, Conn, ConnHandle, Direction as FrameDirection, FrameMeta, RawIo,
     RawStream, TransportError,
@@ -52,9 +52,6 @@ pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 pub struct HostWire {
     door: Arc<dyn FramerDoor>,
     key: &'static str,
-    /// The layer a composing entry was built over ([`HostWire::composed`]); `None` = it frames the
-    /// host's own socket.
-    over: Option<&'static str>,
     conns: Arc<Mutex<HashMap<u64, Arc<HostConn>>>>,
     next: AtomicU64,
     dial_timeout: Duration,
@@ -232,7 +229,7 @@ fn opened(y: &Yielded) -> bool {
     !y.wire.is_empty() || !y.pieces.is_empty()
 }
 
-/// What one connection reads and writes: the host's own socket, or the stream a lower layer handed
+/// What one connection reads and writes: the host's own socket, or the stream another entry handed
 /// up ([`HostWire::adopt_from`]).
 #[derive(Clone)]
 enum Io {
@@ -305,7 +302,8 @@ impl HostWire {
     ///
     /// # Errors
     ///
-    /// The entry states no claim, or composes over a layer (it does not frame the host's socket).
+    /// The entry states no claim, or names another transport it composes over (no transport names
+    /// another: the carrier is the connector's choice).
     pub fn new(door: Arc<dyn FramerDoor>) -> Result<Self, String> {
         let facts = door.facts();
         let Some(&key) = facts.claims.first() else {
@@ -313,51 +311,14 @@ impl HostWire {
         };
         if !facts.composes_over.is_empty() {
             return Err(format!(
-                "transport `{}` composes over a layer; only a framer over the host's socket is \
-                 served here",
+                "transport `{}` names a transport it composes over; no transport names another \
+                 (the carrier is the connector's choice from the target's scheme)",
                 facts.name
             ));
         }
         Ok(Self {
             door,
             key,
-            over: None,
-            conns: Arc::new(Mutex::new(HashMap::new())),
-            next: AtomicU64::new(1),
-            dial_timeout: DIAL_TIMEOUT,
-        })
-    }
-
-    /// THE ENTRY behind `door`, which COMPOSES OVER a lower layer, built over `over` (the lower
-    /// layer's key; `None` where the composition carries none of the layers it declares, which the
-    /// registry's boot check refuses by name). It dials the host's socket itself (its `begin` on the
-    /// dial side writes whatever opening the lower layer would have), and adopts a stream the layer
-    /// under it hands up ([`HostWire::adopt_from`]).
-    ///
-    /// # Errors
-    ///
-    /// The entry states no claim, composes over nothing, or `over` is not a layer it declares.
-    pub fn composed(door: Arc<dyn FramerDoor>, over: Option<&'static str>) -> Result<Self, String> {
-        let facts = door.facts();
-        let Some(&key) = facts.claims.first() else {
-            return Err(format!("transport `{}` states no claim", facts.name));
-        };
-        if facts.composes_over.is_empty() {
-            return Err(format!(
-                "transport `{}` composes over no layer; it frames the host's socket",
-                facts.name
-            ));
-        }
-        if let Some(layer) = over.filter(|l| !facts.composes_over.contains(l)) {
-            return Err(format!(
-                "transport `{}` does not compose over `{layer}`",
-                facts.name
-            ));
-        }
-        Ok(Self {
-            door,
-            key,
-            over,
             conns: Arc::new(Mutex::new(HashMap::new())),
             next: AtomicU64::new(1),
             dial_timeout: DIAL_TIMEOUT,
@@ -401,22 +362,8 @@ impl HostWire {
         let (framing, y) =
             Framing::begin(Arc::clone(&self.door), side, target, &self.established())
                 .map_err(|_| TransportError::Framing)?;
-        let chain = self.over.into_iter().chain([self.key]).collect();
+        let chain = vec![self.key];
         Ok(self.hold_io(Io::Socket(sock), peer, local_port, chain, framing, y))
-    }
-
-    /// Whether this entry composes over a layer (it adopts what a layer under it hands up).
-    #[must_use]
-    pub fn composes(&self) -> bool {
-        !self.door.facts().composes_over.is_empty()
-    }
-
-    /// Whether this entry ADOPTS a stream another framer hands up: it composes over that layer, or
-    /// a claim of its opens at an upgrade (ARCHITECT Q128 U7: an upgrade framer composes over
-    /// nothing and is entered by `adopt` after the upgraded framer's `detach`).
-    #[must_use]
-    pub fn adopts(&self) -> bool {
-        self.composes() || !self.door.facts().upgrades.is_empty()
     }
 
     /// What a framing on this entry is told the handshake established: its claim.
@@ -472,18 +419,17 @@ impl HostWire {
         Ok(conn)
     }
 
-    /// ADOPT the stream a layer under this entry handed up (`raw`, that layer's own
+    /// ADOPT the stream another entry handed up (`raw`, that entry's own
     /// [`busbar_contract::Transport::detach`]): framed from here on by this entry (or by `door`, the
     /// same entry opened under a listener's own settings), begun on the accept side (an upgrade the
-    /// far end asked the lower layer for). The stream carries in front of it whatever the lower
-    /// layer took and did not answer. `below` is the chain the lower layer reported for the
-    /// connection (bottom first); the adopted connection reports it with this entry on top.
+    /// far end asked the other entry for). WHICH entry adopts is the connector's choice (the upgrade's
+    /// scheme), never a list this entry states. The stream carries in front of it whatever the other
+    /// entry took and did not answer. `below` is the chain that entry reported for the connection
+    /// (bottom first); the adopted connection reports it with this entry on top.
     ///
     /// # Errors
     ///
-    /// [`TransportError::HandoffMismatch`]: `raw` comes from a layer this entry does not declare it
-    /// composes over, and no claim of the entry opens at an upgrade; [`TransportError::Framing`]:
-    /// the entry refused to adopt it.
+    /// [`TransportError::Framing`]: the entry refused to adopt it.
     pub async fn adopt_from(
         &self,
         raw: RawStream,
@@ -491,10 +437,6 @@ impl HostWire {
         door: Option<Arc<dyn FramerDoor>>,
     ) -> Result<Conn, TransportError> {
         let door = door.unwrap_or_else(|| Arc::clone(&self.door));
-        let facts = door.facts();
-        if !facts.composes_over.contains(&raw.from()) && facts.upgrades.is_empty() {
-            return Err(TransportError::HandoffMismatch);
-        }
         let (framing, y) = Framing::adopt(door, SIDE_ACCEPT, &[], &self.established())
             .map_err(|_| TransportError::Framing)?;
         let mut chain = if below.is_empty() {
@@ -743,9 +685,10 @@ impl HostWire {
             };
             let held = wire.is_empty() && !bytes.as_slice().is_empty();
             c.send(&wire).await?;
-            // A message a composing framer HELD (its upgrade not yet answered by the far end) goes
-            // out once the far end's answer is read: the connection is driven until it does.
-            if held && self.composes() {
+            // A message a FRAMER HELD (its upgrade not yet answered by the far end) goes out once
+            // the far end's answer is read: the connection is driven until it does. A carrier
+            // frames nothing and holds nothing.
+            if held && self.door.facts().role == ROLE_FRAMER {
                 c.drive_until(self.dial_timeout, answers).await?;
             }
             Ok(bytes.len())
@@ -812,12 +755,6 @@ impl HostWire {
             c.peer.clone(),
             Box::new(HostStream::new(taken, left)),
         ))
-    }
-
-    /// The layer this entry was built over ([`HostWire::composed`]); `None` for an entry that
-    /// frames the host's own socket.
-    pub fn composed_over(&self) -> Option<&'static str> {
-        self.over
     }
 
     /// Close `conn`: the framer finishes, and whatever is parked on it ends.

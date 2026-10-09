@@ -70,7 +70,7 @@ impl RelayTransport for RecordingTransport {
         &self,
         _http_method: &str,
         url: &url::Url,
-        addr: IpAddr,
+        crate::a2a::fetch::Pin { addr, .. }: crate::a2a::fetch::Pin,
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
@@ -95,7 +95,7 @@ impl RelayTransport for RecordingTransport {
     fn post_stream(
         &self,
         _url: &url::Url,
-        _addr: IpAddr,
+        _addr: crate::a2a::fetch::Pin,
         _headers: &[(String, String)],
         _body: &[u8],
         _on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
@@ -883,7 +883,7 @@ impl RelayTransport for ScriptedTransport {
         &self,
         _http_method: &str,
         _url: &url::Url,
-        _addr: IpAddr,
+        _addr: crate::a2a::fetch::Pin,
         _headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
@@ -908,7 +908,7 @@ impl RelayTransport for ScriptedTransport {
     fn post_stream(
         &self,
         _url: &url::Url,
-        _addr: IpAddr,
+        _addr: crate::a2a::fetch::Pin,
         _headers: &[(String, String)],
         _body: &[u8],
         _on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),

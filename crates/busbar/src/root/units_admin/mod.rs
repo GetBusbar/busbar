@@ -2714,6 +2714,12 @@ pub struct AdminBinding {
     /// first use over [`AdminBinding::claims`], so a durable node journals each claim exactly as the
     /// key mint and rotate caches do (item 271).
     pub replays: Arc<std::sync::OnceLock<Arc<bound::ReplayCache>>>,
+    /// THE NODE'S MUTATION LIMITER for the verbs unit: built once, here, with the binding, and
+    /// handed to every `Verbs` the route step builds. A `Verbs` lives for one request, so the
+    /// limiter it used to build for itself saw an empty window on every call and never refused.
+    /// It spends only the new verbs; a legacy verb is spent by the mounted surface's own limiter,
+    /// so each request is counted by exactly one of the two.
+    pub mutations: Arc<busbar_core_admin::rate::MutationLimiter>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2851,6 +2857,7 @@ impl AdminBinding {
             records: None,
             trust: no_trust(),
             replays: Arc::new(std::sync::OnceLock::new()),
+            mutations: Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
             units: AdminUnits::new(),
         }
     }
@@ -3173,7 +3180,7 @@ pub(crate) fn admit(
 /// the unit's decision, from its own closed table, and not this step's.
 pub(crate) fn route(
     binding: &AdminBinding,
-    store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+    store: crate::root::kernel::VerbStoreHandle,
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     token: &Pass<Route>,
     ctx: &UnitCtx,
@@ -3186,12 +3193,12 @@ pub(crate) fn route(
     let Some(verb) = kernel_verb(&resolved) else {
         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
     };
-    let granted = binding
-        .units
-        .granted(ctx.key)
-        .unwrap_or(scope_as_verb_scope(
-            busbar_kernel_scope::admin_required_scope(&request.method, &request.path),
-        ));
+    // THE GRANT APPROVE RECORDED, and nothing in its place. Approve refuses a caller holding none
+    // and records the grant of every caller it admits, so a unit here without one skipped that
+    // step: it is refused, never handed the endpoint's own required scope as if it held it.
+    let Some(granted) = binding.units.granted(ctx.key) else {
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+    };
 
     // THE ONE PLACE THE CHOICE IS MADE. Route is this plane's destination, and a destination is
     // where a composition says which of the unit's entry points an operation reaches. Written as a
@@ -3244,10 +3251,11 @@ pub(crate) fn route(
                     None => bound::ReplayCache::new(),
                 })
             }))),
-            StoreRef(store),
+            store,
             ArrivalNonce(request.at),
             PackedReplay,
             CONFIG_CLASS_RULES,
+            Arc::clone(&binding.mutations),
         )
         // Item 271: the claims the create-key and rotate-key caches take go on the node's journal
         // where a root bound one; `None` (no data directory) is exactly the unbound executor.
@@ -3807,7 +3815,7 @@ impl RegisteredUnits for AdminPlane {
     ) -> SeatVerdict<Route> {
         route(
             &root.admin,
-            Arc::clone(&root.store),
+            root.store.clone(),
             &root.admin_token,
             token,
             ctx,
@@ -3869,52 +3877,6 @@ trait TapAdmin: Sized {
 }
 
 impl<S: busbar_contract::caps::Step> TapAdmin for SeatVerdict<S> {}
-
-/// The store the verbs unit is handed, behind the published ABI.
-///
-/// A thin newtype rather than a second implementation: the adapter the loader already builds is what
-/// answers, and this exists only because the unit takes its store by value while the root holds one
-/// for the whole node.
-struct StoreRef(Arc<dyn busbar_contract::verb_store::Store + Send + Sync>);
-
-impl busbar_contract::verb_store::Store for StoreRef {
-    fn chain_break(
-        &self,
-        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.chain_break(admin)
-    }
-
-    fn store_restore(
-        &self,
-        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.store_restore(admin, backup_ref)
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.reseal_epoch_floor(admin)
-    }
-
-    fn replay_new_verb(
-        &self,
-        key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        self.0.replay_new_verb(key)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        key: &(String, String),
-        response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0.commit_new_verb_replay(key, response)
-    }
-}
 
 /// The nonce a one-time secret is bound to.
 ///

@@ -19,7 +19,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::App;
 
 use super::planes_tests::{bound, composed_services, Published, PUBLISHING};
-use super::{compose_planes, door_routes};
+use super::{compose_planes, compose_served, data_routes, door_routes};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
 
@@ -28,6 +28,8 @@ use crate::root::plane_node::{Node, NodeEndPost};
 pub(super) struct Governed {
     _published: Published,
     pub(super) router: axum::Router,
+    /// The test plane's driver, for a test that reloads its generation while a unit is in flight.
+    pub(super) driver: Arc<busbar_kernel::plane_driver::PlaneDriver>,
     post: Arc<NodeEndPost>,
     money: Arc<PlaneMoney>,
     gov: Arc<GovState>,
@@ -35,6 +37,15 @@ pub(super) struct Governed {
     token: String,
     app: Arc<App>,
     book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+    /// The live generation, as the door planes' units read it: a config apply replaces it.
+    current: Arc<std::sync::Mutex<Arc<App>>>,
+}
+
+impl Governed {
+    /// A CONFIG APPLY: `next` is the generation every unit that binds from now on reads.
+    fn apply(&self, next: Arc<App>) {
+        *self.current.lock().expect("unpoisoned") = next;
+    }
 }
 
 /// `keys_chain`: the deployment's data chain verifies a key (a claim that takes a credential is
@@ -52,6 +63,118 @@ fn governed_with(
     instance: &'static str,
     keys_chain: bool,
     budget: Option<u64>,
+) -> Option<Governed> {
+    governed_full(instance, keys_chain, budget, Screen::Nothing, None)
+}
+
+/// What a governed deployment's `hooks:` screen.
+#[derive(Clone, Copy)]
+enum Screen<'a> {
+    /// No hook is configured.
+    Nothing,
+    /// A global gate rejects text carrying the token.
+    Global(&'a str),
+    /// A gate on the section's pool `p` (`pools: {p: {members: [m]}}`) rejects text carrying the
+    /// token.
+    Pool(&'a str),
+}
+
+/// The operator's gate definition, as `hooks:` writes it.
+fn screen_cfg(token: &str) -> busbar_kernel::config::HookCfg {
+    serde_json::from_value(serde_json::json!({
+        "kind": "gate",
+        "module": "test-hook",
+        "timeout_ms": 10_000,
+        "on_error": "weighted",
+        "prompt": "ro",
+        "priority": 0,
+        "settings": { "reject_if_contains": token },
+    }))
+    .expect("an operator's gate definition")
+}
+
+/// The hook env the gate's `module` resolves in: the kernel's hook double, its manifest asking to
+/// read the prompt.
+fn screen_env() -> busbar_kernel::hooks::HookEnv {
+    let needs = crate::root::loader::sign::HookNeeds {
+        prompt: crate::root::loader::sign::NeedLevel::Ro,
+        ..Default::default()
+    };
+    busbar_kernel::test_support::test_hook_env(&["test-hook"], needs)
+}
+
+/// The deployment's App for `screen`: a pool gate is resolved through the one gate resolver the
+/// build uses for a configured gate, filed under the pool.
+fn screened(screen: Screen<'_>) -> busbar_kernel::test_support::TestApp {
+    match screen {
+        Screen::Nothing => busbar_kernel::test_support::TestApp::new(),
+        Screen::Global(token) => screening_gate(token),
+        Screen::Pool(token) => {
+            let env = screen_env();
+            let registry = [("screen".to_string(), screen_cfg(token))]
+                .into_iter()
+                .collect();
+            let gates = busbar_kernel::hooks::resolve_gate_hooks(
+                &registry,
+                &["screen".to_string()],
+                &env,
+                0,
+            );
+            assert_eq!(gates.len(), 1, "the configured gate resolves");
+            busbar_kernel::test_support::TestApp::new()
+                .hook_env(env)
+                .pool_gates_resolved("p", gates)
+        }
+    }
+}
+
+/// The deployment's `hooks:` as an operator writes it: one global `kind: gate` on the kernel's
+/// hook double (the 1.5.5 hook reply through the hook axis port), granted `prompt: ro`, rejecting
+/// any request whose projected text carries `token`.
+fn screening_gate(token: &str) -> busbar_kernel::test_support::TestApp {
+    busbar_kernel::test_support::TestApp::new()
+        .hook_env(screen_env())
+        .hook("screen", screen_cfg(token))
+        .global_hook("screen")
+        .resolve_global_gates()
+}
+
+/// [`governed_with`], with `screen` configured; the door plane's driver binds the LIVE
+/// generation's hooks ([`super::HookStage`]) as the boot's does.
+fn governed_hooked(
+    instance: &'static str,
+    keys_chain: bool,
+    budget: Option<u64>,
+    screen: Screen<'_>,
+) -> Option<Governed> {
+    governed_full(instance, keys_chain, budget, screen, None)
+}
+
+/// The node a composition's units are driven on, and the book it is already bound to.
+type BoundNode = (
+    Arc<Node>,
+    Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+);
+
+/// [`governed_with`], its units driven on `on` (a node already bound to its book), or on a node of
+/// its own bound to a fresh memory-buffered book.
+fn governed_over(
+    instance: &'static str,
+    keys_chain: bool,
+    budget: Option<u64>,
+    on: Option<BoundNode>,
+) -> Option<Governed> {
+    governed_full(instance, keys_chain, budget, Screen::Nothing, on)
+}
+
+/// [`governed_with`] with both: `screen` configured, and its units driven on `on` (or on a node of
+/// its own bound to a fresh memory-buffered book).
+fn governed_full(
+    instance: &'static str,
+    keys_chain: bool,
+    budget: Option<u64>,
+    screen: Screen<'_>,
+    on: Option<BoundNode>,
 ) -> Option<Governed> {
     // The dispatcher serves its instances the composition's host services (`unit.nest` among
     // them), as the boot's does.
@@ -113,16 +236,19 @@ fn governed_with(
         .expect("mint");
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     // The node's one book, as the boot binds it: every unit's one line and its audit record.
-    let book = Arc::new(std::sync::Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        )
-        .expect("a memory-buffered journal opens"),
-    ));
-    let node = Arc::new(Node::new());
-    node.bind_book(Arc::clone(&book));
+    let (node, book) = on.unwrap_or_else(|| {
+        let book = Arc::new(std::sync::Mutex::new(
+            crate::root::durability::build(
+                &crate::root::durability::DurabilityConfig { data_dir: None },
+                Box::new(busbar_kernel_wal::NullShipper::new()),
+                Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            )
+            .expect("a memory-buffered journal opens"),
+        ));
+        let node = Arc::new(Node::new());
+        node.bind_book(Arc::clone(&book));
+        (node, book)
+    });
     let post = Arc::new(NodeEndPost::new(node));
     let money = Arc::new(PlaneMoney::new(
         Arc::clone(&gov),
@@ -130,7 +256,26 @@ fn governed_with(
     ));
     let one = Arc::clone(&money);
     let mut sections = BTreeMap::new();
-    sections.insert("test_plane", serde_yaml::from_str("m: {}").expect("yaml"));
+    sections.insert(
+        "test_plane",
+        serde_yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
+    );
+    let app = screened(screen);
+    let app = if keys_chain { app.keys_chain() } else { app };
+    let app = groups
+        .iter()
+        .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
+    let app = app.governance(Arc::clone(&gov)).cost(cost).build();
+    // The hook stage reads the generation current when a unit binds, as the boot's reads its swap
+    // handle; this rig's config applies replace the generation in a cell.
+    let current = Arc::new(std::sync::Mutex::new(Arc::clone(&app)));
+    let reads = Arc::clone(&current);
+    let hooks = super::HookStage {
+        host: Arc::new(move || {
+            busbar_kernel::plane_host::engine_host(&reads.lock().expect("unpoisoned"))
+        }),
+        gov: Arc::clone(&gov),
+    };
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
@@ -139,26 +284,22 @@ fn governed_with(
         None,
         &move || Arc::clone(&one),
         None,
-        None,
+        Some(&hooks),
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
+    let driver = Arc::clone(&served.planes[0].driver);
     // The framer of the test plane's framed claim: the neutral frame door, dropped in (ARCHITECT
     // 4l); no other claim of the test plane is one a framer answers.
     served.framers = Some(neutral_framers());
     let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
         .expect("its claims mount");
-    let app = busbar_kernel::test_support::TestApp::new();
-    let app = if keys_chain { app.keys_chain() } else { app };
-    let app = groups
-        .iter()
-        .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
-    let app = app.governance(Arc::clone(&gov)).cost(cost).build();
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
     Some(Governed {
         _published: Published(instance),
         router,
+        driver,
         post,
         money,
         gov,
@@ -166,6 +307,7 @@ fn governed_with(
         token: token.expose_secret().clone(),
         app,
         book,
+        current,
     })
 }
 
@@ -348,6 +490,94 @@ async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
     assert_eq!(g.money.open_units(), 0);
 }
 
+/// THE DEPLOYMENT'S GATE REACHES A DOOR PLANE'S UNIT (U22, ARCHITECT 2026-10-05): the operator's
+/// global `kind: gate` (the 1.5.5 hook double, through the hook axis port) is bound to the unit by
+/// the driver, as the boot binds it. The request itself carries nothing the gate screens, so the
+/// unit is admitted and served; the content the plane then passes through `content.scan` and
+/// `hook.call` carries the screened token, and the configured gate blocks it, with its own status.
+/// The control (the same deployment with no gate) is the test above: `scan=0 gate=0`.
+#[tokio::test]
+async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed_hooked("serve-money-gated", true, None, Screen::Global("ping")) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=1 gate=403 rewrite=0 verify=2"),
+        "the gate blocks the screened content and stops the gated sub-operation"
+    );
+    assert_eq!(g.money.open_units(), 0);
+}
+
+/// A CONFIG APPLY REACHES THE NEXT UNIT WITH NO RESTART (ARCHITECT ruling on U22, 2026-10-05):
+/// the deployment boots with no hook, so a unit's in-session content passes; a config apply then
+/// adds a global gate, and the NEXT unit (a new session) binds the live generation's hooks, so the
+/// same content is blocked. Nothing is restarted or recomposed.
+#[tokio::test]
+async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restart() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-money-live", true) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=0 gate=0 rewrite=0 verify=2"),
+        "the boot generation configures no hook"
+    );
+    // THE APPLY: the same deployment (every plane's runtime carried, as an apply carries them), its
+    // `hooks:` now defining a gate and wiring it globally, resolved through the build's one resolver.
+    let mut next = (*g.app).clone();
+    let registry: std::collections::HashMap<_, _> = [("screen".to_string(), screen_cfg("ping"))]
+        .into_iter()
+        .collect();
+    next.global_gates = busbar_kernel::hooks::resolve_gate_hooks(
+        &registry,
+        &["screen".to_string()],
+        &screen_env(),
+        1,
+    );
+    assert_eq!(next.global_gates.len(), 1, "the applied gate resolves");
+    next.hook_registry = registry;
+    next.global_hooks = vec!["screen".to_string()];
+    let next = Arc::new(next);
+    g.apply(next);
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=1 gate=403 rewrite=0 verify=1"),
+        "the next unit binds the applied gate (and hits the verify entry the first one stored)"
+    );
+}
+
+/// A POOL'S OWN GATE SCREENS ITS UNITS' IN-SESSION CONTENT (ARCHITECT ruling on U22, 2026-10-05):
+/// a gate configured on the section's pool `p` blocks the content of a unit routed over `p`, as
+/// 1.5.5's pool gates did; a unit routed directly (no pool) is not under it.
+#[tokio::test]
+async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed_hooked("serve-money-pool-gate", true, None, Screen::Pool("ping")) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/services-pool:p", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=1 gate=403 rewrite=0 verify=2"),
+        "the pool's gate screens a unit routed over the pool"
+    );
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=0 gate=0 rewrite=0 verify=1"),
+        "a direct unit is not under the pool's gate"
+    );
+}
+
 /// BUDGET EXHAUSTION MID-NEST: the parent is admitted while its key's budget holds one more fee;
 /// that fee spends it, so the child the parent then nests is refused over budget at its own
 /// admission (one admission chain), charged nothing, and the parent is handed the refusal.
@@ -396,6 +626,250 @@ async fn a_nest_past_the_depth_cap_is_refused() {
         "every unit but the refused one"
     );
     assert_eq!(g.money.open_units(), 0);
+}
+
+/// The child arm of [`the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build`]: set in the
+/// fresh process that runs it, so the process-wide card holder and node it boots are its own.
+const NODE_HOOKS_ARM: &str = "BUSBAR_TEST_NODE_HOOKS_ARM";
+
+/// THE NODE'S BOOT HOOKS RUN IN EVERY BUILD (ARCHITECT Q1 (3)), so a door unit's money reaches the
+/// durability book under the card in force — in a door-only build too, where no plane rides the
+/// `node` axis. Run in a fresh process of this test binary ([`node_boot_hooks_arm`]): the arm boots
+/// the process-wide card holder and node, which no other test in this binary may share.
+#[test]
+fn the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build() {
+    if std::env::var_os(NODE_HOOKS_ARM).is_some() {
+        return;
+    }
+    let run = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", "root::serve::money_tests::node_boot_hooks_arm"])
+        .args(["--test-threads", "1", "--nocapture"])
+        .env(NODE_HOOKS_ARM, "1")
+        .output()
+        .expect("the test binary runs");
+    let text =
+        String::from_utf8_lossy(&run.stdout).into_owned() + &String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "the node-hooks arm failed:\n{text}");
+    assert!(
+        text.contains("1 passed"),
+        "the node-hooks arm ran nothing:\n{text}"
+    );
+}
+
+/// The arm: the generated root-unit table carries the node's unit; its configuration step and its
+/// book step run as `main.rs` runs them (every unit's, in table order) around the real app build and
+/// the real boot book; then a keyed door unit of the test plane, dropped in, is driven on the
+/// process's one node. Its line and its audit record are on that book, and the record names the
+/// card the unit was pinned to at its door: a second apply's entry, so not the opening's `0`.
+#[tokio::test]
+async fn node_boot_hooks_arm() {
+    if std::env::var_os(NODE_HOOKS_ARM).is_none() {
+        return;
+    }
+    // THE TABLE: the node's root unit is keyed to the node itself, never to a plane feature.
+    assert!(
+        include_str!(concat!(env!("OUT_DIR"), "/linked.rs"))
+            .contains("&crate::root::plane_node::ROOT_UNIT,"),
+        "this build's generated ROOT_UNITS does not carry the node's root unit"
+    );
+    // THE CONFIGURATION STEP, before the first app build (main.rs), then the boot build: the card
+    // holder's opening entry.
+    busbar_kernel::snapshot::init();
+    // A deployment naming no plane at all (a door-only build links no protocol to name one), over
+    // the kernel's stand-in store.
+    let cfg = || {
+        let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
+            .expect("a minimal deployment");
+        let mut cfg =
+            busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        cfg.store = Some(busbar_kernel::test_support::stand_in_store());
+        cfg
+    };
+    let boot = cfg();
+    for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_config) {
+        step(&boot.limits);
+    }
+    let app = busbar_kernel::test_support::build_once(boot, None).expect("the boot app builds");
+    assert!(
+        crate::root::kernel::ROOT_CARD.pin().is_some(),
+        "the boot build's rates never reached the card holder: its repricer is not installed"
+    );
+    // THE BOOK STEP, over the real boot book.
+    let book = crate::root::boot::book(&app).expect("the boot book opens");
+    let ctx = crate::root::linked::BookCtx {
+        book: &book,
+        app: &app,
+    };
+    for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_book) {
+        step(&ctx);
+    }
+    // A SECOND APPLY: the card in force moves past the opening entry.
+    let mut applied = cfg();
+    applied.per_request_fee = 3;
+    let _applied =
+        busbar_kernel::test_support::build_once(applied, Some(&app)).expect("the apply builds");
+    let pinned = crate::root::kernel::ROOT_CARD
+        .pin()
+        .expect("the card holder has entries")
+        .seq()
+        .get();
+    assert_ne!(pinned, 0, "the apply appended no entry to the card history");
+
+    // THE DOOR UNIT, on the process's one node.
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed_over(
+        "serve-money-node-hooks",
+        true,
+        None,
+        Some((
+            crate::root::plane_node::node(),
+            Arc::clone(&book.durability),
+        )),
+    ) else {
+        // Under CI the cdylib's absence is already a failure (`planes_tests::bound`).
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let lines = || {
+        book.durability
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies")
+            .len()
+    };
+    let before = lines();
+    let (status, body) = g.post("/call/direct:m", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (503, "refused:503:breaker_open"),
+        "admitted, then the walk is exhausted"
+    );
+    assert_eq!(g.requests(), 1, "its request was charged at admission");
+    assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
+    assert!(
+        lines() > before,
+        "the door unit settled nothing onto the durability book"
+    );
+    let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let record = durability
+        .audit_records
+        .last()
+        .expect("the door unit's audit record is on the book");
+    assert_eq!(
+        record.usage.rate_card_version, pinned,
+        "the door unit was not pinned to the card in force at its door"
+    );
+}
+
+/// A BUILD THAT LINKS NO PLANE SERVES A DROPPED-IN DOOR PLANE (ARCHITECT Q1 (2), #2: a dropped-in
+/// plane serves on the same path as a compiled-in one). The boot's own composition — `compose_served`
+/// over a governance book, the test plane dropped in with its section configured and its egress
+/// sealed over the deployment's (empty) providers, then `data_routes` — serves a keyed unit of it on
+/// the process's one node in every build, `--no-default-features` included: admitted and charged,
+/// then its walk exhausted, its money and node facts closed.
+#[tokio::test]
+async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-money-boot-composition";
+    let services = composed_services();
+    let dispatcher = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+    ));
+    let Some(plane) = bound(instance, &dispatcher) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let _published = Published(instance);
+    let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+    let gov = Arc::new(
+        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+            .expect("governance"),
+    );
+    let cost = CostModel::flat(1);
+    let (key, token) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "door".to_string(),
+                ..Default::default()
+            },
+            4_000_000_000,
+            1_700_000_000,
+        )
+        .expect("mint");
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    let providers = BTreeMap::new();
+    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let reach = crate::root::door_steps::DoorReach {
+        providers: &providers,
+        secrets: &secrets,
+        auths: Arc::new(crate::root::door_steps::OutboundAuths::new(
+            Arc::clone(&dispatcher),
+            crate::LINKED.auths,
+            None,
+            crate::root::loader::dispatch::ConnTable::NoNeeds,
+        )),
+        conns: Arc::new(busbar_core_connector::Connector::new()),
+        stream_ceiling_secs: 1,
+        catalog: None,
+        upgrades: Vec::new(),
+    };
+    let mut sections = BTreeMap::new();
+    sections.insert("test_plane", serde_yaml::from_str("m: {}").expect("yaml"));
+    let served = compose_served(
+        Some(Arc::clone(&gov)),
+        &[(instance.to_string(), plane)],
+        &dispatcher,
+        &services,
+        &sections,
+        None,
+        &reach,
+        None,
+    )
+    .expect("every build composes a configured door plane");
+    assert_eq!(served.planes.len(), 1, "the dropped-in door plane composed");
+    let post = Arc::clone(served.post.as_ref().expect("its units post on the node"));
+    let routes = data_routes(served, &[], &[]).expect("its claims mount on the data listener");
+    let app = busbar_kernel::test_support::TestApp::new()
+        .keys_chain()
+        .governance(Arc::clone(&gov))
+        .cost(cost)
+        .build();
+    let (router, _admin, _handle) =
+        busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
+    let (status, body) = {
+        use http_body_util::BodyExt as _;
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/call/direct:m")
+            .header("authorization", format!("Bearer {}", token.expose_secret()))
+            .body(axum::body::Body::from("ping"))
+            .expect("a request");
+        let resp = router.oneshot(req).await.expect("the router answers");
+        let status = resp.status().as_u16();
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("the body")
+            .to_bytes();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    };
+    assert!(
+        status == 503 && body.starts_with("refused:503:"),
+        "the dropped-in plane served the unit: admitted, then its walk exhausted; got {status} {body}"
+    );
+    let requests = gov
+        .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
+        .expect("a read")
+        .expect("the key exists")
+        .requests;
+    assert_eq!(requests, 1, "its request was charged at admission");
+    assert_eq!(post.open_units(), 0, "its node facts closed at its end");
 }
 
 /// The framer that answers a claim, for the compositions here: the neutral frame door (the plugin

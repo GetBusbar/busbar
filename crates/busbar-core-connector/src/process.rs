@@ -192,6 +192,17 @@ impl DestJudge for GuardJudge {
             })
     }
 
+    /// The guard's name arm over a bare host, with the guard's own sentence ([`Guard::judge_name`]).
+    fn judge_host(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
+        self.guard
+            .judge_name(host, class)
+            .map(|_| ())
+            .map_err(|r| DestRefusal {
+                verdict: r.verdict,
+                reason: r.to_string(),
+            })
+    }
+
     /// A config commit re-publishes the guard's metadata lists ([`Guard::publish`]).
     fn destinations_applied(&self, d: &Destinations) {
         self.guard.publish(d);
@@ -303,6 +314,11 @@ impl DialJudge for OneJudge {
         self.pinned(class, done, |pended| {
             self.dest.judge_reaching(dest, class, pended)
         })
+    }
+
+    /// The guard's name arm, the one every dial's judgement opens with ([`DestJudge::judge_name`]).
+    fn judge_static(&self, dest: &str, class: u32) -> Option<Verdict> {
+        self.dest.judge_name(dest, class, false).err()
     }
 }
 

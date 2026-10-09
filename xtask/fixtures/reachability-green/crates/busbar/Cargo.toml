@@ -9,7 +9,10 @@ path = "src/main.rs"
 # The plugin crates' directories — where the gate looks for a plane's own `linked` entry module.
 [dependencies]
 busbar-llm = { path = "../busbar-llm", optional = true }
-busbar-mcp = { path = "../busbar-mcp", optional = true }
+# mcp's row links `busbar-plane-mcp`, the crate the real roster's mcp row names since P3 DEL-MCP
+# (ARCHITECT 2026-10-05). It stays a RIDER plane here: this fixture exercises the rider, Units-export
+# and fold mechanics on a sample plane, and the door arm is exercised on the decisions plane.
+busbar-plane-mcp = { path = "../busbar-plane-mcp", optional = true }
 busbar-a2a = { path = "../busbar-a2a", optional = true }
 busbar-plane-streaming = { path = "../busbar-plane-streaming", optional = true }
 busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
@@ -17,7 +20,7 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 # The linked table the real root's build script turns into the `LINKED` table `main.rs` includes.
 [package.metadata.busbar.linked]
 proto-llm = "busbar-llm"
-plane-mcp = "busbar-mcp"
+plane-mcp = "busbar-plane-mcp"
 plane-a2a = "busbar-a2a"
 plane-streaming = "busbar-plane-streaming"
 plane-decisions = "busbar-plane-decisions"

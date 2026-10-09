@@ -70,7 +70,9 @@ pub struct TestDoor {
 }
 
 impl TestDoor {
-    /// An entry named `name`, claiming `claims`, over `composes_over`.
+    /// An entry named `name`, claiming `claims`, over `composes_over`. Its role is a FRAMER where it
+    /// names a layer (the shape these fixtures used for "framed" before the role was stated) and a
+    /// CARRIER otherwise; [`TestDoor::with_role`] states it outright.
     pub fn new(
         name: &str,
         claims: &[&'static str],
@@ -81,9 +83,14 @@ impl TestDoor {
             facts: DoorFacts {
                 name: name.to_owned(),
                 claims: claims.to_vec(),
+                role: if composes_over.is_empty() {
+                    busbar_contract::abi::transport::ROLE_CARRIER
+                } else {
+                    busbar_contract::abi::transport::ROLE_FRAMER
+                },
                 composes_over: composes_over.to_vec(),
-                upgrades: Vec::new(),
                 status_rows: Vec::new(),
+                duplex: Vec::new(),
             },
             knobs,
             framings: Mutex::new(HashMap::new()),
@@ -96,9 +103,10 @@ impl TestDoor {
         }
     }
 
-    /// This door, its every claim opening at an UPGRADE (`UNIT0_UPGRADE` on its claim rows).
-    pub fn upgrading(mut self) -> Self {
-        self.facts.upgrades = self.facts.claims.clone();
+    /// The same entry, stating `role` (`ROLE_CARRIER` | `ROLE_FRAMER`).
+    #[must_use]
+    pub fn with_role(mut self, role: u32) -> Self {
+        self.facts.role = role;
         self
     }
 

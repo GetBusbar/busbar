@@ -1381,6 +1381,31 @@ fn red_after_close_a_late_wake_and_every_op_fault_without_crossing() {
 }
 
 #[test]
+fn red_a_close_that_faults_leaves_the_instance_closed() {
+    // C1 M5 (c), the loader's backstop: a door whose `close` freed its instance and then answered
+    // FAULT. The host treats the instance as closed: nothing crosses into it again, a second
+    // `close` included (it would free the memory twice).
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    assert_eq!(
+        p.call(TICK, &mut frame(plug::CLOSE_FAULTS)).outcome,
+        Outcome::Ready
+    );
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Fault
+    );
+    assert!(!p.is_open(), "a faulted close leaves no instance pointer");
+    let n = crossings(&p);
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Fault
+    );
+    assert_eq!(crossings(&p), n, "nothing crossed into the freed instance");
+}
+
+#[test]
 fn red_text_is_capped_before_any_slice_is_made() {
     use crate::dispatch::plugin::{str_bytes, MAX_TEXT};
     use busbar_contract::abi::mechanism::call::AbiStr;

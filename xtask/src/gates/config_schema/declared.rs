@@ -27,12 +27,9 @@ use crate::ctx::{Change, Ctx, Overlay, WalkSpec};
 const ROOT: &str = "crates";
 /// The registration item each plane crate exports (the K0 contract shape).
 const ITEM: &str = "const PLANE_DECLARATION";
-/// A plane DOOR's Statement section row (`Section { name: abi_str(…), flags: SECTION_DECLARING, … }`):
-/// the section a door plane declares and owns the grammar of, as its memory-ABI Statement states it
-/// (ARCHITECT 2026-10-05: a door's declared settings feed the snapshot the way a PlaneDecl does).
-const DOOR_SECTION: &str = "Section {";
-/// The flag that makes a door's section row its DECLARING section.
-const DOOR_DECLARING: &str = "SECTION_DECLARING";
+
+/// A plane door's Statement sections: `const SECTIONS: &[Section] = &[ Section { … }, … ];`.
+const DOOR_SECTIONS: &str = ": &[Section] =";
 /// The kernel's reserved list: sections core still declares as concrete `DeployCfg` fields.
 const CORE_OWNED: &str = "CORE_OWNED_CONCRETE_SECTIONS";
 
@@ -109,33 +106,47 @@ fn facts(path: &str, raw: &str) -> Facts {
             }
         }
     }
-    // A DOOR PLANE's declaring section, read off its Statement's section rows: a door plane owns the
-    // grammar of the section it declares (the kernel folds it into the declared-section map carrier,
-    // DECL-FOLD), exactly as a PlaneDecl whose `owned_config_sections` names its `config_section`.
+    // A PLANE DOOR's Statement declares its sections as `Section { name: abi_str("…"), flags: … }`
+    // rows: the one flagged `SECTION_DECLARING` is its declaring section, and a row flagged neither
+    // declaring nor consumed is a section it owns beside it (the loader's own reading,
+    // `registration().owns`). A door-only plane has no `PLANE_DECLARATION`; this is its declaration.
+    // Read only when EVERY row names its section as a string LITERAL: a door that spells them
+    // through other items still has its `PLANE_DECLARATION` row, which this census reads instead;
+    // a door-only plane states literals (its own test holds them equal to its grammar's constants).
     let mut from = 0;
-    while let Some(at) = text[from..].find(DOOR_SECTION) {
-        let start = from + at;
-        from = start + DOOR_SECTION.len();
-        let whole_word = !text[..start]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-        let Some(body) = block(&text, start).filter(|_| whole_word) else {
+    while let Some(at) = text[from..].find(DOOR_SECTIONS) {
+        let start = from + at + DOOR_SECTIONS.len();
+        from = start;
+        let Some(open) = text[start..].find("&[").map(|i| start + i + 2) else {
             continue;
         };
-        if !field(body, "flags").is_some_and(|f| f.split('|').any(|x| x.trim() == DOOR_DECLARING)) {
+        let Some(close) = text[open..].find("];").map(|i| open + i) else {
             continue;
+        };
+        let (mut declaring, mut owned) = (None, Vec::new());
+        let mut rows = &text[open..close];
+        let mut literal = true;
+        while let Some(row) = rows.find("Section {") {
+            let Some(body) = block(rows, row) else { break };
+            rows = &rows[row + body.len() + 2..];
+            let name = body
+                .find("abi_str(")
+                .map(|i| &body[i + "abi_str(".len()..])
+                .and_then(|n| n.find(')').map(|e| n[..e].trim().to_string()));
+            let flags = field(body, "flags").map(str::trim).unwrap_or_default();
+            let Some(name) = name.filter(|n| n.starts_with('"') && n.ends_with('"')) else {
+                literal = false;
+                continue;
+            };
+            if flags.contains("SECTION_DECLARING") {
+                declaring = Some(name);
+            } else if !flags.contains("SECTION_CONSUMED") {
+                owned.push(name);
+            }
         }
-        let Some(name) = field(body, "name").map(str::trim) else {
-            continue;
-        };
-        let name = name
-            .strip_prefix("abi_str(")
-            .and_then(|n| n.strip_suffix(')'))
-            .unwrap_or(name)
-            .trim()
-            .to_string();
-        out.decls.push(Ok((name.clone(), vec![name])));
+        if let (true, Some(declaring)) = (literal, declaring) {
+            out.decls.push(Ok((declaring, owned)));
+        }
     }
     let mut from = 0;
     while let Some(at) = text[from..].find(ITEM) {

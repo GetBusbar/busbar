@@ -36,7 +36,8 @@ const SCANNED: &[&str] = &[
     "crates/busbar-plane-streaming/src",
     "crates/busbar-plane-decisions/src",
     "crates/busbar-llm/src",
-    "crates/busbar-mcp/src",
+    // `crates/busbar-mcp/src` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the
+    // mcp plane is `crates/busbar-plane-mcp/src`, scanned above.
     "crates/busbar-a2a/src",
 ];
 
@@ -54,7 +55,6 @@ const SHAPES: &[&str] = &[
 /// Where a plane's `PlaneDeclaration` (and so its `billable_classes`) is written.
 const DECLARATIONS: &[(&str, &str)] = &[
     ("llm", "crates/busbar-llm/src/lib.rs"),
-    ("mcp", "crates/busbar-mcp/src/mcp/mod.rs"),
     ("a2a", "crates/busbar-a2a/src/a2a/mod.rs"),
     // FLIP-STREAMING: the streaming plane is a door; its classes are its Statement's
     // `BILLABLE_CLASSES` table (`class(<class>, <family>)` rows).
@@ -107,14 +107,10 @@ const SITES: &[Site] = &[
         emits: &[],
         dead: None,
     },
-    Site {
-        plane: "mcp",
-        file: "crates/busbar-mcp/src/mcp/method.rs",
-        shape: "usage_units: std::collections::BTreeMap::from(",
-        occurrences: 1,
-        emits: &["busbar_plane_mcp::meta::CLASS_TOOL_CALLS"],
-        dead: None,
-    },
+    // The engine's `busbar-mcp/src/mcp/method.rs` report site is STRUCK with its crate (P3 DEL-MCP,
+    // ARCHITECT 2026-10-05). The mcp door reports through none of the SHAPES above (a door plane
+    // bills through the plane driver's money seam), so it lists no site here; were it to grow one,
+    // COMPLETENESS reds until it is listed, with a declaration row for its plane.
     Site {
         plane: "a2a",
         file: "crates/busbar-a2a/src/a2a/receive.rs",
@@ -176,7 +172,7 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// The literal a constant path names, read off the file that defines it:
-/// `busbar_plane_mcp::meta::CLASS_BYTES` is `crates/busbar-plane-mcp/src/meta.rs`'s
+/// `busbar_plane_mcp::tool_meta::CLASS_BYTES` is `crates/busbar-plane-mcp/src/tool_meta.rs`'s
 /// `const CLASS_BYTES: … = MeterClassId::new("bytes")` (or `= "bytes"`).
 fn resolve(root: &Path, path: &str) -> Result<String, String> {
     let (file, src, name) = defining(root, path)?;
@@ -529,7 +525,7 @@ fn an_undeclared_class_and_an_unlisted_site_are_both_red() {
         shape: "usage_units: std::collections::BTreeMap::from(",
         occurrences: 1,
         // mcp's tool calls, reported by a2a — which declares only bytes.
-        emits: &["busbar_plane_mcp::meta::CLASS_TOOL_CALLS"],
+        emits: &["busbar_plane_mcp::tool_meta::CLASS_TOOL_CALLS"],
         dead: None,
     }];
     let found = vec![

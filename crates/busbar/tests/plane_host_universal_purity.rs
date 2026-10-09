@@ -8,17 +8,15 @@
 //! ## The coupling this gate mechanises
 //!
 //! `crates/busbar-kernel/src/plane_host/mod.rs` declares the universal host seam `EngineHost` as
-//! the SUM of ~13 capability-slice supertraits (`BreakerHost`, `LanePoolHost`, `MeteringHost`,
+//! the SUM of ~12 capability-slice supertraits (`BreakerHost`, `LanePoolHost`, `MeteringHost`,
 //! `ClockHost`, `TelemetryHost`, `JournalHost`, `MountHost`, `RegistryHost`, `HookConfigHost`,
-//! `BudgetHost`, `IdentityHost`, `AdmissionHost`, `CompletionHost`). Every plane holds an
-//! `Arc<dyn EngineHost>` and inherits EVERY method of EVERY slice. Some of those methods are
-//! SINGLE-PLANE-PURPOSED — `JournalHost::call_log_emit`/`call_log_emit_hostless` (payload
-//! `plane::calllog::CallInput` carries MCP vocabulary: `server`/`tool`/`tool_digest`/`pin_generation`),
-//! `IdentityHost::quarantine_settle`/`approval_redeem`/`ask_state_sealer` (MCP durable trust/audit),
-//! `CompletionHost::synthesize_completion` (LLM completion, reached only by MCP's sampling bridge). They
-//! are GENERICALLY NAMED, so the token-level plane-purity gates (F1/plane-abi-neutrality) are
-//! structurally blind to them: the coupling is SEMANTIC (what the method is FOR), not lexical. A NEW
-//! single-plane method could be added to the universal trait and no token gate would catch it.
+//! `BudgetHost`, `IdentityHost`, `AdmissionHost`). Every plane holds an `Arc<dyn EngineHost>` and
+//! inherits EVERY method of EVERY slice. Some of those methods were SINGLE-PLANE-PURPOSED — the MCP
+//! call-log emitters, durable trust/audit seams and the sampling bridge's completion seam, each
+//! deleted with `busbar-mcp` (ARCHITECT Q1c). Such methods are GENERICALLY NAMED, so the
+//! token-level plane-purity gates (F1/plane-abi-neutrality) are structurally blind to them: the
+//! coupling is SEMANTIC (what the method is FOR), not lexical. A NEW single-plane method could be
+//! added to the universal trait and no token gate would catch it.
 //!
 //! ## The mechanical question this gate answers
 //!
@@ -62,9 +60,10 @@ use std::path::{Path, PathBuf};
 /// The host-seam trait definition file. Its slice supertraits + `EngineHost` are the universe scanned.
 const HOST_TRAIT_FILE: &str = "crates/busbar-kernel/src/plane_host/mod.rs";
 
-/// The capability-slice supertraits of `EngineHost`, plus `EngineHost` itself (its provided
-/// `run_gauntlet`). A slice added/removed on the universal sum is ONE edit here — and the enumeration
-/// floor below bites if this list silently stops matching the trait file.
+/// The capability-slice supertraits of `EngineHost`, plus `EngineHost` itself (it declares no
+/// method of its own today; a method added directly on it is scanned). A slice added/removed on the
+/// universal sum is ONE edit here — and the enumeration floor below bites if this list silently
+/// stops matching the trait file.
 const SLICE_TRAITS: &[&str] = &[
     "BreakerHost",
     "LanePoolHost",
@@ -78,7 +77,6 @@ const SLICE_TRAITS: &[&str] = &[
     "BudgetHost",
     "IdentityHost",
     "AdmissionHost",
-    "CompletionHost",
     "EngineHost",
 ];
 
@@ -258,8 +256,8 @@ fn trait_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
 /// Every method NAME declared in a trait body: each `fn <ident>` token whose `fn` sits on an identifier
 /// boundary. Robust to `#[allow(...)]`/doc/attribute lines (those carry no `fn` keyword) and to generic
 /// params (we read only the name after `fn`). The traits here declare no nested `fn` inside a method
-/// body (the one provided method, `EngineHost::run_gauntlet`, calls the free `run_gauntlet` — a call,
-/// not an `fn` decl), so scanning the whole body for the `fn` keyword yields exactly the methods.
+/// body (a provided method's body makes calls, not `fn` decls), so scanning the whole body for the
+/// `fn` keyword yields exactly the methods.
 fn method_names(body: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     // Work on chars for boundary logic — total even if the file ever gains non-ASCII.
@@ -445,8 +443,8 @@ fn run_scan() -> Scan {
 fn no_unjustified_single_plane_method_on_universal_engine_host() {
     let scan = run_scan();
 
-    // Enumeration floor: the ~13 slices carry ~75 methods. A parse regression that found almost
-    // nothing would make the whole gate vacuous. (75 today; floored well below to tolerate churn.)
+    // Enumeration floor: the ~12 slices carry ~67 methods. A parse regression that found almost
+    // nothing would make the whole gate vacuous. (67 today; floored below to tolerate churn.)
     assert!(
         scan.methods.len() >= 60,
         "enumerated only {} universal-EngineHost methods from {HOST_TRAIT_FILE} — the trait-body \
@@ -519,7 +517,7 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
 }
 
 /// SELF-TEST (the detector is NON-VACUOUS): the SAME detector must (1) enumerate the known slice
-/// methods, (2) classify a KNOWN single-plane method (`synthesize_completion`) as single-plane, (3)
+/// methods, (2) classify a KNOWN single-plane method (`pool_label`) as single-plane, (3)
 /// still see a KNOWN ≥2-plane method (`clock_now_secs`) as multi-plane, and (4) a KNOWN 0-plane method
 /// (`plane_defs`) as neutral. A broken scan that "finds nothing" (all-0, or all-1) fails HERE loudly,
 /// so a green real witness above is meaningful. It also proves `.plane_slot(` ≠ `plane_slot_live`
@@ -528,15 +526,13 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
 fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
     let scan = run_scan();
 
-    // (1) Enumeration sees the specific F3 methods + a per-slice sampling — not a vacuous empty set.
+    // (1) Enumeration sees a per-slice sampling — not a vacuous empty set.
     for expect in [
-        "synthesize_completion", // CompletionHost
-        "call_log_emit",         // JournalHost
-        "quarantine_settle",     // IdentityHost
-        "clock_now_secs",        // ClockHost
-        "breaker_admit",         // BreakerHost
-        "run_gauntlet",          // EngineHost provided method
-        "plane_defs",            // RegistryHost
+        "settle_residual",   // JournalHost
+        "verify_token_test", // IdentityHost
+        "clock_now_secs",    // ClockHost
+        "breaker_admit",     // BreakerHost
+        "plane_defs",        // RegistryHost
     ] {
         assert!(
             scan.methods.contains(expect),
@@ -545,31 +541,28 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         );
     }
 
-    // (2) A KNOWN single-plane method: `synthesize_completion`. Its ONLY host call site is MCP's
-    //     sampling/complete bridge (busbar-llm holds the impl as a free fn, not a host-seam call), so
-    //     the caller-count classifies it single-plane — the F3 case this whole gate exists to pin.
-    let synth = scan
-        .callers
-        .get("synthesize_completion")
-        .expect("enumerated");
+    // (2) A KNOWN single-plane method: `pool_label`. Its ONLY host call site is the LLM plane's
+    //     request path, so the caller-count classifies it single-plane — the case this whole gate
+    //     exists to pin.
+    let single = scan.callers.get("pool_label").expect("enumerated");
     assert_eq!(
-        synth.len(),
+        single.len(),
         1,
-        "detector failed to classify `synthesize_completion` as SINGLE-plane (got callers {synth:?}); \
+        "detector failed to classify `pool_label` as SINGLE-plane (got callers {single:?}); \
          a scan that cannot see a single-plane method makes the real witness vacuous"
     );
     let recorded = single_plane_allowlist()
         .iter()
-        .find(|(m, _, _)| *m == "synthesize_completion")
+        .find(|(m, _, _)| *m == "pool_label")
         .map(|(_, p, _)| *p)
-        .expect("`synthesize_completion` is allowlisted");
+        .expect("`pool_label` is allowlisted");
     assert!(
-        synth.contains(recorded),
-        "the sole `synthesize_completion` host caller should be the sampling bridge the allowlist \
-         records (`{recorded}`), got {synth:?}"
+        single.contains(recorded),
+        "the sole `pool_label` host caller should be the plane the allowlist records \
+         (`{recorded}`), got {single:?}"
     );
 
-    // (3) A KNOWN ≥2-plane method: `clock_now_secs` (mcp + a2a). Proves the detector DISTINGUISHES
+    // (3) A KNOWN ≥2-plane method: `clock_now_secs` (llm + a2a + voice). Proves the detector DISTINGUISHES
     //     shared capabilities — it does not collapse everything to single-plane.
     let clock = scan.callers.get("clock_now_secs").expect("enumerated");
     assert!(
@@ -603,7 +596,53 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         "calls_method wrongly matched a `::path` form as a `.`-method call"
     );
     assert!(
-        calls_method("a.b .synthesize_completion (x)", "synthesize_completion"),
+        calls_method("a.b .pool_label (x)", "pool_label"),
         "calls_method missed a whitespace-before-paren call"
+    );
+}
+
+/// LAW 11 (BUSBAR-1.6.0 lines 2127-2132; the relay-only ruling at 418-422): busbar runs no
+/// completion on the LLM plane to answer an upstream's sampling ask, and routes no call to another
+/// plane on the content's say-so. The kernel's resolved-completion seam (the arrival, its fn-pointer
+/// type, the set-once install, the test hook and the resolver) and the LLM plane's synthesizer that
+/// filled it were that route; 1.5.5 carried none of it. This pins that no crate's non-test source
+/// declares or names any of it again.
+#[test]
+fn no_crate_carries_a_resolved_completion_seam() {
+    const SEAM: &[&str] = &[
+        "completion_ingress",
+        "COMPLETION_INGRESS",
+        "CompletionArrival",
+        "CompletionIngress",
+        "synthesize_completion",
+    ];
+    let crates = repo_root().join("crates");
+    let mut scanned = 0usize;
+    let mut hits = Vec::new();
+    for entry in std::fs::read_dir(&crates)
+        .expect("the crates directory is readable")
+        .flatten()
+    {
+        let mut files = Vec::new();
+        plane_rs_files(&entry.path().join("src"), &mut files);
+        for f in files {
+            scanned += 1;
+            let code = strip_source(&std::fs::read_to_string(&f).expect("source is readable"));
+            for token in SEAM {
+                if code.contains(token) {
+                    hits.push(format!("  {}: {token}", f.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned > 100,
+        "the scan read {scanned} files; a scan that reads nothing passes vacuously"
+    );
+    assert!(
+        hits.is_empty(),
+        "a resolved-completion seam is back (busbar would answer an upstream's ask on another \
+         plane):\n{}",
+        hits.join("\n")
     );
 }

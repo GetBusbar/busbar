@@ -22,8 +22,10 @@ use crate::meta;
 /// session's earlier turns already settled. A closed turn bills the DIFFERENCE of the session's
 /// cumulative seconds figure ([`class_counts`]), so the sum over every turn is the session's total
 /// milliseconds converted once — rounding each turn up on its own billed 20 turns of 1050 ms as 40 s
-/// of audio rather than 21 s. The byte remainder is counted under the format the session admits
-/// audio in, which is one format for the life of a session.
+/// of audio rather than 21 s. Each frame is counted at its own format, and a session may carry more
+/// than one (a Gemini caller may send 16 kHz and 24 kHz blobs), so the remainder is kept in
+/// [`TICKS_PER_MS`] ticks, a unit every format's byte is a whole number of: a remainder carried from
+/// a frame of one format onto a frame of another stays exact.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TurnCounters {
     /// Milliseconds of ingress audio admitted since the turn opened.
@@ -32,17 +34,28 @@ pub struct TurnCounters {
     pub tool_calls: u64,
     /// Milliseconds of ingress audio the session's closed turns settled before this one (carried).
     audio_ms_before: u64,
-    /// Bytes of admitted ingress audio short of a whole millisecond (carried).
-    audio_bytes_rem: u64,
+    /// Admitted ingress audio short of a whole millisecond, in [`TICKS_PER_MS`] ticks (carried).
+    audio_ticks_rem: u64,
 }
+
+/// The ticks a millisecond of audio divides into: the least common multiple of every format's bytes
+/// per millisecond (48, 32 and 8), so one byte of any format is a whole number of ticks.
+const TICKS_PER_MS: u64 = 96;
+
+const _: () = {
+    assert!(TICKS_PER_MS.is_multiple_of(AudioFormat::Pcm16.bytes_per_ms()));
+    assert!(TICKS_PER_MS.is_multiple_of(AudioFormat::Pcm16At16k.bytes_per_ms()));
+    assert!(TICKS_PER_MS.is_multiple_of(AudioFormat::G711Ulaw.bytes_per_ms()));
+};
 
 impl TurnCounters {
     /// Count `bytes` of admitted uplink audio, read under `format`. The part of a millisecond the
     /// bytes leave over is carried onto the next frame, never floored away.
     pub fn admit_audio(&mut self, format: AudioFormat, bytes: usize) {
-        let total = self.audio_bytes_rem.saturating_add(bytes as u64);
-        self.audio_ms_in = self.audio_ms_in.saturating_add(format.bytes_to_ms(total));
-        self.audio_bytes_rem = total % format.bytes_per_ms();
+        let ticks = (bytes as u64).saturating_mul(TICKS_PER_MS / format.bytes_per_ms());
+        let total = self.audio_ticks_rem.saturating_add(ticks);
+        self.audio_ms_in = self.audio_ms_in.saturating_add(total / TICKS_PER_MS);
+        self.audio_ticks_rem = total % TICKS_PER_MS;
     }
 
     /// Count one tool call the upstream opened.
@@ -63,7 +76,7 @@ impl TurnCounters {
         let closed = *self;
         *self = TurnCounters {
             audio_ms_before: closed.audio_ms_before.saturating_add(closed.audio_ms_in),
-            audio_bytes_rem: closed.audio_bytes_rem,
+            audio_ticks_rem: closed.audio_ticks_rem,
             ..TurnCounters::default()
         };
         closed

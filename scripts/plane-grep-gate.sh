@@ -22,7 +22,7 @@
 #     NEUTRAL crates (busbar-core, busbar-substrate, busbar-api): ZERO occurrences (as substrings) of
 #       the six dialect names — openai gemini anthropic bedrock cohere responses — PLUS the plane keys
 #       `mcp` / `a2a` / `voice` (a neutral crate must name no plane by key).
-#     busbar-mcp   : may name `mcp`,   but NOT the six dialect names and NOT `a2a` / `voice`.
+#     (busbar-mcp is DELETED, P3 DEL-MCP: no mcp root; `mcp` stays banned everywhere scanned.)
 #     busbar-a2a   : may name `a2a`,   but NOT the six dialect names and NOT `mcp` / `voice`.
 #     busbar-voice : may name `voice`, but NOT the six dialect names and NOT `mcp` / `a2a`.
 #       (voice added at parity with mcp/a2a after the initial F4 pin, closing the same substring hole
@@ -65,8 +65,8 @@
 #
 # THE SELF-TEST (--selftest, run FIRST like every sibling *-lint.sh): the scanner cannot be lied to.
 #   It plants a fake `gemini_api_version` and a `busbar_a2a::Foo` in a NEUTRAL fixture and proves BOTH
-#   are caught (RED), proves a per-crate symmetric case (busbar-mcp naming `a2a`/`anthropic` is caught,
-#   naming `mcp` is not), and proves a CLEAN neutral fixture — plus a comment / cfg(test) block that
+#   are caught (RED), proves a per-crate symmetric case (busbar-a2a naming `mcp`/`anthropic` is caught,
+#   naming `a2a` is not), and proves a CLEAN neutral fixture — plus a comment / cfg(test) block that
 #   MENTION dialect names — passes with zero hits (GREEN). The tree verdict is trusted only after the
 #   scanner re-proves itself on known inputs.
 #
@@ -109,9 +109,10 @@ DIALECTS="openai gemini anthropic bedrock cohere responses"
 # the set by ONE named deletion there. The env override exists for the self-test's blind-scan cases
 # below and nothing else; CI never sets it.
 NEUTRAL_ROOTS="${PLANE_GREP_NEUTRAL_ROOTS:-$(neutral_src_roots)}"
+# `$PLANE_KEYS_KIND_ONLY` (mcp since P3 DEL-MCP) is still a plane noun the neutral crates must not name.
 # `voice` stays a NEUTRAL needle by name: FLIP-STREAMING took it off PLANE_KEYS with crates/busbar-voice,
 # and the streaming plane's dialect word must still never reach the neutral side.
-NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL voice"
+NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL $PLANE_KEYS_KIND_ONLY voice"
 # TWO ROOTS PER PLANE since the codec split: each protocol plugin kept its I/O half under the
 # historical crate name and shed its pure half into a `-codec` crate a PURE kind may name. The gate
 # scans sources, not manifests, so both halves are named or the moved files stop being scanned —
@@ -121,17 +122,19 @@ NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL voice"
 # `busbar-plane-mcp`, which this needle gate does not read — a plane-kind crate is held to
 # the plugin-kind rules instead, and reading it here would judge it by the legacy engine's
 # cross-plane ban rather than by its own.
-MCP_ROOT="crates/busbar-mcp/src"
-MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
+#
+# MCP HAS NO ROOT HERE ANY MORE (P3 DEL-MCP, ARCHITECT 2026-10-05): `crates/busbar-mcp` is deleted and
+# the plane is its plane-kind crate alone, which this needle gate does not read (see above). Its key
+# is still banned from the neutral crates and the other plane roots (`PLANE_KEYS_KIND_ONLY`).
 # A2A IS ONE ROOT AGAIN: `busbar-a2a-codec` dissolved (#39). The engine kept the durable row structs
 # and the metering attribution, inside the root below; the wire dialect went to `busbar-plane-a2a`,
 # which this needle gate does not read — a plane-kind crate is held to the plugin-kind rules instead.
 A2A_ROOT="crates/busbar-a2a/src"
-A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
+A2A_NEEDLES="$DIALECTS $(plane_noun_keys_other a2a)"
 # VOICE HAS NO ROOT: FLIP-STREAMING deleted crates/busbar-voice, and the streaming plane is
 # `busbar-plane-streaming`, a plane-kind crate this needle gate does not read. VOICE_NEEDLES remains
 # for the self-test's symmetric case, which plants its own file.
-VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"
+VOICE_NEEDLES="$DIALECTS $(plane_noun_keys_other voice)"
 
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.
 OPERATION_EXCLUDE="crates/api/src/operation.rs"
@@ -190,8 +193,7 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 #               deploy key, and that claim is false: v1.5.3 and v1.5.5 both ship a 26-field DeployCfg
 #               (config-schema.snapshot.json) with no `mcp` field and no McpEndpointSection type. The
 #               key is 1.6.0-additive, so both lines now REPORT as the core-names-a-plane debt they are.
-ALLOWLIST="responses|crates/busbar-mcp/src/|
-responses|crates/busbar-a2a/src/|
+ALLOWLIST="responses|crates/busbar-a2a/src/|
 anthropic|crates/busbar-kernel/src/config/providers.rs|DEFAULT_PROTOCOL"
 
 # ── THE TEST-SUPPORT MODULE PREPASS ────────────────────────────────────────────────────────────────
@@ -443,20 +445,21 @@ GREEN
     fail=1; note "GREEN neutral FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
   fi
 
-  # ── SYMMETRIC (busbar-mcp): may name `mcp`, must NOT name `a2a` or a dialect. ──
-  cat >"$tmp/mcp_case.rs" <<'MCP'
-use busbar_mcp::server::McpEndpoint;
-fn wire() { let _ = "a2a"; let _d = "anthropic_v1"; }
-MCP
-  out="$(scan "$MCP_NEEDLES" "" "$tmp/mcp_case.rs")"
-  local mcp_hit_mcp mcp_hit_a2a mcp_hit_anthropic
-  mcp_hit_mcp="$(printf '%s\n' "$out"       | awk -F'\t' '$1=="mcp"{n++}       END{print n+0}')"
-  mcp_hit_a2a="$(printf '%s\n' "$out"       | awk -F'\t' '$1=="a2a"{n++}       END{print n+0}')"
-  mcp_hit_anthropic="$(printf '%s\n' "$out" | awk -F'\t' '$1=="anthropic"{n++} END{print n+0}')"
-  # `mcp` is NOT in MCP_NEEDLES, so it must never appear as a category, and `busbar_mcp` must not trip.
-  if [ "$mcp_hit_mcp" -eq 0 ];      then note "SYMMETRIC mcp: did NOT flag its own \`mcp\` name"; else fail=1; note "SYMMETRIC mcp FAILED: flagged its own \`mcp\`"; fi
-  if [ "$mcp_hit_a2a" -ge 1 ];      then note "SYMMETRIC mcp: flagged the foreign \`a2a\` plane key"; else fail=1; note "SYMMETRIC mcp FAILED: foreign a2a not flagged"; fi
-  if [ "$mcp_hit_anthropic" -ge 1 ]; then note "SYMMETRIC mcp: flagged \`anthropic\` SUBSTRING in anthropic_v1"; else fail=1; note "SYMMETRIC mcp FAILED: anthropic_v1 not flagged"; fi
+  # ── SYMMETRIC (busbar-a2a): may name `a2a`, must NOT name `mcp` (a kind-only plane's key since P3
+  # DEL-MCP, still a noun) or a dialect. Was the busbar-mcp case; that crate is deleted. ──
+  cat >"$tmp/a2a_case.rs" <<'A2A'
+use busbar_a2a::server::A2aEndpoint;
+fn wire() { let _ = "mcp"; let _d = "anthropic_v1"; }
+A2A
+  out="$(scan "$A2A_NEEDLES" "" "$tmp/a2a_case.rs")"
+  local a2a_hit_a2a a2a_hit_mcp a2a_hit_anthropic
+  a2a_hit_a2a="$(printf '%s\n' "$out"       | awk -F'\t' '$1=="a2a"{n++}       END{print n+0}')"
+  a2a_hit_mcp="$(printf '%s\n' "$out"       | awk -F'\t' '$1=="mcp"{n++}       END{print n+0}')"
+  a2a_hit_anthropic="$(printf '%s\n' "$out" | awk -F'\t' '$1=="anthropic"{n++} END{print n+0}')"
+  # `a2a` is NOT in A2A_NEEDLES, so it must never appear as a category, and `busbar_a2a` must not trip.
+  if [ "$a2a_hit_a2a" -eq 0 ];      then note "SYMMETRIC a2a: did NOT flag its own \`a2a\` name"; else fail=1; note "SYMMETRIC a2a FAILED: flagged its own \`a2a\`"; fi
+  if [ "$a2a_hit_mcp" -ge 1 ];      then note "SYMMETRIC a2a: flagged the foreign (kind-only) \`mcp\` plane key"; else fail=1; note "SYMMETRIC a2a FAILED: foreign mcp not flagged"; fi
+  if [ "$a2a_hit_anthropic" -ge 1 ]; then note "SYMMETRIC a2a: flagged \`anthropic\` SUBSTRING in anthropic_v1"; else fail=1; note "SYMMETRIC a2a FAILED: anthropic_v1 not flagged"; fi
 
   # ── SYMMETRIC (busbar-voice): may name `voice`, must NOT name `mcp` or `a2a`. ──
   cat >"$tmp/voice_case.rs" <<'VOICE'
@@ -521,30 +524,25 @@ run_report() {
   # shellcheck disable=SC2086
   require_roots neutral $NEUTRAL_ROOTS
   # shellcheck disable=SC2086
-  require_roots mcp     $MCP_ROOT
-  # shellcheck disable=SC2086
   require_roots a2a     $A2A_ROOT
 
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   : >"$tmp/hits"
 
   # Prepass: compute the test-support module subtrees to drop (across every scanned root).
-  compute_mod_excludes $NEUTRAL_ROOTS $MCP_ROOT $A2A_ROOT
+  compute_mod_excludes $NEUTRAL_ROOTS $A2A_ROOT
 
-  local nf mf af
-  nf="$(prod_files $NEUTRAL_ROOTS)"; mf="$(prod_files $MCP_ROOT)"; af="$(prod_files $A2A_ROOT)"
-  local n_nf n_mf n_af
-  n_nf="$(count_files "$nf")"; n_mf="$(count_files "$mf")"
+  local nf af
+  nf="$(prod_files $NEUTRAL_ROOTS)"; af="$(prod_files $A2A_ROOT)"
+  local n_nf n_af
+  n_nf="$(count_files "$nf")"
   n_af="$(count_files "$af")"
   require_files neutral "$n_nf"
-  require_files mcp     "$n_mf"
   require_files a2a     "$n_af"
 
   : >"$tmp/allowused"
   # shellcheck disable=SC2086
   scan "$NEUTRAL_NEEDLES" "$tmp/allowused" $nf >>"$tmp/hits"
-  # shellcheck disable=SC2086
-  scan "$MCP_NEEDLES"     "$tmp/allowused" $mf >>"$tmp/hits"
   # shellcheck disable=SC2086
   scan "$A2A_NEEDLES"     "$tmp/allowused" $af >>"$tmp/hits"
 
@@ -582,7 +580,6 @@ EOF
 
   hdr "PLANE-GREP report — dialect-name SUBSTRINGS outside busbar-llm (production .rs, comments/tests/Operation excluded)"
   note "neutral roots: $NEUTRAL_ROOTS   ($n_nf file(s); bans: $NEUTRAL_NEEDLES)"
-  note "mcp root:      $MCP_ROOT   ($n_mf file(s); bans: $MCP_NEEDLES)"
   note "a2a root:      $A2A_ROOT   ($n_af file(s); bans: $A2A_NEEDLES)"
   note "excluded:      $OPERATION_EXCLUDE (neutral Operation enum), */tests/*, *_test(s).rs, #[cfg(test)]"
 

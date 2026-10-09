@@ -137,15 +137,16 @@ fn every_plane_registration_item_is_contract_data_naming_no_kernel_type() {
         offenders.join("\n")
     );
 
-    // NON-VACUITY: the engine planes register through the contract type. Neither door plane has such
-    // an item: the decisions plane's row is its door's Statement, folded by the kernel
-    // (FLIP-DECISIONS), and FLIP-STREAMING deleted busbar-voice, the streaming plane registering
-    // through its door's Statement. Fewer than three read means the scan read nothing, and zero
-    // offenders over zero items is not a pass.
+    // NON-VACUITY: the engine planes register through the contract type: llm and a2a. The floor was
+    // five (those two, mcp, voice and decisions); FLIP-MCP and FLIP-DECISIONS each deleted one item,
+    // since each of those planes' rows is now its door's Statement, folded by the composition root,
+    // and FLIP-STREAMING deleted busbar-voice, the streaming plane registering through its door's
+    // Statement. Fewer than two read means the scan read nothing, and zero offenders over zero items
+    // is not a pass.
     let contract_typed = items.iter().filter(|i| i.ty == CONTRACT_TYPE).count();
     assert!(
-        contract_typed >= 3,
-        "expected at least three `{CONTRACT_TYPE}` registration items under crates/, found \
+        contract_typed >= 2,
+        "expected at least two `{CONTRACT_TYPE}` registration items under crates/, found \
          {contract_typed}: {:?}",
         items.iter().map(|i| &i.at).collect::<Vec<_>>()
     );

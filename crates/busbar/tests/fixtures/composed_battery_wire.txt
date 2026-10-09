@@ -1,7 +1,0 @@
-# THE WIRE tests/ws_composed_battery.rs drives, as data: `<wire key> <secure target scheme> <framer it
-# is upgraded from>`. The key is looked up in the linked transport table (build.rs
-# `$OUT_DIR/linked_transports.rs`), which is where the battery gets the wire's build; the secure
-# scheme is the dial target the wire must refuse over a cleartext carrier; the third is the framer an
-# inbound upgrade arrives on, whose `detach` hands the stream up for the wire to `adopt` (the wire
-# composes over nothing: ARCHITECT Q128 U7 / Q8). Its cleartext target scheme is its key.
-ws wss http

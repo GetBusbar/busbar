@@ -28,16 +28,17 @@ fn linked_rows() -> Vec<Registered> {
 
 /// The registry the seal fills: the folded transports, then every linked plane and the core one.
 fn linked_registry() -> Registry {
-    let transports: Vec<Arc<dyn Transport>> = linked_fold().into_iter().map(|(_, t)| t).collect();
-    register_all(&transports, crate::LINKED.claims).expect("nothing collides on a key")
+    let (rows, transports): (Vec<Registered>, Vec<Arc<dyn Transport>>) =
+        linked_fold().into_iter().unzip();
+    register_all(&rows, &transports, crate::LINKED.claims).expect("nothing collides on a key")
 }
 
 /// The shipped transport fold (`<wire key> <composed over, or ->` rows, in build order), as data.
 const TRANSPORT_FOLD: &str = include_str!("fixtures/transport_fold.txt");
 
-/// The sealed walk over the forty-four declared claims, most specific first. The decisions plane's
-/// claim is its door snapshot's (FLIP-DECISIONS) and the streaming plane's are its door snapshot's
-/// (FLIP-STREAMING), each mounted by the serve fold, so they are not here.
+/// The sealed walk over the forty declared claims, most specific first. The decisions plane's
+/// claim is its door snapshot's (FLIP-DECISIONS), mounted by the serve fold, as the MCP plane's are
+/// (FLIP-MCP) and the streaming plane's are (FLIP-STREAMING), so none of them is here.
 ///
 /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
 /// the test that reads it for what a change to this snapshot means. The rows are fixture DATA
@@ -130,7 +131,7 @@ fn six_transports_and_five_planes_register() {
 // are its door snapshot's (FLIP-STREAMING), mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_planes_declare_forty_four_claims() {
+fn the_planes_declare_forty_claims() {
     let claims = linked_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     // One `<plane key> <claims>` row per plane, pinned as fixture DATA so this source names none.
@@ -141,7 +142,9 @@ fn the_planes_declare_forty_four_claims() {
             (key.to_string(), n.parse().expect("a claim count"))
         })
         .collect();
-    assert_eq!(pinned.len(), 4, "four planes are pinned: {pinned:?}");
+    // Three rows: FLIP-MCP, FLIP-DECISIONS and FLIP-STREAMING each took a plane's claims out of the
+    // linked table (its door's snapshot claims them, mounted by the serve fold).
+    assert_eq!(pinned.len(), 3, "three planes are pinned: {pinned:?}");
     for (key, n) in &pinned {
         assert_eq!(
             count(key),
@@ -160,7 +163,7 @@ fn the_planes_declare_forty_four_claims() {
         claims.len(),
         "every claim belongs to a pinned plane"
     );
-    assert_eq!(claims.len(), 44);
+    assert_eq!(claims.len(), 40);
 }
 
 /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -174,19 +177,22 @@ fn the_planes_declare_forty_four_claims() {
 /// 65 without ever answering "disjoint" for a pair one arrival satisfies, and naming the audio
 /// surface one path at a time rather than as a prefix took it from 65 to 63. Joining the decision
 /// plane (item 251) added one more — its `/v1/models` against the llm plane's tail pattern — for 64.
-/// FLIP-STREAMING took the streaming plane's five claims out of the linked table (its door's
-/// snapshot claims them, mounted by the serve fold): ten cross-family and 22 same-family pairs left
-/// with them. FLIP-DECISIONS took the decisions plane's two claims out (its door's snapshot claims
-/// `POST /v1/systemone` alone, mounted by the serve fold): ten cross-family pairs and one
-/// same-family pair. The two planes' claims never overlapped each other (the decisions plane's
-/// exact paths match none of the streaming plane's suffix, substring or prefix selectors), so 100
-/// cross-family and 64 same-family became 80 and 41.
+/// FLIP-MCP took the MCP plane's four claims out of the linked table (its door's snapshot claims
+/// them, mounted by the serve fold behind the data listener's guest list): ten cross-family pairs;
+/// the same-family pairs were unchanged. FLIP-DECISIONS took the decisions plane's two claims out of
+/// it too (its door's snapshot claims `POST /v1/systemone` alone, mounted by the serve fold): ten
+/// cross-family pairs and one same-family pair. FLIP-STREAMING took the streaming plane's five
+/// claims out (its door's snapshot claims them, mounted by the serve fold): ten cross-family and 22
+/// same-family pairs. The three planes' claims never overlapped one another (none of them states a
+/// header claim, the MCP plane's stream name is not on the path planes' transport, and no exact path
+/// of one matches another's suffix, substring or prefix selectors), so 100 cross-family and 64
+/// same-family became 70 and 41.
 // Pinned against the SHIPPED composition (every linked plane on). Compiled out with any of them
 // because the numbers below are that composition's, not a subset of it. The streaming plane's claims
 // are its door snapshot's (FLIP-STREAMING), mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
-fn one_hundred_and_twenty_one_cross_plane_pairs_overlap() {
+fn one_hundred_and_eleven_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
 
     let claims = linked_claims();
@@ -204,7 +210,7 @@ fn one_hundred_and_twenty_one_cross_plane_pairs_overlap() {
             }
         }
     }
-    assert_eq!(cross_family, 80);
+    assert_eq!(cross_family, 70);
     assert_eq!(same_family, 41);
 }
 
@@ -268,7 +274,7 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     assert_eq!(fragments, 0);
 }
 
-/// **The finding, answered.** Every one of those 121 overlaps is settled by the sealed order,
+/// **The finding, answered.** Every one of those 111 overlaps is settled by the sealed order,
 /// and none of them is a refusal.
 ///
 /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
@@ -284,7 +290,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
 
-    assert_eq!(sealed.resolved.len(), 121);
+    assert_eq!(sealed.resolved.len(), 111);
     assert!(
         sealed.refused.is_empty(),
         "the declared claims do not seal: {:?}",
@@ -310,7 +316,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// The sealed order of the forty-four, written out.
+/// The sealed order of the forty, written out.
 ///
 /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
 /// against is the thing this file produces, and a change to it is a change to which plane
@@ -322,7 +328,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 // are its door snapshot's (FLIP-STREAMING), mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_sealed_order_of_the_forty_four_claims_is_pinned() {
+fn the_sealed_order_of_the_forty_claims_is_pinned() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
@@ -500,16 +506,17 @@ fn the_shipped_transport_stack_composes() {
             .expect("registered")
             .composed_over
     };
-    // The transport whose `new()` yields something that refuses every connection is the one that
-    // must be built through `over`, and the rows say it was. `grpc` is a door that frames the
-    // host's socket: it is built over nothing.
-    // `ws` is a framer door too (transport-ws#13, ARCHITECT Q8): it states an empty composes_over
-    // and takes the upgraded connection by adopt, so it is built over nothing.
+    // NO TRANSPORT NAMES ANOTHER (ARCHITECT Q128 U7; TRANSPORT-STACK (2), :4721): every row is
+    // built over nothing, the carrier being the connector's choice from the target's scheme, and
+    // `sse` is a claim of the http entry, served by its wire, not a layer over it.
     if ws_linked() {
         assert_eq!(composed_over("ws"), None);
     }
     assert_eq!(composed_over("grpc"), None);
-    assert_eq!(composed_over("sse"), Some("http"));
+    assert_eq!(composed_over("sse"), None);
+    for row in &rows {
+        assert!(row.composes_over.is_empty(), "`{}` names a layer", row.key);
+    }
 }
 
 /// The other direction of the composition rule: a transport built over a layer it does not
@@ -623,8 +630,8 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default())
         .expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), 44);
-    assert_eq!(sealed.precedence.len(), 44);
+    assert_eq!(sealed.claims.len(), 40);
+    assert_eq!(sealed.precedence.len(), 40);
 }
 
 /// The operator's request-body cap reaches every linked transport.
@@ -688,10 +695,11 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 }
 
 /// THE FOLD IS BOTTOM-UP, AND `COMPOSES_OVER` IS THE COMPOSITION ORDER. The shipped rows build in
-/// the order they register — every wire after every layer it declares — and each composed wire is
-/// built over the first layer it declares: `sse` and `ws` over `http`, the four that open their
-/// own socket or frame the host's over nothing. The same rows handed over in the reverse order build
-/// the same stack, because the order is the declarations' and not the table's.
+/// the order they register — every wire after every layer it declares — and each entry's claims
+/// past its own register right after it (`sse`, the http entry's). No shipped wire declares a
+/// layer (no transport names another), so every row is built over nothing. The same rows handed
+/// over in the reverse order build the same stack, because the order is the declarations' and not
+/// the table's.
 // THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
 // (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
 // cell gates on the transport-door axis, read off the linked table.
@@ -699,7 +707,11 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 #[test]
 fn the_fold_builds_bottom_up_in_composes_over_order() {
     let rows = linked_rows();
-    let linked: Vec<&str> = crate::LINKED.transports.iter().map(|r| r.key).collect();
+    let linked: Vec<&str> = crate::LINKED
+        .transports
+        .iter()
+        .flat_map(|r| (r.claims)())
+        .collect();
     let shipped: Vec<(&str, Option<&str>)> = TRANSPORT_FOLD
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -845,6 +857,7 @@ fn dropped_doors() -> &'static [DroppedDoor] {
             .into_iter()
             .map(|(plugin, key)| DroppedDoor {
                 key,
+                claims: vec![key],
                 composes_over: Vec::new(),
                 wire: crate::root::doors::host_wire(
                     plugin,
@@ -869,6 +882,8 @@ fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
         key: wire.key,
         composes_over: &[],
         build: |_, _| dropped_doors()[0].wire.clone(),
+        claims: || vec![dropped_doors()[0].key],
+        upgrades: Vec::new,
     }
 }
 
@@ -988,4 +1003,25 @@ fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
         "{dropped}"
     );
     assert_eq!(dropped.to_string(), linked.to_string());
+}
+
+/// THE UPGRADE LINES ARE THE LINKED CLAIMS THAT OPEN AT AN UPGRADE, read off the door Statements
+/// (ARCHITECT ruling Q128 U7; never a layer list): the session plane's wire, where this build links
+/// it, and nothing else. (RED, at the loader: a claim row stating any other trigger is no line,
+/// `an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade`.)
+#[test]
+fn the_upgrade_lines_are_read_off_the_door_statements() {
+    let lines = crate::root::serve::upgrade_carriers(crate::LINKED.transports);
+    if ws_linked() {
+        assert_eq!(
+            lines,
+            ["ws"],
+            "the session wire's claim opens at the upgrade"
+        );
+    } else {
+        assert!(
+            lines.is_empty(),
+            "no session wire, no upgrade line: {lines:?}"
+        );
+    }
 }

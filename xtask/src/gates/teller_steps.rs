@@ -944,46 +944,6 @@ fn run_root_legs_gating(cx: &Ctx) -> i32 {
     1
 }
 
-/// The module a lifted-out test file is MOUNTED as when its declaring module names it otherwise
-/// than the `<impl>::tests` convention: `crates/busbar/src/root/tests/serve_tests.rs` reached by
-/// `#[path = "tests/serve_tests.rs"] mod door_tests;` in `root/serve.rs` is `root::serve::door_tests`.
-/// `None` when no sibling declares it under another name (the convention then applies).
-fn path_mounted(cx: &Ctx, file: &str) -> Option<String> {
-    let (dir, stem) = file.strip_suffix(".rs")?.rsplit_once("/tests/")?;
-    let module_dir = dir.split_once("src/")?.1;
-    let wanted = format!("#[path = \"tests/{stem}.rs\"]");
-    let siblings = std::fs::read_dir(cx.abs(dir)).ok()?;
-    let mut names: Vec<String> = siblings
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|n| n.ends_with(".rs"))
-        .collect();
-    names.sort();
-    for name in names {
-        let text = cx.read(format!("{dir}/{name}")).unwrap_or_default();
-        let Some(at) = text.find(&wanted) else {
-            continue;
-        };
-        let decl = text[at + wanted.len()..]
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty() && !l.starts_with("#["))?;
-        let module = decl
-            .strip_prefix("mod ")
-            .or_else(|| decl.strip_prefix("pub mod "))?
-            .trim_end_matches(';')
-            .trim();
-        if module == "tests" {
-            return None;
-        }
-        let impl_path = match name.strip_suffix(".rs")? {
-            "mod" | "lib" | "main" => module_dir.replace('/', "::"),
-            imp => format!("{}::{imp}", module_dir.replace('/', "::")),
-        };
-        return Some(format!("{impl_path}::{module}"));
-    }
-    None
-}
-
 /// The `(leg, file, fn)` triples the matrix claims are proven over the loop.
 fn root_cells(m: &Matrix) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
@@ -1001,6 +961,9 @@ fn root_cells(m: &Matrix) -> Vec<(String, String, String)> {
     }
     out
 }
+
+/// The binary crate whose test harness runs the root legs: its module tree starts here.
+const BUSBAR_MAIN: &str = "crates/busbar/src/main.rs";
 
 /// RUN every named loop cell, with all five legs compiled in.
 ///
@@ -1051,58 +1014,27 @@ fn run_root_legs(cx: &Ctx) -> i32 {
         .filter_map(|l| l.strip_suffix(": test"))
         .collect();
 
-    // `crates/busbar/src/root/plane_node.rs::the_fn` is the ledger's spelling; libtest's is
-    // `root::plane_node::tests::the_fn`. Deriving one from the other rather than storing both is
-    // what keeps the two from drifting apart.
-    //
-    // The structure lint moved each inline `#[cfg(test)] mod tests` body out to its own file, wired
-    // back with `#[path = "tests/<stem>.rs"] mod tests;`, and pointed every ledger entry at that
-    // physical file so the `fn` floor reads it where the body now lives. But `#[path]` does NOT move
-    // the module: the body is still child `tests` of its impl module, so libtest still spells it
-    // `<impl>::tests::<fn>`. The stem is decorative -- named after the impl module by convention --
-    // so a `.../tests/<stem>.rs` tail resolves to `<impl>::tests`, never `...::tests::<stem>::tests`.
+    // `crates/busbar/src/root/plane_node.rs::the_fn` is the ledger's spelling; libtest's is the
+    // module path the crate builds for it. That path is READ OFF THE SOURCE
+    // ([`crate::libtest_path`]): the module tree from `src/main.rs` through every `mod` declaration
+    // and `#[path]` attribute, then the inline modules the fn sits in. It used to be guessed from the
+    // file's NAME (`.../tests/<stem>.rs` -> `<impl>::tests`), which is wrong for a body carried
+    // under another module name (`serve.rs`: `#[path = "tests/serve_tests.rs"] mod door_tests`) or
+    // nested in an inline module (`mod agent_door { .. }`): every such cell was reported absent. A
+    // file or fn the tree reaches two ways is a refusal naming both, never a guess.
+    let tree = crate::libtest_path::module_tree(&|rel: &str| cx.read(rel).ok(), BUSBAR_MAIN);
     let mut wanted: Vec<String> = Vec::new();
     let mut unknown: Vec<String> = Vec::new();
     let mut per_leg: BTreeMap<String, usize> = BTreeMap::new();
     for (leg, file, func) in &cells {
-        // A test body mounted under ANOTHER module name (`#[path = "tests/serve_tests.rs"] mod
-        // door_tests;` in `serve.rs`) is that module: libtest spells it `root::serve::door_tests::f`.
-        if let Some(module) = path_mounted(cx, file) {
-            let path = format!("{module}::{func}");
-            if !known.contains(path.as_str()) {
-                unknown.push(format!("  {leg}: {file}::{func} (looked for {path})"));
-            } else if !wanted.contains(&path) {
-                wanted.push(path);
+        let path = match crate::libtest_path::resolve(&tree, file, func) {
+            Ok(p) => p,
+            Err(why) => {
+                unknown.push(format!("  {leg}: {file}::{func} ({why})"));
                 *per_leg.entry(leg.clone()).or_default() += 1;
+                continue;
             }
-            continue;
-        }
-        let path = file
-            .split("src/")
-            .nth(1)
-            .and_then(|s| s.strip_suffix(".rs"))
-            .map(|s| {
-                let segs: Vec<&str> = s.split('/').collect();
-                // A `.../tests/<stem>` tail is a lifted-out test body reached through `#[path]`.
-                let module = if segs.len() >= 2 && segs[segs.len() - 2] == "tests" {
-                    let stem = segs[segs.len() - 1];
-                    let parent = &segs[..segs.len() - 2];
-                    if parent.last() == Some(&stem) {
-                        // Dir-module impl (`<impl>/mod.rs` beside `<impl>/tests/<stem>.rs`, where
-                        // the dir already IS `<impl>` == stem): the module is `<impl>::tests`.
-                        parent.join("::")
-                    } else {
-                        // File-module impl (`<impl>.rs` beside a sibling `tests/<stem>.rs`, stem ==
-                        // impl name): the module is `<impl>::tests`, restoring the impl segment.
-                        format!("{}::{stem}", parent.join("::"))
-                    }
-                } else {
-                    // Inline / old-style: the file itself is the impl module.
-                    segs.join("::")
-                };
-                format!("{module}::tests::{func}")
-            })
-            .unwrap_or_default();
+        };
         if path.is_empty() || !known.contains(path.as_str()) {
             unknown.push(format!("  {leg}: {file}::{func} (looked for {path})"));
         } else if !wanted.contains(&path) {

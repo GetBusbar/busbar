@@ -554,13 +554,17 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // THE LIFT KEYS ARE READ FROM THE DECLARATIONS, not from a list the kernel keeps: the plane that
     // owns the endpoint door stops declaring it, and the door leaves the rendered grammar.
-    let door_home = "crates/busbar-mcp/src/mcp/mod.rs";
+    //
+    // The owner is the mcp plane's DOOR since P3 DEL-MCP (ARCHITECT 2026-10-05: the engine's
+    // `busbar-mcp/src/mcp/mod.rs` PlaneDecl is deleted): its Statement's `SECTIONS` table owns the
+    // `mcp` endpoint block, and marking that row CONSUMED is the door no longer declaring it.
+    let door_home = "crates/busbar-plane-mcp/src/door.rs";
     let mut ov = Overlay::new();
     ov.set(
         door_home,
         cx.read(door_home).unwrap_or_default().replace(
-            "owned_config_sections: &[\"mcp\"]",
-            "owned_config_sections: &[]",
+            "name: abi_str(\"mcp\"),\n        flags: 0,",
+            "name: abi_str(\"mcp\"),\n        flags: SECTION_CONSUMED,",
         ),
     );
     report.push(prove_rows_red(

@@ -600,7 +600,10 @@ const READY_AT: usize = std::mem::offset_of!(Door, ready);
 /// The door's head checks, in the mechanism's order: not NULL, the magic, the mechanism version, a
 /// size that reaches `ops` (the append-only `ready` tail is optional), a kind the host has, the kind `want` asks for (any, for `None`), and
 /// that kind's ABI version.
-fn read_door(p: *const Door, want: Option<KindCode>) -> Result<(Door, KindCode), LoadError> {
+pub(crate) fn read_door(
+    p: *const Door,
+    want: Option<KindCode>,
+) -> Result<(Door, KindCode), LoadError> {
     if p.is_null() {
         return Err(LoadError::NullDoor);
     }
@@ -712,7 +715,7 @@ fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
         .collect()
 }
 
-fn statement(door: &Door) -> Result<Statement, LoadError> {
+pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
     let p = door.statement;
     if p.is_null() {
         return Err(LoadError::NullStatement);
@@ -742,8 +745,14 @@ fn statement(door: &Door) -> Result<Statement, LoadError> {
     if st.diag_ids_len > 0 && st.diag_ids.is_null() {
         return Err(LoadError::BadStatement("diag_ids is NULL".into()));
     }
+    // THE LISTS' BOUNDS FIRST: `check_statement` refuses a NULL list with a count, a count above
+    // `STATEMENT_LIST_MAX` and a misaligned list before any entry is read, so the walk below never
+    // reads past the plugin's own data.
+    // SAFETY: a door's Statement is `'static` plugin data; every list is checked before it is read.
+    unsafe { check_statement(&st) }
+        .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
     for i in 0..st.families_len {
-        // SAFETY: `families` holds `families_len` `'static` entries.
+        // SAFETY: `families` holds `families_len` `'static` entries, at most STATEMENT_LIST_MAX.
         let fam: MetricFamily = unsafe { st.families.add(i).read_unaligned() };
         if fam.kind > FAMILY_HISTOGRAM {
             return Err(LoadError::BadStatement(format!(
@@ -760,10 +769,6 @@ fn statement(door: &Door) -> Result<Statement, LoadError> {
             return Err(LoadError::BadStatement(format!("family {i} has no name")));
         }
     }
-    // SAFETY: a door's Statement is `'static` plugin data; `check_statement` refuses a NULL list
-    // with a count before it reads the list.
-    unsafe { check_statement(&st) }
-        .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
     kind_tail(&st)?;
     Ok(st)
 }

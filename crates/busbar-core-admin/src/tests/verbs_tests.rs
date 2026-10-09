@@ -66,15 +66,21 @@ impl ReplayEncoder<MintedKeyOutcome> for FakeReplayEncoder {
     }
 }
 
+/// A fresh node-lifetime limiter, as the composition root builds once per node.
+fn node_limiter() -> std::sync::Arc<crate::rate::MutationLimiter> {
+    std::sync::Arc::new(crate::rate::MutationLimiter::new())
+}
+
 fn make_verbs<G: Governance>(
     gov: G,
 ) -> Verbs<G, FakeStore, CountingNonceSource, FakeReplayEncoder> {
     Verbs::new(
         gov,
-        FakeStore,
+        Some(std::sync::Arc::new(FakeStore)),
         CountingNonceSource::new(),
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
+        node_limiter(),
     )
 }
 
@@ -461,13 +467,14 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
     let gov = FakeGovernance::new();
     let verbs = Verbs::new(
         gov,
-        FakeStore,
+        Some(std::sync::Arc::new(FakeStore)),
         RecordingNonceSource {
             seen: seen.clone(),
             draws: AtomicU64::new(0),
         },
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
+        node_limiter(),
     );
     let admin = admin();
     // Two calls with DISTINCT idempotency keys (or none), each therefore minting fresh, and each
@@ -548,10 +555,11 @@ fn the_minted_nonce_is_whatever_the_source_gave_and_nothing_else() {
 
     let verbs = Verbs::new(
         FakeGovernance::new(),
-        FakeStore,
+        Some(std::sync::Arc::new(FakeStore)),
         ConstantNonceSource,
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
+        node_limiter(),
     );
     let admin = admin();
     let expected = u128::from_be_bytes([7u8; 16]);
@@ -1223,11 +1231,62 @@ fn the_other_governance_errors_keep_their_own_reasons() {
     }
 }
 
+/// One trust decision through `execute`, as the root's route step makes it.
+fn approve_trust(
+    verbs: &Verbs<FakeGovernance, FakeStore, CountingNonceSource, FakeReplayEncoder>,
+    admin: &Grant<AdminVerb>,
+) -> Result<Vec<u8>, crate::refusal::Refusal> {
+    verbs.execute(
+        KernelVerb::TrustApprove,
+        admin,
+        "alice",
+        VerbScope::Full,
+        0,
+        Some(PostureCtx {
+            operator: OperatorState::Unset,
+            dual_control: DualControl::Single,
+        }),
+        ApprovalState::NotYetApproved,
+        b"{}",
+    )
+}
+
+/// A new verb spends the node's mutation budget, and the budget is the NODE's: the 61st `Crud`
+/// mutation inside one window is refused even though every call was made through a different
+/// `Verbs` — which is how the composition root builds them, one per request, over the one limiter
+/// it holds for the life of the node.
 #[test]
 fn rate_limit_is_enforced_across_execute_calls() {
+    let limiter = node_limiter();
+    let per_request = || {
+        Verbs::new(
+            FakeGovernance::new(),
+            Some(std::sync::Arc::new(FakeStore)),
+            CountingNonceSource::new(),
+            FakeReplayEncoder,
+            CONFIG_CLASS_RULES,
+            std::sync::Arc::clone(&limiter),
+        )
+    };
+    let admin = admin();
+    let budget = crate::rate::MutationClass::Crud.limit();
+    for i in 0..budget {
+        approve_trust(&per_request(), &admin)
+            .unwrap_or_else(|e| panic!("attempt {i} should be admitted, got {e:?}"));
+    }
+    let err = approve_trust(&per_request(), &admin).unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::RateLimited);
+}
+
+/// A legacy mutation is NOT spent here. Its own 1.5.5 surface spends it in front of the handler,
+/// and a second count on this side would refuse at half the budget 1.5.5 granted: eleven config
+/// applies through one limiter all reach the surface, which is where the eleventh is refused.
+#[test]
+fn a_legacy_mutation_is_not_counted_a_second_time_here() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
-    for i in 0..10 {
+    let budget = crate::rate::MutationClass::Config.limit();
+    for i in 0..=budget {
         verbs
             .execute(
                 KernelVerb::PostConfigApply,
@@ -1239,21 +1298,8 @@ fn rate_limit_is_enforced_across_execute_calls() {
                 ApprovalState::NotYetApproved,
                 b"{}",
             )
-            .unwrap_or_else(|e| panic!("attempt {i} should be admitted, got {e:?}"));
+            .unwrap_or_else(|e| panic!("attempt {i} should reach its surface, got {e:?}"));
     }
-    let err = verbs
-        .execute(
-            KernelVerb::PostConfigApply,
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            None,
-            ApprovalState::NotYetApproved,
-            b"{}",
-        )
-        .unwrap_err();
-    assert_eq!(err.reason, crate::refusal::ReasonCode::RateLimited);
 }
 
 // ── the five 1.6.0 ledger views ─────────────────────────────────────────────────────────────────
@@ -1873,10 +1919,11 @@ fn recovery_verbs() -> Verbs<FakeGovernance, RecordingStore, CountingNonceSource
 {
     Verbs::new(
         FakeGovernance::new(),
-        RecordingStore::new(),
+        Some(std::sync::Arc::new(RecordingStore::new())),
         CountingNonceSource::new(),
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
+        node_limiter(),
     )
 }
 
@@ -2074,6 +2121,62 @@ fn a_recovery_verb_waits_for_its_approval_under_required_dual_control() {
     )
     .expect("an approved chain break lands");
     assert_eq!(v.store_for_test().reached(), vec!["chain_break"]);
+}
+
+/// A node with NO store (no governance configured) is handed `None`, and each disaster-recovery
+/// verb, once admitted, is refused as a store failure: there is nothing for it to reach. The same
+/// admitted verb over a bound store lands (the tests above), so the refusal is the absence alone.
+#[test]
+fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() {
+    let admin = admin();
+    let v: Verbs<FakeGovernance, RecordingStore, CountingNonceSource, FakeReplayEncoder> =
+        Verbs::new(
+            FakeGovernance::new(),
+            None,
+            CountingNonceSource::new(),
+            FakeReplayEncoder,
+            CONFIG_CLASS_RULES,
+            node_limiter(),
+        );
+    let set = || {
+        Some(PostureCtx {
+            operator: OperatorState::Set([0u8; 32]),
+            dual_control: DualControl::Single,
+        })
+    };
+    let refused = [
+        v.chain_break(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            set(),
+            ApprovalState::NotYetApproved,
+        ),
+        v.store_restore(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            set(),
+            ApprovalState::NotYetApproved,
+            "backup-1",
+        ),
+        v.reseal_epoch_floor(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            set(),
+            ApprovalState::NotYetApproved,
+        ),
+    ];
+    for r in refused {
+        assert_eq!(
+            r.expect_err("no store, nothing to reach").reason,
+            crate::refusal::ReasonCode::StoreError
+        );
+    }
 }
 
 /// The group-lookup adapter and the length-framed rotate slot, in their own file.

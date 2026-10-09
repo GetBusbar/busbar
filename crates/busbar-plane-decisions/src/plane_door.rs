@@ -59,7 +59,7 @@ use busbar_contract::abi::sdk::{
 };
 use busbar_contract::plane::PlaneMeta;
 
-use crate::codec::{CONTENT_TYPE_JSON, FIELD_CONTENT_TYPE};
+use crate::codec::{CONTENT_TYPE_JSON, FIELD_CONTENT_TYPE, FIELD_RETRY_AFTER};
 use crate::config::DecisionsSection;
 use crate::driven::{self, tail, CallerAnswer, FarEndReading, PrincipalNeed};
 use crate::{claims, DecisionPlane};
@@ -208,6 +208,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_routes: ptr::null(),
     admin_routes_len: 0,
     admin_openapi: Blob::ABSENT,
+    stream_ceiling_secs: 0,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its need and its tail.
@@ -246,6 +247,27 @@ pub fn read_settings(settings: &[u8]) -> Result<DecisionsSection, String> {
         return Ok(DecisionsSection::default());
     }
     serde_json::from_value(section).map_err(|e| e.to_string())
+}
+
+/// `validate`'s blob: what stage 3g deals a plane (`{<verb>: <section>}`; the kernel's own judges hand
+/// the same shape), read at the `decisions:` section. An empty blob, or one that writes no
+/// `decisions:`, is the empty section.
+///
+/// # Errors
+///
+/// A blob that is not a map of sections, or the section's first broken rule.
+pub fn read_dealt(settings: &[u8]) -> Result<DecisionsSection, String> {
+    if settings.is_empty() {
+        return Ok(DecisionsSection::default());
+    }
+    let value: serde_json::Value = serde_json::from_slice(settings).map_err(|e| e.to_string())?;
+    let serde_json::Value::Object(mut verbs) = value else {
+        return Err("the dealt settings are not a map of the plane's sections".to_string());
+    };
+    match verbs.remove(tail::SECTION_DECLARING) {
+        None | Some(serde_json::Value::Null) => Ok(DecisionsSection::default()),
+        Some(section) => serde_json::from_value(section).map_err(|e| e.to_string()),
+    }
 }
 
 /// ONE GENERATION'S SNAPSHOT for a section with `models` configured models: the claims
@@ -335,7 +357,7 @@ macro_rules! slot {
 slot!(
     /// `validate`: the settings read as the section, or refused in the grammar's words.
     Validate, ValidateIn, OutHead, |_, input, mut out| {
-        match read_settings(input.field(|i| &i.settings).bytes()) {
+        match read_dealt(input.field(|i| &i.settings).bytes()) {
             Ok(_) => Outcome::Ready,
             Err(words) => out.fail(Refusal::refused(words)),
         }
@@ -666,7 +688,9 @@ slot!(
 );
 
 slot!(
-    /// `refusal`: the kernel's status and text in this dialect's error shape, as JSON.
+    /// `refusal`: the kernel's status and text in this dialect's error shape, as JSON, and the
+    /// wait the kernel handed beside it (`retry_after_s`, a limit's rolling window or the walk's
+    /// floor) as `Retry-After`, as every plane answers it.
     RefusalSlot, RefusalIn, RefusalOut, |_, input, mut out| {
         let given = input.get();
         let status = u16::try_from(given.status).unwrap_or(0);
@@ -679,6 +703,13 @@ slot!(
             name: arena.span(FIELD_CONTENT_TYPE.as_bytes()),
             value: arena.span(CONTENT_TYPE_JSON),
         });
+        if given.retry_after_s > 0 {
+            let wait = given.retry_after_s.to_string();
+            fields.push(OutField {
+                name: arena.span(FIELD_RETRY_AFTER.as_bytes()),
+                value: arena.span(wait.as_bytes()),
+            });
+        }
         let short = !(reply.fits() && fields.fits() && arena.fits());
         let (rw, rnd) = reply.settle(short);
         let (fw, fnd) = fields.settle(short);

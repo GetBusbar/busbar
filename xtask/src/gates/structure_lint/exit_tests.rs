@@ -106,19 +106,25 @@ fn item_184_a_duplicate_between_llm_and_a2a_is_seen() {
 /// Item 223: a plane-local copy of another plane's helper (llm beside a2a; voice until FLIP-STREAMING
 /// deleted `busbar-voice`) is seen, and a name the ledger signed for mcp+a2a is NOT excused when a
 /// third plane grows a copy of it.
+///
+/// The signed name is `config.rs`, the ledger's one surviving row: its fn-name siblings (`judge`
+/// among them) were struck at P3 DEL-MCP with the engine whose half they signed for. The stretch
+/// case (a third plane's `config.rs` beside a2a's) is no longer on disk now that voice is deleted,
+/// so llm's `config.rs` is planted beside a2a's real one.
 #[test]
 fn item_223_a_third_plane_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does_not_stretch() {
     let signed = plane_dups::ledger()
         .into_iter()
-        .find(|r| r.name == "judge")
-        .expect("the ledger signs `judge` for mcp and a2a");
+        .find(|r| r.name == "config.rs")
+        .expect("the ledger signs `config.rs` for mcp and a2a");
     let mut ov = Overlay::new();
     ov.set(
         "crates/busbar-llm/src/planted_llm_a2a_helper.rs",
-        format!(
-            "pub fn planted_llm_a2a_helper() {{}}\npub fn {}() {{}}\n",
-            signed.name
-        ),
+        "pub fn planted_llm_a2a_helper() {}\n",
+    );
+    ov.set(
+        "crates/busbar-llm/src/config.rs",
+        "pub fn planted_llm_config() {}\n",
     );
     ov.set(
         "crates/busbar-a2a/src/a2a/planted_llm_a2a_helper.rs",
@@ -130,8 +136,9 @@ fn item_223_a_third_plane_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does
         &[
             "`planted_llm_a2a_helper`",
             "llm:crates/busbar-llm/src/planted_llm_a2a_helper.rs:1",
-            "`judge`",
-            "llm:crates/busbar-llm/src/planted_llm_a2a_helper.rs:2",
+            &format!("`{}`", signed.name),
+            "llm:crates/busbar-llm/src/config.rs",
+            "the ledger row signs for a2a+mcp only",
         ],
     );
 }

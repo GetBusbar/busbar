@@ -611,7 +611,8 @@ forbidden = [
             doc.table("gate")
                 .expect("gate table")
                 .list_of("plane_crates"),
-            vec!["busbar-llm", "busbar-mcp", "busbar-a2a"]
+            // busbar-mcp left at P3 DEL-MCP and busbar-voice at FLIP-STREAMING ([gate.census.deleted]).
+            vec!["busbar-llm", "busbar-a2a"]
         );
         assert_eq!(
             doc.children("rules.legacy-reach.prefixes")
