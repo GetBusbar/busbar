@@ -19,6 +19,9 @@
 //!   drops its inbound cache and reports how many entries under its
 //!   [`METRIC_CACHE_FLUSHED`](busbar_contract::abi::auth::METRIC_CACHE_FLUSHED) family, which this
 //!   answers.
+//! * `tick` runs on the one clock from the instance's open, as an outbound instance's does
+//!   ([`crate::dispatch::auth_ticks`]): its key set refreshes ahead of the TTL. The schedule stops
+//!   when the instance is dropped (retired, or replaced on apply).
 //!
 //! Every answer is a [`VerifyAnswer`]: the verdict (with the identity and its credential, a
 //! secret), the decision and the lines to strip (THE DESIGN, "Auth points and guest lists").
@@ -526,6 +529,9 @@ pub struct AuthInstance {
     generation: AtomicU64,
     label: String,
     lifecycle: Mutex<()>,
+    /// THE INSTANCE'S TICK SCHEDULE, on the runtime it was opened on (none off any runtime);
+    /// aborted when the instance is dropped.
+    schedule: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for AuthInstance {
@@ -638,6 +644,8 @@ impl AuthInstance {
         // declared needs), awaited on a ticket; a door that states none is not called. A refusal
         // refuses the open in the plugin's words.
         plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
+        // ITS TICK SCHEDULE, on the runtime the composition runs on, as an outbound instance's.
+        let schedule = crate::dispatch::auth_ticks::spawn(plugin.clone(), dispatcher.clone(), 0);
         Ok(Self {
             shared: Arc::new(Shared {
                 plugin,
@@ -651,6 +659,7 @@ impl AuthInstance {
             generation: AtomicU64::new(1),
             label: label.to_string(),
             lifecycle: Mutex::new(()),
+            schedule,
         })
     }
 
@@ -663,10 +672,21 @@ impl AuthInstance {
     pub fn label(&self) -> &str {
         &self.label
     }
+
+    /// Whether the instance's tick schedule has ended (or never ran: opened off any runtime).
+    #[must_use]
+    pub fn ticks_ended(&self) -> bool {
+        self.schedule
+            .as_ref()
+            .is_none_or(tokio::task::JoinHandle::is_finished)
+    }
 }
 
 impl Drop for AuthInstance {
     fn drop(&mut self) {
+        if let Some(schedule) = self.schedule.take() {
+            schedule.abort();
+        }
         for s in &mut self.secrets {
             zero(s);
         }
