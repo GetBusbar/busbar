@@ -110,7 +110,10 @@ fn closing(src: &str, at: usize) -> Option<usize> {
             continue;
         }
         if b[i..].starts_with(b"//") {
-            i += b[i..].iter().position(|&c| c == b'\n').unwrap_or(b.len() - i);
+            i += b[i..]
+                .iter()
+                .position(|&c| c == b'\n')
+                .unwrap_or(b.len() - i);
             continue;
         }
         if b[i] == open {
@@ -194,12 +197,14 @@ fn only_skips(body: &str) -> bool {
 /// Every keyword `word` in `src` at a word boundary, by byte index.
 fn words<'a>(src: &'a str, word: &'a str) -> impl Iterator<Item = usize> + 'a {
     let b = src.as_bytes();
-    src.match_indices(word).map(|(at, _)| at).filter(move |&at| {
-        let before = at.checked_sub(1).map(|i| b[i]);
-        let after = b.get(at + word.len());
-        !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_')
-            && !after.is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
-    })
+    src.match_indices(word)
+        .map(|(at, _)| at)
+        .filter(move |&at| {
+            let before = at.checked_sub(1).map(|i| b[i]);
+            let after = b.get(at + word.len());
+            !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_')
+                && !after.is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        })
 }
 
 /// The block opening at the first `{` at or after `at`, as `(open, close)` indices.
@@ -242,8 +247,8 @@ fn hits(src: &str) -> Vec<(usize, &'static str)> {
     for at in src.match_indices("let Some(").map(|(at, _)| at) {
         let head_end = at + src[at..].find(';').unwrap_or(src.len() - at);
         let head = &src[at..head_end];
-        let Some(else_at) = words(head, "else")
-            .find(|&e| head[e + "else".len()..].trim_start().starts_with('{'))
+        let Some(else_at) =
+            words(head, "else").find(|&e| head[e + "else".len()..].trim_start().starts_with('{'))
         else {
             continue;
         };
@@ -292,7 +297,11 @@ fn no_test_in_this_crate_returns_early_when_its_fixture_is_absent() {
     {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-        let shown = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let shown = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for (line, what) in hits(&src) {
             found.push(format!("{shown}:{line}: {what}"));
         }
@@ -340,7 +349,12 @@ fn d() {
 }
 "#;
     let found: Vec<_> = hits(skipping).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(found, vec![3, 8, 13, 18, 19, 20, 25], "{:?}", hits(skipping));
+    assert_eq!(
+        found,
+        vec![3, 8, 13, 18, 19, 20, 25],
+        "{:?}",
+        hits(skipping)
+    );
 
     let failing = r#"
 fn a() {

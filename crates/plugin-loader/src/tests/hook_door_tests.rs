@@ -295,13 +295,12 @@ fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
         refused.contains(crate::dispatch::kinds::hook::NO_TAIL) && refused.contains(UNTAILED_NAME),
         "{refused}"
     );
-    let tailed = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked)
-        .open(
-            NAME,
-            "hooks.gate",
-            &json!({"reject_over_messages": 3}),
-            BUDGET,
-        );
+    let tailed = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).open(
+        NAME,
+        "hooks.gate",
+        &json!({"reject_over_messages": 3}),
+        BUDGET,
+    );
     assert!(tailed.is_ok(), "the tailed door opens");
 }
 

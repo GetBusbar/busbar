@@ -576,7 +576,7 @@ fn a_panicking_close_during_reclaim_does_not_take_the_engine_down() {
 
 #[path = "ffi_guard_tests.rs"]
 mod ffi_guard_tests;
-#[path = "store_adapter_tests.rs"]
-mod store_adapter_tests;
 #[path = "no_silent_skip_tests.rs"]
 mod no_silent_skip_tests;
+#[path = "store_adapter_tests.rs"]
+mod store_adapter_tests;
