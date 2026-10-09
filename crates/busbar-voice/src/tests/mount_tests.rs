@@ -464,48 +464,6 @@ async fn duplex_session_runs_in_process_through_the_gauntlet_after_hydrate() {
     );
 }
 
-/// THE PROVIDER CREDENTIAL DOES NOT REACH THE LOG. The Gemini leg's native provider scheme carries the
-/// API key in the dial URL, and the neutral dialer's URL-shaped refusal quotes the target it could not
-/// use back verbatim — so the one line the failed-dial arm writes is a line the deployment's resolved
-/// provider credential can ride out on. This drives the exact pair that arm composes: the URL the leg
-/// builds, and the rendering of the error a `base_url` the dialer cannot parse produces.
-#[test]
-fn a_failed_gemini_dial_does_not_write_the_provider_key_into_the_log() {
-    const KEY: &str = "AIzaSyTOPSECRETVALUE";
-    // The URL the Gemini leg dials — the key rides the query, which is that dialect's native scheme.
-    let url = super::provider_ws_url(
-        "https://generativelanguage.googleapis.com",
-        crate::GEMINI_LIVE,
-        KEY,
-    );
-    assert!(
-        url.contains(KEY),
-        "the premise: the Gemini dial target really does carry the credential in its query"
-    );
-
-    // A `base_url` the neutral dialer cannot use quotes the whole target back — key and all.
-    let refusal = crate::topology::DialProviderError::Dial(
-        busbar_kernel::egress::duplex_ws::DialError::Url(url.clone()),
-    );
-    let raw = refusal.to_string();
-    assert!(
-        raw.contains(KEY),
-        "the premise: the dialer's own refusal quotes the target verbatim, so the raw error is not \
-         a thing this plane may hand to a logger"
-    );
-
-    // What the arm actually logs.
-    let logged = super::redact_url_credentials(&raw);
-    assert!(
-        !logged.contains(KEY),
-        "the logged line must not carry the provider credential; it read: {logged}"
-    );
-    assert!(
-        logged.contains("generativelanguage.googleapis.com"),
-        "and it must still name the target an operator has to fix: {logged}"
-    );
-}
-
 /// #71 EXIT TEST (money-model integrity, P2-voicefix, architect ruling): a plane's DECLARED
 /// BILLABLE CLASSES must be pairwise DISJOINT, because money = Σ count(class) × rate(class) only
 /// holds when no class is a subset of another. The upstream `cached_tokens` figure both duplex

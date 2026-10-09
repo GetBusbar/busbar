@@ -1327,6 +1327,54 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     );
 }
 
+/// THE VERBS UNIT'S MUTATION BUDGET OUTLIVES THE REQUEST (finding 5). The route step builds one
+/// `Verbs` per request, and each used to build its own limiter, so every call saw an empty window
+/// and none was ever refused. Walked over the real mount, which is the production construction: a
+/// new verb past the node's `Crud` budget inside one window is refused with the kernel's own admin
+/// rate-limit answer, the same bytes a legacy mutation's limiter gives. `trust/revoke` is the verb
+/// walked because no other cell counts its audit rows on the shared ring.
+///
+/// The window is the wall clock's minute, so a run that happens to cross a boundary has its count
+/// reset once. That can only delay the refusal, never bring it forward: the first `budget` calls
+/// are never refused, and one more full budget is the most a single reset can cost.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_new_verb_past_the_nodes_mutation_budget_is_refused() {
+    let (node, _) = a_q71_node(a_door_that_identifies_the_operator(), Some([7u8; 32]));
+    let op = Some(THE_OPERATORS_CREDENTIAL);
+    let revoke = || {
+        over_as(
+            &node,
+            "POST",
+            "/api/v1/admin/trust/revoke",
+            r#"{"key":"inst/stranger"}"#,
+            op,
+        )
+    };
+    let budget = busbar_core_admin::rate::MutationClass::Crud.limit();
+    for i in 0..budget {
+        let (status, body) = revoke().await;
+        assert_ne!(status, 429, "call {i} is inside the budget: {body}");
+    }
+    let mut refused = None;
+    for _ in 0..=budget {
+        let answer = revoke().await;
+        if answer.0 == 429 {
+            refused = Some(answer);
+            break;
+        }
+    }
+    assert_eq!(
+        refused,
+        Some((
+            429,
+            r#"{"error":{"code":"rate_limited","message":"admin mutation rate limit exceeded; retry next minute"}}"#
+                .to_string()
+        )),
+        "a call past the node's budget was admitted: the limiter forgot the window"
+    );
+}
+
 /// One request over `router` presenting `credential` (or none).
 #[cfg(feature = "root-admin")]
 async fn over_as(

@@ -245,7 +245,7 @@ impl DiskHost {
             .rotate_at
             .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
         let (rotated, failed) = if due {
-            crate::host::rotate(&dest.path, dest.keep)
+            crate::host::rotate(std::path::Path::new(&dest.path), dest.keep)
         } else {
             (false, Vec::new())
         };
@@ -1866,15 +1866,16 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     )
     .expect("a plugins.logs block");
     // As the dispatcher binds every door: the host's observability before the binder's log sink.
+    let log_sink = Arc::new(
+        logs.sink(
+            "export.tail",
+            busbar_contract::abi::mechanism::KindCode::Export,
+            Arc::new(crate::dispatch::NoSink),
+        )
+        .expect("a log sink"),
+    );
     let behind = crate::observe::EnvelopeObserver::before(
-        Arc::new(
-            logs.sink(
-                "export.tail",
-                busbar_contract::abi::mechanism::KindCode::Export,
-                Arc::new(crate::dispatch::NoSink),
-            )
-            .expect("a log sink"),
-        ),
+        log_sink.clone(),
         "busbar-export-file",
         busbar_contract::abi::mechanism::kind::EXPORT,
         Vec::new(),
@@ -1886,6 +1887,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         text: b"request-log file open failed; this log was dropped",
     });
     let folds = crate::observe::testing::folds();
+    log_sink.flush();
     let logged: String = std::fs::read_dir(&dir)
         .expect("the log dir")
         .filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok())
