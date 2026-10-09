@@ -233,6 +233,7 @@ unsafe impl Scalar for crate::abi::mechanism::call::RawOutcome {}
 unsafe impl Scalar for crate::abi::mechanism::ticket::Ticket {}
 unsafe impl Scalar for crate::abi::mechanism::call::Span {}
 unsafe impl Scalar for crate::abi::auth::StripName {}
+unsafe impl Scalar for crate::abi::auth::FieldSpan {}
 unsafe impl Scalar for crate::abi::plane::UnitCount {}
 unsafe impl Scalar for crate::abi::plane::RecordWrite {}
 unsafe impl Scalar for crate::abi::plane::OutField {}
