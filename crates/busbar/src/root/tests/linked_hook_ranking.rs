@@ -302,16 +302,21 @@ fn hook_words(r: &rendering::Read) -> Vec<String> {
 
 /// R-FIX3: THE KERNEL'S RANKING DOUBLE STATES WHAT THE LINKED RANKING DOOR STATES, so the kernel's
 /// hook tests, which run against the double, judge the door the binary ships. Both Statements
-/// rendered: the same name, kind, `max_inflight`, flag marks, hook words and tail, and the tail's
-/// facts the same (class and grants, as the hook axis reads them). Both opened: the same refusals,
-/// byte for byte. Both asked: the same decision on every 1.5.5 parity case.
+/// rendered: the same kind, `max_inflight`, flag marks, hook words and tail, and the tail's facts
+/// the same (class and grants, as the hook axis reads them); the name is the double's own (the
+/// kernel names no plugin, C1). Both opened: the same refusals, byte for byte once each door's own
+/// name is read as one. Both asked: the same decision on every 1.5.5 parity case.
 ///
 /// RED by flipping any copied literal or rule in the double (e.g. `least_busy` ascending).
 #[tokio::test]
 async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() {
     let real = read(linked_door_claiming("cheapest"));
     let double = read(ranking_double::door);
-    assert_eq!(double.name, real.name, "the Statement name");
+    assert_ne!(
+        double.name, real.name,
+        "the double states its own name: the kernel names no plugin (C1)"
+    );
+    assert_eq!(double.name, ranking_double::NAME, "the Statement name");
     assert_eq!(double.kind, real.kind);
     assert_eq!(double.kind_abi, real.kind_abi);
     assert_eq!(double.max_inflight, real.max_inflight, "max_inflight");
@@ -336,11 +341,20 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
         serde_json::json!({ "policy": "nope" }),
         serde_json::json!({ "policy": "weighted" }),
     ] {
-        let refusal =
-            |axis: &Arc<dyn HookAxis>| axis.open(&real.name, &real.name, &settings, budget).err();
-        let want = refusal(&linked);
+        let refusal = |axis: &Arc<dyn HookAxis>, name: &str| {
+            axis.open(name, name, &settings, budget).err()
+        };
+        // The door's refusal, its Statement name and its own prefix read as the double's name.
+        let want = refusal(&linked, &real.name).map(|e| {
+            e.replace(&real.name, ranking_double::NAME)
+                .replace("hook-ranking", ranking_double::NAME)
+        });
         assert!(want.is_some(), "the linked door refuses {settings}");
-        assert_eq!(refusal(&doubled), want, "the refusal of {settings}");
+        assert_eq!(
+            refusal(&doubled, ranking_double::NAME),
+            want,
+            "the refusal of {settings}"
+        );
     }
 
     for (word, rows, _) in cases() {

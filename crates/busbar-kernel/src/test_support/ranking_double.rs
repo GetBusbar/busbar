@@ -13,11 +13,13 @@
 //! not the shipped plugin taken under another name: the kernel names no plugin crate.
 //!
 //! What it copies is the shipped ranking door at the rev the root pins (`busbar-hook-ranking@7e1285e2e3`):
-//! the same Statement name, the same four `MARK_WORD_HOOK` words, the same tail and `max_inflight`,
-//! the same `open` refusals byte for byte, and the same ranking rules. Each copied literal and rule
-//! names its source below. That the copy holds is proven where the real door is linked: the root's
-//! `the_kernel_ranking_double_states_what_the_linked_ranking_door_states` renders both and runs the
-//! 1.5.5 parity cases through both. The plugin's own behaviour is proven in its own repo.
+//! the same four `MARK_WORD_HOOK` words, the same tail and `max_inflight`, the same `open` refusals
+//! (in its own name), and the same ranking rules. Each copied literal and rule names its source
+//! below. Its Statement name is its OWN, never the plugin's: the kernel spells no plugin name, not
+//! even in a double (C1, `qa/c1-literals.toml`). That the copy holds is proven where the real door
+//! is linked: the root's `the_kernel_ranking_double_states_what_the_linked_ranking_door_states`
+//! renders both and runs the 1.5.5 parity cases through both. The plugin's own behaviour is proven
+//! in its own repo.
 
 use std::task::Poll;
 
@@ -29,8 +31,8 @@ use busbar_contract::abi::sdk::hook::{
     statement_with_tail, tail, Decoded, DecodedCandidate, Hook, HookOpen, Verdict,
 };
 
-/// The Statement name (`busbar-hook-ranking@7e1285e2e3` `hook-ranking/src/lib.rs`, `NAME`).
-pub const NAME: &str = "hooks-ranking";
+/// The double's own Statement name, and the prefix of its refusals: not the plugin's (C1).
+pub const NAME: &str = "strategy-double";
 
 /// The strategy words, in order (`hook-ranking/src/lib.rs`, `WORDS`).
 pub const WORDS: [&str; 4] = ["cheapest", "fastest", "least_busy", "usage"];
@@ -153,23 +155,24 @@ impl Hook for Ranking {
 }
 
 /// How the double opens (`hook-ranking/src/door.rs`, `HookOpen::open`): settings must carry
-/// `policy`, one of [`WORDS`].
+/// `policy`, one of [`WORDS`]. Each refusal is the door's, prefixed with [`NAME`] where the door
+/// prefixes its own.
 #[derive(Debug)]
 pub struct Open;
 
 impl HookOpen for Open {
     fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
-        // `hook-ranking/src/door.rs`, `open`: "hook-ranking: the settings are not JSON: {e}".
+        // `hook-ranking/src/door.rs`, `open`: "<door>: the settings are not JSON: {e}".
         let v: serde_json::Value = serde_json::from_str(settings)
-            .map_err(|e| format!("hook-ranking: the settings are not JSON: {e}"))?;
-        // `hook-ranking/src/door.rs`, `open`: "hook-ranking: settings.policy is required".
+            .map_err(|e| format!("{NAME}: the settings are not JSON: {e}"))?;
+        // `hook-ranking/src/door.rs`, `open`: "<door>: settings.policy is required".
         let word = v
             .get("policy")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "hook-ranking: settings.policy is required".to_string())?;
-        // `hook-ranking/src/door.rs`, `open`: "hook-ranking: no strategy '{word}' (one of {WORDS:?})".
+            .ok_or_else(|| format!("{NAME}: settings.policy is required"))?;
+        // `hook-ranking/src/door.rs`, `open`: "<door>: no strategy '{word}' (one of {WORDS:?})".
         let strategy = Strategy::of(word)
-            .ok_or_else(|| format!("hook-ranking: no strategy '{word}' (one of {WORDS:?})"))?;
+            .ok_or_else(|| format!("{NAME}: no strategy '{word}' (one of {WORDS:?})"))?;
         Ok(Box::new(Ranking(strategy)))
     }
 }
