@@ -3,7 +3,7 @@
 
 //! THE KERNEL'S TLS, OVER THE CONNECTOR'S REAL WRAP. TLS stays in the connector (THE DESIGN; 1.6.0-TODO
 //! P2: "TLS lives only in the connector"), so the rows that need a REAL handshake through the
-//! kernel's outbound engine and its TLS listener live here, beside the wrap they prove (this crate
+//! kernel's outbound engine live here, beside the wrap they prove (this crate
 //! depends one way on the kernel, so both are named). The kernel's own suites drive the same postures over a TLS
 //! test double (`busbar_kernel::egress::fixtures::TlsDouble`) and prove the engine's side of the
 //! seam; these prove the composition:
@@ -20,9 +20,9 @@
 //! * the egress differential's TLS rows: the owned engine beside 1.5.5's pinned reqwest client
 //!   against one recording TLS fixture (the known leaf's pin and SNI under the pin, webpki refusing
 //!   the private CA, the client-certificate fixture accepting only the carried identity);
-//! * the TLS listener (`busbar_kernel::tls::serve`) over the connector's production wrap
-//!   (`busbar_core_connector::tls::prepare`): a trusted client's 200, mutual TLS admitting a client
-//!   certificate chaining to `client_ca` and refusing none or a foreign one while still serving.
+//! * the TLS listener's rows over the connector's production wrap (a trusted client's 200, mutual
+//!   TLS admitting a client certificate chaining to `client_ca` and refusing none or a foreign one
+//!   while still serving) live in `busbar::root::listener`'s tests, beside the listener.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -1045,171 +1045,4 @@ async fn an_mtls_peer_accepts_its_own_clients_certificate_and_refuses_a_foreign_
         reason.contains("invalid peer certificate"),
         "the foreign certificate is refused AS a certificate: {reason}"
     );
-}
-
-// ── THE TLS LISTENER over the connector's production wrap ───────────────────────────────────────
-
-fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "busbar-engine-tls-{tag}-{}-{:?}.pem",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("time")
-            .as_nanos()
-    ));
-    std::fs::write(&p, contents).expect("write pem");
-    p
-}
-
-fn file(path: &std::path::Path) -> busbar_kernel::config::SecretRef {
-    busbar_kernel::config::SecretRef::file(path.to_string_lossy().into_owned())
-}
-
-/// A self-signed server cert for `localhost`/`127.0.0.1`: (cert_pem, key_pem).
-fn gen_self_signed() -> (String, String) {
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
-            .expect("self-signed");
-    (cert.pem(), signing_key.serialize_pem())
-}
-
-/// Boot the busbar TLS listener (`busbar_kernel::tls::serve`) from a `TlsCfg` on an ephemeral port,
-/// secured by the connector's PRODUCTION wrap (`busbar_core_connector::tls::prepare`), exactly as
-/// `main`'s TLS branch does. Returns the bound address and a shutdown sender.
-async fn spawn_tls_server(
-    tls: &busbar_kernel::config::sections::TlsCfg,
-) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
-    let security = crate::tls::prepare(
-        "engine-tls test",
-        Some(tls),
-        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
-        true,
-    )
-    .expect("valid test TLS config");
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    let router = axum::Router::new().route("/healthz", axum::routing::get(|| async { "ok" }));
-    tokio::spawn(async move {
-        let shutdown = async {
-            let _ = rx.await;
-        };
-        busbar_kernel::tls::serve(listener, router, security, shutdown, None)
-            .await
-            .expect("serve");
-    });
-    (addr, tx)
-}
-
-/// TLS happy path: a client trusting the server's self-signed cert completes an https request and
-/// gets 200.
-#[tokio::test]
-async fn tls_happy_path_trusted_client_gets_200() {
-    let (cert_pem, key_pem) = gen_self_signed();
-    let tls = busbar_kernel::config::sections::TlsCfg {
-        cert: file(&temp_pem("srv-cert", &cert_pem)),
-        key: file(&temp_pem("srv-key", &key_pem)),
-        client_ca: None,
-    };
-    let (addr, _stop) = spawn_tls_server(&tls).await;
-    let client = reqwest::Client::builder()
-        .add_root_certificate(reqwest::Certificate::from_pem(cert_pem.as_bytes()).expect("cert"))
-        .build()
-        .expect("client");
-    let resp = client
-        .get(format!("https://localhost:{}/healthz", addr.port()))
-        .send()
-        .await
-        .expect("https request should succeed over TLS");
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.expect("body"), "ok");
-}
-
-/// A CA and a leaf it signed for `sans`: (ca_pem, leaf_pem, leaf_key_pem).
-fn gen_ca_and_leaf(sans: &[&str]) -> (String, String, String) {
-    let m = ca_and_leaf(sans);
-    (m.ca_pem, m.leaf_pem, m.leaf_key_pem)
-}
-
-/// The mutual listener: client certificates must chain to the CA it names.
-fn mutual(
-    srv_cert_pem: &str,
-    srv_key_pem: &str,
-    ca_pem: &str,
-) -> busbar_kernel::config::sections::TlsCfg {
-    busbar_kernel::config::sections::TlsCfg {
-        cert: file(&temp_pem("m-srv-cert", srv_cert_pem)),
-        key: file(&temp_pem("m-srv-key", srv_key_pem)),
-        client_ca: Some(file(&temp_pem("m-ca", ca_pem))),
-    }
-}
-
-fn client_with(srv_cert_pem: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .add_root_certificate(
-            reqwest::Certificate::from_pem(srv_cert_pem.as_bytes()).expect("cert"),
-        )
-        .use_rustls_tls();
-    if let Some((leaf, key)) = identity {
-        builder = builder.identity(
-            reqwest::Identity::from_pem(format!("{leaf}{key}").as_bytes()).expect("identity"),
-        );
-    }
-    builder.build().expect("client")
-}
-
-/// mTLS required + valid client cert: a client presenting a leaf signed by the configured CA gets
-/// 200.
-#[tokio::test]
-async fn mtls_valid_client_cert_gets_200() {
-    let (srv_cert_pem, srv_key_pem) = gen_self_signed();
-    let (ca_pem, leaf_pem, leaf_key_pem) = gen_ca_and_leaf(&["busbar-client"]);
-    let (addr, _stop) = spawn_tls_server(&mutual(&srv_cert_pem, &srv_key_pem, &ca_pem)).await;
-    let resp = client_with(&srv_cert_pem, Some((&leaf_pem, &leaf_key_pem)))
-        .get(format!("https://localhost:{}/healthz", addr.port()))
-        .send()
-        .await
-        .expect("mTLS request with valid client cert should succeed");
-    assert_eq!(resp.status(), 200);
-}
-
-/// mTLS required + no/wrong client cert: the handshake is rejected, the server stays up, and a
-/// subsequent valid client still succeeds.
-#[tokio::test]
-async fn mtls_rejects_bad_client_then_serves_valid() {
-    let (srv_cert_pem, srv_key_pem) = gen_self_signed();
-    let (ca_pem, leaf_pem, leaf_key_pem) = gen_ca_and_leaf(&["busbar-client"]);
-    let (addr, _stop) = spawn_tls_server(&mutual(&srv_cert_pem, &srv_key_pem, &ca_pem)).await;
-    let url = format!("https://localhost:{}/healthz", addr.port());
-
-    // (a) Client presenting NO client cert ⇒ rejected (server requires one).
-    assert!(
-        client_with(&srv_cert_pem, None)
-            .get(&url)
-            .send()
-            .await
-            .is_err(),
-        "mTLS server must reject a client with no certificate"
-    );
-    // (b) Client presenting a cert from a DIFFERENT CA ⇒ also rejected.
-    let (_other_ca, wrong_leaf, wrong_key) = gen_ca_and_leaf(&["impostor"]);
-    assert!(
-        client_with(&srv_cert_pem, Some((&wrong_leaf, &wrong_key)))
-            .get(&url)
-            .send()
-            .await
-            .is_err(),
-        "mTLS server must reject a client cert from an untrusted CA"
-    );
-    // (c) Server survived both rejections and still serves a valid client.
-    let resp = client_with(&srv_cert_pem, Some((&leaf_pem, &leaf_key_pem)))
-        .get(&url)
-        .send()
-        .await
-        .expect("server must remain up and serve a valid client after rejecting bad ones");
-    assert_eq!(resp.status(), 200);
 }

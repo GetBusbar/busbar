@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/tls.rs`.
+//! Tests for `crates/busbar/src/root/listener.rs`.
 
 //! The TLS listener's serving loop (`serve`) over its opaque connection-security wrap. The wrap
-//! itself is the connector's — TLS stays in the connector and this crate names no TLS library — so
-//! the loop is driven here over a connection-security TEST DOUBLE (a one-line hello, no
-//! cryptography): every accepted connection goes through the wrap, a connection the wrap refuses is
-//! dropped alone and the listener keeps serving. The same loop over the connector's REAL wrap — the
-//! trusted client's 200, the mutual handshake accepting a client certificate chaining to
-//! `client_ca` and refusing none or a foreign one, the `http/1.1`-only ALPN — is the connector's
-//! `tls/engine_tests.rs`.
+//! itself is the connector's — TLS stays in the connector and the composition root names no TLS
+//! library — so the loop is driven here over a connection-security TEST DOUBLE (a one-line hello,
+//! no cryptography): every accepted connection goes through the wrap, a connection the wrap refuses
+//! is dropped alone and the listener keeps serving. The same loop over the connector's REAL wrap —
+//! the trusted client's 200, the mutual handshake accepting a client certificate chaining to
+//! `client_ca` and refusing none or a foreign one — is the rows at the end of this file, moved
+//! here with the listener from the connector's `tls/engine_tests.rs`.
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -62,7 +62,7 @@ impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
 /// MOVED to `crate::limits` (same lock, same rules) so that the `InstallGuard` tests living
 /// beside the static they mutate are serialized against these too — a lock only this file held
 /// protected these tests from each other but not from those, or those from these.
-use crate::limits::LIMITS_TEST_LOCK;
+use busbar_kernel::config::limits::LIMITS_TEST_LOCK;
 
 /// THE ACCEPT-ERROR POLICY, asserted directly. Both listener loops route every `accept()` error
 /// through `AcceptBackoff`, so this covers the class rather than one loop.
@@ -241,11 +241,11 @@ async fn body_read_timeout_trips_on_stalled_body() {
     // — LIMITS_TEST_LOCK only serializes the four installers in THIS file against each other,
     // not against every reader elsewhere. The guard restores whatever was installed before it
     // (never committed, so it always rolls back) when it drops at the end of this test.
-    let limits = crate::config::LimitsResolved {
+    let limits = busbar_kernel::config::LimitsResolved {
         request_body_read_timeout_secs: 1,
-        ..crate::config::LimitsResolved::default()
+        ..busbar_kernel::config::LimitsResolved::default()
     };
-    let _limits_guard = crate::limits::InstallGuard::install(&limits);
+    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(&limits);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -313,15 +313,15 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
     // The "accepted config that is already serving": the historical defaults (30s inter-frame).
     // Itself guarded so this test leaks nothing to the rest of the binary.
-    let _baseline = crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
+    let _baseline = busbar_kernel::config::limits::InstallGuard::install(&busbar_kernel::config::LimitsResolved::default());
     {
         // A candidate config whose build then FAILS. Its limits are live while the build runs…
-        let _rejected = crate::limits::InstallGuard::install(&crate::config::LimitsResolved {
+        let _rejected = busbar_kernel::config::limits::InstallGuard::install(&busbar_kernel::config::LimitsResolved {
             request_body_read_timeout_secs: 1,
-            ..crate::config::LimitsResolved::default()
+            ..busbar_kernel::config::LimitsResolved::default()
         });
         assert_eq!(
-            crate::limits::request_body_read_timeout_secs(),
+            busbar_kernel::limits::request_body_read_timeout_secs(),
             1,
             "sanity: the candidate's bound must really be installed, or the rollback below \
                  proves nothing"
@@ -393,7 +393,7 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
     // That it currently passes is an accident of the values happening to equal the defaults; the
     // guard makes it a property instead of a coincidence.
     let _limits_guard =
-        crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
+        busbar_kernel::config::limits::InstallGuard::install(&busbar_kernel::config::LimitsResolved::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -473,7 +473,7 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
     // Through the RAII guard, not the bare setter — see the note in
     // `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`.
     let _limits_guard =
-        crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
+        busbar_kernel::config::limits::InstallGuard::install(&busbar_kernel::config::LimitsResolved::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -550,9 +550,9 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    let limits = crate::config::LimitsResolved {
+    let limits = busbar_kernel::config::LimitsResolved {
         request_body_max_bytes: 2048, // total_body_deadline() = 2048 / 1024 B/s = 2s
-        ..crate::config::LimitsResolved::default()
+        ..busbar_kernel::config::LimitsResolved::default()
     };
     // Through the RAII guard, not the bare setter: a bare `install` of this 2 KiB cap LEAKS it
     // to every test in the binary that reads limits afterward (`install` replaces the whole
@@ -561,7 +561,7 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
     // `busbar_kernel::proxy::max_translate_body_bytes() == DEFAULT_REQUEST_BODY_MAX_BYTES` — so whether the suite
     // passed depended on that test happening to run BEFORE this one. Never committed, so it
     // always rolls back at the end of this test.
-    let _limits_guard = crate::limits::InstallGuard::install(&limits);
+    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(&limits);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -643,8 +643,11 @@ async fn tcp_pair(
 }
 
 /// A server-accepted stream as the accept source admits it.
-fn admitted(s: tokio::net::TcpStream, peer: std::net::SocketAddr) -> super::Admitted {
-    super::Admitted {
+fn admitted(
+    s: tokio::net::TcpStream,
+    peer: std::net::SocketAddr,
+) -> busbar_core_connector::listen::Admitted {
+    busbar_core_connector::listen::Admitted {
         stream: s.into_std().unwrap(),
         peer,
         hold: None,
@@ -797,12 +800,12 @@ async fn server_posture_matches_the_1_5_5_defaults() {
     // fall back to, exactly like `uninstalled_accessors_return_historical_defaults` pins for the
     // sibling probe-interval/timeout accessors.
     assert_eq!(
-        crate::limits::tls_handshake_timeout_secs(),
+        busbar_kernel::limits::tls_handshake_timeout_secs(),
         10,
         "tls_handshake_timeout_secs default"
     );
     assert_eq!(
-        crate::limits::request_body_read_timeout_secs(),
+        busbar_kernel::limits::request_body_read_timeout_secs(),
         30,
         "request_body_read_timeout_secs default"
     );
@@ -812,4 +815,207 @@ async fn server_posture_matches_the_1_5_5_defaults() {
     // the `.timer(...)` wiring that makes the 30s `header_read_timeout` at this call site (see its
     // doc comment) actually take effect rather than being silently ignored.
     let _ = super::hardened_conn_builder();
+}
+
+/// THE KERNEL SERVES NO HTTP (BUSBAR-1.6.0.md: the kernel is a byte pump; the connector accepts and
+/// hands each stream up; the root serves it, here). The accept loop, the hyper connection builder
+/// and the graceful drain moved out of `busbar-kernel` into this module; a kernel source naming
+/// any of them again is a second serve loop in the wrong home.
+#[test]
+fn the_kernel_serves_no_http() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read kernel source dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../busbar-kernel/src"));
+    let mut files = Vec::new();
+    walk(root, &mut files);
+    assert!(!files.is_empty(), "no kernel sources under {}", root.display());
+    let mut hits = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).expect("read kernel source");
+        for needle in ["hyper_util::server", "TowerToHyperService", "GracefulShutdown"] {
+            if text.contains(needle) {
+                hits.push(format!("{}: {needle}", file.display()));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "the kernel serves HTTP again; the serve loop lives in `busbar::root::listener`:\n{}",
+        hits.join("\n")
+    );
+}
+
+// ── THE TLS LISTENER over the connector's production wrap ───────────────────────────────────────
+
+fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
+    let mut p = std::env::temp_dir();
+    p.push(format!(
+        "busbar-engine-tls-{tag}-{}-{:?}.pem",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    std::fs::write(&p, contents).expect("write pem");
+    p
+}
+
+fn file(path: &std::path::Path) -> busbar_kernel::config::SecretRef {
+    busbar_kernel::config::SecretRef::file(path.to_string_lossy().into_owned())
+}
+
+/// A self-signed server cert for `localhost`/`127.0.0.1`: (cert_pem, key_pem).
+fn gen_self_signed() -> (String, String) {
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
+            .expect("self-signed");
+    (cert.pem(), signing_key.serialize_pem())
+}
+
+/// Boot the busbar TLS listener (`super::serve`) from a `TlsCfg` on an ephemeral port,
+/// secured by the connector's PRODUCTION wrap (`busbar_core_connector::tls::prepare`), exactly as
+/// `main`'s TLS branch does. Returns the bound address and a shutdown sender.
+async fn spawn_tls_server(
+    tls: &busbar_kernel::config::sections::TlsCfg,
+) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
+    let security = busbar_core_connector::tls::prepare(
+        "engine-tls test",
+        Some(tls),
+        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        true,
+    )
+    .expect("valid test TLS config");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let router = axum::Router::new().route("/healthz", axum::routing::get(|| async { "ok" }));
+    tokio::spawn(async move {
+        let shutdown = async {
+            let _ = rx.await;
+        };
+        super::serve(listener, router, security, shutdown, None)
+            .await
+            .expect("serve");
+    });
+    (addr, tx)
+}
+
+/// TLS happy path: a client trusting the server's self-signed cert completes an https request and
+/// gets 200.
+#[tokio::test]
+async fn tls_happy_path_trusted_client_gets_200() {
+    let (cert_pem, key_pem) = gen_self_signed();
+    let tls = busbar_kernel::config::sections::TlsCfg {
+        cert: file(&temp_pem("srv-cert", &cert_pem)),
+        key: file(&temp_pem("srv-key", &key_pem)),
+        client_ca: None,
+    };
+    let (addr, _stop) = spawn_tls_server(&tls).await;
+    let client = reqwest::Client::builder()
+        .add_root_certificate(reqwest::Certificate::from_pem(cert_pem.as_bytes()).expect("cert"))
+        .build()
+        .expect("client");
+    let resp = client
+        .get(format!("https://localhost:{}/healthz", addr.port()))
+        .send()
+        .await
+        .expect("https request should succeed over TLS");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.expect("body"), "ok");
+}
+
+/// A CA and a leaf it signed for `sans`: (ca_pem, leaf_pem, leaf_key_pem).
+fn gen_ca_and_leaf(sans: &[&str]) -> (String, String, String) {
+    let m = busbar_kernel::egress::fixtures::ca_and_leaf(sans);
+    (m.ca_pem, m.leaf_pem, m.leaf_key_pem)
+}
+
+/// The mutual listener: client certificates must chain to the CA it names.
+fn mutual(
+    srv_cert_pem: &str,
+    srv_key_pem: &str,
+    ca_pem: &str,
+) -> busbar_kernel::config::sections::TlsCfg {
+    busbar_kernel::config::sections::TlsCfg {
+        cert: file(&temp_pem("m-srv-cert", srv_cert_pem)),
+        key: file(&temp_pem("m-srv-key", srv_key_pem)),
+        client_ca: Some(file(&temp_pem("m-ca", ca_pem))),
+    }
+}
+
+fn client_with(srv_cert_pem: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .add_root_certificate(
+            reqwest::Certificate::from_pem(srv_cert_pem.as_bytes()).expect("cert"),
+        )
+        .use_rustls_tls();
+    if let Some((leaf, key)) = identity {
+        builder = builder.identity(
+            reqwest::Identity::from_pem(format!("{leaf}{key}").as_bytes()).expect("identity"),
+        );
+    }
+    builder.build().expect("client")
+}
+
+/// mTLS required + valid client cert: a client presenting a leaf signed by the configured CA gets
+/// 200.
+#[tokio::test]
+async fn mtls_valid_client_cert_gets_200() {
+    let (srv_cert_pem, srv_key_pem) = gen_self_signed();
+    let (ca_pem, leaf_pem, leaf_key_pem) = gen_ca_and_leaf(&["busbar-client"]);
+    let (addr, _stop) = spawn_tls_server(&mutual(&srv_cert_pem, &srv_key_pem, &ca_pem)).await;
+    let resp = client_with(&srv_cert_pem, Some((&leaf_pem, &leaf_key_pem)))
+        .get(format!("https://localhost:{}/healthz", addr.port()))
+        .send()
+        .await
+        .expect("mTLS request with valid client cert should succeed");
+    assert_eq!(resp.status(), 200);
+}
+
+/// mTLS required + no/wrong client cert: the handshake is rejected, the server stays up, and a
+/// subsequent valid client still succeeds.
+#[tokio::test]
+async fn mtls_rejects_bad_client_then_serves_valid() {
+    let (srv_cert_pem, srv_key_pem) = gen_self_signed();
+    let (ca_pem, leaf_pem, leaf_key_pem) = gen_ca_and_leaf(&["busbar-client"]);
+    let (addr, _stop) = spawn_tls_server(&mutual(&srv_cert_pem, &srv_key_pem, &ca_pem)).await;
+    let url = format!("https://localhost:{}/healthz", addr.port());
+
+    // (a) Client presenting NO client cert ⇒ rejected (server requires one).
+    assert!(
+        client_with(&srv_cert_pem, None)
+            .get(&url)
+            .send()
+            .await
+            .is_err(),
+        "mTLS server must reject a client with no certificate"
+    );
+    // (b) Client presenting a cert from a DIFFERENT CA ⇒ also rejected.
+    let (_other_ca, wrong_leaf, wrong_key) = gen_ca_and_leaf(&["impostor"]);
+    assert!(
+        client_with(&srv_cert_pem, Some((&wrong_leaf, &wrong_key)))
+            .get(&url)
+            .send()
+            .await
+            .is_err(),
+        "mTLS server must reject a client cert from an untrusted CA"
+    );
+    // (c) Server survived both rejections and still serves a valid client.
+    let resp = client_with(&srv_cert_pem, Some((&leaf_pem, &leaf_key_pem)))
+        .get(&url)
+        .send()
+        .await
+        .expect("server must remain up and serve a valid client after rejecting bad ones");
+    assert_eq!(resp.status(), 200);
 }

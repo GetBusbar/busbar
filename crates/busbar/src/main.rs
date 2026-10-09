@@ -48,7 +48,7 @@ use busbar_kernel::{
     build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, diagnostics, export, snapshot, tls};
+use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
 // The root's own binds listen through the connector's listener (the one listener source).
 #[cfg(unix)]
 use busbar_core_connector::listen::{AcceptLimits, Listening, DEFAULT_HANDSHAKE_TIMEOUT};
@@ -1313,8 +1313,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(not(unix))]
     {
         let _ = data_workers; // sized the runtime in main(); no per-worker listeners here
-        let data_listener = tls::SocketAdmits::new(bind_listener(&listen).await);
-        let admin_listener = tls::SocketAdmits::new(bind_listener(&admin_listen).await);
+        let data_listener = root::listener::SocketAdmits::new(bind_listener(&listen).await);
+        let admin_listener = root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
         tokio::join!(
             serve_listener(
                 data_listener,
@@ -1440,12 +1440,14 @@ fn serve_thread_per_core(
         "thread-per-core data plane: one SO_REUSEPORT listener per worker (admin + background \
          tasks stay on the control runtime)"
     );
-    // The connection-placement balancer (see `tls::ConnBalancer`): one handle per worker, fixing
-    // SO_REUSEPORT's few-connection imbalance at ACCEPT time (placement only, never migration).
-    let mut balancers: Vec<Option<tls::ConnBalancer>> = tls::ConnBalancer::build(cores.len())
-        .into_iter()
-        .map(Some)
-        .collect();
+    // The connection-placement balancer (see `root::listener::ConnBalancer`): one handle per
+    // worker, fixing SO_REUSEPORT's few-connection imbalance at ACCEPT time (placement only, never
+    // migration).
+    let mut balancers: Vec<Option<root::listener::ConnBalancer>> =
+        root::listener::ConnBalancer::build(cores.len())
+            .into_iter()
+            .map(Some)
+            .collect();
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
         let router = data_router.clone();
@@ -1537,15 +1539,15 @@ fn serve_thread_per_core(
                                      // once-per-listener-not-once-per-worker fix (see its own doc); grouping the existing seven into a
                                      // struct is a larger refactor this fix does not need.
 async fn serve_listener(
-    listener: impl tls::Admits,
+    listener: impl busbar_core_connector::listen::Admits,
     router: Router,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     // The data workers' connection-placement balancer (`None` for the admin listener and
-    // non-unix builds — those accept exactly as before). See `tls::ConnBalancer`.
-    balancer: Option<tls::ConnBalancer>,
+    // non-unix builds — those accept exactly as before). See `root::listener::ConnBalancer`.
+    balancer: Option<root::listener::ConnBalancer>,
     // Whether THIS call logs "busbar listening" at INFO. `true` for the admin listener and for the
     // single data listener on non-unix builds (both call this exactly once); on unix's
     // thread-per-core data plane, `serve_thread_per_core` calls this once PER WORKER on the SAME
@@ -1560,7 +1562,9 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, "busbar listening");
             }
-            if let Err(e) = tls::serve_admitted(listener, router, None, shutdown, balancer).await {
+            if let Err(e) =
+                root::listener::serve_admitted(listener, router, None, shutdown, balancer).await
+            {
                 die(format!("server error on '{label}': {e}"));
             }
         }
@@ -1569,8 +1573,8 @@ async fn serve_listener(
             // `serve_listener` is never spawned as a task: the admin call runs directly under
             // `run()` on the control thread, and each per-worker data call is the FIRST thing its
             // freshly-built runtime `block_on`s — in both shapes this resolve parks a thread that
-            // is not yet serving anything. It also completes before `tls::serve` below is reached,
-            // so no connection on this listener can be waiting on it.
+            // is not yet serving anything. It also completes before `listener::serve_admitted`
+            // below is reached, so no connection on this listener can be waiting on it.
             //
             // The built-in axum/hyper listener below always declares itself TLS-capable
             // (`transport_capable = true`); `prepare` still fails closed rather than silently
@@ -1585,8 +1589,14 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) =
-                tls::serve_admitted(listener, router, Some(security), shutdown, balancer).await
+            if let Err(e) = root::listener::serve_admitted(
+                listener,
+                router,
+                Some(security),
+                shutdown,
+                balancer,
+            )
+            .await
             {
                 die(format!("server error on '{label}': {e}"));
             }

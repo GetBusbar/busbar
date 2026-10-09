@@ -3,8 +3,8 @@
 
 //! THE TLS LISTENER SERVES HTTP/2 TO A CLIENT THAT OFFERS IT (OWNER RULING Q137, 2026-10-04: "offers
 //! h2 on the TLS listener. yes why not?"), end to end over the production pieces: the connector's
-//! `tls::prepare` builds the listener's wrap from a `tls:` block, the kernel's `tls::serve` runs the
-//! accept loop and the hardened auto builder, and a real rustls client speaks to it.
+//! `tls::prepare` builds the listener's wrap from a `tls:` block, the root's `listener::serve` runs
+//! the accept loop and the hardened auto builder, and a real rustls client speaks to it.
 //!
 //! * a client offering `h2` negotiates `h2` and is SERVED HTTP/2, not merely advertised it;
 //! * a client offering only `http/1.1` negotiates `http/1.1` and is served HTTP/1.1, as in 1.5.5.
@@ -62,7 +62,7 @@ async fn tls_listener(tls: &TlsCfg) -> (SocketAddr, tokio::sync::oneshot::Sender
         let shutdown = async {
             let _ = stopped.await;
         };
-        busbar_kernel::tls::serve(listener, router, security, shutdown, None)
+        super::serve(listener, router, security, shutdown, None)
             .await
             .expect("serve");
     });

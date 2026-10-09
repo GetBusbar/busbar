@@ -85,6 +85,7 @@ pub mod keyset;
 pub mod ledger_identity;
 pub mod legacy;
 pub mod linked;
+pub mod listener;
 pub(crate) mod loader;
 pub mod migration;
 pub mod observe;

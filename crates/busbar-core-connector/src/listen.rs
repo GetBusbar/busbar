@@ -78,12 +78,34 @@ pub struct Handed {
     pub slot: Slot,
 }
 
-/// The root's stream listener as the kernel's accept source: each admitted socket, with its slot
-/// held for as long as the kernel serves it.
-impl busbar_kernel::tls::Admits for Listening {
-    async fn admit(&mut self) -> busbar_kernel::tls::Admitted {
+// ── THE ACCEPT SOURCE ─────────────────────────────────────────────────────────────────────────────
+
+/// ONE CONNECTION AN INBOUND LISTENER ADMITTED: the accepted socket, not yet on any worker's reactor
+/// (so placement may hand it to another worker), its peer, and what the listener holds for it while
+/// it is served (its connection slot), released when the connection ends.
+pub struct Admitted {
+    /// The accepted socket, non-blocking.
+    pub stream: std::net::TcpStream,
+    /// The far end.
+    pub peer: SocketAddr,
+    /// Held for as long as the connection is served.
+    pub hold: Option<Box<dyn Send>>,
+}
+
+/// AN INBOUND LISTENER, as the accept loop drains it: the next admitted connection. Accept errors,
+/// the connection cap and the accept backoff are the listener's own, so this never fails; it must
+/// be cancel-safe (the loop drops it when shutdown or a hand-off wins the race).
+pub trait Admits: Send {
+    /// The next admitted connection.
+    fn admit(&mut self) -> impl Future<Output = Admitted> + Send + '_;
+}
+
+/// The root's stream listener as the root's accept source (`busbar::root::listener`): each
+/// admitted socket, with its slot held for as long as the root serves it.
+impl Admits for Listening {
+    async fn admit(&mut self) -> Admitted {
         let h = futures::future::poll_fn(|cx| self.poll_accept_stream(cx)).await;
-        busbar_kernel::tls::Admitted {
+        Admitted {
             stream: h.stream,
             peer: h.peer,
             hold: Some(Box::new(h.slot)),
