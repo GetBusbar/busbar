@@ -2769,7 +2769,11 @@ fn a_store_kept_chain_seals_every_record_as_the_store_assigned_node() {
     let node = node_id(slots.calls().as_ref(), "host-sealing").expect("an id");
     {
         let mut durability = keyed_store_book(&slots, node);
-        assert_eq!(durability.record.node(), node, "the book seals as the store's id");
+        assert_eq!(
+            durability.record.node(),
+            node,
+            "the book seals as the store's id"
+        );
         for unit in 1..=2 {
             durability
                 .seal_unit(audit_inputs(unit), audit_pass(), &token())
@@ -2930,7 +2934,10 @@ fn a_driven_unit_killed_mid_stream_over_the_store_is_recovered_at_its_flushed_ch
     }
 
     let restarted = store_book(&slots, 13);
-    assert!(restarted.keeps_chain(), "the chain was resumed from the store");
+    assert!(
+        restarted.keeps_chain(),
+        "the chain was resumed from the store"
+    );
     assert_eq!(restarted.recovered_holds, 1);
     let recovered = restarted
         .read_back()
