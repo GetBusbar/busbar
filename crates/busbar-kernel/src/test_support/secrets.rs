@@ -134,7 +134,10 @@ fn resolve_file(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
             std::io::ErrorKind::Other => ERROR_KIND_INVALID,
             _ => ERROR_KIND_UNAVAILABLE,
         };
-        refused(kind, format!("secret {SECRET_MODULE_FILE}:{path} cannot resolve: {e}"))
+        refused(
+            kind,
+            format!("secret {SECRET_MODULE_FILE}:{path} cannot resolve: {e}"),
+        )
     })?;
     if bytes.is_empty() {
         // file src/lib.rs:112-115 @ 479c833 (Invalid).
