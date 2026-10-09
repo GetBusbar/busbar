@@ -694,6 +694,11 @@ mod door {
             let faced = (reg.facing)(b"{}", b"", None).expect("the door faces the world");
             assert_eq!(faced.claims, vec![("/echo".to_string(), "door/1")]);
             assert_eq!(faced.admission, None, "the fixture binds no audience");
+            assert_eq!(
+                faced.listed,
+                vec![plug::LISTED.to_string()],
+                "the names its snapshot lists cross to the host"
+            );
             let again = (reg.facing)(b"{}", b"", None).expect("a probe closes, so it opens again");
             assert_eq!(again, faced);
             format!("{reg:?}")

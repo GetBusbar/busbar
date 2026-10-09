@@ -191,9 +191,13 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
         busbar_kernel::test_support::neutral_fallback_plane(),
     ]);
+    // The loopback every fixture in this binary binds is listed, as an operator lists a loopback
+    // upstream: the guard installed here is process-wide (first install wins), and every other
+    // test's mock upstream is dialled through it by its loopback literal.
     let boot = deployment(
         &[],
-        "security:\n  allow_metadata_hosts: [169.254.169.254]\n",
+        "security:\n  allow_metadata_hosts: [169.254.169.254]\n\
+         advanced:\n  allow_destinations: [\"127.0.0.1\", \"::1\"]\n",
     );
     let judge = dest_judge(&boot);
     // The boot path's own step: the guard goes behind the egress-trust capability, which is what

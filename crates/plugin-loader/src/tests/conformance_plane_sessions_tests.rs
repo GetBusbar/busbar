@@ -315,3 +315,227 @@ fn red_a_tick_pinned_to_wake_that_wakes_nothing_is_refused() {
     let e = exact(&f).expect_err("one crossing where two are pinned");
     assert!(e.contains("live tick") && e.contains("pinned 2"), "{e}");
 }
+
+// ── THE HOST, THE LEDGER LANE, THE RECORD WRITES AND THE PROMPT TURNS ────────────────────────────
+
+/// The kernel services the fixture asks: `door:echo` entitled for unit 80 alone, the member `m1`'s
+/// `echo` approved.
+const HOST: &str = r#"{ "entitled": [{ "target": "door:echo", "units": [80, 82] }],
+                        "trusted": [["m1", "echo", "none"]] }"#;
+
+const SERVED: &str = r#"[
+  { "name": "granted", "unit": 80, "steps": [
+    { "label": "attempt", "piece": { "from": "kernel", "attempt": 1 },
+      "want": { "outcome": "Ready", "to_far_end": true, "emitted": "m1", "lane": "",
+                "records": [] } },
+    { "label": "answer", "piece": { "from": "far_end", "status": 200, "last": true,
+                                    "bytes": "abc" },
+      "want": { "outcome": "Ready", "emitted": "abc", "done": true, "lane": "lane",
+                "records": [["put", 0, "k", "v"]], "units": [[0, 3]] } } ] },
+  { "name": "ungranted", "unit": 81, "steps": [
+    { "label": "attempt", "piece": { "from": "kernel", "attempt": 1 },
+      "want": { "outcome": "Refused", "to_far_end": false } } ] },
+  { "name": "hooks", "unit": 82, "steps": [
+    { "label": "project", "project": { "body": "hi" },
+      "want": { "outcome": "Ready", "turns": [["user", "hi"]], "body_has": ["hi"] } } ] }
+]"#;
+
+/// The fixture opened on a dispatcher serving `host`, then the sessions leg over `all`.
+fn served_fold(leg: Leg, host: &str, all: &Value) -> Fold {
+    let s = subject();
+    let host = super::host::Host::of(&serde_json::from_str(host).expect("JSON"))
+        .expect("a host is stated");
+    let d = std::sync::Arc::new(crate::dispatch::Dispatcher::with_services(
+        crate::dispatch::DispatchConfig::default(),
+        std::sync::Arc::new(host),
+    ));
+    let p = load::<Plane>(&s, leg, s.bind(&d, "plane")).expect("the plane fixture loads");
+    let mut r = Recorder::new(crossings(&p));
+    r.line("open", 1, || open(&p, b"{}", None));
+    let carried = Carried {
+        member: b"m1".to_vec(),
+        pool: None,
+        caller_ref: None,
+    };
+    sessions(&mut r, &p, &d, &Session::all(all), &carried);
+    r.fold()
+}
+
+/// GREEN: on a host serving the inputs' tables, the granted unit's ATTEMPT is sent and its answer
+/// names its lane and record write, the ungranted unit's is refused, and `project` writes its
+/// turn; both ways, at their pins, the folds equal, every want met.
+#[test]
+fn the_host_tables_gate_the_unit_and_the_lane_records_and_turns_are_judged() {
+    let all: Value = serde_json::from_str(SERVED).expect("JSON");
+    let linked = served_fold(Leg::Linked, HOST, &all);
+    let mut folds = vec![&linked];
+    let dropped = dropped_built().then(|| served_fold(Leg::Dropped, HOST, &all));
+    folds.extend(dropped.as_ref());
+    for f in &folds {
+        exact(f).unwrap_or_else(|e| panic!("{e}"));
+        sessions_contract(f, &all);
+    }
+    if let Some(dropped) = &dropped {
+        same(&linked, dropped).unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
+/// RED: the gate is the host's answer: the member's `echo` not approved, the granted unit's
+/// ATTEMPT is refused and its want fails.
+#[test]
+fn red_a_member_the_host_does_not_approve_is_not_sent_to() {
+    let all: Value = serde_json::from_str(SERVED).expect("JSON");
+    let host = HOST.replace(
+        r#"["m1", "echo", "none"]"#,
+        r#"["m1", "echo", "not_approved"]"#,
+    );
+    let f = served_fold(Leg::Linked, &host, &all);
+    let text = panics(|| sessions_contract(&f, &all));
+    assert!(text.contains("granted attempt"), "{text}");
+}
+
+/// RED: a lane, a record write or a turn other than the answer's fails the contract, and so does
+/// wanting none where the answer carries one.
+#[test]
+fn red_a_lane_record_or_turn_other_than_answered_is_refused() {
+    let f = served_fold(
+        Leg::Linked,
+        HOST,
+        &serde_json::from_str(SERVED).expect("JSON"),
+    );
+    for (label, key, v) in [
+        ("granted answer", "lane", serde_json::json!("other")),
+        ("granted answer", "lane", serde_json::json!("")),
+        (
+            "granted answer",
+            "records",
+            serde_json::json!([["put", 0, "k", "w"]]),
+        ),
+        (
+            "granted answer",
+            "records",
+            serde_json::json!([["audit", 0, "k", "v"]]),
+        ),
+        ("granted answer", "records", serde_json::json!([])),
+        (
+            "granted attempt",
+            "records",
+            serde_json::json!([["put", 0, "k", "v"]]),
+        ),
+        (
+            "hooks project",
+            "turns",
+            serde_json::json!([["user", "ho"]]),
+        ),
+        ("hooks project", "turns", serde_json::json!([])),
+    ] {
+        let mut all: Value = serde_json::from_str(SERVED).expect("JSON");
+        for s in all.as_array_mut().into_iter().flatten() {
+            let name = s["name"].as_str().unwrap_or_default().to_string();
+            for st in s["steps"].as_array_mut().into_iter().flatten() {
+                if format!("{name} {}", st["label"].as_str().unwrap_or_default()) == label {
+                    st["want"][key] = v.clone();
+                }
+            }
+        }
+        let text = panics(|| sessions_contract(&f, &all));
+        assert!(text.contains(label), "{label}/{key}={v}: {text}");
+    }
+}
+
+/// RED: a crossing of a unit the grant does not list is entitled to nothing, as the kernel answers
+/// a principal the grant does not hold.
+#[test]
+fn red_a_unit_the_grant_does_not_list_is_entitled_to_nothing() {
+    let host = super::host::Host::of(&serde_json::from_str(HOST).expect("JSON")).expect("host");
+    let caller = busbar_contract::services::Caller {
+        instance: std::sync::Arc::from("i"),
+        plugin: std::sync::Arc::from("p"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    use crate::dispatch::HostServices;
+    use busbar_contract::abi::host::service::{ENTITLED, NOT_ENTITLED};
+    assert_eq!(
+        host.entitlement_check(&caller, Some(80), "door:echo").value,
+        ENTITLED
+    );
+    assert_eq!(
+        host.entitlement_check(&caller, Some(81), "door:echo").value,
+        NOT_ENTITLED
+    );
+    assert_eq!(
+        host.entitlement_check(&caller, None, "door:echo").value,
+        NOT_ENTITLED
+    );
+    assert_eq!(
+        host.entitlement_check(&caller, Some(80), "door:other")
+            .value,
+        NOT_ENTITLED
+    );
+}
+
+// ── THE ATTEMPT AND THE CALLER'S BODIES (`plane.attempt`, `plane.arrive_each`) ─────────────────
+
+fn step(label: &str, answer: &str) -> crate::conformance::Step {
+    crate::conformance::Step {
+        label: label.into(),
+        answer: answer.into(),
+        crossed: 1,
+        pinned: 1,
+        resumes: 0,
+    }
+}
+
+/// A fold of the attempts, the bodies and (with `arrive_each`) the arrivals, the attempts going
+/// to the far end or not.
+fn attempts(far: bool, narrow_body: &str) -> Fold {
+    let a = format!("Ready lease=false  emitted= more=0 to_far_end={far} done=false");
+    let b = "Ready lease=false  emitted=req more=0 to_far_end=true done=false";
+    vec![
+        step("attempt", &a),
+        step("body", b),
+        step("narrow arrive", "Ready lease=false  op_class=0"),
+        step("narrow attempt", &a),
+        step("narrow body", narrow_body),
+        step("short arrive", "Ready lease=false  op_class=0"),
+        step("short attempt", &a),
+        step("short body", b),
+    ]
+}
+
+/// GREEN and RED: an ATTEMPT taken with nothing sent passes only where the inputs say so, and with
+/// `arrive_each` every unit's body is judged as the claimed one's.
+#[test]
+fn the_attempt_and_every_arrived_units_body_are_judged() {
+    let ok = "Ready lease=false  emitted=req more=0 to_far_end=true done=false";
+    let taken: Value = serde_json::json!({ "attempt": { "to_far_end": false }, "arrive_each": true, "request_out": "req" });
+    super::attempts_and_bodies(&attempts(false, ok), &taken);
+    super::attempts_and_bodies(
+        &attempts(true, ok),
+        &serde_json::json!({ "request_out": "req" }),
+    );
+    // RED: taken, where the inputs do not say so.
+    let text = panics(|| {
+        super::attempts_and_bodies(
+            &attempts(false, ok),
+            &serde_json::json!({ "request_out": "req" }),
+        );
+    });
+    assert!(text.contains("attempt"), "{text}");
+    // RED: a unit that arrived whose body is not the request.
+    let text = panics(|| {
+        super::attempts_and_bodies(
+            &attempts(
+                false,
+                "Ready lease=false  emitted=other more=0 to_far_end=true done=false",
+            ),
+            &taken,
+        );
+    });
+    assert!(text.contains("narrow body"), "{text}");
+    // RED: `arrive_each` stated, a unit that never arrived.
+    let mut f = attempts(false, ok);
+    f.retain(|s| s.label != "short arrive");
+    let text = panics(|| super::attempts_and_bodies(&f, &taken));
+    assert!(text.contains("short arrive"), "{text}");
+}

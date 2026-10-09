@@ -35,7 +35,9 @@ use busbar_contract::auth::{
 };
 use busbar_contract::auth_calls::{AuthCalls, LoginCallback};
 
-use super::self_keys::{issue_key, resolve_exchange, DeterministicEd25519Keys, HandleProvisioner};
+use super::self_keys::{
+    issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError, HandleProvisioner,
+};
 use super::ChainVerdict;
 use crate::config::AuthCfg;
 use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
@@ -496,6 +498,15 @@ pub(crate) async fn browser(State(handle): State<Arc<AppHandle>>, req: Request<B
     // `.await` (axum's `Body` is not `Sync`, so the handler future would not be `Send`).
     let params = parse_query(req.uri().query().unwrap_or(""));
     let cookie_raw = read_cookie(&req);
+    // Whether this navigation came from busbar's OWN page (the key-issued page's "Refresh key"
+    // link). Browsers set `Sec-Fetch-Site` themselves and a page cannot forge it; `cross-site` is a
+    // link from another site, `none` a typed, bookmarked or mail-app URL, and an absent header an
+    // old browser or a non-browser. Only `same-origin` may rotate.
+    let same_origin = req
+        .headers()
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        == Some("same-origin");
     drop(req);
     let get = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
 
@@ -510,7 +521,13 @@ pub(crate) async fn browser(State(handle): State<Arc<AppHandle>>, req: Request<B
     }
     match get("method") {
         // `?refresh=1` marks a ROTATE ("Refresh key"): the completing handler mints with refresh=true.
-        Some(method) => begin(&app, &method, get("refresh").as_deref() == Some("1")).await,
+        // Honoured only from busbar's own page: a rotate revokes the user's key, and any other site
+        // can navigate a signed-in user here (the IdP approves silently), so a cross-site, typed or
+        // header-less `refresh=1` is a plain issue that re-shows the key.
+        Some(method) => {
+            let refresh = same_origin && get("refresh").as_deref() == Some("1");
+            begin(&app, &method, refresh).await
+        }
         None => chooser(&app),
     }
 }
@@ -874,10 +891,19 @@ async fn issue_and_render(
     // Auto-provision the `user:<sub>` leaf under `team` (from the team's `child_default`) before the
     // mint, so the browser-issued key is usable immediately (no 429 MissingGroup).
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
+    let keys =
+        DeterministicEd25519Keys::new(gov, module_name.to_string(), team, pools, provisioner);
     let issued =
         match issue_key(&keys, principal, ttl, refresh).await {
             Ok(k) => k,
+            // The subject's key is disabled, or another identity provider minted it: the same
+            // refusal page as an identity with no grant.
+            Err(ExchangeError::Unbound) => return error_page(
+                StatusCode::FORBIDDEN,
+                "No access yet",
+                "Your account isn't granted a self-serve key yet. Ask your Busbar admin to assign \
+                 you a role.",
+            ),
             Err(_) => return error_page(
                 StatusCode::BAD_GATEWAY,
                 "Couldn't issue your key",
