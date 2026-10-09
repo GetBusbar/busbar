@@ -75,11 +75,20 @@ const TWIN_FILE: &str = "crates/busbar-contract/src/billing.rs";
 const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 
 /// THE FILE-COUNT FLOOR: the `.rs` files the census-neutral roots held on predev, measured
-/// (0fd08ee75d, 2026-10-07). A scan set under it is refused rather than read as a cleaner tree:
+/// (39374ec00e, 2026-10-09). A scan set under it is refused rather than read as a cleaner tree:
 /// the hand list's guard was `files.is_empty()`, so a root list that collapsed to one file passed.
 /// Raised as the neutral crates grow; lowered only in a reviewed diff that names the files that
 /// legitimately left.
-pub const MIN_FILES: usize = 1231;
+///
+/// Was 1231 on 0fd08ee75d. Lowered by the egress-auth move out of the kernel (5c23d7527): 13
+/// `busbar-kernel/src` files left (`auth_cache.rs`, `egress_auth/{mod,bearer_token,jwt_bearer,
+/// oauth_client_credentials}.rs`, `egress_auth/tests/{bearer_token,helper,jwt_bearer,
+/// oauth_client_credentials,prebuilt_auth}_tests.rs`, `tests/auth_cache_tests.rs`,
+/// `tests/members/identity/{declared,egress_auth}_tests.rs`) and 11 `busbar-kernel-identity/src`
+/// files (`cache.rs`, `ingress_sigv4.rs`, `egress_auth/{mod,declared,declared_tests,tests,
+/// token_response}.rs`, `egress_auth/sigv4/{mod,tests}.rs`, `tests/{cache,ingress_sigv4}_tests.rs`),
+/// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
+pub const MIN_FILES: usize = 1220;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
