@@ -898,6 +898,58 @@ fn an_unpresentable_static_credential_logs_its_builders_own_line() {
     assert!(lines(&bearer, "good-key").is_empty());
 }
 
+/// THE PROCESS'S ONE INSTANCE, BOUND FROM MANY THREADS AT ONCE: every build binds a style through
+/// the same opened auth instance, so binds run concurrently on it. A bind's unpresentable-credential
+/// line is that bind's own — its header named exactly — however many other binds of the same
+/// instance run while the host reads it back. RED with the plugin's per-call envelope storage held
+/// on the instance (a sibling's `open_outbound` refills it under the reader): the line names the
+/// sibling's header (`header=api-key`), or the sibling's shorter text read at this one's length
+/// (`header=api-keyapi-key`).
+#[test]
+fn concurrent_binds_of_one_instance_each_log_their_own_header() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const SIBLINGS: usize = 8;
+    const ROUNDS: usize = 300;
+    let goog = named_binding("gemini", "static-twin-header");
+    let api_key = named_binding("api-key-override", "static-twin-header");
+    let want = vec![
+        "egress credential contains invalid header bytes (ASCII control character); \
+         omitting auth header — upstream will reject with 401 diag=BUSBAR-4013 \
+         header=x-goog-api-key"
+            .to_string(),
+    ];
+    /// Stops the siblings however the measuring thread leaves the scope.
+    struct Stop<'a>(&'a AtomicBool);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+    let done = AtomicBool::new(false);
+    let got: Vec<Vec<String>> = std::thread::scope(|s| {
+        for _ in 0..SIBLINGS {
+            s.spawn(|| {
+                // The `api-key` header's binding: its unpresentable key notes `header=api-key` on
+                // the same instance's envelope.
+                while !done.load(Ordering::Relaxed) {
+                    drop(bound(&api_key, "bad\nkey"));
+                }
+            });
+        }
+        let _stop = Stop(&done);
+        (0..ROUNDS)
+            .map(|_| lines(&goog, "bad\nkey"))
+            .filter(|l| *l != want)
+            .collect()
+    });
+    assert!(
+        got.is_empty(),
+        "{} of {ROUNDS} binds read another's line: {:?}",
+        got.len(),
+        got.first()
+    );
+}
+
 /// A CALLER's credential no header value may carry logs its builder's line on the request that
 /// presents it, as 1.5.5 built (and logged) a passthrough header per request; a signing
 /// credential's unsendable token, likewise per request in either mode.
