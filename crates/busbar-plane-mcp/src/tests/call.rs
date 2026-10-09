@@ -634,6 +634,43 @@ fn an_upstream_error_message_reaches_its_caller_unchanged() {
     );
 }
 
+/// P-ITEM: EMPTY REPLY / UNARY-EMPTY TERMINALITY (spec DONE item 2, "All P-item behaviours match
+/// 1.5.5"; the drive log's P4, commit 470351a480, which the money briefs name "mcp bills empty
+/// answer as complete"). An envelope with a real result is the upstream's complete answer; one
+/// with neither `result` nor `error` is never settled as one.
+///
+/// This is a money boundary. A JSON-RPC answer carries exactly one of `result` or `error`; a
+/// document with NEITHER used to fall through to a complete answer and charge the caller for a
+/// result that never came. On the served door it is the upstream's failure: an `isError` result
+/// naming the server, logged `upstream_failed` and audited rejected, never the `dispatched` line
+/// of a delivered result. The 1.5.5 behaviour this plane matches is its one surface's (the llm
+/// surface; owner correction 2026-09-28): a response the caller cannot use is not billed as a
+/// delivered one (v1.5.5 `crates/busbar/src/proxy/response_body.rs:415-440`).
+#[test]
+fn p_item_empty_reply_only_a_real_result_settles_complete() {
+    let (status, body, line) = answer_of(settle_far(r#"{"jsonrpc":"2.0","id":0,"result":{}}"#));
+    assert_eq!(status, 200);
+    assert_eq!(body["result"], json!({ "resultType": "complete" }));
+    assert_eq!((line.outcome, line.reason.as_str()), ("dispatched", ""));
+
+    let (status, body, line) = answer_of(settle_far(r#"{"jsonrpc":"2.0","id":0}"#));
+    assert_eq!(status, 200);
+    assert_eq!(body["id"], json!(7));
+    assert_eq!(body["result"]["isError"], json!(true));
+    let text = body["result"]["content"][0]["text"].as_str().expect("text");
+    assert!(
+        text.starts_with("The MCP server `fs` did not complete this tool call:")
+            && text.contains("neither `result` nor `error`"),
+        "{text}"
+    );
+    assert_eq!(
+        (line.outcome, line.reason.as_str()),
+        ("dispatched", "upstream_failed"),
+        "an empty envelope is the upstream's failure, never a delivered result"
+    );
+    assert_eq!(line.audit, Some(AuditRow::tool("fs_read_file", false)));
+}
+
 #[test]
 fn an_answer_to_something_else_is_never_served() {
     let (_, body, _) = answer_of(settle_far(r#"{"jsonrpc":"2.0","id":5,"result":{}}"#));

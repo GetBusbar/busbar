@@ -1008,6 +1008,79 @@ mod both_ways {
         }
     }
 
+    /// The kernel refuses with `reason` at its own `status` (no unit had arrived), and the door
+    /// renders it.
+    fn kernel_refusal(p: &Plugin<Plane>, reason: u32, status: u32) -> Step {
+        let words = b"refused";
+        let (mut reply, mut fields, mut arena) = ([0_u8; 512], [z::<OutField>(); 2], [0_u8; 64]);
+        let mut r: Frame<RefusalIn, RefusalOut> = Frame::new(z(), z());
+        (r.input.head, r.out.head) = (in_head(), out_head());
+        (r.input.cause, r.input.status, r.input.reason) = (plane::REFUSAL_KERNEL, status, reason);
+        r.input.text = text(words);
+        (r.input.reply_buf, r.input.reply_cap) = (reply.as_mut_ptr(), reply.len());
+        (r.input.fields_buf, r.input.fields_cap) = (fields.as_mut_ptr(), fields.len());
+        (r.input.arena_buf, r.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        let c = p.call(slot::REFUSAL, &mut r);
+        let mut s = Step::new("kernel refusal", c.outcome);
+        s.status = r.out.status;
+        s.reply = reply[..usize::try_from(r.out.reply_written).expect("small")].to_vec();
+        s
+    }
+
+    /// P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, "All P-item behaviours match 1.5.5";
+    /// drive log P2, commit 470351a480; TODO L-ENG9). 1.5.5's one surface gave every limit reason
+    /// its own status and kind and answered none of them as an internal error (v1.5.5
+    /// `crates/busbar/src/ingress/mod.rs:237-305`). On the served mcp door the reason-to-family
+    /// decision is the kernel's alone: every reason a plane is handed is answered at the status the
+    /// kernel chose from the one classification (`busbar_contract::abi::plane::RefusalCode::class`;
+    /// the door states `0`, the kernel's status stands) and in the one refusal family
+    /// (`CODE_REFUSED`), never as the internal error, whatever its class. The door holds no
+    /// reason-to-class table of its own (the unserved `Plane` impl's `refusal_words` is deleted,
+    /// plane-mcp finding 12).
+    #[test]
+    fn p_item_refusal_reason_collapse_the_door_answers_every_reason_at_the_kernels_status_never_internal()
+    {
+        use busbar_contract::abi::plane::{reason_of, RefusalCode};
+        let d = Dispatcher::new(DispatchConfig::default());
+        let p = linked(&d);
+        let mut i: PlaneOpenIn = z();
+        i.open.head = in_head();
+        (i.open.generation, i.open.settings) = (1, octets(SECTION));
+        i.public_url = text(PUBLIC_URL.as_bytes());
+        let mut o: PlaneOpenOut = z();
+        o.open.head = out_head();
+        let (c, _) = p.open(&mut Frame::new(i, o));
+        assert_eq!(c.outcome, Outcome::Ready, "the door opens");
+        let mut rendered = 0;
+        for code in RefusalCode::ALL {
+            // Two codes are the kernel's own money verdicts and never reach a plane (`reason_of`).
+            if reason_of(code.code()).is_none() {
+                continue;
+            }
+            let class = code.class();
+            let status = if class.is_node_fault() { 500 } else { 403 };
+            let r = kernel_refusal(&p, code.code(), status);
+            assert_eq!(
+                (r.outcome, r.status),
+                (Outcome::Ready, 0),
+                "{code:?} (class {class:?}) is answered at the kernel's status"
+            );
+            let body = document(&r.reply);
+            assert_eq!(
+                body["error"]["code"],
+                json!(busbar_plane_mcp::codec::CODE_REFUSED),
+                "{code:?} (class {class:?}) renders {body}"
+            );
+            assert_ne!(
+                body["error"]["code"],
+                json!(busbar_plane_mcp::codec::CODE_INTERNAL),
+                "{code:?} (class {class:?}) is never the internal error"
+            );
+            rendered += 1;
+        }
+        assert!(rendered > 0, "the walk rendered at least one reason");
+    }
+
     // ── the relayed call and the entitlement binding ───────────────────────────────────────────────
 
     /// A HOST whose entitlement answer is a fixed table of `"<kind>:<name>"` grants, and which
