@@ -16,7 +16,10 @@
 //!    middleware, which this crate does not run).
 //! 2. **Rate limit.** [`crate::rate::MutationClass::for_verb`] then
 //!    [`crate::rate::MutationLimiter::check`] — refused `RateLimited` otherwise. Reads never reach
-//!    the limiter at all (their class is `Forbidden`, i.e. never checked).
+//!    the limiter at all (their class is `Forbidden`, i.e. never checked). The limiter is the one
+//!    the composition root built for the life of the node and handed to [`Verbs::new`], so the
+//!    window outlives the request; and it spends only the new verbs (see [`Verbs::admit`] for why
+//!    a legacy verb's budget is not spent here).
 //! 3. **Posture** (new verbs only). [`crate::posture::check_new_verb_admission`]. The five ledger
 //!    views ([`crate::verb::LEDGER_VERBS`]) are answered BEFORE this step and never reach it: a view
 //!    reads figures the ledger already holds, so there is no mutation for dual control to check and
@@ -228,7 +231,10 @@ pub struct Verbs<
     config_class_rules: &'static [ConfigClassRule],
     create_key_cache: IdempotencyCache<Vec<u8>>,
     rotate_key_cache: IdempotencyCache<Vec<u8>>,
-    limiter: MutationLimiter,
+    /// The node's mutation limiter: built ONCE by the composition root and shared by every `Verbs`
+    /// it builds. A `Verbs` lives for one request, so a limiter it built for itself saw an empty
+    /// window on every call and never refused anything.
+    limiter: Arc<MutationLimiter>,
 }
 
 impl<G: Governance, S: Store + ?Sized, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>>
@@ -238,13 +244,16 @@ impl<G: Governance, S: Store + ?Sized, N: NonceSource, E: ReplayEncoder<MintedKe
     /// root's sealed class table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
     /// default); `nonce_source` and `replay_encoder` are mandatory — there is no `Default` for
     /// either, so a caller cannot silently construct a `Verbs` with a predictable nonce or a
-    /// re-minting replay path.
+    /// re-minting replay path. `limiter` is mandatory for the same reason: it is the node's, built
+    /// once for the life of the process, and there is no per-executor default that could stand in
+    /// for it — a limiter born with the request forgets every attempt before the next one.
     pub fn new(
         governance: G,
         store: Option<Arc<S>>,
         nonce_source: N,
         replay_encoder: E,
         config_class_rules: &'static [ConfigClassRule],
+        limiter: Arc<MutationLimiter>,
     ) -> Self {
         Verbs {
             governance,
@@ -254,7 +263,7 @@ impl<G: Governance, S: Store + ?Sized, N: NonceSource, E: ReplayEncoder<MintedKe
             config_class_rules,
             create_key_cache: IdempotencyCache::new(),
             rotate_key_cache: IdempotencyCache::new(),
-            limiter: MutationLimiter::new(),
+            limiter,
         }
     }
 
@@ -276,6 +285,14 @@ impl<G: Governance, S: Store + ?Sized, N: NonceSource, E: ReplayEncoder<MintedKe
 
     /// The scope + rate-limit gate every verb runs through. Returns the [`MutationClass`] on
     /// success, so a caller that must also check idempotency doesn't re-derive it.
+    ///
+    /// ONE REQUEST, ONE LIMITER. A legacy verb (every verb with a [`LEGACY_VERBS`] row, the two
+    /// mint verbs among them) is answered by the 1.5.5 surface it always was, and that surface
+    /// spends the principal's mutation budget itself, in front of the handler, exactly as 1.5.5
+    /// did. Spending it here as well would count one request twice and refuse at half the budget
+    /// 1.5.5 granted. So this limiter spends exactly the verbs no legacy surface answers — the new
+    /// verbs ([`NEW_VERBS`]), whose effects land on the store, the journal and the kernel's books
+    /// and meet no other limiter on their way.
     fn admit(
         &self,
         verb: KernelVerb,
@@ -287,8 +304,8 @@ impl<G: Governance, S: Store + ?Sized, N: NonceSource, E: ReplayEncoder<MintedKe
             return Err(Refusal::new(RefusalStep::Admit, ReasonCode::Unauthorized));
         }
         let class = MutationClass::for_verb(verb, self.config_class_rules);
-        if class == MutationClass::Forbidden {
-            // Never rate-limited (a read, or a verb this limiter does not shape).
+        if class == MutationClass::Forbidden || !NEW_VERBS.contains(&verb) {
+            // Never rate-limited here: a read, or a legacy verb whose own surface spends its budget.
             return Ok(class);
         }
         match self.limiter.check(actor, class, now) {

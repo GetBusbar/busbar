@@ -601,7 +601,9 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
     enum WriteRefusal {
         NotFound(String),
         Validation(String),
+        NotKept(String),
     }
+    let now = ctx.host.clock_now_secs();
     let applied = subject.plane.with_registrations_mut(|regs| {
         // RE-FOUND under the lock rather than mutating the clone: a config apply may have removed
         // the registration while the card was being fetched, and writing an approval back into a
@@ -612,8 +614,15 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
                 super::PLANE_DECLARATION.subject_noun
             )));
         };
-        super::pin::approve_registration(&mut reg.approval, &preview.sighting, None)
+        let mut approval = reg.approval.clone();
+        super::pin::approve_registration(&mut approval, &preview.sighting, None)
             .map_err(|e| WriteRefusal::Validation(e.to_string()))?;
+        // KEPT BEFORE IT IS APPLIED. An approval the store did not keep is one a restart forgets,
+        // and the card the agent serves after that restart would then be met as a first sighting
+        // with no drift to show. So a write the store refuses is an approve refused.
+        super::pin::keep_approval(subject.plane.kept(), &name, &approval, now)
+            .map_err(WriteRefusal::NotKept)?;
+        reg.approval = approval;
         // RECORD WHAT WAS SEEN. The approval just adopted this exact observation, so it derives no
         // drift and the state is `Approved` either way — but leaving `Never` behind would report a
         // registration that has demonstrably been contacted as one that never has.
@@ -645,6 +654,11 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
             return AdminReply::Prebuilt(match e {
                 WriteRefusal::NotFound(what) => plane_admin_envelope().not_found(what),
                 WriteRefusal::Validation(msg) => plane_admin_envelope().validation(msg, None),
+                WriteRefusal::NotKept(e) => plane_admin_envelope().plane_error(
+                    "a2a",
+                    &name,
+                    PlaneVerbError::Internal(format!("the approval could not be kept: {e}")),
+                ),
             });
         }
     };

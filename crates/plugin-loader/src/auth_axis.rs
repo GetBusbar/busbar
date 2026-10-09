@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-use busbar_contract::abi::auth::FACT_CACHEABLE;
+use busbar_contract::abi::auth::{FACT_CACHEABLE, FACT_READS_CREDENTIALS};
 use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
 use busbar_contract::abi::mechanism::rendering::read;
 use busbar_contract::auth::{AuthModule, AuthVerdict};
@@ -203,6 +203,28 @@ impl AuthRows {
         })
     }
 
+    /// THE CREDENTIAL READERS: the config keys of the auth rows whose Statement states
+    /// `FACT_READS_CREDENTIALS` (a row whose door will not load states nothing here), linked rows
+    /// first, then the plugins directory's.
+    #[must_use]
+    pub fn credential_readers(&self) -> Vec<String> {
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        rows.filter(|p| p.manifest.kind == AUTH)
+            .filter_map(|row| {
+                let alias = &row.manifest.alias;
+                let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
+                    return None;
+                };
+                let facts = plugin.context::<AuthFacts>()?;
+                (facts.facts & FACT_READS_CREDENTIALS != 0).then(|| alias.clone())
+            })
+            .collect()
+    }
+
     /// ONE VERIFIER PER CREDENTIAL KIND: a row whose Statement declares it reads a credential kind
     /// refuses to open while another auth row declares the same kind (1.5.5 had one built-in
     /// inbound verifier per credential kind and no way to declare a second, so there is no 1.5.5
@@ -347,6 +369,10 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
 
     fn operator(&self) -> Option<(String, String)> {
         AuthRows::operator(self)
+    }
+
+    fn credential_readers(&self) -> Vec<String> {
+        AuthRows::credential_readers(self)
     }
 
     fn open(

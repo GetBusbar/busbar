@@ -1777,7 +1777,7 @@ unless `allow_destinations` names it: a provider on `localhost` or an internal n
 Operator infrastructure a plugin's config names (a database, a secret service, a directory) may be
 private or loopback without an entry. A cloud-metadata address is refused for every destination,
 configured ones included (a configured name that later resolves to one is refused). The check runs after name resolution, and the connection is
-made to the address that was checked. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
+made to the address that was checked; an IP address written in a URL is checked as that address. Through an HTTP(S)/ALL_PROXY CONNECT proxy, the target is checked before the proxy is asked: its name always, and its addresses when the name resolves locally; a name that does not resolve locally is passed to the proxy, and what it reaches behind the proxy is the proxy's boundary. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
 wildcard (`*.corp.example.com` matches names under it, not the apex), an IP (`127.0.0.1`), or a CIDR
 (`10.20.0.0/16`). A host entry never admits a cloud-metadata answer; only an IP or CIDR entry naming the
 address does. With `block_private_addresses: false`, cloud metadata is still refused. Both are
