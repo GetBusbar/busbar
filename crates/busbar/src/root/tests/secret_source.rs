@@ -152,8 +152,7 @@ fn program_section(secret: &SecretRef) -> serde_yaml::Value {
         "settings": secret.settings,
     });
     let environment: serde_yaml::Mapping =
-        serde_yaml::from_str(&format!("{{ env: {{ TOKEN: {reference} }} }}"))
-            .expect("a reference");
+        serde_yaml::from_str(&format!("{{ env: {{ TOKEN: {reference} }} }}")).expect("a reference");
     for (key, value) in environment {
         fs.insert(key, value);
     }
