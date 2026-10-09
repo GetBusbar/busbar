@@ -33,6 +33,8 @@
 # Requirements: the busbar checkout must be buildable (cargo). python3 + tar for the tamper cases.
 # The busbar binary and busbar-plugin-pack are built here WITH the ephemeral key embedded — the
 # gate never touches the real release key.
+#
+# package-selector: busbar-secret-env-plugin -- qa/pipeline-checks.json -- the signing-gate check builds this plugin from the fleet busbar-secret-env checkout (cargo --manifest-path into that workspace, resolved from Cargo.lock), where the package exists; it is not a package of this workspace
 set -euo pipefail
 
 BUSBAR_DIR=$(cd "${1:?busbar checkout dir}" && pwd)

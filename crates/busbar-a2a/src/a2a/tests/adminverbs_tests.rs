@@ -24,6 +24,12 @@ use serde_json::{json, Value};
 use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
 use crate::a2a::jws::ED25519_KEY_INFO_PREFIX;
 use crate::testkit::engine_boot::engine;
+use busbar_kernel::{
+    governance::signing::{TokenSigner, DEFAULT_KID},
+    plane::registry::{CardIssuer, PlaneBootCtx, RestoredSummary},
+    plane::store::{PlaneStore, PlaneStoreView},
+    plane_host::EngineHost,
+};
 
 const TOKEN: &str = "admintok";
 const STD: base64::engine::general_purpose::GeneralPurpose =
@@ -162,12 +168,7 @@ async fn serve(
         .governance(
             engine().scratch_store(),
             Some(TOKEN.to_string()),
-            Some(
-                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
-                    &[9u8; 32],
-                    busbar_kernel::governance::signing::DEFAULT_KID,
-                ),
-            ),
+            Some(TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID)),
         )
         .unwrap();
     let app = engine()
@@ -522,4 +523,149 @@ pub async fn drive_a2a_verb_errors() {
 
     server.abort();
     agent_task.abort();
+}
+
+/// THE HYDRATE-PHASE BOOT CONTEXT a restart hands the plane's `hydrate` hook: the configured store,
+/// and the host over the freshly-built app. The methods the A2A hook never calls are inert.
+struct RestartBootCtx {
+    store: Arc<dyn PlaneStore>,
+    host: Arc<dyn EngineHost>,
+}
+
+impl PlaneBootCtx for RestartBootCtx {
+    fn has_store(&self) -> bool {
+        true
+    }
+    fn register_call_stream(&self) {}
+    fn restore_call_log(&self) -> Result<RestoredSummary, String> {
+        Ok(RestoredSummary::default())
+    }
+    fn attach_durable_sinks(&self) {}
+    fn plane_store(&self) -> Option<Arc<dyn PlaneStore>> {
+        Some(Arc::clone(&self.store))
+    }
+    fn card_issuer(&self) -> Option<CardIssuer> {
+        None
+    }
+    fn engine_host(&self) -> Arc<dyn EngineHost> {
+        Arc::clone(&self.host)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// ONE BOOT over `store`: the app built with governance on it, the plane's `hydrate` hook run as the
+/// composition root runs it before a listener binds, and the router served.
+async fn boot_over(
+    store: Arc<dyn busbar_contract::records::RecordStore>,
+    def: AgentDefCfg,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    install_admin_mount();
+    let gov = engine()
+        .governance(
+            Arc::clone(&store),
+            Some(TOKEN.to_string()),
+            Some(TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID)),
+        )
+        .unwrap();
+    let app = engine()
+        .new_app_plus()
+        .governance(gov)
+        .agent_def("echo", def)
+        .build();
+    let ctx = RestartBootCtx {
+        store: PlaneStoreView::narrow(store),
+        host: Arc::clone(&app).engine_host(),
+    };
+    crate::a2a::a2a_hydrate(&ctx).expect("the a2a hydrate hook");
+    let router = app.router();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (addr, handle)
+}
+
+/// AN APPROVAL OUTLIVES A RESTART, and a card that moved while busbar was down is DRIFT.
+///
+/// The operator approves the card an agent serves (C1); busbar restarts over the same configured
+/// store; the agent now serves a different card (C2) under the same root key. The first look after
+/// the restart must judge C2 against the approval that was kept: `quarantined`, with the moved
+/// fingerprint and the skill set's change named. Were the approval held in memory alone, the
+/// restarted plane would meet C2 as a first sighting: `pending`, no drift, one `approve` away.
+#[tokio::test]
+async fn an_approval_outlives_a_restart_and_a_moved_card_is_drift_not_a_first_sighting() {
+    engine().metrics_init();
+    let _tasks = crate::taskstore::TASKS_SINK_LOCK.lock().await;
+    let k = key();
+    let served = Arc::new(std::sync::RwLock::new(signed_by(&k, a_card("echo"))));
+    let body_of = Arc::clone(&served);
+    let router = axum::Router::new().route(
+        crate::a2a::card::WELL_KNOWN_CARD_PATH,
+        axum::routing::get(move || {
+            let body = serde_json::to_string(&*body_of.read().unwrap()).expect("serialize");
+            async move {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    body,
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let agent = listener.local_addr().unwrap();
+    let agent_task = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let def = agent_cfg(&format!("http://{agent}/agent"), true);
+    let store = engine().scratch_store();
+
+    // ── BOOT 1: connect, and approve the fingerprint the preview showed. ─────────────────────────
+    let (addr, server) = boot_over(Arc::clone(&store), def.clone()).await;
+    let (status, body) = request(addr, reqwest::Method::POST, "/agents/echo/connect", None).await;
+    assert_eq!(status, 200, "{body}");
+    let first = body
+        .get("fingerprint")
+        .and_then(|f| f.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(!first.is_empty(), "{body}");
+    let (status, body) = request(
+        addr,
+        reqwest::Method::POST,
+        "/agents/echo/approve",
+        Some(json!({ "fingerprint": first })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body.get("state").unwrap(), "approved", "{body}");
+    server.abort();
+
+    // ── WHILE BUSBAR IS DOWN the agent's card moves, under the same root key. ────────────────────
+    *served.write().unwrap() = signed_by(&k, a_card("summarise"));
+
+    // ── BOOT 2, over the same store. ─────────────────────────────────────────────────────────────
+    let (addr, server) = boot_over(Arc::clone(&store), def).await;
+    let (status, body) = request(addr, reqwest::Method::POST, "/agents/echo/connect", None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_ne!(
+        body.get("fingerprint").and_then(|f| f.as_str()),
+        Some(first.as_str()),
+        "the card served after the restart is a different document: {body}"
+    );
+    assert_eq!(
+        body.get("state").unwrap(),
+        "quarantined",
+        "a card that moved while busbar was down is DRIFT against the kept approval, never a \
+         first sighting: {body}"
+    );
+    assert_eq!(body.get("pin_changed").unwrap(), true, "{body}");
+    assert_eq!(body.get("added").unwrap(), &json!(["summarise"]), "{body}");
+    assert_eq!(body.get("removed").unwrap(), &json!(["echo"]), "{body}");
+
+    server.abort();
+    agent_task.abort();
+    crate::taskstore::TASKS.clear_sink_for_test();
 }

@@ -518,6 +518,9 @@ pub struct AuthInstance {
     shared: Arc<Shared>,
     sink: AuthSink,
     facts: AuthFacts,
+    // settings-leak-lint: allow — NON-PROJECTION engine type: the settings bytes this instance was
+    // opened over, re-sent on `refresh`. No `Serialize`; the hand-written `Debug` below prints the
+    // plugin and the label only (`an_instance_debug_never_shows_its_settings_or_secrets`).
     settings: Vec<u8>,
     secrets: Vec<Vec<u8>>,
     generation: AtomicU64,
@@ -677,6 +680,14 @@ impl AuthCalls for AuthInstance {
 
     fn facts(&self) -> u32 {
         self.facts.facts
+    }
+
+    fn credential_kinds(&self) -> Vec<String> {
+        self.facts.credential_kinds.clone()
+    }
+
+    fn carriers(&self) -> Vec<String> {
+        self.facts.carriers.clone()
     }
 
     fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {

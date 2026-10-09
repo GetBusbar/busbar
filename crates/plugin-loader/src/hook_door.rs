@@ -199,6 +199,9 @@ struct Inner {
     name: String,
     dispatcher: Arc<Dispatcher>,
     rebind: Rebind,
+    // settings-leak-lint: allow — NON-PROJECTION engine type: the instance's own settings bytes,
+    // re-sent to the plugin's `open` on a quarantine trial. `Inner` implements neither `Debug` nor
+    // `Serialize`, and `HookInstance`'s hand-written `Debug` prints the name only.
     settings: Vec<u8>,
     state: Mutex<State>,
     next_worker: AtomicU32,

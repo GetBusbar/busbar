@@ -2408,6 +2408,60 @@ plugins:
     );
 }
 
+/// FINDING 7: `POST /config/validate` does its plugin-directory scan (and the resolve and
+/// validate passes before it) OFF the async worker, behind the same bounded gate the catalog's own
+/// scan of that directory takes. Inline, a read-only token parked a Tokio worker per request on
+/// the scan, and on a hung plugins mount stalled the runtime the data plane shares.
+///
+/// With the gate held — a scan that has not come back — the call must still be WAITING after the
+/// runtime has had every chance to run it: work that ran inline on the reactor would already be
+/// done. Released, it completes with the very verdict it always gave.
+#[tokio::test]
+async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor() {
+    let svc = svc_with(tmp_plugins_dir("validate-gated"), unsigned_ok_posture());
+    let deploy: busbar_kernel::config::DeployCfg = serde_yaml::from_str(
+        r#"
+listen: "0.0.0.0:8080"
+providers:
+  upstream:
+    api_key: { env: UPSTREAM_API_KEY }
+models:
+  claude:
+    provider: upstream
+pools:
+  main:
+    members:
+      - model: claude
+store:
+  module: memory
+"#,
+    )
+    .expect("test DeployCfg yaml must parse");
+    let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(&format!(
+        "protocol: {}\nbase_url: https://upstream.example\nerror_map:\n  \"400\": client_error\n",
+        busbar_kernel::proto::PROTO_ANTHROPIC
+    ))
+    .unwrap();
+    let defs = std::collections::HashMap::from([("upstream".to_string(), def)]);
+
+    let held = CATALOG_SCAN_GATE.lock().await;
+    let call = tokio::spawn(async move { svc.validate_config(deploy, defs).await });
+    for _ in 0..256 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !call.is_finished(),
+        "validate_config finished while the plugin scan gate was held: its scan ran inline on \
+         the async worker instead of behind the gate on a blocking thread"
+    );
+    drop(held);
+    let view = call
+        .await
+        .expect("the caller task must not panic")
+        .expect("validate returns a view");
+    assert!(view.ok, "the verdict is unchanged: {:?}", view.errors);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // DECISION #79 — RATE CARDS ARE A DATED HISTORY
 //

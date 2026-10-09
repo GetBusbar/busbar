@@ -1249,47 +1249,56 @@ impl AdminService {
     /// once, WITHOUT applying anything. Always succeeds as an operation (`Result::Ok`) — the verdict is
     /// in the view's `ok`/`errors`; a valid request describing an invalid config is `ok: false`, not an
     /// error. Read scope (no mutation). Env interpolation is out of scope (structure + resolution only).
+    ///
+    /// OFF THE REACTOR, BEHIND THE SCAN GATE. The pre-flight scans the running `plugins.dir` (a
+    /// `read_dir` and a read of every tarball in it) and the resolve and validate passes before it
+    /// are CPU-bound over a caller-sized document; none of it may run inline on a Tokio worker,
+    /// which is shared with the data plane. So the whole dry run goes to `spawn_blocking`, behind
+    /// [`CATALOG_SCAN_GATE`] — the gate the catalog's own scan of the same directory already takes —
+    /// with the same bounded wait: a read-only token can no longer park a worker per request on a
+    /// slow or hung plugins mount, and a hung scan answers the next caller a retryable `503` instead
+    /// of queuing it forever. A blocking task that fails to join answers what a panic inside the
+    /// handler always answered, the `500` `internal` envelope.
     pub(crate) async fn validate_config(
         &self,
-        mut deploy: DeployCfg,
+        deploy: DeployCfg,
         defs: std::collections::HashMap<String, ProviderDef>,
     ) -> Result<ConfigValidateView, AdminError> {
-        // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
-        // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
-        let root = match busbar_kernel::config::resolve(&deploy, &defs) {
-            Ok(root) => root,
-            Err(errors) => return Ok(ConfigValidateView { ok: false, errors }),
+        let _gate = match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(_elapsed) => {
+                diag_warn!(
+                    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
+                    operation = "config.validate",
+                    wait = ?CATALOG_SCAN_GATE_WAIT,
+                    "plugin scan gate could not be acquired within the wait bound; a prior scan \
+                     is not returning (e.g. a stale/hung plugins_dir mount). Answering with a \
+                     retryable error rather than hanging this request too."
+                );
+                return Err(AdminError::Unavailable(
+                    "the plugin directory scan is taking too long; try again shortly".to_string(),
+                ));
+            }
         };
-        if let Err(errors) = busbar_kernel::config_validate::validate(&root) {
-            return Ok(ConfigValidateView { ok: false, errors });
-        }
-        // SECURITY (R3-B): the pre-flight below SCANS `plugins.dir` — `fs::read_dir` plus a read of
-        // every tarball it finds (`plugins_preflight` → `scan_and_validate`). On THIS endpoint
-        // `deploy` is CALLER-SUPPLIED, so honoring its `plugins.dir` turned validation into an
-        // arbitrary-path readability + directory-enumeration oracle for any token that can reach it
-        // (`plugins.dir: /root/.ssh` reports whether that path is readable and what it contains).
-        // PIN the scanned directory to the RUNNING install's plugins dir before preflight: the scan
-        // can no longer be steered off the real install, while validation still lints every
-        // store/auth/hook/secret REFERENCE against the plugins that are ACTUALLY installed — the
-        // meaningful check, and the CI dry-run use case (does this config resolve against what is
-        // deployed?). The caller's `plugins.dir` string was already structurally checked by
-        // `config_validate::validate` above (no FS access); only the SCAN is pinned.
-        deploy.plugins.dir = self.app.plugins_dir.to_string_lossy().into_owned();
-        // The SAME post-resolve pre-flight `--validate` runs. Without it this endpoint answered
-        // `ok: true` for configs the CLI rejects -- a plugin whose trust posture or store reference
-        // does not resolve, a `secrets:` entry naming no `kind: secret` plugin, a secret REFERENCE
-        // whose module is neither built-in nor installed -- so an operator could dry-run a config
-        // green here and then watch boot fail on it. Manifest-only: nothing is `dlopen`ed.
-        if let Err(e) = busbar_kernel::preflight_plugins_and_secrets(&deploy, &root) {
-            return Ok(ConfigValidateView {
-                ok: false,
-                errors: vec![e],
-            });
-        }
-        Ok(ConfigValidateView {
-            ok: true,
-            errors: Vec::new(),
+        let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
+        match tokio::task::spawn_blocking(move || {
+            validate_config_blocking(deploy, &defs, plugins_dir)
         })
+        .await
+        {
+            Ok(view) => Ok(view),
+            Err(join_err) => {
+                diag_error!(
+                    ADMIN_STORE_TASK_JOIN_FAILED,
+                    operation = "config.validate",
+                    error = %join_err,
+                    "admin blocking task failed"
+                );
+                Err(AdminError::Internal)
+            }
+        }
     }
 
     /// `GET /api/v1/admin/admin-auth` — the ADMIN-plane auth config (distinct from the ingress chain).
@@ -1769,4 +1778,50 @@ fn add_classes(
         e.cost = e.cost.checked_add(u.cost)?;
     }
     Some(())
+}
+
+/// The dry run itself, on a blocking thread (see [`AdminService::validate_config`]): resolve, the
+/// boot-time semantic validation, then the plugin and secret pre-flight over the running install's
+/// `plugins_dir`.
+fn validate_config_blocking(
+    mut deploy: DeployCfg,
+    defs: &std::collections::HashMap<String, ProviderDef>,
+    plugins_dir: String,
+) -> ConfigValidateView {
+    // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
+    // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
+    let root = match busbar_kernel::config::resolve(&deploy, defs) {
+        Ok(root) => root,
+        Err(errors) => return ConfigValidateView { ok: false, errors },
+    };
+    if let Err(errors) = busbar_kernel::config_validate::validate(&root) {
+        return ConfigValidateView { ok: false, errors };
+    }
+    // SECURITY (R3-B): the pre-flight below SCANS `plugins.dir` — `fs::read_dir` plus a read of
+    // every tarball it finds (`plugins_preflight` → `scan_and_validate`). On THIS endpoint
+    // `deploy` is CALLER-SUPPLIED, so honoring its `plugins.dir` turned validation into an
+    // arbitrary-path readability + directory-enumeration oracle for any token that can reach it
+    // (`plugins.dir: /root/.ssh` reports whether that path is readable and what it contains).
+    // PIN the scanned directory to the RUNNING install's plugins dir before preflight: the scan
+    // can no longer be steered off the real install, while validation still lints every
+    // store/auth/hook/secret REFERENCE against the plugins that are ACTUALLY installed — the
+    // meaningful check, and the CI dry-run use case (does this config resolve against what is
+    // deployed?). The caller's `plugins.dir` string was already structurally checked by
+    // `config_validate::validate` above (no FS access); only the SCAN is pinned.
+    deploy.plugins.dir = plugins_dir;
+    // The SAME post-resolve pre-flight `--validate` runs. Without it this endpoint answered
+    // `ok: true` for configs the CLI rejects -- a plugin whose trust posture or store reference
+    // does not resolve, a `secrets:` entry naming no `kind: secret` plugin, a secret REFERENCE
+    // whose module is neither built-in nor installed -- so an operator could dry-run a config
+    // green here and then watch boot fail on it. Manifest-only: nothing is `dlopen`ed.
+    if let Err(e) = busbar_kernel::preflight_plugins_and_secrets(&deploy, &root) {
+        return ConfigValidateView {
+            ok: false,
+            errors: vec![e],
+        };
+    }
+    ConfigValidateView {
+        ok: true,
+        errors: Vec::new(),
+    }
 }
