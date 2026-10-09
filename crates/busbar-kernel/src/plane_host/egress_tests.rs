@@ -572,12 +572,10 @@ fn read_fault(
 #[test]
 fn a_connect_failure_surfaces_class_connect_with_cause_and_url_kept_separate() {
     use busbar_contract::abi::hot::EgressFailClass;
-    // Bind then DROP a listener to obtain a port nothing is listening on, so the connect is refused.
-    let port = {
-        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
-        l.local_addr().unwrap().port()
-    };
-    let url = format!("http://127.0.0.1:{port}/some/path");
+    // Port 1: a port nothing listens on, so the connect is refused. Not a bound-then-dropped
+    // ephemeral port — a sibling test's fixture (`spawn_http` binds `:0`) could be handed that freed
+    // port, so this open would land on it: Ok instead of Fault here, a second connection there.
+    let url = "http://127.0.0.1:1/some/path".to_string();
     let desc = http_desc(url.as_bytes());
 
     let app = crate::test_support::TestApp::new().build();
