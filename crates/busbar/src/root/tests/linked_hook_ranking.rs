@@ -341,9 +341,8 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
         serde_json::json!({ "policy": "nope" }),
         serde_json::json!({ "policy": "weighted" }),
     ] {
-        let refusal = |axis: &Arc<dyn HookAxis>, name: &str| {
-            axis.open(name, name, &settings, budget).err()
-        };
+        let refusal =
+            |axis: &Arc<dyn HookAxis>, name: &str| axis.open(name, name, &settings, budget).err();
         // The door's refusal, its Statement name and its own prefix read as the double's name.
         let want = refusal(&linked, &real.name).map(|e| {
             e.replace(&real.name, ranking_double::NAME)
