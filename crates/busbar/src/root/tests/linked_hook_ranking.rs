@@ -85,7 +85,7 @@ fn request() -> RoutingRequest<'static> {
     }
 }
 
-/// The 1.5.5 natives' cases (crates/hooks-ranking lib_tests before the door), as the kernel's
+/// The 1.5.5 natives' cases (the ranking plugin's lib_tests before the door), as the kernel's
 /// `each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error` states them:
 /// word, candidates, the decision 1.5.5 answered.
 fn cases() -> Vec<(&'static str, Vec<Row>, RoutingDecision)> {
@@ -229,7 +229,7 @@ fn strategy_words() -> Vec<&'static str> {
 }
 
 /// The twin of the kernel's test of the same name, on the REAL door: the built-in ranking
-/// strategies are the HOOK WORDS of ONE linked `hooks-ranking` door on the hook axis — each
+/// strategies are the HOOK WORDS of ONE linked ranking door on the hook axis — each
 /// strategy word names that row, and opens (with `{"policy": "<word>"}`). `weighted` stays the
 /// inline floor (no row). The words are the door's Statement marks, never registry aliases.
 #[test]

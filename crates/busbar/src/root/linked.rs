@@ -1489,6 +1489,6 @@ mod auth_tests;
 #[path = "tests/linked_protocols.rs"]
 mod linked_protocols;
 
-#[cfg(all(test, feature = "hooks-ranking"))]
+#[cfg(all(test, linked_axis_hooks))]
 #[path = "tests/linked_hook_ranking.rs"]
 mod linked_hook_ranking;

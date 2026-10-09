@@ -12,7 +12,7 @@
 //! module of the crate under test, LINKED only — not a workspace crate, not an example plugin, and
 //! not the shipped plugin taken under another name: the kernel names no plugin crate.
 //!
-//! What it copies is the shipped ranking door at the rev the root pins (`busbar-hook-ranking@7e1285e2e3`):
+//! What it copies is the shipped ranking door at the rev the root pins (`7e1285e2e3`):
 //! the same four `MARK_WORD_HOOK` words, the same tail and `max_inflight`, the same `open` refusals
 //! (in its own name), and the same ranking rules. Each copied literal and rule names its source
 //! below. Its Statement name is its OWN, never the plugin's: the kernel spells no plugin name, not
