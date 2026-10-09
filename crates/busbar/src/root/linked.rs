@@ -179,7 +179,16 @@ pub struct LinkedTransport {
     pub composes_over: &'static [&'static str],
     /// Build the wire over `lower`.
     pub build: BuildTransport,
+    /// Every scheme its entry claims, its own first: a door row's are read off the door's
+    /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
+    pub claims: ClaimsOf,
+    /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
+    /// upgrade lines (`crate::root::serve::upgrade_carriers`; ARCHITECT ruling Q128 U7).
+    pub upgrades: ClaimsOf,
 }
+
+/// A row's claims, read when the seal runs.
+pub type ClaimsOf = fn() -> Vec<&'static str>;
 
 /// A wire's build: handed the layer built beneath it, where one is, and the deployment's settings.
 pub type BuildTransport = fn(
@@ -395,7 +404,8 @@ pub fn link_secrets(
     let mut rows = crate::root::loader::secret_calls::SecretRows::new(
         crate::root::dispatch::dispatcher,
         conns,
-    );
+    )
+    .with_logs(|| crate::root::boot::plugin_logs().clone());
     for door in doors {
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
@@ -414,6 +424,7 @@ fn conns() -> Option<std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>> {
 pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
     SECRETS.get_or_init(|| {
         crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher, conns)
+            .with_logs(|| crate::root::boot::plugin_logs().clone())
     })
 }
 

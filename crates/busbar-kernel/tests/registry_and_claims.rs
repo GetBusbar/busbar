@@ -422,3 +422,26 @@ fn two_door_pattern_claims_at_equal_precedence_refuse_boot() {
     ];
     assert!(check_claims(&disjoint).is_ok());
 }
+
+/// THE CLASS DECIDES FIRST (audit kernel-K5 #12): no claim, however long, outranks a claim of a more
+/// specific class. A pattern of many literal segments stays below every exact path; a long one-level
+/// prefix stays below every pattern; a long suffix stays below every header claim.
+#[test]
+fn a_long_claim_never_outranks_a_more_specific_class() {
+    const MANY_LITERALS: &[Segment] = &[Segment::Lit("a"); 64];
+    let long = "x".repeat(10_000);
+    let long: &'static str = Box::leak(long.into_boxed_str());
+    assert!(
+        precedence(&Selector::PathPattern(MANY_LITERALS)) < precedence(&Selector::ExactPath("/")),
+        "a pattern of many literals outranked an exact path"
+    );
+    assert!(
+        precedence(&Selector::PrefixOneLevel(long))
+            < precedence(&Selector::PathPattern(&[Segment::Tail])),
+        "a long prefix outranked a pattern"
+    );
+    assert!(
+        precedence(&Selector::PathSuffix(long)) < precedence(&Selector::HeaderPresent("x")),
+        "a long suffix outranked a header claim"
+    );
+}

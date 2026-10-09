@@ -2282,6 +2282,60 @@ plugins:
     );
 }
 
+/// FINDING 7: `POST /config/validate` does its plugin-directory scan (and the resolve and
+/// validate passes before it) OFF the async worker, behind the same bounded gate the catalog's own
+/// scan of that directory takes. Inline, a read-only token parked a Tokio worker per request on
+/// the scan, and on a hung plugins mount stalled the runtime the data plane shares.
+///
+/// With the gate held — a scan that has not come back — the call must still be WAITING after the
+/// runtime has had every chance to run it: work that ran inline on the reactor would already be
+/// done. Released, it completes with the very verdict it always gave.
+#[tokio::test]
+async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor() {
+    let svc = svc_with(tmp_plugins_dir("validate-gated"), unsigned_ok_posture());
+    let deploy: busbar_kernel::config::DeployCfg = serde_yaml::from_str(
+        r#"
+listen: "0.0.0.0:8080"
+providers:
+  upstream:
+    api_key: { env: UPSTREAM_API_KEY }
+models:
+  claude:
+    provider: upstream
+pools:
+  main:
+    members:
+      - model: claude
+store:
+  module: memory
+"#,
+    )
+    .expect("test DeployCfg yaml must parse");
+    let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(&format!(
+        "protocol: {}\nbase_url: https://upstream.example\nerror_map:\n  \"400\": client_error\n",
+        busbar_kernel::proto::PROTO_ANTHROPIC
+    ))
+    .unwrap();
+    let defs = std::collections::HashMap::from([("upstream".to_string(), def)]);
+
+    let held = CATALOG_SCAN_GATE.lock().await;
+    let call = tokio::spawn(async move { svc.validate_config(deploy, defs).await });
+    for _ in 0..256 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !call.is_finished(),
+        "validate_config finished while the plugin scan gate was held: its scan ran inline on \
+         the async worker instead of behind the gate on a blocking thread"
+    );
+    drop(held);
+    let view = call
+        .await
+        .expect("the caller task must not panic")
+        .expect("validate returns a view");
+    assert!(view.ok, "the verdict is unchanged: {:?}", view.errors);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // DECISION #79 — RATE CARDS ARE A DATED HISTORY
 //
@@ -4025,6 +4079,59 @@ mod plane_fees_on_admin_usage {
             610 * MICROS_PER_MINOR,
             "/admin/usage agrees (before: 10)"
         );
+    }
+
+    /// A POOLS ROW'S OPEN CLASS IS PRICED, NEVER ITEMIZED: the rerank's `search_units` stay in
+    /// `spend_micros` (610 over the model rows and on the total, as above), and no model row, key row
+    /// or total carries a `classes` key — 1.5.5's usage shape, which the signed LEDGER-SIMPLE entry
+    /// pins byte for byte on `usage.gemini|stream-grounded|no-tool-use-count` (its open class there
+    /// is `unitemized_tokens`). Only a non-pools plane's row itemizes its declared classes.
+    #[tokio::test]
+    async fn a_pools_open_class_is_priced_but_never_itemized_on_the_usage_read() {
+        let calls = [
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+        ];
+        let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &calls).await;
+        assert_eq!(view.total.spend_micros, 610 * MICROS_PER_MINOR);
+        assert_eq!(
+            view.by_model
+                .iter()
+                .map(|r| r.usage.spend_micros)
+                .sum::<i64>(),
+            610 * MICROS_PER_MINOR,
+            "the model rows still price the open class"
+        );
+        let mut wires = vec![(
+            "total".to_string(),
+            serde_json::to_value(&view.total).expect("the total serializes"),
+        )];
+        for r in &view.by_model {
+            wires.push((
+                format!("model row {}/{}", r.model, r.upstream),
+                serde_json::to_value(r).expect("the row serializes"),
+            ));
+        }
+        for r in &view.by_key {
+            wires.push((
+                format!("key row {}", r.id),
+                serde_json::to_value(r).expect("the key row serializes"),
+            ));
+        }
+        assert!(
+            wires.len() >= 3,
+            "a total, a model row and a key row: {wires:?}"
+        );
+        for (what, wire) in wires {
+            assert!(
+                wire.get("classes").is_none(),
+                "a pools {what} keeps 1.5.5's usage shape: {wire}"
+            );
+        }
     }
 
     /// (c) Pools-only token traffic is unchanged: the tokens ride the row's token columns, the fee

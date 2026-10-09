@@ -59,7 +59,7 @@ use busbar_contract::abi::sdk::{
 };
 use busbar_contract::plane::PlaneMeta;
 
-use crate::codec::{CONTENT_TYPE_JSON, FIELD_CONTENT_TYPE};
+use crate::codec::{CONTENT_TYPE_JSON, FIELD_CONTENT_TYPE, FIELD_RETRY_AFTER};
 use crate::config::DecisionsSection;
 use crate::driven::{self, tail, CallerAnswer, FarEndReading, PrincipalNeed};
 use crate::{claims, DecisionPlane};
@@ -208,6 +208,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_routes: ptr::null(),
     admin_routes_len: 0,
     admin_openapi: Blob::ABSENT,
+    stream_ceiling_secs: 0,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its need and its tail.
@@ -687,7 +688,9 @@ slot!(
 );
 
 slot!(
-    /// `refusal`: the kernel's status and text in this dialect's error shape, as JSON.
+    /// `refusal`: the kernel's status and text in this dialect's error shape, as JSON, and the
+    /// wait the kernel handed beside it (`retry_after_s`, a limit's rolling window or the walk's
+    /// floor) as `Retry-After`, as every plane answers it.
     RefusalSlot, RefusalIn, RefusalOut, |_, input, mut out| {
         let given = input.get();
         let status = u16::try_from(given.status).unwrap_or(0);
@@ -700,6 +703,13 @@ slot!(
             name: arena.span(FIELD_CONTENT_TYPE.as_bytes()),
             value: arena.span(CONTENT_TYPE_JSON),
         });
+        if given.retry_after_s > 0 {
+            let wait = given.retry_after_s.to_string();
+            fields.push(OutField {
+                name: arena.span(FIELD_RETRY_AFTER.as_bytes()),
+                value: arena.span(wait.as_bytes()),
+            });
+        }
         let short = !(reply.fits() && fields.fits() && arena.fits());
         let (rw, rnd) = reply.settle(short);
         let (fw, fnd) = fields.settle(short);
