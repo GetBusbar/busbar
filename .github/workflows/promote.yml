@@ -24,8 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # THE RUN GATE reads GitHub (open pull requests, the merge queue, this head's promote runs) with
-    # this job's actions read.
-    permissions: { contents: read, actions: read }
+    # this job's token. In a merge group it also writes: ORPHANS cancels the merge-group runs a queue
+    # rebuild left running (actions: write), and R7 REPEAT turns off the auto-merge of a PR whose
+    # head already failed the queue first in its group (pull-requests: write).
+    permissions: { contents: read, actions: write, pull-requests: write }
     outputs: { runner: "${{ steps.pre.outputs.runner }}", one_runner: "${{ steps.pre.outputs.one_runner }}", needs_release_artifact: "${{ steps.pre.outputs.needs_release_artifact }}", run: "${{ steps.pre.outputs.run }}", reason: "${{ steps.pre.outputs.reason }}" }
     steps:
       # Full history: the pre-flight reads the pull request's diff against BASE_SHA to choose one runner or the matrix.
@@ -189,7 +191,9 @@ jobs:
     if: always() && needs.preflight.result != 'skipped' && (needs.preflight.result != 'success' || needs.preflight.outputs.run == '1')
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions: { contents: read, actions: read, checks: read, pull-requests: write }
+    # statuses: write: a merge group DENIED with its PR first in the group marks that PR's head red
+    # ("merge queue" status) beside its sticky verdict, so the watcher's fix agent starts at failure.
+    permissions: { contents: read, actions: read, checks: read, pull-requests: write, statuses: write }
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       - { id: verdict, continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { name: "verdict-${{ env.SHA }}", path: verdict } } # v8.0.1
