@@ -205,7 +205,10 @@ async fn decide(
         } => match out.verbs {
             VERB_PREFER => {
                 let valid: HashSet<usize> = cands.iter().map(|c| c.idx).collect();
-                Ok(RoutingDecision::from_ranked(frame.order(out.order_written), &valid))
+                Ok(RoutingDecision::from_ranked(
+                    frame.order(out.order_written),
+                    &valid,
+                ))
             }
             VERB_ABSTAIN => Ok(RoutingDecision::Abstain),
             verbs => Err(format!("a ranking answered verbs {verbs:#x}")),
@@ -322,16 +325,19 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
     for word in hook_words(&real) {
         let settings = serde_json::json!({ "policy": word });
         let facts = |axis: &Arc<dyn HookAxis>| axis.probe(&word, &word, &settings);
-        assert_eq!(facts(&doubled), facts(&linked), "the tail's facts, `{word}`");
+        assert_eq!(
+            facts(&doubled),
+            facts(&linked),
+            "the tail's facts, `{word}`"
+        );
     }
     for settings in [
         serde_json::json!({}),
         serde_json::json!({ "policy": "nope" }),
         serde_json::json!({ "policy": "weighted" }),
     ] {
-        let refusal = |axis: &Arc<dyn HookAxis>| {
-            axis.open(&real.name, &real.name, &settings, budget).err()
-        };
+        let refusal =
+            |axis: &Arc<dyn HookAxis>| axis.open(&real.name, &real.name, &settings, budget).err();
         let want = refusal(&linked);
         assert!(want.is_some(), "the linked door refuses {settings}");
         assert_eq!(refusal(&doubled), want, "the refusal of {settings}");
