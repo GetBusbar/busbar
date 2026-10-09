@@ -312,7 +312,8 @@
 # c09bffd8fcad and carries #181, the recorder keeps an llm cell's wire bytes in the recording at
 # <out>/raw/<safe>/{request.body,headers,body} instead of the shared <work>/raw-cell, and #182, turnstile merge's
 # INFRA:platform / INFRA:ours split for a shard with no report). No corpus change: cells.json and every golden are
-# untouched. promote.yml RELEASE_REF moves to the same commit, so the CI engine and the local one agree again.
+# untouched. promote.yml RELEASE_REF is already at 65e862fbf808, a descendant of 636e82e0d44b (nothing under
+# crates/busbar-release-oracle differs between them). RELEASE_REF does not move.
 #
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
