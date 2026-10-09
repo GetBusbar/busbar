@@ -353,20 +353,14 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> 
 /// the first: when a migration rule regresses it usually breaks a whole era of configs at once, and
 /// seeing "these 9 all lost their pools block" is a diagnosis where "v1.2.0 failed" is a scavenger
 /// hunt.
+// A config whose chain names `keys` needs an admin credential that can mint one, and the only
+// built-in is `admin-tokens`. Without that feature the binary REFUSES such a config by design ("the
+// admin API would be silently disabled"), so the deferred decision cannot be supplied and the test
+// would be asserting a property of the build, not of the migrator. A build without it never
+// compiles the test; the default build runs it, so coverage is not lost.
+#[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn every_shipped_config_migrates_to_a_valid_current_config() {
-    // A config whose chain names `keys` needs an admin credential that can mint one, and the only
-    // built-in is `admin-tokens`. Without that feature the binary REFUSES such a config by design
-    // ("the admin API would be silently disabled"), so the deferred decision cannot be supplied and
-    // the test would be asserting a property of the build, not of the migrator. Skipped loudly
-    // rather than silently: the default build runs it, so coverage is not lost.
-    if !cfg!(feature = "auth-admin-tokens") {
-        eprintln!(
-            "SKIP: built without `auth-admin-tokens`, so a migrated config naming `keys` cannot be \
-             given a valid admin mint path. The default-features build covers this."
-        );
-        return;
-    }
     let files = corpus_files();
     assert!(
         files.len() >= 20,
@@ -521,15 +515,11 @@ fn recorded_1_5_5_warning_count(tag: &str) -> Option<usize> {
 /// Reports every config that gained a warning, with the lines it gained, rather than dying on the
 /// first: a warning added to a shared boot path shows up on the whole corpus at once, and the set
 /// is the diagnosis.
+// Gated as [`every_shipped_config_migrates_to_a_valid_current_config`] is: a migrated config naming
+// `keys` has a valid admin mint path only where `auth-admin-tokens` is linked.
+#[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
-    if !cfg!(feature = "auth-admin-tokens") {
-        eprintln!(
-            "SKIP: built without `auth-admin-tokens`, so a migrated config naming `keys` cannot be \
-             given a valid admin mint path. The default-features build covers this."
-        );
-        return;
-    }
     let files = corpus_files();
     let tmp = std::env::temp_dir().join(format!("busbar-warncount-{}.yaml", std::process::id()));
     let mut regressions: Vec<String> = Vec::new();

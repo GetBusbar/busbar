@@ -121,19 +121,18 @@ fn request(port: u16, body: &str) -> Option<u16> {
     text.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
+// The data door rides the tcp wire: a build that does not link it never compiles this test, and
+// one that does asserts its linked table agrees.
+#[cfg(feature = "transport-tcp")]
 #[test]
 fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refused() {
-    // The data door rides the tcp wire; a build that does not link it is out of this test's reach.
-    if !LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp") {
-        return;
-    }
-    let Some(lib) = common::plugins::cdylib(CDYLIB) else {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "the {CDYLIB} cdylib is not built under CI; a both-doors proof must not skip"
-        );
-        return;
-    };
+    assert!(
+        LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp"),
+        "a build with `transport-tcp` links no tcp transport row"
+    );
+    // A both-doors proof never skips: the dropped-in door's cdylib is built or the test fails.
+    let lib = common::plugins::cdylib(CDYLIB)
+        .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
     let dir = common::plugins::scratch("traces-both-doors");
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
     let tarball = common::plugins::pack_stated("export", DROPPED, &lib, "acme");

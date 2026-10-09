@@ -100,7 +100,8 @@ fn repo_root() -> PathBuf {
 /// through `install_planes` (and the content of the test-support plane registry). Referenced directly
 /// so the Some/None this test reasons over is the REAL decl, never a restated copy.
 // Each plane crate is only linked when its feature is on. Under `--no-default-features` no plane
-// is installed, so this yields an empty set and the gate test below is vacuous (returns early).
+// is installed, so this yields an empty set and the gate tests below are not compiled
+// (`linked_axis_plane`).
 fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
     LINKED_PLANES.iter().map(|d| (d.key, d)).collect()
 }
@@ -338,13 +339,17 @@ fn columns_map() -> BTreeMap<&'static str, &'static [&'static str]> {
 // 1. THE GATE: the live decls' asymmetries are all declared, ledger-anchored, and exact.
 // ---------------------------------------------------------------------------
 
+// No plane linked (e.g. --no-default-features): cross-plane isomorphism is vacuous, so the test is
+// the plane axis's (any linked row carrying it, the rows `LINKED_PLANES` holds); a partial roster
+// still runs it, scoped below.
+#[cfg(linked_axis_plane)]
 #[test]
 fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
     let decls = installed_decls();
-    if decls.is_empty() {
-        // No plane linked (e.g. --no-default-features): cross-plane isomorphism is vacuous.
-        return;
-    }
+    assert!(
+        !decls.is_empty(),
+        "a build on the plane axis installs no plane decl"
+    );
     let root = repo_root();
     let matrix = reflect(&decls);
     let ledger = read_json(&root.join("qa/capability-equality.json"));
@@ -400,12 +405,14 @@ fn compiled_legs() -> BTreeSet<&'static str> {
 /// decide is which legs are COMPILED, and that is asserted separately below: a plane installed into
 /// this build whose answering leg this build also carries must be driven through the loop by a leg
 /// that proves at least one cell.
+#[cfg(linked_axis_plane)]
 #[test]
 fn every_installed_plane_is_answered_by_a_root_leg() {
     let decls = installed_decls();
-    if decls.is_empty() {
-        return;
-    }
+    assert!(
+        !decls.is_empty(),
+        "a build on the plane axis installs no plane decl"
+    );
     let ledger = read_json(&repo_root().join("qa/capability-equality.json"));
     let legs = ledger["root_legs"]
         .as_object()

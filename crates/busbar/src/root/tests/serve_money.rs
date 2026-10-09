@@ -50,7 +50,7 @@ impl Governed {
 
 /// `keys_chain`: the deployment's data chain verifies a key (a claim that takes a credential is
 /// then refused by the gate when none is presented).
-pub(super) fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
+pub(super) fn governed(instance: &'static str, keys_chain: bool) -> Governed {
     governed_with(instance, keys_chain, None)
 }
 
@@ -63,7 +63,7 @@ fn governed_with(
     instance: &'static str,
     keys_chain: bool,
     budget: Option<u64>,
-) -> Option<Governed> {
+) -> Governed {
     governed_full(instance, keys_chain, budget, Screen::Nothing, None)
 }
 
@@ -146,7 +146,7 @@ fn governed_hooked(
     keys_chain: bool,
     budget: Option<u64>,
     screen: Screen<'_>,
-) -> Option<Governed> {
+) -> Governed {
     governed_full(instance, keys_chain, budget, screen, None)
 }
 
@@ -163,7 +163,7 @@ fn governed_over(
     keys_chain: bool,
     budget: Option<u64>,
     on: Option<BoundNode>,
-) -> Option<Governed> {
+) -> Governed {
     governed_full(instance, keys_chain, budget, Screen::Nothing, on)
 }
 
@@ -175,7 +175,7 @@ fn governed_full(
     budget: Option<u64>,
     screen: Screen<'_>,
     on: Option<BoundNode>,
-) -> Option<Governed> {
+) -> Governed {
     // The dispatcher serves its instances the composition's host services (`unit.nest` among
     // them), as the boot's does.
     let services = composed_services();
@@ -183,7 +183,7 @@ fn governed_full(
         DispatchConfig::default(),
         Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
     ));
-    let plane = bound(instance, &dispatcher)?;
+    let plane = bound(instance, &dispatcher);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
@@ -296,7 +296,7 @@ fn governed_full(
         .expect("its claims mount");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
-    Some(Governed {
+    Governed {
         _published: Published(instance),
         router,
         driver,
@@ -308,7 +308,7 @@ fn governed_full(
         app,
         book,
         current,
-    })
+    }
 }
 
 impl Governed {
@@ -354,10 +354,7 @@ impl Governed {
 #[tokio::test]
 async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-keyed", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-keyed", true);
     assert_eq!(g.requests(), 0, "nothing admitted yet");
     let (status, body) = g.post("/call/direct:m", true).await;
     assert_eq!(
@@ -375,10 +372,7 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
 #[tokio::test]
 async fn an_unknown_route_is_admitted_then_refused_and_settles() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-unknown", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-unknown", true);
     let (status, body) = g.post("/call/direct:nowhere", true).await;
     assert_eq!((status, body.as_str()), (503, "refused:503:no_destination"));
     assert_eq!(g.requests(), 1, "charged before its route was refused");
@@ -390,10 +384,7 @@ async fn an_unknown_route_is_admitted_then_refused_and_settles() {
 #[tokio::test]
 async fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-unkeyed", false) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-unkeyed", false);
     let (status, body) = g.post("/call/direct:m", false).await;
     assert_eq!(
         (status, body.as_str()),
@@ -408,10 +399,7 @@ async fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
 #[tokio::test]
 async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-open", false) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-open", false);
     let (status, body) = g.post("/open", false).await;
     assert_eq!(
         (status, body.as_str()),
@@ -429,10 +417,7 @@ async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
 #[tokio::test]
 async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-nest", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-nest", true);
     let (status, body) = g.post("/call/nest:/call/local", true).await;
     assert_eq!((status, body.as_str()), (200, "nested:200:ping"));
     assert_eq!(
@@ -478,10 +463,7 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
 #[tokio::test]
 async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-services", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-services", true);
     let (status, body) = g.post("/call/services", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -499,10 +481,7 @@ async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
 #[tokio::test]
 async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed_hooked("serve-money-gated", true, None, Screen::Global("ping")) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed_hooked("serve-money-gated", true, None, Screen::Global("ping"));
     let (status, body) = g.post("/call/services", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -519,10 +498,7 @@ async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane(
 #[tokio::test]
 async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restart() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-live", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-live", true);
     let (status, body) = g.post("/call/services", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -560,10 +536,7 @@ async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restar
 #[tokio::test]
 async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed_hooked("serve-money-pool-gate", true, None, Screen::Pool("ping")) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed_hooked("serve-money-pool-gate", true, None, Screen::Pool("ping"));
     let (status, body) = g.post("/call/services-pool:p", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -584,10 +557,7 @@ async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
 #[tokio::test]
 async fn a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed_with("serve-money-nest-budget", true, Some(1)) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed_with("serve-money-nest-budget", true, Some(1));
     let (status, body) = g.post("/call/nest:/call/local", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -604,10 +574,7 @@ async fn a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing
 #[tokio::test]
 async fn a_nest_past_the_depth_cap_is_refused() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-nest-deep", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-nest-deep", true);
     let deep = busbar_kernel::host_services::NEST_DEPTH_MAX as usize;
     let path = format!("{}/call/local", "/call/nest:".repeat(deep + 1));
     let (status, body) = g.post(&path, true).await;
@@ -717,7 +684,7 @@ async fn node_boot_hooks_arm() {
 
     // THE DOOR UNIT, on the process's one node.
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed_over(
+    let g = governed_over(
         "serve-money-node-hooks",
         true,
         None,
@@ -725,11 +692,7 @@ async fn node_boot_hooks_arm() {
             crate::root::plane_node::node(),
             Arc::clone(&book.durability),
         )),
-    ) else {
-        // Under CI the cdylib's absence is already a failure (`planes_tests::bound`).
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    );
     let lines = || {
         book.durability
             .lock()
@@ -779,10 +742,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         DispatchConfig::default(),
         Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
     ));
-    let Some(plane) = bound(instance, &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let plane = bound(instance, &dispatcher);
     let _published = Published(instance);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
@@ -873,27 +833,25 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
 
 /// The framer that answers a claim, for the compositions here: the neutral frame door (the plugin
 /// loader's `neutral_frame_door` example), dropped in and opened through the one door, for its own
-/// claim alone. Under CI a missing artifact is a failure.
+/// claim alone. Not built is a failure in every run, never a skip.
 pub(super) fn neutral_framers() -> super::StreamFramers {
     use busbar_core_connector::framer::FramerDoor;
-    static DOOR: std::sync::OnceLock<Option<Arc<dyn FramerDoor>>> = std::sync::OnceLock::new();
+    use crate::root::test_plugins::{missing, neutral_frame_door, BUILD_LOADER_EXAMPLES};
+    static DOOR: std::sync::OnceLock<Arc<dyn FramerDoor>> = std::sync::OnceLock::new();
     let door = DOOR
         .get_or_init(|| {
-            let (plugin, _key) = crate::root::test_plugins::neutral_frame_door()?;
+            let (plugin, _key) = neutral_frame_door()
+                .unwrap_or_else(|| missing("neutral_frame_door", BUILD_LOADER_EXAMPLES));
             let door = crate::root::doors::Dispatched::open(
                 plugin,
                 &busbar_contract::transport::TransportSettings::default(),
             )
             .expect("the neutral frame door opens");
-            Some(Arc::new(door) as Arc<dyn FramerDoor>)
+            Arc::new(door) as Arc<dyn FramerDoor>
         })
         .clone();
-    assert!(
-        door.is_some() || std::env::var_os("CI").is_none(),
-        "the neutral frame door cdylib is built beside the test binary under CI"
-    );
     super::StreamFramers(Arc::new(move |claim: &str| {
-        door.as_ref()
+        Some(&door)
             .filter(|d| d.facts().claims.contains(&claim))
             .cloned()
     }))

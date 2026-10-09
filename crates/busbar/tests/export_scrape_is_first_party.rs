@@ -39,15 +39,12 @@ use std::time::{Duration, Instant};
 const THIRD_PARTY: &str = "tp-metrics";
 
 /// The in-tree `cdylib` that loads as an export sink carrying exactly the `metrics` stream, in the
-/// target directory this test binary lives in (uplifted or under `deps`, newest first). Under CI a
-/// missing artifact is a failure, never a skip.
-fn metrics_sink_cdylib() -> Option<Vec<u8>> {
-    let found = common::plugins::metrics_sink_cdylib();
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "no in-tree metrics-stream export cdylib is built under CI; refusing to skip #65's control"
-    );
-    found
+/// target directory this test binary lives in (uplifted or under `deps`, newest first). A missing
+/// artifact is a failure in every run, never a skip of #65's control.
+fn metrics_sink_cdylib() -> Vec<u8> {
+    common::plugins::metrics_sink_cdylib().unwrap_or_else(|| {
+        common::plugins::missing("metrics-stream export sink", common::plugins::BUILD_PINNED)
+    })
 }
 
 fn fixture_dir(tag: &str) -> PathBuf {
@@ -222,10 +219,7 @@ fn post_messages(port: u16) {
 
 #[test]
 fn a_third_party_metrics_sink_never_serves_metrics() {
-    let Some(lib) = metrics_sink_cdylib() else {
-        eprintln!("skip: no in-tree metrics-stream export cdylib is built (run under --workspace)");
-        return;
-    };
+    let lib = metrics_sink_cdylib();
 
     // 1. The third party ALONE, subscribed to `metrics`: no `/metrics`, as 1.5.5 without a
     //    `module: prometheus` instance.

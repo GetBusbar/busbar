@@ -56,19 +56,16 @@ const EXCHANGE: &str = include_str!("fixtures/transport_dropped_in_exchange.txt"
 /// (`common::plugins::transport_cdylib_under`). No linked layer composes over another (ARCHITECT
 /// ruling Q128 U7: no transport names another), so no key is needed under them and any transport
 /// door beside the binary is the proof's subject: a linked key's tarball is refused as a second
-/// plugin with that key, an unlinked key's registers through the one fold. Under CI a missing
-/// artifact is a hard failure, never a silent skip.
-fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
+/// plugin with that key, an unlinked key's registers through the one fold. A missing artifact is a
+/// hard failure in every run, never a silent skip.
+fn transport_cdylib() -> (Vec<u8>, &'static str) {
     let under: Vec<&str> = LINKED_TRANSPORTS
         .iter()
         .flat_map(|w| w.composes_over.iter().copied())
         .collect();
-    let found = common::plugins::transport_cdylib_under(&under);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "no in-tree kind: transport cdylib is built beside the binary under CI"
-    );
-    found
+    common::plugins::transport_cdylib_under(&under).unwrap_or_else(|| {
+        common::plugins::missing("kind: transport floor door", common::plugins::BUILD_PINNED)
+    })
 }
 
 fn fixture_dir(tag: &str) -> PathBuf {
@@ -275,10 +272,7 @@ fn pinned() -> String {
 
 #[test]
 fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
-    let Some((lib, key)) = transport_cdylib() else {
-        eprintln!("skip: no in-tree kind: transport cdylib is built (run under --workspace)");
-        return;
-    };
+    let (lib, key) = transport_cdylib();
     let linked = LINKED_TRANSPORTS.iter().any(|w| w.key == key);
     let dir = fixture_dir("serve");
     let (data_port, admin_port) = (free_port(), free_port());

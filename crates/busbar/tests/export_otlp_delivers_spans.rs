@@ -132,19 +132,23 @@ fn otlp_linked(dir: &Path) -> bool {
     !text.contains("unknown exporter 'otlp'")
 }
 
+// The data door rides the tcp wire and the sink is the linked otlp exporter: a build that links
+// only one of them never compiles this test, and one that links both asserts the binary agrees.
+#[cfg(all(feature = "transport-tcp", feature = "export-otlp"))]
 #[test]
 fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
-    // The data door rides the tcp wire; a build that does not link it is out of this test's reach.
-    if !LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp") {
-        return;
-    }
+    assert!(
+        LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp"),
+        "a build with `transport-tcp` links no tcp transport row"
+    );
     let dir = fixture_dir();
     let (data_port, admin_port) = (free_port(), free_port());
     let (collector_port, seen) = common::otlp::collector();
     write_configs(&dir, data_port, admin_port, collector_port);
-    if !otlp_linked(&dir) {
-        return;
-    }
+    assert!(
+        otlp_linked(&dir),
+        "a build with `export-otlp` refuses `module: otlp` as an unknown exporter"
+    );
 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
