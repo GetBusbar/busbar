@@ -465,6 +465,9 @@ pub struct DoorFacts {
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
     pub bench_below_trip_threshold: Option<bool>,
+    /// Its stated stream ceiling, seconds (its tail's `stream_ceiling_secs`): the deadline of a
+    /// unit whose `arrive` states `ROUTE_STREAM`, from the moment its route is known. `0` = none.
+    pub stream_ceiling_secs: u64,
 }
 
 /// What one unit carries between its steps.
@@ -611,7 +614,7 @@ impl<'s> DoorSteps<'s> {
 
     /// Whether the unit's caller asked for its answer streamed (its `arrive`'s `ROUTE_STREAM`).
     #[must_use]
-    pub fn wants_stream(&self) -> bool {
+    pub fn streamed(&self) -> bool {
         self.lock().stream
     }
 
@@ -1118,6 +1121,7 @@ pub fn door_facts(
         keeps,
         translations: (Arc::from(Vec::new()), Arc::default()),
         bench_below_trip_threshold: None,
+        stream_ceiling_secs: 0,
     }
 }
 
@@ -1241,6 +1245,7 @@ pub fn compose_egress(
         pools: built,
         routes: sealed,
         stream_ceiling_secs,
+        stated_ceiling_secs: facts.stream_ceiling_secs,
         error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
     })
 }

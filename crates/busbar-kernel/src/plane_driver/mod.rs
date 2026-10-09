@@ -97,7 +97,7 @@ pub use hooks::{
     UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
-pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, SessionCaller};
@@ -1043,13 +1043,21 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         let Some(ticket) = d.calls.mint() else {
             return StepAnswer::refuse(token, Refusal::new(ReasonCode::InFlightCap));
         };
+        // THE DEADLINE ONCE THE ROUTE IS KNOWN (ARCHITECT ruling 2026-10-07, STREAM-CEILING): the
+        // far end states the ceiling its plane puts on a streamed answer; the earlier of it and
+        // the unit's own deadline bounds the pump.
+        let deadline_ns = match (self.deadline_ns, self.far.deadline_ns(d.calls.now_ns())) {
+            (own, 0) => own,
+            (0, stated) => stated,
+            (own, stated) => own.min(stated),
+        };
         let mut run = route::Pumping::new(
             d,
             token,
             &self.state,
             ctx,
             ticket,
-            self.deadline_ns,
+            deadline_ns,
             self.lock()
                 .body
                 .clone()

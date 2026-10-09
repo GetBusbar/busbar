@@ -725,6 +725,7 @@ pub fn compose(
             pools: built,
             routes: sealed,
             stream_ceiling_secs,
+            stated_ceiling_secs: facts.stream_ceiling_secs,
             error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
         },
         shown,

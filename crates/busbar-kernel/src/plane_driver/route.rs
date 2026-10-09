@@ -201,6 +201,15 @@ pub trait FarEnd: Sync {
     fn constrain(&self, token: &Pass<Route>, constraint: super::hooks::Constraint) {
         let _ = (token, constraint);
     }
+
+    /// THE UNIT'S DEADLINE ONCE ITS ROUTE IS KNOWN (ARCHITECT ruling 2026-10-07, STREAM-CEILING),
+    /// on the dispatcher's clock (`now_ns` is its reading as the route step starts): the ceiling
+    /// the plane states for a streamed answer, which the pump then honours like any deadline, on
+    /// the far end's reads and on the caller's writes alike. `0` = none. The default states none.
+    fn deadline_ns(&self, now_ns: u64) -> u64 {
+        let _ = now_ns;
+        0
+    }
     /// A HELD FAR END's next frame (a duplex session's: dialled once, by the [`FarEnd::send`] of its
     /// first turn, and held for the session): write `request`'s body, as one message, into the
     /// attempt that send opened and its far end answered. The verb, target and fields were the

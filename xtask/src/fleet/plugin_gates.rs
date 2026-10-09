@@ -1294,6 +1294,8 @@ pub fn parse_toml(text: &str) -> Res<Json> {
 
 const CRATES: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const BUSBAR_SRC: &str = "git+https://github.com/GetBusbar/busbar?rev=x#x";
+/// The policy at this commit, as the plugin harness reads it at a pin.
+const COMMITTED_POLICY: &str = include_str!("../../../.github/fleet/deps.toml");
 const POLICY: &str = r#"
 [net-ban]
 spec = "line 3980"
@@ -1392,6 +1394,15 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
     let k = pk("k", "busbar-kernel", "1", Some(BUSBAR_SRC), None, &[]);
     let r = pk("r", "rustls", "0.23.1", Some(CRATES), None, &[]);
     let t = pk("t", "tokio", "1.0.0", Some(CRATES), None, &["net"]);
+    let pg = pk(
+        "pg",
+        "postgres",
+        "0.19.14",
+        Some(CRATES),
+        None,
+        &["default"],
+    );
+    let committed = parse_toml(COMMITTED_POLICY).expect("the committed policy parses");
     let s_on = pk(
         "s",
         "libsqlite3-sys",
@@ -1494,6 +1505,29 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
                 "r",
             ),
             true,
+        ),
+        // THE DRIVERS, AGAINST THE COMMITTED POLICY (THE DESIGN §5: a database or directory wire
+        // protocol is a sans-IO codec over the host's stream, never a driver that dials): a store
+        // that ships the `postgres` driver is RED; the same driver as a test's dependency is not.
+        (
+            "netban shipped driver (the committed policy)",
+            netban(
+                &meta(&[m, pg], &[("m", "pg", None)]),
+                Some(&Shipped::parse("postgres v0.19.14|default\n")),
+                &committed,
+                "busbar-store-postgres",
+            ),
+            true,
+        ),
+        (
+            "netban dev-only driver (the committed policy)",
+            netban(
+                &meta(&[m, pg], &[("m", "pg", Some("dev"))]),
+                Some(&Shipped::parse("busbar-store-x v1.0.0 (/w)|\n")),
+                &committed,
+                "busbar-store-postgres",
+            ),
+            false,
         ),
         (
             "cdeps bundled",
@@ -1825,6 +1859,8 @@ mod tests {
         netban_dev_only => "netban dev-only",
         netban_rustls => "netban rustls",
         netban_tokio_net => "netban tokio/net",
+        netban_shipped_driver => "netban shipped driver (the committed policy)",
+        netban_dev_only_driver => "netban dev-only driver (the committed policy)",
         cdeps_bundled => "cdeps bundled",
         cdeps_unbundled => "cdeps unbundled",
         cdeps_unlisted => "cdeps unlisted",
@@ -1928,6 +1964,43 @@ mod tests {
             found("netban tokio/net"),
             ["NETBAN tokio/net is enabled in the shipped closure (line 3980)"]
         );
+    }
+
+    /// Every database and directory driver a plugin used to ship dials its own socket: the
+    /// committed policy refuses each in a shipped closure, by name, and none as a test's dependency.
+    #[test]
+    fn the_committed_policy_refuses_every_driver_in_the_shipped_closure() {
+        let committed = parse_toml(COMMITTED_POLICY).unwrap();
+        let m: Pk = ("m", "busbar-store-x", "1.0.0", None, None, &[]);
+        for (name, ver) in [
+            ("mysql", "28.0.0"),
+            ("postgres", "0.19.14"),
+            ("tokio-postgres", "0.7.18"),
+            ("redis", "1.0.0"),
+            ("ldap3", "0.12.1"),
+        ] {
+            let d: Pk = ("d", name, ver, Some(CRATES), None, &[]);
+            let tree = format!("{name} v{ver}|\n");
+            let shipped = netban(
+                &meta(&[m, d], &[("m", "d", None)]),
+                Some(&Shipped::parse(&tree)),
+                &committed,
+                "busbar-store-x",
+            )
+            .unwrap();
+            assert_eq!(
+                shipped,
+                [format!("NETBAN {name} {ver} is in the shipped closure (BUSBAR-1.6.0.md line 3980: NO plugin opens its own socket, dials, binds, or does TLS)")]
+            );
+            let dev = netban(
+                &meta(&[m, d], &[("m", "d", Some("dev"))]),
+                Some(&Shipped::parse("busbar-store-x v1.0.0 (/w)|\n")),
+                &committed,
+                "busbar-store-x",
+            )
+            .unwrap();
+            assert!(dev.is_empty(), "{name}: {dev:?}");
+        }
     }
 
     #[test]

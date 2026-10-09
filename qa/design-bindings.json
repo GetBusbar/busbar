@@ -609,8 +609,8 @@
      "kind": "oracle-family",
      "ref": "plugins",
      "status": "mapped",
-     "cites": 14,
-     "family_size": 14,
+     "cites": 13,
+     "family_size": 13,
      "source": "cells.json why"
     },
     {

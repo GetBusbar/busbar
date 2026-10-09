@@ -788,6 +788,45 @@ fn test_validate_rejects_non_https_base_url() {
     );
 }
 
+/// E1 PARITY: `--validate` accepts a provider at a private or loopback LITERAL, as 1.5.5 did. The
+/// destination guard refuses such a dial at the dial (the connector's name arm, unless
+/// `advanced.allow_destinations` names it); the configuration check does not move with it.
+#[test]
+fn test_validate_accepts_a_private_or_loopback_literal_base_url() {
+    for url in [
+        "http://127.0.0.1:11434",
+        "http://10.1.2.3/",
+        "http://192.168.1.5:8080/v1",
+        "http://[::1]:8080",
+        "https://172.16.0.9",
+    ] {
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider(proto_a(), url, "API_KEY"));
+        let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        assert!(
+            validate(&cfg).is_ok(),
+            "a private or loopback literal base_url validates, as in 1.5.5: {url}"
+        );
+    }
+}
+
+/// E1 PARITY: the metadata denylist DISPLAYS 1.5.5's eleven entries (`--print-metadata-blocklist`
+/// and the boot line's count), and the guard ENFORCES twelve: the EC2 task-metadata endpoint
+/// `fd00:ec2::23` is refused beside the eleven, though it is not listed.
+#[test]
+fn test_the_metadata_denylist_displays_eleven_and_enforces_twelve() {
+    let shown = crate::config_validate::metadata_denylist_entries();
+    assert_eq!(shown.len(), 11, "1.5.5's displayed list: {shown:?}");
+    assert!(!shown.iter().any(|e| e == "fd00:ec2::23"), "{shown:?}");
+    let task: std::net::IpAddr = "fd00:ec2::23".parse().expect("an address");
+    assert!(
+        busbar_contract::net::ip_is_cloud_metadata(&task),
+        "the twelfth entry is enforced"
+    );
+    let imds: std::net::IpAddr = "fd00:ec2::254".parse().expect("an address");
+    assert!(busbar_contract::net::ip_is_cloud_metadata(&imds));
+}
+
 #[test]
 fn test_validate_accepts_https_base_url() {
     let mut providers = HashMap::new();

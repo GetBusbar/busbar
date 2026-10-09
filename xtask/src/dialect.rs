@@ -278,6 +278,16 @@ fn compile_one(all: &[Dialect], d: &Dialect, answer: &BTreeSet<String>) -> Resul
         if !known {
             return Err(format!("{source}: [{t}] is not a mapping-file table"));
         }
+        // A KEY WRITTEN TWICE in one table is invalid TOML, and two rows for one wire path are two
+        // answers to one question: refused, naming the key, never compiled as both.
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for (key, _) in &d.doc.tables[t].entries {
+            if !seen.insert(key.as_str()) {
+                return Err(format!(
+                    "{source}: [{t}] \"{key}\" is written twice; a key is stated once per table"
+                ));
+            }
+        }
     }
 
     // The row groups this file declares, in name order. Every group's rows are checked; only the

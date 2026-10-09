@@ -898,3 +898,104 @@ fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
         );
     }
 }
+
+/// What a checkpoint site was handed, in order.
+#[derive(Default)]
+struct Journaled(std::sync::Mutex<Vec<(UnitKey, Accrued)>>);
+impl Checkpointer for Journaled {
+    fn checkpoint(&self, key: UnitKey, accrued: &Accrued) {
+        self.0
+            .lock()
+            .expect("journaled")
+            .push((key, accrued.clone()));
+    }
+}
+impl Journaled {
+    fn taken(&self) -> Vec<(UnitKey, Accrued)> {
+        std::mem::take(&mut *self.0.lock().expect("journaled"))
+    }
+}
+
+/// Unit 1 of a [`rig`], on money steps paced by `epoch`.
+fn paced(epoch: &FlushEpoch) -> PlaneMoney {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let money = PlaneMoney::new(r.gov.clone(), r.posted.clone()).with_epoch(epoch.clone());
+    money.open(UnitKey::new(1), r.unit.clone());
+    money
+}
+
+fn input(n: u64) -> Accrued {
+    Accrued {
+        lane: "m".into(),
+        fee_count: 0,
+        classes: BTreeMap::from([("input".to_string(), n)]),
+    }
+}
+
+/// A RUNNING REPORT IS A CHECKPOINT (THE DESIGN §7): the piece path only marks the unit, and the
+/// root's flush tick hands its last counts over ONCE per flush epoch. Two reports in one epoch are
+/// one write, of the later counts; a second flush in the same epoch writes nothing, even for new
+/// counts, until the epoch is bumped.
+#[test]
+fn two_checkpoints_in_one_epoch_are_one_write_and_a_bump_allows_the_next() {
+    let epoch = FlushEpoch::new();
+    let money = paced(&epoch);
+    let site = Journaled::default();
+    money.checkpoint(&ctx(1), &reported(10));
+    money.checkpoint(&ctx(1), &reported(60));
+    assert!(site.taken().is_empty(), "the piece path journals nothing");
+    epoch.bump();
+    assert_eq!(money.flush_checkpoints(&site), 1);
+    assert_eq!(site.taken(), vec![(UnitKey::new(1), input(60))]);
+    money.checkpoint(&ctx(1), &reported(100));
+    assert_eq!(
+        money.flush_checkpoints(&site),
+        0,
+        "at most one checkpoint per unit per epoch"
+    );
+    assert!(site.taken().is_empty());
+    epoch.bump();
+    assert_eq!(
+        money.flush_checkpoints(&site),
+        1,
+        "the bump allows the next"
+    );
+    assert_eq!(site.taken(), vec![(UnitKey::new(1), input(100))]);
+}
+
+/// A unit the plane reported nothing new for since its last checkpoint writes nothing; nor does a
+/// unit whose reports are estimates alone, or a unit that closed.
+#[test]
+fn a_unit_with_no_new_counts_writes_nothing() {
+    let epoch = FlushEpoch::new();
+    let money = paced(&epoch);
+    let site = Journaled::default();
+    epoch.bump();
+    assert_eq!(money.flush_checkpoints(&site), 0, "no counts, no write");
+    money.checkpoint(&ctx(1), &reported(40));
+    assert_eq!(money.flush_checkpoints(&site), 1);
+    site.taken();
+    epoch.bump();
+    assert_eq!(money.flush_checkpoints(&site), 0, "nothing new, no write");
+    epoch.bump();
+    let estimated = [UnitCount {
+        class: INPUT,
+        source: UNITS_ESTIMATED,
+        amount: 500,
+    }];
+    money.checkpoint(&ctx(1), &estimated);
+    assert_eq!(
+        money.flush_checkpoints(&site),
+        0,
+        "an estimate is no accrual"
+    );
+    epoch.bump();
+    money.checkpoint(&ctx(1), &reported(70));
+    money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(
+        money.flush_checkpoints(&site),
+        0,
+        "a closed unit writes nothing"
+    );
+    assert!(site.taken().is_empty());
+}
