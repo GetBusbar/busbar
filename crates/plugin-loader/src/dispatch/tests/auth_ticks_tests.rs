@@ -175,7 +175,11 @@ async fn an_inbound_instance_is_ticked_at_each_next_tick_ns_until_it_answers_zer
     // Past the third tick's answer of `0`, no other comes.
     tokio::time::sleep(Duration::from_millis(5 * GAP_NS / 1_000_000)).await;
     let at = ticked();
-    assert_eq!(at.len(), 3, "ticked at open and at both next_tick_ns: {at:?}");
+    assert_eq!(
+        at.len(),
+        3,
+        "ticked at open and at both next_tick_ns: {at:?}"
+    );
     for w in at.windows(2) {
         assert!(
             w[1] >= w[0] + GAP_NS,
