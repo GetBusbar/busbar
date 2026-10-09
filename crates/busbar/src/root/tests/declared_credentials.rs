@@ -56,8 +56,9 @@ fn bound(binding: &StyleBinding, credential: &str) -> Arc<dyn CredentialProvider
 }
 
 /// The binding the fixture records for `dialect` (`bindings`): the style its declared scheme is
-/// bound under and its parameters, a signing style's region added from `host` as the plane adds it
-/// (the plane's own suite holds its mapping to the same rows).
+/// bound under and its parameters, a signing style's region added from `host` and its content type
+/// lent as the sent `content-type`, as the plane adds them (the plane's own suite holds its mapping
+/// to the same rows).
 fn binding_of(
     dialect: &str,
     host: &str,
@@ -66,15 +67,19 @@ fn binding_of(
     let row = &fixture()["bindings"][dialect];
     let style = row["style"].as_str().expect("style").to_string();
     let mut params = row["params"].clone();
+    let mut sent = Vec::new();
     if style == "sigv4" {
         let region = recorded_region(host).unwrap_or("us-east-1");
         params["region"] = serde_json::Value::String(region.to_string());
+        let content_type = params["content_type"].as_str().expect("content_type");
+        sent.push(("content-type".to_string(), content_type.to_string()));
     }
     StyleBinding {
         style,
         params,
         uses_key: true,
         statics,
+        sent,
     }
 }
 
