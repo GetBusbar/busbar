@@ -471,8 +471,9 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
         let value = match name {
             "host" => AUTHORITY.to_string(),
             "x-amz-content-sha256" => empty_hash.clone(),
-            other => field(other)
-                .unwrap_or_else(|| panic!("no field carries the signed `{other}`")),
+            other => {
+                field(other).unwrap_or_else(|| panic!("no field carries the signed `{other}`"))
+            }
         };
         canonical_headers.push_str(&format!("{name}:{value}\n"));
     }
