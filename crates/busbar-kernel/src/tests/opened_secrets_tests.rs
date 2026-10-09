@@ -41,7 +41,7 @@ fn a_slow_secret_source_does_not_stall_another_modules_resolution() {
     // The slow module's resolution is in the plugin, waiting.
     let slow_side = {
         let opened = Arc::clone(&opened);
-        std::thread::spawn(move || opened.resolve("slow-source", "slow",|| Ok(slow)))
+        std::thread::spawn(move || opened.resolve("slow-source", "slow", || Ok(slow)))
     };
     std::thread::sleep(Duration::from_millis(200));
 
@@ -51,7 +51,7 @@ fn a_slow_secret_source_does_not_stall_another_modules_resolution() {
         let opened = Arc::clone(&opened);
         std::thread::spawn(move || {
             let fast: Arc<dyn SecretCalls> = Arc::new(Source { gate: None });
-            let _ = done_tx.send(opened.resolve("fast-source", "fast",|| Ok(fast)));
+            let _ = done_tx.send(opened.resolve("fast-source", "fast", || Ok(fast)));
         });
     }
     let answered = done.recv_timeout(Duration::from_secs(3));
