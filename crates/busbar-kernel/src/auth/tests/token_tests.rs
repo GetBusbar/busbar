@@ -282,7 +282,7 @@ async fn refresh_flag_for(
 /// issue that re-shows the key.
 #[tokio::test]
 async fn a_refresh_link_rotates_only_from_busbars_own_page() {
-    let app = test_app_with_methods(vec![("microsoft", true)], "");
+    let app = test_app_with_methods(vec![("microsoft", true)]);
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
     for site in [Some("cross-site"), None, Some("none"), Some("same-site")] {
         assert!(
