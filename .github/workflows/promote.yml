@@ -73,13 +73,18 @@ jobs:
         working-directory: busbar-release
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: $RUNNER_TEMP/busbar-release ci preflight
-  # The release artifact the slsa-verifier conformance rig judges, built ONCE, in the merge group: the
-  # commit it judges is the commit the queue lands, and the ladder fast-forwards that sha to dev, where
-  # the turnstile fetches what this run stored for it (ARCHITECT 2026-10-02). Its SLSA provenance is
-  # minted from `base64-subjects` by the pinned slsa-github-generator once the owner rules on R14 (the
+  # The release artifact the oracle records and the slsa-verifier conformance rig judges. It runs in
+  # every merge group (the fold requires it: a check on the release build), and in every run whose
+  # rung reads the artifact (`needs_release_artifact=true`: the rung runs the oracle or conformance,
+  # i.e. the predev->dev pull request and up). dev moves by pull request now, not by the ladder
+  # fast-forwarding a merge group's sha (ARCHITECT 2026-10-02, superseded), so the run that judges a
+  # promotion builds the artifact of exactly the commit it promotes: its shards download
+  # `slsa-artifact-<sha>` from THIS run, which a merge-group-only build never produced (#740 failed
+  # every run at that download). workflow-rules R17 holds this wiring. Its SLSA provenance is minted
+  # from `base64-subjects` by the pinned slsa-github-generator once the owner rules on R14 (the
   # generator must be referenced by tag); until then the suite is not-run, a standing red here.
   slsa-build:
-    if: github.event_name == 'merge_group' && needs.preflight.outputs.run == '1'
+    if: needs.preflight.outputs.run == '1' && (github.event_name == 'merge_group' || needs.preflight.outputs.needs_release_artifact == 'true')
     needs: preflight
     permissions: { contents: read }
     runs-on: ${{ needs.preflight.outputs.runner }}
@@ -105,9 +110,10 @@ jobs:
   # the ladder's entry asks for it (`soak=true`: qa). The hop folds this job's result like
   # slsa-build's (`ci turnstile merge --needs soak=...`): a failed soak DENIES the promotion. CI=false
   # selects the full hour (the CI context would pick the two-minute smoke). It runs the candidate, so
-  # it holds no write token. The candidate binary is the merge group's slsa-build artifact; a pull
-  # request (no slsa-build) builds it here. The engine is the downloaded ci binary (built with
-  # `--features soak`, dev-bin.yml), sha256-pinned like every other job's.
+  # it holds no write token. The candidate binary is this run's slsa-build artifact (a rung with the
+  # soak reads the artifact, so slsa-build runs); a run without it builds it here. The engine is the
+  # downloaded ci binary (built with `--features soak`, dev-bin.yml), sha256-pinned like every other
+  # job's.
   soak:
     needs: [preflight, slsa-build]
     if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.run == '1' && needs.preflight.outputs.soak == 'true' }}
@@ -212,8 +218,9 @@ jobs:
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}-shard${{ matrix.shard }}", path: "artifacts/", if-no-files-found: warn } } # v7.0.1
   # `hop` (the required check) is the hop's ONE verdict. In a merge group and on the predev->dev pull
   # request it folds the shards: BOARD only when every shard reported and boarded and slsa-build is
-  # green (or skipped: not a merge group): a red slsa-build denies it; a shard that is missing, timed
-  # out or INFRA makes it INFRA, never green. A pull request INTO PREDEV whose pre-flight
+  # green (or skipped: a pull request whose rung reads no release artifact): a red slsa-build denies
+  # it; a shard that is missing, timed out or INFRA makes it INFRA, never green. A pull request
+  # INTO PREDEV whose pre-flight
   # chose one runner (OWNER-LOCKED 2026-10-06, BUSBAR-1.6.0 Part 6 "Verification runs once per input")
   # runs it as ONE runner: no shard, no slsa-build; the ladder's predev `enter_pr`, the merge group's
   # gates and steps scoped to the crates the PR changes plus their reverse dependencies, on the PR merged
