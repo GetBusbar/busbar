@@ -7584,6 +7584,25 @@ impl Gate for KindIsolationGate {
             ));
         }
 
+        // THE LOADER IS ONE CRATE ATOP THE ONE CONTRACT CRATE (BUSBAR-1.6.0.md Part 2 #33). Its
+        // kernel edges (`busbar-kernel-ledger`, `busbar-kernel-wal`) were removed at the root and
+        // their rows struck, so a landing that grows one back is an edge nobody wrote down. Per-push
+        // only; the ship twin's half of this proof is below.
+        if !self.ship {
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "the loader growing a kernel edge back is an edge nobody wrote down",
+                &[ROW_DEPS],
+                loader_reaches_kernel(cx),
+                &[
+                    "unlisted-dep-edge",
+                    "plugin-tooling -> kernel",
+                    "busbar-plugin-loader -> busbar-kernel-ledger",
+                ],
+            ));
+        }
+
         // A CLEANLINESS SURFACE MAY NAME A PRICE. The money-vocabulary ban was a `control`-kind
         // rule and it retired with the kind (DECISIONS #5, and the note in `rule_vocab`): admin and
         // oauth2 are served surfaces that legitimately report on cost and usage. The red case that
@@ -10695,6 +10714,22 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
+        // AND THE LOADER'S KERNEL EDGE, AT THE ARCHITECTURE'S GRAPH: `plugin-tooling -> kernel` is
+        // `tcb`, which the ship criterion does not grant (Part 2 #33: the loader sits atop the
+        // contract alone). The edge is gone from the tree, so the plant is a NAMED, NEW deviation.
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "at the architecture's own graph, the loader reaching a kernel crate is refused",
+            &[ROW_DEPS],
+            loader_reaches_kernel(cx),
+            &[
+                "ship-edge",
+                "busbar-plugin-loader -> busbar-kernel-ledger",
+                "is `tcb`",
+            ],
+        ));
+
         report.push(prove_rows_red(
             cx,
             subject,
@@ -11826,6 +11861,22 @@ fn the_wall_plant(extra: &[&str]) -> Overlay {
 /// findings that produced would be the ones a reader mistook for the case's own.
 fn manifest_plus(cx: &Ctx, rel: &str, extra: &str) -> String {
     format!("{}\n{extra}", cx.read(rel).unwrap_or_default().trim_end())
+}
+
+/// The loader's real manifest with a `busbar-kernel-ledger` dependency added back: the edge Part 2
+/// #33 removed, planted for both gates' refusal of it.
+fn loader_reaches_kernel(cx: &Ctx) -> Overlay {
+    let rel = "crates/plugin-loader/Cargo.toml";
+    let mut ov = Overlay::new();
+    ov.set(
+        rel,
+        manifest_plus(
+            cx,
+            rel,
+            "\n[dependencies]\nbusbar-kernel-ledger = { path = \"../busbar-kernel-ledger\" }\n",
+        ),
+    );
+    ov
 }
 
 /// A planted `Cargo.toml` for `dir`, declaring `name` and depending on `deps`. `set` rather than an

@@ -374,27 +374,26 @@ impl SessionScope {
 
     /// OPEN this session's handle: submit a fresh durable handle to the engine at the genesis position.
     /// Delegates straight to [`DurableHandleEngine::submit`]; `plan` builds the row + records + optional
-    /// genesis event (the plane computes any digest), `abandon` is the retention-sweep transition, and
-    /// `report_fail` receives a sweep-time durable failure. Returns the installed opaque row.
+    /// genesis event (the plane computes any digest), and `report_fail` receives the failure to take
+    /// back a row whose genesis append failed. Returns the installed opaque row. The retention sweep
+    /// this submit may claim touches only settled handles; a live session stays until it is settled.
     ///
     /// The caller's `plan` MUST stamp the returned [`SubmitRecord`] with THIS session's [`id`](Self::id)
     /// and a [`HandleMeta`](crate::plane::handle_engine::HandleMeta) owner equal to this session's
     /// [`owner`](Self::owner): the session keys every later scoped call on that pair, so a genesis under
     /// a diverging owner/id would leave this session unable to read or resume what it just opened.
-    pub fn open<P, A, R>(
+    pub fn open<P, R>(
         &self,
         now: u64,
         bounds: SweepBounds,
         plan: P,
-        abandon: A,
         report_fail: R,
     ) -> Result<Arc<dyn Any + Send + Sync>, HandleEngineError>
     where
         P: FnOnce(&ChainPosition) -> Result<SubmitRecord, RecordStoreError>,
-        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
         R: Fn(&str, &RecordStoreError),
     {
-        self.engine.submit(now, bounds, plan, abandon, report_fail)
+        self.engine.submit(now, bounds, plan, report_fail)
     }
 
     /// GET this session's current opaque row through the engine's SCOPED read — a session bound under a
