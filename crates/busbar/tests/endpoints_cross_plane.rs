@@ -60,6 +60,11 @@ fn vkey(allowed_pools: &[&str]) -> Arc<VirtualKey> {
 /// Two pools, three lanes: `pool-a` -> lanes {0,1}, `pool-b` -> lane {2}. Lane 2's model is
 /// private to `pool-b` so a `pool-a`-only key must never see it.
 fn topology_app() -> Arc<App> {
+    topology().build()
+}
+
+/// The builder [`topology_app`] builds.
+fn topology() -> TestApp {
     register_planes();
     TestApp::new()
         .lane(LaneSpec::new(
@@ -79,7 +84,6 @@ fn topology_app() -> Arc<App> {
         ))
         .pool("pool-a", &[(0, 1), (1, 1)])
         .pool("pool-b", &[(2, 1)])
-        .build()
 }
 
 async fn stats_json(app: Arc<App>, gov: GovCtx) -> Value {
@@ -426,4 +430,137 @@ async fn test_v1_models_gemini_fingerprint_gets_gemini_envelope() {
         beta["models"][0]["name"], "models/pool-a",
         "/v1beta path implies Gemini"
     );
+}
+
+// ── each plane generation's listed names (THE DESIGN section 2) ──────────────────────────────────
+
+/// The scope kind the listing door states: a grant of it names a listed name.
+const LISTING_KIND: &str = "listing_door_entry";
+
+/// A door plane folded under `key`/`section` whose generation lists `names`, and the topology app
+/// with that generation's slot installed.
+fn with_listing_door(
+    key: &'static str,
+    section: &'static str,
+    names: &'static [&'static str],
+) -> Arc<App> {
+    use busbar_contract::plane_calls::{DoorFacing, PlaneRegistration};
+    use busbar_kernel::plane::door::{fold, DoorSection, DoorSlot};
+    let reg = PlaneRegistration {
+        key,
+        section,
+        owns: Vec::new(),
+        consumes: Vec::new(),
+        secret_refs: Vec::new(),
+        admin_routes: Vec::new(),
+        admin_openapi: None,
+        label: "Listing",
+        subject_noun: "entry",
+        admin_noun: "entry",
+        audit_kind: "listing_entry",
+        signing: None,
+        dialects: Vec::new(),
+        scope_kinds: vec![LISTING_KIND],
+        billable_classes: Vec::new(),
+        fee_units: Vec::new(),
+        record_kinds: Vec::new(),
+        trust_keys: Vec::new(),
+        caller_credential_refusal: None,
+        validate: Arc::new(|_: &[u8]| Ok(())),
+        facing: Arc::new(move |_: &[u8], _: &[u8], _: Option<&str>| {
+            Ok(DoorFacing {
+                listed: names.iter().map(|n| (*n).to_string()).collect(),
+                ..DoorFacing::default()
+            })
+        }),
+    };
+    let facing = (reg.facing)(b"", b"", None).expect("faces");
+    let decl = fold(reg).expect("the listing door folds");
+    let mut t = topology();
+    t.install_plane_runtime(
+        decl.key,
+        Arc::new(DoorSlot {
+            section: DoorSection::new(section, serde_yaml::Value::Null),
+            facing,
+        }),
+    );
+    t.build()
+}
+
+/// RED: `/v1/models` APPENDS EACH PLANE GENERATION'S LISTED NAMES after the routing tables' own, in
+/// the plane's order, a name already listed not listed twice, scope-filtered as the plane admits a
+/// direct route: a key whose grants name only pools sees none of them, a key granting the plane's
+/// scope kind sees the names it grants.
+#[tokio::test]
+async fn test_v1_models_appends_each_plane_generations_listed_names() {
+    let app = with_listing_door(
+        "v1-models-listing",
+        "v1_models_listing",
+        &["listed-b", "pool-a", "listed-a"],
+    );
+    assert_eq!(
+        models_ids(Arc::clone(&app), GovCtx::default()).await,
+        ["pool-a", "pool-b", "model-a0", "model-a1", "model-b", "listed-b", "listed-a"],
+        "the plane's listed names follow the tables' own, once each"
+    );
+    let pools_only = GovCtx {
+        key: Some(vkey(&["pool-a"])),
+    };
+    assert_eq!(
+        models_ids(Arc::clone(&app), pools_only).await,
+        ["pool-a", "model-a0", "model-a1"],
+        "a key granting only pools sees no listed name"
+    );
+    let mut granted = (*vkey(&["pool-a"])).clone();
+    granted
+        .allowed_scopes
+        .as_mut()
+        .expect("a restricted key")
+        .push(ScopeRef {
+            kind: LISTING_KIND.to_string(),
+            value: "listed-a".to_string(),
+        });
+    let granted = GovCtx {
+        key: Some(Arc::new(granted)),
+    };
+    assert_eq!(
+        models_ids(app, granted).await,
+        ["pool-a", "model-a0", "model-a1", "listed-a"],
+        "a grant of the plane's scope kind names what it sees"
+    );
+}
+
+/// PIN: A PLANE GENERATION THAT LISTS NOTHING LEAVES `/v1/models` BYTE-IDENTICAL (the 1.5.5 bytes):
+/// every envelope, governed or not, is the same bytes as the app with no plane slot at all.
+#[tokio::test]
+async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
+    async fn bytes(app: Arc<App>, gov: GovCtx, headers: HeaderMap) -> Vec<u8> {
+        let resp = list_models(CurrentApp(app), Extension(gov), headers).await;
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("collect body")
+            .to_vec()
+    }
+    let quiet = with_listing_door("v1-models-quiet", "v1_models_quiet", &[]);
+    let mut fingerprints = vec![HeaderMap::new()];
+    let mut h = HeaderMap::new();
+    h.insert("anthropic-version", "2023-06-01".parse().unwrap());
+    fingerprints.push(h);
+    let mut h = HeaderMap::new();
+    h.insert("x-goog-api-key", "k".parse().unwrap());
+    fingerprints.push(h);
+    for headers in fingerprints {
+        for gov in [
+            GovCtx::default(),
+            GovCtx {
+                key: Some(vkey(&["pool-a"])),
+            },
+        ] {
+            assert_eq!(
+                bytes(Arc::clone(&quiet), gov.clone(), headers.clone()).await,
+                bytes(topology_app(), gov, headers.clone()).await,
+                "a plane listing nothing moves no byte"
+            );
+        }
+    }
 }

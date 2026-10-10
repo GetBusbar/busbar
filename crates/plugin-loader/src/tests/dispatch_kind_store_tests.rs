@@ -113,7 +113,7 @@ fn reserve_red_partial_grant() {
     let i = reserve_in(&cells, grants.as_mut_ptr(), 2);
     let o = reserve_out(2, RESERVE_OK, 0);
     let f = Store::check(&answer(slot::RESERVE, Outcome::Ready, &i, &o)).unwrap_err();
-    assert_eq!(f, sc::GRANT_OUT_OF_RANGE);
+    assert_eq!(f, sc::RESERVE_GRANT_NOT_WHOLE);
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn slice_release_green_and_red() {
     let mut released = [10, 5];
     let i = release_in(&items, &mut released);
     let f = Store::check(&answer(slot::SLICE_RELEASE, Outcome::Ready, &i, &o)).unwrap_err();
-    assert_eq!(f, sc::RELEASE_OVER_UNSPENT);
+    assert_eq!(f, sc::SLICE_RELEASE_OVER_UNSPENT);
 
     let mut released = [0u64; 2];
     let mut i = release_in(&items, &mut released);
@@ -258,7 +258,7 @@ fn record_get_green_red_and_short() {
 
     let o = bytes_out(17, 0);
     let f = Store::check(&answer(slot::RECORD_GET, Outcome::Ready, &i, &o)).unwrap_err();
-    assert_eq!(f, sc::COUNT_OVER_CAP);
+    assert_eq!(f, sc::BYTES_WRITTEN_OVER_CAP);
 
     let mut o = bytes_out(0, 0);
     o.found = 7;
@@ -390,7 +390,7 @@ fn leased_list_green_and_red() {
     let items = [blob_at(null(), 3)];
     let o = leased(items.as_ptr(), 1);
     let f = Store::check(&answer(slot::LIST_KEYS, Outcome::Ready, &i, &o)).unwrap_err();
-    assert_eq!(f, sc::NULL_WITH_COUNT);
+    assert_eq!(f, sc::OWNED_NULL_WITH_LEN);
 
     // A count with a NULL array.
     let o = leased(null(), 1);
@@ -442,7 +442,7 @@ fn cancel_green_and_red() {
         let r = Store::check(&answer(life::CANCEL, Outcome::Ready, &i, &o));
         assert_eq!(r.is_ok(), ok, "disposition {d}");
         if !ok {
-            assert_eq!(r.unwrap_err(), sc::VOCABULARY);
+            assert_eq!(r.unwrap_err(), sc::CANCEL_DISPOSITION);
         }
     }
 }
@@ -471,17 +471,17 @@ fn window_caps_refused_error_text_is_checked() {
     // A REFUSED push whose text names no cap, or a cap outside the push.
     assert_eq!(
         window_caps_error(&i, Outcome::Refused, b"STORE_CAP_CONFLICT"),
-        Err(sc::MISSING)
+        Err(sc::WINDOW_ERROR_INDEX_MISSING)
     );
     assert_eq!(
         window_caps_error(&i, Outcome::Refused, b"3: STORE_CAP_CONFLICT"),
-        Err(sc::COUNT_OVER_CAP)
+        Err(sc::WINDOW_ERROR_INDEX_OVER)
     );
     // A REFUSED push with no text at all.
     let o = out_head();
     assert_eq!(
         Store::check(&answer(slot::WINDOW_CAPS, Outcome::Refused, &i, &o)),
-        Err(sc::MISSING)
+        Err(sc::WINDOW_ERROR_MISSING)
     );
     // The same text on another outcome is not a refusal's index.
     assert_eq!(
@@ -505,7 +505,7 @@ fn window_caps_green_and_red() {
     );
     i.caps_len = LIST_ITEMS_HARD_MAX as usize + 1;
     let f = Store::check(&answer(slot::WINDOW_CAPS, Outcome::Ready, &i, &o)).unwrap_err();
-    assert_eq!(f, sc::COUNT_OVER_CAP);
+    assert_eq!(f, sc::WINDOW_CAPS_OVER_MAX);
 }
 
 // ── purges and append_batch ──────────────────────────────────────────────────────────────────
@@ -525,7 +525,7 @@ fn purges_route_to_the_count_check() {
         assert_eq!(Store::check(&answer(s, Outcome::Ready, &i, &o)), Ok(()));
         assert_eq!(
             Store::check(&answer(s, Outcome::Failed, &i, &o)),
-            Err(sc::WRITTEN_ON_FAILED),
+            Err(sc::COUNT_FAILED_WRITTEN),
             "{}",
             Store::op_name(s)
         );
@@ -546,7 +546,7 @@ fn append_batch_routes_to_the_head_check() {
     );
     assert_eq!(
         Store::check(&answer(slot::APPEND_BATCH, Outcome::Failed, &i, &o)),
-        Err(sc::WRITTEN_ON_FAILED)
+        Err(sc::APPEND_FAILED_HEAD)
     );
     // Too small an `out` for a head is a foreign struct.
     let o = out_head();
@@ -589,7 +589,7 @@ fn a_zeroed_answer_on_pending_or_refused_passes_every_slot() {
             };
             let r = Store::check(&a);
             if s == slot::WINDOW_CAPS && outcome == Outcome::Refused {
-                assert_eq!(r, Err(sc::MISSING));
+                assert_eq!(r, Err(sc::WINDOW_ERROR_MISSING));
             } else {
                 assert_eq!(r, Ok(()), "{} {outcome:?}", Store::op_name(s));
             }
@@ -631,22 +631,7 @@ fn every_store_slot_is_named() {
 
 #[test]
 fn every_store_fault_maps_to_a_distinct_field() {
-    let all = [
-        sc::VOCABULARY,
-        sc::NEEDED_NOT_FAILED,
-        sc::NEEDED_TOO_LARGE,
-        sc::NEEDED_WITHIN_CAP,
-        sc::WRITTEN_ON_FAILED,
-        sc::COUNT_OVER_CAP,
-        sc::COUNT_MISMATCH,
-        sc::NULL_WITH_COUNT,
-        sc::ABSENT_WITH_LEN,
-        sc::SPAN_OUT_OF_BOUNDS,
-        sc::GRANT_OUT_OF_RANGE,
-        sc::RELEASE_OVER_UNSPENT,
-        sc::FAILED_CELL_OUT_OF_RANGE,
-        sc::MISSING,
-    ];
+    let all = sc::ALL;
     let mut fields: Vec<&str> = all.iter().map(|f| f.field).collect();
     fields.sort_unstable();
     fields.dedup();
