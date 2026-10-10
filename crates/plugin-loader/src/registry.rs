@@ -113,7 +113,6 @@ impl LoadablePlugin {
                     .ok()
                     .map(|row| row.statement)
             }
-            Some(LinkedEntry::Boundary(_)) => None,
             None => self.manifest.stated_rendering().ok().flatten(),
         }
     }
