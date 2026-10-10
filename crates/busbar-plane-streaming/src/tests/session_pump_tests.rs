@@ -212,7 +212,8 @@ fn p_item_voice_tool_args_streamed_fragments_reach_the_caller_whole_and_once() {
         .map(|f| f["delta"].as_str().expect("a delta carries its fragment"))
         .collect();
     assert_eq!(
-        args, "{\"loc\":\"SF\"}",
+        args,
+        "{\"loc\":\"SF\"}",
         "the fragments reach the caller whole, in order: {}",
         texts(&down)
     );
