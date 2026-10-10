@@ -1,0 +1,295 @@
+use super::lane_auth_headers;
+use crate::engine::Lane;
+use busbar_kernel::proto::SigningContext;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// A lane whose credential is bound, under `auth`'s style, on the test build's kind-neutral outbound
+/// double (each style's real bytes are its auth plugin's, proven by that plugin's own suite).
+fn lane_with_auth(auth: Option<&str>) -> Lane {
+    let binding = busbar_kernel::bound_credential::StyleBinding {
+        style: auth.unwrap_or("bearer").to_string(),
+        params: serde_json::json!({}),
+        uses_key: true,
+        statics: &[],
+        sent: Vec::new(),
+    };
+    let credential = busbar_kernel::bound_credential::bind(
+        &*busbar_kernel::test_support::outbound_auth::axis(),
+        &binding,
+        b"SECRETKEY",
+    )
+    .expect("the double serves every style");
+    Lane {
+        prebuilt_auth: None,
+        latency_reservoir: std::sync::OnceLock::new(),
+        credential,
+        egress_targets: std::collections::HashMap::new(),
+        reasoning: false,
+        prompt_caching: false,
+        lane_caps: Default::default(),
+        default_max_tokens: None,
+        model: "gpt-4o".to_string(),
+        provider: "azure".to_string(),
+        signing_host: "res.openai.azure.com".to_string(),
+        base_url: "https://res.openai.azure.com".to_string(),
+        // The seated names this fixture never plans a leg with — spelled as the literals the row
+        // would have been built from, so the fixture stays a lane row and not a second interner.
+        authority: "https://res.openai.azure.com",
+        lane_id: "gpt-4o",
+        api_key: busbar_contract::redacted::Redacted::new("SECRETKEY".to_string()),
+        protocol: "openai",
+        max: 1,
+        error_map: Arc::new(HashMap::new()),
+        context_max: None,
+        path: Some(
+            "/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01".to_string(),
+        ),
+        path_base: None,
+        tenant_headers: Vec::new(),
+        health: None,
+        upstream_model: None,
+        attempt_timeout_ms: None,
+    }
+}
+
+fn ctx<'a>(body: &'a [u8]) -> SigningContext<'a> {
+    SigningContext {
+        host: "res.openai.azure.com",
+        canonical_uri: "/openai/deployments/gpt-4o/chat/completions",
+        body,
+        timestamp_epoch: 0,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
+    }
+}
+
+/// NO CREDENTIAL ⇒ NO AUTH HEADER. A lane whose provider declared `api_key: none` (a keyless local
+/// upstream — ollama, vLLM) holds an empty key, and an empty key must produce NO auth header at all
+/// — not `Authorization: Bearer ` with an empty token, and not an empty `api-key:` header. A bare
+/// `Bearer` is a proxy tell no native client emits, and a keyless upstream is entitled to reject a
+/// malformed empty credential outright.
+///
+/// The same rule is applied to the boot-time freeze in `prebuild_auth`, so a lane-constant
+/// credential cannot smuggle an empty header back in through the prebuilt path.
+#[test]
+fn test_keyless_lane_sends_no_auth_header() {
+    crate::testkit::install_test_seams();
+    for auth in [None, Some("bearer"), Some("api-key")] {
+        let lane = lane_with_auth(auth);
+        assert!(
+            lane_auth_headers(&lane, "", &ctx(b"{}")).is_empty(),
+            "an empty credential must send NO auth header (auth style {auth:?})"
+        );
+        assert!(
+            busbar_kernel::bound_credential::prebuild_auth(
+                &lane.credential,
+                "",
+                &lane.signing_host
+            )
+            .is_none_or(|h| h.is_empty()),
+            "and the boot-time prebuilt freeze must not hold one either (auth style {auth:?})"
+        );
+    }
+    // A NON-empty credential is unaffected — the guard is about absence, not about auth style.
+    assert_eq!(
+        lane_auth_headers(&lane_with_auth(Some("bearer")), "SECRETKEY", &ctx(b"{}")).len(),
+        1,
+        "a real credential still sends its header"
+    );
+}
+
+#[test]
+fn test_host_from_base_strips_scheme_and_userinfo() {
+    crate::testkit::install_test_seams();
+    use super::host_from_base;
+    // Plain host: scheme stripped, nothing else touched.
+    assert_eq!(
+        host_from_base("https://bedrock-runtime.us-east-1.amazonaws.com"),
+        "bedrock-runtime.us-east-1.amazonaws.com"
+    );
+    assert_eq!(host_from_base("http://localhost:8080"), "localhost:8080");
+    // No scheme: returned unchanged.
+    assert_eq!(host_from_base("example.com"), "example.com");
+    // Embedded userinfo MUST be stripped so the SigV4-signed `host` matches the `Host` header
+    // the HTTP stack actually transmits (otherwise: signature mismatch + credential in the
+    // signed string). The host (and port) survive; the credential is gone.
+    assert_eq!(
+        host_from_base("https://user:pass@host.example.com"),
+        "host.example.com"
+    );
+    assert_eq!(
+        host_from_base("https://user:pass@host.example.com:443"),
+        "host.example.com:443"
+    );
+    // An `@` later in a path/query is NOT userinfo and must not be treated as one — and the path
+    // itself is discarded, so only the host survives.
+    assert_eq!(
+        host_from_base("https://host.example.com/x@y"),
+        "host.example.com"
+    );
+    // A path-bearing base_url yields ONLY the authority: a signed `host` that included the path
+    // would never match the `Host:` header the HTTP stack transmits (SignatureDoesNotMatch).
+    assert_eq!(
+        host_from_base("https://bedrock.us-east-1.amazonaws.com/some-prefix"),
+        "bedrock.us-east-1.amazonaws.com"
+    );
+    // Port preserved, path discarded.
+    assert_eq!(
+        host_from_base("https://host.example.com:8443/v1/foo?x=1"),
+        "host.example.com:8443"
+    );
+    // Userinfo stripped AND path discarded together.
+    assert_eq!(
+        host_from_base("https://user:pass@host.example.com/p"),
+        "host.example.com"
+    );
+}
+
+#[test]
+fn test_host_from_base_backslash_authority_matches_wire_host() {
+    crate::testkit::install_test_seams();
+    // CLASS-SIBLING of the SSRF backslash defect: the WHATWG URL parser the `url` crate (and
+    // thus reqwest) uses treats `\` as an authority/path delimiter exactly like `/`, so reqwest
+    // dials the host that ENDS at the first backslash. A `/?#`-only split read PAST the
+    // backslash and (via `rfind('@')`) returned a DIFFERENT host than reqwest connects to,
+    // desyncing the SigV4-signed `Host` from the host actually contacted.
+    use super::host_from_base;
+    // Backslash where a `/` would normally start the path: reqwest connects to
+    // `evil.example.com`; the signed host must be the SAME, not the post-`@` `victim.example`.
+    assert_eq!(
+        host_from_base("https://evil.example.com\\@victim.example/path"),
+        "evil.example.com"
+    );
+    // Bare backslash path delimiter, no userinfo trickery: authority still ends at the `\`.
+    assert_eq!(
+        host_from_base("https://host.example.com\\some\\path"),
+        "host.example.com"
+    );
+    // Backslash before a port-bearing authority boundary: port survives, backslash path gone.
+    assert_eq!(
+        host_from_base("https://host.example.com:8443\\v1\\foo"),
+        "host.example.com:8443"
+    );
+    // Legitimate userinfo with a backslash path AFTER the real authority: userinfo stripped,
+    // authority ends at the backslash, the real host survives.
+    assert_eq!(
+        host_from_base("https://user:pass@host.example.com\\p"),
+        "host.example.com"
+    );
+}
+
+#[test]
+fn test_sign_and_wire_path_parts_strips_query_from_canonical() {
+    crate::testkit::install_test_seams();
+    use super::sign_and_wire_path_parts;
+    // The SigV4 canonical_uri MUST exclude the query string while the wire path retains it. This
+    // guards the operator `path:`-override branch (Bedrock's own paths are query-free, so the
+    // single-return wrapper test never reaches the `?` split).
+    let (wire, canonical) = sign_and_wire_path_parts("/model/foo/converse?api-version=2024-05-01");
+    assert_eq!(
+        canonical, "/model/foo/converse",
+        "canonical uri excludes the query"
+    );
+    assert_eq!(
+        wire, "/model/foo/converse?api-version=2024-05-01",
+        "wire path keeps the query"
+    );
+    assert_ne!(wire, canonical);
+}
+
+#[test]
+fn test_sign_and_wire_path_signed_equals_sent_for_reserved_chars() {
+    crate::testkit::install_test_seams();
+    use super::sign_and_wire_path;
+    // A Bedrock modelId carrying reserved chars (`:` for a cross-region inference profile /
+    // provisioned-throughput ARN, `.` already unreserved). The path must be encoded ONCE and used
+    // for BOTH the SigV4 canonical URI and the wire URL, or AWS rejects with SignatureDoesNotMatch.
+    let model = "us.anthropic.claude-3-5-sonnet-20240620-v1:0";
+    // Raw, un-encoded path as built by the Bedrock writer's `upstream_path_for_stream`.
+    let url_path = format!("/model/{model}/converse");
+    let wire_path = sign_and_wire_path(&url_path);
+    // `:` encoded to %3A; `/` and `.` preserved.
+    assert_eq!(
+        wire_path,
+        "/model/us.anthropic.claude-3-5-sonnet-20240620-v1%3A0/converse"
+    );
+
+    // The path actually SIGNED (the canonical_uri the forward path passes to SigningContext).
+    let signed_canonical = wire_path
+        .split('?')
+        .next()
+        .unwrap_or(&wire_path)
+        .to_string();
+
+    // The path actually SENT: reqwest parses `{base}{wire_path}` into a `url::Url`. Its parser
+    // must preserve the existing `%3A` (not double-encode the `%`), so the transmitted path is
+    // byte-identical to the signed canonical path.
+    let url = url::Url::parse(&format!(
+        "https://bedrock-runtime.us-east-1.amazonaws.com{wire_path}"
+    ))
+    .expect("url parses");
+    assert_eq!(
+        url.path(),
+        signed_canonical,
+        "transmitted path must equal the signed canonical path"
+    );
+}
+
+/// THE PLANE'S HALF OF THE DECLARED-CREDENTIAL PROOF (P2 D1): every real dialect declaration's
+/// egress scheme maps to exactly the binding the shared fixture records for it
+/// (`testing/plane-copies/declared-credentials.json`, `bindings`), a signing style's region read
+/// from the host by the dialect's own rule; the `auth: api-key` override to its own. The composition
+/// root binds those same rows on the linked auth plugins and holds the headers they present to the
+/// 1.5.5 builders' (`root/tests/declared_credentials.rs`); neither half names the other.
+#[test]
+fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
+    crate::testkit::install_test_seams();
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/declared-credentials.json"
+    );
+    let fixture: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
+            .expect("fixture is JSON");
+    let bindings = fixture["bindings"].as_object().expect("bindings");
+    let mut mapped = 0usize;
+    for (dialect, want) in bindings {
+        if dialect == "api-key-override" {
+            let b = crate::engine::credential::api_key_override_binding();
+            assert_eq!(b.style, want["style"], "{dialect}");
+            assert_eq!(b.params, want["params"], "{dialect}");
+            assert!(
+                b.statics.is_empty(),
+                "the override writes no dialect static"
+            );
+            continue;
+        }
+        let decl = busbar_kernel::proto::decl_for(dialect)
+            .unwrap_or_else(|| panic!("{dialect} is a registered dialect"));
+        let scheme = decl
+            .egress_scheme
+            .expect("each dialect declares its scheme");
+        for region in fixture["regions"].as_array().expect("regions") {
+            let host = region["host"].as_str().expect("host");
+            let b = crate::engine::credential::declared_binding(decl, scheme, host);
+            assert_eq!(b.style, want["style"], "{dialect}");
+            let mut params = b.params.clone();
+            if b.style == "sigv4" {
+                let read = params
+                    .as_object_mut()
+                    .and_then(|m| m.remove("region"))
+                    .expect("a signing binding names its region");
+                assert_eq!(
+                    read.as_str(),
+                    Some(region["region"].as_str().unwrap_or("us-east-1")),
+                    "{dialect} at {host}"
+                );
+            }
+            assert_eq!(params, want["params"], "{dialect} at {host}");
+            assert_eq!(b.statics, decl.static_headers, "{dialect}");
+            assert!(b.uses_key, "{dialect}: a declared scheme presents the key");
+        }
+        mapped += 1;
+    }
+    assert_eq!(mapped, 6, "every recorded dialect was mapped");
+}

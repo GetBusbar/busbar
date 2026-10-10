@@ -1,0 +1,55 @@
+# FROZEN CUSTOMER TEXT the busbar-kernel tests pin (ARCHITECT RULING 2026-09-25 "FROZEN CUSTOMER TEXT vs
+# the noun gate", F-T): values an operator's config, store and `--migrate-config` / boot output carry,
+# byte-for-byte as 1.5.5 shipped them. The tests load this file as their golden input, so their sources
+# spell no store backend or auth scheme. Changing a value here changes what the tests demand of the
+# kernel — it is a customer-visible change, never a test edit.
+
+# The 1.4.x durable governance backend `--migrate-config` writes as `store.module:`.
+legacy_backend_1_4: sqlite
+# The retired 1.5.x `store.module:` spellings (the 1.5.3 rename) and the alias they migrate to.
+retired_modules_1_5_3: [redis, busbar-store-redis, busbar-store-redis-plugin]
+renamed_module_1_5_3: valkey
+# The durable-store fix the stateful-plane ephemeral-store boot warn names. 1.6.0-only text (v1.5.5
+# has no such warn), so it names no store backend (ARCHITECT RULING F-D, N-DATA).
+durable_store_advice: Configure a durable store plugin.
+# The persisted credential `kind` of a row-looked-up (AccessKeyId) signed-ingress credential.
+signed_credential_kind: sigv4
+# THE ROOT LEGACY TABLE's rows, as a test build stands them in (`config::legacy::rows`, no root to hand
+# them in): the same rows plugins.yaml renders into the root manifest's
+# `[package.metadata.busbar.legacy]`; the root's tests hold the two equal.
+legacy_rows:
+  export_module_streams: "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
+  export_modules: "prometheus | request-log-webhook | request-log-file | otlp"
+  export_trace_instance: "traces"
+  export_trace_module: "otlp"
+  export_type_keys: "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
+  renamed_display: Valkey
+  retired_url_scheme: redis
+  gov14_module: sqlite
+  gov14_db_path: busbar-governance.db
+  gov14_busy_timeout_key: sqlite_busy_timeout_ms
+  gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
+  module_examples: "sqlite | postgres | valkey"
+  retired.store.redis: valkey
+  retired.store.busbar-store-redis: valkey
+  retired.store.busbar-store-redis-plugin: valkey
+  manifest.valkey: busbar-store-valkey
+  asset.valkey: busbar-store-valkey
+  name_1_5_5.busbar-auth-github: busbar-auth-github-plugin
+  name_1_5_5.busbar-auth-ldap: busbar-auth-ldap-plugin
+  name_1_5_5.busbar-auth-oidc: busbar-auth-oidc-plugin
+  name_1_5_5.busbar-hook-webrequest: busbar-webrequest
+  name_1_5_5.busbar-secret-vault: busbar-hashicorp-vault
+  name_1_5_5.busbar-store-mysql: busbar-store-mysql-plugin
+  name_1_5_5.busbar-store-postgres: busbar-store-postgres-plugin
+  name_1_5_5.busbar-store-sqlite: busbar-store-sqlite-plugin
+  name_1_5_5.busbar-store-valkey: busbar-store-valkey-plugin
+  former.mysql: busbar-store-mysql-plugin
+  former.postgres: busbar-store-postgres-plugin
+  former.sqlite: busbar-store-sqlite-plugin
+  former.valkey: busbar-store-valkey-plugin
+  former.vault: busbar-hashicorp-vault
+  former.oidc: busbar-auth-oidc-plugin
+  former.github: busbar-auth-github-plugin
+  former.ldap: busbar-auth-ldap-plugin
+  former.webrequest: busbar-webrequest

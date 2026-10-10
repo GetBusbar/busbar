@@ -1,0 +1,14 @@
+{
+  "event_id": "evt_client_0008",
+  "type": "response.create",
+  "response": {
+    "modalities": ["audio", "text"],
+    "instructions": "Answer using the tool result you just received.",
+    "voice": "alloy",
+    "output_audio_format": "pcm16",
+    "tools": [],
+    "tool_choice": "auto",
+    "temperature": 0.8,
+    "max_output_tokens": 512
+  }
+}

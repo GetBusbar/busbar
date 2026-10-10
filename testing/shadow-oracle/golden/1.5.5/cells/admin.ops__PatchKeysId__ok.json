@@ -1,0 +1,61 @@
+{
+  "applied": [
+    "audit.hash",
+    "hdr.date",
+    "hdr.length",
+    "key.id",
+    "ts.unix"
+  ],
+  "body": {
+    "json": {
+      "allowed_pools": null,
+      "created_at": 0,
+      "enabled": true,
+      "group": "oracle",
+      "id": "<KEY>",
+      "labels": {},
+      "name": "oracle-ok",
+      "state": "active"
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "key.patch",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "key:vk_<KEY>"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "path": "/api/v1/admin/keys/vk_<KEY>",
+        "status": 200,
+        "body": {
+          "json": {
+            "allowed_pools": null,
+            "created_at": 0,
+            "enabled": true,
+            "group": "oracle",
+            "id": "<KEY>",
+            "labels": {},
+            "name": "oracle-ok",
+            "state": "active"
+          }
+        }
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "<LEN>",
+    "content-type": "application/json"
+  },
+  "status": 200
+}

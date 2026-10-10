@@ -1,0 +1,11 @@
+# A pure-kind crate (the `plane` glob matches it) with a banned direct dependency. It exists so the
+# fixture's green/red answer is about the MISSING RULE TABLE and nothing else: with the table
+# present this crate is unambiguously RED.
+[package]
+name = "busbar-plane-demo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = "0.2"

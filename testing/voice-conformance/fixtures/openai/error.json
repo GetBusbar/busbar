@@ -1,0 +1,11 @@
+{
+  "event_id": "evt_server_0099",
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "code": "invalid_value",
+    "message": "Unknown parameter: 'session.foo'.",
+    "param": "session.foo",
+    "event_id": "evt_client_0001"
+  }
+}

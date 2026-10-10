@@ -1,0 +1,1 @@
+{"metrics":{"latencyMs":123},"output":{"message":{"content":[{"reasoningContent":{"reasoningText":{"signature":"sig-abc","text":"Let me think about this"}}},{"text":"42"}],"role":"assistant"}},"stopReason":"end_turn","usage":{"inputTokens":9,"outputTokens":33,"totalTokens":42}}

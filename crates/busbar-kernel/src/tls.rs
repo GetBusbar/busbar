@@ -1,0 +1,828 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Native inbound TLS termination (+ optional mutual-TLS) for the client↔Busbar hop.
+//!
+//! This module is a thin transport wrapper around the *ingress* listener. It does NOT touch routing,
+//! request translation, the breaker, or failover — it only decides, once at startup, whether the
+//! accepted TCP stream is handed to axum as-is (plain HTTP, the historical default) or first put
+//! through a rustls server handshake.
+//!
+//! ## Why we drive hyper directly here instead of `axum::serve`
+//!
+//! `axum::serve` in axum 0.7 is hardwired to a concrete `tokio::net::TcpListener` and constructs its
+//! per-connection `IncomingStream` from private fields — there is no public `Listener` trait to
+//! implement (that arrived in axum 0.8). Rather than bump axum (which would churn the Router/Service
+//! types on the routing hot path this feature is contractually forbidden from touching), the TLS
+//! branch reproduces axum::serve's accept loop over hyper-util directly:
+//!   * accept on the `TcpListener`,
+//!   * run the rustls handshake,
+//!   * serve the connection with `hyper_util::server::conn::auto::Builder` (http/1.1) and
+//!     `TowerToHyperService` bridging the cloned axum `Router`,
+//!   * drain in-flight connections on shutdown via `hyper_util`'s `GracefulShutdown`.
+//!
+//! The plain-HTTP path in `main.rs` is left exactly as it was; only `cfg.tls == Some(_)` reaches
+//! this module.
+//!
+//! ## Connection security is opaque here (DECISIONS #40)
+//!
+//! [`serve`] does not build a `rustls::ServerConfig` and does not decide TLS vs. plaintext for
+//! itself: it is handed an already-built `busbar_contract::transport::wire::ConnectionSecurity`
+//! and calls nothing on it but `wrap`. Reading the operator's `tls:` config, resolving the key
+//! material through the secret kind, and building the rustls config live in
+//! `busbar-core-connector` — this module is the LISTENER half of the seam (the accept loop,
+//! hyper serving, graceful shutdown), not the connection-security-prep half.
+//!
+//! ## Crypto provider
+//!
+//! The process-wide crypto provider TLS needs is installed by the connector
+//! (`busbar_core_connector::tls::install_crypto_provider`), with the `ServerConfig` it builds — TLS
+//! stays in the connector, and this crate names no TLS library.
+//!
+//! ## Failure model
+//!
+//! Any cert/key/CA load or parse error is fatal at startup (`die`) with a message naming the file;
+//! key bytes are never logged. A handshake failure on a single connection is logged at debug and
+//! drops only that connection — it never crashes the server or affects other clients.
+
+use std::io;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use crate::diagnostics::{diag_warn, TLS_ACCEPT_PERSISTENT_FAILURE};
+use std::time::{Duration, Instant};
+
+/// Hard wall-clock bound on the TLS handshake for a single accepted connection. A client that
+/// connects then stalls (sends nothing / dribbles handshake bytes) must not park a task + FDs
+/// indefinitely — this caps the pre-auth slowloris / handshake-flood surface. The cost is incurred
+/// BEFORE mTLS client-cert verification, so this guards the unauthenticated edge.
+/// Operator-tunable via `limits.tls_handshake_timeout_secs` (default 10s), read through the
+/// process-wide `crate::limits` install. A function (not a `const`) so the configured value is read
+/// per accepted connection; falls back to the historical 10s when limits aren't installed.
+fn handshake_timeout() -> Duration {
+    Duration::from_secs(crate::limits::tls_handshake_timeout_secs())
+}
+
+/// Max wall-clock time allowed BETWEEN inbound request-body frames before the connection is dropped.
+/// The header-read timeout (`hardened_conn_builder`) covers ONLY the header phase - once headers are
+/// complete an unauthenticated slow-loris can dribble the request BODY one byte at a time, holding a
+/// connection task, an FD, AND (critically) one of the finite `max_inbound_concurrent` (default 8192)
+/// permits indefinitely, starving real traffic. `DefaultBodyLimit` caps total SIZE, not TIME between
+/// frames, so it does not help. This wraps every inbound body in a [`TimeoutBody`] that trips when no
+/// frame arrives within this bound. Operator-tunable via `limits.request_body_read_timeout_secs`
+/// (default 30s), read per connection through the process-wide `crate::limits` install; falls back to
+/// the default when limits aren't installed (tests / pre-install).
+fn body_read_timeout() -> Duration {
+    Duration::from_secs(crate::limits::request_body_read_timeout_secs())
+}
+
+/// MINIMUM sustained throughput a body read must maintain once the grace period has elapsed. The
+/// inter-frame timer (`body_read_timeout`) resets on ANY progress at all, so a client that dribbles
+/// exactly one byte per `body_read_timeout` interval holds a connection, an FD, and an
+/// inbound-concurrency permit indefinitely without ever tripping it. This floor catches that: it
+/// bounds RETENTION IN TIME, not size (`DefaultBodyLimit`/the per-request buffer cap already bound
+/// size) and not concurrency (`GlobalConcurrencyLimitLayer` already bounds that globally). Hardcoded
+/// rather than an operator knob (per owner decision): 1 KiB/s is far below any honest client's
+/// sustained rate and comfortably above "a client stalling one byte every ~30s".
+const MIN_BODY_THROUGHPUT_BYTES_PER_SEC: u64 = 1024;
+
+/// Grace period before the throughput floor is evaluated. Before it, `bytes / elapsed` is unstable
+/// (a client that pauses briefly before its first frame, or whose first frame is large relative to
+/// elapsed time, would false-positive). Hardcoded alongside the floor for the same reason.
+const BODY_THROUGHPUT_GRACE: Duration = Duration::from_secs(10);
+
+/// TOTAL wall-clock deadline for reading one inbound body — the backstop that bounds retention even
+/// for a client that stays JUST above the throughput floor forever. DERIVED from the configured body
+/// size cap and the throughput floor (`body_cap / floor`), NOT a bare constant: `request_body_max_bytes`
+/// is an operator knob with a 1 GiB ceiling, so a fixed total would silently demand an arbitrarily
+/// high sustained rate from an honest client uploading near that ceiling. Deriving it means the total
+/// always admits exactly "the whole cap, sustained at the floor," regardless of how the operator has
+/// configured the cap.
+fn total_body_deadline() -> Duration {
+    let cap_bytes = busbar_kernel::proxy::max_translate_body_bytes() as u64;
+    Duration::from_secs(cap_bytes / MIN_BODY_THROUGHPUT_BYTES_PER_SEC)
+}
+
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use axum::Router;
+use busbar_contract::transport::wire::{ConnectionSecurity, RawIo};
+use bytes::Buf;
+use http_body::{Body, Frame, SizeHint};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder as ConnBuilder;
+use hyper_util::server::graceful::{GracefulShutdown, Watcher};
+use hyper_util::service::TowerToHyperService;
+use tokio::net::TcpListener;
+use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
+
+// The cert/key/client-CA PARSING and the `rustls::ServerConfig` BUILD that used to sit here moved
+// verbatim to `busbar-core-connector` (DECISIONS #40, the core-side connection-security seam):
+// this crate's own inbound listener now names no rustls/cert type of its own for that job — it is
+// handed an already-built, opaque `ConnectionSecurity` wrap (`serve`'s `security` parameter, below)
+// and calls nothing on it but `wrap`. `read_pem` (below) stays here: `busbar-a2a`'s OUTBOUND client
+// identity resolver still reads PEM bytes through it directly, an egress concern this move does not
+// touch, so the one turn-a-`SecretRef`-into-PEM function keeps its historical home.
+
+/// THE ONE ACCEPT-ERROR POLICY, shared by both listener loops below.
+///
+/// `accept()` errors come in two kinds and the difference matters enormously:
+///
+///   * PER-CONNECTION transients -- `ECONNABORTED` (the peer reset between SYN and accept),
+///     `EINTR`. The next `accept()` will very likely succeed, so retrying immediately is right.
+///   * RESOURCE EXHAUSTION -- `EMFILE`/`ENFILE` (fd table full), `ENOBUFS`/`ENOMEM`. These do NOT
+///     clear on their own: `accept()` fails instantly, every time, until something else releases an
+///     fd. An immediate `continue` therefore spins the loop at 100% CPU on a full core, which is
+///     exactly when the process can least afford it -- it starves the very tasks whose completion
+///     would free the fds, turning a transient fd shortage into a wedged server.
+///
+/// So the second kind backs off, exponentially and capped. The cap is deliberately well under a
+/// second: it bounds both the CPU burn and how long a shutdown request can sit behind a sleep.
+struct AcceptBackoff {
+    delay: Option<std::time::Duration>,
+}
+
+impl AcceptBackoff {
+    const FIRST: std::time::Duration = std::time::Duration::from_millis(5);
+    const CAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+    fn new() -> Self {
+        Self { delay: None }
+    }
+
+    /// Clear the backoff after a successful accept.
+    fn reset(&mut self) {
+        self.delay = None;
+    }
+
+    /// How long to wait before the next `accept()`, and advance the schedule. `None` = retry now
+    /// (a per-connection transient). PURE, so the policy is unit-testable without a listener.
+    fn next_delay(&mut self, e: &io::Error) -> Option<std::time::Duration> {
+        if matches!(
+            e.kind(),
+            io::ErrorKind::ConnectionAborted | io::ErrorKind::Interrupted
+        ) {
+            self.delay = None;
+            return None;
+        }
+        let d = match self.delay {
+            None => Self::FIRST,
+            Some(prev) => (prev * 2).min(Self::CAP),
+        };
+        self.delay = Some(d);
+        Some(d)
+    }
+
+    /// Apply the policy: log at the right level and sleep if this error class calls for it.
+    async fn absorb(&mut self, scheme: &'static str, e: &io::Error) {
+        match self.next_delay(e) {
+            None => tracing::debug!(error = %e, "{scheme}: accept error; continuing"),
+            Some(d) => {
+                diag_warn!(
+                    TLS_ACCEPT_PERSISTENT_FAILURE,
+                    error = %e,
+                    backoff_ms = d.as_millis() as u64,
+                    "{scheme}: accept is failing persistently (fd exhaustion?); backing off",
+                );
+                tokio::time::sleep(d).await;
+            }
+        }
+    }
+}
+
+// ── THE ACCEPT SOURCE ─────────────────────────────────────────────────────────────────────────────
+
+/// ONE CONNECTION AN INBOUND LISTENER ADMITTED: the accepted socket, not yet on any worker's reactor
+/// (so placement may hand it to another worker), its peer, and what the listener holds for it while
+/// it is served (its connection slot), released when the connection ends.
+pub struct Admitted {
+    /// The accepted socket, non-blocking.
+    pub stream: std::net::TcpStream,
+    /// The far end.
+    pub peer: SocketAddr,
+    /// Held for as long as the connection is served.
+    pub hold: Option<Box<dyn Send>>,
+}
+
+/// AN INBOUND LISTENER, as the accept loop drains it: the next admitted connection. Accept errors,
+/// the connection cap and the accept backoff are the listener's own, so this never fails; it must
+/// be cancel-safe (the loop drops it when shutdown or a hand-off wins the race).
+pub trait Admits: Send {
+    /// The next admitted connection.
+    fn admit(&mut self) -> impl Future<Output = Admitted> + Send + '_;
+}
+
+/// A tokio socket listener as an accept source, its accept errors absorbed by [`AcceptBackoff`]:
+/// what [`serve`] and [`serve_plain`] are handed, and what a build without the connector's
+/// listener serves on.
+pub struct SocketAdmits {
+    listener: TcpListener,
+    backoff: AcceptBackoff,
+    scheme: &'static str,
+}
+
+impl SocketAdmits {
+    /// `listener` as an accept source.
+    #[must_use]
+    pub fn new(listener: TcpListener) -> Self {
+        Self {
+            listener,
+            backoff: AcceptBackoff::new(),
+            scheme: "http",
+        }
+    }
+}
+
+impl Admits for SocketAdmits {
+    async fn admit(&mut self) -> Admitted {
+        loop {
+            match self.listener.accept().await {
+                Ok((stream, peer)) => {
+                    self.backoff.reset();
+                    if let Ok(stream) = stream.into_std() {
+                        return Admitted {
+                            stream,
+                            peer,
+                            hold: None,
+                        };
+                    }
+                }
+                Err(e) => self.backoff.absorb(self.scheme, &e).await,
+            }
+        }
+    }
+}
+
+// ── CONNECTION PLACEMENT BALANCER (thread-per-core data plane) ──────────────────────────────────
+//
+// The kernel assigns an SO_REUSEPORT connection to a listener by a deterministic 4-tuple hash at
+// SYN time, and with FEW long-lived keep-alive connections that assignment is measurably uneven
+// (8 connections over 4 workers land 2/2/2/2 only ~4% of the time) and PERSISTS — an overloaded
+// worker saturates while an underloaded one idles. This balancer fixes PLACEMENT at ACCEPT time
+// and only there: when a worker accepts while carrying at least [`REBALANCE_MARGIN`] more live
+// connections than the least-loaded worker, it hands the just-accepted bare `TcpStream` (no TLS,
+// no HTTP state exists yet) to that worker, where the connection then lives for its WHOLE life —
+// no migration, no cross-worker request state, the per-worker striping invariants untouched.
+// Once per-worker counts exceed a few dozen the margin check is statistically never true, so the
+// high-concurrency cost is a handful of relaxed loads per ACCEPT (never per request).
+//
+// No knob, no mode: the composition root wires one balancer across the data workers; the admin
+// listener and non-unix builds simply pass `None` and behave exactly as before.
+
+/// Margin before a handoff: my live connections must exceed the minimum by at least this much.
+/// 2 bounds steady-state imbalance at ±1 while making handoff ping-pong impossible (a handoff
+/// changes the difference by 2, so it can never immediately reverse).
+const REBALANCE_MARGIN: u32 = 2;
+
+/// Per-worker handoff channel depth. Accepts are rare relative to service time and the fallback
+/// (serve locally) is always correct, so this only needs to absorb a small burst.
+const HANDOFF_CHANNEL_DEPTH: usize = 16;
+
+/// One cache-line-padded live-connection count per worker (padded so workers' counter updates
+/// never false-share).
+#[repr(align(64))]
+struct PaddedCount(std::sync::atomic::AtomicU32);
+
+/// One data worker's handle to the shared placement state: the live-connection counts of every
+/// worker, its own index, its own handoff receiver, and every worker's sender.
+pub struct ConnBalancer {
+    counts: Arc<[PaddedCount]>,
+    txs: Arc<[tokio::sync::mpsc::Sender<Admitted>]>,
+    me: usize,
+    rx: tokio::sync::mpsc::Receiver<Admitted>,
+}
+
+impl ConnBalancer {
+    /// Build the shared placement state for `n` data workers: one handle per worker.
+    pub fn build(n: usize) -> Vec<ConnBalancer> {
+        let counts: Arc<[PaddedCount]> = (0..n)
+            .map(|_| PaddedCount(std::sync::atomic::AtomicU32::new(0)))
+            .collect();
+        let mut txs = Vec::with_capacity(n);
+        let mut rxs = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (tx, rx) = tokio::sync::mpsc::channel(HANDOFF_CHANNEL_DEPTH);
+            txs.push(tx);
+            rxs.push(rx);
+        }
+        let txs: Arc<[_]> = txs.into();
+        rxs.into_iter()
+            .enumerate()
+            .map(|(me, rx)| ConnBalancer {
+                counts: counts.clone(),
+                txs: txs.clone(),
+                me,
+                rx,
+            })
+            .collect()
+    }
+
+    /// Decide placement for a locally-accepted connection: `None` = serve it here (the count is
+    /// already incremented and `guard` returned by the caller path), or hand it off to the
+    /// least-loaded worker. Increment-before-send so the target's count is never transiently low;
+    /// a full/closed channel rolls the increment back and serves locally — a connection is never
+    /// dropped by balancing.
+    fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
+        use std::sync::atomic::Ordering;
+        let mine = self.counts[self.me].0.load(Ordering::Relaxed);
+        let (min_idx, min_val) = self
+            .counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.0.load(Ordering::Relaxed)))
+            .min_by_key(|&(_, v)| v)
+            .expect("at least one worker");
+        if min_idx == self.me || mine < min_val.saturating_add(REBALANCE_MARGIN) {
+            return Some(admitted);
+        }
+        // The admitted socket is on no worker's reactor yet, so it crosses the hand-off channel as
+        // it is (each worker runs its own runtime).
+        self.counts[min_idx].0.fetch_add(1, Ordering::Relaxed);
+        match self.txs[min_idx].try_send(admitted) {
+            Ok(()) => None,
+            Err(e) => {
+                // Backpressure (channel full) or a torn-down peer worker (closed): roll back the
+                // increment we just made and serve the connection HERE — balancing must never drop a
+                // live connection on hand-off failure.
+                self.counts[min_idx].0.fetch_sub(1, Ordering::Relaxed);
+                match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(a)
+                    | tokio::sync::mpsc::error::TrySendError::Closed(a) => Some(a),
+                }
+            }
+        }
+    }
+
+    /// Count this worker's newly-placed local connection; the returned guard decrements on drop
+    /// (every exit path, including panics).
+    fn place_local(&self) -> ConnCountGuard {
+        use std::sync::atomic::Ordering;
+        self.counts[self.me].0.fetch_add(1, Ordering::Relaxed);
+        ConnCountGuard {
+            counts: self.counts.clone(),
+            idx: self.me,
+        }
+    }
+
+    /// Adopt a handed-off connection: the SENDER already incremented this worker's count, so the
+    /// guard only owns the decrement.
+    fn adopt(&self) -> ConnCountGuard {
+        ConnCountGuard {
+            counts: self.counts.clone(),
+            idx: self.me,
+        }
+    }
+}
+
+/// RAII live-connection count: decrements its worker's slot when the served connection ends.
+struct ConnCountGuard {
+    counts: Arc<[PaddedCount]>,
+    idx: usize,
+}
+
+impl Drop for ConnCountGuard {
+    fn drop(&mut self) {
+        self.counts[self.idx]
+            .0
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Serve `router` over TLS on `listener` until `shutdown` resolves, then drain in-flight connections.
+///
+/// Mirrors `axum::serve(listener, router).with_graceful_shutdown(shutdown)` for the TLS case:
+/// each accepted connection is handshook with rustls and served with hyper's auto builder (http/1.1).
+/// A handshake or accept error affects only that one connection — the accept loop continues, so a
+/// rejected mTLS client (wrong/missing cert) never takes the server down or blocks other clients.
+pub async fn serve(
+    listener: TcpListener,
+    router: Router,
+    security: Arc<dyn ConnectionSecurity>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    balancer: Option<ConnBalancer>,
+) -> io::Result<()> {
+    let served = Served::new(router, Some(security));
+    let admits = SocketAdmits {
+        listener,
+        backoff: AcceptBackoff::new(),
+        scheme: served.scheme,
+    };
+    accept_loop(admits, shutdown, balancer, served).await
+}
+
+/// Serve `router` on the connections an inbound listener `admits` until `shutdown` resolves, then
+/// drain: each secured by `security` where set (its handshake bounded as [`serve`]'s is), served by
+/// the same hardened builder and body bounds, placed by `balancer` as [`serve`]'s are.
+///
+/// # Errors
+///
+/// None today; the signature matches [`serve`]'s.
+pub async fn serve_admitted(
+    admits: impl Admits,
+    router: Router,
+    security: Option<Arc<dyn ConnectionSecurity>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    balancer: Option<ConnBalancer>,
+) -> io::Result<()> {
+    accept_loop(admits, shutdown, balancer, Served::new(router, security)).await
+}
+
+/// THE ONE ACCEPT LOOP both socket listeners run ([`serve`] and [`serve_plain`]): accept until
+/// `shutdown`, place each connection (see [`ConnBalancer`]) and serve it under the graceful watcher,
+/// then serve the late hand-offs and drain in-flight connections.
+async fn accept_loop(
+    mut admits: impl Admits,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    mut balancer: Option<ConnBalancer>,
+    served: Served,
+) -> io::Result<()> {
+    let graceful = GracefulShutdown::new();
+    let mut shutdown = std::pin::pin!(shutdown);
+    // Each served connection releases its placement count (if it holds one) and the listener's
+    // hold when it ends.
+    let spawn = |a: Admitted, guard: Option<ConnCountGuard>| {
+        let Ok(stream) = tokio::net::TcpStream::from_std(a.stream) else {
+            return;
+        };
+        let conn = served.clone().tcp(stream, a.peer, graceful.watcher());
+        let hold = a.hold;
+        tokio::spawn(async move {
+            conn.await;
+            drop(guard);
+            drop(hold);
+        });
+    };
+
+    loop {
+        // Placement (see `ConnBalancer`): a locally-ADMITTED connection may be handed to the
+        // least-loaded worker (pre-TLS, bare socket — placement, never migration); a RECEIVED
+        // hand-off is served here, its count already owned by the sender's increment.
+        let (admitted, guard) = tokio::select! {
+            biased;
+            () = &mut shutdown => break,
+            handed = async { balancer.as_mut().expect("guarded by if").rx.recv().await },
+                if balancer.is_some() =>
+            {
+                let Some(a) = handed else { continue };
+                (a, balancer.as_ref().map(ConnBalancer::adopt))
+            }
+            a = admits.admit() => match balancer.as_ref() {
+                Some(b) => match b.try_hand_off(a) {
+                    // Handed to the least-loaded worker — nothing to serve here.
+                    None => continue,
+                    Some(a) => (a, Some(b.place_local())),
+                },
+                None => (a, None),
+            },
+        };
+        spawn(admitted, guard);
+    }
+
+    // Drain any hand-offs already in the channel (sent before every worker saw the shutdown):
+    // serve them under the graceful watcher like any late connection rather than dropping them.
+    if let Some(mut b) = balancer.take() {
+        while let Ok(a) = b.rx.try_recv() {
+            let guard = b.adopt();
+            spawn(a, Some(guard));
+        }
+    }
+
+    // Stop accepting; drain in-flight connections (the watched futures complete on their own once
+    // their requests finish or their clients hang up).
+    graceful.shutdown().await;
+    Ok(())
+}
+
+/// An inbound-body wrapper that bounds the wall-clock time a request body may occupy a connection,
+/// on THREE axes. Wraps the hyper `Incoming` body; each `poll_frame` races the inner poll against a
+/// `body_read_timeout()` inter-frame timer that is RESET on every delivered frame, AND checks a
+/// TOTAL deadline and a MINIMUM-THROUGHPUT floor that are evaluated on every `poll_frame` entry (so
+/// no separate timer is needed for either - a dribbling client necessarily polls at least once per
+/// byte). The inter-frame timer alone cannot catch a client that dribbles fast enough to keep
+/// resetting it forever; the floor closes that gap, and the total deadline backstops a client that
+/// stays just above the floor forever. Any of the three failing yields an error, which hyper surfaces
+/// as a connection error - dropping the stalled connection and freeing its task, FD, and
+/// inbound-concurrency permit. A body that keeps delivering frames promptly and above the floor is
+/// passed through unchanged, so a slow-but-progressing large upload is never falsely killed.
+/// `SizeHint`/`is_end_stream` delegate to the inner body so framing/content-length behavior is
+/// identical to the unwrapped body.
+struct TimeoutBody<B> {
+    inner: B,
+    timeout: Duration,
+    // Lazily-armed inter-frame timer. Re-armed after every delivered frame; `None` until the first
+    // poll so the timer is driven from the runtime clock inside the connection task.
+    sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    /// Set on the first `poll_frame`, from the runtime clock - the origin for both the total
+    /// deadline and the throughput-floor grace period.
+    started: Option<Instant>,
+    /// Total DATA bytes delivered so far (frame trailers/metadata excluded), for the throughput
+    /// floor's `bytes / elapsed` comparison.
+    bytes: u64,
+}
+
+impl<B> TimeoutBody<B> {
+    fn new(inner: B, timeout: Duration) -> Self {
+        Self {
+            inner,
+            timeout,
+            sleep: None,
+            started: None,
+            bytes: 0,
+        }
+    }
+}
+
+/// The error a [`TimeoutBody`] yields when the inter-frame bound elapses. Boxed into the router's
+/// body-error type; the message is generic (no client bytes) so it is safe to surface.
+#[derive(Debug)]
+struct BodyReadTimeout;
+
+impl std::fmt::Display for BodyReadTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "inbound request body read timed out (slow-loris body bound)"
+        )
+    }
+}
+impl std::error::Error for BodyReadTimeout {}
+
+/// The error a [`TimeoutBody`] yields when the TOTAL body deadline or the MINIMUM-THROUGHPUT floor
+/// is exceeded - the retention-in-time bound `BodyReadTimeout`'s inter-frame check cannot catch,
+/// because a dribbling client that polls at least once per byte keeps resetting that timer forever.
+/// Same discipline as `BodyReadTimeout`: generic message, no client bytes.
+#[derive(Debug)]
+enum BodyBoundExceeded {
+    Total,
+    Throughput,
+}
+
+impl std::fmt::Display for BodyBoundExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Total => write!(f, "inbound request body exceeded its total read deadline"),
+            Self::Throughput => write!(
+                f,
+                "inbound request body fell below the minimum throughput floor"
+            ),
+        }
+    }
+}
+impl std::error::Error for BodyBoundExceeded {}
+
+/// Shared by both the `Ready` and `Pending` arms of `poll_frame`: evaluate the total deadline, then
+/// (after the grace period) the throughput floor. `None` means neither tripped.
+fn check_body_bounds(started: Instant, bytes: u64) -> Option<BodyBoundExceeded> {
+    let elapsed = started.elapsed();
+    if elapsed > total_body_deadline() {
+        return Some(BodyBoundExceeded::Total);
+    }
+    if elapsed > BODY_THROUGHPUT_GRACE
+        && bytes < MIN_BODY_THROUGHPUT_BYTES_PER_SEC * elapsed.as_secs()
+    {
+        return Some(BodyBoundExceeded::Throughput);
+    }
+    None
+}
+
+impl<B> Body for TimeoutBody<B>
+where
+    B: Body + Unpin,
+    B::Data: bytes::Buf,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    type Data = B::Data;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = &mut *self;
+        let started = *this.started.get_or_insert_with(Instant::now);
+        // Poll the underlying body first: a frame ready right now short-circuits the timer entirely.
+        match Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                // Progress: reset the inter-frame timer for the NEXT frame.
+                this.sleep = None;
+                if let Some(data) = frame.data_ref() {
+                    this.bytes += data.remaining() as u64;
+                }
+                // Evaluated on EVERY delivered frame too, not just on `Pending`: a dribbling client
+                // necessarily polls (and delivers) at least once per byte, so checking only on
+                // `Pending` would never see it.
+                if let Some(e) = check_body_bounds(started, this.bytes) {
+                    return Poll::Ready(Some(Err(Box::new(e))));
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e.into()))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => {
+                if let Some(e) = check_body_bounds(started, this.bytes) {
+                    return Poll::Ready(Some(Err(Box::new(e))));
+                }
+                // No frame yet: arm (or poll) the inter-frame timer. On elapse, fail the body so the
+                // connection is dropped rather than parked indefinitely on a dribbling client.
+                let timeout = this.timeout;
+                let sleep = this
+                    .sleep
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
+                match sleep.as_mut().poll(cx) {
+                    Poll::Ready(()) => Poll::Ready(Some(Err(Box::new(BodyReadTimeout)))),
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// A hyper `Service` that wraps every inbound request's body in a [`TimeoutBody`] before delegating
+/// to the axum router (bridged by `TowerToHyperService`). This is the seam that installs the
+/// body-read slow-loris bound on BOTH the TLS and plain serve loops, without touching the router or
+/// the routing hot path - the router sees an ordinary `http_body::Body`, just one that fails on a
+/// stalled inbound stream.
+#[derive(Clone)]
+struct BodyTimeoutService {
+    inner: TowerToHyperService<Router>,
+    timeout: Duration,
+}
+
+impl BodyTimeoutService {
+    fn new(router: Router, timeout: Duration) -> Self {
+        Self {
+            inner: TowerToHyperService::new(router),
+            timeout,
+        }
+    }
+}
+
+impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTimeoutService {
+    type Response = <TowerToHyperService<Router> as hyper::service::Service<
+        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
+    >>::Response;
+    type Error = <TowerToHyperService<Router> as hyper::service::Service<
+        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
+    >>::Error;
+    type Future = <TowerToHyperService<Router> as hyper::service::Service<
+        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
+    >>::Future;
+
+    fn call(&self, req: hyper::Request<hyper::body::Incoming>) -> Self::Future {
+        let timeout = self.timeout;
+        let req = req.map(|body| TimeoutBody::new(body, timeout));
+        self.inner.call(req)
+    }
+}
+
+/// Build the hyper auto connection builder shared by BOTH the plain-HTTP and TLS serve loops.
+///
+/// Bounds the HTTP/1 HEADER-read phase (slow-loris defense): a client that opens a connection and
+/// then trickles request headers one byte at a time would otherwise hold the connection task + FD
+/// indefinitely — `DefaultBodyLimit` only applies AFTER headers are fully received, so it does not
+/// help here. `header_read_timeout` bounds ONLY the header phase, so it never truncates a
+/// legitimately long response stream (a streamed response can run for minutes). 30s is far longer
+/// than any real client needs to send its request line + headers, so it cannot false-positive on a
+/// healthy connection. `header_read_timeout` requires a `Timer` (hyper panics otherwise), so the
+/// Tokio timer is wired to drive it from the runtime clock.
+fn hardened_conn_builder() -> ConnBuilder<TokioExecutor> {
+    let mut builder = ConnBuilder::new(TokioExecutor::new());
+    builder
+        .http1()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(std::time::Duration::from_secs(30));
+    builder
+}
+
+/// Plain-HTTP serve loop — the no-`tls`-block default path. Mirrors `serve` (and the historical
+/// `axum::serve(listener, router).with_graceful_shutdown(shutdown)`) but over the bare TCP stream
+/// (no TLS handshake). Routed through the SAME `hardened_conn_builder` so the plain listener gets the
+/// identical slow-loris header-read bound the TLS listener has — the previous `axum::serve` path
+/// exposed no such timeout, leaving a plain-HTTP edge deployment open to header-trickle clients.
+pub async fn serve_plain(
+    listener: TcpListener,
+    router: Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    balancer: Option<ConnBalancer>,
+) -> io::Result<()> {
+    let admits = SocketAdmits {
+        listener,
+        backoff: AcceptBackoff::new(),
+        scheme: "http",
+    };
+    accept_loop(admits, shutdown, balancer, Served::new(router, None)).await
+}
+
+/// What one listener serves every connection with: the hardened builder (see
+/// `hardened_conn_builder`), the router, and the connection-security wrap (`None` = plain).
+#[derive(Clone)]
+struct Served {
+    builder: Arc<ConnBuilder<TokioExecutor>>,
+    router: Router,
+    security: Option<Arc<dyn ConnectionSecurity>>,
+    /// The scheme a log line names.
+    scheme: &'static str,
+}
+
+impl Served {
+    fn new(router: Router, security: Option<Arc<dyn ConnectionSecurity>>) -> Self {
+        let builder = Arc::new(hardened_conn_builder());
+        let scheme = if security.is_some() { "tls" } else { "http" };
+        Self {
+            builder,
+            router,
+            security,
+            scheme,
+        }
+    }
+
+    /// Serve a single accepted TCP connection: as it arrived on a plain listener (the stream itself,
+    /// no compat layer), through the wrap on a TLS one. Any failure is contained to this connection.
+    async fn tcp(self, stream: tokio::net::TcpStream, peer: SocketAddr, watcher: Watcher) {
+        // TCP_NODELAY parity with axum::serve (which sets it by default on accepted streams).
+        if let Err(e) = stream.set_nodelay(true) {
+            tracing::debug!(error = %e, %peer, "{}: set_nodelay failed; continuing", self.scheme);
+        }
+        if self.security.is_none() {
+            return self.io(stream, peer, watcher).await;
+        }
+        let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(stream));
+        self.raw(raw, peer, watcher).await;
+    }
+
+    /// Handshake + serve a single accepted connection's byte stream. Any failure is contained to
+    /// this connection.
+    ///
+    /// `security` is the opaque connection-security wrap `serve`'s caller was handed by
+    /// `busbar-core-connector` (DECISIONS #40): this calls `wrap` on the raw accepted stream and
+    /// nothing else — it names no rustls type, no cert, no key byte. The `RawIo`/tokio-io compat
+    /// bridge on either side of `wrap` is the same seam the core connection-security `Tls` wrap
+    /// crosses inside it. No wrap serves the stream as it arrived.
+    async fn raw(self, raw: Box<dyn RawIo>, peer: impl std::fmt::Display + Send, watcher: Watcher) {
+        // Bound the handshake (see `handshake_timeout()`): on elapse the `wrap` future is dropped,
+        // which closes the half-open connection and frees the task + FDs. Cancel-safe.
+        let wrapped = match &self.security {
+            None => raw,
+            Some(security) => {
+                match tokio::time::timeout(handshake_timeout(), security.wrap(raw)).await {
+                    Ok(Ok(s)) => s,
+                    // Handshake failure (bad/missing client cert under mTLS, protocol mismatch,
+                    // client gone). Debug-level and dropped — never escalated. NEVER logs key/cert
+                    // bytes.
+                    Ok(Err(e)) => {
+                        tracing::debug!(error = %e, %peer, "tls: handshake failed; dropping connection");
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::debug!(%peer, "tls: handshake timed out; dropping connection");
+                        return;
+                    }
+                }
+            }
+        };
+        self.io(FuturesAsyncReadCompatExt::compat(wrapped), peer, watcher)
+            .await;
+    }
+
+    /// Serve one connection's (already secured) bytes. Any failure is contained to it.
+    async fn io<I>(self, io: I, peer: impl std::fmt::Display, watcher: Watcher)
+    where
+        I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let service = BodyTimeoutService::new(self.router, body_read_timeout());
+        let conn = self
+            .builder
+            .serve_connection_with_upgrades(TokioIo::new(io), service);
+        if let Err(e) = watcher.watch(conn).await {
+            // Per-connection serving error (client reset, malformed request framing). Contained.
+            tracing::debug!(error = %e, %peer, "{}: connection error", self.scheme);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/tls_tests.rs"]
+mod tests;
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+/// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
+/// source-named message. Never logs contents.
+pub fn read_pem(
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+    secret: &busbar_contract::secret_ref::SecretRef,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    resolver
+        .resolve(secret)
+        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
+}

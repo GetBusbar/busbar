@@ -137,9 +137,12 @@ fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, Stri
     let effective = rewritten.as_deref().unwrap_or(config_path);
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    // 1.6.0: the catalog lives at the shipped root, NOT next to the temp config, so point busbar at
+    // it with the `--providers` flag (the removed `BUSBAR_PROVIDERS` env var no longer works).
     cmd.arg("--validate")
-        .env("BUSBAR_CONFIG", effective)
-        .env("BUSBAR_PROVIDERS", providers_path);
+        .arg("--providers")
+        .arg(providers_path)
+        .env("BUSBAR_CONFIG", effective);
     for name in &referenced {
         // 64 hex chars: valid for `auth.signing_key`, and harmless as any other secret's value.
         cmd.env(
@@ -245,7 +248,7 @@ fn marked_config_examples_validate() {
         marked.len() >= 3,
         "only found {} `doc-check: config`-marked examples — expected at least 3 \
          (getting-started.md x2, configuration.md x1; reliability.md's example is deliberately \
-         left unmarked, see its own `store.module: sqlite` note). Either a marker was removed, or \
+         left unmarked, see its own `store.module` note). Either a marker was removed, or \
          the extractor regressed — either way this guard just went quiet.",
         marked.len()
     );
@@ -271,15 +274,21 @@ fn marked_config_examples_validate() {
     );
 }
 
-/// The SHIPPED config artifacts users literally copy — root `config.yaml` and the
-/// clean 1.5.0 example — validate clean against the shipped `providers.yaml`. Three lines of
-/// coverage; nothing validated these in CI before this test existed.
+/// The SHIPPED config artifacts users literally copy or run — root `config.yaml`, the clean 1.5.0
+/// example, and `docker/config.yaml` (the default the getbusbar/busbar image boots when nothing is
+/// mounted, which the README's `docker run` relies on) — validate clean against the shipped
+/// `providers.yaml`. The docker default once shipped without the `store:` block 1.6.0 requires
+/// (Q-STORE (B)) and the image refused to boot; this list is what catches that.
 #[test]
 fn shipped_config_artifacts_validate() {
     let root = repo_root();
     let providers_path = root.join("providers.yaml");
 
-    for shipped in ["config.yaml", "examples/clean-config-1.5.0.yaml"] {
+    for shipped in [
+        "config.yaml",
+        "examples/clean-config-1.5.0.yaml",
+        "docker/config.yaml",
+    ] {
         let path = root.join(shipped);
         assert!(path.is_file(), "shipped artifact {shipped} must exist");
         let (code, stdout, stderr) = run_validate(&path, &providers_path);

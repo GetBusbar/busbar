@@ -1,18 +1,8 @@
 # Contributing to Busbar
 
-Thanks for your interest in improving Busbar. This document covers how to build,
-test, and submit changes.
-
-
-## Cutting a release: refresh the migration corpus
-
-After tagging, run `tests/migration-corpus/refresh.sh` so the new release's `config.yaml` joins the
-corpus. `crates/busbar/tests/migration_corpus.rs` then asserts, on every CI run, that a config from
-that version still migrates to whatever the current shape is.
-
-The point is that the guarantee grows automatically: an operator on any released version can run
-`busbar --migrate-config` and get something that boots. See
-`tests/migration-corpus/README.md` for why it holds real shipped files rather than fixtures.
+The rules for how a change lands live in one place:
+[docs/design/BUSBAR-1.6.0.md, Part 6, "How work lands"](docs/design/BUSBAR-1.6.0.md#how-work-lands-the-pr-flow-and-the-rules-every-contributor-follows).
+This page is the short version. Where the two differ, Part 6 wins.
 
 ## Ground rules
 
@@ -21,76 +11,41 @@ The point is that the guarantee grows automatically: an operator on any released
   [Apache-2.0](LICENSE) license.
 - Security issues go through [SECURITY.md](SECURITY.md), **not** public issues.
 
-## Development setup
+## How a change lands
 
-Busbar is a single Rust binary. You need a recent stable toolchain
-(`rustup` recommended).
+1. Branch `lane-<name>` from `origin/predev`.
+2. Before you ship, run the local pre-flight and nothing heavier:
 
-```bash
-cargo build              # debug build
-cargo test               # run tests
-cargo clippy --all-targets -- -D warnings   # lints must be clean
-cargo fmt --all          # format before committing
-```
+   ```bash
+   cargo fmt --all
+   cargo metadata --format-version 1 >/dev/null   # refreshes a stale Cargo.lock
+   cargo xtask gate abi-header --write            # regenerates the C header
+   ```
 
-Run locally against the shipped example config (two YAML files; keys are supplied
-via the env vars named in `config.yaml`):
+   Builds, tests, clippy, the gates and the oracle run in CI (`.github/workflows/promote.yml`).
+3. Ship it from the lane's worktree with the release CLI (a clone of GetBusbar/busbar-release):
+   `busbar-release ship "<PR title>" [--body <file>]`. It merges `origin/predev`, runs the
+   pre-flight, commits its changes, pushes, opens (or reuses) the PR into `predev` and turns on
+   auto-merge. Then stop; CI is the proof and a red comes back as a task.
+4. The PR body says what changed, why, and the ruling or issue it implements. No AI attribution.
 
-```bash
-export BUSBAR_CLIENT_TOKEN=dev-token
-export ANTHROPIC_KEY=sk-ant-...      # any provider key referenced by config.yaml
-BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml cargo run
-curl -s localhost:8080/healthz
-curl -s -H "Authorization: Bearer $BUSBAR_CLIENT_TOKEN" localhost:8080/stats | jq
-```
+## Fixing a defect: the remediation contract and what every PR is held to
 
-See [docs/configuration.md](docs/configuration.md) for the full config reference.
+- Red-before-green: every behaviour change ships a test that fails without it. Tests live in their
+  own files, not inline in production code.
+- Customer-visible bytes stay 1.5.5's. Never bless a golden or a ratchet; `golden/1.5.5` is
+  read-only.
+- A `$` (money) change is its own PR.
+- No `_ =>` catch-all arms in the disposition/breaker `match` statements: the exhaustive match is
+  how the compiler proves every failure mode is handled. A backend is ejected for upstream faults,
+  never for a client-supplied 4xx.
+- `git -C` only, no `git stash`, no force-push except `--force-with-lease` on your own branch.
+- Fixing a defect: read
+  [docs/testing.md § The remediation contract](docs/testing.md#the-remediation-contract). Fix the
+  class at its choke point with one class-level test, and name the RED-before in the PR.
+- A design question the spec does not answer: open a `needs-owner` issue with a proposed option.
 
-## Before you open a pull request
+## Cutting a release
 
-1. **`cargo fmt --all`** — code must be rustfmt-clean.
-2. **`cargo clippy --all-targets -- -D warnings`** — no warnings.
-3. **`cargo build && cargo test`** — green.
-4. Add or update tests for any behavior change. The circuit-breaker disposition
-   logic in particular should be covered by tests, not just inspection.
-5. **No `_ =>` catch-all arms** in disposition/breaker `match` statements — the
-   exhaustive match is how the compiler enforces that every failure mode is
-   handled. This is a project invariant.
-6. **`scripts/structure-lint.sh`** — green. Beyond code layout it enforces the
-   remediation contract's choke-point registry.
-7. Update documentation when you change behavior or config.
-
-## Fixing a defect: the remediation contract
-
-Read [docs/testing.md § The remediation contract](docs/testing.md#the-remediation-contract)
-before fixing a bug. In short:
-
-- **A finding with a sibling is not a bug — it is a missing choke point.** If the
-  same mistake is possible at a second call site, fix the class, not the instance.
-- **The fix is the choke point + ONE class-level test**, not N patched instances
-  with N tests.
-- **A repeat sibling means the class was never fixed**: the previous
-  remediation patched an instance instead of the class.
-- A defect test must be **contract-derived**, **RED-demonstrated**, or
-  **cross-checked by an independent oracle** — a `assert_eq!(actual, <inline
-  constant>)` that restates the implementation guards nothing.
-
-Your changeset should name the choke point it attaches to, its one class-level
-test, and the RED-before note (`RED at <sha>: <failure line>`).
-
-## Commit & PR conventions
-
-- Keep commits focused; squash noisy WIP commits before opening the PR.
-- Write a clear PR description: what changed, why, and how it was verified.
-- Reference any related issue.
-- Stage files by name; avoid sweeping `git add -A` that pulls in unrelated changes.
-
-## Architecture
-
-The circuit breaker — the upstream-vs-client failure taxonomy — is the core of the
-project; changes there deserve extra care and review. A backend is ejected for
-*upstream* faults but never for *client-supplied* 4xx.
-
-## Questions
-
-Open a discussion or issue. We're happy to help you get oriented.
+After tagging, run `tests/migration-corpus/refresh.sh` so the new release's `config.yaml` joins the
+corpus (see `tests/migration-corpus/README.md`).

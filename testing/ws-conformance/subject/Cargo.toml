@@ -1,0 +1,30 @@
+[package]
+name = "ws-conformance-subject"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.97"
+description = "Autobahn|Testsuite subject: busbar's ws door framed by the connector's own listener, echoing on loopback."
+
+# TESTKIT, NOT PRODUCT PATH. This binary exists only so the Autobahn|Testsuite fuzzingclient has
+# busbar's real WebSocket framer to point at. It is not shipped and not built by `cargo build --bin
+# busbar`, and it adds no product surface: it uses the connector's EXISTING public listener API
+# (`Listening::bind` with the `ws` door, `poll_accept`, `poll_piece`, `emit`), the one inbound path
+# every busbar socket takes since INBOUND-LISTEN H5, with the door admitted through the root's own
+# doors module (ARCHITECT ruling 2026-10-02, CONFORMANCE-RIGS).
+[[bin]]
+name = "ws-conformance-subject"
+path = "src/main.rs"
+
+[dependencies]
+busbar-contract = { path = "../../../crates/busbar-contract" }
+busbar-transport-ws = { workspace = true }
+# The root's transport doors (`crates/busbar/src/root/doors.rs`, mounted by path): the ws door
+# admitted through the one dispatcher, opened, and handed to the connector as its framer table.
+busbar-core-connector = { path = "../../../crates/busbar-core-connector" }
+busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
+# The mounted doors module builds each door's typed settings into the JSON object its `open` reads.
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
+futures = { workspace = true }

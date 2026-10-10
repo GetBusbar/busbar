@@ -1,0 +1,1 @@
+{"finish_reason":"TOOL_CALL","id":"00000000-0000-4000-8000-000000000000","message":{"content":[{"text":"Checking.","type":"text"}],"role":"assistant","tool_calls":[{"function":{"arguments":"{\"city\":\"Paris\"}","name":"get_weather"},"id":"toolu_01AAA","type":"function"}]},"model":"claude-sonnet-4","usage":{"tokens":{"input_tokens":50,"output_tokens":20}}}

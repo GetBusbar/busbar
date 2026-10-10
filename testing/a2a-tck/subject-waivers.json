@@ -1,0 +1,95 @@
+{
+  "_comment": "THE LEDGER the subject leg's gate (scripts/a2a-subject/boot.sh assert_tck_number) reads. Every entry is {id, why, premise}, and the premise is a non-empty list of conditions the gate EVALUATES against the run in front of it (BUSBAR-1.6.0.md Law 10). `waived` forgives a MUST that reports FAIL; `skipped` justifies a MUST that reports SKIPPED (Law 8: every SKIP is named, never excused as a class). An entry whose requirement is not in the state it forgives, or whose premise is false on the run, is RED: retire it. A FAIL outside `waived` is RED; a SKIPPED outside `skipped` is RED. The dated reasoning lives in WAIVERS.md; this file is the machine-checked half.",
+  "waived": [
+    {
+      "id": "PUSH-DELIVER-001",
+      "why": "busbar refuses a plaintext push callback, and the pinned TCK's webhook receiver is http:// by literal (WAIVERS.md, PUSH-DELIVER, blocker 1).",
+      "premise": [
+        {
+          "kind": "errors_match",
+          "pattern": "push callback scheme `http` is refused"
+        }
+      ]
+    },
+    {
+      "id": "PUSH-DELIVER-002",
+      "why": "busbar refuses a plaintext push callback, and the pinned TCK's webhook receiver is http:// by literal (WAIVERS.md, PUSH-DELIVER, blocker 1).",
+      "premise": [
+        {
+          "kind": "errors_match",
+          "pattern": "push callback scheme `http` is refused"
+        }
+      ]
+    },
+    {
+      "id": "PUSH-DELIVER-003",
+      "why": "busbar refuses a plaintext push callback, and the pinned TCK's webhook receiver is http:// by literal (WAIVERS.md, PUSH-DELIVER, blocker 1).",
+      "premise": [
+        {
+          "kind": "errors_match",
+          "pattern": "push callback scheme `http` is refused"
+        }
+      ]
+    }
+  ],
+  "skipped": [
+    {
+      "id": "CORE-CAP-001",
+      "why": "Push-not-supported error: the test skips when the card declares pushNotifications, which busbar's served card does (WAIVERS.md, The 5 SKIPPED MUSTs).",
+      "premise": [
+        {
+          "kind": "card_equals",
+          "path": "capabilities.pushNotifications",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "CORE-CAP-002",
+      "why": "Streaming-not-supported error: the test skips when the card declares streaming, which busbar's served card does (WAIVERS.md, The 5 SKIPPED MUSTs).",
+      "premise": [
+        {
+          "kind": "card_equals",
+          "path": "capabilities.streaming",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "CORE-CAP-003",
+      "why": "Extended-card-not-supported error: the test skips when the card declares extendedAgentCard, which busbar's served card does (WAIVERS.md, The 5 SKIPPED MUSTs).",
+      "premise": [
+        {
+          "kind": "card_equals",
+          "path": "capabilities.extendedAgentCard",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "CORE-CAP-004",
+      "why": "Required-extension-missing error: the test skips unless the card declares urn:a2a:tck:required-extension as required, and busbar declares no required extension (WAIVERS.md, The 5 SKIPPED MUSTs).",
+      "premise": [
+        {
+          "kind": "card_lacks_required_extension",
+          "uri": "urn:a2a:tck:required-extension"
+        }
+      ]
+    },
+    {
+      "id": "CARD-EXT-002",
+      "why": "Extended-card-not-configured error: the test skips when the card declares extendedAgentCard and the extended card is returned successfully, which CARD-EXT-001 passing on the same run proves (WAIVERS.md, The 5 SKIPPED MUSTs).",
+      "premise": [
+        {
+          "kind": "card_equals",
+          "path": "capabilities.extendedAgentCard",
+          "value": true
+        },
+        {
+          "kind": "requirement_passes",
+          "id": "CARD-EXT-001"
+        }
+      ]
+    }
+  ]
+}

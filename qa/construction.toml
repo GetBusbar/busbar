@@ -1,0 +1,2184 @@
+# qa/construction.toml — thresholds for THE CONSTRUCTION GATE (cargo xtask gate construction).
+#
+# The shadow oracle proves the tree is user-correct. This file is the owner's dial for how well the
+# tree is BUILT, measured against docs/design/BUSBAR-1.6.0.md. Every rule below is a named invariant
+# with a plain-language reason, a current-state threshold, and the one knob the owner tightens as the
+# construction improves. Tightening is a one-line edit here; the gate script never restates a number.
+#
+# Every threshold is a ceiling: the rule fails when the measured value is ABOVE it. A rule at 0 is
+# fully enforced. A rule sitting at today's count is a ratchet: it stops regression while the debt
+# is paid down. Never loosen a value without saying why in the commit.
+#
+# NO LINE-COUNT CEILING LIVES HERE. Size is not a CI check (owner 2026-10-02): it is measured by hand
+# at PERF with `cargo xtask loc`, and no number in this file is a count of lines.
+
+[gate]
+# Where Rust source is scanned. Globs relative to the repo root; the composition-root bin
+# (crates/busbar) is included on purpose because production installers live there.
+#
+# ── WIDENED 2026-09-23: THIS ONE LINE WAS THE DENOMINATOR OF ALL 113 ROWS ────────────────────────
+#
+# It read `["crates/*/src"]` and that is not the tree. MEASURED on this branch: `crates/*/src` holds
+# 1471 `.rs` files, `crates/*/tests` holds 139 and `crates/*/benches` holds 4 — 143 files of real,
+# compiled, product-linked Rust that every one of the 113 rows below was asserting about and none of
+# them could open. A forged token mint, a `busbar_core::` reach, a seal site or a test double
+# written into `crates/busbar-llm/tests/` was invisible to this gate, and the 1.6.0 gate
+# blind-spot census planted one and watched the gate stay green.
+#
+# `crates/*/tests` and `crates/*/benches` are PRODUCT code in the sense that matters here: they
+# compile against the product crates, they can name every type the product exports, and a
+# capability they spell is a capability that crate can reach. They are in.
+#
+# `xtask/src` IS DELIBERATELY NOT, and the reason is structural rather than a preference. `xtask`
+# declares three dependencies (serde_json, proc-macro2, syn) and NO product crate — which is the
+# property `cargo xtask gate segregation` exists to hold — so a line spelling `Grant::<C>::mint(`
+# there names a type xtask cannot reach and would not compile. It is not a forgery surface; it is
+# prose about one. MEASURED: adding `xtask/src` produces 17 non-comment hits on the token-sealed
+# pattern set and every single one is this gate's OWN needle table or its own selftest plant string
+# (`xtask/src/gates/seal_witness.rs:51` is `const MINTER: &str = "KernelSeal::acquire_for_kernel("`).
+# A gate that goes red reading its own specification has not widened its scan, it has lost its
+# subject. The census's P3 plant is therefore recorded as a plant that could never have been a
+# defect.
+#
+# `crates/*/build.rs` (1 file) stays out for a mechanical reason, not a judged one: these are
+# DIRECTORY globs walked by `glob_dirs` + `collect_rs`, so a bare file path cannot be expressed
+# here at all. It is shipped source, it is compiled on every build, and it is in no construction
+# row. PARK: it needs a file-glob arm in `Tree::load`, not an entry on this line.
+scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
+# The plane crates (the plugin side): one name per protocol plane, so each carries its own ceiling
+# below. This is the ROW KEY list, not the whole source surface — see gate.plane_codec_crates.
+#
+# NOTE (BUSBAR-1.6.0.md THE DESIGN, §2): "plane" is defined TWICE in this file, disjointly. This list is the four
+# LEGACY ENGINE crates; `gate.plugin_kinds.plane` below is the five `busbar-plane-*` crates, and the
+# two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
+# another plane" means. The two collapse into one definition when the legacy engines are deleted;
+# until then a reader must not take either as "the plane kind".
+#
+# `busbar-mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05: "delete busbar-mcp, add `crates/busbar-mcp`
+# to [gate.census.deleted]"). The engine is deleted and the mcp plane is its door crate
+# `busbar-plane-mcp`, which `gate.plugin_kinds.plane` already scans; the census floor below drops
+# 4 -> 3 by the one ruled deletion, and `ceiling-census` excuses exactly that one entry.
+plane_crates = ["busbar-llm", "busbar-a2a", "busbar-voice"]
+# A file at one of these path fragments is TEST code (same rule the purity lint applies), in
+# addition to any `#[cfg(test)] mod … { … }` block inside a production file.
+# A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
+test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
+
+# Directory globs (relative to the repo root) that name each PLUGIN KIND from BUSBAR-1.6.0.md THE DESIGN, §2.
+# Shared by manifest-allowlist, source-denylist and forbid-unsafe so the kind boundaries are drawn
+# once. A glob matching no directory today is fine (the kind has no crate yet) — every rule below
+# treats an empty match list as nothing-to-check, not a failure.
+#
+# THE SEVEN PLUGIN KINDS (DECISIONS #3, locked): store, secret, auth, hook, export, plane,
+# transport. Each has a construction scope below. `unit` scopes core's governance steps; `loader`
+# and `abi` scope the TCB crates the design excuses by name (NOT plugin kinds). `control` and
+# `dialect` are gone (DECISIONS #4/#5): admin/oauth2 are compiled-in cleanliness crates, not a
+# `control` kind, and a dialect is a thing inside a plane with no crate of its own. The old
+# `pure_auth`/`egress_auth` split is collapsed into ONE `auth` key — outbound-sign is an OPERATION of
+# the auth kind (DECISIONS #3), and the outbound-scheme units are scoped by `unit`.
+#
+#   * Kind membership is decided here by DIRECTORY GLOB, and `Plugin::kind()` — the declaration that
+#     should be authoritative — is read by nothing. That is how `crates/secret-ref` (a SecretRef TYPE
+#     crate, no Secret impl) is classified `secret`, and how `crates/hooks-ranking` is classified
+#     `hook` by the directory name while implementing a busbar-api trait. Renaming the crate
+#     directories to their existing `package.name` (BUSBAR-1.6.0.md THE DESIGN, §2) makes these globs
+#     correct by construction and is the cheap first half of kind-by-declaration.
+#
+# `kind-isolation:truths` reconciles this file, the gate's kind table and qa/kind-isolation.toml, in
+# both directions, on the DECISIONS #3 taxonomy: a key naming a struck kind (control/dialect/
+# egress_auth/pure_auth), or a plugin kind with no key here, is RED.
+# `plane` is an EXPLICIT list, not `crates/busbar-plane-*`, AND THE REASON HAS CHANGED — read this
+# before anyone widens it to a glob. It was written because two directories the glob would match
+# were each plane's IMPURE HOST crate: the bridged-ABI half that holds the runtime slot, `serve`
+# and the engine glue, and that path-deps `busbar-kernel` and `busbar-substrate-values` the way a
+# pure plane never may. Scanning them here would have run the PURE kind's rule (no I/O, no
+# `busbar-kernel` edge — "no allow-list can excuse it") over a crate whose own docs declared it
+# impure.
+# BOTH HOST CRATES ARE GONE. `busbar-plane-a2a-host` folded back into `busbar-a2a` and
+# `busbar-plane-mcp-host` into `busbar-mcp` — qa/kind-isolation.toml records both in
+# those words — and the roster spells "no `busbar-plane-mcp-host`". MEASURED
+# 2026-09-22: `crates/busbar-plane-*` matches exactly the five directories listed below and nothing
+# else, so this list EXCLUDES NOTHING TODAY.
+# It stays an EXPLICIT list anyway, and not because of those two: a glob silently re-absorbs the
+# next host crate the day one appears, which is the case this paragraph was written for, and
+# `[gate.census.plugin_kinds].plane` below is the count that keeps the list honest either way.
+[gate.plugin_kinds]
+plane = [
+  "crates/busbar-plane-a2a",
+  # The DECISIONS plane (jev, #48) -- the fifth plane, and it was in NO kind list at all.
+  # PROVEN 2026-09-22 with a positive control: the same `use std::net::TcpStream` planted in
+  # busbar-plane-decisions scored `PASS denylist:hits - no banned transitive source in any pure
+  # plugin kind`, while the identical plant in busbar-plane-streaming scored `RED denylist:hits`.
+  # One caught, one invisible, the only difference being membership in this list. The fifth plane
+  # could open a socket, read the filesystem, spawn a process or read env and the purity gate
+  # reported green over it.
+  "crates/busbar-plane-decisions",
+  "crates/busbar-plane-llm",
+  "crates/busbar-plane-mcp",
+  "crates/busbar-plane-streaming",
+]
+transport = ["crates/busbar-transport-*"]
+store = ["crates/store-*"]
+secret = ["crates/secret-*"]
+hook = ["crates/hook*"]
+# ONE auth kind. Inbound-verify and outbound-sign are two OPERATIONS of it (DECISIONS #3), not two
+# kinds: the auth PLUGINS live at crates/auth-*; the outbound-scheme units (busbar-kernel-identity's egress_auth module,
+# …) are `unit` kind, scoped by `unit` below.
+auth = ["crates/auth-*"]
+# BOTH spellings, and the second is the one that matters. #34 names every plugin instance
+# `busbar-<kind>-<name>`, so the roster's export sinks land at `crates/busbar-export-*` — a path the
+# bare `export-*` glob does not match. It matched only the export fixture that predated the naming
+# rule (deleted 2026-09-27; the real sinks live in their own repos) and would have gone on printing a
+# green row while every real export crate sat outside the family, unscanned. A glob that stops matching its own kind is the
+# same failure class as a census row that stops counting.
+export = ["crates/export-*", "crates/busbar-export-*"]
+# NON-PLUGIN-KIND infra families: loader and abi (TCB crates). `unit` is STRUCK (fold F14 2/2): the
+# spec lists it among the NOT-kinds ("unit (core's own workflow)"), the last `busbar-unit-*` crate
+# folded into `busbar-kernel-identity` (#36), and kind-isolation retired the kind in the same
+# commit. `[rules.no-unit-crates] unit_crate_glob` still refuses any `busbar-unit-*` crate (armed at 0).
+loader = ["crates/plugin-loader"]
+abi = ["crates/busbar-contract"]
+
+# The OTHER half of each plane's sources. Every plane kept its I/O half under its own name and shed
+# its pure half — the codecs, the record vocabularies, the duplex IR, the dialect grammars — into a
+# `-codec` crate; scripts/plane-keys.sh's `plane_src_roots` names both halves for exactly that
+# reason. A gate that scans sources rather than manifests and knows only the first half stops
+# watching the bulk of the plane on the day of the split and still prints a green row, so the second
+# half is named here and folded into its plane's ports-only rows.
+#
+# This is deliberately NOT `plane_crates`. That list also decides which dependency is a
+# plane-names-another-plane RED in manifest-allowlist, and a plane naming its own pure codec half is
+# the intended shape, already on that rule's reviewed list.
+#
+# THESE ARE NOT A KIND, AND THERE IS NO DIALECT KIND TO NAME THEM (DECISIONS #3/#4; BUSBAR-1.6.0.md
+# "Rejected (do not resurrect)"). This block used to read "these four crates ARE the dialect kind,
+# unnamed" and to schedule a SPLIT of each codec into `busbar-plane-<plane>-<dialect>` crates, citing
+# the 2026-09-07 PLUGIN-TREE ruling. That is D36, and D36 is CANCELLED BY OWNER: a dialect is a thing
+# INSIDE a plane, there are no per-dialect crates and no Dialect trait/kind, and NO CRATE IS EVER OF
+# KIND `dialect`. The paragraph contradicted this file's own header ("`control` and `dialect` are
+# gone (DECISIONS #4/#5) ... a dialect is a thing inside a plane with no crate of its own"), its own
+# `[gate.census.plugin_kinds]` note ("`dialect` = 0 and `control` = 0 are STRUCK"), and the gate that
+# reads this file (`xtask/src/gates/kind_isolation.rs`, which carries no `dialect` row by design). It
+# was also already false on its own terms: it says "these four crates" and the table below lists two.
+# A cancelled kind scheduled in a config file is the DECISIONS #14 resurrection hazard exactly.
+#
+# WHAT THESE CRATES ACTUALLY ARE: a plane's own PURE half, a per-plane path-dep, kept beside the
+# plane crate and scanned as part of it (DECISIONS #6; BUSBAR-1.6.0.md THE DESIGN, §2). They carry no `Kind`
+# variant because they are not a kind; the plane's own rules are what hold them.
+#
+# STILL TRUE AND STILL OWED, independent of D36: the llm DECLS order (anthropic, openai, gemini,
+# bedrock, responses, cohere) is operator-visible and every metric-family index is a position in it,
+# so any reshaping of these crates must land an oracle boot cell pinning that order FIRST. It has
+# been silently swapped once.
+#
+# MCP HAS NO ROW HERE ANY MORE. `busbar-mcp-codec` dissolved (#39: no `busbar-*-codec` crate): its
+# wire dialect went to `busbar-plane-mcp`, which definition 16-20 makes the home of everything one
+# protocol needs, and its `ProtocolDecl` registry row and two operation cells stayed with the engine
+# in `crates/busbar-mcp/src/codec/` because they name the kernel's handler matrix. Both halves are
+# already scanned — the engine half by `busbar-mcp`'s own rows, the dialect half by
+# `gate.plugin_kinds.plane` — so there is no second source root to fold in.
+#
+# LLM HAS NO ROW HERE ANY MORE EITHER (owner ruling R7, 2026-09-27). `busbar-llm-codec` dissolved
+# (#39: no `busbar-*-codec` crate): the six dialect readers/writers, the IR, the stream translator
+# and the answer-normalization pass folded into `busbar-plane-llm` as its `codec` module — a pure
+# move, no item changed shape crossing it. `busbar-plane-llm` is already `gate.plugin_kinds.plane`'s
+# own row, so the whole crate directory, `codec` module included, is scanned as part of it; there is
+# no second source root to fold in, and `busbar-llm` re-exports the moved modules under their old
+# names so no in-tree caller changed a spelling.
+#
+# VOICE HAS NO ROW HERE ANY MORE EITHER (owner ruling R7, 2026-09-27). `busbar-voice-codec`
+# dissolved (#39: no `busbar-*-codec` crate): the plane-4 duplex/session IR, the shared duplex
+# reader/writer, the Gemini Live dialect and the Twilio grammar folded into `busbar-plane-streaming`
+# as its `codec` module — a pure move. `busbar-plane-streaming` is already `gate.plugin_kinds.plane`'s
+# own row, so the whole crate directory, `codec` module included, is scanned as part of it; there is
+# no second source root to fold in, and `busbar-voice` re-exports the moved modules under their old
+# names so no in-tree caller changed a spelling.
+[gate.plane_codec_crates]
+
+# ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
+[rules.one-attempt-seam]
+why = """Exactly one function in the workspace may send the egress request for a unit. Two twins \
+(the pooled hot path and the degraded walk path) mean every fix to the attempt — a timeout arm, a \
+breaker recording, a header rule — has to be made twice and is made once. The architecture's loop \
+has one ROUTE step and one dispatch; the code should have one too."""
+# The egress client's send verb: the call that turns an assembled request into an upstream
+# round trip. Every occurrence in non-test code outside `allowed_function` is a finding.
+send_verb = '\.client\(\)\.get\(\)\.request\('
+# The seam moved from the pooled hot loop to `engine/attempt/mod.rs::attempt` when the degraded
+# walk twin was deleted; the hot loop now calls `attempt()` too, so no extra site remains.
+allowed_function = "attempt"
+max_extra_sites = 0
+
+# ── 2. request-path-fn-size ──────────────────────────────────────────────────────────────────────
+[rules.request-path-fn-size]
+why = """A function on the request path that runs to four figures of lines cannot be read whole, \
+tested at its seams, or diffed with confidence. The loop is eight named steps; a function should \
+be one of them, not all of them."""
+files = [
+  "crates/busbar-llm/src/engine/pipeline.rs",
+  "crates/busbar-llm/src/engine/attempt/mod.rs",
+  "crates/busbar-llm/src/engine/attempt/assemble.rs",
+  "crates/busbar-llm/src/engine/attempt/send.rs",
+  "crates/busbar-llm/src/engine/attempt/classify.rs",
+  "crates/busbar-llm/src/engine/attempt/respond.rs",
+  "crates/busbar-llm/src/engine/attempt/buffered.rs",
+  "crates/busbar-llm/src/engine/exhaustion/mod.rs",
+  "crates/busbar-llm/src/engine/exhaustion/queue.rs",
+  "crates/busbar-llm/src/engine/exhaustion/fallback.rs",
+  "crates/busbar-llm/src/engine/exhaustion/least_bad.rs",
+  "crates/busbar-llm/src/native_ingress.rs",
+  "crates/busbar-llm/src/arrival.rs",
+  # busbar-core's ingress/admission moved into busbar-kernel when the crate was absorbed; re-pointed
+  # here rather than dropped (see the crate's own `qa/construction.toml` history for the absorption).
+  "crates/busbar-kernel/src/ingress/mod.rs",
+  "crates/busbar-kernel/src/limits/admission.rs",
+]
+max_lines = 200
+# How many of the worst offenders the report lists.
+top = 10
+
+# ── 3. ports-only / ports-only-tests ─────────────────────────────────────────────────────────────
+[rules.ports-only]
+why = """A plane crate talks to the kernel through the substrate/api ABI only. Every `busbar_kernel::` \
+it names is a hole in that wall: the plane cannot be compiled out, cannot be replaced by a plugin, \
+and breaks whenever core moves. This is the production residue, counted per crate."""
+needle = "busbar_kernel::"
+# item 376 (Q11/Q32, owner-signed 2026-09-24): the needle was `busbar_core::`, a crate 673ecdaaa
+# absorbed into busbar-kernel -- so this row measured 0 against 0 whatever the plane reached, a
+# false zero over real production reach. Repointed at `busbar_kernel::` and pinned at TODAY's
+# measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
+# arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
+[rules.ports-only.max_per_crate]
+busbar-llm = 226
+# LOWERED 244 -> 226 by the llm plane reply fold: the answer path's byte steps moved into
+# busbar_plane_llm::exchange::reply and the engine calls the plane's copy. Downward only.
+# LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
+# contract's JSON-RPC reader, not the kernel's. Downward only.
+# LOWERED 282 -> 281 at the measure on the MCP-COMPAT train (T12, lk cli-5acd1cc0). Downward only.
+# LOWERED 280 -> 279 by the test-kit naming the kernel's one stand-in for the root's seam bindings
+# (test_support::install_root_seams) where it named the section-list install over two lines.
+# Downward only.
+# RAISED 279 -> 281 (measured at lane-predev-all cd8dde66c2; ARCHITECT-ruled 2026-10-03 11:40Z): commit
+# 26be1926aa (secret: env and file are plugin repos linked by pinned dependency; every reference resolves
+# through the root's secret axis) added two `busbar_kernel::config::secret::resolve_linked_string` calls,
+# one in mcp/upstream.rs and one in mcp/client/stdio.rs (lane lane-dg-auth, lanes/L2-AUTH.md). The two
+# lines are the secret axis replacing the removed busbar-mcp -> env/file secret dependency, not new reach.
+# busbar-mcp is deleted by DEL-MCP (W2), and the row goes with the crate.
+# STRUCK: busbar-mcp = 281 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
+# busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
+# instead of per signature.
+busbar-a2a = 232
+busbar-voice = 88
+
+[rules.ports-only-tests]
+why = """The same reach from test code. Tests that name core internals pin the plane to core's \
+private shape just as surely as production code does; they are reported separately so both \
+counts can trend to zero at their own pace."""
+# item 376 (Q11/Q32, owner-signed 2026-09-24): same needle repair as ports-only above, pinned at
+# TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
+[rules.ports-only-tests.max_per_crate]
+# RAISED 995 -> 996 (the step-34a proof test's one busbar_kernel line; GRANT 2, declared above;
+# drains at D3).
+# LOWERED 996 -> 980 at the measurement by DEL-REQLOG (reqlog_dispatch_tests and the chain reads in
+# unit/tests/{audit,chain}.rs deleted).
+# RAISED 980 -> 1027 at the measurement by #372 (token-sealed B, lane-gg-token-helper): the llm tests
+# no longer mint their own tokens (a mint is legal only in the kernel) and take them from
+# `busbar_kernel::test_support::tokens`, 47 added `busbar_kernel::` lines across the engine and unit
+# tests (RESOLVE c4, ARCHITECT to re-read).
+busbar-llm = 1027
+# STRUCK: busbar-mcp = 185 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
+busbar-a2a = 98
+busbar-voice = 43
+
+# ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
+[rules.no-uninstalled-seam]
+why = """An installable seam (a substrate `install_*` / `set_*_factory` that fills a process-wide \
+static) is a promise that boot fills it. A seam only the test kit installs is a seam production \
+never fills — the stream-translator factory fault that made real streams pass through \
+untranslated while every test was green."""
+# BOTH HALVES of the substrate are in the kernel today. The value families split into
+# `busbar-substrate-values` so a plane's closure resolves no hyper/reqwest/tokio edge, taking
+# `install_protocols`, `install_stream_translator_factory` and `install_diagnostics` with them; that
+# crate is deleted (#83a SD-8) and the three seams are the kernel's again (`proto/installed.rs`,
+# `diagnostics/mod.rs`), so the one kernel root reads every seam the fault it exists for lived in.
+#
+# THE ENGINE HALF IS `crates/busbar-kernel/src`, NOT `crates/busbar-substrate/src`. This row named
+# the deleted path and therefore scanned a population of ZERO on that side — a ban over nothing,
+# printing PASS. REPOINT, NOT A WIDENING, and the git evidence is rename-detection at 100%
+# similarity rather than a judgement call: `5fa320208` ("W4.b P2: absorb busbar-substrate ENGINE
+# into busbar-kernel; delete busbar-substrate") carries
+# `R100 crates/busbar-substrate/src/rate_apply.rs -> crates/busbar-kernel/src/rate_apply.rs` and
+# `R100 crates/busbar-substrate/src/ingress/arrival.rs -> crates/busbar-kernel/src/ingress/arrival.rs`,
+# and `673ecdaaa` ("W4.a: absorb busbar-core INTO busbar-kernel") carries
+# `R099 crates/busbar-core/src/plane/registry.rs -> crates/busbar-kernel/src/plane/registry.rs`.
+# Measured at `5fa320208^`: `crates/busbar-substrate/src` held ELEVEN `pub fn install_*` seams and
+# `crates/busbar-core/src` held SIX; all seventeen stand today under `crates/busbar-kernel/src` at
+# the same relative path, nine of them at the SAME LINE NUMBER. The subject moved; the name did not.
+seam_root = ["crates/busbar-kernel/src"]
+seam_name_pattern = '^(install_[a-z0-9_]+|set_[a-z0-9_]+_factory)$'
+# A file whose path contains one of these is NOT production and cannot count as an installer.
+non_production_path_fragments = ["testkit", "test_support", "plugin-testkit", "fixtures.rs"]
+# A seam DEFINED under the substrate's own test kit is a fixture install hook, never a production
+# promise, so it is not counted at all.
+#
+# `/test_support/` IS THE KERNEL'S TEST KIT UNDER ITS CURRENT NAME — a REPOINT following a rename,
+# not a widening. `e8d4e7120` carries `R100 crates/busbar-kernel/src/testkit/mod.rs ->
+# crates/busbar-kernel/src/test_support/seam.rs` (Locked Decision #33: the kernel ships no
+# "testkit"), and `crates/busbar-kernel/src/lib.rs` declares the module
+# `#[cfg(any(test, feature = "test-support"))] pub mod test_support;` — nothing under it exists in a
+# production build, so a seam defined there is a promise production cannot make or break. The
+# CALLER side of this rule already reads `test_support` as non-production
+# (`non_production_path_fragments`); without the definition-side twin, a fixture hook there
+# (`install_test_mcp_runtime_factory`) could only be satisfied by a FAKE production installer. It
+# read green until 87ec372e2 only because its one caller sat in a `#[cfg(test)] fn` of
+# busbar-core-admin/src/lib.rs, which this scanner (it tracks `#[cfg(test)] mod`, not fns) took
+# for production. A seam anywhere else under `seam_root` is still counted; the selftest holds both.
+exempt_seam_path_fragments = ["/testkit/", "/testkit.rs", "/test_support/"]
+max_uninstalled = 0
+
+# ── 5. neutral-no-dialect ────────────────────────────────────────────────────────────────────────
+[rules.neutral-no-dialect]
+why = """The neutral crates (busbar-core, busbar-substrate, busbar-api) must not know a dialect or \
+a plane by name. This rule is a thin delegation to `cargo xtask gate plane-purity`, which owns the \
+scanner, the noun list and the frozen-wire allow-list; the construction gate only counts its \
+DIALECT and KEY rows so there is one policy, not two."""
+categories = ["DIALECT", "KEY"]
+max_hits = 0
+
+# ── 6. single-terminal ───────────────────────────────────────────────────────────────────────────
+[rules.single-terminal]
+why = """The request terminal is where a unit's end is sealed and posted once. Every extra caller \
+is a second place the money can be counted, or not counted. The named wrappers are the only \
+doors; anything else calling the terminal is a finding."""
+terminal = "finish_inner"
+allowed_callers = ["finish", "finish_admitted", "finish_rejected"]
+max_extra_sites = 0
+
+# ── 7. duplicate-dispatch (informational) ────────────────────────────────────────────────────────
+[rules.duplicate-dispatch]
+why = """How much of the two attempt twins is the same code. Informational (a WARN row, never a \
+FAIL) until the twins are merged; then it becomes moot and the rule can be retired."""
+informational = true
+twins = ["forward_with_pool_parsed_inner", "forward_once"]
+# A shared block must span at least this many source lines to be reported.
+min_block_lines = 40
+# Token-shingle width for the cheap similarity pass.
+shingle_tokens = 12
+top_pairs = 5
+# Ceiling on total duplicated lines. Informational: shown in --summary, never enforced.
+max_duplicated_lines = 0
+
+# ── 8. token-sealed ──────────────────────────────────────────────────────────────────────────────
+[rules.token-sealed]
+why = """The Teller's decision, hold and posting tokens are what make the loop's order a matter of \
+types rather than discipline: a step can only be answered with that step's token, a hold can only \
+be opened by Admit, a posting can only be minted after Audit. Every one of those constructors takes \
+a token, so a unit spelling Decision::proceed or Hold::open with its own token is the design working; \
+the forgery surface is MINTING a token. That holds exactly as long as nothing outside the kernel can \
+spell a token constructor. Every such spelling elsewhere is a forged token.
+
+The same argument covers the kernel's own VALUE constructors, which are sealed on the same seal and \
+were scanned by nothing at all until X-178: the request generation a proof is bound to, a unit's \
+origin, its session, its replay-claim key, and the end that closes it. A forged generation makes a \
+stray proof match any call; a forged origin is a plane claiming to be a tick and skipping the door. \
+"Nobody spells it outside the kernel today" is the reason to write the rule down, not a reason to \
+leave it out — a capability confined only by convention is confined until the first author who does \
+not know the convention."""
+patterns = ["Pass::mint(", "Grant::<WriteMoney>::mint(", "Grant::<Consumption>::mint(", "Grant::<Exit>::mint("]
+# ── WIDENED 2026-09-23: THIS ROW NAMED FOUR OF TWENTY MARKERS AND CALLED THAT "SEALED" ───
+#
+# `patterns` above is a list of LITERAL spellings, one per capability somebody happened to write
+# down. But `Grant<C>::mint` and `Pass<S>::mint` are ONE GENERIC CONSTRUCTOR EACH (busbar-contract/
+# src/caps/token.rs) over a SEALED marker set -- ten capabilities in caps/capability.rs, ten steps
+# in caps/step.rs. A per-marker literal list is therefore stale the moment a marker is added, and
+# this one was stale on arrival: measured on this tree, the literals reached four markers and left
+# SIX CAPABILITIES (Dial, DurableWrite, KeyHandle, Sign, AdminVerb, Recover), the ENTIRE turbofish
+# `Pass::<S>::mint(` form the kernel itself writes 31 times, the FULLY-QUALIFIED
+# `Grant::<busbar_contract::caps::C>::mint(` form it writes 42 times, and `mint_bound` in a place
+# no row of this gate looked at. A forged mint spelled any of those ways sat under a green row.
+#
+# `pattern_families` are REGEXES (not escaped literals) and they match the constructor FAMILY, so
+# an eleventh capability is covered on the day it is declared rather than on the day somebody
+# remembers this file. They are scanned with the same `allowed_root`, `exclude_files` and
+# max_sites=0 ceiling; nothing here is loosened, and a site a literal and a family both reach is
+# counted once.
+pattern_families = [
+  # The two generic constructors, in every spelling the tree actually uses: bare marker
+  # (`Grant::<Dial>`), fully-qualified marker (`Grant::<busbar_contract::caps::Dial>`), and both
+  # the unbound `mint(` and the call-bound `mint_bound(` (#74).
+  '(?<![A-Za-z0-9_])Pass::<[^<>]*>::mint(_bound)?\(',
+  '(?<![A-Za-z0-9_])Grant::<[^<>]*>::mint(_bound)?\(',
+  # The inferred-marker spelling of the same two, which `patterns` covers only for `Pass::mint(`.
+  '(?<![A-Za-z0-9_])(Pass|Grant)::mint_bound\(',
+  '(?<![A-Za-z0-9_])Grant::mint\(',
+  # QUALIFIED-PATH SYNTAX — the fourth spelling, named earlier as a gap that was not yet closed.
+  # `<Grant<Dial>>::mint(` writes the marker inside the type rather than after a turbofish `::`, so
+  # it carries no `Grant::<` for the two families above to bite on and no bare `Grant::mint(`
+  # either: measured against the pre-X-178 family set, `<Grant<Dial>>::mint(` and
+  # `<Pass<Approve>>::mint_bound(` both scored ZERO. It is ordinary Rust and it is the last way left
+  # to spell either generic constructor.
+  '<(Grant|Pass)<[^<>]*>>::mint(_bound)?\(',
+  # THE PRE-#73 TOKEN ZOO'S CONSTRUCTORS. These names are dead (caps/token.rs documents the
+  # unification) and `cargo xtask gate seal-witness` bans the identifiers outright -- but this row
+  # claims "the Teller's tokens are minted only inside the Teller", and a resurrected zoo
+  # constructor called from outside the kernel is exactly that claim being false. Two rows holding
+  # one property from two directions is the point; a name that only ONE row can see is not.
+  # `AdmitToken::mint(` is deliberately absent: it belongs to the admit-token-mint sub-row below,
+  # which is the row whose own claim text names it.
+  '(?<![A-Za-z0-9_])(UnitToken|TrustToken|UsageToken|LedgerToken|DurabilityToken|EgressAuthToken|TransportKeyToken|AdminToken|RecoveryToken|ExitToken)::mint(_bound)?\(',
+  # ── X-178: THE KERNEL'S OWN VALUE CONSTRUCTORS, WHICH NOTHING AT ALL SCANNED ──────────────────
+  #
+  # X-177 widened this row across the TOKEN family and left the kernel's other sealed constructors
+  # where it found them: unscanned. A grep of qa/ and xtask/src/ returned ZERO for every symbol
+  # below. Five of them take `&KernelSeal` exactly as `Grant`/`Pass` do (caps/token.rs:115,
+  # caps/unit_end.rs:50/115/135) or the exit token (caps/unit_end.rs:223), so each is the same
+  # forgery surface this row exists to close, and each was reachable from any crate in the tree by
+  # writing one line. Measured on this tree with all six planted in an orphan module under
+  # crates/busbar-llm/src, the pre-X-178 scanners scored ZERO hits and all three token-sealed rows
+  # stood PASS.
+  #
+  # "There is no production site outside the kernel today" is the reason to write these down, not
+  # a reason to skip them: a capability confined only by convention is confined until the first
+  # agent who does not know the convention. The kernel owns the badge press (spec Part 0, #73 at
+  # :413, hardened by #65 at :401) and a mint outside it must be impossible to spell.
+  #
+  # Each is a FAMILY, not a literal, for the same reason X-177's are: the optional `(?:…::)*` path
+  # prefix covers the fully-qualified spelling (`busbar_contract::caps::SecretOnce::mint(` is
+  # written today at crates/busbar/src/root/units_admin/tests/units_admin.rs:851), the `>?` covers
+  # the qualified-path form `<UnitEnd>::seal(`, and `(_bound)?` covers the #74 call-bound variant
+  # the day one of these grows it. A turbofish arm is deliberately absent HERE and only here: all
+  # six types are non-generic (they carry a `u64`, a `[u8; 32]`, an `OriginKind`), so `T::<X>::seal(`
+  # does not parse for any of them and an arm matching it would be an arm no tree can ever exercise.
+  #
+  # `SecretOnce::mint(` is deliberately absent from this list: its home is the VERBS unit, not the
+  # kernel, so it belongs to the `secret-once-mint` sub-row below, which is the row that can state
+  # its actual confinement. Same reason `AdmitToken::mint(` is absent.
+  #
+  # `CallId::seal(` mints the #74 generation `bound_to` compares, so a forged one makes a stray
+  # proof match any call. `Origin::seal(`'s own doc gives the attack: "a plane that could claim to
+  # be a tick could skip the door". `IdempotencyKey::mint(` is the replay-claim key and is ON THE
+  # MONEY PATH — it has NO production site anywhere in this tree, which is the strongest possible
+  # position from which to seal it, because the ceiling can be 0 with nothing to grandfather.
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*CallId>?::seal(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*Origin>?::seal(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*SessionId>?::mint(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*IdempotencyKey>?::mint(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*UnitEnd>?::seal(_bound)?\(',
+]
+allowed_root = "crates/busbar-kernel/src"
+max_sites = 0
+# ── THE BLANKET EXCLUSION IS STRUCK 2026-09-23. IT DID NOT SURVIVE, AND HERE IS WHY ─────────────
+#
+# It read `exclude_files = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]` and the
+# argument beside it was that the file is "DATA, not surface": its literal token-constructor strings
+# self-match this scanner. That argument is true about TWO LINES and the exclusion was written
+# file-wide, so it stood over the whole file — and the file is not data on disk, it is
+# `crates/busbar-contract/src/**.rs`, compiled into the shipped contract crate. A real forged mint
+# written anywhere in it was invisible: the census planted one (`Grant::<Sign>::mint(`, appended)
+# and the row stayed PASS.
+#
+# THE TWO SELF-MATCHES ARE NOW FINDINGS AND ARE REPORTED AS SUCH, zero-touch, with no plant needed:
+# `lint_rules.rs:84` (`symbol: "Grant::<Recover>::mint("`) and `:93`
+# (`symbol: "take(&Grant::<Exit>::mint("`). Both are exact matches for this rule's pattern set, both
+# sit outside `allowed_root`, and the row was green about them.
+#
+# THEY ARE NOT SILENCED HERE. A per-line pragma would be the narrow shape (`plane-purity`'s
+# frozen-wire carve-out is the model) but a pragma is a new permission, and permissions are the
+# owner's. PARK, with the recommendation: move the rule-spec literals out of Rust source into a data
+# file this gate does not walk, which removes the self-match instead of excusing it — a
+# specification that is not compiled cannot be mistaken for a call site by anything.
+# DONE 2026-10-02 (GATE-GREEN, ARCHITECT Q-GG2): the literals live in
+# `crates/busbar-contract/src/caps/fixtures/lint_rules.txt`, which lint_rules.rs reads with include_str!.
+# The construction selftest plants a real `Pass::mint(` in that fixtures directory and requires this row
+# to report it, so the move hides no mint.
+#
+# The key stays, empty, because an absent key and an empty list read the same to `list_of` and only
+# one of them is a decision somebody made.
+exclude_files = []
+# Two more of the same shape, scoped to busbar-kernel (not busbar-substrate/src/teller, which is
+# the pre-busbar-kernel path the `patterns` list above still ratchets against): `KernelSeal::
+# acquire_for_kernel(` mints the one seal every token constructor needs, and the unit crates'
+# OWN test modules call it directly to build sealed tokens for their tests (mirroring
+# busbar-contract/src/caps/tests/mod.rs) -- allowed there because production_only test-classification already
+# excludes them, never allowed from a unit's production src. `AdmitToken::mint(` is the in-flight
+# table's arrival-hold constructor; `Kernel::admit_token()` (busbar-kernel/src/teller.rs) is its one
+# named seam, so the mint itself should never be spelled anywhere else -- it is scanned only by the
+# admit-token-mint sub-rule below, not by the `patterns` list above, so each seal-site symbol has
+# exactly one scanner.
+#
+# THAT LAST SENTENCE WAS THE BUG. "Scanned only by the sub-rule, not by the patterns list"
+# is a correct description of an intent and was a false description of the code: the sub-rule
+# scanned `Grant::<Admittance>::mint\(` and NOTHING scanned the bare-marker variants, the
+# fully-qualified variant, `mint_bound`, or the pre-#73 `AdmitToken::mint(` that the sub-row's own
+# printed claim named. A symbol assigned to one mechanism and matched by neither is covered by
+# neither, and the row said PASS about it. The patterns below are widened to the same family shape
+# `pattern_families` above uses; `*_subject` is the text the row PRINTS, read from beside the
+# pattern it describes so a claim can no longer name a symbol its scan cannot see.
+kernel_seal_pattern = 'KernelSeal::acquire_for_kernel\('
+kernel_seal_subject = "`KernelSeal::acquire_for_kernel(`"
+admit_token_mint_pattern = '(?<![A-Za-z0-9_])(Grant::<([A-Za-z0-9_]+::)*Admittance>|AdmitToken)::mint(_bound)?\('
+admit_token_mint_subject = "the arrival-hold mint (`Grant::<Admittance>::mint[_bound](`, and its pre-#73 name `AdmitToken::mint(`)"
+kernel_root = "crates/busbar-kernel/src"
+max_kernel_seal_sites = 0
+max_admit_token_mint_sites = 0
+
+# ── X-178: THE ONE SEALED CONSTRUCTOR WHOSE HOME IS NOT THE KERNEL ──────────────────────────────
+#
+# `SecretOnce::mint(` mints the placeholder for a credential a verb creates ONCE, at ONE declared
+# location; if the encoded bytes do not carry the nonce exactly once at that location the unit fails
+# and the mint is reversed. That is what stops a credential-minting verb leaking its output into a
+# log, a fact, or a second copy of the response — so a forged mint is a second copy of a secret with
+# nothing to reverse it.
+#
+# Its confinement is "Verbs unit only" (caps/egress.rs:149), NOT "kernel only", and it is the only
+# one of the six that has a live production site: crates/busbar-core-admin/src/verbs.rs:285. That is
+# why it gets a sub-row with `secret_once_root` rather than a `pattern_families` entry — the family
+# list is judged against `allowed_root` (the kernel), which would stand this row RED on the single
+# call the design REQUIRES. Greening that would need a waiver for a correct call, and a waiver for a
+# correct call is how a gate learns to lie. The row that can state the real confinement is the row
+# that gets to make the claim.
+#
+# TWO TYPES, ONE SPELLING — SAID OUT LOUD BECAUSE A TEXT SCANNER CANNOT SEE IT. There are two live
+# `SecretOnce` types with two different `mint` signatures: `caps::egress::SecretOnce::mint(&Grant
+# <AdminVerb>, nonce, unit, target)` (caps/egress.rs:150) and `dest::SecretOnce::mint(&dyn
+# KernelSeal, nonce, target)` (dest.rs:379), both re-exported from the contract crate's root. This
+# pattern matches BOTH, and that is correct rather than sloppy: both docs say the verbs unit is the
+# only minter ("Verbs unit only"; "Verbs-unit-only; the seal is what says so"), so one home holds
+# for both. `dest::SecretOnce::mint` has no production caller at all today.
+secret_once_mint_pattern = '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*SecretOnce>?::mint(_bound)?\('
+secret_once_mint_subject = "the one-time secret placeholder mint (`SecretOnce::mint(`, both the capability and the destination type of that name)"
+secret_once_root = "crates/busbar-core-admin/src"
+max_secret_once_mint_sites = 0
+
+# ── 9. teller-step-order ─────────────────────────────────────────────────────────────────────────
+[rules.teller-step-order]
+why = """The loop is nine named steps in one fixed order, written once. The loop file is read as \
+the loop plus the helpers it calls (the opener is synchronous, the runner is async), and the steps \
+must appear once each in the canonical order; the session opener runs exactly the steps up to the \
+door. Exactly one loop function may exist."""
+# REPOINTED: busbar-substrate (and its teller/run.rs) was deleted in W4.b P2 (5fa320208, "absorb
+# busbar-substrate ENGINE into busbar-kernel; delete busbar-substrate"); the Teller loop moved by
+# identity to crates/busbar-kernel/src/teller.rs.
+# Verified same loop: `run_unit`/`open_unit` and the nine-step canonical order
+# (arrival/decode/authenticate/verify/approve/admit/route/meter/audit) are unchanged — `open_to_door`
+# (the governance-to-door chain both the one-shot loop and the session opener share) still runs
+# "arrival→decode→authenticate→verify→approve→admit, in the same order, minting the same tokens" per
+# its own doc comment, `under_hold` still runs route then meter, and `terminal` still calls
+# `units.audit(...)` last.
+file = "crates/busbar-kernel/src/teller.rs"
+loop_function = "run_unit"
+opener_function = "open_unit"
+door_step = "admit"
+steps = ["arrival", "decode", "authenticate", "verify", "approve", "admit", "route", "meter", "audit"]
+# A step counts only when dispatched off one of these receivers — the door driver's own `units`
+# handle, spelled either bare or as the field `Blocking` wraps it in (`self.0`) for the Route leg.
+# This is what keeps an unrelated same-named method (`HoldCell::admit`, called as `run.cell.admit(`)
+# from textually colliding with the real `Units::admit` step: `cell` is not a step receiver.
+step_receivers = ["units", "self.0"]
+# Trait-object indirections the walker must follow by METHOD call, not just by bare call:
+# `RouteAwait::route_leg` is invoked as `route.route_leg(...)`, and the one local impl of that trait
+# (`Blocking`) is where the real `Units::route` step it forwards to (`self.0.route(...)`) lives —
+# otherwise invisible to a scanner that only recurses into bare-call sites. `Abandoned::reached` is
+# the same shape one step later: `run_unit_async`'s one await hands its outcome to
+# `abandoned.reached(outcome)`, which is where the admitted path's `terminal(...)` (and so its
+# `audit`) actually lives — the OTHER call to `terminal`, from the cell-rejected short-circuit arm
+# next to it, is a bare call the walker already skips (see `preceded_by_fat_arrow` in rules.rs).
+dispatch_methods = ["route_leg", "reached"]
+# The one step a session opener runs AFTER its door, not just up to it: `open_unit` runs the SAME
+# arrival→…→admit chain as the one-shot loop, THEN records the outcome (success or refusal) through
+# the real `audit` step and returns — it never reaches `route` or `meter`, which have no Route leg or
+# spend to meter in a session that has not opened its own reservation yet. Declaring that here, rather
+# than pretending the opener stops dead at the door, is what keeps this rule from misreading the
+# opener's own documented closing step as it running a step outside its territory.
+opener_closing_step = "audit"
+max_findings = 0
+
+# ── WHAT AN ARM MAY LEGITIMATELY NOT RUN ────────────────────────────────────────────────────────
+# The rule judges EVERY PATH through the loop on its own: the steps a path calls must appear in the
+# canonical order, none twice, and a path may STOP early (that is a refusal) but may not walk PAST a
+# step it never ran. These entries are the ONLY thing that excuses walking past one — a branch is
+# not, by itself, an excuse. Each names the function whose body holds the branch, a substring of the
+# arm's own pattern text, the steps that arm does not run, and WHY. An entry that matches no arm the
+# walk reaches is itself a finding, so a refactor cannot leave a licence behind its arm.
+
+[[rules.teller-step-order.arm_may_omit]]
+function = "open_to_door"
+arm = "Authenticated::Challenge"
+steps = ["verify"]
+why = """A challenge round has no principal and no destination set, so there is nothing for Verify \
+to seal. Verify answers WHERE a unit may go FOR A NAMED PRINCIPAL and seals that answer with the \
+trust grant Route and Meter consume; a round that dials nothing has nothing to seal, and recording \
+the anonymous identity there would put an identity nobody established onto the unit's own record. \
+The sealed set stays EMPTY, which every later seat already accepts. The arm still faces Approve \
+(the hook-veto seat, an opinion about the exchange rather than about where it goes) and Admit (the \
+door, where a frozen group and a disabled bucket are read), so the two POLICY seats are not \
+skipped — only the one step that cannot apply to a round with no principal."""
+
+[[rules.teller-step-order.arm_may_omit]]
+function = "run_unit_async"
+arm = "Some(outcome)"
+steps = ["route", "meter"]
+why = """The cell refused a second hold: the unit lost the race at the door and never reached the \
+wire, so there is no Route leg to await and no spend to meter. It still ends where every admitted \
+unit ends — `terminal`, and so the real `audit` step — which is exactly why this path has to be \
+allowed to reach Audit without Route and Meter rather than pretended to stop at the door."""
+
+[[rules.teller-step-order.arm_may_omit]]
+function = "under_hold"
+arm = "Err(refusal)"
+steps = ["meter"]
+why = """The Route leg refused, so there is no completed leg to meter. The refusal becomes the \
+unit's outcome and the same terminal audit seals it; metering a leg that did not happen would post \
+usage against nothing."""
+
+# ── 10. one-teller-loop ──────────────────────────────────────────────────────────────────────────
+[rules.one-teller-loop]
+why = """Each plane enters the loop from one place, so a unit cannot be run twice or half-run. The \
+legacy adapter (`run_gauntlet`) is the coexistence shim the planes migrate off one at a time; its \
+call-site count is a ratchet the owner drives to zero and never loosens."""
+loop_verb = "run_unit"
+# REPOINTED alongside teller-step-order above: busbar-substrate/src/teller was a directory (run.rs
+# plus siblings); the loop's file is now crates/busbar-kernel/src/teller.rs, directly under the
+# crate's src/ rather than its own subdirectory, so the narrowest existing directory that still
+# resolves the rule's own "does this root exist" check is the crate root. No production call site
+# inside teller.rs calls `run_unit(` on itself today, so this exclusion is inert either way, and
+# nothing outside busbar-kernel is exempted by widening it from the file to the crate: `planes`
+# (the only crates this row can flag) never includes busbar-kernel.
+loop_root = "crates/busbar-kernel/src"
+max_callers_per_plane_crate = 1
+legacy_verb = "run_gauntlet"
+# Today: the LLM and A2A planes. The MCP plane's site left with `busbar-mcp`, and the host-seam
+# adapter body (`EngineHost::run_gauntlet`) was deleted with it (ARCHITECT Q1c). Down to 0 when the
+# planes move.
+max_legacy_sites = 2
+
+# ── 11. no-response-escapes-audit ────────────────────────────────────────────────────────────────
+[rules.no-response-escapes-audit]
+why = """A plane's step files decide; only its Audit step answers. A function under the plane's \
+step directory that returns a `Response` from anywhere but `audit.rs` is a way for a unit to end \
+without being posted — the exact hole the loop exists to close."""
+root = "crates/busbar-llm/src/unit"
+allowed_files = ["audit.rs"]
+# THE SCOPE'S ONE EXEMPTION (spec #28; ARCHITECT RULING, SLOT NODE-AUDIT): a plane's unit answers with
+# the two-variant `PlaneAnswer` — `Unary(status, headers, body)`, turned into a response only on the
+# root's audited exit, or `Live(Response)`, a live body governed at admit. `PlaneAnswer::Live` is the
+# one carrier a response crosses the plane's boundary in, so a function returning a `PlaneAnswer` is
+# not an escape. It is stated HERE, once, for the whole scope; there is no per-function waiver, and a
+# carrier that is itself a bare `Response` is refused by the rule.
+answer_carrier = "PlaneAnswer::Live"
+max_escapes = 0
+
+# ── 12. terminal-doors-in-audit-step ─────────────────────────────────────────────────────────────
+[rules.terminal-doors-in-audit-step]
+why = """The terminal doors (`finish_admitted` / `finish_rejected`) seal and post a unit. In the \
+rebuilt plane they are called from its Audit step and nowhere else, so every unit is posted exactly \
+once by the one step whose job that is. Red by design until that step exists: every call from the \
+legacy ingress is a site the rebuild must move."""
+crate = "busbar-llm"
+doors = ["finish_admitted", "finish_rejected"]
+allowed_file = "crates/busbar-llm/src/unit/audit.rs"
+max_extra_sites = 0
+
+# ── 13. one-pick-site ────────────────────────────────────────────────────────────────────────────
+[rules.one-pick-site]
+why = """The lane pick has two legitimate callers: the Route loop and the fallback-pool re-entry. \
+A third is a second selection policy growing beside the first."""
+verb = "pick_among"
+max_sites = 2
+
+# ── 14. no-unit-crates (BUSBAR-1.6.0.md THE DESIGN, §1; fold F14) ──────────────────────────────────
+# The section 1.1 LINE-COUNT ceilings that lived here (`kernel_ceiling`, `caps_contract_ceiling`,
+# `union_ceiling`, the `kernel_files.*` split) are DELETED, with `[gate.surface_ceilings]`, the
+# `[gate.ceiling_raises]` / `[gate.ceiling_reservations]` transactions and the `ceiling-rose` /
+# `ceiling-slack` rows that policed them: size is not a CI check (owner 2026-10-02); it is measured
+# by hand at PERF with `cargo xtask loc`. What stays is the one ceiling that was armed at ZERO,
+# because a unit crate coming back is architecture, not size.
+[rules.no-unit-crates]
+why = """No `busbar-unit-*` crate. Fold F14 2/2 deleted the last one; the kernel's units are kernel \
+modules or plugins behind the ABI, and a crate matching `unit_crate_glob` coming back is the split \
+the folds undid. Armed at 0: the row is RED for any such crate, on disk or in the tree handed to the \
+gate, and there is no figure to raise."""
+unit_crate_glob = "busbar-unit-*"
+
+# ── 15. manifest-allowlist (BUSBAR-1.6.0.md THE DESIGN, §2) ────────────────────────────────────────────────────
+[rules.manifest-allowlist]
+why = """Core → plugin, never plugin → core. A plugin-kind crate (plane, store, auth, hook, export, \
+secret) may name `busbar-contract` and the closed grammar it is written on (`busbar-grammar`) freely; \
+every other workspace crate it names is either an \
+automatic RED (busbar-kernel, a busbar-unit-*, another plane, a transport — the \
+coupling the ABI exists to prevent, and no allow-list can excuse it) or must be on the reviewed \
+list below, named once with its reason. Parsed out of every SHIPPED dependency table each crate \
+declares — `[dependencies]`, `[build-dependencies]` and the per-target forms of both, with \
+`package = "…"` and workspace renames resolved — through the one manifest reader (xtask \
+`manifest::shipped_dep_names`). It read `[dependencies]` alone until 2026-09-09, on the stated \
+ground that the other tables "never ship in the plugin binary": a `[target.'cfg(unix)'.dependencies]` \
+entry ships in every Linux artifact this tree builds, and a red-team pass carried a whole plane into \
+a transport through that table with every gate green. `[dev-dependencies]` is still out — a test \
+edge is not a shipped edge, and it is scored on `kind-isolation:test-deps` instead of here. \
+`cargo metadata` is \
+consulted when present to widen the same check to transitive path/workspace deps, and skipped \
+(noted, not failed) when cargo is unavailable, keeping this gate cargo-optional."""
+# Every dependency a plugin-kind crate may name beyond busbar-contract, with the review recorded in
+# the commit that added it: busbar-api is the 1.5.5-era loader ABI every example plugin bridged
+# through until it moved onto busbar-contract (busbar-plugin-sdk, the other half of that bridge, is
+# struck: it merged INTO busbar-contract, #84, so a plugin names the contract alone); busbar-grammar is the
+# closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
+# directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
+# third-party crates.
+reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-grammar"]
+# busbar-llm-codec and busbar-voice-codec are GONE from this list (owner ruling R7, 2026-09-27, #39):
+# both dissolved into their plane's own `codec` module, so neither plane NAMES a codec crate at all.
+# Per-crate additions beyond the global list above, each a one-line review.
+#
+# OWNER RULING 2026-09-28 (PLUGIN LIBRARIES): "a plugin may use any third-party library it needs to
+# do its job" (tokio, hyper, h2, tracing, ...) supersedes the old posture of reviewing a transport's
+# runtime/wire-protocol crates one at a time. The four `busbar-transport-*` rows below are that
+# ruling applied: each crate's OWN direct third-party dependencies, named once. The two walls that
+# remain are unaffected — a transport's closure still holds no busbar-* crate but busbar-contract
+# (the RED (kernel/caps/unit/plane/transport) branch above, never waivable), and the host still owns
+# OS sockets, TLS, ALPN and pools (busbar-core-connector; BUSBAR-1.6.0.md THE DESIGN, §5) regardless
+# of which wire library a transport links to reach them.
+[rules.manifest-allowlist.reviewed_extra]
+busbar-transport-stdio = ["tokio", "futures"]
+# The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
+# the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
+busbar-plane-mcp = ["base64", "indexmap"]
+# Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
+# (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
+# those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
+# plane names another plane" coupling section 1.2 forbids. Tracked here, not waved through, until
+# the codec split lands and the dependency disappears (BUSBAR-1.6.0.md #39: codecs fold into the plane).
+# STALE — verified 2026-09-07: NONE of the four edges below exists at this commit. Every plane crate
+# is exactly `busbar-contract` + its own codec and nothing else; the planes are the cleanest seam in
+# the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
+# is still there. Delete it (BUSBAR-1.6.0.md THE DESIGN, §2) — noted here, not done here, because a rule
+# change is not this commit's business.
+[rules.manifest-allowlist.known_red_deps]
+busbar-plane-llm = ["busbar-llm"]
+# busbar-plane-a2a HAS NO ROW, for the same reason busbar-plane-mcp lost its one: the codec fold
+# left its manifest at `busbar-contract` plus two third-party crates, and it names no engine crate
+# in either spelling. The edge that exists now runs the other way.
+# busbar-plane-mcp HAS NO ROW: the codec fold left its manifest at `busbar-contract` + `busbar-api`
+# + three third-party crates, and it names no engine crate in either spelling. The edge that exists
+# now runs the other way — `busbar-mcp` reads the plane's wire dialect — which is the direction a
+# plane's definition asks for and not a coupling this rule is about.
+busbar-plane-streaming = ["busbar-voice"]
+
+# ── 16. source-denylist (BUSBAR-1.6.0.md THE DESIGN, §2) ───────────────────────────────────────────────────────
+[rules.source-denylist]
+why = """The pure kinds (plane, hook, pure auth, egress-auth-scheme) do no I/O by construction: no \
+socket, no file, no process, no OS handle, no environment read, no HTTP client. A plugin that opens \
+one of these itself is a plugin the deadline/blocking-pool machinery around the I/O kinds was never \
+built to bound. The allow-list is empty at hour 0, same as section 1.2 says; every entry added later names \
+the exact crate and pattern reviewed."""
+patterns = [
+  'std::net', 'std::fs', 'std::process', 'std::os', 'std::env',
+  'tokio::net', 'tokio::fs', 'tokio::process',
+  'async_std', 'libc', 'reqwest', 'hyper',
+]
+# kinds scanned: plane, hook, auth (gate.plugin_kinds); store/secret/export are I/O kinds and are
+# out of scope for this rule by design (section 1.2 exempts them). UNTIL 2026-09-22 THIS LINE READ
+# `plane, hook, pure_auth, egress_auth`, in the present tense, and that is the defect below.
+# `pure_auth`/`egress_auth` named NO key in [gate.plugin_kinds] -- both resolved to an EMPTY glob
+# list, so the whole auth kind went unscanned. Proven, not inferred: `use std::net::TcpStream`
+# planted in crates/auth-static-plugin/src/lib.rs scored `PASS denylist:hits`.
+# The spelling is stale against LOCKED DECISION #3: auth is ONE kind -- inbound-verify and
+# outbound-sign are two OPERATIONS of it, direction is a usage mode, and there is no separate
+# egress-auth kind. The config still encoded a split the architecture cancelled.
+kinds = ["plane", "hook", "auth"]
+# Reviewed exceptions: crate -> list of patterns from above accepted for that crate, with the reason
+# living in the commit that added it. Empty at hour 0.
+[rules.source-denylist.allowlist]
+
+# EDGE EXEMPTIONS — a ruling about an EDGE, keyed on `(dep, via)`, stated ONCE for the whole tree.
+#
+# This is NOT the per-crate waiver seam. `qa/denylist-allow.toml` answers "this CRATE may reach this
+# offender"; an entry here answers "this EDGE is not what the ban above is about", for every pure
+# kind at once, and it is the shape a decision takes when the same reasoning has been rediscovered
+# crate by crate. Four `[[allow]]` rows carried one identical paragraph about `cpufeatures` before
+# this table existed, two of them already red as stale, and enrolling the auth kind was about to
+# mint a fifth and a sixth. A rule restated once per rediscovery is not a rule: it is the tree
+# losing the ability to say what its own policy is.
+#
+# IT EXEMPTS THAT PATH ONLY, and that limit is the whole safety of it. An entry does not waive the
+# offender — it waives reaching the offender THROUGH `via`. A crate that reaches the same `dep` by
+# any other route is still a hit, computed by the same `find_bypass_path` walk a `via`-narrowed
+# `[[allow]]` entry uses, so an exemption can never quietly disarm the ban it narrows.
+#
+# `symbols` is the EVIDENCE, and it is required: it enumerates every symbol the `via` crate takes
+# from `dep`, so the claim "no I/O primitive is reachable through this edge" is a list a reviewer
+# can check against the crate's source rather than an assertion. `reason` and `owner` are required
+# for the same reason they are in `qa/denylist-allow.toml` — an entry missing any of the three
+# refuses the whole run (`xtask/src/denylist.rs::edge_exemptions_of` panics).
+#
+# AND IT IS CHECKED BOTH WAYS, exactly as the waiver file is: an exemption that suppresses NO hit is
+# RED (`denylist:stale-waivers`). An exemption nobody has to defend reads to the next reviewer as a
+# live, reviewed fact about the tree, and after the edge is gone it is not a fact at all.
+[[rules.source-denylist.edge_exemptions]]
+dep = "libc"
+via = "cpufeatures"
+symbols = ["getauxval", "sysctlbyname"]
+reason = "OWNER RULING 2026-09-22, docs/design/BUSBAR-1.6.0.md: cpufeatures -> libc is NOT an I/O reach. NEEDED, and it cannot be switched off: in sha2 0.10.9 cpufeatures is a TARGET-GATED hard dependency for aarch64, x86_64 and x86 -- every platform busbar ships on -- declared behind NO feature, so force-soft forces the software hash path and still leaves the edge resolved. RIGHT CRATE: it is RustCrypto's standard runtime detector for selecting hardware SHA acceleration. ENTIRE libc SURFACE, enumerated from its source and listed in `symbols` above: getauxval and sysctlbyname, plus the c_ulong/c_void type aliases. Two function calls, both CPU-capability queries. This rule's own `why` forbids a socket, a file, a process, an OS handle, an environment read and an HTTP client; a CPU-capability query is none of those six. SCOPE, load-bearing: this exempts THAT PATH ONLY -- a pure crate reaching libc by any OTHER route is still a hit, which is the per-crate waivers' own words (re-review if any other path to libc appears) kept as the rule. getrandom -> libc is explicitly NOT ruled on here: it is a different edge with a different argument (entropy drawn by the codec instead of arriving through Ctx) and it keeps its per-crate waiver in qa/denylist-allow.toml until someone rules on it."
+owner = "owner, 2026-09-22"
+
+# ── 17. lean-core (BUSBAR-1.6.0.md THE DESIGN, §1) ─────────────────────────────────────────────────────────────
+[rules.lean-core]
+why = """The kernel and the unit crates have no closed enum a plugin could need to extend, and no \
+open-vocabulary word of their own: every dialect name and plane key is a runtime registration, never \
+a literal a kernel or unit file compares against. This mechanically checks every string literal in \
+busbar-kernel and busbar-unit-* against section 1.3's own pinned word list plus the dialect names it names \
+by name in section 6 — the exact list the architecture text gives, not a guess at "the union of all \
+registered keys" (that union only exists at runtime; approximating it with the pinned list is what \
+the design's own doc-scan already does, so this rule reuses it rather than inventing a second one). \
+A literal used in an `if kind == …` or `match` arm is still a string literal and is caught the same \
+way."""
+# REPOINTED (item 379). The glob was `busbar-unit-*`, which since W2.c (2c9eddecf, twelve
+# `busbar-unit-*` crates became eight `busbar-kernel-<name>` crates) matches ONE crate,
+# `busbar-unit-transport-key` — so the eight crates the unit family became, 167 files, were
+# unscanned at `max_hits = 0` while this rule's two siblings (`unit-no-wall-clock`,
+# `unit-no-finding-ids`) had already been repointed at `busbar-kernel-*`. The glob now names the
+# family the units became, and the one surviving `busbar-unit-*` crate is kept BY NAME rather than
+# dropped, so the repoint narrows nothing — and a name, unlike a glob, goes red under `qa-names`
+# the day that crate is retired. Measured at e970ed0ae: the widening adds ZERO findings (the same 14
+# offenders, all in busbar-kernel); a planted `const PLANTED_LABEL: &str = "anthropic";` in
+# `crates/busbar-kernel-ledger/src/cost/mod.rs` now counts (14 -> 15), where the old scope never
+# opened the file (14 -> 14).
+# RETIRED BY NAME (fold F14 2/2): `busbar-unit-transport-key` is deleted; its code became
+# `busbar-kernel-identity`'s `transport_key` module (itself deleted by TRANSPORT-STACK: TLS is
+# core-only connection security, `busbar-core-connector`), so striking the name narrows nothing.
+crates_kernel = ["busbar-kernel"]
+crate_glob = "busbar-kernel-*"
+# section 6's dialect names + the section 1.3 pinned word list, verbatim.
+words = [
+  "anthropic", "openai", "responses", "gemini", "bedrock", "cohere", "mcp", "a2a", "voice",
+  "chat", "completion", "prompt", "assistant", "agent", "realtime", "speech", "transcribe",
+  "audio", "image", "embedding", "model", "tool call", "sampling", "mail", "message queue",
+  "tunnel",
+]
+# ZERO, and it got here the way the ratchet said it would. The 21 were busbar-unit-auth's
+# fourteen-rung dialect ladder and busbar-unit-egress-auth's forwarded-client-header table, both of
+# which named vendors literally inside a kind-neutral unit. Neither needed the "registry lookup in
+# the unit crate" this comment used to promise: both tables already existed, contributed, on the
+# plugin side of a face — the ladder as busbar-plane-llm's `claims.rs` declaration through the
+# contract's own `claims_from_ladder!`, the header table as busbar-llm's `engine/egress.rs` — so the
+# neutral copies were deleted rather than re-homed. This is a floor now, not a ceiling: a unit crate
+# that names an open-vocabulary word again is RED with no slack to hide in.
+max_hits = 0
+# SITE-LEVEL review (`<path> :: <literal text>`, the exact string in the exact file, never a whole
+# file; ARCHITECT 2026-10-02 STANDING-REDS option 2: an entry follows its literal when lines move, and
+# one that matches no literal is reported stale): busbar-core's config absorption into
+# busbar-kernel (W4.a) brought these findings over as-is; each is a literal `model`/`mcp`/`prompt`/
+# `completion` this rule's word list bans as DIALECT vocabulary, but every one below is actually one
+# of three things that are NOT dialect leaking into the kernel:
+#   (a) the operator's own `model:`/`pool.members[].model:` config field name, quoted back in a
+#       validation or 404 message — renaming it would desync the message from the key the operator
+#       actually wrote in their YAML, which is a worse regression than the word appearing here;
+#   (b) a FROZEN wire-format literal (a `config-schema.snapshot.json` key, a `--migrate-config`
+#       rewrite table entry, a Cargo feature name) that computes or quotes the literal key it exists
+#       to rename or record — the migration's correctness DEPENDS on spelling the old/new key exactly;
+#   (c) a JSON/metrics field name mirroring a real struct field or wire response shape, where
+#       renaming the label would desync it from the actual API/metrics key it names.
+# Two related sites were left RED rather than waived here: `plane_host/mod.rs`'s "no default chat
+# protocol is installed" / "the sampling completion's body could not be read" genuinely bridge an
+# LLM-dialect concept (chat completions, MCP's sampling verb) from inside kernel-level code — real
+# dialect coupling this rule is right to catch, not a frozen-wire term, and worth an owner's decision
+# on relocating the bridge rather than a wording change that would hide what it does. `cost.rs`'s
+# `"Prompt"` display label is left RED too: it is the operator/customer-facing billing-dimension name
+# the pricer renders on usage reports, and changing operator-visible billing terminology is not a
+# call this rule's cleanup gets to make unilaterally.
+known_sites = [
+  "crates/busbar-kernel/src/appbuild.rs :: model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
+  "crates/busbar-kernel/src/appbuild.rs :: model '{model}' references unknown provider '{}'",
+  "crates/busbar-kernel/src/appbuild.rs ::   model {} via {} ({}) max {}{}",
+  "crates/busbar-kernel/src/appbuild.rs :: pool '{name}' references unknown model '{}'",
+  "crates/busbar-kernel/src/config/migrate.rs :: `pools.{}.members[].target:` (renamed to model)",
+  "crates/busbar-kernel/src/config/migrate.rs :: prompt",
+  "crates/busbar-kernel/src/config/migrate.rs :: model",
+  "crates/busbar-kernel/src/config/migrate.rs :: pools.{pname}.members[].target -> model",
+  "crates/busbar-kernel/src/config/mod.rs :: completion",
+  "crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference.",
+  "crates/busbar-kernel/src/config/pools.rs :: a bare member name, or a member object `{ model, weight, ... }`",
+  # Moved from the retired shared value crate with the code that carries them (#83a SD-8), reviewed
+  # there and frozen: the omitted-`protocol:` default of the 1.5.3 providers.yaml grammar, and the
+  # published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
+  "crates/busbar-kernel/src/config/providers.rs :: anthropic",
+  "crates/busbar-kernel/src/diagnostics/mod.rs :: rate_card entry prices a model at ALL ZERO (metered as free, uncapped)",
+  # `crates/busbar-kernel/src/config/providers.rs:75` STRUCK: the provider config shapes moved to
+  # the LLM plane side and left that file 20 lines long, so the pin named a line that does not exist
+  # and waived nothing. A reviewed site that points at nothing is a waiver waiting for the next
+  # literal written there.
+  "crates/busbar-kernel/src/config/transaction.rs :: loom-model",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' references unknown provider '{}'",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has max_concurrent: 0; must be >= 1, or omit it (default = unbounded)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has max_requests: 0; a lane with a zero lifetime budget never admits a request — use a positive cap, or omit it (default -1 = unlimited)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to disable the per-attempt cap",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has an empty upstream_model; set a non-empty provider model id, or omit it to use the config key",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool name '{}' conflicts with model name '{}'; pools and models must have distinct names",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: provider name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a provider reachable via the adhoc /admin/<model> route is unreachable to clients; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: provider name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a provider reachable via the adhoc /{}/<model> route is unreachable to clients; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool '{}' member '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to inherit the model's setting",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool '{}' member '{}' references model '{}', which is defined but whose provider is unresolvable; fix that model's provider reference (the model's 'references unknown provider' error is reported separately)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool '{}' references unknown model '{}'",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: provider '{provider_name}' base_url must use https for a public host (got '{base_url}'); plaintext http is permitted only for a private/loopback local-model upstream",
+  "crates/busbar-kernel/src/endpoints.rs :: model",
+  "crates/busbar-kernel/src/ingress/mod.rs :: governance: no configured rate for model; rejecting (rate_card is authoritative and complete)",
+  "crates/busbar-kernel/src/door.rs :: no configured rate for model '{name}'",
+  "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
+  "crates/busbar-kernel/src/ingress/mod.rs :: /{provider}/{model}/v1/messages",
+  "crates/busbar-kernel/src/snapshot/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
+  "crates/busbar-kernel/src/snapshot/money.rs :: model",
+  "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
+  "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
+  "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
+  "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
+]
+
+# ── 18. no-default-bodies (BUSBAR-1.6.0.md THE DESIGN, §8) ─────────────────────────────────────────────────────
+[rules.no-default-bodies]
+why = """A kind trait with a default method body is a place a plugin's behaviour was decided for it \
+without the plugin's author ever writing a line — the opposite of "every trait method implemented". \
+Every method on every kind trait below must be bodiless (`;`), so implementing the trait is the only \
+way to answer it."""
+file = "crates/busbar-contract/src/kinds.rs"
+plane_file = "crates/busbar-contract/src/plane.rs"
+transport_file = "crates/busbar-contract/src/transport/mod.rs"
+# ONE auth kind, ONE auth trait (DECISIONS #3, owner 2026-09-22). `EgressAuthScheme` stood here
+# until the `Kind::EgressAuth` variant, the `EgressAuthKind` marker and the trait itself were struck
+# from busbar-contract: outbound-sign is an OPERATION of the auth kind and direction is a property
+# of the leg, so there is no second kind trait for this rule to scan. The rule's own refusal is what
+# requires the strike to land in the same commit as the deletion — a trait it cannot find is a trait
+# it cannot judge, and a ceiling of 0 met by scanning nothing is the passing answer to every ban.
+# `Store` stood here until the `kinds::Store` journal trait was struck from busbar-contract
+# (STORE-NOALLOC, ARCHITECT R7 2026-10-01): it had no implementor and no caller; the store kind is
+# its v3 table and `abi::sdk::store::StoreSlots`. Struck in the same commit, as above.
+traits = [
+  "Plane", "SessionPlane", "Transport",
+]
+max_defaulted = 0
+
+# ── 19. sealed-unit-traits (BUSBAR-1.6.0.md THE DESIGN, §8) ────────────────────────────────────────────────────
+[rules.sealed-unit-traits]
+why = """The trait a unit implements to be called by the Teller is sealed on a private supertrait, \
+so no plugin crate can implement it and stand in for a unit the kernel itself must own. \
+busbar-kernel-breaker's `Breaker` trait does this today (`mod sealed { pub trait Sealed {} }`, \
+`pub trait Breaker: sealed::Sealed`); this rule requires the same shape of every unit's own \
+kernel-facing trait as each is written. NOT every `pub trait` in a busbar-unit-* crate is one of \
+these — most are internal ports (a header reader, a journal sink) a unit crate defines to keep its \
+own tests fast, never the thing a plugin would implement to BE the unit — so the check is scoped to \
+the explicit list below, maintained by the owner as each unit's sealed shape lands."""
+# Ratchet: 0. The one unsealed trait, `Admission`, left with busbar-kernel-budget (deleted whole,
+# ARCHITECT ruling 2026-09-30): its admission stack had no production caller.
+max_unsealed = 0
+# crate, trait, file (relative to repo root) — the unit's own kernel-facing trait.
+[rules.sealed-unit-traits.traits.breaker]
+crate = "busbar-kernel-breaker"
+file = "crates/busbar-kernel-breaker/src/lib.rs"
+trait = "Breaker"
+
+[rules.sealed-unit-traits.traits.audit]
+crate = "busbar-kernel-audit"
+file = "crates/busbar-kernel-audit/src/record.rs"
+trait = "Audit"
+
+# ── 20. hold-discipline (BUSBAR-1.6.0.md THE DESIGN, §8) ────────────────────────────────────────────────
+[rules.hold-discipline]
+why = """Every path takes its Hold exactly once and every path that takes one actually settles it. \
+Five mechanical proxies for that, each a pattern match over busbar-kernel and busbar-unit-* \
+production code, each reported only where its subject exists (a crate that has none of the pattern \
+yet is a vacuous PASS, not a lie): no `?` or early `return` between a HoldCell take and its settle; \
+no identifier typed `Hold` closed over by a `catch_unwind` closure; no `JoinHandle::abort`; no \
+`mem::forget`/`drop(...)` of a value whose name says it is a hold; and a cancellation-token check \
+before every `.await` inside the route step, wherever the route step is async."""
+# REPOINTED (item 380), the same dead glob as `lean-core`'s: `busbar-unit-*` matches only
+# `busbar-unit-transport-key`, which holds no hold, so the money settle site
+# (`crates/busbar-kernel-ledger/src/settle.rs`) and the budget crate's hold cell
+# (`crates/busbar-kernel-budget/src/lib.rs`) were outside every one of the five proxies. The glob
+# now names the eight `busbar-kernel-<name>` crates the units became, and the surviving unit crate
+# is kept by name so nothing leaves scope. Measured at e970ed0ae: all four rows that were PASS stay
+# PASS over the wider set (no finding added), and a planted `let hold = cell.take(); let x =
+# maybe()?; Posted::settle(hold, x)` in `settle.rs` now reds `hold-discipline:no-early-exit`, which
+# under the old glob stayed PASS.
+# RETIRED BY NAME (fold F14 2/2): the last unit crate is deleted and its code sits in
+# `busbar-kernel-identity`, inside `scope_crate_glob` below, so nothing leaves scope.
+scope_crates_kernel = ["busbar-kernel"]
+scope_crate_glob = "busbar-kernel-*"
+take_pattern = '\.take\('
+settle_pattern = '::settle\(|\.settle\('
+catch_unwind_pattern = 'catch_unwind'
+hold_word = "Hold"
+abort_pattern = '\.abort\('
+forget_or_drop_pattern = '(?:mem::forget|drop)\(\s*&?\s*[A-Za-z_][A-Za-z0-9_]*[Hh]old[A-Za-z0-9_]*'
+# (e) `cancellation-before-await`: the kernel route step it once scanned is sync, so the row was
+# vacuous there. Its subject is the plugin dispatcher's
+# deadline/cancel path: in a function of `cancel_scope_dirs` that names a cancel or a deadline, a
+# money hold (`hold_open_pattern`) is released or settled (`hold_close_pattern`) before any `.await`
+# or `return` that follows the cancel.
+# The dispatcher's cancel paths hold no money hold today; the ONE money `.await` in the tree is the
+# teller's `under_hold(...).await` (crates/busbar-kernel/src/teller.rs), so the row scans both: a
+# cancel or deadline path growing around it is held to the rule the day it appears.
+cancel_scope_dirs = ["crates/plugin-loader/src/dispatch/", "crates/busbar-kernel/src/teller.rs"]
+cancel_path_pattern = 'slot::CANCEL|DropClient|drop_client|deadline'
+hold_open_pattern = 'Hold::open|HoldCell|\blet\s+(?:mut\s+)?\w*[Hh]old\w*\s*[:=]'
+hold_close_pattern = '::settle\(|\.settle\(|::release\(|\.release\('
+max_early_exit = 0
+max_catch_unwind_capture = 0
+max_join_abort = 0
+max_forget_or_drop = 0
+max_await_with_open_hold = 0
+
+# ── 21. forbid-unsafe (BUSBAR-1.6.0.md THE DESIGN, §2) ─────────────────────────────────────────────────────────
+[rules.kernel-seal-impls]
+why = """`busbar_contract::plugin::KernelSeal` is what every kernel-built view the contract declares \
+takes to be constructed: a verified destination, the unit a plane reads, a one-shot secret, a \
+transport key handle. It has to be a public trait, because busbar-contract's caps module implements it on every token \
+and sits ABOVE the contract, and Rust cannot say "implementable by exactly one other crate". So the \
+type system does not close it and this scan does: outside busbar-contract's caps module, an in-tree crate that \
+implements this trait can mint its own kernel evidence, and it does not need a token, a kernel or a \
+review to do it. Scanned INCLUDING test code on purpose -- every site this rule found on the day it \
+was written was in a test module, so a production-only reading of it would be vacuous by \
+construction and would prove nothing. This is the in-tree half only: an out-of-tree plugin can still \
+implement the trait, and per the trust policy a loaded plugin is trusted code, so that is not a line \
+this rule pretends to draw."""
+pattern = 'impl(<[^>]*>)?\s+(busbar_contract::)?(plugin::)?KernelSeal\s+for'
+allowed_root = "crates/busbar-contract/src/caps"
+max_sites = 0
+# Ratchet, NOT a review: each file below forges a seal today with a private type, and each is owned
+# by a change that is not this one. A new site anywhere else is held to the rule immediately.
+# busbar-plane-admin and busbar-plane-streaming are the awkward ones: a PLANE
+# crate may not name busbar-contract's caps module at all (section 1.2, and manifest-allowlist makes
+# it an automatic RED), so their test seals cannot move onto a token until the contract offers a seal
+# a plane is allowed to name. That is debt this rule now PINS rather than debt it hides.
+#
+# STRUCK 2026-09-22: `crates/busbar-plane-admin/src/tests/mod.rs`. GONE, NOT MOVED — the file's
+# successor LIVES but the debt in it does not, which is the case a path-exists check cannot tell
+# from a working row. Followed end to end: `a39ec8633` renamed it to
+# `crates/busbar-core-admin/src/tests/mod.rs`, `92e823cd5` renamed that to
+# `crates/busbar-core-admin/src/admin_codec/tests/mod.rs` (which EXISTS at HEAD), and `ae4f22210`
+# ("kind-isolation: delete the admin plane entry face") deleted the `struct TestSeal; impl
+# busbar_contract::plugin::KernelSeal for TestSeal` block outright — `grep -c KernelSeal` on that
+# file is now 0, and no file under `crates/busbar-core-admin/` implements the trait. So the entry is
+# NOT repointed at the successor: a row pointed at a path with no finding suppresses nothing today
+# and would silently excuse the seal if anyone re-forged one there. Striking it puts that path back
+# under the rule immediately, which is what the ratchet is for.
+#
+# STRUCK 2026-10-03: `crates/busbar-kernel-egress/src/tests/harness.rs`. MOVED AND CURED — `4b8891c0a`
+# (token-sealed A, ARCHITECT Q-GG3) moved the harness whole to
+# `crates/busbar-kernel/src/tests/members/egress/route/harness.rs`, where it lends a real
+# kernel-minted Pass (`KernelSeal::acquire_for_kernel()`) instead of the test seal, and egress's
+# test-seal dev-dependency went with it. The rule's pattern matches no file under either crate, so
+# the entry is not repointed (a row on a path with no finding would only excuse a future forgery);
+# it is struck, and both paths are held to the rule. The seal debt that remains is the two below.
+# STRUCK 2026-10-04: `crates/busbar-transport-stdio/src/tests/battery.rs`. GONE — the stdio row was
+# made door-only (ARCHITECT ruling (A)): its in-process `impl Transport` battery, which forged a
+# `TestKernelSeal` to drive that transport, was deleted and its coverage folded onto the carrier and
+# door batteries, none of which forge a seal. The rule's `impl … KernelSeal for` pattern now matches
+# NO file under `crates/busbar-transport-stdio/`, so the entry is not repointed (a row on a path with
+# no finding would only excuse a future forgery); it is struck, and the crate is held to the rule.
+known_sites = [
+  "crates/busbar-plane-streaming/src/tests/harness.rs",
+]
+
+# ── 22. forbid-unsafe ────────────────────────────────────────────────────────────────────────────
+[rules.forbid-unsafe]
+why = """Plane, hook, auth and secret crates carry `#![forbid(unsafe_code)]` — a \
+lint level nothing inside the crate can locally override, matching that these kinds are structurally \
+barred from unsafe by design, not merely asked nicely. Transport, ABI, loader, store and export \
+crates carry at least `#![deny(unsafe_code)]` (weaker: a reviewed site may locally `#[allow]` it), \
+because these kinds legitimately touch FFI or the wire. This checks the attribute is present at the \
+crate root — not that every individual unsafe site is itself reviewed, which is a finer-grained \
+check left to `cargo xtask gate blocking-ffi`-style tooling outside this gate."""
+# THE FOURTH TABLE THAT NAMED A KIND THAT DOES NOT EXIST. `[gate.plugin_kinds].plane` was missing
+# the fifth plane, `[gate.plugin_kinds].export` pointed its family glob at the wrong
+# path, `[rules.source-denylist].kinds` named `pure_auth`/`egress_auth` and so scanned
+# no auth crate at all — and THIS list carried the same two struck names. LOCKED
+# DECISION #3 collapsed them into ONE `auth` kind (inbound-verify and outbound-sign are two
+# OPERATIONS of it), `[gate.plugin_kinds]` has no `pure_auth` or `egress_auth` key, so both
+# resolved to an EMPTY glob list and the auth kind was never held to this rule.
+# MEASURED, NOT INFERRED, 2026-09-22: this gate emitted nine `forbid-unsafe:<crate>` rows — the
+# five planes, both hooks, both secret crates — and NONE for `crates/auth-admin-tokens` or
+# `crates/auth-static-plugin`, NEITHER OF WHICH CARRIES THE ATTRIBUTE. Both are already named on
+# `known_missing_forbid` below, so spelling the kind correctly re-opens the ratchet over them
+# rather than reddening the row. That is the point of the correction: a debt that is scanned is a
+# debt somebody can close, and a debt filed under a kind nobody scans is a debt nobody can see.
+forbid_kinds = ["plane", "hook", "auth", "secret"]
+deny_kinds = ["transport", "abi", "loader", "store", "export"]
+# Ratchet: crates known to be missing the attribute today, so the gate does not go red the moment
+# this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
+# name below; a new crate NOT on this list is held to the rule immediately.
+known_missing_forbid = [
+]
+known_missing_deny = [ "plugin-loader",
+]
+
+# ── 22. secret-carrier-debug (BUSBAR-1.6.0.md THE DESIGN, §8) ───────────────────────────────────────────────────
+[rules.secret-carrier-debug]
+why = """A value that carries secret bytes must hand-roll its `Debug` so the bytes cannot be printed \
+— never derive one. On the plugin ABI this is not a matter of caller discipline: every auth scheme \
+in the tree and out of it is handed a `Credential`, and the code that might format it is code this \
+repository cannot read. The carriers below are the named ones; adding a type that holds a resolved \
+secret, a client credential or key material means adding it here and writing the impl."""
+carriers = ["Credential", "SecretValue", "CredentialSecret", "KeyMaterial", "UpstreamAddress", "SecretOnce", "LaneInput"]
+max_derived = 0
+
+# ── 23. no-escaped-newline-doc-comment ──────────────────────────────────────────────────────────────
+[rules.no-escaped-newline-doc-comment]
+why = """A relocation script that moves a test module into its own file can turn the doc comment's
+intended line breaks into the literal two characters backslash-n, which then sits on one physical
+line right before the next `//!`/`///` prefix instead of starting a new one. rustdoc renders it as
+inert text mid-sentence and no compiler warning catches it, so it survives until someone reads the
+generated docs. The ceiling is zero and is never calibrated upward: this is a class of typo, not a
+figure the tree is allowed to carry any of."""
+max_hits = 0
+
+# ── 24. hold-escapes (BUSBAR-1.6.0.md THE DESIGN, §1) ────────────────────────────────────────────────────────────
+[rules.hold-escapes]
+why = """Rust has no linear types, so "this value must be consumed by exactly this function" is not \
+expressible: `std::mem::forget`, `ManuallyDrop`, `Box::leak` and an `AssertUnwindSafe` wrapper all \
+compile, and a hold that goes away through one of them is a unit that was admitted and never \
+settled — money that vanishes with no canary arithmetic to catch it, because the canary only ever \
+sees the counts a settled unit leaves behind. busbar-contract's caps module writes the escape list down as data in \
+its `caps/fixtures/lint_rules.rs` and says in its own honesty table that CI scans for it; this rule is \
+that scan. It reads the same symbols with the same scopes, over every crate's production sources \
+rather than only the kernel's, because a plugin-side crate that leaks a hold loses exactly as much \
+money as the kernel would. `hold-discipline` above is the narrower, shape-aware reading of the same \
+promise over busbar-kernel and the unit crates; this one is the flat symbol scan the honesty table \
+names, workspace-wide."""
+scan_globs = ["crates/*/src"]
+max_sites = 0
+# The reviewed sites. An entry is `path::function` (one function), a file path (one file), or a
+# path ending in `/` (a directory). Every one of these was read before it was written down.
+#
+#   busbar-contract ids.rs `Registration::key` is THE reviewed leak-once intern: lane names,
+#   op-class names and a loaded plugin's key are leaked once at boot, the allocation is fixed and
+#   countable, and interning is idempotent — so "leaked once" is a property of the interner rather
+#   than a hope. It is named by function, so the rest of the file is still held to the rule.
+#
+#   The plane-host, plugin-loader and busbar-contract abi::sdk boundaries catch a panic crossing the ABI, which is
+#   the design: a plugin that panics must not take the node with it, and no hold is in scope on
+#   either side of those calls. busbar-core was the crate being emptied; its sites MOVED, and this
+#   list has now followed them. See the repoint note below.
+#
+#   ── REPOINTED 2026-09-22: SIX ENTRIES NAMED TWO DELETED CRATES ─────────────────────────────────
+#
+#   Three entries were scoped to `crates/busbar-core/…` and three to `crates/busbar-substrate/…`.
+#   NEITHER CRATE IS IN THIS TREE. A `known_sites` entry that matches no path suppresses nothing, so
+#   all 65 escapes it had reviewed came back as findings — the row was RED on debt somebody HAD
+#   read, under names that had died. Repointing restores the ratchet; it does not raise a ceiling.
+#
+#   EVERY REPOINT IS A RENAME GIT DETECTED, NOT A JUDGEMENT. `673ecdaaa` (absorb busbar-core) and
+#   `5fa320208` (absorb busbar-substrate) carry, at 99–100% similarity:
+#     R099 crates/busbar-core/src/router.rs            -> crates/busbar-kernel/src/router.rs
+#     R099 crates/busbar-core/src/plane/registry.rs    -> crates/busbar-kernel/src/plane/registry.rs
+#     R100 crates/busbar-core/src/plane_host/*.rs      -> crates/busbar-kernel/src/plane_host/*.rs
+#     R100 crates/busbar-substrate/src/plane/handle_engine.rs
+#                                                      -> crates/busbar-kernel/src/plane/handle_engine.rs
+#   and `5fa320208` MERGED substrate's `plane_host/{mod,scope}.rs` INTO the core-descended kernel
+#   files of the same name (+1775 and +596 lines).
+#
+#   THE DIRECTORY ENTRY IS DELIBERATELY NOT REPOINTED AS A DIRECTORY, and this is the whole care of
+#   this edit. `crates/busbar-kernel/src/plane_host/` is the union of TWO former directories: core's
+#   (which the old entry covered whole) and substrate's (which it never covered — the reviewer took
+#   only `mod.rs` and `scope.rs::reclaim_all` from that side, by name, deliberately). Repointing a
+#   directory at a directory that has since absorbed SEVEN files it never reviewed
+#   (build_input, egress_trust, engine_view, identity, slots_through, spki, trust_anchor) would
+#   silently excuse whatever lands in them. Those seven carry ZERO escapes today, so the widening
+#   would cost nothing this minute and everything the first time one grew — which is exactly how a
+#   ratchet becomes laundering. So the directory is replaced by the TEN core-descended files that
+#   actually carry the reviewed escapes. That is strictly NARROWER than what it replaces (creds.rs,
+#   govern.rs and the plane_host test files drop out of coverage at 0 escapes each), and a ratchet
+#   may always tighten.
+#
+#   NOTHING NEW IS EXCUSED, AND THAT IS MEASURED, NOT ASSERTED. Escapes per file in
+#   `crates/busbar-core/src/plane_host/` at `673ecdaaa^` were 4/3/7/10/2/2/13/3/8/8 = 60 across
+#   breaker, cost_host, dispatch, egress, guard, identity_admit, journal, pipe, trust, vtable. The
+#   same ten files at HEAD read 4/3/7/10/2/2/13/3/8/8 = 60. FILE FOR FILE IDENTICAL — no escape
+#   accrued in the blind spot while the name was dead. The remaining five findings are the other
+#   five entries one-for-one: plane_host/mod.rs:2433 (substrate's leak, the +1775 merge),
+#   plane_host/scope.rs:355 (inside `reclaim_all`, line 343), plane/registry.rs:489,
+#   plane/handle_engine.rs:858 (inside `sweep`, line 820), router.rs:680. 60 + 5 = the 65.
+#
+#   The two remaining leaks are boot-time interners of the same shape as ids.rs.
+#
+#   scope.rs `reclaim_all` is the arena's per-entry reclaim boundary, named by function so the rest
+#   of the file is still held to the rule. Reclaiming runs code the arena does not own — a closer
+#   that kills a subprocess, a guard's real `Drop` — and the loop is reached from `Drop`, so an
+#   unbounded panic there both strands every entry after it (leaking exactly what the arena exists to
+#   reclaim) and, unwinding out of a drop already running during an unwind, aborts the node. No hold
+#   is in scope on either side of the call: the boundary wraps exactly one entry's reclaim, the entry
+#   is already out of the registry and is consumed whichever way it ends, and the registry lock is
+#   released before the loop starts.
+#
+#   handle_engine.rs `sweep` is the plane-callback boundary of the same family as the plane-host
+#   ones above, named by function so the rest of the engine is still held to the rule. The retention
+#   sweep is AMORTISED over submits, so the plane's `abandon` callback runs inside some OTHER
+#   caller's `submit` — one whose row and genesis event are already durable and whose handle is not
+#   yet installed. A panic escaping that callback would unwind through that submit and leave a
+#   durable row no live handle answers for, which the next boot rehydrates as a handle nobody
+#   accepted. No hold is in scope on either side of the call: the boundary wraps exactly the
+#   callback invocation, the slot guard is held outside it, and both a `None` verdict and a
+#   panicking one mean the same thing — this handle was not abandoned.
+known_sites = [
+  "crates/busbar-contract/src/ids.rs::key",
+  # boot/reload-time route-literal interning, deduplicated, never a money hold
+  "crates/busbar-contract/src/abi/transport/route.rs::intern",
+  # was crates/busbar-core/src/plane_host/ (a whole directory) — the ten files of it that carry a
+  # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
+  "crates/busbar-kernel/src/plane_host/breaker.rs",
+  "crates/busbar-kernel/src/plane_host/dispatch.rs",
+  "crates/busbar-kernel/src/plane_host/egress.rs",
+  "crates/busbar-kernel/src/plane_host/guard.rs",
+  "crates/busbar-kernel/src/plane_host/identity_admit.rs",
+  "crates/busbar-kernel/src/plane_host/journal.rs",
+  "crates/busbar-kernel/src/plane_host/pipe.rs",
+  "crates/busbar-kernel/src/plane_host/trust.rs",
+  "crates/busbar-kernel/src/plane_host/vtable.rs",
+  # was crates/busbar-core/src/plane/registry.rs (R099)
+  "crates/busbar-kernel/src/plane/registry.rs",
+  # was crates/busbar-core/src/router.rs (R099)
+  "crates/busbar-kernel/src/router.rs",
+  # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100); `sweep` is still the
+  # enclosing function — the escape is at :858, the fn opens at :820.
+  "crates/busbar-kernel/src/plane/handle_engine.rs::sweep",
+  # was crates/busbar-substrate/src/plane_host/mod.rs — MERGED into the core-descended kernel file
+  # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's.
+  "crates/busbar-kernel/src/plane_host/mod.rs",
+  # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
+  # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
+  "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
+  # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
+  # verbatim (#83a SD-8).
+  "crates/busbar-kernel/src/proto/installed.rs",
+  "crates/plugin-loader/src/",
+  "crates/busbar-contract/src/abi/sdk/boundary.rs",
+  # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
+  # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
+  # ONE per (code, level, field-name list) and interns it, so the allocation is bounded by the
+  # catalogue and made once — the leak-once intern shape of ids.rs `key` above.
+  "crates/busbar-kernel/src/diagnostics/emit.rs::site",
+  # REVIEWED 2026-09-25 (item 141): a first-party plugin's DECLARED diagnostic joins the process
+  # catalogue, whose entries are `&'static Diagnostic` with `&'static str` text by the catalogue's
+  # type; one allocation per declared code, once, at boot, before the catalogue is first read.
+  # REPOINTED (pure extraction): SEAM-S1 5d2941f7b3 moved the two reviewed `Box::leak`s, byte for
+  # byte, out of `declared_diagnostics` into the helper it calls once per plugin or door,
+  # `catalogue_entries`; `declared_diagnostics` itself holds none now. Named by function, as before.
+  "crates/busbar/src/root/linked.rs::catalogue_entries",
+  # REVIEWED 2026-10-05 (disk.append, ARCHITECT ruling Q-C1-FILE): a host service's error text is
+  # `'static` by the service's type (`DiskReport::error`), so the disk lane interns each distinct
+  # operating-system failure text ONCE and answers `OS_REFUSED` past `MAX_WORDS` of them — the
+  # leak-once intern shape of ids.rs `key` above, its allocation bounded by the cap.
+  "crates/busbar-kernel/src/host_disk.rs::os_words",
+  # REVIEWED 2026-10-07 (`Vec::leak`/`String::leak`/`.leak()` joined the symbol list; every site
+  # below was read then). Each is a boot- or load-time, fixed-size allocation of non-hold data
+  # (names, registry rows, declaration tables, interned path patterns), made once per plane, plugin
+  # load or distinct pattern, never per request, and none of them can carry a hold. Sites already
+  # inside a reviewed entry above were read too: `plugin-loader/src/` (a plane's Statement words
+  # and tail tables copied once per load: `kinds/plane.rs` `tail_facts`, `kept`, `declared`,
+  # `registration`), `proto/installed.rs` (the protocol registry's process-singleton tables) and
+  # `diagnostics/emit.rs::site` (the interned field set).
+  #   The plane axis's installed row list: one slice of row references, made once at boot.
+  "crates/busbar/src/root/linked.rs::register_planes",
+  #   The HOT-lane planes and the rows read off them, kept once at boot for the process's life.
+  "crates/busbar/src/root/linked.rs::plane_rows",
+  #   A HOT-lane plane's declaration words and tables, copied once per plane as its row is built.
+  "crates/busbar/src/root/linked.rs::hot_plane_row",
+  #   The declared-diagnostics catalogue, installed once at boot.
+  "crates/busbar/src/root/linked.rs::register_diagnostics",
+  #   A door plane's registration words, folded once per key (bounded by MAX_DOOR_PLANES).
+  "crates/busbar-kernel/src/plane/door.rs::fold",
+  "crates/busbar-kernel/src/plane/door.rs::declaration_of",
+  #   A path pattern's segments, interned once per distinct pattern (the interner answers a pattern
+  #   it already holds), the leak-once intern shape of ids.rs `key` above.
+  "crates/busbar-contract/src/abi/transport/route.rs::intern_pattern",
+]
+
+# The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
+# crate asserts this table names every symbol the fixture does, and repeats the fixture's own
+# `confined_to` spelling, so the two cannot drift apart.
+#
+# `confined_to` is that fixture's spelling of the scope, kept verbatim for the join. It is PROSE,
+# not a matcher: as a bare substring test it also excuses `crates/other-kernel/src/tellerish.rs`, or
+# any path anywhere in the tree that happens to contain those characters, which is the opposite of
+# confining anything. `confined_to_paths` is the same scope resolved against this tree —
+# crate-relative paths, matched as prefixes, so only the files actually named are excused. An empty
+# `confined_to` (and an empty or absent `confined_to_paths`) means banned everywhere.
+# The fixture's rule-spec literals used to self-match this scan, so every symbol below excused
+# `crates/busbar-contract/src/caps/fixtures/lint_rules.rs`. STRUCK 2026-10-02 (GATE-GREEN, ARCHITECT
+# Q-GG2): the literals moved to `caps/fixtures/lint_rules.txt`, a data file no scan walks, so the
+# Rust file holds none and the excuse is gone. Every symbol is again banned everywhere it says.
+[rules.hold-escapes.symbols.forget]
+symbol = "mem::forget"
+confined_to = ""
+confined_to_paths = []
+because = "a forgotten hold is a unit that was admitted and never settled"
+
+[rules.hold-escapes.symbols.manually-drop]
+symbol = "ManuallyDrop"
+confined_to = ""
+confined_to_paths = []
+because = "the same as forgetting, spelled differently"
+
+[rules.hold-escapes.symbols.box-leak]
+symbol = "Box::leak"
+confined_to = ""
+confined_to_paths = []
+because = "a leaked hold never reaches the exit path"
+
+[rules.hold-escapes.symbols.vec-leak]
+symbol = "Vec::leak"
+confined_to = ""
+confined_to_paths = []
+because = "the same as Box::leak, spelled differently"
+
+[rules.hold-escapes.symbols.string-leak]
+symbol = "String::leak"
+confined_to = ""
+confined_to_paths = []
+because = "the same as Box::leak, spelled differently"
+
+[rules.hold-escapes.symbols.leak-method]
+symbol = ".leak()"
+confined_to = ""
+confined_to_paths = []
+because = "the same as Box::leak, spelled differently"
+
+[rules.hold-escapes.symbols.process-abort]
+symbol = "process::abort"
+confined_to = ""
+confined_to_paths = []
+because = "aborting skips every exit path at once; the node drains instead"
+
+[rules.hold-escapes.symbols.assert-unwind-safe]
+symbol = "AssertUnwindSafe"
+confined_to = "kernel/src/teller"
+# The Teller loop's ONE home in this tree: the kernel's own teller.rs. The second site is
+# busbar_kernel::timing's atexit diagnostic dump (the former busbar-timing crate, folded by OWNER
+# Q70): a debug-only (`feature = "timing"`) profiling module that holds no unit, so its catch_unwind
+# cannot smuggle a hold across — a distinct, provably-safe use.
+#
+# STRUCK 2026-09-22: `crates/busbar-substrate/src/teller`. GONE, NOT MOVED, and the distinction is
+# the whole point — there is no successor to repoint at. The list described "the Teller loop's TWO
+# homes"; `f6a869ac0` ("busbar 1.6.0: the second Teller loop deleted onto the kernel's one loop")
+# and `05fa6d33d` ("W2.b: re-point llm/a2a/streaming onto the unified kernel loop; delete substrate
+# teller") DELETED all six files of it — mod.rs, run.rs, steps.rs, tests.rs, tokens.rs, unit.rs —
+# with `--name-status` showing `D` for every one and no `R` anywhere. `crates/busbar-kernel/src/
+# teller.rs` is NOT its successor: it was born independently at `ad49838bf` as an `A`, it is the
+# loop that SURVIVED, and it is already on this list in its own right. Repointing the struck entry
+# at it would be inventing coverage for a scope that no longer exists; the substrate teller's
+# AssertUnwindSafe went away with its code. The remaining paths already confine the live loop.
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/timing/mod.rs"]
+because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar_kernel::timing's holdless atexit dump)"
+
+[rules.hold-escapes.symbols.join-abort]
+symbol = "JoinHandle::abort"
+confined_to = ""
+confined_to_paths = []
+because = "an aborted task loses its unit's end; the sweep is the second exit, not abort"
+
+# ── 25. unit-no-wall-clock ───────────────────────────────────────────────────────────────────────
+[rules.unit-no-wall-clock]
+why = """A unit crate decides from the values it was handed, so replaying the same inputs gives the \
+same answer. A unit that reads the wall or monotonic clock itself has an input nobody passed it: \
+its decision stops being reproducible, a test of it becomes a race, and the same request replayed \
+for an audit no longer yields the same record. Reading a clock is the composition root's job — the \
+root reads it ONCE per arrival and hands the reading down, which is also what keeps two steps of \
+one unit from landing in different seconds. Production code only: a test may read a clock to \
+measure a test."""
+# Where a unit crate's production code lives.
+scope_globs = ["crates/busbar-kernel-*/src/*"]
+# The clock reads a unit crate may not perform.
+forbidden = ["SystemTime::now", "Instant::now"]
+# No file is exempt: the one helper that was (breaker clock.rs) is deleted.
+exempt_files = []
+max_hits = 0
+
+# ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
+[rules.unit-no-finding-ids]
+why = """A comment that cites a finding identifier or a bare document section number tells a reader \
+nothing they can act on: the identifier resolves to an audit worksheet that is not in this tree, \
+and the section number moves the next time the document is edited. The rule the code follows has to \
+be stated in words, in the comment, so the comment survives the worksheet and the renumbering. RFC \
+citations are exempt by construction — they are stable, externally resolvable documents — and only \
+the identifier shapes below are searched for."""
+scope_globs = ["crates/busbar-kernel-*/src/*"]
+# The shapes searched for, as regular expressions over the raw comment text.
+patterns = ["PB-[0-9]", "CG-[0-9]", "ARCHITECTURE\\.md §"]
+# The one crate whose occurrence is knowingly left in place, so the rule can hold the line on every
+# other unit crate rather than waiting for that one citation to be rewritten. Emptying this list is
+# the goal, and nothing may be added to it without the same argument.
+exempt_crates = ["busbar-kernel-ledger"]
+max_hits = 0
+
+# ── 27. seal-sites ───────────────────────────────────────────────────────────────────────────────
+[rules.seal-sites]
+why = """busbar-contract's caps module writes down two lists of rules the compiler cannot carry: the hold escapes, \
+scanned above, and the seal sites -- the symbols that decide who may build a capability at all. \
+Its honesty table said CI scanned for both. It scanned for one. The three seal-site symbols are \
+the seal every token constructor needs, the recovery token that materialises a hold from a journal \
+record with no admission behind it, and the take that empties a hold cell; each is a crate boundary \
+Rust cannot police, so each is one audited name and this is the scan that audits it. Same shape as \
+hold-escapes and the same code path: literal substrings, `confined_to` scoping, one reviewed \
+known_sites ratchet, over production sources only."""
+scan_globs = ["crates/*/src"]
+max_sites = 0
+# The reviewed sites, each read before it was written down.
+#
+#   busbar-contract's caps module is what DECLARES these capabilities: its own token, hold and unit-end
+#   modules necessarily spell their names, and its module documentation shows a kernel acquiring
+#   the seal so a reader can see what the sealed constructors are for. Declaring a capability is
+#   not minting one; what the rule is about is who may CALL these outside their one home.
+#
+#   The composition root (crates/busbar/src/root/) is where the process assembles its one kernel,
+#   so it is the second place that legitimately holds a seal: durability, the ledger identity, the
+#   migration and the per-dialect unit wirings are all root-side construction, not unit code.
+#
+#   busbar-llm's unit modules and busbar-kernel-breaker's port carry the same seal spelling in
+#   fixtures that build a sealed token to show a step's shape.
+known_sites = [
+  "crates/busbar-contract/src/caps/",
+  "crates/busbar/src/root/",
+  "crates/busbar-llm/src/unit/",
+  "crates/busbar-kernel-breaker/src/port.rs",
+]
+
+# The seal-site list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs SEAL_SITES. A test in that
+# crate walks `lint::all()` and asserts this file names every symbol either list carries, with the
+# same scope both ways round, so the specification and the scan cannot drift apart.
+[rules.seal-sites.symbols.kernel-seal]
+symbol = "KernelSeal::acquire_for_kernel"
+confined_to = "kernel/src"
+# The scope resolved against this tree, matched as path prefixes.
+confined_to_paths = ["crates/busbar-kernel/src/"]
+because = "the seal is what mints every token; only the kernel may obtain one"
+
+[rules.seal-sites.symbols.recovery-token]
+symbol = "Grant::<Recover>::mint("
+confined_to = "recovery"
+# The scope resolved against this tree, matched as path prefixes.
+confined_to_paths = ["crates/busbar-kernel/src/recovery.rs"]
+because = "it materialises a hold from a journal record with no admission behind it"
+
+[rules.seal-sites.symbols.hold-cell-take]
+symbol = "take(&Grant::<Exit>::mint("
+confined_to = "kernel/src"
+# The scope resolved against this tree, matched as path prefixes.
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/tick.rs"]
+# COUNTED, not only confined (item 130). The three are teller.rs's exit path and a child unit's end,
+# and tick.rs's sweep. The sweep used to take through a named grant (`take(&exit)`), which this
+# literal cannot see, so confinement guarded two of the three and "no fourth" was guarded by
+# nothing: a fourth take written inside teller.rs sat inside the home and the row stayed PASS.
+# The sweep now spells the literal, and `sites` holds the home to exactly three.
+sites = 3
+because = "there are three take sites -- the exit path and a child unit's end in teller.rs, and the sweep in tick.rs -- and no fourth"
+
+# ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────
+[rules.plane-no-money]
+why = """A plane says what HAPPENED; the cost unit says what it COST. A plane crate, the pure codec \
+half it shed, and a plane's own unit modules deal in usage CLASSES and QUANTITIES -- how many \
+tokens, how many frames, how many seconds, which meter class, which lane -- and never in an amount, \
+a rate, a fee or a card. Only busbar-kernel-ledger's cost module (the rate card, the per-request fee, the posting) and \
+the composition root's meter/admission wiring may name a price. This is not a matter of taste: a \
+price named on the plane side is a price the kernel cannot re-derive, cannot seal into a posting and \
+cannot audit, and it is named inside a plugin-shaped crate that a third party may one day write. The \
+near-miss this rule was born from added a fee method to the plane-host cost seam and priced on the \
+plane side, and nothing here stopped it. THE ALLOWED VOCABULARY, deliberately: usage classes and \
+quantities of every kind; `fee_count`, which is EVIDENCE that a billable request happened -- a \
+kernel-derived count of 1 or 0, never an amount, and only the card turns it into money, so a plane \
+may report it without ever knowing what a request costs; the yes/no card predicates \
+(`pricing_enabled`, `is_unpriced`, `cost_model_unpriced`, and the `Unpriced` refusal reason), which \
+answer "does a card cover this lane at all" and carry no figure back across the seam; and the \
+time-sense `_nanos` names (`as_nanos`, `elapsed_nanos`, `monotonic_nanos`, `latency_nanos`), which \
+are nanoseconds, not nano-units of money. The seam verb that turns usage INTO an amount \
+(`cost_price_usage`) is deliberately not in the symbol list below: it is scanned by one-pricing-site, \
+which is the row that can name the home the call belongs in, so one site is never counted twice."""
+# Where a plane's own production source lives: the plugin-side plane crates, the pure codec half of
+# each plane, the llm plane's unit modules, and the three protocol-plugin crates that carry a
+# plane's worth of state behind the same on/off switch as their codec.
+#
+# ── REPOINTED 2026-09-22. THREE OF THESE FOUR GLOBS MATCHED ZERO FILES AND THE ROW READ THAT
+#    PERMANENT ZERO BACK AS A FACT ABOUT THE TREE ────────────────────────────────────────────────
+#
+# `crates/busbar-{mcp,a2a,voice}/src/unit/*` were written beside the llm glob on the assumption that
+# `src/unit/` generalises across the planes. IT DOES NOT, AND THE GLOBS WERE WRONG ON THE DAY THEY
+# LANDED. At ae307a648 — the commit that added them — `git ls-tree -d ae307a648 crates/busbar-mcp/src`
+# already reported `mcp` and `tests` and no `unit`; `busbar-a2a` reported `a2a`; `busbar-voice`
+# reported `bin`, `runtime`, `tests`, `topology`. `git log --all -- crates/busbar-mcp/src/unit`
+# returns ZERO commits, and the same for a2a and voice: no such directory has ever existed in this
+# repository. This was never a subject that MOVED and never a kind with no crate yet. It is a name
+# that resolved to nothing from birth, and the comment it replaces ("their globs match nothing YET")
+# is the sentence a scan over zero always invites somebody to write.
+#
+# WHAT THE ROW WAS ACTUALLY MISSING, AND WHY IT IS THIS WIDTH. `busbar-mcp`'s own crate docs say it
+# holds BOTH halves — the codec in `src/codec/` and "the MCP plane ... ~18k lines" in `src/mcp/` —
+# and `busbar-a2a` has the same shape in `src/a2a/`, because `busbar-mcp-codec` and
+# `busbar-a2a-codec` DISSOLVED INTO THEM; see `[gate.plugin_kinds]`'s own note
+# above, which records exactly that. So `crates/busbar-*-codec/src/*` kept matching the two codec
+# crates that survive (llm, voice) and never went red when the other two folded into the very crates
+# these globs were supposed to reach: the mcp and a2a codec halves have been unscanned since the
+# fold. So the MCP and A2A globs now name their crate's whole `src`, which is what this rule's own
+# `why` asks for ("a plane crate, the pure codec half it shed") and the same width
+# `crates/busbar-plane-*/src/*` already uses for a plane crate. Both isolate to ZERO findings: that
+# widening restores coverage the fold silently took away, and costs nothing.
+#
+# ── VOICE IS NOT MCP OR A2A. ITS GLOB WAS RE-SCOPED AGAIN, 2026-09-22 ───────────────────────────
+#
+# The same repoint handed `busbar-voice` its whole `src` in the same sentence, and THAT half was
+# wrong. Not because the old `crates/busbar-voice/src/unit/*` was any better -- it never resolved
+# either, and putting it back would restore the exact green-over-nothing this rule had just stopped
+# printing -- but because voice's two in-scope halves ARE ALREADY SCANNED by the two wildcard globs
+# above, and the half the widening actually added is not in scope at all:
+#
+#   * THE PLANE is `busbar-plane-streaming`, NOT `busbar-voice`. #18: the fourth plane is
+#     STREAMING and `voice` is one dialect inside it. `qa/kind-isolation.toml` says it outright --
+#     "`busbar-voice` is the retiring 1.5.x streams crate and `busbar-plane-streaming` is the plane
+#     it [became]" -- `[gate.plugin_kinds].plane` above lists `crates/busbar-plane-streaming` as the
+#     plane KIND, and `plane_crates` at the top of this file files `busbar-voice` under "LEGACY
+#     ENGINE crates" with its own warning that "a reader must not take either as the plane kind".
+#     `crates/busbar-plane-*/src/*` has always reached it.
+#   * THE PURE CODEC HALF IT SHED is `busbar-voice-codec`, AND THAT CRATE STILL EXISTS. Unlike
+#     `busbar-mcp-codec` and `busbar-a2a-codec` it was never folded back in, so the argument three
+#     paragraphs up does not transfer: `crates/busbar-*-codec/src/*` has been matching it the whole
+#     time. Its own crate doc states the split in this rule's exact words -- "`busbar-voice` held
+#     two things behind one name: these codecs ... and the runtime that carries them over a live
+#     socket."
+#   * THE PLANE'S OWN UNIT MODULES do not exist here. `crates/busbar-voice/src` has no `unit/`
+#     directory and never had one, which is why the original glob could not have matched.
+#
+# So what `crates/busbar-voice/src/*` added over those two globs was ONLY the ENGINE half -- the
+# axum mount, the tokio session pump, the D2 metering lease, the telephony/WebRTC dial, and a
+# conformance-harness BINARY. An engine is none of the three things the `why` scopes.
+#
+# MEASURED WITH ALL 113 COUNTED BY FILE, not sampled off the detail line -- which prints only the
+# first 8 IN PATH ORDER, so `busbar-llm` and `src/bin/` are all a sample can ever show and the
+# distribution reads as "it is nearly all the test binary". It is not:
+#
+#      44  crates/busbar-voice/src/runtime/metering.rs                   the D2 reserve/settle lease
+#      36  crates/busbar-voice/src/bin/voice-conform.rs                  the conformance harness bin
+#      14  crates/busbar-voice/src/runtime/voice_d2_billing_oracle.rs    a pinned billing oracle
+#       6  crates/busbar-voice/src/mount.rs                              the axum mount
+#       5  crates/busbar-voice/src/runtime/mod.rs
+#       4  crates/busbar-voice/src/topology/mod.rs                       telephony / WebRTC
+#       3  crates/busbar-voice/src/runtime/session.rs
+#       1  crates/busbar-llm/src/unit/meter.rs                           `priced_from_ms` -- REAL
+#
+# The binary is 36 of 113, not the bulk. 112 of the 113 are the engine half, and the symbols are
+# `cap_nanos` / `settled_nanos` / `fee_nanos` / `estimate_nanos` / `reserved_nanos` -- NANODOLLARS,
+# as `metering.rs`'s own header says ("a reserve-then-settle lease over ALREADY-PRICED
+# nanodollars"), not the time-sense `_nanos` this rule's `allowed_vocabulary` excuses. They are real
+# money and real DEBT -- but they are not THIS row's debt. `plane-pricing-blindness`
+# (`qa/plane-pricing-blindness.toml`) is the gate built to burn exactly them down, with a per-file
+# ledger and a human-supplied reachability claim on every row; its own worked example row is
+# `crates/busbar-voice/src/runtime/metering.rs`. Counting them a second time under a `max_hits = 0`
+# with no burndown would not fix one of them. It would only bury the one finding this row can still
+# see under 112 it cannot act on.
+#
+# ZERO of the 113 were in `crates/busbar-voice-codec/src` or `crates/busbar-plane-streaming/src`.
+# Voice's plane and its codec are clean TODAY, and after this re-scope they are still SCANNED, so
+# they cannot stop being clean quietly. PROVEN with a positive control in BOTH directions, each
+# plant grepped back before the verdict was read: a `per_request_fee` planted in
+# `crates/busbar-voice-codec/src/ir/usage.rs` is CAUGHT (1 -> 2), and the same symbol planted in
+# `crates/busbar-voice/src/bin/voice-conform.rs` is NOT (1). Both plants were reverted.
+#
+# WHAT SURVIVES IS STILL RED, WHICH IS THE POINT. `crates/busbar-llm/src/unit/meter.rs:490`
+# `priced_from_ms` is a plane-side unit module naming a price -- the field the parked
+# two-money-reads recommendation proposes, landing on the plane side of the #43 line. It is NOT
+# allowlisted and this row stays RED at 1.
+#
+# `busbar-llm` IS DELIBERATELY LEFT AT `src/unit/*`. That glob RESOLVES — it is not a dead name, and
+# widening it to `crates/busbar-llm/src/*` would pull `src/engine/` into scope in the same edit that
+# fixes a staleness defect. Adding unreviewed debt under cover of a repoint is the move this whole
+# exercise exists to refuse; widening llm is a separate edit that owes its own review.
+#
+# `crates/busbar-*-codec/src/*` IS GONE (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39: no
+# `busbar-*-codec` crate). Unlike MCP/A2A's codec dissolution — which folded into the LEGACY ENGINE
+# crate (`busbar-mcp/src`, `busbar-a2a/src`), a root this glob list already names on its own line —
+# both remaining codecs (llm, voice) folded into their PLANE crate (`busbar-plane-llm`,
+# `busbar-plane-streaming`), which `crates/busbar-plane-*/src/*` already covers whole. So there is no
+# coverage gap to widen for: the glob would match zero directories and is struck rather than left to
+# read that permanent zero back as a fact about the tree, which is the exact anti-pattern the
+# 2026-09-22 repoint above this row already fixed once.
+scope_globs = [
+  "crates/busbar-plane-*/src/*",
+  "crates/busbar-llm/src/unit/*",
+  # `crates/busbar-mcp/src/*` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted and
+  # the mcp plane is its door crate, which `crates/busbar-plane-*/src/*` above already covers whole.
+  "crates/busbar-a2a/src/*",
+]
+# Each is matched as a whole word (an entry starting with `_` as a suffix), and judged against the
+# WHOLE identifier it lands in, so the vocabulary below can excuse a word rather than a substring.
+symbols = ["RateCard", "Pricer", "per_request_fee", "fee_cents", "price_", "priced",
+           "CostHandle", "CostModel", "Nanos", "_nanos"]
+# The words a plane MAY say, each because it carries no amount. See the `why` for the argument.
+allowed_vocabulary = [
+  "fee_count", "pricing_enabled", "cost_pricing_enabled", "is_unpriced", "cost_model_unpriced",
+  "unpriced_message", "unpriced_classes", "Unpriced", "unpriced",
+  "as_nanos", "elapsed_nanos", "monotonic_nanos", "latency_nanos",
+]
+# The cost crate and the cost host modules, named as module paths rather than as words.
+#
+# REPOINTED (item 377): two of the three entries were `busbar_core::cost::` and
+# `busbar_core::plane_host::cost_host`, spellings of a crate `673ecdaaa` absorbed into busbar-kernel
+# — so they matched no line in any crate and the module-path half of this ban was two-thirds dead,
+# blind to the exact cost-host seam the `why` names. The rename is git's, not a judgement: that
+# commit carries `R100 crates/{busbar-core => busbar-kernel}/src/cost.rs` and
+# `R100 crates/{busbar-core => busbar-kernel}/src/plane_host/cost_host.rs`. Repointing adds NO
+# finding on today's tree (the only `busbar_kernel::cost::` spellings in scope are in
+# `crates/busbar-llm/src/unit/tests/meter.rs`, test code this rule skips); a planted
+# `busbar_kernel::cost::CostAmount::of(usage)` in `crates/busbar-plane-llm/src/lib.rs` now counts
+# (1 -> 2), where under the dead spelling it did not (1 -> 1).
+forbidden_module_paths = ["busbar_kernel_ledger::cost::", "busbar_kernel::cost::", "busbar_kernel::plane_host::cost_host"]
+# A manifest dependency is the same reach spelled where no source scan would see it.
+forbidden_deps = ["busbar-kernel-ledger"]
+max_hits = 0
+# Reviewed per-file exceptions: file -> the symbols accepted there, the reason recorded here.
+#
+#   None stands: the destination guard (and its `priced` question) is the kernel's
+#   (busbar-kernel-scope, re-exported by the kernel door).
+[rules.plane-no-money.allowlist]
+
+# ── 29. one-pricing-site ─────────────────────────────────────────────────────────────────────────
+[rules.one-pricing-site]
+why = """There is ONE place a unit is priced. The cost unit owns the card and the arithmetic; the \
+composition root's meter and admission wiring is what calls it, once, with the usage the plane \
+reported; the kernel's settle sites consume the amount that came back and mint a posting from it, \
+and never derive one. Anywhere else that turns usage into money is a second pricing policy growing \
+beside the first -- two answers to "what did this cost", diverging silently, with the ledger unable \
+to say which one it recorded. The homes below are enumerated with a reason each rather than left to \
+a path pattern, so adding a home is a reviewed edit. The second row is the same promise on the \
+input side: a per-request fee read straight off a config or a card, outside the crate that owns the \
+card, is a price derived where nobody can see it. busbar-core is on that reader list because it is \
+the retiring 1.5.5 engine that still carries the legacy fee path; the list shortens as core empties, \
+and never lengthens."""
+scope_note = "production code only; a test may price whatever it likes to prove the arithmetic"
+# The seam verb that turns reported usage into an amount. Definitions and `use` lines are not calls.
+entry_verbs = ["cost_price_usage"]
+# The cost unit's own pricing entry points, named as paths.
+entry_path_patterns = ['busbar_kernel_ledger::cost::[A-Za-z0-9_:]*price', 'busbar_kernel_ledger::cost::apply_tier']
+# THE ONE FUNCTION UNDER ANOTHER NAME (ARCHITECT ruling 2026-09-30). The patterns above see a
+# NAME, and a one-line wrapper in the cost unit whose name lacks `price` (`fn f(entries: &[LedgerEntry],
+# view) { price_in_view(entries, view)?.micros_i64() }`) would let a reader price beside the cost
+# unit unseen. So the cost unit `wrapper_home` is read for SHAPE as well: a function
+# there whose signature names one of `wrapper_inputs` (the one function's own input, the ledger
+# slice) and whose body reaches a pricing entry (a call matching a pattern above, one of
+# `wrapper_reaches`, or a wrapper already found) IS a pricing entry, whatever its name, and a call
+# to it outside the homes is counted here. What a reader may call is a cost-unit read that takes
+# the reader's OWN row and builds the slice itself, because then the projection (lane, fee lane,
+# classes) and the price both live in the cost unit.
+wrapper_home = "cost-unit"
+wrapper_inputs = ["LedgerEntry"]
+wrapper_reaches = ['(?<![A-Za-z0-9_])Tally::']
+max_extra_sites = 0
+# The fee fields, and the two crates that may read them. `per_request_fee` is the card's OWN
+# spelling since the cost unit re-labelled `per_request_fee_cents` to it (the fee is carried in the
+# currency's minor units, so `_cents` was a lie on any non-USD deployment). Without it on this list
+# the rule went blind to exactly the thing it was written for: it would still have counted two
+# offenders, but both name `fee_cents`, the config/substrate spelling, and NOT ONE read of the
+# card's own fee anywhere in the workspace. The old spelling stays so a re-introduction of it is
+# still caught.
+fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
+# busbar-core is DELETED (W4.a, 673ecdaaa) so it matches nothing any more and is dropped, per this
+# row's own "the list shortens as core empties, and never lengthens" -- it emptied all the way.
+# busbar-kernel and busbar-core-admin are ADDED: W4.a absorbed busbar-core's config/
+# appbuild/cost fee-display code into busbar-kernel (crates/busbar-kernel/src/{appbuild.rs,cost.rs,
+# config/{mod,migrate,overlay}.rs,config_validate/{mod,secret_refs}.rs,test_support/fixtures.rs} are
+# ports of the identically-named busbar-core files -- `git show --stat 673ecdaaa` shows most as
+# `{busbar-core => busbar-kernel}/src/….rs | 0`, i.e. pure renames with zero line changes), and
+# cb2ba5df3 ("extract busbar-admin API service crate out of busbar-core, byte-identical") did the
+# same for the admin handlers (every `per_request_fee` site there existed, same wording, in
+# busbar-core's admin/v1/json/handlers.rs one commit earlier). Both are the fee DISPLAY/config path
+# following the crate it moved into, same as busbar-core was on this list for.
+#
+# THE NAME WAS DEAD, AND A DEAD NAME UN-MADE THE ALLOWANCE. 2026-09-22. This key read
+# "busbar-admin" until today, but #37 (92e823cd5 "fold the two admin crates into one
+# busbar-core-admin", reference updates 93a0d9f3d) renamed the crate and touched NO qa/ config --
+# `git show --stat 92e823cd5 -- qa/construction.toml` and the same for 93a0d9f3d are both empty.
+# `fee_reader_crates` matches on the crate NAME, so from that commit the entry matched nothing and
+# the recorded cb2ba5df3 allowance silently stopped applying: the row went to 9 findings, 5 of them
+# the very handlers.rs sites this note argues are allowed. Repointed to `busbar-core-admin` -- and
+# every one of those 5 was RE-ADJUDICATED against cb2ba5df3 first rather than restored on this
+# note's say-so, because a summary is not the authority. handlers.rs:2604/2632/2633/2683 are
+# character-identical to the authority commit except `busbar_core::` -> `busbar_kernel::` (the
+# 673ecdaaa config move already blessed above), and :4052 is a byte-identical openapi `summary`
+# string. NONE of the 5 computes a price: four are an overlay MERGE of an operator-supplied config
+# value (`if per_request_fee.is_some() { base.per_request_fee = per_request_fee; }`) plus an
+# exhaustive `per_request_fee: _` destructure, and the fifth is prose. busbar-core-admin has no
+# other production reader -- its only other hits are 22 in src/tests/tests.rs, which this rule does
+# not count -- so this repoint grants exactly the reviewed sites and nothing else. The general
+# lesson, and it is the fifth of this shape found today: a rename that skips the qa/ tables does not
+# merely stale a comment, it REVOKES a reviewed allowance in silence, and the gate cannot tell that
+# from a genuine regression. (qa/kind-isolation.toml still names `busbar-admin` in 8 rows from the
+# same miss -- out of scope for this key, reported separately.)
+#
+# ADJUDICATED 2026-09-22 AGAINST THE LAWS, AND THE VERDICT REVERSED: `busbar` (the composition
+# root)'s crates/busbar/src/root/units_admin/mod.rs:1118,1149,1155,1247 read `per_request_fee`, and
+# THE SCOPE OF THIS CHECK WAS THE DEFECT, not those four sites. The reads are granted below, by
+# PATH and with a COUNT, and `max_fee_readers` STAYS 0 -- the ceiling did not move.
+#
+# THE CONFLICT THAT FORCED THE ADJUDICATION. This rule's OWN `why` opens "the composition root's
+# meter and admission wiring is what calls it"; `[rules.one-pricing-site.allowed.root-wiring]` below
+# grants `crates/busbar/src/root/` in so many words; and the sibling `plane-no-money`'s `why` says
+# "Only busbar-kernel-ledger's cost module ... AND THE COMPOSITION ROOT'S METER/ADMISSION WIRING may
+# name a price." Three sentences in this file permitted the root; one crate list forbade it. They
+# cannot both be right, and the crate list is the one with no argument behind it -- it was never
+# written as a ruling about the root, it is simply the only shape a crate list can take, because a
+# crate list cannot say "this one reviewed file". The entry-verb half of this same rule had path
+# homes from birth; the fee half never did, and that asymmetry -- not a decision -- is what kept the
+# root out.
+#
+# WHAT THE FOUR SITES ARE, each read and judged on its own:
+#   :1118  `obj.get("per_request_fee")` -> `Option<i64>`. PARSES the operator's JSON wire field.
+#          The spelling is the operator's, fixed by #47 ("1.5.5's flat top-level `rate_card`/
+#          `per_request_fee` load as the `pools` (llm) plane's reserved keys, byte-identical"). No
+#          arithmetic, no card read, integer -- there is no f64 anywhere on the fee's own path.
+#   :1149  `entries.is_empty() && per_request_fee.is_none()` -- a SHAPE REFUSAL. An amendment that
+#          moves no figure is refused before anything is appended. Tests PRESENCE, uses no value.
+#   :1155  `per_request_fee.unwrap_or(0)` handed as the third argument to
+#          `RateCard::from_micro_rates_in`. THE RELAY the card crate itself asks for, in its own
+#          words at `crates/busbar-kernel-ledger/src/cost/rate.rs` (`from_config`'s doc): "the two
+#          configured figures a card is made of ... are read by their owner and handed straight
+#          over; what is DONE with them is this crate's ... and the composition root's binding is a
+#          relay with no arithmetic in it." The clamp (`.max(0)`) and the absent/present branch are
+#          the card crate's, exactly as that doc requires. `unwrap_or(0)` is a default, not a
+#          derivation, and it is the card crate's own convention -- `absent_in`/`from_config` take a
+#          bare `i64` with no `Option`, so "no fee named" is 0 everywhere, not just here.
+#   :1247  the STRING LITERAL `"per_request_fee"` in `canonical_amend_payload`'s fixed key list.
+#          It reads no fee at all: it names the JSON key so the operator's detached ed25519
+#          signature COVERS the fee. Deleting it to quiet a grep would take the fee outside the
+#          signed payload -- a security regression bought with a green row.
+#
+# NONE of the four stores a price (#77(3)), writes a price into a durable book, computes money in
+# binary floating point (#77(8)/#81), or prices against any card at all -- they never price. What
+# they append is a CARD, into the dated history, which is the machinery #79 exists to describe.
+#
+# THE DECISION THAT DECIDES IT IS #79, AND IT NAMES THIS FILE. "A back-dated correction ... DOES
+# reprice exactly the window `[effective_from, effective_until)` -- that is the sanctioned repair
+# path ... it is an APPEND and a signed admin act, never an edit. Engine already exists and is
+# reachable: `crates/busbar/src/root/kernel.rs:262` (`effective_from`), `:291` (window recompute),
+# `root/units_admin/mod.rs:679` (signed back-dated entry)." CHECKED, not paraphrased: #79 was locked
+# by 5caf5fea7 on 2026-09-22, FIVE DAYS AFTER D38 landed (54dbbdfcc, 2026-09-17), and
+# `git show 5caf5fea7:crates/busbar/src/root/units_admin/mod.rs | sed -n 679p` is the doc line of
+# `amend_rate_history_effect` -- the very function these four sites live in. A locked decision
+# examined this code, five days after it was written, and named its path as the sanctioned engine.
+# Part 2's own preamble: "a decision here is LAW and states the CURRENT truth ... Only Part 1 (the
+# Laws) and Part 3 outrank this Part." A gate note does not.
+#
+# THE OLD NOTE'S ARGUMENT, AND WHY IT DOES NOT REACH. It cited "MONEY -- the enforcement book must
+# stop storing a price": one money function `price(ledger_slice, card_history) -> Money`, `f`
+# implemented ~20 times across 5 crates. That section is about the READ that turns COUNTS into
+# MONEY. `amend_rate_history_effect` is not an implementation of `f` -- it takes no ledger slice,
+# returns no `Money`, and performs no multiplication. It AUTHORS `card_history`, which is `f`'s
+# second ARGUMENT. Consolidating `f` does not delete the verb that appends to the card history; the
+# consolidated `f` cannot be written without one, because the same section requires "each posting
+# prices against the card in force at its own `arrived_ms` (#79)". Counting the card's author as one
+# of the ~20 pricing sites is a category error, and it is what kept this row red.
+#
+# AND PART 1, WHICH OUTRANKS EVERYTHING ELSE IN THIS FILE, DECIDES THE REMEDY: "The purity gates ...
+# are servants of the vision, not the vision ... A gate that reds on that is SCOPED WRONG, and the
+# fix is the gate's scope, not the code." Law 6 puts pricing in core -- "Core captures the
+# quantities and prices them against the rate card the user registered" -- and #43 makes the card
+# core-owned ("rate_card + fees are CORE-owned; plugins are PRICING-BLIND"). The composition root IS
+# core. #42 governs the READ (card presence is the switch) and says nothing against authoring a
+# card; #43/#71 make pricing a read-time view, and this file computes no view.
+#
+# WHY NOT `fee_reader_crates = [..., "busbar"]`. Because the old note is RIGHT about that much: a
+# crate grant would launder the whole root -- `main.rs`, every `units_*.rs`, `money_book` -- in one
+# unargued stroke, and it would contradict the root's own written discipline at
+# `crates/busbar/src/root/kernel.rs` (`card_from_config`): "the flat figure crosses as a NEUTRAL
+# minor-unit value; the cost unit's constructor is the one that reads it AS the per-request fee ...
+# so no plane and no root file spells a fee -- the read lives where the card lives." That discipline
+# is real and it still holds for every root file but this one. THE ONE EXCEPTION IS FORCED BY THE
+# WIRE: an admin verb that accepts a correction must spell the operator's own field name to parse
+# it and must spell it again to sign it (#47 fixes the spelling; the signature makes it
+# load-bearing). So the grant is exactly one file, with the count it was reviewed at, and a fifth
+# read in that same file is RED again.
+fee_reader_crates = ["busbar-kernel-ledger", "busbar-kernel", "busbar-core-admin"]
+max_fee_readers = 0
+
+# The reviewed fee homes: a PATH, the COUNT it was reviewed at, and the reason. The count is half
+# the grant -- a read above it is reported exactly like a read with no home at all -- and a home
+# that falls to ZERO reads is reported too, because a grant that describes nothing is the dead name
+# this file has been bitten by five times already: it stops applying in silence, and the next real
+# read at that path inherits a waiver nobody reviewed.
+[rules.one-pricing-site.fee_allowed.amend-rate-history]
+path = "crates/busbar/src/root/units_admin/mod.rs"
+max = 4
+because = "#79 names this file as the engine of the signed back-dated correction and was locked five days after the code landed; the verb parses the operator's own `per_request_fee` wire field (#47 fixes that spelling), covers it with the operator's ed25519 signature, and relays it unchanged to `RateCard::from_micro_rates_in` -- it appends a CARD to the dated history and never derives, stores or computes a price"
+
+[rules.one-pricing-site.allowed.cost-unit]
+path = "crates/busbar-kernel-ledger/src/cost/"
+because = "the cost unit IS the card; its own source names its own entry points"
+
+[rules.one-pricing-site.allowed.root-wiring]
+path = "crates/busbar/src/root/"
+because = "the composition root's meter and admission wiring: the one place that hands the cost unit a unit's usage and takes an amount back"
+
+[rules.one-pricing-site.allowed.kernel-exit]
+path = "crates/busbar-kernel/src/teller.rs"
+because = "the exit path settles the hold and mints the posting from an amount it was given; it derives none"
+
+[rules.one-pricing-site.allowed.kernel-sweep]
+path = "crates/busbar-kernel/src/tick.rs"
+because = "the tick sweep is the second settle site, for a unit whose exit never ran"
+
+[rules.one-pricing-site.allowed.kernel-recovery]
+path = "crates/busbar-kernel/src/recovery.rs"
+because = "recovery settles a hold a dead incarnation left open, from the journal's own figure"
+
+# ── 30. legacy-reach ─────────────────────────────────────────────────────────────────────────────
+[rules.legacy-reach]
+why = """The composition root is the last place that still reaches into the retiring crates by name. \
+Every distinct symbol it spells there is one more thing the deletion of those crates has to move, \
+and the TOTAL over all of them is a ratchet: it may go DOWN and never up. Counted as DISTINCT \
+symbols rather than lines, because moving one symbol's five call sites into a unit is real progress \
+and merging two imports is not. Grouped `use` braces are expanded, so a reach does not appear to \
+shrink when an import is folded. The llm engine's own unit modules are excluded from that plane's \
+count: those are the plane step files the rebuild is moving TO, not the engine paths it is moving \
+off. The red row lists the symbols it counted, so the work has a worklist and not just a number.
+
+ONE RATCHET, NOT THREE. The count was per crate, and that measured the wrong thing. The cuts this \
+rule exists to drive move a symbol off one retiring crate and, for a stretch, onto another: a core \
+seam the kernel is taking over is spelled through the substrate on the way, which is one fewer \
+`busbar_core::` name and one more `busbar_substrate::` one. Under per-crate ceilings that step is a \
+RED row -- the gate calling a real cut a regression -- while the direction that actually matters, \
+how much of the retiring surface the root names at all, went unmeasured. The total cannot be gamed \
+by moving a name sideways, which is the only property the per-crate figures were ever asked for. \
+They are kept as WARN sub-rows: they carry the worklist per crate, and a crate whose figure climbs \
+while the total falls is that intermediate step, visible and not fatal."""
+scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
+# THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
+# the tree it was written against; it may only go down.
+# item 381 (Q11/Q32, owner-signed 2026-09-24): the total gains the three live retiring engines the
+# root still names by prefix (busbar_mcp 5, busbar_a2a 3, busbar_voice 12 distinct symbols) and
+# loses busbar_core/busbar_substrate, both of which measure 0 hits forever (busbar_core is a
+# deleted crate; busbar_substrate's root reach was already fully retired). 17 (busbar_llm,
+# unchanged) + 5 + 3 + 12 = 37, the same root reach, now counted instead of a false zero. Pinned at
+# TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
+# RATCHETED DOWN 15 -> 10, AT THE MEASUREMENT (K2f): eefc65fd7 deleted root/units_voice.rs, the last
+# root file naming `busbar_voice::` (5 distinct symbols), so the busbar_voice figure below is 0.
+# RATCHETED DOWN 10 -> 0, AT THE MEASUREMENT: the llm unit became the plane's only arrival path (K2h)
+# and the root names no `busbar_llm::` engine path any more, so every prefix below measures 0.
+ceiling = 0
+
+[rules.legacy-reach.prefixes.busbar_llm]
+prefix = "busbar_llm::"
+# The plane's own unit modules are where the rebuilt steps live; they are not legacy engine reach.
+exclude = ["busbar_llm::unit"]
+because = "the llm engine's non-unit paths: arrival parsing, proto codecs, the stream translator"
+figure = 0
+
+[rules.legacy-reach.prefixes.busbar_mcp]
+prefix = "busbar_mcp::"
+exclude = []
+because = "item 381 (Q11/Q32): the retiring mcp engine, the root still names by prefix"
+figure = 0
+
+[rules.legacy-reach.prefixes.busbar_a2a]
+prefix = "busbar_a2a::"
+exclude = []
+because = "item 381 (Q11/Q32): the retiring a2a engine, the root still names by prefix"
+figure = 0
+
+[rules.legacy-reach.prefixes.busbar_voice]
+prefix = "busbar_voice::"
+exclude = []
+because = "item 381 (Q11/Q32): the retiring voice engine, the root still names by prefix"
+# RATCHETED DOWN 5 -> 0, AT THE MEASUREMENT (K2f, eefc65fd7: root/units_voice.rs deleted).
+figure = 0
+
+# ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
+[rules.no-test-doubles-in-production]
+why = """The composition root is where a node's real parts are chosen, and it is also where a \
+stand-in is easiest to leave behind: a flat pricer, an all-pass chain of nothing, a shipper that \
+drops what it is handed, a rows table that only remembers, a bindings value with no directory \
+under it. Each of those is a legitimate value for SOME node -- a deployment with no `peers:` \
+really does ship a null shipper -- and each is also exactly what a fixture reaches for, so the two \
+are indistinguishable at the call site. They are not indistinguishable to a reader who went and \
+looked, which is what this rule is: every one of these spellings on a production line of \
+`crates/busbar/src` is either named here with a one-line reason, or it is a stand-in nobody \
+reviewed and the gate says so. The second row is the worklist: of the sites that WERE reviewed, the \
+ones the review found to be a test double in the shipped binary rather than the shipped node's own \
+value. That count is a ratchet -- it may go down. Scanned over production lines only, because a \
+double is what a test is FOR."""
+scope_globs = ["crates/busbar/src/*"]
+# The spellings. A stand-in is recognised by what it constructs, not by where it sits.
+forbidden = [
+  "Pricer::flat(",
+  "AuthChain::new(Vec::new()",
+  "NullShipper",
+  "RecordingRows",
+  "without_directory(",
+]
+max_unlisted = 0
+# RATCHETED DOWN 5 -> 3, AT THE MEASUREMENT (K2f): the three main.rs `RecordingRows` sites remain.
+# RATCHETED DOWN 3 -> 0 (p6-ledger-fix, Q128 audit): the boot book's three `RecordingRows` sites now
+# bind `SummedRows`, the production dual write that holds one row per cell rather than every posting.
+max_doubles = 0
+
+# THE REVIEWED SITES. `verdict = "real"` means the review found this to be the shipped node's own
+# value at this composition — a null shipper on a node with no `peers:`, a memory-buffered book on a
+# node that configured no data directory. `verdict = "double"` means the review found a fixture's
+# value in the shipped binary, and those are counted by the second row so the owner sees them.
+# K1 (2026-09-25): the five voice-calls-* sites are the same constructions, reviewed with the same
+# verdicts, MOVED with `compose_voice_governed_calls` from main.rs into root/units_voice.rs (the root
+# unit that composes the node) when the composition root stopped naming plugin crates. A path
+# re-point, not a new review: the symbols, verdicts and reasons are unchanged and the doubles count
+# is the same seven (the main.rs `RecordingRows` row stays for the two left in `compose_boot_book`).
+# K2f: those five sites were deleted with root/units_voice.rs — the voice node they built
+# is gone and the plane composes its governed-call table (no pricer, chain, journal or bindings) in
+# its own crate — so their five rows are struck; the main.rs row stays.
+# The main.rs half of the row above, kept: before K1 one `RecordingRows` row for main.rs covered the
+# voice node's rows AND the two in `compose_boot_book`; the node's moved, the boot book's did not.
+# BOOT-TAIL (TODO step 11): the boot book moved whole into root/boot.rs as stage 4 Book
+# (`root::boot::compose_book`), so the row follows the same two sites there. A path re-point, not a
+# new review: symbol, verdict and reason unchanged, and the doubles count is unchanged.
+# p6-ledger-fix (Q128): struck, with the node-book and admin-only `RecordingRows` rows. Every
+# production dual write binds `SummedRows` now; `RecordingRows` is a test recorder no shipped line
+# constructs, and the only production spelling left is the read-half impl below.
+[rules.no-test-doubles-in-production.known_sites.bindings-constructor]
+file = "crates/busbar/src/root/auth_bindings.rs"
+symbol = "without_directory("
+verdict = "real"
+because = "this is where the unbound posture is declared; declaring it is not composing a node out of it"
+
+[rules.no-test-doubles-in-production.known_sites.node-book-shipper]
+file = "crates/busbar/src/root/durability/mod.rs"
+symbol = "NullShipper"
+verdict = "real"
+because = "no peer is configured, so shipping nowhere is what this node's journal really does"
+
+[rules.no-test-doubles-in-production.known_sites.assembly-bindings]
+file = "crates/busbar/src/root/kernel.rs"
+symbol = "without_directory("
+verdict = "real"
+because = "the posture the assembly starts from; a boot with governance state binds the directory over it"
+
+[rules.no-test-doubles-in-production.known_sites.admin-only-shipper]
+file = "crates/busbar/src/root/kernel.rs"
+symbol = "NullShipper"
+verdict = "real"
+because = "an admin-only node ships its journal nowhere, which is the previous release's shape for it"
+
+[rules.no-test-doubles-in-production.known_sites.assembly-chain]
+file = "crates/busbar/src/root/kernel.rs"
+symbol = "AuthChain::new(Vec::new()"
+verdict = "real"
+because = "the open door the assembly starts from, which the mount replaces with the deployment's own chain"
+
+[rules.no-test-doubles-in-production.known_sites.legacy-rows-read]
+file = "crates/busbar/src/root/units_admin/mod.rs"
+symbol = "RecordingRows"
+verdict = "real"
+because = "the read half's impl on the previous release's rows type; an impl constructs nothing"
+
+[rules.no-test-doubles-in-production.known_sites.harness-rows-alias]
+file = "crates/busbar/src/root/harness.rs"
+symbol = "RecordingRows"
+verdict = "real"
+because = "a type alias over the rows the loop posted, and a reader of it; the name is spelled, nothing is constructed"
+
+# ------------------------------------------------------------------------------------------------
+# [gate.census] — THE RATCHET ON THE RATCHETS
+# ------------------------------------------------------------------------------------------------
+#
+# Nothing stopped a rule DELETED TOGETHER WITH THE TABLE THAT HOLDS IT, because the construction
+# gate's owed-row register is derived from this very file: delete a `[rules.legacy-reach.prefixes.*]`
+# table and the check and the obligation to run it vanish in the same edit. Measured, 2026-09-09,
+# on the (since deleted) kernel-file LOC tables: the gate went from 112 rows to 111 and said nothing
+# at all. `gate.plane_crates` and every `[gate.plugin_kinds]` glob have the same shape.
+#
+# So the COUNTS are pinned here, and `ceiling-census` is owed UNCONDITIONALLY — it is a literal in
+# the gate's id list rather than something derived from this file, which is the property every other
+# derived row lacks.
+#
+# EACH NUMBER IS A FLOOR, NOT AN EQUALITY. Adding a legacy prefix or a plane crate is
+# the ordinary direction of this work and needs no ceremony here; REMOVING one is the manoeuvre, and
+# `actual < pinned` is RED.
+#
+# AND THE FLOOR IS ITSELF PINNED AGAINST THE BASE. `ceiling-census` compares every number in this
+# table against the base commit's copy, and a floor that WENT DOWN is RED (a key on the gate's named
+# RETIRED_PINS list — `loc_ceilings_kernel_files`, deleted 2026-10-02 — is a subject that left the
+# code, not a lowered floor). Without
+# that half, deleting a rule table and dropping its census number in one edit would be exactly as
+# silent as deleting the table alone was.
+[gate.census]
+legacy_reach_prefixes = 4
+# 4 -> 3: `busbar-mcp` left `gate.plane_crates` as a ruled deletion ([gate.census.deleted]
+# "crates/busbar-mcp", P3 DEL-MCP, ARCHITECT 2026-10-05) — the one drop `ceiling-census` excuses.
+plane_crates = 3
+
+# HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
+#
+# The failure this closes: `kind-isolation:truths` checks that a `[gate.plugin_kinds]` KEY exists,
+# never that its globs still match the crates that exist. Narrow `crates/busbar-plane-*` to
+# `crates/busbar-plane-llm` and the key is still present, still cross-checked in both directions,
+# and four crates silently stop being scanned by manifest-allowlist, source-denylist and
+# forbid-unsafe.
+#
+# A COUNT, NOT "AT LEAST ONE". A glob matching no directory today is the intended state for a kind
+# with no crate yet, and a blanket "at least one" would red such a documented zero while still
+# saying nothing about `plane` going from five crates to one. The count catches the narrowing and
+# leaves an intended zero alone; the day a kind's first crate appears, its number is raised with it.
+# `export` is the live example: both of its globs match no directory today (every export sink lives
+# in its own repo), so the kind counts 0 — its documented zero in this repo, not a miscount.
+#
+# ── RE-PINNED 2026-09-22, AND EVERY DECREMENT NAMES ITS CAUSE ───────────────────────────────────
+#
+# This is the ceremony the rule above asks for. ADDING a kind crate needs none; REMOVING one is the
+# manoeuvre, `actual < pinned` is RED, and a decrement with NO NAMED CAUSE is exactly what that RED
+# exists to catch. Measured on this tree, 2026-09-22, by the globs exactly as they are written
+# above — the number each glob ACTUALLY matches, not the number it ought to:
+#
+#   * `plane` 6 -> 5. TWO removals and one addition, netting one. `busbar-plane-voice` was FOLDED
+#     into `busbar-plane-streaming` and its directory DELETED (#18/#83, fbead1a31) — the streaming
+#     plane is the one plane. `crates/busbar-plane-admin` IS NOT IN THIS TREE and
+#     `crates/busbar-core-admin` is: DECISIONS #3 excludes admin from the plugin kinds outright
+#     ("admin & oauth2 are NOT plugins ... There is no `control` plugin kind"), so that list entry
+#     had been naming a directory that does not exist, for a kind admin never was.
+#     Against those two removals, `busbar-plane-decisions` was ADDED (#48, 2b2de9712): the fifth
+#     plane, which had been in no kind list at all and which source-denylist therefore could not
+#     see. DECISIONS #39 pins the roster — "planes = exactly 5 crates
+#     `busbar-plane-{llm,mcp,a2a,streaming,decision}`" — the explicit list above names exactly
+#     those five, and all five directories exist on this tree.
+#   * `unit` 14 -> 1. The W2.c unit fold (2c9eddecf, "12 units -> 8 busbar-kernel-<name>"): the
+#     glob `crates/busbar-unit-*` now matches exactly one directory,
+#     `crates/busbar-unit-transport-key`. THE SAME LANDING IS ALREADY RE-PINNED TWICE IN THIS FILE
+#     — `[rules.loc-ceilings].unit_total_ceiling` 14423 -> 268 and
+#     `[rules.loc-ceilings].verbs_ceiling` 1431 -> 0, both on this date, both citing this fold —
+#     and this row is its third figure, the one nobody re-pinned alongside the other two. The glob
+#     is deliberately NOT repointed at `crates/busbar-kernel-*`: those eight are KERNEL crates,
+#     held by `[rules.loc-ceilings]`, and moving them under a plugin-kind glob would run the unit
+#     kind's rules over the kernel rather than restore a count.
+#   * `unit` 1 -> STRUCK (fold F14 2/2). `crates/busbar-unit-transport-key` is DELETED: its
+#     provisioning is `busbar-kernel-identity`'s `transport_key` module (#36: the TLS secret->config
+#     provisioning is kernel-side machinery; #40: the tls plugin gets an opaque config handle). The
+#     spec lists `unit` among the NOT-kinds, so the `[gate.plugin_kinds]` key and this pin go with
+#     the kind kind-isolation retired in the same commit. A `busbar-unit-*` crate that comes back
+#     is still refused by `[rules.no-unit-crates] unit_crate_glob`, armed at 0.
+#   * `pure_auth` = 2 and `egress_auth` = 0 are STRUCK and `auth` = 2 takes their place. This is a
+#     RENAME, not a decrement: LOCKED DECISION #3 makes auth ONE kind — inbound-verify and
+#     outbound-sign are two OPERATIONS of it, direction is a usage mode — and `[gate.plugin_kinds]`
+#     now carries a single `auth` key whose glob `crates/auth-*` matches the same two directories
+#     (`crates/auth-admin-tokens`, `crates/auth-static-plugin`) that the split spelling claimed
+#     between them. Neither struck key named a glob: both resolved to the empty list, which is how
+#     `[rules.source-denylist].kinds` left the whole auth kind unscanned.
+#   * `dialect` = 0 and `control` = 0 are STRUCK. Both are kinds DECISIONS #3 cancelled, neither
+#     names a key in `[gate.plugin_kinds]`, and `ceiling-census` reds a pin naming no glob in
+#     exactly the way a ceiling naming no row is red. NOTHING STOPS BEING COUNTED by striking them:
+#     there was no glob under either key for the count to have been reading.
+#
+# ── RE-PINNED 2026-09-25: `transport` 7 -> 5, `secret` 2 -> 1 ────────────────────────────────────────────────
+#
+#   * `transport` 7 -> 5. The transport fold: `busbar-transport-grpc` folded into
+#     `busbar-transport-http` as its `grpc` module and `busbar-transport-sse` as its `sse` module,
+#     and both directories were deleted. `crates/busbar-transport-*`
+#     now matches exactly five: http, stdio, tcp, tls and ws.
+#
+#   * `secret` 2 -> 1. The secret-reference fold: `crates/secret-ref` merged into `busbar-contract`
+#     as its `secret_ref` module (the contract has one secret reference type), and its directory was
+#     deleted. `crates/secret-*` now matches exactly one: `crates/secret-example-plugin`.
+#
+# ── RE-PINNED 2026-09-26: `secret` 1 -> 0 ───────────────────────────────────────────────────────────────────
+#
+#   * `secret` 1 -> 0. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES":
+#     "these are trash … real plugins are the examples"): `crates/secret-example-plugin` was
+#     deleted, and the secret kind is proven by the real plugin repo GetBusbar/busbar-secret-vault
+#     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, the removed ci.yml `plugin-proofs`).
+#     `crates/secret-*` now matches no directory: the kind's documented zero in this repo.
+#
+# ── RE-PINNED 2026-09-26: `auth` 2 -> 1 ─────────────────────────────────────────────────────────────────────
+#
+#   * `auth` 2 -> 1. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES": "real
+#     plugins are the examples"; ARCHITECT R-FIX2): `crates/auth-static-plugin` was deleted. The auth
+#     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/busbar-auth-oidc (pinned by
+#     git: busbar-kernel `auth/tests/plugin_chain_tests.rs`, `crates/busbar/tests/mcp_stdio_serve.rs`,
+#     busbar-plugin-loader `auth_conformance_tests`), and the removed ci.yml `plugin-proofs` proves
+#     GetBusbar/busbar-auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
+#
+# ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────
+#
+#   * `transport` 5 -> 4. TRANSPORT-STACK (owner-approved 2026-09-27, docs/design/1.6.0-QUESTIONS.md;
+#     spec #3): TLS is core-only connection security — `busbar-core-connector` is the one TLS path and
+#     never crosses the plugin ABI — so `crates/busbar-transport-tls` was deleted, not moved.
+#     `crates/busbar-transport-*` now matches exactly four: http, stdio, tcp and ws.
+#
+# ── RE-PINNED 2026-09-27: `auth` 1 -> 0 ───────────────────────────────────────────────────────────────────
+#
+#   * `auth` 1 -> 0. The move-out (owner, "PLUGINS LIVE IN THEIR OWN REPOS"; ARCHITECT 2026-09-27:
+#     auth-admin-tokens is a REAL auth plugin, extracted with its door and conformance):
+#     `crates/auth-admin-tokens` moved to GetBusbar/busbar-auth-admin-tokens with its history, and busbar
+#     pulls it at a pinned rev under the unchanged `auth-admin-tokens` feature (busbar-kernel) and as
+#     the loader's `auth-verify` both-ways proof. `crates/auth-*` now matches no directory: the
+#     kind's documented zero in this repo. Its `known_missing_forbid` entry leaves with it (the
+#     crate carries `#![deny(unsafe_code)]` outside its one macro door module).
+#
+# THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
+# plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
+# FAILING. `[gate.census]` reds a floor that went DOWN versus the base commit precisely because it
+# cannot tell a narrowed glob from a folded-away crate, so the commit that owns a roster move is
+# the commit that carries the report and names the cause — above, and in its own message. It
+# EXPIRES BY ITSELF, exactly as a declared ceiling raise does: the moment this lands, the base
+# carries these numbers, the decrement disappears and the comparison is quiet. Re-pinning without
+# naming the fold, or leaving the pins stale so the row reds on `actual < pinned` forever, are the
+# two things this table is written to prevent.
+#
+# store 2 -> 1 (DOOR-STORE item 4, R-FIX2 + owner FIXTURES ruling): crates/store-example-plugin is
+# DELETED — its one remaining test (the dlopen-restart durability proof) moved onto the real durable
+# store GetBusbar/busbar-store-sqlite in `plugin_proof_tests`. `crates/store-*` now matches exactly one:
+# `crates/store-memory`, the store kind's both-ways proof.
+#
+# export 1 -> 0 (EX-DEL, owner FIXTURES ruling "real plugins are the proofs" + Q75): the export
+# fixture crate is DELETED. Every test that loaded it now loads a REAL sink from its own repo at the
+# root's pinned rev (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp) — the loader's both-ways
+# rows `export`, `export-webhook`, `export-scrape`, `export-otlp`. Neither export glob matches a
+# directory in this repo any more: the kind's documented zero.
+#
+# transport -1 (EXTRACT-15, TODO PATH TO DEV-GREEN P5 "EXTRACTION TO 15 CRATES", item http): the http
+# transport crate MOVED OUT with its history to GetBusbar/busbar-transport-http and busbar pulls it at one pinned rev
+# (root Cargo.toml). Its gates run in that repo's plugin CI.
+# transport 3 -> 2 (EXTRACT-15, item tcp): the tcp transport crate MOVED OUT with its history to
+# GetBusbar/busbar-transport-tcp and busbar pulls the logic crate and its -plugin cdylib crate at one pinned
+# rev (root Cargo.toml). Its gates run in that repo's plugin CI. `crates/busbar-transport-*` now matches
+# two: stdio and ws.
+# transport 2 -> 1 (EXTRACT-15, item ws, #214): the ws transport crate MOVED OUT with its history to
+# GetBusbar/busbar-transport-ws and busbar pulls it at one pinned rev (root Cargo.toml). Its gates run
+# in that repo's plugin CI. `crates/busbar-transport-*` now matches one: stdio.
+# hook 1 -> 0 (P5 item hook-ranking): the ranking hook crate MOVED OUT with its history to
+# GetBusbar/busbar-hook-ranking, renamed busbar-hooks-ranking -> busbar-hook-ranking (the singular kind
+# name, Part 2 #3; its rename row below), and busbar pulls the logic crate at one pinned rev (root
+# Cargo.toml). Its gates run in that repo's plugin CI. `crates/hook*` now matches no directory: the
+# kind's documented zero in this repo (kind-isolation reads it from its pinned checkout).
+[gate.census.plugin_kinds]
+plane = 5
+hook = 0
+auth = 0
+secret = 0
+store = 1
+export = 0
+transport = 1
+loader = 1
+abi = 1
+
+
+# ARCHITECT 2026-10-04: a census floor may also drop by the number of a kind's crate directories DELETED
+# under a ruled TODO deletion, each named here. Add-only vs the base; a listed dir still present is RED;
+# an unlisted vanished dir stays RED.
+[gate.census.deleted]
+"crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"
+"crates/busbar-mcp" = "P3 DEL-MCP: the mcp plane is served through its door alone; the legacy engine crate is deleted (ARCHITECT 2026-10-05, U11 / Q1)"
+"crates/plane-example" = "TODO P5: delete plane-example (Q128 audit BLOCK 11/12: a fixture plane plugin riding the HOT lane with C-unwind doors)"
+
+# THE RENAME ROWS (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). A moved-out crate excuses its kind's floor
+# drop only when the root pins it as a git dependency at a rev under the package name it had at the
+# base. A crate whose package name changed with the move counts ONLY with BOTH the git pin under the
+# NEW name AND a row here naming old -> new, the commit that moved it and why. A rename with no row
+# stays RED: nothing else says the new crate is the old one. A broken row (a field missing or empty,
+# a commit that does not resolve) is itself a census problem.
+
+[[gate.census.renamed]]
+from = "busbar-hooks-ranking"
+to = "busbar-hook-ranking"
+commit = "3b74ca71fb716fed371b7592b9c445c6a8863630"
+reason = "P5 item hook-ranking: the crate moved to GetBusbar/busbar-hook-ranking under the singular kind name (Part 2 #3, busbar-<kind>-<name>); the root pins busbar-hook-ranking at one rev"

@@ -1,0 +1,61 @@
+{
+  "applied": [
+    "hdr.date",
+    "hdr.etag"
+  ],
+  "body": {
+    "json": {
+      "enabled": true,
+      "limits": [
+        {
+          "amount": 5,
+          "metric": "budget",
+          "per": "day"
+        }
+      ],
+      "name": "oracle-added"
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "group.create",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "group:oracle-added"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "path": "/api/v1/admin/groups/oracle-added",
+        "status": 200,
+        "body": {
+          "json": {
+            "enabled": true,
+            "limits": [
+              {
+                "amount": 5,
+                "metric": "budget",
+                "per": "day"
+              }
+            ],
+            "name": "oracle-added"
+          }
+        }
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "92",
+    "content-type": "application/json",
+    "etag": "<ETAG>"
+  },
+  "status": 200
+}

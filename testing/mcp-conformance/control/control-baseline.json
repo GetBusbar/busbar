@@ -1,0 +1,97 @@
+{
+  "_comment": [
+    "KNOWN, ENUMERATED FACTS ABOUT THE CONTROL.",
+    "",
+    "Two mechanisms, both machine-checked on every control run:",
+    "",
+    "  expectedFailures    tests that FAIL against the pinned control and that we",
+    "                      judge to be a defect in the CONTROL, not a bug in the",
+    "                      test. The run is green while they fail as listed. A",
+    "                      SECOND, un-baselined failure breaks the green. If a",
+    "                      listed deviation stops failing, the run reports",
+    "                      UNEXPECTED PASS and fails, forcing the entry out.",
+    "",
+    "  pinnedObservations  spec-AMBIGUOUS behaviour where the battery deliberately",
+    "                      records rather than asserts, because two conformant",
+    "                      implementations may legally differ. Pinning the",
+    "                      control's observed choice means the ambiguity record",
+    "                      cannot silently start passing, silently flip, or",
+    "                      silently grow: any change is a build failure that",
+    "                      forces the documented analysis to be revisited.",
+    "",
+    "This file is NOT a way to silence inconvenient tests. Adding an entry",
+    "requires the verbatim spec clause, the observed behaviour, and a judgement."
+  ],
+  "control": "python-sdk mcp==2.0.0",
+  "recordedAt": "2026-08-08",
+  "expectedFailures": [
+    {
+      "testId": "CLI.HOSTILE.SERVER-INITIATED-REQUEST-IS-NOT-ANSWERED",
+      "clause": "STDIO.CLIENT-NO-RESPONSES",
+      "specQuote": "The client sends messages by writing JSON-RPC requests and notifications to the server's stdin, one message per line. The client MUST NOT write JSON-RPC responses.",
+      "specUrl": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio#sending-messages",
+      "observed": "When the fake server sends a forbidden server-initiated JSON-RPC request (method elicitation/create, id \"server-initiated-1\"), the control client replies on the server's stdin with {\"jsonrpc\":\"2.0\",\"id\":\"server-initiated-1\",\"error\":{\"code\":-32601,\"message\":\"Method not found\",\"data\":\"elicitation/create\"}}.",
+      "judgement": "DEFECT IN THE CONTROL. The stdio binding states the client MUST NOT write JSON-RPC responses, without qualification, and the message-patterns page states that clients do not send JSON-RPC responses at all. Replying 'Method not found' is well intentioned but it is exactly the wire behaviour the 2026-07-28 revision removed. A server still on the pre-2026 pattern will read the reply as a normal response and stay in legacy mode, which is the interoperability failure the MUST NOT exists to prevent.",
+      "counterArgument": "One could argue an error reply is a courtesy to a misbehaving peer and that the MUST NOT targets well-formed request/response flow rather than error signalling. The spec text carries no such carve-out, so we treat the plain reading as authoritative and record the disagreement here rather than weakening the test.",
+      "upstreamReference": "not yet reported upstream as of 2026-08-08"
+    }
+  ],
+  "pinnedObservations": [
+    {
+      "testId": "AMB.CONNECTION-ERA-LOCK",
+      "variancePoint": "eraLock.connectionStillModernAfterMalformedRequest",
+      "expectedValue": true,
+      "ambiguity": "AMB-ERA-LOCK",
+      "why": "A dual-era server decides a stdio connection's era from its OPENING request: an enveloped request opens 2026, anything else opens 2025 (upstream python-sdk PR #3152, closed). An enveloped server/discover is a probe that pins nothing. Because this test opens with server/discover and then sends an envelope-less request, the connection is ALREADY pinned modern and must stay modern: the bad request gets -32602 and nothing else changes. Pinning true means that if the control ever starts downgrading an ESTABLISHED modern connection, the build fails. That would be a genuine denial-of-service shape and is the thing actually worth watching."
+    },
+    {
+      "testId": "SRV.TOOLS.UNKNOWN-TOOL-IS-PROTOCOL-ERROR",
+      "variancePoint": "unknownTool.routing",
+      "expectedValue": "isError-result",
+      "ambiguity": "AMB-TOOLS-UNKNOWN",
+      "why": "The spec lists 'Unknown tool' under Protocol Errors but with NO RFC 2119 keyword, so both a JSON-RPC error and an isError result are defensible. The control chose isError. Pinned so the ambiguity cannot silently resolve itself without the documented analysis being revisited."
+    },
+    {
+      "testId": "SRV.TOOLS.EXECUTION-ERROR-IS-RESULT",
+      "variancePoint": "toolExecutionError.routing",
+      "expectedValue": "isError-result",
+      "ambiguity": "AMB-TOOLS-UNKNOWN",
+      "why": "The same ambiguity in the other direction: tool execution errors are described as isError results but never with a MUST. Pinned for the same reason."
+    },
+    {
+      "testId": "ADV.NOTIFICATION-WITH-ID",
+      "variancePoint": "notificationWithId.replyKind",
+      "expectedValue": "error:-32601",
+      "ambiguity": "AMB-NOTIFICATION-WITH-ID",
+      "why": "A message that is a request by JSON-RPC structure but a notification by method name. Both 'reply with an error' and 'ignore it' are defensible and the spec settles neither. The control replies -32601. Pinned so a silent change in this hostile-input path is visible."
+    },
+    {
+      "testId": "ADV.DUPLICATE-REQUEST-ID",
+      "variancePoint": "duplicateId.replyCount",
+      "expectedValue": 2,
+      "ambiguity": "AMB-DUPLICATE-ID",
+      "why": "The CLIENT must not reuse an in-flight id, but the spec never says what a server does when one does. The control answers both. Pinned because a change here (to 1, or to 0) alters how a hostile client can confuse id correlation, and that should never change unnoticed."
+    },
+    {
+      "testId": "CONC.CANCEL-STOPS-RESPONSE",
+      "variancePoint": "cancel.responseCount",
+      "expectedValue": 1,
+      "ambiguity": "AMB-CANCEL-RACE",
+      "why": "Servers SHOULD not respond to a cancelled request but MAY ignore a cancellation whose processing already completed, so both 0 and 1 are legal. The control answers once, having completed before the cancel arrived. Pinned so a drift to 2 (which WOULD violate the stdio MUST NOT on further messages) fails the build."
+    },
+    {
+      "testId": "ADV.BATCH-ARRAY",
+      "variancePoint": "batch.answered",
+      "expectedValue": false,
+      "ambiguity": "AMB-BATCH",
+      "why": "The stdio binding says each message is a single request, notification or response, but never forbids a top-level array with a MUST NOT. The control ignores batches. Pinned so a change to accepting them, which would widen the parsing surface, is visible."
+    },
+    {
+      "testId": "CONC.NULL-ID-REJECTED",
+      "variancePoint": "nullId.replyKind",
+      "expectedValue": "none",
+      "ambiguity": "AMB-NULL-ID",
+      "why": "MCP forbids id: null from the client but does not state the server's obligation. The control stays silent. Pinned so a drift to answering with a result, which no client could correlate, fails the build."
+    }
+  ]
+}

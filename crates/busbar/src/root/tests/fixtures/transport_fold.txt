@@ -1,0 +1,12 @@
+# THE SHIPPED TRANSPORT FOLD — `<wire key> <layer it was composed over, or ->`, one row per wire, in
+# the order the boot seal builds and registers them (an entry's claims past its own right after it:
+# `sse` is the http entry's). Read by root/tests/registry.rs
+# (`the_fold_builds_bottom_up_in_composes_over_order`); a build that does not link a wire has no
+# row for it and the remaining rows keep this order. A wire added, dropped or re-layered has to say
+# so here.
+tcp -
+http -
+sse -
+ws -
+grpc -
+stdio -

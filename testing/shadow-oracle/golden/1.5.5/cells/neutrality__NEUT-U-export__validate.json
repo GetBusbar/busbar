@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config.yaml: invalid YAML: export.metrics: unknown field `bogus_key`, expected one of `module`, `streams`, `fields`, `durable`, `settings` at line 20 column 5\n"},"headers":{},"status":1}

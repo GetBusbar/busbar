@@ -1,0 +1,10 @@
+# A synthetic "clean" pure crate for `cargo xtask denylist --selftest`: no banned dependency, no
+# banned own-src path. `[workspace]` with no members makes this its own workspace root, so
+# `cargo metadata --manifest-path` here never touches the real repo's Cargo.lock.
+[workspace]
+
+[package]
+name = "xtask-fixture-clean"
+version = "0.0.0"
+edition = "2021"
+publish = false

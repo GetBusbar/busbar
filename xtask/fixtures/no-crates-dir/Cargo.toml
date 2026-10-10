@@ -1,0 +1,10 @@
+# The fixture's own tiny workspace. There is deliberately no `crates/` directory beside it.
+[workspace]
+
+[package]
+name = "xtask-fixture-no-crates-dir"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]

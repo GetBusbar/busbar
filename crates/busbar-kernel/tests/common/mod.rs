@@ -1,0 +1,549 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The stand-in units the battery drives the loop with.
+//!
+//! Every unit behind a sealed trait is replaced here by one that records that it was called and
+//! answers what the test told it to answer. That is the whole harness: the loop under test is the
+//! real one, the money types are the real ones, and only the units are fakes.
+
+#![allow(dead_code)]
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use busbar_contract::caps::{
+    Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decode,
+    Encode, Grant, Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, Pass, PrincipalId,
+    ReasonCode, Refusal, Route, ScopeFacts, SeatVerdict, StepName, UnitKey, Usage, UsageLine,
+    VerifiedDestination, Verify,
+};
+use busbar_kernel::registry::Generation;
+use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx, Units};
+
+/// A group with a `concurrent` cap, kept the way a real door keeps one.
+///
+/// The kernel depends on no door, so the door's counter is modelled here — and modelled exactly:
+/// a count raised while the decision is being taken, released by dropping the value the yes handed
+/// back, and a refusal for anything that arrives while the count is at the cap. That shape is the
+/// whole of what the fix is about. A grant nothing holds is a count released before the unit it
+/// admitted has run, and the N+1th unit is then measured against a gauge that has forgotten the N
+/// in flight.
+pub struct CappedGroup {
+    live: Arc<std::sync::atomic::AtomicUsize>,
+    cap: usize,
+}
+
+impl CappedGroup {
+    /// A group that will run at most `cap` units at once.
+    pub fn at(cap: usize) -> Arc<Self> {
+        Arc::new(CappedGroup {
+            live: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            cap,
+        })
+    }
+
+    /// How many units this group is running right now.
+    pub fn live(&self) -> usize {
+        self.live.load(Ordering::Acquire)
+    }
+
+    /// Count one unit, or say the group is full. The count comes back when the answer is dropped.
+    fn count_one(&self) -> Option<GroupCount> {
+        self.live
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < self.cap).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| GroupCount(Arc::clone(&self.live)))
+    }
+}
+
+/// One unit's count on a [`CappedGroup`], given back by dropping it.
+struct GroupCount(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for GroupCount {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// What the fake door answers.
+pub enum Door {
+    /// Open a hold of this size.
+    Own(u64),
+    /// Spend this much against a parent's hold in this cell.
+    Accrual(Arc<HoldCell>, u64),
+    /// Hold nothing.
+    Zero,
+}
+
+/// The units the battery drives the loop with.
+pub struct TestUnits {
+    /// Every step the loop called, in the order it called them.
+    pub calls: Mutex<Vec<StepName>>,
+    /// Refuse at this step, with this reason.
+    pub refuse_at: Option<(StepName, ReasonCode)>,
+    /// The Retry-After, in whole seconds, the refusal at `refuse_at` carries (an admission's
+    /// window reset, as the root's door hands it). `None` = the refusal carries none.
+    pub refuse_wait: Option<u32>,
+    /// What the door answers.
+    pub door: Door,
+    /// What the settlement table reads at the exit.
+    pub evidence: Evidence,
+    /// How much the route step spends.
+    pub spend: u64,
+    /// The meter the route step accrues `spend` onto. A unit accrues nothing through the loop's
+    /// seam (the kernel reads its own meter at the exit), so a battery that runs a spending unit
+    /// hands the loop THIS meter as the run's meter — one meter, as production has one.
+    pub meter: Arc<AccrualMeter>,
+    /// Whether the door for a unit that never passed the door was used.
+    pub refused_door: AtomicBool,
+    /// Whether the door for a unit that DID pass was used.
+    pub admitted_door: AtomicBool,
+    /// Answer the authenticate step with a challenge instead of an identity.
+    pub challenge: bool,
+    /// The lanes the verified set carried when it reached the approve step.
+    pub approved_lanes: Mutex<Vec<busbar_contract::caps::LaneId>>,
+    /// The principal each POLICY SEAT was handed, in the order the seats were asked. A challenge
+    /// round has no established identity and still has to present one to the seats that decide
+    /// ABOUT a principal, so this is what says WHICH one it presented.
+    pub seated_principals: Mutex<Vec<PrincipalId>>,
+    /// The capped-`concurrent` groups this door names on its yes, as the root would have interned
+    /// them. Empty is the door that names none, which is every case that predates the slip.
+    pub groups: Vec<&'static str>,
+    /// The capped group this door enforces on its own counter, when it has one. `None` is a door
+    /// whose cap is somebody else's, which is every case that predates the grant.
+    pub capped: Option<Arc<CappedGroup>>,
+    /// The ends of units a caller went away from, as the loop handed them to the leg's plane. What
+    /// a plane does with one is post it; what this harness does is keep it, so a cell can post it
+    /// onto a real ledger and read the books.
+    pub abandoned: Mutex<Vec<busbar_kernel::teller::Ended>>,
+}
+
+impl Default for TestUnits {
+    fn default() -> Self {
+        TestUnits {
+            calls: Mutex::new(Vec::new()),
+            refuse_at: None,
+            refuse_wait: None,
+            door: Door::Own(1_000),
+            evidence: Evidence::default(),
+            spend: 0,
+            meter: Arc::new(AccrualMeter::new()),
+            challenge: false,
+            refused_door: AtomicBool::new(false),
+            admitted_door: AtomicBool::new(false),
+            approved_lanes: Mutex::new(Vec::new()),
+            seated_principals: Mutex::new(Vec::new()),
+            groups: Vec::new(),
+            capped: None,
+            abandoned: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl TestUnits {
+    /// Units that let every step through.
+    pub fn passing() -> Self {
+        TestUnits::default()
+    }
+
+    /// Units whose door counts every unit against these capped groups and says so.
+    pub fn in_groups(groups: &[&'static str]) -> Self {
+        TestUnits {
+            groups: groups.to_vec(),
+            ..TestUnits::default()
+        }
+    }
+
+    /// Units whose door enforces a `concurrent` cap on its own counter, and hands the count it
+    /// took to the slot to hold.
+    pub fn behind(group: &Arc<CappedGroup>) -> Self {
+        TestUnits {
+            capped: Some(Arc::clone(group)),
+            ..TestUnits::default()
+        }
+    }
+
+    /// Units that refuse at `step` for `reason`.
+    pub fn refusing(step: StepName, reason: ReasonCode) -> Self {
+        TestUnits {
+            refuse_at: Some((step, reason)),
+            ..TestUnits::default()
+        }
+    }
+
+    /// The steps the loop called.
+    pub fn called(&self) -> Vec<StepName> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// Which audit door the unit left through.
+    pub fn doors(&self) -> (bool, bool) {
+        (
+            self.refused_door.load(Ordering::Acquire),
+            self.admitted_door.load(Ordering::Acquire),
+        )
+    }
+
+    /// The destination set as the approve step received it — what the verify step actually sealed.
+    pub fn approved_lanes(&self) -> Vec<busbar_contract::caps::LaneId> {
+        self.approved_lanes.lock().unwrap().clone()
+    }
+
+    /// The principal the approve and admit seats were handed, in that order.
+    pub fn seated_principals(&self) -> Vec<PrincipalId> {
+        self.seated_principals.lock().unwrap().clone()
+    }
+
+    fn note(&self, step: StepName) {
+        self.calls.lock().unwrap().push(step);
+    }
+
+    fn refusal(&self, step: StepName) -> Option<Refusal> {
+        match self.refuse_at {
+            Some((at, reason)) if at == step => Some(match self.refuse_wait {
+                Some(secs) => Refusal::new(reason).retry_after(secs),
+                None => Refusal::new(reason),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// THE UPSTREAM THAT IS STILL THINKING.
+///
+/// A Route leg that never answers, so the loop is left waiting at its one await — exactly where a
+/// client that hangs up mid-request drops it. Nothing else about the plane changes: every other step
+/// is [`TestUnits`]', so what the cells around this fixture measure is the await and only the await.
+pub struct NeverRoutes<'u> {
+    /// The plane the other nine steps come from, so the call order still reads as one unit.
+    pub units: &'u TestUnits,
+    /// Set when the leg's own future is dropped — the proof that cancellation reached the upstream
+    /// rather than stopping at the loop.
+    pub dropped: &'u AtomicBool,
+}
+
+/// The leg itself. It answers `Pending` for ever, and says so when it is dropped.
+pub struct Never<'u> {
+    dropped: &'u AtomicBool,
+}
+
+impl std::future::Future for Never<'_> {
+    type Output = SeatVerdict<Route>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Pending
+    }
+}
+
+impl Drop for Never<'_> {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::Release);
+    }
+}
+
+impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
+    fn route_leg<'a>(
+        &'a self,
+        _token: &'a Pass<Route>,
+        _ctx: &'a UnitCtx,
+        _destinations: &'a [busbar_contract::caps::VerifiedDestination],
+    ) -> busbar_kernel::teller::RouteLeg<'a> {
+        self.units.note(StepName::Route);
+        Box::pin(Never {
+            dropped: self.dropped,
+        })
+    }
+
+    fn abandoned(&self, _ctx: &UnitCtx, ended: busbar_kernel::teller::Ended) {
+        self.units.abandoned.lock().unwrap().push(ended);
+    }
+}
+
+/// A principal every test shares.
+/// The arrival record the battery's kernel-owned arrival step hands forward.
+pub fn arrival_record() -> busbar_contract::caps::ArrivalRecord {
+    busbar_contract::caps::ArrivalRecord {
+        source: "127.0.0.1:9".into(),
+        port: 9,
+        alpn: None,
+        sni: None,
+        peer_cert: None,
+        transport_chain: vec!["battery"],
+    }
+}
+
+/// What the battery's audit step seals.
+pub fn audit_facts() -> busbar_contract::caps::AuditFacts {
+    busbar_contract::caps::AuditFacts {
+        op_class: busbar_contract::caps::OpClassId::new("battery"),
+        finish: busbar_contract::FinishClass::Complete,
+    }
+}
+
+/// The one frame the battery's encode step produces.
+pub fn encoded_frame() -> busbar_contract::caps::Frame {
+    busbar_contract::caps::Frame {
+        direction: busbar_contract::Direction::Outbound,
+        stream: busbar_contract::StreamId(0),
+        bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),
+        meta: busbar_contract::FrameMeta::default(),
+    }
+}
+
+/// The door, as the table asks it for an arrival hold. The real one is the admission unit; what
+/// the battery needs is only that the hold is opened by whoever holds the token, not by the table.
+pub struct TestDoor;
+
+impl busbar_kernel::inflight::ArrivalDoor for TestDoor {
+    fn arrival_hold(
+        &self,
+        principal: PrincipalId,
+        token: &busbar_contract::caps::Grant<busbar_contract::caps::Admittance>,
+    ) -> Hold {
+        Hold::open(token, principal, 0)
+    }
+}
+
+pub fn principal() -> PrincipalId {
+    PrincipalId::new("acct:battery")
+}
+
+/// A context for a client unit.
+pub fn ctx(key: u64) -> UnitCtx {
+    UnitCtx {
+        key: UnitKey::new(key),
+        origin: OriginKind::Client,
+        session: None,
+        generation: Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    }
+}
+
+/// A cell holding an arrival hold, ready for the door.
+pub fn cell(kernel: &Kernel) -> HoldCell {
+    HoldCell::new(Hold::open(&kernel.admit_token(), principal(), 0))
+}
+
+/// A usage report of one line, for tests that need one directly.
+pub fn usage(token: &Grant<Consumption>, quantity: u64) -> Usage {
+    Usage::report(
+        token,
+        vec![UsageLine {
+            class: MeterClassId::new("nano_units"),
+            quantity,
+            source: busbar_contract::caps::QuantitySource::Count,
+            estimated: false,
+        }],
+    )
+    .expect("one line is within the bound")
+}
+
+macro_rules! step {
+    ($self:ident, $token:ident, $marker:ty, $name:expr, $facts:expr) => {{
+        $self.note($name);
+        match $self.refusal($name) {
+            Some(refusal) => SeatVerdict::<$marker>::refuse($token, refusal),
+            None => SeatVerdict::<$marker>::proceed($token, $facts),
+        }
+    }};
+}
+
+/// The plane driver's kernel steps: told nothing beyond the loop's own seats.
+impl busbar_kernel::plane_driver::DriverSteps for TestUnits {}
+
+impl Units for TestUnits {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
+        step!(self, token, Arrival, StepName::Arrival, arrival_record())
+    }
+
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> SeatVerdict<Decode> {
+        step!(
+            self,
+            token,
+            Decode,
+            StepName::Decode,
+            busbar_contract::caps::OpClassId::new("battery")
+        )
+    }
+
+    fn authenticate(
+        &self,
+        token: &Pass<Authenticate>,
+        _ctx: &UnitCtx,
+    ) -> SeatVerdict<Authenticate> {
+        let facts = if self.challenge {
+            busbar_contract::caps::Authenticated::Challenge(busbar_contract::Challenge {
+                bytes: b"nonce".to_vec(),
+                state: busbar_contract::ChallengeState(Vec::new()),
+                rounds_left: 2,
+            })
+        } else {
+            busbar_contract::caps::Authenticated::Principal(principal())
+        };
+        step!(self, token, Authenticate, StepName::Authenticate, facts)
+    }
+
+    fn verify(
+        &self,
+        token: &Pass<Verify>,
+        trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
+        _ctx: &UnitCtx,
+        _principal: &PrincipalId,
+    ) -> SeatVerdict<Verify> {
+        self.note(StepName::Verify);
+        match self.refusal(StepName::Verify) {
+            Some(refusal) => SeatVerdict::refuse(token, refusal),
+            // The trust token the loop lends this step is what seals a destination, so the fixture
+            // seals one: a step that answered with the empty set would exercise the loop's
+            // no-destination path on every test rather than the one that names it.
+            None => SeatVerdict::proceed(
+                token,
+                vec![VerifiedDestination::seal(
+                    trust,
+                    busbar_contract::caps::LaneId::new("fixture-lane"),
+                )],
+            ),
+        }
+    }
+
+    fn approve(
+        &self,
+        token: &Pass<Approve>,
+        _ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Approve> {
+        self.seated_principals
+            .lock()
+            .unwrap()
+            .push(principal.clone());
+        self.approved_lanes
+            .lock()
+            .unwrap()
+            .extend(destinations.iter().map(|d| *d.lane()));
+        step!(
+            self,
+            token,
+            Approve,
+            StepName::Approve,
+            ScopeFacts::default()
+        )
+    }
+
+    fn admit(
+        &self,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
+        _ctx: &UnitCtx,
+        principal: &PrincipalId,
+        _destinations: &[VerifiedDestination],
+        leases: &busbar_kernel::slice::GroupLeaseSlip,
+    ) -> SeatVerdict<Admit> {
+        self.note(StepName::Admit);
+        self.seated_principals
+            .lock()
+            .unwrap()
+            .push(principal.clone());
+        match self.refusal(StepName::Admit) {
+            Some(refusal) => SeatVerdict::refuse(token, refusal),
+            None => {
+                // The cap, on the door's own counter, exactly where a real door takes it: as part
+                // of the decision, before anything else is answered. A full group refuses, and the
+                // refusal is the rate-limited one the ratified table renders a concurrency cap as.
+                if let Some(group) = &self.capped {
+                    let Some(counted) = group.count_one() else {
+                        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::RateLimited));
+                    };
+                    // And handed straight over, because the count is the cap and the cap has to
+                    // outlive the call that took it.
+                    leases.holding(busbar_kernel::slice::DoorGrant::new(counted));
+                }
+                // Named on the yes and only on the yes, exactly where the real door names them:
+                // after the decision, never as part of it.
+                for group in &self.groups {
+                    leases.counted(group);
+                }
+                let admission = match &self.door {
+                    Door::Own(size) => Admission::Own(Hold::open(admit, principal.clone(), *size)),
+                    Door::Zero => Admission::ZeroHold,
+                    Door::Accrual(parent, amount) => {
+                        match parent.accrue_child(principal, *amount, admit) {
+                            Ok(accrual) => Admission::Accrual(accrual),
+                            // A refused accrual falls back to the child's own hold, which is what
+                            // the loop does when the parent has already exited.
+                            Err(_) => Admission::Own(Hold::open(admit, principal.clone(), *amount)),
+                        }
+                    }
+                };
+                SeatVerdict::proceed(token, admission)
+            }
+        }
+    }
+
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        _ctx: &UnitCtx,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
+    ) -> SeatVerdict<Route> {
+        self.note(StepName::Route);
+        self.meter.accrue(self.spend);
+        match self.refusal(StepName::Route) {
+            Some(refusal) => SeatVerdict::refuse(token, refusal),
+            None => SeatVerdict::proceed(token, busbar_contract::caps::RoutePlan::default()),
+        }
+    }
+
+    fn meter(
+        &self,
+        token: &Pass<Meter>,
+        usage_token: &Grant<Consumption>,
+        _ctx: &UnitCtx,
+        _provisional: &Outcome,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
+    ) -> SeatVerdict<Meter> {
+        self.note(StepName::Meter);
+        match self.refusal(StepName::Meter) {
+            Some(refusal) => SeatVerdict::refuse(token, refusal),
+            None => SeatVerdict::proceed(token, usage(usage_token, self.spend)),
+        }
+    }
+
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> SeatVerdict<Audit> {
+        self.note(StepName::Audit);
+        self.admitted_door.store(true, Ordering::Release);
+        SeatVerdict::proceed(token, audit_facts())
+    }
+
+    fn audit_refused(
+        &self,
+        token: &Pass<Audit>,
+        _ctx: &UnitCtx,
+        _refusal: &Refusal,
+    ) -> SeatVerdict<Audit> {
+        self.calls.lock().unwrap().push(StepName::Audit);
+        self.refused_door.store(true, Ordering::Release);
+        SeatVerdict::proceed(token, audit_facts())
+    }
+
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
+        self.note(StepName::Encode);
+        SeatVerdict::proceed(token, encoded_frame())
+    }
+
+    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+        self.evidence.clone()
+    }
+}

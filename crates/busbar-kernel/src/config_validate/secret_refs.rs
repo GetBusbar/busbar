@@ -1,0 +1,499 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! EVERY secret reference in the resolved config, and the guard that makes omitting one impossible.
+//!
+//! Split out of `config_validate/mod.rs` when B1 turned a hand-written list into a compiler-enforced
+//! walk: the walk, its exhaustive destructures and the type inventory the coverage test checks the
+//! source against are one unit, and they are easier to review as one.
+
+use super::RootCfg;
+
+/// Enumerate EVERY secret reference in the resolved config as `(what, &SecretRef)`, where `what` is
+/// the human-readable config path used in error messages. The SINGLE source of truth for which
+/// references are secrets: the structural check in `validate_cost_model` and the registry-backed
+/// module-existence check in `main::validate_secret_refs` (deferred until the plugin registry exists)
+/// both walk this list, so a new secret-bearing field is covered by both the moment it is added here.
+///
+/// THIS FUNCTION USED TO FAIL OPEN. It was a hand-written list of config paths, and a secret-bearing
+/// field that nobody remembered to add here was SILENTLY SKIPPED: no compile error, no test failure,
+/// and `--validate` printed `ok: config valid` for a config whose credential could not resolve.
+/// That was not hypothetical. `identity-providers.<name>.browser_login.client_secret` (a confidential
+/// client secret the core itself presents during a code-to-token exchange) had been
+/// absent from the list since the block was introduced, so a deployment whose confidential-client
+/// secret env var was unset was told its config was good and then failed every hosted login at runtime.
+///
+/// TWO LAYERS NOW MAKE OMISSION IMPOSSIBLE RATHER THAN REMEMBERED, because each layer catches a
+/// different way of introducing one:
+///
+/// 1. A NEW FIELD ON A TYPE ALREADY WALKED HERE is a COMPILE ERROR. Every struct below is taken
+///    apart with an EXHAUSTIVE destructure and no `..`, the idiom already used by
+///    `RootSettings::is_empty` and `config::patch`. Adding a field to `RootCfg`, `TlsCfg`,
+///    `AuthCfg`, `AuthChainEntry`, `AuthMethodCfg`, `BrowserLoginCfg`, `IdentityProviderCfg` or
+///    `ProviderCfg` fails to build with `E0027 pattern does not mention field` until somebody has
+///    decided, here, whether it carries a secret.
+/// 2. A NEW SECRET-BEARING TYPE is a TEST failure. The compiler cannot help with a `SecretRef`
+///    added to a struct this function never destructures, so
+///    `config_validate::tests::secret_ref_coverage` reads the crate's own sources, finds every
+///    field anywhere in the tree whose type mentions `SecretRef`, and requires the declaring type to
+///    appear in [`SECRET_BEARING_TYPES`] below. A new one fails the test with the type named.
+pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
+    walk_secret_refs(cfg, TokenRefs::Every)
+}
+
+/// Whether `api_key: none` — the declaration that there is NO credential at all — is MEANINGFUL at
+/// the config path `what`, which is one of the paths [`walk_secret_refs`] mints.
+///
+/// True for the credential field on a `providers.<name>` entry and nothing else. A keyless upstream
+/// is a real thing: some upstreams take no credential at all, and since an unresolvable reference now
+/// refuses boot, the operator needs a way to say that on purpose. Every OTHER secret here protects
+/// something that has no credential-free mode — a TLS cert, `auth.signing_key`, the authorization
+/// server's ES256 key, an operator token, a confidential-client secret, a plane's outbound delegation
+/// credential. Accepting `none` on one of those would not configure anything; it would silently
+/// disarm the thing the secret exists to protect, which is the same class of quiet failure the
+/// degrade this replaces used to cause.
+///
+/// Written as a predicate over the PATH, and deliberately kept in this file: `providers.<name>.api_key`
+/// is minted by the loop over `providers` a few lines below, so the shape this matches and the shape
+/// that exists are written within sight of each other. `tests::keyless_is_accepted_on_provider_api_keys_alone`
+/// drives it over the full walk of a fully-populated config, so a new secret-bearing path is
+/// classified by the test rather than by anyone remembering to look here.
+pub(crate) fn keyless_credential_allowed(what: &str) -> bool {
+    // A `providers.<name>` entry name may itself contain dots (`providers.my.local.llama.api_key`),
+    // so this is a prefix/suffix test, not a segment count. It cannot over-match: no other path this
+    // walk mints both starts under `providers.` and ends in `.api_key`.
+    what.starts_with("providers.") && what.ends_with(".api_key")
+}
+
+/// The subset of [`secret_refs`] that boot actually RESOLVES, for the strict `--validate` pass.
+///
+/// `--validate` promises that a clean run means a clean boot, and the converse matters just as much:
+/// it must not refuse a config boot would serve. Boot resolves exactly one identity-provider
+/// `token:` — the operator credential `AuthCfg::admin_token_ref` picks out of the
+/// resolved chains — and never touches the `token:` on a definition nothing references. An operator
+/// who keeps a spare `identity-providers:` entry on file, its env var unset until the day it is
+/// wired in, has a config that boots and ran `--validate` clean in every earlier release. Resolving
+/// every definition's token would turn that into a refusal, so this walk keeps every OTHER reference
+/// (the full walk is still what the structural and module-existence checks use, so nothing is hidden
+/// from them) and narrows only the token set to what boot reads.
+pub(crate) fn boot_resolved_secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
+    walk_secret_refs(cfg, TokenRefs::BootResolved)
+}
+
+/// Which identity-provider `token:` references a walk reports. See [`boot_resolved_secret_refs`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TokenRefs {
+    /// Every `token:` in the config: on each `identity-providers:` definition and on each resolved
+    /// chain entry. The coverage contract — nothing that can hold a secret is skipped.
+    Every,
+    /// Only the one `token:` boot resolves (the operator credential from the resolved chains).
+    BootResolved,
+}
+
+fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::config::SecretRef)> {
+    // EXHAUSTIVE, no `..`: see layer 1 above. Fields bound with a leading underscore carry no secret
+    // reference, and the grouped comments say why. If you are here because the compiler stopped you,
+    // the question to answer is "can this field hold a `SecretRef`, at any depth?" — not "is it
+    // convenient to ignore".
+    let RootCfg {
+        // ── SECRET-BEARING: walked below ──
+        tls,
+        admin_tls,
+        auth,
+        providers,
+        identity_providers,
+        // ── ADDRESSES, NAMES AND REFERENCES: strings the operator types in the clear. A listen
+        // address, a public URL, a module name or a bare hook/group/definition name is not a
+        // credential and has no `SecretRef` anywhere beneath it. ──
+        listen: _,
+        public_url: _,
+        admin_listen: _,
+        admin_auth: _,
+        global_hooks: _,
+        // ── LIMIT, COST AND POLICY VALUES: numbers, booleans and host lists. ──
+        groups: _,
+        rate_card: _,
+        per_request_fee: _,
+        plane_fees: _,
+        limits: _,
+        blocked_metadata_hosts: _,
+        allow_metadata_hosts: _,
+        allow_all_metadata: _,
+        guard: _,
+        upstream_credentials: _,
+        // The configured plane section NAMES (Law 7): `&'static str` keys, no credential.
+        plane_sections: _,
+        // ── OPAQUE MODULE SETTINGS BAGS (`serde_json::Value` trees, not typed config): `store`,
+        // `secrets`, `hooks`, `export` and `export_defs` all carry a plugin's own `settings:`, which
+        // MAY contain `SecretRef`-SHAPED documents. Those are NOT `SecretRef`-typed values and are
+        // deliberately NOT enumerated here: they are resolved against the built-in env/file modules
+        // at the seam that consumes them (`build_secret_resolver` for `secrets.<module>.settings`,
+        // the store/exporter/hook open paths for the rest), where the module that owns the bag knows
+        // which of its own keys are credentials. This function's contract is the TYPED config
+        // surface. `SECRET_BEARING_TYPES` is keyed off the `SecretRef` TYPE for exactly that reason,
+        // so this exclusion cannot quietly widen: give any of these a `SecretRef`-typed field and
+        // layer 2 fails until it is walked here. ──
+        store: _,
+        secrets: _,
+        hooks: _,
+        export: _,
+        export_defs: _,
+        // `models` names a provider and a model id; the credential lives on the provider.
+        models: _,
+        pools: _,
+        // The per-section ENDPOINT RESOURCES carry NO credential, and the reason is checkable rather
+        // than asserted: an endpoint resource's fields — its canonical URI, authorization servers,
+        // supported scopes, allowed origins — are published VERBATIM in the RFC 9728 protected-resource
+        // metadata document, which is served to unauthenticated callers by design. A secret cannot live
+        // in a struct whose every field is deliberately public. busbar is the RESOURCE server here: it
+        // VERIFIES tokens the operator's IdP mints and holds no issuing key of its own. Each resource is
+        // type-erased as `Arc<dyn Any>` behind the neutral seam, so no `SecretRef` can be reached here
+        // even in principle.
+        //
+        // This arm exists because B1 made omission impossible: adding the field to `RootCfg` FAILED TO
+        // COMPILE until someone decided, and that is the whole value of the exhaustive destructure.
+        endpoint_resources: _,
+        // `oauth_as:` DOES carry a `SecretRef` — the ES256 signing key — and it is walked below
+        // rather than declined here. It is the one secret on that section, and it is the highest-value
+        // one in the process: whoever holds it forges every token this deployment will ever issue.
+        oauth_as,
+        // `tool_defs` (one plane's own named-definition section) DOES carry credentials — a
+        // token-exchange subject token and a launched child's environment references — but they are
+        // NO LONGER walked here. The exhaustive destructure that forces the secret/not-secret decision
+        // on every field of that section now lives in `ToolsCfg`'s `PlaneCfg::secret_refs` impl,
+        // beside the fields it guards, and this binding is handed to that impl by the loop below. It
+        // stays NAMED (not `_`) so a new TOP-LEVEL `RootCfg` field is still a compile error somebody
+        // has to answer.
+        tool_defs,
+        // `agent_defs` (another plane's own named-definition section) DOES carry credentials — each
+        // definition's leased outbound delegation secret and both halves of its outbound client
+        // identity — but, like `tool_defs`, they are gathered by that section's own
+        // `AgentsCfg::secret_refs` impl through the loop below, not walked here. Bound by name for the
+        // same reason: the RootCfg destructure keeps forcing a decision on a new top-level field.
+        agent_defs,
+        // THE TWO FAILOVER POOL MAPS hold BARE NAMES and nothing else: a `members:` list of
+        // registrations defined elsewhere, and a `repeatable:` list of operation names. Both are
+        // references INTO sections this walk already covers, so a credential could only appear here
+        // by somebody putting one in a pool member's name. Declined, and the decline is checkable the
+        // same way every other one on this list is: layer 2 fails by TYPE NAME the day
+        // `CandidatePoolCfg` grows a field that holds a `SecretRef`.
+        tool_pools: _,
+        agent_pools: _,
+    } = cfg;
+
+    let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
+
+    // THE AUTHORIZATION SERVER'S SIGNING KEY. `--validate` must be able to resolve it, because the
+    // alternative is a deployment that boots, advertises a JWKS, and fails on the first token
+    // request of the day with a secret module error.
+    //
+    // The `oauth_as:` block is OPAQUE to the kernel: its owner (`busbar-core-oauth2`) lists the
+    // references it carries (`resolve` kept them on the accepted block), walking its validated
+    // identity with an exhaustive destructure there, so a new secret-bearing field is a compile
+    // error in that crate.
+    // Destructured exhaustively, so a field added to the accepted block is a compile error here.
+    if let Some(crate::oauth_as::seam::CheckedAsBlock {
+        block: _,
+        secret_refs,
+    }) = oauth_as
+    {
+        refs.extend(secret_refs.iter().map(|(path, key)| (path.clone(), key)));
+    }
+
+    for (name, p) in providers {
+        let crate::config::ProviderCfg {
+            api_key,
+            // Everything else on a provider is a URL, a protocol/auth-scheme selector, an error map
+            // or a host allowlist.
+            protocol: _,
+            base_url: _,
+            health: _,
+            error_map: _,
+            path: _,
+            path_base: _,
+            organization: _,
+            project: _,
+            token_url: _,
+            scope: _,
+            subject: _,
+            auth: _,
+            allow_metadata_hosts: _,
+            max_output_key: _,
+            anthropic_adaptive_thinking: _,
+            native_structured_output: _,
+            model_capabilities: _,
+        } = p;
+        refs.push((format!("providers.{name}.api_key"), api_key));
+    }
+    push_tls_refs(&mut refs, "tls", tls.as_ref());
+    push_tls_refs(&mut refs, "admin_tls", admin_tls.as_ref());
+
+    // The `identity-providers:` DEFINITION map is walked directly rather than through the resolved
+    // auth chains. `resolve_auth` projects a definition onto an `AuthChainEntry` only for a provider
+    // NAMED in `auth.chain:`/`auth.admin_auth:`, and `AuthCfg::admin_token_ref` then returns at most
+    // ONE token (the first operator-credential entry it finds), so walking the chains alone missed both a
+    // second operator credential and every secret on a defined-but-not-yet-referenced provider. A
+    // definition the operator wrote down is a definition busbar must be able to resolve.
+    for (name, def) in identity_providers {
+        let crate::config::IdentityProviderCfg {
+            token,
+            browser_login,
+            module: _,
+            max_admin_scope: _,
+            settings: _, // opaque plugin settings bag; see the `RootCfg` note above.
+        } = def;
+        // A definition's own `token:` is only ever READ through the resolved chains (below), so the
+        // boot-resolved walk leaves it out here and reports it from the chain entry instead.
+        if let (Some(tok), TokenRefs::Every) = (token, tokens) {
+            refs.push((format!("identity-providers.{name}.token"), tok));
+        }
+        push_browser_login_refs(
+            &mut refs,
+            &format!("identity-providers.{name}"),
+            browser_login.as_ref(),
+        );
+    }
+
+    if let Some(auth) = auth {
+        let crate::config::AuthCfg {
+            signing_key,
+            operator_pub,
+            chain,
+            admin_auth,
+            methods,
+            // Role bindings map a role name onto pool/group/scope grants: no credentials.
+            role_bindings: _,
+            // A duration string.
+            key_ttl: _,
+            // Token-mint policy: bools, duration strings, pool-name strings, binding-mode enums —
+            // no secret references anywhere in the block.
+            policy: _,
+        } = auth;
+        if let Some(sk) = signing_key {
+            refs.push(("auth.signing_key".to_string(), sk));
+        }
+        if let Some(op) = operator_pub {
+            refs.push(("auth.operator_pub".to_string(), op));
+        }
+        // The RESOLVED chains and methods are projections of the definitions walked above, so in a
+        // config built by `resolve` these add nothing new. They are walked anyway because they are
+        // separate types with their own `SecretRef` fields, they are reachable from `RootCfg`, and a
+        // future construction path that does not go through `identity-providers:` (a synthesized
+        // entry, an admin-applied chain) would otherwise reintroduce exactly this blind spot.
+        // Duplicate paths are harmless: both consumers are pure checks over the list.
+        //
+        // The boot-resolved walk reports only the token boot reads: `admin_token_ref` returns the
+        // first operator-credential entry's reference, and that is compared by ADDRESS (the accessor
+        // hands back a borrow into these very entries), so a second such entry, or a token on a
+        // module that never reads one, is left out exactly as boot leaves it unread.
+        let boot_token = auth.admin_token_ref();
+        for (plane, entries) in [("chain", chain), ("admin_auth", admin_auth)] {
+            for entry in entries {
+                let crate::config::AuthChainEntry {
+                    token,
+                    name,
+                    module: _,
+                    max_admin_scope: _,
+                    settings: _,
+                } = entry;
+                if let Some(tok) = token {
+                    let reported = match tokens {
+                        TokenRefs::Every => true,
+                        TokenRefs::BootResolved => boot_token.is_some_and(|b| std::ptr::eq(b, tok)),
+                    };
+                    if reported {
+                        refs.push((format!("auth.{plane}.{name}.token"), tok));
+                    }
+                }
+            }
+        }
+        for (name, method) in methods {
+            let crate::config::AuthMethodCfg {
+                browser_login,
+                module: _,
+                settings: _,
+            } = method;
+            push_browser_login_refs(
+                &mut refs,
+                &format!("auth.methods.{name}"),
+                browser_login.as_ref(),
+            );
+        }
+    }
+
+    // ── THE PLANE SECTIONS, each asked for its OWN secret references. The exhaustive no-`..`
+    // destructure that forces a secret/not-secret decision on every new field of either section has
+    // moved OUT of this walk and INTO each plane's `PlaneCfg::secret_refs` impl, beside the fields it
+    // guards (`ToolsCfg`, `AgentsCfg`). Core no longer names the plane's credential-bearing types —
+    // `McpServerDefCfg`, `TokenExchangeCfg`, `AgentDefCfg`, `OutboundCredential`, `ClientIdentityCfg`
+    // — to enumerate them; it loops the trait over the section bindings the RootCfg destructure
+    // above already forced a decision on. Each impl returns FULLY-QUALIFIED paths
+    // (`tools.<name>.…`, `agents.<name>.…`), so nothing is prefixed here. Order within the returned
+    // list is not observed: every consumer (`validate`, `validate_secret_refs`,
+    // `validate_builtin_secrets_resolve`) is a per-reference check, and the coverage test compares by
+    // SET.
+    for plane_cfg in [tool_defs.as_ref(), agent_defs.as_ref()] {
+        refs.extend(plane_cfg.secret_refs());
+    }
+
+    refs
+}
+
+/// The three PEM secret references on one `tls:`/`admin_tls:` block, prefixed with the block's config
+/// path. Split out so the two call sites cannot drift (they did not, but they were two copies).
+fn push_tls_refs<'a>(
+    refs: &mut Vec<(String, &'a crate::config::SecretRef)>,
+    at: &str,
+    tls: Option<&'a crate::config::TlsCfg>,
+) {
+    let Some(tls) = tls else {
+        return;
+    };
+    let crate::config::TlsCfg {
+        cert,
+        key,
+        client_ca,
+    } = tls;
+    refs.push((format!("{at}.cert"), cert));
+    refs.push((format!("{at}.key"), key));
+    if let Some(ca) = client_ca {
+        refs.push((format!("{at}.client_ca"), ca));
+    }
+}
+
+/// The confidential-client secret on one `browser_login:` block, prefixed with the owning provider's
+/// config path. THIS IS THE FIELD THE OLD HAND-WRITTEN LIST MISSED: an unset `client_secret` env var
+/// passed `--validate` as `ok: config valid` and then failed every hosted login.
+fn push_browser_login_refs<'a>(
+    refs: &mut Vec<(String, &'a crate::config::SecretRef)>,
+    at: &str,
+    login: Option<&'a crate::config::BrowserLoginCfg>,
+) {
+    let Some(login) = login else {
+        return;
+    };
+    let crate::config::BrowserLoginCfg {
+        client_secret,
+        // The client id is advertised on the authorize URL in the clear; it is public by design.
+        client_id: _,
+    } = login;
+    if let Some(secret) = client_secret {
+        refs.push((format!("{at}.browser_login.client_secret"), secret));
+    }
+}
+
+/// EVERY type in the tree that declares a `SecretRef`-typed field, and how [`secret_refs`] accounts
+/// for it. This is layer 2 of the anti-omission guard described on `secret_refs`: the compiler can
+/// force a NEW FIELD on a type that is already destructured, but it cannot say a word about a
+/// `SecretRef` added to a struct `secret_refs` never looks at. `tests::secret_ref_coverage` derives
+/// the real set from the SOURCE and fails if it is not exactly this one.
+///
+/// It is a checked inventory, NOT a waiver list. Nothing can be added to it to silence a failure: an
+/// entry that is `Walked` must genuinely be destructured by `secret_refs`, and an entry that is
+/// `NotInResolvedConfig` must genuinely be unreachable from `RootCfg` — the test verifies both, so
+/// mislabelling a live type as unreachable fails just as loudly as leaving it out.
+#[cfg(test)]
+pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
+    ("TlsCfg", SecretBearing::Walked),
+    ("ProviderCfg", SecretBearing::Walked),
+    ("AuthCfg", SecretBearing::Walked),
+    ("AuthChainEntry", SecretBearing::Walked),
+    ("IdentityProviderCfg", SecretBearing::Walked),
+    ("BrowserLoginCfg", SecretBearing::Walked),
+    // `tools.<name>.token_exchange.subject_token` — busbar's OWN token, the SUBJECT of an RFC 8693
+    // exchange, never the caller's.
+    (
+        "TokenExchangeCfg",
+        SecretBearing::DoorDeclared(
+            "the `tools:` door's section: its Statement declares \
+             `settings.*.token_exchange.subject_token` (and `settings.*.env.*` for a stdio child's \
+             referenced environment), and the folded row's section enumerates every reference at \
+             those paths",
+        ),
+    ),
+    // That plane's LEASED outbound delegation credential. Reached from `RootCfg` through
+    // `agent_defs -> agents.<name>.upstream_credential`.
+    ("OutboundCredential", SecretBearing::Walked),
+    // That plane's OUTBOUND CLIENT CERTIFICATE — busbar's own end of a mutual handshake with a
+    // registered peer. Reached from `RootCfg` through `agent_defs -> agents.<name>.client_identity`.
+    ("ClientIdentityCfg", SecretBearing::Walked),
+    // The authorization server's ES256 signing key — the highest-value secret in the process, since
+    // whoever holds it forges every token this deployment will ever issue. Reached from `RootCfg`
+    // through `oauth_as`, which is the VALIDATED identity, which is why that type carries the
+    // reference verbatim rather than consuming it at `resolve` time.
+    ("CheckedAsBlock", SecretBearing::Walked),
+    // A door plane's section as the kernel carries it: the references read at its door's declared
+    // paths, answered through `PlaneCfg::secret_refs` on the plane loop.
+    (
+        "DoorSection",
+        SecretBearing::DoorDeclared(
+            "the folded door row's section: it holds the references read at its door's declared \
+             `settings.` paths and answers them through `PlaneCfg::secret_refs`",
+        ),
+    ),
+    (
+        "AsIdentity",
+        SecretBearing::NotInResolvedConfig(
+            "the `oauth_as:` block is OPAQUE in `RootCfg`: the kernel hands it to its owner through \
+             the seam's `check`, and `busbar-core-oauth2` walks this type with an exhaustive \
+             destructure (`config::secret_refs`), so a new secret field there is a compile error.",
+        ),
+    ),
+    (
+        "OauthAsCfg",
+        SecretBearing::NotInResolvedConfig(
+            "the DESERIALIZE-side `oauth_as:` block. `busbar-core-oauth2` lowers it into \
+             `AsIdentity` and walks that, and `resolve` runs that owner check on every \
+             `--validate`/boot, so the block is covered without the kernel naming this type.",
+        ),
+    ),
+    (
+        "AuthDeployCfg",
+        SecretBearing::NotInResolvedConfig(
+            "the DESERIALIZE-side `auth:` block. `resolve_auth` lowers it into `AuthCfg`, which IS \
+             walked, and every `--validate`/boot check runs against the RESOLVED config.",
+        ),
+    ),
+    (
+        "ProviderDeploy",
+        SecretBearing::NotInResolvedConfig(
+            "the DESERIALIZE-side provider entry (providers.yaml). `resolve` lowers it into \
+             `ProviderCfg`, which IS walked.",
+        ),
+    ),
+    (
+        "ProviderRoute",
+        SecretBearing::NotInResolvedConfig(
+            "the composition root's copy of a RESOLVED `ProviderCfg` (`root::door_steps::\
+             provider_routes`), made for a door plane's members after the `ProviderCfg` it copies \
+             was walked; it is never part of `RootCfg`.",
+        ),
+    ),
+];
+
+/// How [`secret_refs`] accounts for one secret-bearing type. See [`SECRET_BEARING_TYPES`].
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SecretBearing {
+    /// Exhaustively destructured by [`secret_refs`], so every one of its `SecretRef` fields reaches
+    /// the returned list and a new field is a compile error.
+    Walked,
+    /// Not reachable from `RootCfg` at all, with the reason it is not.
+    ///
+    /// Two shapes land here, on either side of the walk. A DESERIALIZE-side config shape that is
+    /// LOWERED into a walked type before any validation runs (`OauthAsCfg` -> `AsIdentity`), and a
+    /// runtime CARRIER built FROM walked references after the walk has already reported them. Both
+    /// are unreachable from `RootCfg`, which is the claim the variant makes and the one the test
+    /// checks; each entry's reason says which shape it is and why the references it touches are
+    /// covered elsewhere.
+    NotInResolvedConfig(&'static str),
+    /// A DOOR PLANE'S configuration type: the kernel holds no typed copy of a door's section, so it
+    /// never destructures the type; it reads every reference the section holds at the door's
+    /// declared secret-reference paths (`PlaneRegistration::secret_refs`), walking the section as
+    /// written. The reason names those paths.
+    DoorDeclared(&'static str),
+}
+
+#[cfg(test)]
+#[path = "tests/secret_ref_coverage.rs"]
+mod secret_ref_coverage;

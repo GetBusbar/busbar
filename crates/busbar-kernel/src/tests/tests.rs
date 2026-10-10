@@ -1,0 +1,2985 @@
+use super::*;
+use crate::test_support::EnvVarGuard;
+use crate::test_support::{build_once, cfg_with_provider_api_key};
+
+/// The sources this crate took from the retired shared value crate (#83a SD-8), relative to this
+/// crate's manifest dir. The rules that crate held over its own tree — body JSON through the one
+/// seam, every operator-facing warn/error coded — are kept over the same code where it lives now.
+/// `src/sigv4.rs` left with D3 (ec0c05f4e3): it was a re-export of the identity unit's SigV4 items
+/// and carried no code of its own, so no code under these rules left with it.
+pub(crate) fn moved_sources() -> &'static [&'static str] {
+    &[
+        "src/breaker.rs",
+        "src/diagnostics/mod.rs",
+        "src/diagnostics/emit.rs",
+        "src/json.rs",
+        "src/ir/lane_caps.rs",
+        "src/config/providers.rs",
+        "src/proto/installed.rs",
+    ]
+}
+// The monolith's root tests reached every crate-root item through `use super::*`. The split put
+// those items in appbuild/preflight/router/boot; this block restores the same names to this file's
+// scope. Allowed-unused as one block: which of these a given test build exercises varies by cfg.
+#[allow(unused_imports)]
+use crate::appbuild::{
+    inert_durable_keys_banner, open_relay_banner, resolve_model_context_max,
+    stateful_plane_ephemeral_store_warn,
+};
+#[allow(unused_imports)]
+use crate::preflight::{
+    build_secret_resolver, is_real_auth_plugin_ref, is_real_identity_provider_plugin_ref,
+    parse_signing_secret, plugin_fetch_downloader, plugin_fetch_downloader_with_cap,
+    resolve_admin_token, resolve_signing_key, valid_identity_provider_modules,
+    validate_secret_module, validate_secret_modules, validate_secret_refs,
+};
+#[allow(unused_imports)]
+use crate::router::{
+    apply_common_layers, apply_inbound_concurrency_limit, base_data_router,
+    build_router_with_limits, method_not_allowed_handler, project_auth_scope_caps,
+    request_activity_tick, reshape_body_limit_413, reshape_oversized_413, server_timing,
+    server_timing_dur_ms, AXUM_BODY_LIMIT_413_MARKER, HEADER_SERVER_TIMING, NO_UPSTREAM_RTT,
+};
+#[allow(unused_imports)]
+use axum::Router;
+#[allow(unused_imports)]
+use std::collections::HashMap;
+
+use crate::config::{PoolCfg, PoolMember};
+
+/// The inbound-concurrency cap is added as a layer ONLY when `max_inbound_concurrent > 0`. This
+/// drives `apply_inbound_concurrency_limit` over a minimal router whose handler PARKS on a barrier of
+/// size 2 (released only once BOTH requests arrive). With cap = 1 the second request is SHED (Bug 4:
+/// load-shed) rather than admitted, so it never reaches the barrier — the first handler waits out its
+/// 300ms timeout ALONE and the run takes ≥ 300ms. With cap = 0 (NO layer) both requests reach the
+/// barrier concurrently and release immediately (< 250ms). The dedicated shed semantics (the 503 the
+/// second request receives) are asserted separately by
+/// [`test_inbound_over_capacity_sheds_503_not_queued`]; this test only pins the add-layer-when-`>0`
+/// rule via the timing difference.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_inbound_concurrency_layer_added_only_when_positive() {
+    use std::sync::Arc;
+    use tokio::sync::{Barrier, Notify};
+
+    async fn run_router(router: Router) -> std::time::Duration {
+        // Serve on an ephemeral port; fire two concurrent GETs to the parking handler.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let url = format!("http://{addr}/park");
+        let client = reqwest::Client::new();
+        let start = std::time::Instant::now();
+        let (a, b) = tokio::join!(client.get(&url).send(), client.get(&url).send());
+        a.unwrap();
+        b.unwrap();
+        let elapsed = start.elapsed();
+        server.abort();
+        elapsed
+    }
+
+    // Handler that signals arrival then waits on a barrier; the barrier of size 2 only releases
+    // once BOTH requests have arrived — so if a layer serializes them to 1-at-a-time, the second
+    // never arrives, the barrier never releases, and the handler instead falls back to a short
+    // timeout. We detect the cap via that timeout path (capped run takes the timeout; uncapped run
+    // releases immediately).
+    fn make_router(barrier: Arc<Barrier>, _gate: Arc<Notify>) -> Router {
+        Router::new().route(
+            "/park",
+            axum::routing::get(move || {
+                let barrier = barrier.clone();
+                async move {
+                    // If both requests run concurrently the barrier releases at once. If a cap
+                    // serializes them, this wait blocks until the per-request timeout fires.
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_millis(300), barrier.wait())
+                            .await;
+                    "ok"
+                }
+            }),
+        )
+    }
+
+    // Uncapped (cap = 0): NO layer, both requests reach the barrier concurrently → fast release.
+    let uncapped = apply_inbound_concurrency_limit(
+        make_router(Arc::new(Barrier::new(2)), Arc::new(Notify::new())),
+        0,
+    );
+    let uncapped_elapsed = run_router(uncapped).await;
+
+    // Capped (cap = 1): the layer admits one and SHEDS the other, so the two requests can NOT both
+    // reach the barrier at once → the first handler waits out its 300ms timeout alone.
+    let capped = apply_inbound_concurrency_limit(
+        make_router(Arc::new(Barrier::new(2)), Arc::new(Notify::new())),
+        1,
+    );
+    let capped_elapsed = run_router(capped).await;
+
+    assert!(
+        uncapped_elapsed < std::time::Duration::from_millis(250),
+        "cap=0 must add NO layer: both requests reach the barrier concurrently and release fast, \
+             got {uncapped_elapsed:?}"
+    );
+    assert!(
+        capped_elapsed >= std::time::Duration::from_millis(300),
+        "cap=1 must serialize admission: the first request waits out its timeout before the \
+             second is admitted, got {capped_elapsed:?}"
+    );
+}
+
+/// THE ADMISSION CONTRACT. The original defect here was HEAD-OF-LINE BLOCKING: the old tower
+/// concurrency layer queued in `poll_ready`, so a saturated cap wedged the whole CONNECTION and
+/// every unrelated request sharing it. The fix keeps `poll_ready` always-ready and makes the
+/// decision per REQUEST: an over-cap arrival is SHED IMMEDIATELY with the static 503 rather than
+/// parked waiting for a slot. A queueing arm was tried in its place and had to be reverted — an
+/// over-cap burst turned into an unbounded stall, which a client cannot tell apart from a hung
+/// gateway, and it burns the caller's own deadline while holding the connection. This test pins
+/// that shape: with cap = 1 held, a second request is answered AT ONCE with the 503, and the
+/// admitted one still completes normally when it is released.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_inbound_over_capacity_sheds_immediately_and_admitted_request_completes() {
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let router = {
+        let started = started.clone();
+        let release = release.clone();
+        Router::new().route(
+            "/block",
+            axum::routing::get(move || {
+                let started = started.clone();
+                let release = release.clone();
+                async move {
+                    // Signal that the (only) admission permit is now held, then hold it until released.
+                    started.notify_one();
+                    release.notified().await;
+                    "ok"
+                }
+            }),
+        )
+    };
+    let router = apply_inbound_concurrency_limit(router, 1);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let url = format!("http://{addr}/block");
+
+    // Request 1 acquires the single admission permit and parks in the handler.
+    let url1 = url.clone();
+    let req1 = tokio::spawn(async move { reqwest::Client::new().get(&url1).send().await });
+    started.notified().await; // permit is now held
+
+    // Request 2 arrives with the cap full: it must be SHED, and shed NOW — not parked until the
+    // permit frees. (On a NEW connection, so this also witnesses the no-head-of-line property:
+    // the second connection is serviced far enough to reach admission rather than wedging in the
+    // accept path.) The timeout is the teeth: a parking layer never answers this call at all.
+    let r2 = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        reqwest::Client::new().get(&url).send(),
+    )
+    .await
+    .expect("an over-capacity inbound request must be answered immediately, never parked")
+    .expect("request 2 gets a response");
+    assert_eq!(
+        r2.status().as_u16(),
+        503,
+        "an over-capacity inbound request is shed with the at-capacity 503"
+    );
+    assert_eq!(
+        r2.headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "the shed names a concrete backoff"
+    );
+    assert_eq!(
+        r2.text().await.unwrap(),
+        r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#,
+        "the static shed body is part of the observable contract"
+    );
+
+    // Shedding never disturbs the ADMITTED request: free the permit and request 1 completes 200.
+    release.notify_one();
+    let r1 = req1.await.unwrap().expect("request 1 completes");
+    assert_eq!(r1.status().as_u16(), 200);
+    server.abort();
+}
+
+fn pool(members: Vec<PoolMember>) -> PoolCfg {
+    PoolCfg {
+        upstream_credentials: None,
+        members,
+        breaker: None,
+        failover: None,
+        on_exhausted: None,
+        affinity: None,
+        policy: crate::config::PoolPolicy::default(),
+        gates: Vec::new(),
+        base_named: false,
+        ..Default::default()
+    }
+}
+
+fn member(model: &str, context_max: Option<usize>) -> PoolMember {
+    PoolMember {
+        reasoning: None,
+        model: model.to_string(),
+        weight: 1,
+        attempt_timeout_ms: None,
+        context_max,
+        tier: None,
+        tags: Vec::new(),
+    }
+}
+
+#[test]
+fn test_resolve_model_context_max_explicit_wins_over_none() {
+    // The same model in pool A with Some(128000) and pool B with None must resolve to the
+    // explicit limit regardless of iteration order — None never clobbers a real value.
+    let mut pools = HashMap::new();
+    pools.insert("a".to_string(), pool(vec![member("m", Some(128_000))]));
+    pools.insert("b".to_string(), pool(vec![member("m", None)]));
+    let resolved = resolve_model_context_max(&pools).expect("None must not override Some");
+    assert_eq!(resolved.get("m"), Some(&Some(128_000)));
+}
+
+#[test]
+fn test_resolve_model_context_max_identical_values_ok() {
+    // The same explicit limit repeated across pools is consistent, not a conflict.
+    let mut pools = HashMap::new();
+    pools.insert("a".to_string(), pool(vec![member("m", Some(64_000))]));
+    pools.insert("b".to_string(), pool(vec![member("m", Some(64_000))]));
+    let resolved = resolve_model_context_max(&pools).expect("identical values must not conflict");
+    assert_eq!(resolved.get("m"), Some(&Some(64_000)));
+}
+
+#[test]
+fn test_resolve_model_context_max_conflict_is_loud() {
+    // Two DIFFERENT explicit limits for the same model is an operator contradiction: fail loud
+    // (deterministic error) rather than silently pick whichever pool iterated last.
+    let mut pools = HashMap::new();
+    pools.insert("a".to_string(), pool(vec![member("m", Some(128_000))]));
+    pools.insert("b".to_string(), pool(vec![member("m", Some(32_000))]));
+    let err =
+        resolve_model_context_max(&pools).expect_err("conflicting context_max must be rejected");
+    assert!(err.contains("conflicting context_max"), "got: {err}");
+    assert!(err.contains('m'), "error must name the model; got: {err}");
+    assert!(
+        err.contains("128000") && err.contains("32000"),
+        "error must show both values; got: {err}"
+    );
+}
+
+#[test]
+fn test_resolve_model_context_max_none_everywhere() {
+    let mut pools = HashMap::new();
+    pools.insert("a".to_string(), pool(vec![member("m", None)]));
+    pools.insert("b".to_string(), pool(vec![member("m", None)]));
+    let resolved = resolve_model_context_max(&pools).expect("all-None resolves to None");
+    assert_eq!(resolved.get("m"), Some(&None));
+}
+
+#[test]
+fn test_open_relay_banner_distinguishes_absent_vs_explicit_none() {
+    // Absent `auth:` block (empty chain): banner must flag the silent open-relay foot-gun.
+    let absent = open_relay_banner(true, false).expect("empty chain must produce a banner");
+    assert!(
+        absent.contains("OPEN RELAY") && absent.contains("no `auth:` block"),
+        "absent-auth banner must call out the missing block; got: {absent}"
+    );
+    // Explicit empty chain: still an open relay, but the operator opted in.
+    let explicit = open_relay_banner(true, true).expect("explicit empty chain must banner");
+    assert!(
+        explicit.contains("OPEN RELAY") && explicit.contains("auth.chain is empty"),
+        "explicit-empty banner must reference auth.chain is empty; got: {explicit}"
+    );
+}
+
+#[test]
+fn test_open_relay_banner_silent_when_auth_engaged() {
+    // A non-empty chain emits nothing — the banner is exclusively for the open-relay state.
+    assert!(open_relay_banner(false, true).is_none());
+}
+
+/// INERT-KEYS BOOT GUARD (bypass-edge): since 1.5.2 virtual-key enforcement is driven by the CHAIN
+/// SHAPE, not the admin token. A DURABLE store carrying keys while `auth.chain` does NOT name the
+/// `keys` verifier is the one state where a prior run's keys become silently unenforced (no
+/// data-plane request resolves them). The banner fires EXACTLY there and nowhere else. The third
+/// argument is now `keys_in_chain` (banner fires when it is FALSE).
+#[test]
+fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
+    // The dangerous edge: durable store, keys present, `keys` NOT in the chain → LOUD banner.
+    let b = inert_durable_keys_banner(true, 3, false).expect("durable+keys+no-keys-chain banners");
+    assert!(
+        b.contains("INERT") && b.contains("3 key") && b.contains("keys"),
+        "banner must name the count and the fix (add `keys` to auth.chain); got: {b}"
+    );
+
+    // `keys` IS in the chain → keys are enforced, no banner.
+    assert!(
+        inert_durable_keys_banner(true, 3, true).is_none(),
+        "`keys` in the chain enforces persisted keys — no inert-keys banner"
+    );
+
+    // Durable store but EMPTY (fresh durable deploy, no keys yet) → nothing to bypass, no banner.
+    assert!(
+        inert_durable_keys_banner(true, 0, false).is_none(),
+        "an empty durable store has no keys to leave unenforced"
+    );
+
+    // A RAM (non-durable) store never persists keys across restarts — even if it somehow reported
+    // keys, the banner is scoped to durable stores.
+    assert!(
+        inert_durable_keys_banner(false, 5, false).is_none(),
+        "the inert-keys banner is scoped to durable stores"
+    );
+}
+
+/// STATEFUL-PLANE EPHEMERAL-STORE WARN: the sharper, conditional boot warn fires EXACTLY when the
+/// RAM store is resolved AND a stateful plane (MCP tools / A2A agents, whether bare or pooled) is
+/// configured — and names the CONSEQUENCE (in-flight task loss on restart), not just advice. An
+/// LLM-only deploy (no stateful plane) and any durable store both stay silent: the sharper warn
+/// would be noise there. This is a WARN, never a boot-block.
+#[test]
+fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
+    // RAM store + an MCP plane configured (tool or tool-pool) → the specific warn fires.
+    let w = stateful_plane_ephemeral_store_warn(true, true, false)
+        .expect("RAM + the first stateful plane → sharper warn fires");
+    assert!(
+        w.contains("in-flight tasks will break")
+            && w.contains(frozen_str("durable_store_advice").as_str())
+            && w.contains("NOT survive a restart"),
+        "the warn must name the CONSEQUENCE and the durable-store fix; got: {w}"
+    );
+
+    // RAM store + an A2A plane configured (agent or agent-pool) → fires (either stateful plane does).
+    assert!(
+        stateful_plane_ephemeral_store_warn(true, false, true).is_some(),
+        "RAM + the second stateful plane → the sharper warn fires"
+    );
+
+    // RAM store but LLM-only (no stateful plane) → stateless, a restart costs nothing → NO warn.
+    assert!(
+        stateful_plane_ephemeral_store_warn(true, false, false).is_none(),
+        "a stateless-only deploy must NOT get the sharper warn — noise trains people to \
+         ignore warnings"
+    );
+
+    // A DURABLE store → task state survives a restart → no warn, even with stateful planes present.
+    assert!(
+        stateful_plane_ephemeral_store_warn(false, true, true).is_none(),
+        "a durable store persists stateful-plane task state across restarts — no sharper warn"
+    );
+}
+
+/// A MEMORY store can never REACH the inert-with-keys state in practice: keys are only minted
+/// through the admin API, which is gated by the admin token — so a keyed engine implies an admin
+/// token, and a RAM store starts empty every boot. This pins that invariant end-to-end: a fresh
+/// `MemoryStore` reports zero keys, and its `admin_token_hash()` gate matches the token it was
+/// constructed with. (The durable-store analogue is exercised by the router-level bypass test.)
+#[test]
+fn test_memory_store_cannot_reach_inert_with_keys() {
+    use crate::governance::{GovState, MemoryStore};
+    use std::sync::Arc;
+
+    // No admin token → engine inert AND the store is empty (RAM starts fresh each boot). There is
+    // no keyed-but-inert state to warn about: key_count is 0, so the banner is None regardless.
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    assert!(gov.admin_token_hash().is_none(), "no admin token → inert");
+    let key_count = gov.all_keys().map(|k| k.len()).unwrap_or(0);
+    assert_eq!(key_count, 0, "a fresh RAM store holds no keys");
+    // store_is_durable = false for memory → banner is None even if key_count were nonzero.
+    assert!(inert_durable_keys_banner(false, key_count, false).is_none());
+
+    // With an admin token the same engine is active — the state a real minted-keys deploy is in.
+    let store2 = Arc::new(MemoryStore::new());
+    let gov2 = GovState::new(store2, Some("admintok".to_string())).unwrap();
+    assert!(gov2.admin_token_hash().is_some(), "admin token → active");
+}
+
+/// A deployment with NO plane mounted: every path resolves through the resolver's residual arm,
+/// which is the arm these vendor-envelope assertions are about.
+fn residual_planes() -> crate::plane::PlaneDispatch {
+    crate::plane::PlaneDispatch::default()
+}
+
+// THE RESIDUAL-DIALECT TABLE (`test_residual_dialect_inference`: which shipped dialect each residual
+// path shape is answered in) MOVED to `tests/residual_envelope_cross_plane.rs`, beside the other
+// tests that assert real-plane behaviour. Its assertions are the real dialects' own residual
+// claims, which that integration target reaches through the plane crate's testkit; this neutral
+// source names no dialect.
+
+// (The test that pinned `main.rs::proto_for_path` against the canonical `proto::proto_for_path`
+// is GONE WITH ITS SUBJECT: there is no second classifier left for it to agree with. ONE resolver
+// — `plane::PlaneDispatch::ingress_of` — answers for the fallback handlers, the 413 reshape and the
+// auth-time 401 alike, so agreement is now a property of the code rather than of a test watching
+// two copies. `plane_tests::the_mount_table_is_read_before_the_path_shape` pins what it answers.)
+
+/// A 404 fallback on the OpenAI path is shaped as the OpenAI error envelope (no amzn headers).
+#[tokio::test]
+async fn test_fallback_openai_404_is_json_no_amzn_headers() {
+    let resp = fallback_error_response(
+        &residual_planes(),
+        "/v1/chat/completions",
+        axum::http::StatusCode::NOT_FOUND,
+        // REGRESSION: the fallback 404 emits the CANONICAL `not_found_error` kind, so
+        // an OpenAI-inferred 404 carries `{"error":{"type":"not_found_error"}}`, not `not_found`.
+        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        "missing",
+    );
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok()),
+        Some("application/json") // golden wire-contract literal (kept bare on purpose)
+    );
+    // Guard the canonical kind reaches the body via the OpenAI writer's verbatim passthrough.
+    use http_body_util::BodyExt as _;
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        v["error"]["type"],
+        "not_found_error", // golden wire-contract literal (kept bare on purpose)
+        "a chat-completions-path 404 must carry the canonical not_found_error type, not not_found"
+    );
+    let resp = fallback_error_response(
+        &residual_planes(),
+        "/v1/chat/completions",
+        axum::http::StatusCode::NOT_FOUND,
+        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        "missing",
+    );
+    assert!(
+        resp.headers().get("x-amzn-requestid").is_none(),
+        "a non-Converse-path fallback must NOT carry x-amzn-* headers"
+    );
+}
+
+/// `Server-Timing` reports Busbar's OWN processing time = total − upstream RTT, with the
+/// no-upstream sentinel reporting the full time and clock skew saturating to zero (never a
+/// huge underflowed value).
+#[test]
+fn test_server_timing_dur_ms() {
+    // total 1090µs − upstream 1000µs = 90µs internal = 0.090 ms.
+    assert!((server_timing_dur_ms(1090, 1000) - 0.090).abs() < 1e-9);
+    // No upstream hop (sentinel) → report the full time (e.g. /healthz at 57µs).
+    assert!((server_timing_dur_ms(57, NO_UPSTREAM_RTT) - 0.057).abs() < 1e-9);
+    // Clock skew (upstream measured ≥ total) saturates to 0, never underflows.
+    assert_eq!(server_timing_dur_ms(500, 800), 0.0);
+}
+
+/// REGRESSION: axum's `DefaultBodyLimit` rejects an
+/// oversized body with a bare `text/plain` 413 (`"length limit exceeded"`) — a router/proxy
+/// tell. `reshape_oversized_413` must turn that into a protocol-native `application/json`
+/// envelope. Against the OLD code (no reshaping layer) the response stayed `text/plain`, so this
+/// assertion on `application/json` fails; after the fix it passes.
+#[tokio::test]
+async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt as _;
+
+    // Simulate exactly what axum's DefaultBodyLimit emits: a 413 with a bare text/plain body.
+    let axum_native_413 = (
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+        )],
+        "length limit exceeded",
+    )
+        .into_response();
+
+    let reshaped =
+        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", axum_native_413).await;
+    assert_eq!(reshaped.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    let ct = reshaped
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|h| h.to_str().ok());
+    assert_eq!(
+        ct,
+        Some("application/json"), // golden wire-contract literal (kept bare on purpose)
+        "oversized-body 413 must be reshaped to application/json, not the bare text/plain tell"
+    );
+    let bytes = reshaped.into_body().collect().await.unwrap().to_bytes();
+    // Must be valid JSON (not the plain-text "length limit exceeded" string).
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("reshaped 413 body must be valid JSON");
+    assert!(
+        v.get("error").is_some(),
+        "a chat-completions-path 413 must carry an `error` envelope; got {v}"
+    );
+    assert_ne!(
+        String::from_utf8_lossy(&bytes),
+        "length limit exceeded",
+        "the axum plain-text body must not survive reshaping"
+    );
+}
+
+/// A non-413 response (or a 413 a handler already shaped as JSON) must pass through
+/// `reshape_oversized_413` untouched — the layer only rewrites the bare-text body-limit reject.
+#[tokio::test]
+async fn test_reshape_oversized_413_passthrough() {
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt as _;
+
+    // Non-413: untouched.
+    let ok = (axum::http::StatusCode::OK, "hello").into_response();
+    let passed = reshape_oversized_413(&residual_planes(), "/v1/chat/completions", ok).await;
+    assert_eq!(passed.status(), axum::http::StatusCode::OK);
+    let bytes = passed.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        &bytes[..],
+        b"hello",
+        "non-413 body must pass through verbatim"
+    );
+
+    // 413 that is ALREADY application/json: untouched (re-wrapping would corrupt it).
+    let already_json = (
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+        )],
+        r#"{"error":{"type":"request_too_large","message":"native"}}"#,
+    )
+        .into_response();
+    let passed =
+        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", already_json).await;
+    let bytes = passed.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        v["error"]["message"], "native",
+        "an already-JSON 413 must be passed through, not re-wrapped"
+    );
+}
+
+/// REGRESSION: a forward-path-relayed UPSTREAM 413 with a NON-JSON content-type (e.g.
+/// an upstream that itself answers 413 with a `text/plain`/`text/html` body that is NOT axum's
+/// own `length limit exceeded` marker) must pass through `reshape_oversized_413` UNTOUCHED —
+/// reshaping it would clobber the upstream's relayed error with busbar's own envelope.
+///
+/// Against the OLD code (which reshaped ANY non-JSON 413) this body would be rewritten into
+/// busbar's `request_too_large` JSON, so the `text/plain` content-type + verbatim-body
+/// assertions below fail; after the sentinel gate they pass.
+#[tokio::test]
+async fn test_relayed_upstream_413_not_reshaped() {
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt as _;
+
+    // An upstream-relayed 413 whose body is NOT axum's body-limit sentinel.
+    let upstream_413 = (
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+        )],
+        "upstream says: prompt is too long",
+    )
+        .into_response();
+
+    let passed =
+        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", upstream_413).await;
+    assert_eq!(passed.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    // Content-type must remain the upstream's text/plain — NOT rewritten to application/json.
+    assert_eq!(
+        passed
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok()),
+        Some("text/plain; charset=utf-8"), // golden wire-contract literal (kept bare on purpose)
+        "a relayed upstream 413 must keep its own content-type, not be reshaped to JSON"
+    );
+    let bytes = passed.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        &bytes[..],
+        b"upstream says: prompt is too long",
+        "a relayed upstream 413 body must pass through verbatim, not be clobbered"
+    );
+}
+
+/// The sentinel gate must be exact: a non-JSON 413 whose body equals axum's
+/// [`AXUM_BODY_LIMIT_413_MARKER`] IS reshaped (it is axum's own reject), confirming the
+/// passthrough above is driven by the body content and not merely the content-type.
+#[tokio::test]
+async fn test_axum_marker_413_is_reshaped_even_as_plain_text() {
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt as _;
+
+    let axum_native_413 = (
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+        )],
+        std::str::from_utf8(AXUM_BODY_LIMIT_413_MARKER).unwrap(),
+    )
+        .into_response();
+
+    let reshaped =
+        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", axum_native_413).await;
+    assert_eq!(
+        reshaped
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok()),
+        Some("application/json"), // golden wire-contract literal (kept bare on purpose)
+        "axum's own body-limit 413 (sentinel body) must be reshaped to JSON"
+    );
+    let bytes = reshaped.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("reshaped 413 body must be valid JSON");
+    assert!(v.get("error").is_some());
+}
+
+/// Helpers for the plugin pre-flight regression tests: a fresh temp plugins dir and an in-memory
+/// signed/unsigned tarball builder.
+pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
+    // A monotonic counter, NOT a timestamp. Several helpers call this with the same `tag` from
+    // different tests running concurrently, and a clock read is not guaranteed to differ between
+    // two threads. Colliding on the path made two tests share one directory: one wrote its tarball
+    // while the other scanned it, or removed the directory out from under it — surfacing as an
+    // unrelated hooks test failing on "corrupt tar.gz archive" roughly one run in three.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // AND a once-per-process token, because the pid alone is not a process identity over time.
+    // These dirs are deliberately never cleaned up, and under process churn (a full workspace
+    // build spawning thousands of compiler processes while several copies of this binary run) the
+    // OS reuses pids within a session — at which point a fresh run's `create_dir_all` happily
+    // adopts a PREVIOUS run's leftover dir, stale manifests, stale cdylib copies and all. A stale
+    // plugin dir reads exactly like an ABI or staleness defect, which is the worst possible way
+    // for a fixture to fail. One clock read per PROCESS (not per call — see the counter note
+    // above), so two calls in one process still can't collide and two processes with one pid
+    // can't either.
+    static PROC_TOKEN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let token = PROC_TOKEN.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    });
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-boot-plugins-{}-{token:x}-{tag}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+pub(crate) fn plugin_manifest(
+    name: &str,
+    alias: &str,
+    publisher: &str,
+) -> busbar_plugin_loader::sign::Manifest {
+    busbar_plugin_loader::sign::Manifest {
+        name: name.into(),
+        alias: alias.into(),
+        kind: "store".into(),
+        version: "1.5.0".into(),
+        publisher: publisher.into(),
+        abi_version: *busbar_plugin_loader::supported_abi("store")
+            .iter()
+            .max()
+            .expect("store abi"),
+        sha256: String::new(),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+        host: None,
+        declares: Default::default(),
+        statement: None,
+        former_names: Vec::new(),
+    }
+}
+
+/// An UNSIGNED (but structurally valid) tarball: sha256 set, signature empty.
+pub(crate) fn unsigned_tarball(mut m: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<u8> {
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
+    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
+}
+
+fn plugins_cfg(dir: &std::path::Path, enabled: bool) -> crate::config::PluginsCfg {
+    crate::config::PluginsCfg {
+        enabled,
+        dir: dir.to_string_lossy().into_owned(),
+        ..Default::default()
+    }
+}
+
+fn gov_with_store(store: &str) -> crate::config::StoreCfg {
+    crate::config::StoreCfg {
+        module: store.to_string(),
+        settings: serde_json::Map::new(),
+    }
+}
+
+/// FAIL-CLOSED (hard requirement 1): `governance.store: <plugin>` with `plugins.enabled: false`
+/// (or the block absent) is a BOOT ERROR that NAMES the flag — the drop-is-inert failsafe.
+#[test]
+fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
+    let dir = tmp_plugin_dir("disabled-store");
+    let err = crate::plugins_preflight(
+        Some(&gov_with_store("durable-kv")),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins_cfg(&dir, false),
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("plugins.enabled"), "names the flag: {err}");
+    assert!(err.contains("durable-kv"), "names the store: {err}");
+    // The ABSENT-block default behaves identically.
+    let err = crate::plugins_preflight(
+        Some(&gov_with_store("durable-kv")),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &crate::config::PluginsCfg::default(),
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("plugins.enabled"), "absent block: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `plugins.logs` is refused at the one pre-flight seam every path runs (boot, `--validate`, reload,
+/// apply), naming its key: a level word that names no level, and a zero rotation size.
+#[test]
+fn a_bad_plugins_logs_value_is_refused_naming_its_key() {
+    let mut cfg = crate::config::PluginsCfg::default();
+    cfg.logs.level = Some("loud".into());
+    let run = |cfg: &crate::config::PluginsCfg| {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &Default::default(),
+            cfg,
+            &Default::default(),
+        )
+    };
+    let err = run(&cfg).unwrap_err();
+    assert!(err.contains("plugins.logs.level"), "{err}");
+    cfg.logs.level = Some("debug".into());
+    cfg.logs.rotate_mb = Some(0);
+    let err = run(&cfg).unwrap_err();
+    assert!(err.contains("plugins.logs.rotate_mb"), "{err}");
+    cfg.logs.rotate_mb = Some(8);
+    assert!(run(&cfg).is_ok(), "a good block passes");
+}
+
+/// DROP-IS-INERT: plugins present in the directory but `plugins.enabled: false` (store: memory) —
+/// boot succeeds with an EMPTY registry; nothing in the dir is even considered.
+#[test]
+fn disabled_plugins_are_inert_even_when_present() {
+    let dir = tmp_plugin_dir("inert");
+    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
+    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
+    // Even an INVALID tarball must not matter while disabled.
+    std::fs::write(dir.join("junk.tar.gz"), b"not a tarball").unwrap();
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins_cfg(&dir, false),
+        &Default::default(),
+    )
+    .expect("inert");
+    assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE BOOT LOG OVER THE ROOT'S REGISTRY BUILD (ARCHITECT ruling Q8): the registry is built by
+/// the composition root (`preflight::RegistryBuild`), and the preflight logs each step the build
+/// notes — the same lines, the same fields, in the order it logged them when it scanned the
+/// directory itself: `disabled`; or `enabled`, then every skipped row, then every loadable row.
+#[test]
+fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let dir = tmp_plugin_dir("boot-lines");
+    let tarball = unsigned_tarball(plugin_manifest("acme-lines", "lines", "acme"), b"lib");
+    std::fs::write(dir.join("lines.tar.gz"), tarball).unwrap();
+    let lines = |cfg: &crate::config::PluginsCfg| {
+        let cap = WarnCapture::capturing_debug();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            crate::plugins_preflight(
+                None,
+                None,
+                &Default::default(),
+                &Default::default(),
+                cfg,
+                &Default::default(),
+            )
+            .expect("the preflight passes");
+        });
+        let ours = |m: &String| m.starts_with("plugin");
+        let messages = cap.messages().into_iter().filter(ours);
+        messages
+            .map(|m| m.trim_end().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let d = dir.to_string_lossy().into_owned();
+    let off = lines(&plugins_cfg(&dir, false));
+    assert_eq!(
+        off,
+        ["plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"]
+    );
+    let skipped = lines(&plugins_cfg(&dir, true));
+    assert_eq!(skipped.len(), 2, "{skipped:?}");
+    assert_eq!(
+        skipped[0],
+        format!("plugins: enabled dir={d} loadable=0 skipped=1")
+    );
+    assert!(
+        skipped[1].starts_with("plugin present but NOT loaded (trust policy) ")
+            && skipped[1].contains("plugin=acme-lines")
+            && skipped[1].contains("lines.tar.gz"),
+        "{skipped:?}"
+    );
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let allowed = lines(&cfg);
+    assert_eq!(allowed.len(), 2, "{allowed:?}");
+    assert_eq!(
+        allowed[0],
+        format!("plugins: enabled dir={d} loadable=1 skipped=0")
+    );
+    assert!(
+        allowed[1].starts_with(
+            "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in) "
+        ) && allowed[1].contains("plugin=acme-lines"),
+        "{allowed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BOOT WARNS ABOUT A MALFORMED FLOOR where it resolved the trust policy: the preflight (boot,
+/// reload, apply) warns before the root's registry build resolves the policy.
+#[test]
+fn the_preflight_warns_about_a_malformed_floor() {
+    use crate::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let mut cfg = crate::config::PluginsCfg::default();
+    cfg.min_versions.insert("p".into(), "v1".into());
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &Default::default(),
+            &cfg,
+            &Default::default(),
+        )
+        .expect("the preflight passes");
+    });
+    assert!(
+        cap.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
+        "{:?}",
+        cap.messages()
+    );
+}
+
+/// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The linked store is
+/// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
+/// configured name resolves to it there — not a name the kernel matches. With the plugins directory
+/// off the registry holds exactly that row, which states itself ephemeral and opens through
+/// `open_store`, by its key and by its canonical name alike (ARCHITECT C': one plugin, one identity).
+/// With the directory on, a dropped-in copy of the SAME plugin (its canonical name) at the version
+/// the linked plugin states is admitted once — the linked row serves — and a DIFFERENT plugin
+/// spelling the linked row's key is refused, naming both (Q-P4-12: no door outranks the other; the
+/// silent first-registration win is gone).
+///
+/// RED by planting the door bypass: `linked_rows()` registering nothing leaves the configured
+/// `store.module` (the stand-in row) unresolved (the preflight then refuses it as a plugin with
+/// plugins off).
+#[test]
+fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
+    let store = crate::test_support::stand_in_store();
+    let name = store.module.as_str();
+    let reg = crate::plugins_preflight(
+        Some(&store),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &crate::config::PluginsCfg::default(),
+        &Default::default(),
+    )
+    .expect("the configured store resolves on the axis");
+    let row = reg.resolve(name).expect("the configured store is a row");
+    assert_eq!((row.manifest.kind.as_str(), row.ephemeral), ("store", true));
+    let stores = reg.linked().iter().filter(|p| p.manifest.kind == "store");
+    assert_eq!((stores.count(), reg.loadable().len()), (1, 0));
+    reg.store_door(name)
+        .expect("the row states its door to boot");
+    let canonical = row.manifest.name.clone();
+    assert_ne!(canonical, name, "the row's canonical name is not its key");
+    assert_eq!(row.key(), name, "the row prints its key");
+    let version = row.plugin_version().expect("the store states its version");
+    let statement = row.statement().expect("the store states itself");
+    reg.store_door(&canonical)
+        .expect("the canonical name opens the same store");
+    let by_canonical = crate::plugins_preflight(
+        Some(&gov_with_store(&canonical)),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &crate::config::PluginsCfg::default(),
+        &Default::default(),
+    )
+    .expect("`store.module: <canonical>` resolves as the key does");
+    assert!(by_canonical.resolve(&canonical).expect("resolves").linked());
+
+    // A dropped-in copy of the same plugin at its version: admitted once, the linked row serves.
+    let dir = tmp_plugin_dir("linked-store");
+    let mut m = plugin_manifest(&canonical, name, "acme");
+    m.version = version.clone();
+    m.statement = Some(hex::encode(&statement));
+    std::fs::write(dir.join("copy.tar.gz"), unsigned_tarball(m, b"lib")).unwrap();
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let scan = || {
+        crate::plugins_preflight(
+            Some(&store),
+            None,
+            &Default::default(),
+            &Default::default(),
+            &cfg,
+            &Default::default(),
+        )
+    };
+    let reg = scan().expect("the directory scans");
+    assert!(
+        reg.resolve(name).expect("resolves").linked(),
+        "the linked row serves"
+    );
+    assert_eq!(reg.loadable().len(), 0, "the copy is no row of its own");
+    assert_eq!(reg.linked_copies().len(), 1);
+
+    // A DIFFERENT plugin spelling the key: refused, naming both.
+    std::fs::remove_file(dir.join("copy.tar.gz")).unwrap();
+    let other = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");
+    std::fs::write(dir.join("ram.tar.gz"), other).unwrap();
+    let refused = scan().expect_err("two plugins claim the key");
+    assert!(
+        refused.contains("plugin claim conflict")
+            && refused.contains(&format!("'{name}'"))
+            && refused.contains("ram.tar.gz"),
+        "{refused}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE PRINTED NAME OF A LINKED ROW IS ITS KEY (ARCHITECT C'): every preflight refusal that names a
+/// linked row prints the key it printed before the row answered to its canonical name too —
+/// reached by its key or by its canonical name. Pinned per surface: `require_plugin` (a hook
+/// referencing the store), the `identity-providers:` refusal, the `secrets:` key and a secret
+/// reference.
+#[test]
+fn a_linked_rows_refusals_print_its_key() {
+    let store = crate::test_support::stand_in_store();
+    let key = store.module.clone();
+    let dir = tmp_plugin_dir("printed-key");
+    let plugins = plugins_cfg(&dir, true);
+    let reg = crate::plugins_preflight(
+        Some(&store),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect("the store resolves");
+    let canonical = reg.resolve(&key).expect("the row").manifest.name.clone();
+    for word in [key.as_str(), canonical.as_str()] {
+        let hooks: std::collections::HashMap<String, crate::config::HookCfg> =
+            serde_json::from_value(serde_json::json!({ "h": { "module": word, "kind": "tap" } }))
+                .expect("hooks");
+        let refused = crate::plugins_preflight(
+            Some(&store),
+            None,
+            &Default::default(),
+            &hooks,
+            &plugins,
+            &Default::default(),
+        )
+        .expect_err("a store is not a hook");
+        assert!(
+            refused.contains(&format!(
+                "resolves to plugin '{key}' of kind 'store', not a `hook` plugin"
+            )),
+            "{word}: {refused}"
+        );
+        let providers: crate::config::IdentityProviders =
+            serde_json::from_value(serde_json::json!({ "x": { "module": word } })).expect("idps");
+        let refused = crate::plugins_preflight(
+            Some(&store),
+            None,
+            &providers,
+            &Default::default(),
+            &plugins,
+            &Default::default(),
+        )
+        .expect_err("a store is not an auth plugin");
+        assert!(
+            refused.contains(&format!(
+                "identity-providers.x.module: '{word}' resolves to plugin '{key}' of kind 'store'"
+            )),
+            "{word}: {refused}"
+        );
+        assert_eq!(
+            crate::preflight::validate_secret_module(&reg, word).unwrap_err(),
+            format!(
+                "secrets.{word}: plugin '{key}' has kind 'store', not 'secret'; only a kind: \
+                 secret plugin can back a `secrets:` block entry"
+            )
+        );
+        let cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef {
+            module: word.to_string(),
+            ..crate::config::SecretRef::env("K")
+        });
+        let refused = crate::preflight::validate_secret_refs(&reg, &cfg).unwrap_err();
+        assert!(
+            refused.contains(&format!(
+                "references secret module '{word}', but plugin '{key}' has kind 'store'"
+            )),
+            "{word}: {refused}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN, "Plugins" and the plugin ABI; TODO
+/// step 28). `env` and `file` are secret plugins the kernel reaches through the root's
+/// `SecretAxis`, not rows of the cold-kind registry and not a name the resolver matches: the
+/// registry holds no secret row for either, and a resolution's failure text is the plugin's own,
+/// unwrapped (1.5.5's). A dropped-in cold plugin spelling `env` does not take the name: the resolver
+/// asks the linked plugins first, and the cold lane only for a module none of them answers.
+///
+/// RED by planting the shortcut back: a registry row answering `env` fails the first assert.
+#[test]
+fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
+    use crate::config::secret::{SecretRef, SecretResolver};
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &crate::config::PluginsCfg::default(),
+        &Default::default(),
+    )
+    .expect("the default boot registers its linked rows");
+    for name in ["env", "file"] {
+        assert!(reg.resolve(name).is_none(), "{name} is no cold-kind row");
+        assert!(
+            crate::config::secret::is_linked_secret(name),
+            "{name} is a linked secret plugin"
+        );
+    }
+    let var = "BUSBAR_K5B_LINKED_SECRET_ROW";
+    std::env::set_var(var, "hunter2");
+    let resolver = SecretResolver::builtins_only();
+    assert_eq!(resolver.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
+    let missing = resolver
+        .resolve(&SecretRef::env("BUSBAR_K5B_NO_SUCH_VARIABLE"))
+        .expect_err("an unset variable refuses");
+    assert_eq!(
+        missing,
+        "secret env:BUSBAR_K5B_NO_SUCH_VARIABLE cannot resolve: environment variable \
+         'BUSBAR_K5B_NO_SUCH_VARIABLE' is unset"
+    );
+
+    let dir = tmp_plugin_dir("linked-secret");
+    let tarball = unsigned_tarball(plugin_manifest("env", "acme-env", "acme"), b"lib");
+    std::fs::write(dir.join("env.tar.gz"), tarball).unwrap();
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .expect("the directory scans");
+    assert!(
+        reg.resolve("env").is_some(),
+        "the dropped-in row registered"
+    );
+    let cold = SecretResolver::with_plugin(Box::new(|_, _| Ok(b"from-the-cold-lane".to_vec())));
+    assert_eq!(cold.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
+    std::env::remove_var(var);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ARCHITECT Q-P4-13: the pre-flight resolves a hook reference against the SAME claim table boot
+/// opens hooks through — the LINKED hook rows (the hook axis: Statement name, aliases, former names,
+/// hook words) beside the plugins directory's — not the registry alone, which holds no linked hook.
+/// GREEN: a config naming this build's linked hook (the stand-in hook door) passes, with the plugin
+/// subsystem off and on (RED before: "the hooks registry names plugin module(s) [<its name>],
+/// which require the plugin subsystem" / "no plugin matching the hook reference"). RED ARM: an
+/// unknown name is still refused in 1.5.5's BUSBAR-6009 words (golden BOOT-138c).
+#[cfg(feature = "hooks-ranking")]
+#[test]
+fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused() {
+    let hook = |module: &str| {
+        let cfg: crate::config::HookCfg =
+            serde_yaml::from_str(&format!("kind: gate\nmodule: {module}\n")).expect("a hook");
+        std::collections::HashMap::from([("h".to_string(), cfg)])
+    };
+    let dir = tmp_plugin_dir("linked-hook");
+    let run = |module: &str, enabled: bool| {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &hook(module),
+            &plugins_cfg(&dir, enabled),
+            &Default::default(),
+        )
+    };
+    let linked = linked_hook_name();
+    for enabled in [false, true] {
+        run(linked, enabled).unwrap_or_else(|e| {
+            panic!("the linked hook '{linked}' passes (plugins.enabled: {enabled}): {e}")
+        });
+    }
+    let err = run("oracle-hook", true).expect_err("an unknown hook is refused");
+    assert!(
+        err.starts_with(&format!(
+            "no plugin matching the hook reference 'oracle-hook' is installed in '{}' (plugins ARE \
+             enabled; loadable: []). Two things to check: is the plugin subsystem enabled? (it is) \
+             — and is the signed `kind: hook` tarball actually IN the folder?",
+            dir.display()
+        )),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The linked hook's Statement name, as this test build links it (the stand-in hook door).
+#[cfg(feature = "hooks-ranking")]
+fn linked_hook_name() -> &'static str {
+    fixture_hook::NAME
+}
+
+/// K5b (3c) exit test, on the hook door: the built-in ranking strategies are the HOOK WORDS of ONE
+/// linked `hooks-ranking` door on the hook axis — each strategy word names that row, and opens (with
+/// `{"policy": "<word>"}`) as the strategy it spells. `weighted` stays the inline floor (no row).
+/// The words are the door's Statement marks, never registry aliases: no registry row spells them.
+/// RED by planting the door bypass: an axis with no linked ranking door leaves every strategy word
+/// unknown.
+#[cfg(feature = "hooks-ranking")]
+#[test]
+fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook_axis() {
+    for name in crate::config::RESERVED_HOOK_NAMES
+        .iter()
+        .filter(|n| crate::config::parse_strategy(n) != crate::config::PoolPolicy::Weighted)
+    {
+        assert!(
+            crate::preflight::builtin_ranking_known(name),
+            "a built-in ranking strategy is a hook word of the linked ranking door: {name}"
+        );
+        let (policy, _) = crate::preflight::builtin_ranking(name).expect("the strategy opens");
+        assert_eq!(policy.name(), *name);
+    }
+    assert!(!crate::preflight::builtin_ranking_known(
+        crate::config::ON_ERROR_WEIGHTED
+    ));
+    let reg = crate::preflight::linked().expect("the linked rows register");
+    assert!(
+        reg.resolve("cheapest").is_none(),
+        "a strategy word is the door's mark, not a registry alias"
+    );
+}
+
+/// RANKING PARITY THROUGH THE DOOR (ARCHITECT Q-SO9): each of the four strategy words, opened
+/// through the hook axis and called through the hook seam, answers exactly the decision 1.5.5's
+/// in-process native answered on the ranking parity cases (the 1.5.5 natives' own cases: the same
+/// candidates, the same expected order or abstain). Every answer is `Ok`: the call never fails,
+/// times out or reaches `on_error`. Its deadline is the dispatcher's Call class budget, never the
+/// 1 ms gate default.
+#[cfg(feature = "hooks-ranking")]
+#[tokio::test]
+async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error() {
+    use crate::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
+    /// `(idx, cost, latency, concurrency, rate headroom)`.
+    type Row = (usize, Option<f64>, Option<f64>, usize, Option<f64>);
+    let cand = |&(idx, cost, lat, conc, rate): &Row| Candidate {
+        idx,
+        model: "m",
+        provider: "p",
+        weight: 1,
+        context_max: None,
+        tier: None,
+        cost_per_mtok: cost,
+        tags: &[],
+        latency_ms: lat,
+        available_concurrency: conc,
+        budget_remaining: None,
+        rate_headroom: rate,
+        signals: Default::default(),
+    };
+    let req = RoutingRequest {
+        request_id: 1,
+        pool: "p",
+        ingress_protocol: "wire-a",
+        requested_model: None,
+        message_count: 1,
+        tool_count: 0,
+        has_tools: false,
+        total_chars: 10,
+        system_chars: 0,
+        max_tokens: None,
+        stream: false,
+        prompt: None,
+        identity: None,
+        signals: Default::default(),
+        session: None,
+    };
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let prefer = |o: &[usize]| RoutingDecision::Prefer(o.to_vec());
+    // The 1.5.5 natives' cases (crates/hooks-ranking lib_tests before the door): word, candidates,
+    // the decision 1.5.5 answered.
+    let cases: Vec<(&str, Vec<Row>, RoutingDecision)> = vec![
+        (
+            "cheapest",
+            vec![
+                (0, Some(15.0), None, 1, None),
+                (1, Some(3.0), None, 1, None),
+                (2, None, None, 1, None),
+            ],
+            prefer(&[1, 0, 2]),
+        ),
+        (
+            "cheapest",
+            vec![(0, None, None, 1, None), (1, None, None, 1, None)],
+            RoutingDecision::Abstain,
+        ),
+        (
+            "cheapest",
+            vec![(0, Some(5.0), None, 1, None)],
+            prefer(&[0]),
+        ),
+        (
+            "fastest",
+            vec![
+                (0, None, Some(120.0), 1, None),
+                (1, None, Some(40.0), 1, None),
+                (2, None, Some(80.0), 1, None),
+            ],
+            prefer(&[1, 2, 0]),
+        ),
+        (
+            "fastest",
+            vec![(0, None, None, 1, None), (1, None, None, 1, None)],
+            RoutingDecision::Abstain,
+        ),
+        (
+            "fastest",
+            vec![(0, None, Some(30.0), 1, None)],
+            prefer(&[0]),
+        ),
+        (
+            "least_busy",
+            vec![
+                (0, None, None, 2, None),
+                (1, None, None, 9, None),
+                (2, None, None, 5, None),
+            ],
+            prefer(&[1, 2, 0]),
+        ),
+        (
+            "least_busy",
+            vec![
+                (0, None, None, 0, None),
+                (1, None, None, 0, None),
+                (2, None, None, 0, None),
+            ],
+            prefer(&[0, 1, 2]),
+        ),
+        ("least_busy", vec![(0, None, None, 3, None)], prefer(&[0])),
+        (
+            "usage",
+            vec![
+                (0, None, None, 1, Some(0.10)),
+                (1, None, None, 1, Some(0.90)),
+                (2, None, None, 1, None),
+                (3, None, None, 1, Some(0.50)),
+            ],
+            prefer(&[1, 3, 0, 2]),
+        ),
+        (
+            "usage",
+            vec![
+                (0, None, None, 1, None),
+                (1, None, None, 1, None),
+                (2, None, None, 1, None),
+            ],
+            RoutingDecision::Abstain,
+        ),
+        (
+            "usage",
+            vec![(0, None, None, 1, Some(0.0)), (1, None, None, 1, Some(0.0))],
+            prefer(&[0, 1]),
+        ),
+        ("cheapest", Vec::new(), RoutingDecision::Abstain),
+        ("fastest", Vec::new(), RoutingDecision::Abstain),
+        ("least_busy", Vec::new(), RoutingDecision::Abstain),
+        ("usage", Vec::new(), RoutingDecision::Abstain),
+    ];
+    let gate_default = std::time::Duration::from_millis(crate::config::DEFAULT_POLICY_TIMEOUT_MS);
+    for (word, rows, want) in cases {
+        let (policy, budget) =
+            crate::preflight::builtin_ranking(word).expect("the strategy opens through the door");
+        assert!(
+            budget > gate_default,
+            "`{word}`'s deadline is the dispatcher's Call class budget, not the gate default"
+        );
+        let cands: Vec<Candidate<'_>> = rows.iter().map(cand).collect();
+        let got = policy.decide(&req, &cands, &ctx, budget).await;
+        match got {
+            Ok(decision) => assert_eq!(decision, want, "`{word}` over {rows:?}"),
+            Err(e) => panic!("`{word}` reached on_error ({e}); 1.5.5's ranking never did"),
+        }
+    }
+}
+
+/// SECURITY: if the CONFIGURED governance store resolves to a plugin that is UNTRUSTED and NOT
+/// opted-in, boot must FAIL with a clear error that NAMES the plugin and carries the exact trust
+/// reason - never silently skip the store the operator asked for. With `allow_unsigned` set, the
+/// same tarball passes preflight and resolves by alias AND canonical name.
+#[test]
+fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
+    let dir = tmp_plugin_dir("untrusted-store");
+    let tarball = unsigned_tarball(
+        plugin_manifest("busbar-store-durable", "durable", "busbar"),
+        b"unsigned lib bytes",
+    );
+    std::fs::write(dir.join("durable.tar.gz"), tarball).unwrap();
+
+    // STRICT default trust: the referenced store plugin is skipped -> preflight fails, naming it.
+    let err = crate::plugins_preflight(
+        Some(&gov_with_store("durable")),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins_cfg(&dir, true),
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("busbar-store-durable") || err.contains("'durable'"),
+        "names the plugin: {err}"
+    );
+    assert!(
+        err.contains("allow_unsigned"),
+        "carries the exact opt-in flag to set: {err}"
+    );
+
+    // Opt in to unsigned: preflight passes and the store resolves by alias AND canonical name.
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let reg = crate::plugins_preflight(
+        Some(&gov_with_store("durable")),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .expect("allow_unsigned permits the unsigned store plugin at boot");
+    assert!(reg.resolve("durable").is_some(), "alias resolves");
+    assert!(
+        reg.resolve("busbar-store-durable").is_some(),
+        "canonical name resolves"
+    );
+    let reg2 = crate::plugins_preflight(
+        Some(&gov_with_store("busbar-store-durable")),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .expect("the canonical name is equally valid as governance.store");
+    assert!(reg2.resolve("busbar-store-durable").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An UNKNOWN `governance.store` name (no plugin matches by alias or name) is a clear boot error
+/// listing what IS available.
+#[test]
+fn unknown_store_name_is_a_clear_boot_error() {
+    let dir = tmp_plugin_dir("unknown-store");
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
+    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
+    let err = crate::plugins_preflight(
+        Some(&gov_with_store("dynamo")),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("'dynamo'"), "names the missing store: {err}");
+    assert!(
+        err.contains("acme-store-x"),
+        "lists what is available: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// FAIL-CLOSED (hard requirement 1): ANY invalid tarball/manifest in an ENABLED plugins dir aborts
+/// preflight (and therefore boot) with the file + reason named — never a partial boot, even when
+/// the invalid plugin is not the configured store.
+#[test]
+fn invalid_manifest_in_enabled_dir_fails_boot() {
+    let dir = tmp_plugin_dir("invalid-any");
+    std::fs::write(dir.join("junk.tar.gz"), b"not a tarball at all").unwrap();
+    let err = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins_cfg(&dir, true),
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("junk.tar.gz"), "names the file: {err}");
+    assert!(err.contains("plugin validation failed"), "got {err}");
+
+    // A structurally-broken manifest (bad sha256 binding) equally aborts.
+    std::fs::remove_file(dir.join("junk.tar.gz")).unwrap();
+    let mut m = plugin_manifest("acme-store-x", "x", "acme");
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"OTHER bytes");
+    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
+    std::fs::write(dir.join("sha.tar.gz"), tarball).unwrap();
+    let err = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins_cfg(&dir, true),
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("integrity"), "names the sha mismatch: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// CONFLICT (hard requirement 3): two loadable plugins claiming the same alias abort boot naming
+/// BOTH — "you can't use kv and a third-party kv".
+#[test]
+fn alias_conflict_fails_boot_naming_both() {
+    let dir = tmp_plugin_dir("conflict");
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let a = unsigned_tarball(
+        plugin_manifest("busbar-store-kv-plugin", "kv", "busbar"),
+        b"a",
+    );
+    let b = unsigned_tarball(plugin_manifest("acme-store-kv", "kv", "acme"), b"b");
+    std::fs::write(dir.join("a.tar.gz"), a).unwrap();
+    std::fs::write(dir.join("b.tar.gz"), b).unwrap();
+    let err = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("busbar-store-kv-plugin") && err.contains("acme-store-kv"),
+        "names both plugins: {err}"
+    );
+    assert!(err.contains("alias conflict"), "got {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── secrets: block validation + alias/name canonicalization ──────────────────────────────────────
+
+/// A `kind: secret` manifest with the correct secret ABI (the store default from `plugin_manifest`
+/// carries the store ABI, which the secret kind would reject).
+fn secret_manifest(name: &str, alias: &str) -> busbar_plugin_loader::sign::Manifest {
+    let mut m = plugin_manifest(name, alias, "acme");
+    m.kind = "secret".into();
+    m.abi_version = *busbar_plugin_loader::supported_abi("secret")
+        .iter()
+        .max()
+        .expect("secret abi");
+    m
+}
+
+/// A registry loaded from an unsigned `kind: secret` tarball (name `acme-secret-vault`, alias
+/// `vault`), for exercising the `secrets:` block resolution.
+fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::PluginRegistry) {
+    let dir = tmp_plugin_dir(tag);
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let tarball = unsigned_tarball(secret_manifest("acme-secret-vault", "vault"), b"lib");
+    std::fs::write(dir.join("vault.tar.gz"), tarball).unwrap();
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .expect("allow_unsigned permits the unsigned secret plugin");
+    (dir, reg)
+}
+
+/// A `secrets:` entry naming a reserved BUILT-IN resolver (`env` / `file`) as a
+/// module is rejected — the built-ins take no module-level open() config, so such an entry is an
+/// operator error, not a silent no-op.
+#[test]
+fn secrets_block_rejects_builtin_resolver_names() {
+    let reg = busbar_plugin_loader::PluginRegistry::empty();
+    for reserved in ["env", "file"] {
+        let err = validate_secret_module(&reg, reserved).unwrap_err();
+        assert!(
+            err.contains("built-in secret resolver"),
+            "reserved '{reserved}' rejected as a module: {err}"
+        );
+    }
+}
+
+/// A `secrets:` entry that resolves to NO loadable plugin is a hard error (not a silent `{}` open) —
+/// this is the failure that pairs with the alias/name mismatch below.
+#[test]
+fn secrets_block_rejects_unknown_module() {
+    let reg = busbar_plugin_loader::PluginRegistry::empty();
+    let err = validate_secret_module(&reg, "typo-vault").unwrap_err();
+    assert!(
+        err.contains("no loadable") && err.contains("typo-vault"),
+        "unknown module named in the error: {err}"
+    );
+}
+
+/// The `secrets:` block key canonicalizes through the SAME by_name/by_alias
+/// resolution the registry uses — a block keyed on the ALIAS and a block keyed on the CANONICAL name
+/// both resolve to the plugin's canonical name, so a later `SecretRef` written under either spelling
+/// finds the configured open() config (no silent `{}`).
+#[test]
+fn secrets_block_canonicalizes_alias_and_name_to_the_same_key() {
+    let (dir, reg) = secret_registry("secrets-canon");
+    // Both the alias and the canonical name resolve to the SAME canonical name.
+    assert_eq!(
+        validate_secret_module(&reg, "vault").unwrap(),
+        "acme-secret-vault"
+    );
+    assert_eq!(
+        validate_secret_module(&reg, "acme-secret-vault").unwrap(),
+        "acme-secret-vault"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `secrets:` entry naming a plugin whose kind is NOT `secret` is rejected (only a kind: secret
+/// plugin can back a `secrets:` block entry).
+#[test]
+fn secrets_block_rejects_non_secret_kind() {
+    let dir = tmp_plugin_dir("secrets-wrong-kind");
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    // A STORE-kind plugin (default from plugin_manifest) — wrong kind for a secrets: entry.
+    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
+    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .unwrap();
+    let err = validate_secret_module(&reg, "x").unwrap_err();
+    assert!(
+        err.contains("not 'secret'"),
+        "wrong-kind rejection names the mismatch: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// FAIL-CLOSED PROVIDER CREDENTIAL: a provider `api_key` whose reference does not resolve STOPS
+/// BOOT. It used to warn and start the lane with an empty credential — a lane that reported healthy,
+/// was never probed (no key, no probe), and 401'd every request routed to it.
+///
+/// The refusal must name the provider and the REFERENCE, and must carry no credential material: a
+/// SECOND provider whose key DOES resolve puts a sentinel value in the process environment, and the
+/// refusal must not contain it. That is the real property — nothing dumps a resolved credential into
+/// a boot diagnostic — and it is checkable, unlike asserting the absence of a value that was never
+/// read.
+#[test]
+fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
+    crate::snapshot::init();
+    const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
+    let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
+    let unset_var = format!("BUSBAR_TEST_PROVIDER_KEY_UNSET_{}", std::process::id());
+    std::env::set_var(&set_var, SENTINEL);
+    std::env::remove_var(&unset_var);
+
+    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(&unset_var));
+    // A second, RESOLVING provider (the same fixture under another name), so the sentinel really is
+    // resolvable during this boot and its absence from the error means something.
+    let resolving = cfg_with_provider_api_key(crate::config::SecretRef::env(&set_var))
+        .providers
+        .remove("acme")
+        .expect("fixture provider");
+    cfg.providers.insert("resolves".to_string(), resolving);
+    for (model, provider) in [("m-unset", "acme"), ("m-set", "resolves")] {
+        cfg.models
+            .insert(model.to_string(), model_cfg_for_provider(provider));
+    }
+
+    let err = build_once(cfg, None)
+        .err()
+        .expect("an api_key that does not resolve must refuse boot, not degrade to an empty key");
+    assert!(
+        err.contains("acme"),
+        "the refusal names the provider: {err}"
+    );
+    assert!(
+        err.contains(&format!("env:{unset_var}")),
+        "the refusal names the reference: {err}"
+    );
+    assert!(
+        err.contains("api_key: none"),
+        "and points at the keyless declaration for an upstream that takes no credential: {err}"
+    );
+    assert!(
+        !err.contains(SENTINEL),
+        "a resolved credential value must never appear in a boot diagnostic"
+    );
+
+    std::env::remove_var(&set_var);
+}
+
+/// `api_key: none` — the EXPLICIT keyless declaration — BOOTS. It is the one form that starts a lane
+/// with no credential now that a reference which fails to resolve refuses, so the whole migration
+/// path for a keyless local upstream rests on this building an App at all.
+///
+/// What that lane then does on the wire — no auth header, and skipped by the prober — is asserted at
+/// the seams that decide it, in busbar-llm's `auth_style_tests` and `health` tests, rather than
+/// re-derived here through a lane accessor that exists only for the test.
+#[test]
+fn boot_starts_a_keyless_lane_declared_none() {
+    crate::snapshot::init();
+    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
+    cfg.models
+        .insert("m0".to_string(), model_cfg_for_provider("acme"));
+    build_once(cfg, None).expect("`api_key: none` starts the lane");
+}
+
+/// A `ModelCfg` naming `provider`, with every other field at its default — the two credential tests
+/// above differ only in the provider's `api_key`, so the model they hang off it is boilerplate.
+#[cfg(test)]
+fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
+    crate::config::ModelCfg {
+        provider: provider.into(),
+        max_concurrent: Some(1),
+        max_requests: -1,
+        default_max_tokens: None,
+        upstream_model: None,
+        attempt_timeout_ms: None,
+        reasoning: None,
+        prompt_caching: None,
+        protocol: None,
+    }
+}
+
+/// The marquee 1.5.0 "secrets are plugins" feature — a provider
+/// `api_key: { module: acme-vault, … }` (TLS cert/key, `auth.signing_key`, and the admin token are
+/// the same shape) — must PASS validation when the `kind: secret` plugin is loaded + trusted. The
+/// module-existence check is DEFERRED past `config_validate::validate` (which runs before the plugin
+/// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
+#[test]
+fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
+    let (dir, reg) = secret_registry("secretref-vault-ok");
+    // The `vault` alias AND the canonical `acme-secret-vault` name both resolve → both pass.
+    for module in ["vault", "acme-secret-vault"] {
+        let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
+            module: module.to_string(),
+            settings: serde_json::Map::new(),
+        });
+        // `config_validate::validate` (pre-registry) must NOT reject a plugin-backed module.
+        assert!(
+            crate::config_validate::validate(&cfg).is_ok(),
+            "pre-registry validate must not reject plugin-backed module '{module}'"
+        );
+        // The registry-backed pre-flight check PASSES because the plugin is loaded + is kind:secret.
+        assert!(
+            validate_secret_refs(&reg, &cfg).is_ok(),
+            "a loaded kind:secret plugin '{module}' must pass the secret-ref pre-flight"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A GENUINE typo — a secret module that is neither a built-in
+/// (`env`/`file`) nor a loaded plugin — must still FAIL, so the deferral does not weaken the check.
+#[test]
+fn secret_ref_typo_module_still_fails_at_preflight() {
+    let (dir, reg) = secret_registry("secretref-typo");
+    let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "vaultt".to_string(), // typo of the `vault` alias — no such plugin
+        settings: serde_json::Map::new(),
+    });
+    // `validate` alone can't tell a typo from an installed plugin (no registry), so it must NOT be
+    // the layer that catches this — the deferred registry check is.
+    assert!(
+        crate::config_validate::validate(&cfg).is_ok(),
+        "pre-registry validate cannot (and must not) reject the unknown module by itself"
+    );
+    let err = validate_secret_refs(&reg, &cfg)
+        .expect_err("a typo'd secret module with no plugin must fail the pre-flight");
+    assert!(
+        err.contains("providers.acme.api_key")
+            && err.contains("vaultt")
+            && err.contains("no loadable"),
+        "the error must name the ref and the unknown module: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The built-in `env`/`file` modules always pass the registry
+/// pre-flight (they are resolved inline, never through a plugin), even with an EMPTY registry.
+#[test]
+fn secret_ref_builtin_modules_pass_with_empty_registry() {
+    let reg = busbar_plugin_loader::PluginRegistry::empty();
+    let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env("ACME_KEY"));
+    assert!(
+        validate_secret_refs(&reg, &cfg).is_ok(),
+        "a built-in env ref must pass the pre-flight with no plugins loaded"
+    );
+}
+
+/// A secret ref naming a plugin of the WRONG kind (a store plugin,
+/// not `kind: secret`) fails the pre-flight — the same wrong-kind guard the `secrets:` block gets.
+#[test]
+fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
+    let dir = tmp_plugin_dir("secretref-wrong-kind");
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
+    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .unwrap();
+    let root = cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "x".to_string(),
+        settings: serde_json::Map::new(),
+    });
+    let err = validate_secret_refs(&reg, &root)
+        .expect_err("a store-kind plugin cannot back a secret reference");
+    assert!(
+        err.contains("not 'secret'") && err.contains("providers.acme.api_key"),
+        "wrong-kind rejection names the ref and mismatch: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── CREDENTIAL SecretRefs RE-RESOLVE ON APPLY/RELOAD ──────────────────────
+//
+// `GovState` is process-lifetime and REUSED across every config apply/reload (the key cache,
+// ledgers and rate windows must survive one). Its admin-token digest and signing key were resolved
+// ONCE at construction and then frozen, so an operator who rotated the underlying secret behind the
+// operator credential's `token:` or `auth.signing_key` and reloaded got NO effect: the process kept
+// accepting the boot-time credential for the rest of its life, while every signal it gave said the
+// rotation had landed. The rotation tests drive the REAL `build_app_from_config` apply path with an
+// operator token configured, so they need the auth row the composition root links for it: they live
+// beside that row, in the root's `root/tests/linked_auth.rs`.
+
+/// The neutral session substrate is PROCESS-LIFETIME: a config apply must carry the SAME
+/// `SessionStore` `Arc` across the rebuild — otherwise every apply would forget every live session's
+/// cleared-scan set (and any future tenant's state), exactly the failure the probe-schedule carry
+/// guards against. Synchronous pointer identity, no clock. Also pins the operator default: with the
+/// env flag unset the gate hot path stays OFF (`incremental_scan == false`), i.e. byte-identical to
+/// 1.5.4.
+#[test]
+fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
+    crate::snapshot::init();
+    let cfg = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_SESSION_STORE",
+        ))
+    };
+    let prior = build_once(cfg(), None).expect("boot");
+    assert!(
+        !prior.incremental_scan,
+        "with BUSBAR_INCREMENTAL_SCAN unset the gate incremental scan must default OFF"
+    );
+    let next = build_once(cfg(), Some(&prior)).expect("rebuild");
+    assert!(
+        std::sync::Arc::ptr_eq(&prior.session_store, &next.session_store),
+        "an apply must carry the process-lifetime session substrate across the rebuild"
+    );
+}
+
+/// #39: a `secrets:` block written under BOTH a plugin's ALIAS and its CANONICAL name resolves to
+/// one module, and the second entry used to silently overwrite the first — one block's configured
+/// address/token/CA just vanished while the module loaded happily on the survivor. Ambiguous by
+/// construction (there is no defensible winner), so it is a loud boot error naming both spellings.
+#[test]
+fn secrets_block_rejects_alias_and_canonical_for_one_module() {
+    let (dir, reg) = secret_registry("secrets-alias-collision");
+    let reg = std::sync::Arc::new(reg);
+    let mut secrets = std::collections::BTreeMap::new();
+    for spelling in ["vault", "acme-secret-vault"] {
+        secrets.insert(
+            spelling.to_string(),
+            crate::config::SecretModuleCfg {
+                settings: serde_json::Map::new(),
+            },
+        );
+    }
+    let err = match crate::preflight::build_secret_resolver(reg.clone(), &secrets) {
+        Err(e) => e,
+        Ok(_) => panic!("two spellings of one secret module must be a loud error"),
+    };
+    assert!(
+        err.contains("acme-secret-vault") && err.contains("vault") && err.contains("TWICE"),
+        "the error names the module and both spellings: {err}"
+    );
+
+    // Either spelling ALONE is fine (the canonicalization itself is unchanged).
+    for spelling in ["vault", "acme-secret-vault"] {
+        let mut one = std::collections::BTreeMap::new();
+        one.insert(
+            spelling.to_string(),
+            crate::config::SecretModuleCfg {
+                settings: serde_json::Map::new(),
+            },
+        );
+        assert!(
+            crate::preflight::build_secret_resolver(reg.clone(), &one).is_ok(),
+            "a single '{spelling}' block still configures the module"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A REJECTED CONFIG MUST NOT LEAVE ITS LIMITS INSTALLED.
+///
+/// `build_app_from_config` installs the candidate `limits` process-wide as its FIRST act — it has
+/// to, because the build itself reads them through the deep-call-stack accessors. But every step
+/// after that is fallible (semantic validation, the plugin pre-flight, secret-ref resolution, the
+/// store open), and no error path used to put the previous values back. A `POST /config/apply` that
+/// returned 400 therefore mutated live, process-wide caps under the old `App` that kept serving:
+/// `busbar_kernel::proxy::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
+/// cross-protocol translate buffer, so a rejected apply could silently start 401-ing larger Bedrock
+/// requests and failing larger cross-protocol completions.
+///
+/// The sharpest case is the one asserted here, because it is self-contradictory: the values
+/// `validate_limits` exists to REJECT are exactly the ones that got installed anyway, since the
+/// range check runs after the install.
+///
+/// Asserted as "the rejected value is not what is installed" rather than "the prior value is" —
+/// `INSTALLED` is process-global and other tests in this binary build apps concurrently, but none
+/// of them uses this deliberately-illegal number.
+#[test]
+fn a_rejected_config_leaves_no_limits_behind() {
+    crate::snapshot::init();
+    // Below `REQUEST_BODY_MAX_BYTES_FLOOR` (64 KiB) — `validate_limits` refuses it, which is the
+    // whole point: the refusal happens AFTER the install.
+    const ILLEGAL: usize = 4096;
+    // Precondition, checked at COMPILE time: raising the floor must not quietly make this test
+    // assert nothing.
+    const _: () = assert!(ILLEGAL < crate::config::REQUEST_BODY_MAX_BYTES_FLOOR);
+
+    // `api_key: none` — this fixture's provider is never contacted, so it declares no credential
+    // rather than naming a variable it knows is unset (which now refuses boot).
+    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
+    cfg.limits.request_body_max_bytes = ILLEGAL;
+
+    let Err(err) = build_once(cfg, None) else {
+        panic!("a below-floor body cap must fail validation")
+    };
+    assert!(
+        err.contains("request_body_max_bytes"),
+        "the build failed for the expected reason: {err}"
+    );
+    assert_ne!(
+        busbar_kernel::proxy::max_translate_body_bytes(),
+        ILLEGAL,
+        "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
+         live signed-ingress and cross-protocol translate body caps"
+    );
+}
+
+/// THE 413 RESHAPE MUST FIRE ON A REAL OVERSIZED REQUEST.
+///
+/// Every existing test of this path hand-constructs the sentinel body and calls the pure
+/// `reshape_oversized_413` directly, so all four passed while the layer was dead in production:
+/// `AXUM_BODY_LIMIT_413_MARKER` was pinned to axum 0.7's wire shape and the crate is on axum 0.8,
+/// whose `FailedToBufferBody::LengthLimitError` renders a DIFFERENT body. The byte-equality gate
+/// therefore never matched, and every oversized request — admin and data plane alike — answered with
+/// a bare `text/plain` body: the admin surface's frozen `{error:{code}}` envelope broken (tooling
+/// that branches on `code` throws on parse), and official OpenAI/Anthropic/Bedrock SDKs handed a
+/// router tell instead of the vendor-native JSON the reshape exists to produce.
+///
+/// This drives a REAL request through the REAL layer stack, so it cannot pass on a marker the
+/// running axum does not emit — whatever axum emits next, this fails when it changes. One leg is
+/// enough: `apply_common_layers` installs the body limit and this reshape on the admin and data
+/// routers alike, so the layer is either live for both surfaces or dead for both. (The admin leg
+/// cannot be driven here without a configured admin credential — auth answers 401 before the body
+/// is ever buffered.)
+#[tokio::test]
+async fn oversized_request_413_is_reshaped_on_the_live_stack() {
+    crate::snapshot::init();
+    let app = crate::test_support::TestApp::new().build();
+    // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
+    let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let client = reqwest::Client::new();
+    let oversized = "x".repeat(4096);
+    let r = client
+        .post(format!("http://{addr}/v1/chat/completions"))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"pad": oversized}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 413, "the body cap must reject");
+    let ct = r
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = r.text().await.unwrap();
+    assert!(
+        ct.starts_with("application/json"),
+        "an oversized-body 413 must speak JSON, not the bare `{body}` router tell (content-type \
+         was `{ct}`) — the reshape layer's sentinel no longer matches what axum emits"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"));
+    assert!(
+        v.get("error").is_some(),
+        "the 413 must carry the error envelope; got {v}"
+    );
+
+    server.abort();
+}
+
+// ── THE MOUNT-AWARE RESOLVER, read off the wire ──────────────────────────────────────────────────
+//
+// One resolver answers "which plane, and in which dialect, is this path spoken", and an oversized
+// POST is the cheapest place to READ its answer: the body cap fires OUTSIDE auth and OUTSIDE
+// routing, so the 413 envelope is shaped by the resolver alone with nothing else in the way. If the
+// mount table and the path-shape classifier ever disagree again, these three tests are where it
+// shows.
+
+// `an_unmounted_plane_claims_no_path_by_url_shape` MOVED to `tests/residual_envelope_cross_plane.rs`,
+// beside its mounted twin in `crates/busbar/tests/plane_integration.rs`: the path it probes is a real plane's
+// mount path, which that integration target names through the plane crate itself.
+
+// ── response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ──────────
+//
+// Drives a REAL request through the REAL layer stack (like the 413 test above), rather than calling
+// `server_timing` or `maybe_attach_route_policy` directly, so the assertion is on what actually ships
+// on the wire — a composition-gate bug (the layer silently staying installed, or never installed even
+// when enabled) would not be caught by a unit test that calls the middleware function by hand.
+
+/// RED (pre-task-#139 behavior, pinned here as the regression this test guards against): the
+/// `server_timing` middleware layer used to be installed UNCONDITIONALLY — an `Arc<AtomicU64>`
+/// allocation, an `Instant::now()`, and a task-local `.scope()` on every request regardless of the
+/// flag, with only the response header itself suppressed when disabled. GREEN: with
+/// `server_timing_enabled == false` the layer is not installed at all (see
+/// `apply_common_layers`'s composition gate) and the `Server-Timing` response header is absent by
+/// default; with `true` the layer IS installed and the header is present, carrying the
+/// `busbar;dur=<ms>` shape.
+#[tokio::test]
+async fn server_timing_header_absent_by_default_present_when_enabled() {
+    crate::snapshot::init();
+    let client = reqwest::Client::new();
+
+    // Default OFF.
+    let app = crate::test_support::TestApp::new().build();
+    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let r = client
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.headers().get("server-timing").is_none(),
+        "Server-Timing must be ABSENT by default (advanced.response_headers.server_timing defaults \
+         false): {:?}",
+        r.headers().get("server-timing")
+    );
+    server.abort();
+
+    // Explicitly enabled.
+    let app = crate::test_support::TestApp::new().build();
+    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, true);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let r = client
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    let st = r
+        .headers()
+        .get("server-timing")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    server.abort();
+    let st = st.expect("Server-Timing must be PRESENT when server_timing_enabled == true");
+    assert!(
+        st.starts_with("busbar;dur="),
+        "unexpected Server-Timing shape: {st}"
+    );
+}
+
+/// GREEN: `x-busbar-route-policy` / `x-busbar-route-target` are ABSENT by default on a real request
+/// through the real stack — `advanced.response_headers.route_policy` defaults `false`, and nothing in
+/// this test process ever calls `proxy::configure_route_policy_headers(true)`
+/// (`route_policy_headers_enabled()` returns `false` when unconfigured — see its doc comment), so this
+/// end-to-end check needs no global-state setup. The `enabled == true` direction (and the "still
+/// absent for a default policy even when enabled" inner-gate direction) is covered deterministically
+/// by `proxy::wire::tests` against the pure `maybe_attach_route_policy_gated` core instead of here:
+/// `ROUTE_POLICY_HEADERS_ENABLED` is a process-wide `OnceLock` that can be set at most once for the
+/// life of this test binary, so flipping it to `true` in an end-to-end test would permanently leak
+/// into every other test that shares this process.
+#[tokio::test]
+async fn route_policy_headers_absent_by_default_on_the_live_stack() {
+    crate::snapshot::init();
+    let app = crate::test_support::TestApp::new().build();
+    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let r = reqwest::Client::new()
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.headers().get("x-busbar-route-policy").is_none(),
+        "x-busbar-route-policy must be ABSENT by default"
+    );
+    assert!(
+        r.headers().get("x-busbar-route-target").is_none(),
+        "x-busbar-route-target must be ABSENT by default"
+    );
+    server.abort();
+}
+
+// ── real boot-time legacy-config refusal / migration (end to end) ────────────────────────────────
+//
+// Every legacy/migration test in `config::migrate::tests` drives `detect_legacy_markers` /
+// `migrate_config` directly against an in-memory `serde_yaml::Value` — none of them go through
+// `load_config_from_disk`, the REAL disk-read -> env-interpolate -> legacy-marker-check ->
+// typed-parse pipeline that boot, `POST .../config/reload`, and `--validate` all actually run. A
+// bug in the stitching around the marker check (wrong path, marker check skipped, wired to the
+// wrong error string) would pass every existing test and only show up at a real boot. These two
+// tests close that gap by writing REAL files to disk and calling the REAL boot entry point.
+
+/// A representative 1.4.x config (same shape as `config::migrate::tests::LEGACY_14X`) written to a
+/// REAL file on disk for the boot-path tests below. `admin_token` carries a REAL `${PATH}`
+/// interpolation token (rather than a plain literal) so these tests also exercise `EnvSubst::Strict`
+/// interpolation ahead of the legacy-marker check — a bug where the marker check ran on the RAW
+/// (pre-interpolation) text, or where interpolation itself introduced/hid a marker, would otherwise
+/// slip past. `PATH` is used because it's guaranteed set in any process environment, so the fixture
+/// needs no env mutation.
+const BOOT_LEGACY_14X_CONFIG: &str = r#"
+listen: "0.0.0.0:8080"
+governance:
+  enabled: true
+  db_path: "/var/lib/busbar/governance.db"
+  admin_token: '${PATH}'
+providers:
+  upstream-a:
+    api_key_env: ANTHROPIC_KEY
+models:
+  claude: { provider: upstream-a }
+pools:
+  fast:
+    members:
+      - { target: claude, weight: 1 }
+"#;
+
+/// A fresh temp dir holding `config.yaml` (given content) + an empty `providers.yaml`, so
+/// `load_config_from_disk` has real files to read.
+fn boot_config_dir(
+    tag: &str,
+    config_yaml: &str,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-boot-legacy-{}-{tag}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.yaml");
+    let providers_path = dir.join("providers.yaml");
+    std::fs::write(&providers_path, "{}\n").unwrap();
+    std::fs::write(&config_path, config_yaml).unwrap();
+    (dir, config_path, providers_path)
+}
+
+/// THE BOOT PATH ITSELF must refuse a real 1.x config file on disk, loudly and by name — never a
+/// silent load with 1.5.0 semantics, never a bare unknown-field parse error that doesn't say what's
+/// actually wrong. This is the one path that actually proves the product's documented promise ("a
+/// loud fail-closed boot on an outdated config, never a silent behavior change").
+#[test]
+fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
+    let (dir, config_path, providers_path) = boot_config_dir("refuse", BOOT_LEGACY_14X_CONFIG);
+
+    let result = load_config_from_disk(
+        &config_path,
+        Some(&providers_path),
+        false,
+        crate::config::EnvSubst::Strict,
+    );
+
+    let err = match result {
+        Ok(_) => panic!(
+            "a REAL 1.x config file on disk must be REFUSED at the real boot entry point \
+             (load_config_from_disk), not silently loaded under 1.5.0 semantics"
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("busbar --migrate-config"),
+        "the boot-time refusal must name the migrator: {err}"
+    );
+    assert!(
+        err.contains("1.x"),
+        "the boot-time refusal must name the version family: {err}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `--migrate-config` output, written to a REAL file and fed back through the REAL boot entry
+/// point, must boot cleanly — the recovery half of the same promise: an operator who migrates ends
+/// up with a config the actual boot path accepts, not one that still trips the legacy detector or
+/// fails typed parsing for some other reason.
+#[test]
+fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
+    crate::test_support::register_neutral_test_plane();
+    let (dir, legacy_config_path, providers_path) =
+        boot_config_dir("migrate", BOOT_LEGACY_14X_CONFIG);
+
+    // Mirrors `migrate_config_command`: read the real file from disk, run the real migrator.
+    let raw = std::fs::read_to_string(&legacy_config_path).unwrap();
+    let migrated = crate::config::migrate::migrate_config(&raw).expect("legacy config migrates");
+
+    let migrated_path = dir.join("migrated-config.yaml");
+    std::fs::write(&migrated_path, &migrated.yaml).unwrap();
+
+    // THE REAL BOOT ENTRY POINT must accept the migrated file on disk without error.
+    let loaded = load_config_from_disk(
+        &migrated_path,
+        Some(&providers_path),
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .unwrap_or_else(|e| {
+        panic!("the migrated config must boot cleanly through the real boot path: {e}")
+    });
+
+    // Prove it's a real typed parse of the real content, not a stub: the migrated `listen` value
+    // and the store module the migrator selected both round-trip through the real boot path.
+    assert_eq!(loaded.deploy.listen, "0.0.0.0:8080");
+    assert_eq!(
+        loaded.deploy.store.as_ref().map(|s| s.module.as_str()),
+        Some(frozen_str("legacy_backend_1_4").as_str()),
+        "the migrated store module must survive the real disk-load pipeline"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Proves the restore survives a PANIC between
+/// `set_var` and the end of scope, not just the happy path. Before introducing the `Drop` guard, a
+/// failed assertion in `worker_threads_from_config_reads_a_real_file` would unwind past its manual
+/// `match prior { .. }` restore and leak the override to every later test in the binary. This test
+/// deliberately panics inside `catch_unwind` while the guard is live and asserts the env var is back
+/// to its pre-test value once the guard drops — i.e. the guard, not test-ordering luck, is what
+/// makes the leak impossible.
+#[test]
+fn env_var_guard_restores_on_panic() {
+    const KEY: &str = "BUSBAR_TEST_ENV_GUARD_PANIC_PROBE";
+    // Establish a known ambient value so "restored" has something concrete to check against.
+    std::env::set_var(KEY, "ambient-value");
+
+    let result = std::panic::catch_unwind(|| {
+        let _guard = EnvVarGuard::capture(KEY);
+        std::env::set_var(KEY, "clobbered-by-test-body");
+        panic!("simulated assertion failure mid-test");
+    });
+    assert!(result.is_err(), "the inner closure was expected to panic");
+
+    assert_eq!(
+        std::env::var(KEY).as_deref(),
+        Ok("ambient-value"),
+        "EnvVarGuard must restore the prior value even when the guarded scope unwinds via panic"
+    );
+    std::env::remove_var(KEY);
+}
+
+/// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin).
+/// `test-groups-module` is exempt ONLY when `is_test_build` is true — in a release build it must
+/// be treated as a real (unresolvable) plugin ref, so `--validate` fails it the same way real boot
+/// does, rather than silently agreeing a config naming it is fine. Every other name is always a
+/// real ref regardless of build flavor.
+#[test]
+fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_test_builds() {
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, true));
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, false));
+    assert!(
+        !is_real_auth_plugin_ref("test-groups-module", true),
+        "exempt in a test build, matching AuthMiddleware::new's #[cfg(test)] arm"
+    );
+    assert!(
+        is_real_auth_plugin_ref("test-groups-module", false),
+        "must NOT be exempt in a release build - it isn't a real registered module there, so a \
+         release config naming it must be treated as a real (and therefore unresolvable) plugin \
+         ref, not silently waved through"
+    );
+    assert!(is_real_auth_plugin_ref("test-idp-double", true));
+    assert!(is_real_auth_plugin_ref("test-idp-double", false));
+}
+
+/// `plugins.fetch` (resource/DoS finding): a mistyped or compromised fetch URL serving an
+/// oversized body must be rejected under a size cap, never buffered whole into memory via
+/// `resp.bytes()`. Drives the REAL downloader (`plugin_fetch_downloader_with_cap`, which
+/// `plugin_fetch_downloader` pins to `config::DEFAULT_PLUGIN_FETCH_MAX_BYTES` in production)
+/// against a local server that serves a body larger than a small test cap, from BOTH an honest
+/// `Content-Length` (the fast pre-check) and a chunked/no-Content-Length transfer (the streamed
+/// cap, which must catch a body a lying/absent header would otherwise let through).
+#[tokio::test]
+async fn plugin_fetch_downloader_rejects_an_oversized_body() {
+    // NO "let the server start" SLEEP in any of the three legs below (nor in the redirect test that
+    // follows): `TcpListener::bind` already listens, so the kernel queues the client's SYN in the
+    // accept backlog whether or not the spawned serve task has reached its first `accept()` yet. A
+    // wall-clock pause there synchronises nothing — it is a fixed tax on every run, and a bound that
+    // a loaded machine can outlast.
+    const CAP: usize = 64;
+    let oversized = vec![b'x'; CAP * 4];
+
+    // (a) Content-Length present and honest: rejected before any streamed read.
+    {
+        let body = oversized.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/big",
+            axum::routing::get(move || async move { axum::body::Bytes::from(body) }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
+        let url = format!("http://{addr}/big");
+        let result = tokio::task::spawn_blocking(move || downloader(&url))
+            .await
+            .unwrap();
+        server.abort();
+
+        let err = result.expect_err("an over-cap plugins.fetch download must be a clear error");
+        assert!(
+            err.contains("cap"),
+            "expected an error naming the size cap, got: {err}"
+        );
+    }
+
+    // (b) No Content-Length (axum's `Body::from_stream`, so the header is omitted): the streamed
+    // cap in `read_capped` must still catch it — the Content-Length pre-check is a fast path, not
+    // the only defense.
+    {
+        let body = oversized.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/big-streamed",
+            axum::routing::get(move || async move {
+                let chunks: Vec<Result<Vec<u8>, std::io::Error>> =
+                    body.chunks(8).map(|c| Ok(c.to_vec())).collect();
+                let stream = futures::stream::iter(chunks);
+                axum::body::Body::from_stream(stream)
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
+        let url = format!("http://{addr}/big-streamed");
+        let result = tokio::task::spawn_blocking(move || downloader(&url))
+            .await
+            .unwrap();
+        server.abort();
+
+        let err = result.expect_err(
+            "an over-cap plugins.fetch download with no Content-Length must still be rejected",
+        );
+        assert!(
+            err.contains("cap"),
+            "expected an error naming the size cap, got: {err}"
+        );
+    }
+
+    // Sanity: a within-cap body still downloads successfully (the cap does not false-positive on
+    // legitimate small artifacts).
+    {
+        let small = vec![b'y'; CAP / 2];
+        let expected = small.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/small",
+            axum::routing::get(move || async move { axum::body::Bytes::from(small) }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
+        let url = format!("http://{addr}/small");
+        let result = tokio::task::spawn_blocking(move || downloader(&url))
+            .await
+            .unwrap();
+        server.abort();
+
+        assert_eq!(
+            result.expect("a within-cap download must succeed"),
+            expected,
+            "the downloaded bytes must match the served body exactly"
+        );
+    }
+}
+
+/// `plugins.fetch` must NOT follow HTTP redirects: the SSRF guard vets only the original URL, so a
+/// 3xx `Location` from the semi-trusted registry that points at an internal/metadata-looking target
+/// must be refused rather than fetched. Drives the REAL downloader against a loopback server whose
+/// first path answers `302 Location: /metadata` and whose redirect target serves a distinctive body;
+/// the download must return an Err and must NOT contain the redirect target's bytes.
+#[tokio::test]
+async fn plugin_fetch_downloader_refuses_to_follow_a_redirect() {
+    const CAP: usize = 4096;
+    // A body only reachable via the redirect. If the downloader followed the 302, it would return
+    // these bytes instead of an error.
+    const SECRET_BODY: &[u8] = b"internal-metadata-token-should-never-be-returned";
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = Router::new()
+        .route(
+            "/artifact",
+            axum::routing::get(|| async {
+                (
+                    axum::http::StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, "/metadata")],
+                )
+            }),
+        )
+        .route(
+            "/metadata",
+            axum::routing::get(|| async { axum::body::Bytes::from_static(SECRET_BODY) }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
+    let url = format!("http://{addr}/artifact");
+    let result = tokio::task::spawn_blocking(move || downloader(&url))
+        .await
+        .unwrap();
+    server.abort();
+
+    let err = result.expect_err("a plugins.fetch redirect must be refused, not followed");
+    assert!(
+        !err.as_bytes()
+            .windows(SECRET_BODY.len())
+            .any(|w| w == SECRET_BODY),
+        "the redirect target's body must never appear — the redirect was followed: {err}"
+    );
+    assert!(
+        err.contains("302") || err.to_lowercase().contains("redirect"),
+        "expected an error naming the refused redirect, got: {err}"
+    );
+}
+
+/// Source review of the boot-logging matrix: the enabled/disabled boot lines and
+/// the two-part referenced-but-missing diagnosis are present in `plugins_preflight`. Guards the
+/// observability wording against silent removal.
+#[test]
+fn plugins_boot_logging_wording_present() {
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/preflight.rs"));
+    assert!(
+        src.contains("plugins: disabled (plugins.enabled is false"),
+        "disabled boot line missing"
+    );
+    assert!(
+        src.contains("\"plugins: enabled\""),
+        "enabled boot line missing"
+    );
+    // Two-part diagnosis + fetch/drop remediation on the referenced-but-missing arms.
+    assert!(
+        src.contains("no plugin matching store.module")
+            && src.contains("no plugin matching auth.chain module")
+            && src.contains("no plugin matching the hook reference"),
+        "referenced-but-missing arms not enriched"
+    );
+    assert!(
+        src.contains("Add it to plugins.fetch or drop the signed tarball"),
+        "two-part remediation wording missing"
+    );
+}
+
+/// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`
+/// does not resolve, so empty maps are fine).
+const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
+
+/// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section the default overlay lands next
+/// to config.yaml and the config is reported mutable. The deprecated `BUSBAR_CONFIG_OVERLAY` env var
+/// (still honored when set) is cleared for the run so the DEFAULT path is what is under test; its
+/// precedence is pinned separately in the overlay consolidation tests.
+#[test]
+fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
+    let (dir, config_path, _providers_path) = boot_config_dir("durable", BOOT_MINIMAL_CONFIG);
+    // Guarded so any ambient value is restored on drop (incl. panic).
+    let _guard = EnvVarGuard::capture("BUSBAR_CONFIG_OVERLAY");
+    std::env::remove_var("BUSBAR_CONFIG_OVERLAY");
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("a mutable default config must boot");
+    assert!(!loaded.config_locked, "default config is mutable");
+    assert_eq!(
+        loaded.overlay_path.as_deref(),
+        Some(dir.join("busbar-overlay.json").as_path()),
+        "durable-by-default: overlay next to config.yaml"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.5.3 BOOT INVARIANT: a mutable config that explicitly disables the overlay REFUSES TO BOOT, with an
+/// actionable message (writable overlay OR `config.locked: true`). Pre-1.5.3 nothing
+/// enforced "mutable XOR writable overlay".
+#[test]
+fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
+    let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: false\n  overlay: false\n";
+    let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
+    let Err(err) =
+        load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+    else {
+        panic!("mutable + overlay disabled must refuse to boot");
+    };
+    // Pin the SPECIFIC resolve_backend Err arm for `overlay: false` on a mutable config — not an OR of
+    // two substrings that a coincidentally-worded unrelated error could satisfy. This is the
+    // "mutable-but-overlay-disabled" arm, distinct from the read-only-dir "not writable" arm and the
+    // `overlay: true` "names no backend" arm.
+    assert!(
+        err.contains("has no writable overlay backend")
+            && err.contains("`config.overlay` is disabled"),
+        "the boot refusal must be the specific mutable-without-backend message: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.5.3: a LOCKED config boots with NO overlay backend (mutations are refused at runtime).
+#[test]
+fn boot_locked_config_has_no_overlay() {
+    let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n";
+    let (dir, config_path, _p) = boot_config_dir("locked", cfg);
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("a locked config boots");
+    assert!(loaded.config_locked);
+    assert!(loaded.overlay_path.is_none(), "locked ⇒ no overlay backend");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Providers catalog resolution: the top-level `providers_file:` pointer names the catalog (resolved
+/// relative to config.yaml), honored with NO env var; and an explicit override (the `--providers`
+/// flag, or a reload's live path) still wins. Pre-1.5.3 the catalog path came only from a hardcoded
+/// default; a config-file pointer had no code path.
+#[test]
+fn boot_providers_file_pointer_is_honored_and_override_wins() {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-providers-file-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.yaml");
+    // The catalog lives at a NON-default name, reachable only via the pointer.
+    let catalog = dir.join("catalog.yaml");
+    std::fs::write(&catalog, "{}\n").unwrap();
+    std::fs::write(
+        &config_path,
+        "providers: {}\nmodels: {}\nproviders_file: catalog.yaml\n",
+    )
+    .unwrap();
+
+    // No override → the `providers_file:` pointer is used.
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("providers_file pointer resolves");
+    assert_eq!(
+        loaded.providers_path, catalog,
+        "the providers_file pointer must be honored"
+    );
+
+    // An explicit override (the `--providers` flag, or a reload's live path) wins.
+    let other = dir.join("other-catalog.yaml");
+    std::fs::write(&other, "{}\n").unwrap();
+    let loaded2 = load_config_from_disk(
+        &config_path,
+        Some(&other),
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .expect("override resolves");
+    assert_eq!(
+        loaded2.providers_path, other,
+        "the override wins over providers_file"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `App.auth_scope_caps` is keyed by PROVIDER NAME, not by the backing plugin MODULE.
+///
+/// Two named providers sharing one plugin module must get INDEPENDENT ceilings (the invariant
+/// `ChainVerdict::Identified` documents), and the read side (`auth::module_admin_scope_cap`) looks
+/// the ceiling up by the provider NAME a chain verdict carries. This test is the one shape the whole
+/// suite lacked: a config where name != module, plus the escalation shape where one provider's NAME
+/// collides with a DIFFERENT provider's MODULE.
+#[test]
+fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
+    use crate::config::{AuthCfg, AuthChainEntry};
+    let entry = |name: &str, module: &str, cap: Option<&str>| AuthChainEntry {
+        name: name.to_string(),
+        module: module.to_string(),
+        max_admin_scope: cap.map(str::to_string),
+        token: None,
+        settings: serde_json::Map::new(),
+    };
+    let mut auth = AuthCfg::default_none();
+    // Two NAMED providers on ONE plugin module, with DIFFERENT ceilings — plus a third provider
+    // whose NAME is literally the module name the other two ride, the collision that escalated.
+    auth.admin_auth = vec![
+        entry("corp-sso", "test-idp-double", Some("full")),
+        entry("vendor-sso", "test-idp-double", Some("read-only")),
+        entry("test-idp-double", "some-other-module", Some("none")),
+    ];
+    let caps = project_auth_scope_caps(&auth);
+
+    assert_eq!(
+        caps.get("corp-sso").map(String::as_str),
+        Some("full"),
+        "the operator's explicit ceiling must be found under the PROVIDER NAME (module-keying \
+         silently floored this to read-only)"
+    );
+    assert_eq!(
+        caps.get("vendor-sso").map(String::as_str),
+        Some("read-only"),
+        "the sibling provider on the same module keeps its OWN, independent ceiling"
+    );
+    assert_eq!(
+        caps.get("test-idp-double").map(String::as_str),
+        Some("none"),
+        "the provider actually NAMED `test-idp-double` owns that key — not whichever provider happens to run \
+         the `test-idp-double` module (module-keying made a last-writer-wins collision here, handing one \
+         provider's ceiling to another)"
+    );
+    assert_eq!(caps.len(), 3, "one entry per NAMED provider: {caps:?}");
+}
+
+// ── STEP 2.3: THE TYPE-ERASED PLANE SLOT MAP (`App::plane_slot`) ─────────────────────────────
+//
+// Additive: `App::mcp` / `App::a2a` still exist and every existing reader is untouched. These
+// tests pin the two things Step 2.3 actually promises — the slot mirrors the typed field's SAME
+// `Arc` when a plane is configured, and is absent exactly when the typed field is `None`.
+
+// ── PLANELESS CONFIGS GET AN INERT `PlaneBreakers` (idle-RSS doctrine) ───────────────────────
+//
+// "What is not configured must not be loaded": a config with no mounted plane, no `tools:`/
+// `agents:` registration and no plane pools must not pay for the 8 placeholder breaker cells
+// (a preallocated 1024-slot outcome window each, plus per-worker padded counter stripes —
+// ~130 KiB of idle RSS). These pin the four arms of the apply-time decision in
+// `build_app_from_config` and the inert handle's fail-closed guards.
+
+/// Boot with a planeless config yields the INERT handle; a second planeless apply REUSES it
+/// (same `Arc`); the first apply that carries plane content upgrades to a PROVISIONED handle at
+/// apply time; and a provisioned prior is reused even when the plane content disappears again
+/// (learned reliability survives every apply).
+#[test]
+fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
+    crate::snapshot::init();
+    let planeless = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_PLANES",
+        ))
+    };
+    let build = |cfg, prior: Option<&crate::state::App>| {
+        crate::build_app_from_config(
+            cfg,
+            crate::config::PluginsCfg::default(),
+            None,
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            (None, None),
+            prior,
+        )
+        .expect("boot must succeed")
+        .0
+    };
+
+    // Arm 1: no plane content, no prior → inert.
+    let app = build(planeless(), None);
+    assert!(
+        !app.plane_breakers.is_provisioned(),
+        "a planeless config must get the inert handle"
+    );
+    // The inert guards fail CLOSED (refuse / no-op), never index the empty lane table.
+    assert!(
+        matches!(
+            app.plane_breakers.try_admit("tool:x", 0),
+            Err(busbar_kernel::store::Unavailable::Shedding)
+        ),
+        "inert admit must refuse, not panic"
+    );
+    app.plane_breakers.record_success("tool:x", 0);
+    app.plane_breakers.release("tool:x", 0, Some(7));
+    assert_eq!(app.plane_breakers.retry_after_secs("tool:x", 0), 1);
+
+    // Arm 2: still planeless with an inert prior → the SAME handle (no re-allocation per apply).
+    let app2 = build(planeless(), Some(&app));
+    assert!(
+        std::sync::Arc::ptr_eq(&app.plane_breakers, &app2.plane_breakers),
+        "an inert prior must be reused across a planeless apply"
+    );
+
+    // Arm 3: plane content appears (a `tool_pools:` set here — any of the plane signals works) →
+    // upgraded to a provisioned handle AT APPLY, not on a request path.
+    let mut with_pool = planeless();
+    with_pool.tool_pools.insert(
+        "search".to_string(),
+        crate::failover::CandidatePoolCfg {
+            members: vec!["search-eu".to_string(), "search-us".to_string()],
+            ..Default::default()
+        },
+    );
+    let app3 = build(with_pool, Some(&app2));
+    assert!(
+        app3.plane_breakers.is_provisioned(),
+        "the first apply carrying plane content must provision the breakers"
+    );
+    assert!(
+        !std::sync::Arc::ptr_eq(&app2.plane_breakers, &app3.plane_breakers),
+        "the provisioned handle is a fresh build, not the inert prior"
+    );
+
+    // Arm 4: plane content removed again → the PROVISIONED prior is kept (learned reliability
+    // survives every apply; an apply never downgrades).
+    let app4 = build(planeless(), Some(&app3));
+    assert!(
+        std::sync::Arc::ptr_eq(&app3.plane_breakers, &app4.plane_breakers),
+        "a provisioned prior must survive an apply that removes the plane content"
+    );
+}
+
+// ── THE REQUEST-PANIC BOUNDARY (1.6.0 item 148) ──────────────────────────────────────────────────
+
+/// A PANIC FAILS ITS OWN REQUEST, NOT THE CONNECTION. Drives the REAL common layer stack over a
+/// real socket: a route that panics must answer `500` in the kernel's standard JSON error body, and
+/// the SAME client (its pooled keep-alive connection) must go on being served. Without the boundary
+/// the unwind tears down hyper's connection task and the client sees a reset instead of a response.
+#[tokio::test]
+async fn a_panicking_handler_fails_only_its_own_request() {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    crate::snapshot::init();
+    let app = crate::test_support::TestApp::new().build();
+    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
+    async fn boom() -> &'static str {
+        panic!("deliberate handler panic (request-panic boundary test)")
+    }
+    async fn fine() -> &'static str {
+        "fine"
+    }
+    let (router, table) = crate::core_routes::CoreRouter::new()
+        .route(
+            "/v1/chat/completions",
+            RouteMethod::Post,
+            RouteAuth::None,
+            boom,
+        )
+        .route("/still-serving", RouteMethod::Get, RouteAuth::None, fine)
+        .into_parts();
+    let router = apply_common_layers(router, table, &handle, 1 << 20, false);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    let r = client
+        .post(format!("http://{addr}/v1/chat/completions"))
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .expect("a panicking handler must still produce a RESPONSE, not a torn-down connection");
+    assert_eq!(r.status().as_u16(), 500, "the one request fails with 500");
+    let ct = r
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ct.starts_with("application/json"),
+        "content-type was `{ct}`"
+    );
+    let v: serde_json::Value = r.json().await.expect("the 500 body is JSON");
+    assert_eq!(
+        v["error"]["type"], "api_error",
+        "the kernel's standard dialect-native error body, got {v}"
+    );
+
+    // The sibling: the same client, the same pool, served normally after the panic.
+    for _ in 0..3 {
+        let ok = client
+            .get(format!("http://{addr}/still-serving"))
+            .send()
+            .await
+            .expect("the listener keeps serving after a request panicked");
+        assert_eq!(ok.status().as_u16(), 200);
+        assert_eq!(ok.text().await.unwrap(), "fine");
+    }
+    server.abort();
+}
+
+/// On the native-API root the boundary's 500 is the frozen admin envelope's own `internal` code —
+/// never the `not_found` the root's 404/405 branch would otherwise hand a 500.
+#[tokio::test]
+async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
+    let resp = fallback_error_response(
+        &residual_planes(),
+        "/api/v1/admin/info",
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        crate::proxy::KIND_API_ERROR,
+        "internal error",
+    );
+    assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    use http_body_util::BodyExt as _;
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error"]["code"], "internal", "got {v}");
+}
+
+/// THE GATE: every router the kernel SERVES carries the request-panic boundary.
+///
+/// Structural, because the property is about construction: a `Router<Arc<AppHandle>>` cannot be
+/// served until `.with_state` erases its state, so (1) the ONLY production `.with_state(` in the
+/// workspace must be the one in `apply_common_layers`, (2) that function's LAST `.layer(` must be
+/// `CatchPanicLayer` (outermost, so it also covers every other layer), and (3) every production
+/// `Router::new()` must be a known pre-state sub-router that can only be served through (1). A new
+/// router built any other way — a second `.with_state`, a fresh stateless `Router::new()` served on a
+/// listener — fails here until it goes through `apply_common_layers` or wraps `CatchPanicLayer`.
+#[test]
+fn the_request_panic_boundary_wraps_every_served_router() {
+    let kernel = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let crates = kernel.parent().expect("crates/ dir");
+
+    // (2) The boundary is the outermost layer of the one servable-router builder.
+    let router_src = std::fs::read_to_string(kernel.join("src/router.rs")).unwrap();
+    let start = router_src
+        .find("pub(crate) fn apply_common_layers(")
+        .expect("apply_common_layers exists");
+    let body = &router_src[start..];
+    let body = &body[..body.find("\n}\n").expect("end of apply_common_layers")];
+    let last_layer = body
+        .rfind(".layer(")
+        .expect("apply_common_layers applies layers");
+    assert!(
+        body[last_layer..].starts_with(".layer(CatchPanicLayer::new("),
+        "the LAST `.layer(` in apply_common_layers must be the request-panic boundary, so it wraps \
+         every handler and every other layer"
+    );
+    let with_state = body
+        .rfind(".with_state(")
+        .expect("apply_common_layers binds state");
+    assert!(
+        with_state > last_layer,
+        "the boundary is applied before state is bound"
+    );
+
+    // Walk every production source file in the workspace.
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if p.is_dir() {
+                if matches!(
+                    name,
+                    "tests" | "test_support" | "testkit" | "benches" | "target" | "examples"
+                ) {
+                    continue;
+                }
+                walk(&p, out);
+            } else if name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(crates, &mut files);
+    assert!(files.len() > 100, "the walk found the workspace sources");
+
+    // Pre-state sub-routers: typed `Router<Arc<AppHandle>>`, so they are only ever served through
+    // `apply_common_layers`' `.with_state`.
+    let pre_state = [
+        "busbar-kernel/src/core_routes.rs",
+        "busbar-core-admin/src/v1/json/mod.rs",
+        "busbar-core-admin/src/v1/json/named_map.rs",
+    ];
+    // KNOWN GAP, named so it cannot grow: the root-admin wrap builds a STATELESS outer router around
+    // the (guarded) admin router. Requests it forwards are inside the boundary; its own node loop is
+    // not. Closing it is one `.layer(busbar_kernel::router::CatchPanicLayer::new(handle))` in that
+    // file (owned by another slot) — at which point this entry is deleted.
+    let unguarded_pending = ["busbar/src/root/units_admin/admin_mount.rs"];
+
+    let mut with_state_sites = Vec::new();
+    let mut stray_routers = Vec::new();
+    for f in &files {
+        let rel = f
+            .strip_prefix(crates)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let src = std::fs::read_to_string(f).unwrap_or_default();
+        for line in src.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if code.contains(".with_state(") {
+                with_state_sites.push(rel.clone());
+            }
+            // `Router::new()` as its own identifier (not `CoreRouter::new()`, the pre-state builder).
+            let bare_router_new = code.match_indices("Router::new()").any(|(i, _)| {
+                !code[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            });
+            if bare_router_new
+                && !pre_state.contains(&rel.as_str())
+                && !unguarded_pending.contains(&rel.as_str())
+            {
+                stray_routers.push(format!("{rel}: {}", line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        with_state_sites,
+        vec!["busbar-kernel/src/router.rs".to_string()],
+        "(1) a router became servable somewhere other than apply_common_layers — it would be \
+         served WITHOUT the request-panic boundary"
+    );
+    assert!(
+        stray_routers.is_empty(),
+        "(3) production routers built outside the request-panic boundary: {stray_routers:#?}"
+    );
+}
+
+/// `ir::lane_caps` answers at a kernel path (#83a SD-2): the capability resolver a lane's provider
+/// entry is folded through is reachable as `busbar_kernel::ir::lane_caps`, and it is the real one —
+/// a provider-level spelling applies, and the FIRST matching model rule overrides it.
+#[test]
+fn lane_caps_resolver_answers_at_the_kernel_ir_path() {
+    use crate::ir::lane_caps::{
+        resolve_lane_caps, MaxOutputKeyCfg, ModelCapabilities, ProviderLaneCaps,
+    };
+    use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
+    let provider = ProviderLaneCaps {
+        max_output_key: Some(MaxOutputKeyCfg::MaxCompletionTokens),
+        ..ProviderLaneCaps::default()
+    };
+    let rules = [
+        ModelCapabilities {
+            models: vec!["model-a*".to_string()],
+            native_structured_output: Some(true),
+            max_output_key: Some(MaxOutputKeyCfg::MaxTokens),
+            ..ModelCapabilities::default()
+        },
+        ModelCapabilities {
+            models: vec!["model-a-2*".to_string()],
+            native_structured_output: Some(false),
+            ..ModelCapabilities::default()
+        },
+    ];
+    assert_eq!(
+        resolve_lane_caps(ProviderLaneCaps::default(), &[], "any"),
+        LaneCaps::NONE
+    );
+    let other = resolve_lane_caps(provider, &rules, "model-b");
+    assert_eq!(other.max_output_key, MaxOutputKey::MaxCompletionTokens);
+    assert!(!other.native_structured_output);
+    let first_match = resolve_lane_caps(provider, &rules, "model-a-2-mini");
+    assert_eq!(first_match.max_output_key, MaxOutputKey::MaxTokens);
+    assert!(first_match.native_structured_output);
+}
+
+/// FROZEN CUSTOMER TEXT the kernel's tests pin (ARCHITECT RULING 2026-09-25, F-T): one value of
+/// `tests/fixtures/frozen_customer_text.yaml`, the golden input DATA that holds the store spellings and
+/// credential kind operators see, byte-for-byte as 1.5.5 shipped them — so no test source spells them.
+pub(crate) fn frozen_text(key: &str) -> serde_yaml::Value {
+    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
+        "../../tests/fixtures/frozen_customer_text.yaml"
+    ))
+    .expect("the frozen-text fixture parses");
+    doc.get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("the frozen-text fixture has no `{key}`"))
+}
+
+/// [`frozen_text`] as a string.
+pub(crate) fn frozen_str(key: &str) -> String {
+    let v = frozen_text(key);
+    v.as_str()
+        .unwrap_or_else(|| panic!("frozen `{key}` is not a string"))
+        .to_string()
+}

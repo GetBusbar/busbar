@@ -1,0 +1,555 @@
+//! Tests for `meter.rs`. Lifted out of the implementation file so its line count
+//! measures implementation and nothing else; still a direct child module, so `use
+//! super::*` reaches the private items it always did.
+
+use super::*;
+use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_contract::caps::{KernelSeal, StepName};
+use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, TestAppKit};
+
+/// The literal token figures every identity here is pinned on: eleven uncached input tokens and
+/// seven output tokens, reported by the upstream and normalized by the dialect's reader.
+const INPUT: u64 = 11;
+const OUTPUT: u64 = 7;
+
+/// One OpenAI chat completion carrying that usage.
+fn completion() -> MockResponse {
+    MockResponse::Ok {
+        status: axum::http::StatusCode::OK,
+        body: serde_json::json!({
+            "id": "chatcmpl-meter",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "m0",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "hello"}}],
+            "usage": {"prompt_tokens": INPUT, "completion_tokens": OUTPUT,
+                "total_tokens": INPUT + OUTPUT}
+        }),
+    }
+}
+
+/// What the accrual left behind, on both surfaces at once: the raw metering row the flush
+/// writes, and the token ledger the budget chain enforces against.
+#[derive(Debug, PartialEq, Eq)]
+struct Accrued {
+    row: busbar_contract::records::MeteringRow,
+    ledger_tokens: u64,
+    ledger_spend_cents: i64,
+}
+
+/// A governed rig: one lane, one pool, one key, a fresh in-memory registry, and one queued
+/// upstream response. Each leg of an identity gets its own, so the two accruals are compared
+/// rather than summed.
+async fn rig() -> (
+    std::sync::Arc<crate::test_support::BuiltApp>,
+    std::sync::Arc<busbar_contract::records::VirtualKey>,
+    MockServer,
+) {
+    crate::testkit::install_test_seams();
+    let state = std::sync::Arc::new(MockServerState::new());
+    state.push(completion());
+    let server = MockServer::new(state).await;
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
+    let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("governance");
+    let (key, _) = gov_kit
+        .create_key(
+            busbar_kernel::governance::NewKeySpec {
+                name: "meter".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let mut builder = TestApp::new()
+        .lane(
+            LaneSpec::new("m0", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
+        .pool("p", &[(0, 1)])
+        // BILLED: a `rate_card:` is present, so `cost_pricing_enabled` is true and — per DECISION #42
+        // — the `meter_charge` seam writes its metering row (an unbilled plane serves free and emits
+        // none). The card prices the one lane `m0` at ZERO on every tier, matching the historical
+        // no-card posture's token pricing (a rig with no card already prices every tier at 0), and
+        // the flat per-request fee stays `1` (the builder's `CostModel::flat(1)` default). So the
+        // row's counts, the derived token ledger and the zero-cent derived spend are byte-identical
+        // to the unbilled rig — #42 changed only whether the row is emitted, never its values.
+        .cost(billed_zero_card());
+    TestAppKit::set_governance(&mut builder, gov_kit);
+    (builder.build(), std::sync::Arc::new(key), server)
+}
+
+/// A PRESENT rate card that prices the lane `m0` at zero on every tier, with the flat fee (`1`) the
+/// unbilled rig's `CostModel::flat(1)` default carried. `pricing_enabled` is true (a card is present)
+/// so #42 lets the metering row through, while every priced figure stays the no-card baseline's.
+fn billed_zero_card() -> busbar_kernel::cost::CostModel {
+    busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&std::collections::BTreeMap::from([(
+            "m0".to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 0.0,
+                output_utok: 0.0,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+                ..Default::default()
+            },
+        )])),
+        1,
+        &Default::default(),
+    )
+}
+
+/// The sink the admit step builds and every accrual site carries to the end of the response.
+fn sink(
+    host: &Arc<dyn EngineHost>,
+    key: &std::sync::Arc<busbar_contract::records::VirtualKey>,
+    charged_at: u64,
+) -> crate::engine::UsageSink {
+    crate::engine::UsageSink {
+        pin: host.meter_pin().expect("governance is configured"),
+        key: key.clone(),
+        pool: std::sync::Arc::from("p"),
+        charged_at,
+        request_id: 0,
+        admit: None,
+    }
+}
+
+/// Read both accrual surfaces for one key.
+fn accrued(
+    app: &std::sync::Arc<crate::test_support::BuiltApp>,
+    key_id: &str,
+    charged_at: u64,
+) -> Accrued {
+    let gov = app.governance.clone().expect("governance is configured");
+    let derived = gov
+        .usage_for(&app.cost, key_id, charged_at)
+        .expect("usage read")
+        .expect("the key exists");
+    gov.flush_metering();
+    let rows = gov
+        .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+        .expect("metering read");
+    let mut mine: Vec<_> = rows.into_iter().filter(|r| r.key_id == key_id).collect();
+    assert_eq!(mine.len(), 1, "one response, one metering cell");
+    Accrued {
+        row: mine.remove(0),
+        ledger_tokens: derived.tokens,
+        ledger_spend_cents: derived.spend_cents,
+    }
+}
+
+/// A kernel seal for the length of one test.
+fn tokens() -> (KernelSeal, Pass<Meter>, Grant<Consumption>) {
+    let seal = busbar_kernel::test_support::tokens::seal();
+    let unit = busbar_kernel::test_support::tokens::pass();
+    let usage = busbar_kernel::test_support::tokens::grant::<Consumption>();
+    (seal, unit, usage)
+}
+
+/// THE METERED IDENTITY. The row a delivered response leaves behind is the same row whether the
+/// live buffered tap accrued it or this step did — field for field, on a separate registry
+/// each, so nothing is being compared with itself.
+///
+/// The literal: one row for `(key, m0, zai)` carrying `tokens_input = 11`, `tokens_output = 7`,
+/// both cache tiers `0`, and `requests = billable_requests = 1`; and a token ledger of 18
+/// tokens at zero cents, because a rig with no rate card prices every tier at zero and the fee
+/// is the door's, not the meter's.
+#[tokio::test]
+async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
+    // LEG 1 — a real forwarded request, metered by the live tap at the end of the response.
+    let (app, key, server) = rig().await;
+    let charged_at = busbar_kernel::store::now();
+    let (host, _rt) = crate::engine::test_host_rt(&app);
+    let resp = crate::engine::forward_with_pool(
+        &app,
+        vec![crate::engine::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        serde_json::to_vec(&serde_json::json!({
+            "model": "p", "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap()
+        .into(),
+        None,
+        "p",
+        None,
+        crate::proto_codec::PROTO_OPENAI,
+        crate::test_support::CHAT,
+        Some(sink(&host, &key, charged_at)),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200, "the response is served");
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+    let live = accrued(&app, &key.id, charged_at);
+    assert_eq!(
+        live,
+        Accrued {
+            row: busbar_contract::records::MeteringRow {
+                usage_units: Default::default(),
+                key_id: key.id.clone(),
+                model: "m0".to_string(),
+                provider: "zai".to_string(),
+                tokens_input: INPUT,
+                tokens_output: OUTPUT,
+                tokens_cache_read: 0,
+                tokens_cache_write: 0,
+                requests: 1,
+                billable_requests: 1,
+                key_group_at_use: String::new(),
+                pricing_version: String::new(),
+                priced_from_ms: 0,
+            },
+            ledger_tokens: INPUT + OUTPUT,
+            ledger_spend_cents: 0,
+        },
+        "the live tap's row and ledger, in full"
+    );
+    server.shutdown().await;
+
+    // LEG 2 — the step, on its own registry, over the same reported usage.
+    let (app2, key2, server2) = rig().await;
+    let (host2, rt2) = crate::engine::test_host_rt(&app2);
+    let reported = busbar_contract::billing::TokenUsage {
+        input: INPUT,
+        output: OUTPUT,
+        ..Default::default()
+    };
+    let sink2 = sink(&host2, &key2, charged_at);
+    let tables = crate::engine::EngineTables::new(&rt2);
+    let lane = &tables.lanes()[0];
+    let ctx = MeterCtx::new(&host2, Some(&sink2), Some(lane), Some(&reported), 200, true);
+    let (seal, unit_token, usage_token) = tokens();
+    let metered = meter(&unit_token, &usage_token, &ctx, &Outcome::Completed);
+
+    assert_eq!(
+        metered.row.as_ref().expect("a served response is metered"),
+        &busbar_contract::records::MeteringRow {
+            usage_units: Default::default(),
+            key_id: key2.id.clone(),
+            model: "m0".to_string(),
+            provider: "zai".to_string(),
+            tokens_input: INPUT,
+            tokens_output: OUTPUT,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: String::new(),
+            priced_from_ms: 0,
+        },
+        "the step reports the row it accrued"
+    );
+    let step = accrued(&app2, &key2.id, charged_at);
+    assert_eq!(
+        step.row.model, live.row.model,
+        "both metered the SERVING lane's config name"
+    );
+    assert_eq!(step.row.provider, live.row.provider);
+    assert_eq!(
+        (
+            step.row.tokens_input,
+            step.row.tokens_output,
+            step.row.tokens_cache_read,
+            step.row.tokens_cache_write,
+            step.row.requests,
+            step.row.billable_requests
+        ),
+        (
+            live.row.tokens_input,
+            live.row.tokens_output,
+            live.row.tokens_cache_read,
+            live.row.tokens_cache_write,
+            live.row.requests,
+            live.row.billable_requests
+        ),
+        "field for field, the step's row is the live tap's row"
+    );
+    assert_eq!(step.ledger_tokens, live.ledger_tokens);
+    assert_eq!(step.ledger_spend_cents, live.ledger_spend_cents);
+
+    // The usage report the posting is made against: one line per non-zero tier, summing to
+    // exactly what was metered.
+    let usage = metered
+        .decision
+        .into_result(&seal)
+        .expect("a delivered response proceeds");
+    assert_eq!(usage.total(), INPUT + OUTPUT);
+    assert_eq!(usage.lines().len(), 2, "two tiers reported, two lines");
+    assert!(!usage.is_estimated(), "the destination reported this");
+    assert_eq!(
+        metered.fee_count, 1,
+        "a delivered 2xx from an upstream posts the flat fee"
+    );
+    server2.shutdown().await;
+}
+
+/// THE FEE IS THE LEG AND THE CLIENT-FACING STATUS, AND NOTHING ELSE.
+///
+/// One flat fee per delivered client request that routed to an upstream: a 2xx from an upstream leg
+/// posts it; a 502 or a post-admission 404 posts none; a unit with no upstream leg (a kernel verb)
+/// posts none even on a 2xx. There is no refund row here, and that is the point: the refund of the
+/// fee base is the admitted terminal door's (step 7), decided once from the client-facing status
+/// and the admit step's `charged` — `unit/tests/chain.rs` holds it on the ledger.
+/// The plane's fee unit, moved here from the kernel's door with the decision (TD step 13): the
+/// kernel decides no fee; this plane reports one per delivered request that routed upstream.
+#[test]
+fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
+    assert_eq!(fee_units(true, true), 1);
+    assert_eq!(fee_units(true, false), 0);
+    assert_eq!(fee_units(false, true), 0);
+    assert_eq!(fee_units(false, false), 0);
+}
+
+#[test]
+fn the_fee_is_decided_by_the_leg_and_the_client_facing_status() {
+    let host: Arc<dyn EngineHost> =
+        busbar_kernel::test_support::engine_host(&crate::test_support::TestApp::new().build());
+    let (_seal, unit_token, usage_token) = tokens();
+    for (status, upstream_leg, fee, why) in [
+        (200u16, true, 1u32, "delivered from an upstream leg"),
+        (502, true, 0, "a failed transfer posts no fee"),
+        (
+            200,
+            false,
+            0,
+            "no upstream leg, so no flat fee: a kernel verb is not a proxied request",
+        ),
+        (404, true, 0, "a post-admission 404 is unbilled"),
+    ] {
+        let ctx = MeterCtx::new(&host, None, None, None, status, upstream_leg);
+        let metered = meter(&unit_token, &usage_token, &ctx, &Outcome::Completed);
+        assert_eq!(metered.fee_count, fee, "{why}: fee_count");
+        assert!(
+            metered.row.is_none(),
+            "{why}: nothing to attribute, so nothing metered"
+        );
+    }
+}
+
+/// A stream that ended in an error bills the tokens it STREAMED — the accrual follows what was
+/// delivered up to the cut, not the way the stream ended — and the fee it already earned is not
+/// taken back.
+///
+/// #62 (owner-locked): a mid-stream cut is NOT a refund. Breaker, disconnect, revoked auth or
+/// timeout, the customer pays for what actually streamed; the plane reports the units, the ledger
+/// records them, the money view prices them. The tokens the readers found before the error are the
+/// charge, and the fee follows the status that was settled at the first frame relayed to the
+/// client, which a later abort does not reverse either.
+#[test]
+fn a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned() {
+    let host: Arc<dyn EngineHost> =
+        busbar_kernel::test_support::engine_host(&crate::test_support::TestApp::new().build());
+    let (seal, unit_token, usage_token) = tokens();
+    let reported = busbar_contract::billing::TokenUsage {
+        input: INPUT,
+        output: OUTPUT,
+        ..Default::default()
+    };
+    // Everything the step is told about this unit: a 2xx went out, the readers had counted INPUT and
+    // OUTPUT by the time the stream died. How it died is the provisional end below, and it is not a
+    // fact the charge turns on.
+    let ctx = MeterCtx::new(&host, None, None, Some(&reported), 200, true);
+    let metered = meter(
+        &unit_token,
+        &usage_token,
+        &ctx,
+        &Outcome::Failed(
+            StepName::Route,
+            busbar_contract::caps::ReasonCode::DestinationUnreachable,
+        ),
+    );
+    assert_eq!(
+        metered.fee_count, 1,
+        "the 2xx that went out is not reversed"
+    );
+    assert!(
+        metered.row.is_none(),
+        "no sink and no lane on this rig, so nothing to attribute a row to"
+    );
+    let usage = metered.decision.into_result(&seal).expect("still a report");
+    assert_eq!(
+        usage.total(),
+        INPUT + OUTPUT,
+        "#62: the tokens that streamed before the cut are the charge, not evidence"
+    );
+    assert_eq!(
+        usage.lines().len(),
+        2,
+        "one line per streamed tier: input and output"
+    );
+}
+
+/// The step is the `Units::meter` row's shape, as a value.
+#[test]
+fn the_step_has_the_meters_shape() {
+    let _: MeterStep = meter;
+}
+
+/// The card the accrual is priced against, keyed by the SERVING lane's config name — the only
+/// key space a rate card is allowed to use, and the same key the metering row attributes to.
+///
+/// Two micro-units per input token and six per output token, which the one config-to-integer
+/// projection turns into 2_000 and 6_000 nano-units per token. The two tiers are priced
+/// DIFFERENTLY on purpose: a card that priced them alike could not tell a money figure from a
+/// token count, which is the whole thing under test.
+fn priced_card() -> busbar_kernel::cost::CostModel {
+    busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&std::collections::BTreeMap::from([(
+            "m0".to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 2.0,
+                output_utok: 6.0,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+                ..Default::default()
+            },
+        )])),
+        0,
+        &Default::default(),
+    )
+}
+
+/// A rig whose deployment carries [`priced_card`], one lane named for it, and governance — so
+/// the sink the door pins carries a card that actually prices something. No upstream is dialled
+/// here: this test drives the step directly over a usage report the reader already produced.
+fn priced_rig() -> (
+    std::sync::Arc<busbar_kernel::state::App>,
+    std::sync::Arc<busbar_contract::records::VirtualKey>,
+) {
+    crate::testkit::install_test_seams();
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
+    let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("governance");
+    let (key, _) = gov_kit
+        .create_key(
+            busbar_kernel::governance::NewKeySpec {
+                name: "priced".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let mut builder = TestApp::new()
+        .lane(
+            LaneSpec::new("m0", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:9")
+                .provider("zai"),
+        )
+        .pool("p", &[(0, 1)])
+        .cost(priced_card());
+    TestAppKit::set_governance(&mut builder, gov_kit);
+    (builder.build(), std::sync::Arc::new(key))
+}
+
+/// SEALING IS NOT POSTING, and the step has to say which it did.
+///
+/// A unit reaches this step in one of two states. Either the walk was handed the admission's
+/// meter half and its tap has already made this unit's one accrual — in which case the step
+/// SEALS: it reports the row, and it must not touch the ledger a second
+/// time. Or the walk held no meter half, and the step IS the accrual. `MeterFacts::accrued` is
+/// the fact that separates them, and the walk carries the answer forward as `posted_here` so the
+/// rehearsal can assert one posting per unit.
+///
+/// The instrument it carries it on is `Metered::row`, and a row is not that fact. A row is a
+/// truthful report of what the response consumed and it is filled on BOTH sides of the branch —
+/// deliberately, because sealing is not a reason to report nothing. So `row.is_some()` answers
+/// "there was something to attribute", which is a different question, and it answers `true` for
+/// a unit whose accrual was made somewhere else entirely.
+///
+/// Two legs, each on its own registry so neither reads the other's rows. Same host, same sink,
+/// same lane, same reported usage; the only difference is which side of the branch the unit is
+/// on. The registries prove the branch itself works — one accrual on the posting leg, none on
+/// the sealing leg. The pair the walk reads has to tell them apart too.
+#[test]
+fn the_step_says_whether_it_posted_or_only_sealed() {
+    let reported = busbar_contract::billing::TokenUsage {
+        input: INPUT,
+        output: OUTPUT,
+        ..Default::default()
+    };
+    let (_seal, unit_token, usage_token) = tokens();
+
+    // LEG 1 — the walk held no meter half, so this step is the accrual.
+    let (app1, key1) = priced_rig();
+    let charged_at = busbar_kernel::store::now();
+    let (host1, rt1) = crate::engine::test_host_rt(&app1);
+    let sink1 = sink(&host1, &key1, charged_at);
+    let tables1 = crate::engine::EngineTables::new(&rt1);
+    let posting = meter(
+        &unit_token,
+        &usage_token,
+        &MeterCtx::new(
+            &host1,
+            Some(&sink1),
+            Some(&tables1.lanes()[0]),
+            Some(&reported),
+            200,
+            true,
+        ),
+        &Outcome::Completed,
+    );
+    assert_eq!(
+        accrued(&app1, &key1.id, charged_at).ledger_tokens,
+        INPUT + OUTPUT,
+        "the walk held no sink, so the step made the unit's one accrual"
+    );
+
+    // LEG 2 — the walk's tap already accrued this unit, so this step only seals.
+    let (app2, key2) = priced_rig();
+    let (host2, rt2) = crate::engine::test_host_rt(&app2);
+    let sink2 = sink(&host2, &key2, charged_at);
+    let tables2 = crate::engine::EngineTables::new(&rt2);
+    let facts = MeterFacts {
+        lane: Some(0),
+        usage: Some(reported.clone()),
+        open_units: Default::default(),
+        status: 200,
+        upstream_leg: true,
+        tap_posts: true,
+    };
+    let sealing = meter(
+        &unit_token,
+        &usage_token,
+        &MeterCtx::bind(&host2, Some(&sink2), Some(&tables2.lanes()[0]), &facts),
+        &Outcome::Completed,
+    );
+    let gov2 = app2.governance.clone().expect("governance is configured");
+    gov2.flush_metering();
+    assert!(
+        gov2.metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .expect("metering read")
+            .iter()
+            .all(|r| r.key_id != key2.id),
+        "the tap owns this unit's accrual, so the step posted nothing on top of it"
+    );
+
+    // Both legs report a row, because both had something to attribute — which is exactly why a
+    // row cannot be the answer to "who posted".
+    assert!(posting.row.is_some(), "the posting leg reports its row");
+    assert!(
+        sealing.row.is_some(),
+        "the sealing leg reports the same row"
+    );
+
+    // What the walk carries forward as `posted_here`.
+    assert_eq!(
+        (posting.posted, sealing.posted),
+        (true, false),
+        "the step that made the accrual says so; the step that only sealed one says it did not"
+    );
+}

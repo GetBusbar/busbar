@@ -1,0 +1,1910 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+use super::*;
+
+const OWNER: InstanceId = InstanceId(1);
+const OTHER: InstanceId = InstanceId(2);
+
+/// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
+/// private address the scheme-rule test names (the destination guard refuses both by default), so
+/// what those tests assert stays the connector's own rule.
+pub(crate) fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
+    let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
+    std::sync::Arc::new(crate::LiteralsOnly(
+        crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
+            block_private_addresses: true,
+            allow,
+            ..busbar_kernel::config::Destinations::default()
+        })
+        .expect("the loopback allowlist"),
+    ))
+}
+
+/// A far end on loopback: the bound listener, and the address a need dials to reach it.
+async fn far_end() -> (tokio::net::TcpListener, String) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    (l, addr)
+}
+
+/// A need declared without a transport (an inbound need) dials nothing: its open is refused; an
+/// undeclared one is refused as undeclared.
+#[test]
+fn a_need_declared_without_a_transport_dials_nothing() {
+    let c = Connector::new();
+    c.declare(OWNER, NeedId(0));
+    let desc = OpenDesc {
+        target: "127.0.0.1:1",
+        ..OpenDesc::default()
+    };
+    assert_eq!(c.open(OWNER, NeedId(0), &desc), Err(ConnError::Refused));
+    assert_eq!(
+        c.open(OWNER, NeedId(1), &desc),
+        Err(ConnError::UndeclaredNeed)
+    );
+    assert_eq!(
+        c.open(OTHER, NeedId(0), &desc),
+        Err(ConnError::UndeclaredNeed)
+    );
+}
+
+/// RED (spec Part 2 #50, THE SCHEME MATCH AT DECLARE): a need over a scheme no loaded transport
+/// serves is refused when it is declared, by the inherent declare and the table's alike, and is
+/// left undeclared, so no open ever meets an unserved scheme; re-declaring a served need over an
+/// unserved scheme drops its record. The same need over the served scheme opens.
+#[test]
+fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = literal_connector();
+        assert!(c.serves_scheme("bytes"));
+        assert!(!c.serves_scheme("nowhere"));
+        assert_eq!(
+            c.declare_over(OWNER, NeedId(0), "nowhere"),
+            Err(ConnError::Refused)
+        );
+        let mut unserved = config_targeted_need("");
+        unserved.transport = "nowhere".to_owned();
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(1), &unserved, None, None),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(c.declared(OWNER, NeedId(1)), Some(Err(ConnError::Refused)));
+        // An inbound need over an unserved scheme is refused alike (ARCHITECT ruling 2026-10-02).
+        let mut inbound = unserved.clone();
+        inbound.direction = busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None, None),
+            Err(ConnError::Refused)
+        );
+        inbound.transport = "bytes".to_owned();
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None, None),
+            Ok(())
+        );
+        let desc = OpenDesc {
+            target: &far,
+            ..OpenDesc::default()
+        };
+        assert_eq!(
+            c.open(OWNER, NeedId(0), &desc),
+            Err(ConnError::UndeclaredNeed)
+        );
+        assert_eq!(
+            c.open(OWNER, NeedId(1), &desc),
+            Err(ConnError::UndeclaredNeed)
+        );
+
+        // The served scheme opens.
+        DeclaredConns::declare(&c, OWNER, NeedId(2), &config_targeted_need(""), None, None)
+            .expect("a served scheme declares");
+        let id = c
+            .open(OWNER, NeedId(2), &desc)
+            .expect("a need over a served scheme opens");
+        c.close(OWNER, id).unwrap();
+
+        // A served need re-declared over an unserved scheme loses its record.
+        assert_eq!(
+            c.declare_over(OWNER, NeedId(2), "nowhere"),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(c.open(OWNER, NeedId(2), &desc), Err(ConnError::Refused));
+    });
+}
+
+/// No id is live in the shell, so every id-taking operation answers closed, never a fault.
+#[test]
+fn an_id_the_shell_never_opened_is_closed() {
+    let c = Connector::new();
+    let mut buf = [0_u8; 4];
+    assert_eq!(
+        c.write(OWNER, ConnId(1), b"x", true, false),
+        Err(ConnError::Closed)
+    );
+    assert_eq!(
+        c.read(OWNER, ConnId(1), 0, &mut buf),
+        Err(ConnError::Closed)
+    );
+    assert_eq!(c.wait(OWNER, &[ConnId(1)], 0), Err(ConnError::Closed));
+    assert_eq!(c.facts(OWNER, ConnId(1)), Err(ConnError::Closed));
+    assert_eq!(c.close(OWNER, ConnId(1)), Err(ConnError::Closed));
+}
+
+/// A declared need whose target is a cloud metadata host is refused before any dial.
+#[test]
+fn a_metadata_target_is_refused_before_any_dial() {
+    let c = Connector::new();
+    c.declare(OWNER, NeedId(0));
+    let desc = OpenDesc {
+        target: "169.254.169.254:80",
+        ..OpenDesc::default()
+    };
+    assert_eq!(c.open(OWNER, NeedId(0), &desc), Err(ConnError::Refused));
+    assert!(endpoint::check(desc.target).is_err());
+}
+
+// ── the table over a composed connection ──
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use crate::registry::{Entry, Transports};
+use crate::support::{worker, TestDoor};
+
+fn serving(wakes: Arc<AtomicU64>) -> Connector {
+    let view = Transports::new(vec![Entry {
+        door: Arc::new(TestDoor::identity("bytes")),
+        alpn: Vec::new(),
+    }])
+    .unwrap();
+    Connector::serving(
+        view,
+        loopback_literals(),
+        None,
+        Arc::new(move |_| {
+            wakes.fetch_add(1, Ordering::SeqCst);
+        }),
+    )
+}
+
+/// A declared need over a served transport opens a real connection: the opening body goes out,
+/// a read with nothing ready is Pending with the ticket registered, the far end's bytes wake the
+/// ticket, and the next read answers them.
+#[test]
+fn a_need_over_a_served_transport_reaches_a_real_far_end() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 5];
+            s.read_exact(&mut buf).await.unwrap();
+            let _ = tx.send(buf.to_vec());
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            s.write_all(b"answer").await.unwrap();
+        });
+        let wakes = Arc::new(AtomicU64::new(0));
+        let c = serving(wakes.clone());
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Pending));
+        // Nothing drives the connection but the caller's own reads: read until the far end has the
+        // opening body (it answers only after a pause, so no answer is taken here).
+        let mut rx = rx;
+        let first = loop {
+            assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Pending));
+            match rx.try_recv() {
+                Ok(v) => break v,
+                Err(_) => tokio::task::yield_now().await,
+            }
+        };
+        assert_eq!(first, b"first");
+        let piece = loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                other => break other.unwrap(),
+            }
+        };
+        assert_eq!(&buf[..piece.len], b"answer");
+        assert!(wakes.load(Ordering::SeqCst) >= 1, "the ticket was woken");
+        assert_eq!(c.read(OTHER, id, 7, &mut buf), Err(ConnError::NotOwner));
+        assert_eq!(c.facts(OWNER, id).unwrap().claim.as_deref(), Some("bytes"));
+        c.close(OWNER, id).unwrap();
+        assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Closed));
+    });
+}
+
+/// RED (C19-TAIL U5 write): a write through the table stated as text reaches the framer as a text
+/// emit (`EMIT_TEXT`), held through the dial like any early write.
+#[test]
+fn a_text_write_through_the_table_reaches_the_framer_as_text() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 2];
+            s.read_exact(&mut buf).await.unwrap();
+            let _ = tx.send(buf.to_vec());
+        });
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let view = Transports::new(vec![Entry {
+            door: door.clone(),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_: Ticket| {}));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        assert_eq!(c.write(OWNER, id, b"{}", true, true), Ok(2));
+        let mut buf = [0_u8; 8];
+        let got = loop {
+            let _ = c.read(OWNER, id, 7, &mut buf);
+            match rx.try_recv() {
+                Ok(v) => break v,
+                Err(_) => tokio::task::yield_now().await,
+            }
+        };
+        assert_eq!(got, b"{}");
+        assert_eq!(door.count("emit text"), 1, "the write crossed as text");
+        assert_eq!(door.count("emit"), 0, "and never as binary");
+    });
+}
+
+/// RED: a metadata target is refused through the table even when a transport serves the need.
+#[test]
+fn a_metadata_target_is_refused_even_over_a_served_transport() {
+    worker().block_on(async {
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        for target in [
+            "169.254.169.254:80",
+            "[fd00:ec2::254]:80",
+            "100.100.100.200:80",
+        ] {
+            let desc = OpenDesc {
+                target,
+                ..OpenDesc::default()
+            };
+            assert_eq!(
+                c.open(OWNER, NeedId(0), &desc),
+                Err(ConnError::Refused),
+                "{target}"
+            );
+        }
+    });
+}
+
+/// The egress class a restricted need is declared in: its judge refuses internal addresses.
+const RESTRICTED: u32 = 7;
+
+/// RED: each need's dial is judged under the need's OWN egress class. A judge that refuses internal
+/// addresses in a restricted class refuses a loopback target for the need declared in that class,
+/// while the same target opens for a need in the default class on the same connector.
+#[test]
+fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let judge = |dest: &str, class: u32, _: crate::Judged| {
+            let addr = crate::socket::address_of(dest)
+                .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE);
+            Some(match (class, addr) {
+                (RESTRICTED, Ok(a)) if a.ip().is_loopback() => {
+                    Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE)
+                }
+                (_, got) => got,
+            })
+        };
+        let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_| {}));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        c.declare_need(OWNER, NeedId(1), "bytes", RESTRICTED)
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            ..OpenDesc::default()
+        };
+        assert_eq!(
+            c.open(OWNER, NeedId(1), &desc),
+            Err(ConnError::Refused),
+            "the restricted need is judged under its own class"
+        );
+        let id = c
+            .open(OWNER, NeedId(0), &desc)
+            .expect("the default-class need opens the same target");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: writes made while a dial's judgement is pending are held under the same cap: a write past
+/// it is taken short, and the next is answered Pending, never buffered without bound.
+#[test]
+fn writes_held_for_a_pending_judgement_are_capped() {
+    let view = Transports::new(vec![Entry {
+        door: Arc::new(TestDoor::identity("bytes")),
+        alpn: Vec::new(),
+    }])
+    .unwrap();
+    // A judge that never answers: every dial stays in flight.
+    let judge = |_: &str, _: u32, done: crate::Judged| {
+        std::mem::forget(done);
+        None
+    };
+    let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_| {}));
+    c.declare_over(OWNER, NeedId(0), "bytes")
+        .expect("a served scheme declares");
+    let desc = OpenDesc {
+        target: "upstream.test:80",
+        ..OpenDesc::default()
+    };
+    let id = c
+        .open(OWNER, NeedId(0), &desc)
+        .expect("opens, judgement pending");
+    let big = vec![1_u8; crate::compose::WRITE_BUFFER_BYTES + 10];
+    assert_eq!(
+        c.write(OWNER, id, &big, true, false),
+        Ok(crate::compose::WRITE_BUFFER_BYTES),
+        "taken short, up to the cap"
+    );
+    assert_eq!(
+        c.write(OWNER, id, b"more", false, false),
+        Err(ConnError::Pending),
+        "no room: Pending"
+    );
+    assert_eq!(
+        c.write(OWNER, id, b"", true, false),
+        Ok(0),
+        "an empty write still passes"
+    );
+}
+
+/// A need dials a hostname through the kernel's one judge, over the plugin's own table. Its one
+/// `unsafe` is the host's own lowered table (`HostConns::new`), test-only as `support` is.
+#[allow(unsafe_code)]
+#[path = "name_dial_tests.rs"]
+mod name_dial;
+
+// ── EGRESS: the declared target; metadata and link-local are refused on every need ──
+
+/// A connector serving the byte-exact door, admitting literals (its loopback far ends allowlisted).
+fn literal_connector() -> Connector {
+    let view = Transports::new(vec![Entry {
+        door: Arc::new(TestDoor::identity("bytes")),
+        alpn: Vec::new(),
+    }])
+    .unwrap();
+    Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}))
+}
+
+/// RED: a need whose config names its target (`target_from`) dials that target and no other: an
+/// open to another host, or to another port on the same host, is refused before any dial, while
+/// the declared target itself opens.
+#[test]
+fn a_config_targeted_need_dialing_elsewhere_is_refused() {
+    worker().block_on(async {
+        let (_listening, declared) = far_end().await;
+        let c = literal_connector();
+        c.declare_need_to(OWNER, NeedId(0), "bytes", crate::DEFAULT_CLASS, &declared)
+            .expect("a served scheme declares");
+        let open = |target: &str| {
+            c.open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target,
+                    ..OpenDesc::default()
+                },
+            )
+        };
+        assert_eq!(
+            open("127.0.0.2:443"),
+            Err(ConnError::Refused),
+            "another host"
+        );
+        assert_eq!(open("127.0.0.1:1"), Err(ConnError::Refused), "another port");
+        let id = open(&declared).expect("the declared target opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// An outbound need over the test transport whose target comes from `target_from`.
+fn config_targeted_need(target_from: &str) -> ReadNeed {
+    ReadNeed {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: crate::DEFAULT_CLASS,
+        transport: "bytes".to_owned(),
+        auth: String::new(),
+        target_from: target_from.to_owned(),
+        trust_from: String::new(),
+        details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+            fmt: 0,
+            flags: 0,
+            bytes: Vec::new(),
+        },
+        timeout_ms: 0,
+    }
+}
+
+/// RED: a need the loader's conns fill declares with the target its `target_from` resolved to is
+/// pinned to it (ARCHITECT ruling 2026-09-30 on the conns fill, option A): an open to another host
+/// is refused before any dial, while the resolved target opens. Declaring it again with another
+/// target (a refresh) moves the pin.
+#[test]
+fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
+    worker().block_on(async {
+        let (_listening, resolved) = far_end().await;
+        let c = literal_connector();
+        let need = config_targeted_need("settings.upstream");
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved), None),
+            Ok(())
+        );
+        let open = |target: &str| {
+            c.open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target,
+                    ..OpenDesc::default()
+                },
+            )
+        };
+        assert_eq!(
+            open("127.0.0.2:443"),
+            Err(ConnError::Refused),
+            "another host"
+        );
+        let id = open(&resolved).expect("the resolved target opens");
+        c.close(OWNER, id).unwrap();
+        let (_moved_listening, moved) = far_end().await;
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&moved), None),
+            Ok(())
+        );
+        assert_eq!(open(&resolved), Err(ConnError::Refused), "the old pin");
+        let id = open(&moved).expect("the re-declared target opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: a need whose `target_from` resolved to nothing is refused, its answer kept, and nothing
+/// opens on it, even after an earlier declaration pinned it.
+#[test]
+fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
+    worker().block_on(async {
+        let (_listening, resolved) = far_end().await;
+        let c = literal_connector();
+        let need = config_targeted_need("settings.upstream");
+        let _ = DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved), None);
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None, None),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(
+            DeclaredConns::declared(&c, OWNER, NeedId(0)),
+            Some(Err(ConnError::Refused))
+        );
+        assert!(c
+            .open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: &resolved,
+                    ..OpenDesc::default()
+                },
+            )
+            .is_err());
+    });
+}
+
+/// A need whose target the plugin names (no `target_from`) is judged by its egress class only: any
+/// host the class admits opens.
+#[test]
+fn a_plugin_named_need_to_a_class_legal_host_is_allowed() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = literal_connector();
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let id = c
+            .open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: &far,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a plugin-named target the class admits opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: a plugin-named need to a cloud metadata or link-local address is refused, whatever its
+/// class admits.
+#[test]
+fn a_plugin_named_need_to_the_metadata_address_is_refused() {
+    worker().block_on(async {
+        let c = literal_connector();
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        for target in ["169.254.169.254:80", "169.254.1.1:80", "[fe80::1]:80"] {
+            assert_eq!(
+                c.open(
+                    OWNER,
+                    NeedId(0),
+                    &OpenDesc {
+                        target,
+                        ..OpenDesc::default()
+                    },
+                ),
+                Err(ConnError::Refused),
+                "{target}"
+            );
+        }
+    });
+}
+
+/// RED (ARCHITECT rule 15.3: ports `execute_hop_does_not_follow_redirect`, deleted with the
+/// core-run login hop): THE CONNECTOR NEVER FOLLOWS AN ANSWER. A far end answering a `302` whose
+/// `Location` names another listener hands that answer to the need's owner through the table, byte
+/// for byte, and the connector dials nothing the answer names: the listener it points at never sees
+/// a connection, so nothing the request carried (a token exchange's client secret) is re-sent there.
+#[test]
+fn an_answer_naming_another_place_is_handed_up_and_never_dialled() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let elsewhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let answer = format!(
+            "HTTP/1.1 302 Found\r\nlocation: http://{}/steal\r\ncontent-length: 0\r\n\r\n",
+            elsewhere.local_addr().unwrap()
+        );
+        let sent = answer.clone().into_bytes();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 5];
+            s.read_exact(&mut buf).await.unwrap();
+            s.write_all(&sent).await.unwrap();
+        });
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"token",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut got = Vec::new();
+        let mut buf = [0_u8; 256];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while got.len() < answer.len() {
+            assert!(std::time::Instant::now() < deadline, "the answer arrives");
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                Ok(piece) => got.extend_from_slice(&buf[..piece.len]),
+                Err(e) => panic!("the exchange failed: {e:?}"),
+            }
+        }
+        assert_eq!(got, answer.as_bytes(), "the redirect is the answer");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let dialled =
+            tokio::time::timeout(std::time::Duration::from_millis(50), elsewhere.accept()).await;
+        assert!(dialled.is_err(), "the location was never dialled");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED (ARCHITECT parity ruling A5; ports `sanitize_hop_header_rejects_crlf_and_hop_control` and
+/// `execute_hop_refuses_a_crlf_injected_header`, v1.5.5 `crates/busbar/src/auth/token.rs:805`
+/// `FORBIDDEN_HOP_HEADERS`, `:893-907` `sanitize_hop_header`, `crates/busbar/src/auth/tests/
+/// token_tests.rs:750-762`): a plugin's exchange whose head carries a NUL (or a CR or LF) in its
+/// target, its request target, its method, a field name or a field value, or a field stating the
+/// message's own framing (`Content-Length`, `Transfer-Encoding`, any case), is REFUSED whole before
+/// anything is dialled: the far end never sees a connection, so no byte of it (a token exchange's
+/// client secret) leaves. A clean head with an `Authorization` field opens. RED on the connector
+/// that handed every head to the framer.
+#[test]
+fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let nul_target = format!("{far}\0");
+        let clean: &[(&str, &[u8])] = &[("authorization", b"Bearer abc.def".as_slice())];
+        let refused: &[(&str, OpenDesc<'_>)] = &[
+            (
+                "NUL in the target",
+                OpenDesc {
+                    target: &nul_target,
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "NUL in the request target",
+                OpenDesc {
+                    target: &far,
+                    head_target: b"/v1/\0traces",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "NUL in the method",
+                OpenDesc {
+                    target: &far,
+                    method: b"PO\0ST",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "NUL in a field value",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("x-nul", b"a\0b".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "NUL in a field name",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("x-\0nul", b"v".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "CRLF in a field value",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("x-evil", b"a\r\nInjected: 1".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "LF in a field name",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("Bad\nName", b"v".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "CRLF in the request target",
+                OpenDesc {
+                    target: &far,
+                    head_target: b"/v1\r\nX: y",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "the plugin's own content-length",
+                OpenDesc {
+                    target: &far,
+                    fields: &[
+                        ("authorization", b"Bearer abc.def".as_slice()),
+                        ("content-length", b"5".as_slice()),
+                    ],
+                    body: b"token",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "the plugin's own Content-Length",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("Content-Length", b"0".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "the plugin's own transfer-encoding",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("Transfer-Encoding", b"chunked".as_slice())],
+                    body: b"token",
+                    ..OpenDesc::default()
+                },
+            ),
+            (
+                "the plugin's own TRANSFER-ENCODING",
+                OpenDesc {
+                    target: &far,
+                    fields: &[("TRANSFER-ENCODING", b"identity".as_slice())],
+                    ..OpenDesc::default()
+                },
+            ),
+        ];
+        for (why, desc) in refused {
+            assert_eq!(
+                c.open(OWNER, NeedId(0), desc),
+                Err(ConnError::Refused),
+                "{why}"
+            );
+        }
+        let dialled = tokio::time::timeout(std::time::Duration::from_millis(100), l.accept()).await;
+        assert!(dialled.is_err(), "a refused head dials nothing");
+        let id = c
+            .open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: &far,
+                    fields: clean,
+                    method: b"POST",
+                    head_target: b"/v1/traces",
+                    body: b"token",
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a clean head opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// A HOST-SIDE READER awaits a connection through `poll_read`: nothing ready is `Pending` with the
+/// reader's own waker registered, the far end's bytes wake THAT waker (the task finishes without
+/// being re-polled by anything else), and no plugin ticket is ever woken.
+#[test]
+fn a_host_side_reader_is_woken_through_its_own_waker() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 5];
+            s.read_exact(&mut buf).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            s.write_all(b"answer").await.unwrap();
+        });
+        let wakes = Arc::new(AtomicU64::new(0));
+        let c = serving(wakes.clone());
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let piece = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+        )
+        .await
+        .expect("the reader's waker was woken")
+        .unwrap();
+        assert_eq!(&buf[..piece.len], b"answer");
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            0,
+            "no plugin ticket was woken"
+        );
+        let polled =
+            std::future::poll_fn(|cx| std::task::Poll::Ready(c.poll_read(OTHER, id, cx, &mut buf)))
+                .await;
+        assert_eq!(polled, std::task::Poll::Ready(Err(ConnError::NotOwner)));
+    });
+}
+
+/// A far end that takes the opening and then holds the connection open, answering nothing, until
+/// `release` fires (or `answer` is written first, after `after`, then held again).
+fn stalled_far_end(
+    l: tokio::net::TcpListener,
+    answer: Option<(
+        std::time::Duration,
+        &'static [u8],
+        std::time::Duration,
+        &'static [u8],
+    )>,
+) {
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut s, _) = l.accept().await.unwrap();
+        let mut buf = [0_u8; 5];
+        s.read_exact(&mut buf).await.unwrap();
+        if let Some((after, first, then, second)) = answer {
+            tokio::time::sleep(after).await;
+            s.write_all(first).await.unwrap();
+            tokio::time::sleep(then).await;
+            s.write_all(second).await.unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        drop(s);
+    });
+}
+
+/// RED (ARCHITECT timeout ruling, step 2; BUSBAR-1.6.0.md:4890): `timeout_ms` bounds the WHOLE
+/// request until its answer, not only the dial. A far end that connects, takes the request and
+/// never answers is a timeout once the bound passes: a host-side reader is woken with it, within
+/// the bound and not at the far end's leisure.
+#[test]
+fn a_request_bound_times_out_a_far_end_that_never_answers() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        stalled_far_end(l, None);
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            timeout_ms: 300,
+            ..OpenDesc::default()
+        };
+        let started = std::time::Instant::now();
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+        )
+        .await
+        .expect("the bound woke the reader before the far end ever answered");
+        assert_eq!(read, Err(ConnError::Timeout));
+        let took = started.elapsed();
+        assert!(
+            took >= std::time::Duration::from_millis(300)
+                && took < std::time::Duration::from_secs(2),
+            "timed out at the bound, not before it and not long after: {took:?}"
+        );
+        assert_eq!(
+            c.read(OWNER, id, 7, &mut buf),
+            Err(ConnError::Timeout),
+            "a read after the bound stays a timeout"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: a plugin reader (a ticket, as WRITE_REQUEST's exchange reads) waiting on a request past
+/// its bound has its ticket woken, and its next read is the timeout.
+#[test]
+fn a_request_bound_wakes_a_plugin_ticket_with_the_timeout() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        stalled_far_end(l, None);
+        let wakes = Arc::new(AtomicU64::new(0));
+        let c = serving(wakes.clone());
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            timeout_ms: 200,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let started = std::time::Instant::now();
+        let read = loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(5),
+                        "never timed out"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                other => break other,
+            }
+        };
+        assert_eq!(read, Err(ConnError::Timeout));
+        assert!(
+            wakes.load(Ordering::SeqCst) >= 1,
+            "the ticket was woken by the bound"
+        );
+        assert_eq!(
+            c.wait(OWNER, &[id], 7),
+            Ok(0),
+            "a request past its bound is ready to read"
+        );
+    });
+}
+
+/// The bound ends where the answer begins: an answer whose first piece arrived inside the bound is
+/// read to its end even when its later pieces arrive after it.
+#[test]
+fn a_request_bound_is_spent_once_the_answer_begins() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let ms = std::time::Duration::from_millis;
+        stalled_far_end(l, Some((ms(20), b"head", ms(400), b"tail")));
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            timeout_ms: 200,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut got = Vec::new();
+        while got.len() < 8 {
+            let mut buf = [0_u8; 64];
+            let piece = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+            )
+            .await
+            .expect("the answer arrives")
+            .expect("an answer begun inside the bound is not cut by it");
+            got.extend_from_slice(&buf[..piece.len]);
+        }
+        assert_eq!(got, b"headtail");
+    });
+}
+
+// ── EGRESS: the scheme each egress class allows ──
+
+use busbar_contract::abi::host::conn::connector::{
+    EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+};
+
+/// A connector serving a plaintext door (`plain`) and a door whose targets ask for connection
+/// security (`sec`), admitting every literal, with a client config for the secure one.
+fn scheme_connector() -> Connector {
+    let view = Transports::new(vec![
+        Entry {
+            door: Arc::new(TestDoor::identity("plain")),
+            alpn: Vec::new(),
+        },
+        Entry {
+            door: Arc::new(TestDoor::new(
+                "sec",
+                &["sec"],
+                &[],
+                crate::support::Knobs {
+                    secure_name: Some("localhost"),
+                    ..crate::support::Knobs::default()
+                },
+            )),
+            alpn: Vec::new(),
+        },
+    ])
+    .unwrap();
+    let tls = crate::tls::client::build_client_config(&Default::default()).expect("the config");
+    Connector::serving(
+        view,
+        loopback_literals(),
+        Some(Arc::new(tls)),
+        Arc::new(|_| {}),
+    )
+}
+
+fn open_in(c: &Connector, need: u32, target: &str) -> Result<ConnId, ConnError> {
+    c.open(
+        OWNER,
+        NeedId(need),
+        &OpenDesc {
+            target,
+            ..OpenDesc::default()
+        },
+    )
+}
+
+/// RED: open-web dials over connection security only: a plaintext target, public or not, is
+/// refused before any judgement; the same class over a secure target opens.
+#[test]
+fn http_to_a_public_host_under_open_web_is_refused() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = scheme_connector();
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPEN_WEB)
+            .expect("a served scheme declares");
+        c.declare_need(OWNER, NeedId(1), "sec", EGRESS_OPEN_WEB)
+            .expect("a served scheme declares");
+        assert_eq!(open_in(&c, 0, "93.184.216.34:80"), Err(ConnError::Refused));
+        assert_eq!(open_in(&c, 0, &far), Err(ConnError::Refused));
+        let id = open_in(&c, 1, &far).expect("open-web over a secure target opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// Operator-infrastructure takes the operator's configured plaintext private target (1.5.5's
+/// private-network http api_base case).
+#[test]
+fn the_operator_infrastructure_http_private_target_is_allowed() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = scheme_connector();
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPERATOR_INFRASTRUCTURE)
+            .expect("a served scheme declares");
+        let id = open_in(&c, 0, &far).expect("plaintext to the private target opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: loopback-allowed dials plaintext to loopback only: a plaintext private (non-loopback)
+/// address is refused; plaintext loopback opens.
+#[test]
+fn loopback_allowed_refuses_plaintext_off_loopback() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = scheme_connector();
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_LOOPBACK_ALLOWED)
+            .expect("a served scheme declares");
+        assert_eq!(open_in(&c, 0, "10.1.2.3:80"), Err(ConnError::Refused));
+        let id = open_in(&c, 0, &far).expect("plaintext loopback opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED (SEAM-4f, ARCHITECT ruling on mint endpoints: https or loopback plaintext, as 1.5.5
+/// validated `token_url`/`token_uri`): a mint endpoint's need, its target the binding's own setting,
+/// in the `loopback-allowed` class, dials a plaintext loopback endpoint and refuses a plaintext
+/// private one; the `open-web` class it was declared in refused the loopback endpoint outright.
+/// Each refusal is the need's ADMISSION at declare (the target is pinned, so its static facts are
+/// judged there, G1(a)), and every open on the refused need is refused with it.
+#[test]
+fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plaintext() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = scheme_connector();
+        let need = |class| ReadNeed {
+            egress_class: class,
+            transport: "plain".to_owned(),
+            ..config_targeted_need("settings.token_url")
+        };
+        let declare = |id, class, target: &str| {
+            DeclaredConns::declare(&c, OWNER, NeedId(id), &need(class), Some(target), None)
+        };
+        assert_eq!(declare(0, EGRESS_LOOPBACK_ALLOWED, &far), Ok(()));
+        let id = open_in(&c, 0, &far).expect("a loopback plaintext mint endpoint opens");
+        c.close(OWNER, id).unwrap();
+        assert_eq!(
+            declare(1, EGRESS_LOOPBACK_ALLOWED, "10.1.2.3:80"),
+            Err(ConnError::Refused),
+            "plaintext off loopback, refused at its admission"
+        );
+        assert_eq!(
+            open_in(&c, 1, "10.1.2.3:80"),
+            Err(ConnError::Refused),
+            "plaintext off loopback"
+        );
+        assert_eq!(
+            declare(2, EGRESS_OPEN_WEB, &far),
+            Err(ConnError::Refused),
+            "open-web refuses every plaintext endpoint, at its admission"
+        );
+        assert_eq!(
+            open_in(&c, 2, &far),
+            Err(ConnError::Refused),
+            "open-web refuses every plaintext endpoint"
+        );
+    });
+}
+
+/// An inbound need listens through the table: the listener is bound for the need's owner, an
+/// accepted connection is held for that owner (read and answered on the piece's stream through the
+/// table), another instance can neither accept on the need nor read the connection, and a need
+/// listens once.
+#[test]
+fn an_inbound_need_listens_and_its_connections_are_its_owners() {
+    worker().block_on(async {
+        let wakes = Arc::new(AtomicU64::new(0));
+        let c = serving(wakes.clone());
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        c.declare_over(OWNER, NeedId(1), "bytes")
+            .expect("a served scheme declares");
+        c.declare_over(OTHER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let limits = crate::listen::AcceptLimits::default();
+        let addr = c
+            .listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits)
+            .expect("listens");
+        let second = c
+            .listen(OWNER, NeedId(1), "127.0.0.1:0", None, limits)
+            .expect("a second need gets its own listener");
+        assert_ne!(addr, second);
+        assert_eq!(
+            c.listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits),
+            Err(ConnError::Refused),
+            "a need listens once"
+        );
+        assert_eq!(
+            c.listen(OWNER, NeedId(7), "127.0.0.1:0", None, limits),
+            Err(ConnError::UndeclaredNeed)
+        );
+        assert_eq!(
+            c.accept(OTHER, NeedId(0), 3).map(|_| ()),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(
+            c.accept(OWNER, NeedId(0), 3).map(|_| ()),
+            Err(ConnError::Pending)
+        );
+        let client = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            s.write_all(b"knock").await.unwrap();
+            let mut got = [0_u8; 5];
+            s.read_exact(&mut got).await.unwrap();
+            got
+        });
+        let id = loop {
+            match c.accept(OWNER, NeedId(0), 3) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                other => break other.expect("accepted").0,
+            }
+        };
+        let mut buf = [0_u8; 64];
+        assert_eq!(c.read(OTHER, id, 3, &mut buf), Err(ConnError::NotOwner));
+        let mut got = Vec::new();
+        let mut stream = 0;
+        while got.len() < 5 {
+            match c.read(OWNER, id, 3, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                Ok(p) => {
+                    stream = p.stream.0;
+                    got.extend_from_slice(&buf[..p.len]);
+                }
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+        assert_eq!(got, b"knock");
+        assert_eq!(
+            c.emit(OTHER, id, stream, b"x", false, false),
+            Err(ConnError::NotOwner)
+        );
+        c.emit(OWNER, id, stream, b"welcome"[..5].as_ref(), false, false)
+            .unwrap();
+        // Nothing drives the connection but the owner's own calls.
+        let answered = loop {
+            let _ = c.wait(OWNER, &[id], 3);
+            if client.is_finished() {
+                break client.await.unwrap();
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(&answered, b"welco");
+        assert!(
+            wakes.load(Ordering::SeqCst) >= 1,
+            "the accept woke the ticket"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED (ARCHITECT ruling 2026-10-02, WIRE-EXPORT userinfo): a need declared with a target that
+/// carries a userinfo — a URL's `user:pass@` or a bare `user@host:port` — is REFUSED, fail closed:
+/// the answer is kept for the need's admission, and nothing opens on it. The same target without
+/// the userinfo is declared.
+#[test]
+fn a_declared_target_carrying_a_userinfo_is_refused() {
+    worker().block_on(async {
+        let (_listening, resolved) = far_end().await;
+        let c = literal_connector();
+        let need = config_targeted_need("settings.url");
+        for credentialed in [
+            format!("http://user:secret@{resolved}/v1/traces"),
+            format!("user@{resolved}"),
+        ] {
+            assert_eq!(
+                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed), None),
+                Err(ConnError::Refused),
+                "{credentialed}"
+            );
+            assert_eq!(
+                DeclaredConns::declared(&c, OWNER, NeedId(0)),
+                Some(Err(ConnError::Refused))
+            );
+            assert!(c
+                .open(
+                    OWNER,
+                    NeedId(0),
+                    &OpenDesc {
+                        target: &resolved,
+                        ..OpenDesc::default()
+                    },
+                )
+                .is_err());
+        }
+        assert_eq!(
+            DeclaredConns::declare(
+                &c,
+                OWNER,
+                NeedId(0),
+                &need,
+                Some(&format!("http://{resolved}/v1/traces")),
+                None
+            ),
+            Ok(())
+        );
+    });
+}
+
+// ── a need whose target is a PROGRAM ───────────────────────────────────────────────────────────
+
+/// An outbound program need over the test transport, in `class`, with `auth`.
+fn program_need(class: u32, auth: &str) -> ReadNeed {
+    ReadNeed {
+        egress_class: class,
+        auth: auth.to_owned(),
+        ..config_targeted_need("settings.server")
+    }
+}
+
+fn program(command: &str, args: &[&str], env: &[(&str, &str)]) -> busbar_contract::conn::Program {
+    busbar_contract::conn::Program {
+        command: command.to_owned(),
+        args: args.iter().map(|a| (*a).to_owned()).collect(),
+        env: env
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect(),
+    }
+}
+
+/// Read until `want` bytes arrived (or the connection ended), driving it by the caller's reads.
+async fn read_all(c: &Connector, id: ConnId, want: usize) -> Vec<u8> {
+    let mut got = Vec::new();
+    let mut buf = [0_u8; 256];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while got.len() < want && std::time::Instant::now() < deadline {
+        match c.read(OWNER, id, 7, &mut buf) {
+            Ok(piece) => {
+                got.extend_from_slice(&buf[..piece.len]);
+                if piece.kind == PieceKind::Completion {
+                    break;
+                }
+            }
+            Err(ConnError::Pending) => {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            Err(e) => panic!("the read failed: {e:?}"),
+        }
+    }
+    got
+}
+
+/// Whether process `pid` is gone (or a zombie: it ended and waits to be reaped).
+fn gone(pid: &str) -> bool {
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .expect("ps runs");
+    let stat = String::from_utf8_lossy(&out.stdout);
+    stat.trim().is_empty() || stat.trim().starts_with('Z')
+}
+
+/// RED (ARCHITECT round 4 (e)): a need whose `target_from` resolved to a PROGRAM is carried in the
+/// operator-infrastructure class: every open spawns it (no shell, only its stated environment),
+/// its stdin and stdout are the connection, and the connector kills it on close.
+#[test]
+fn a_program_need_spawns_its_program_and_kills_it_on_close() {
+    use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    worker().block_on(async {
+        let c = literal_connector();
+        let need = program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "");
+        // The program states its process id, then echoes what it is sent.
+        let echo = program("/bin/sh", &["-c", "echo $$; exec /bin/cat"], &[]);
+        assert_eq!(
+            DeclaredConns::declare_program(&c, OWNER, NeedId(0), &need, &echo),
+            Ok(())
+        );
+        assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(0)), Some(Ok(())));
+        let id = c
+            .open(OWNER, NeedId(0), &OpenDesc::default())
+            .expect("the program opens");
+        let first = read_all(&c, id, 1).await;
+        let line = String::from_utf8(first).unwrap();
+        let pid = line.lines().next().expect("the pid line").trim().to_owned();
+        assert!(pid.parse::<u32>().is_ok(), "{line:?}");
+        assert_eq!(c.write(OWNER, id, b"hello\n", true, false), Ok(6));
+        let echoed = read_all(&c, id, 6).await;
+        assert_eq!(echoed, b"hello\n");
+        assert!(!gone(&pid), "the program runs while the connection is open");
+        c.close(OWNER, id).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !gone(&pid) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(gone(&pid), "the connector killed the program on close");
+    });
+}
+
+/// The program's environment is ONLY what its settings state: nothing of the host's leaks in.
+#[test]
+fn a_program_inherits_no_environment_but_its_own() {
+    use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    worker().block_on(async {
+        let c = literal_connector();
+        let need = program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "");
+        let env = program("/usr/bin/env", &[], &[("DECLARED", "yes")]);
+        DeclaredConns::declare_program(&c, OWNER, NeedId(0), &need, &env).unwrap();
+        let id = c.open(OWNER, NeedId(0), &OpenDesc::default()).unwrap();
+        let out = read_all(&c, id, usize::MAX).await;
+        assert_eq!(String::from_utf8(out).unwrap(), "DECLARED=yes\n");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: a program need is refused outside the operator-infrastructure class, with an auth style,
+/// over an unserved scheme, or for a command that is not an absolute path — and an open on it that
+/// names a target of its own is refused: it spawns its program and nothing else.
+#[test]
+fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
+    use busbar_contract::abi::host::conn::connector::{
+        EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    };
+    worker().block_on(async {
+        let c = literal_connector();
+        let cat = program("/bin/cat", &[], &[]);
+        let refused = |need: &ReadNeed, p: &busbar_contract::conn::Program| {
+            assert_eq!(
+                DeclaredConns::declare_program(&c, OWNER, NeedId(0), need, p),
+                Err(ConnError::Refused)
+            );
+            assert!(
+                c.open(OWNER, NeedId(0), &OpenDesc::default()).is_err(),
+                "nothing opens on a refused need"
+            );
+        };
+        refused(&program_need(EGRESS_OPEN_WEB, ""), &cat);
+        refused(&program_need(crate::DEFAULT_CLASS, ""), &cat);
+        refused(
+            &program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "bearer"),
+            &cat,
+        );
+        refused(
+            &ReadNeed {
+                transport: "nowhere".into(),
+                ..program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "")
+            },
+            &cat,
+        );
+        refused(
+            &program_need(EGRESS_OPERATOR_INFRASTRUCTURE, ""),
+            &program("cat", &[], &[]),
+        );
+        let need = program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "");
+        DeclaredConns::declare_program(&c, OWNER, NeedId(0), &need, &cat).unwrap();
+        assert_eq!(
+            c.open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: "127.0.0.1:1",
+                    ..OpenDesc::default()
+                }
+            ),
+            Err(ConnError::Refused),
+            "a program need dials no target of the open's"
+        );
+    });
+}
+
+/// THE TRANSPORT PIN (the transport pin, ARCHITECT 2026-10-03): a destination's sealed trust
+/// anchors are enforced by the connector itself on every connection to it, against a real TLS far
+/// end on loopback whose certificate chains to a test root the connector trusts.
+mod transport_pin {
+    use std::sync::{Arc, Mutex};
+
+    use busbar_contract::transport::trust::{key_pin, Anchors, ClientIdentity, EgressTrust};
+    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair, PublicKeyData as _};
+
+    use super::*;
+    use crate::registry::{Entry, Transports};
+    use crate::support::{worker, TestDoor};
+
+    /// A test root and the leaves it issues.
+    struct Pki {
+        ca_der: Vec<u8>,
+        issuer: Issuer<'static, KeyPair>,
+    }
+
+    /// One issued leaf: its DER, its key's PKCS#8 DER, and its key's pin, taken off the key pair
+    /// itself (never off the certificate the connector walks).
+    struct Leaf {
+        der: Vec<u8>,
+        key: Vec<u8>,
+        pin: String,
+    }
+
+    impl Pki {
+        fn new() -> Self {
+            let kp = KeyPair::generate().unwrap();
+            let mut params = CertificateParams::new(Vec::new()).unwrap();
+            params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            let ca = params.self_signed(&kp).unwrap();
+            Self {
+                ca_der: ca.der().to_vec(),
+                issuer: Issuer::new(params, kp),
+            }
+        }
+
+        fn leaf(&self, name: &str) -> Leaf {
+            let kp = KeyPair::generate().unwrap();
+            let cert = CertificateParams::new(vec![name.to_string()])
+                .unwrap()
+                .signed_by(&kp, &self.issuer)
+                .unwrap();
+            Leaf {
+                der: cert.der().to_vec(),
+                key: kp.serialize_der(),
+                pin: key_pin(&kp.subject_public_key_info()),
+            }
+        }
+    }
+
+    /// What the far end saw on one connection: the bytes it read, and whether the dialler
+    /// presented a client certificate.
+    type Seen = Arc<Mutex<Option<(Vec<u8>, bool)>>>;
+
+    /// A TLS far end on loopback serving `leaf` (asking for a client certificate under `pki`'s
+    /// root when `mutual`), answering `answer` once it read five bytes: its address, and what it
+    /// saw.
+    async fn tls_far_end(pki: &Pki, leaf: &Leaf, mutual: bool) -> (String, Seen) {
+        crate::tls::install_crypto_provider();
+        let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
+        let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
+        let builder = rustls::ServerConfig::builder();
+        let config = if mutual {
+            let mut roots = rustls::RootCertStore::empty();
+            roots
+                .add(rustls_pki_types::CertificateDer::from(pki.ca_der.clone()))
+                .unwrap();
+            let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+                .build()
+                .unwrap();
+            builder.with_client_cert_verifier(verifier)
+        } else {
+            builder.with_no_client_auth()
+        }
+        .with_single_cert(chain, key)
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let (l, far) = far_end().await;
+        let seen: Seen = Arc::default();
+        let saw = Arc::clone(&seen);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((s, _)) = l.accept().await {
+                let (acceptor, saw) = (acceptor.clone(), Arc::clone(&saw));
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(s).await else {
+                        return;
+                    };
+                    let presented = tls.get_ref().1.peer_certificates().is_some();
+                    let mut buf = [0_u8; 5];
+                    let got = tls.read_exact(&mut buf).await.map(|_| buf.to_vec());
+                    *saw.lock().unwrap() = Some((got.unwrap_or_default(), presented));
+                    let _ = tls.write_all(b"answer").await;
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+        (far, seen)
+    }
+
+    /// A connector serving a door whose targets ask for connection security under the name
+    /// `localhost` (`sec`) and a plaintext one (`plain`), trusting `pki`'s root, with `need` 0
+    /// declared over `sec` and need 1 over `plain`.
+    fn trusting(pki: &Pki) -> Connector {
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::identity("plain")),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "sec",
+                    &["sec"],
+                    &[],
+                    crate::support::Knobs {
+                        secure_name: Some("localhost"),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let tls = crate::tls::client::build_client_config(&EgressTrust {
+            extra_anchors: vec![pki.ca_der.clone()],
+            ..EgressTrust::default()
+        })
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            loopback_literals(),
+            Some(Arc::new(tls)),
+            Arc::new(|_| {}),
+        );
+        c.declare_over(OWNER, NeedId(0), "sec").unwrap();
+        c.declare_over(OWNER, NeedId(1), "plain").unwrap();
+        c
+    }
+
+    /// Open need 0 at `far` with a five-byte opening body and read to its first answer: the
+    /// connection, and the read's answer.
+    async fn exchange(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
+        let desc = OpenDesc {
+            target: far,
+            body: b"first",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Ok(p) => return (id, Ok(buf[..p.len].to_vec())),
+                Err(e) => return (id, Err(e)),
+            }
+        }
+    }
+
+    /// A far end serving the pinned key is reached, and the connection's facts carry the key it
+    /// observed; no client identity was presented (none is sealed).
+    #[test]
+    fn a_far_end_serving_the_pinned_key_is_reached_and_its_key_is_the_facts() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let leaf = pki.leaf("localhost");
+            let (far, seen) = tls_far_end(&pki, &leaf, false).await;
+            let c = trusting(&pki);
+            let anchors = Anchors {
+                key_pin: Some(format!(" {} ", leaf.pin)),
+                client_identity: None,
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            let (id, got) = exchange(&c, &far).await;
+            assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
+            let facts = c.facts(OWNER, id).expect("facts");
+            assert_eq!(facts.peer_key_pin.as_deref(), Some(leaf.pin.as_str()));
+            assert!(!facts.client_identity);
+            assert_eq!(
+                seen.lock().unwrap().clone(),
+                Some((b"first".to_vec(), false))
+            );
+        });
+    }
+
+    /// RED: a far end serving ANOTHER key (a valid chain, the right name) is refused after its
+    /// handshake and before a request byte is written; the facts still name the key it served.
+    #[test]
+    fn a_far_end_serving_another_key_is_refused_before_any_request_byte() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let pinned = pki.leaf("localhost");
+            let served = pki.leaf("localhost");
+            let (far, seen) = tls_far_end(&pki, &served, false).await;
+            let c = trusting(&pki);
+            let anchors = Anchors {
+                key_pin: Some(pinned.pin.clone()),
+                client_identity: None,
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            let (id, got) = exchange(&c, &far).await;
+            assert_eq!(got, Err(ConnError::Refused));
+            let facts = c.facts(OWNER, id).expect("facts after the refusal");
+            assert_eq!(facts.peer_key_pin.as_deref(), Some(served.pin.as_str()));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert!(
+                seen.lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_none_or(|(bytes, _)| bytes.is_empty()),
+                "no request byte reached the far end"
+            );
+            c.close(OWNER, id).expect("closed");
+            // Unsealed, the same far end is reached again: the refusal was the anchors'.
+            c.anchor(OWNER, NeedId(0), &far, &Anchors::default())
+                .expect("unsealed");
+            let (_, got) = exchange(&c, &far).await;
+            assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
+        });
+    }
+
+    /// A far end that asks for a client certificate is presented the sealed identity, and the
+    /// facts say so; without one sealed, the same far end refuses the handshake.
+    #[test]
+    fn a_sealed_client_identity_is_presented_to_a_mutual_far_end() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let server = pki.leaf("localhost");
+            let client = pki.leaf("busbar.client");
+            let (far, seen) = tls_far_end(&pki, &server, true).await;
+            let c = trusting(&pki);
+            let (_, got) = exchange(&c, &far).await;
+            assert!(got.is_err(), "no identity: the mutual far end refuses");
+            let anchors = Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![client.der.clone()],
+                    private_key: client.key.clone().into(),
+                }),
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            let (id, got) = exchange(&c, &far).await;
+            assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
+            let facts = c.facts(OWNER, id).expect("facts");
+            assert!(facts.client_identity, "the identity was presented");
+            assert_eq!(facts.peer_key_pin.as_deref(), Some(server.pin.as_str()));
+            assert_eq!(
+                seen.lock().unwrap().clone(),
+                Some((b"first".to_vec(), true))
+            );
+        });
+    }
+
+    /// RED: a pinned destination reached without connection security has no key to hold, and is
+    /// refused before any dial; an identity that does not parse refuses the seal.
+    #[test]
+    fn a_pinned_destination_over_plaintext_is_refused_and_a_bad_identity_refuses_the_seal() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let leaf = pki.leaf("localhost");
+            let (_listening, far) = far_end().await;
+            let c = trusting(&pki);
+            let anchors = Anchors {
+                key_pin: Some(leaf.pin.clone()),
+                client_identity: None,
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(1), &far, &anchors).expect("sealed");
+            assert_eq!(open_in(&c, 1, &far), Err(ConnError::Refused));
+            let bad = Anchors {
+                key_pin: None,
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![leaf.der.clone()],
+                    private_key: b"not a key".to_vec().into(),
+                }),
+                private_reach: false,
+            };
+            assert_eq!(
+                c.anchor(OWNER, NeedId(0), &far, &bad),
+                Err(ConnError::Refused)
+            );
+            // A need the owner never declared seals nothing.
+            assert_eq!(
+                c.anchor(OTHER, NeedId(0), &far, &anchors),
+                Err(ConnError::Refused)
+            );
+        });
+    }
+}
+
+/// RED (SEAM-4f/4k, a registration's private reach, `abi::plane::TRUST_PRIVATE_REACH`, sealed per
+/// REGISTRATION): under a strict guard (private refused, nothing allowlisted) a provider-class
+/// need's open that names a registration holding a reach dials that registration's private
+/// destination, as an allowlist entry naming it would; a second registration at the SAME
+/// authority without one, an open naming no registration, and another need are all still refused
+/// (the class is unchanged); a reach never admits a cloud-metadata address; and a seal without it
+/// takes it back.
+#[test]
+fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let strict = Arc::new(crate::LiteralsOnly(crate::guard::Guard::default()));
+        let c = Connector::serving(view, strict, None, Arc::new(|_| {}));
+        for need in [0, 1] {
+            c.declare_need(
+                OWNER,
+                NeedId(need),
+                "bytes",
+                busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+            )
+            .expect("a served scheme declares");
+        }
+        let open_as = |need: u32, target: &str, member: &str| {
+            c.open(
+                OWNER,
+                NeedId(need),
+                &OpenDesc {
+                    target,
+                    member,
+                    ..OpenDesc::default()
+                },
+            )
+        };
+        assert_eq!(
+            open_as(0, &far, "inside"),
+            Err(ConnError::Refused),
+            "no reach yet"
+        );
+        c.seal_reach(OWNER, NeedId(0), "inside", &far, true)
+            .expect("sealed");
+        c.seal_reach(OWNER, NeedId(0), "outside", &far, false)
+            .expect("nothing to seal");
+        let id = open_as(0, &far, "inside").expect("the registration's own open reaches");
+        c.close(OWNER, id).unwrap();
+        assert_eq!(
+            open_as(0, &far, "outside"),
+            Err(ConnError::Refused),
+            "another registration at the same authority holds no reach"
+        );
+        assert_eq!(
+            open_as(0, &far, ""),
+            Err(ConnError::Refused),
+            "an open naming no registration holds none"
+        );
+        assert_eq!(
+            open_as(1, &far, "inside"),
+            Err(ConnError::Refused),
+            "the reach is the need's alone"
+        );
+        let metadata = "169.254.169.254:80";
+        c.seal_reach(OWNER, NeedId(0), "inside", metadata, true)
+            .expect("sealed");
+        assert_eq!(
+            open_as(0, metadata, "inside"),
+            Err(ConnError::Refused),
+            "a reach never admits cloud metadata"
+        );
+        c.seal_reach(OWNER, NeedId(0), "inside", &far, true)
+            .expect("sealed");
+        c.seal_reach(OWNER, NeedId(0), "inside", &far, false)
+            .expect("dropped");
+        assert_eq!(
+            open_as(0, &far, "inside"),
+            Err(ConnError::Refused),
+            "a seal without the reach takes it back"
+        );
+        assert!(
+            Connector::new()
+                .seal_reach(OWNER, NeedId(0), "inside", &far, true)
+                .is_err(),
+            "an undeclared need holds no reach"
+        );
+    });
+}
+
+// ── THE ADMISSION OF A PINNED TARGET: the verdict `need_admit` reports is the one every dial meets ──
+
+/// A connector serving `plain` (an entry that locates a target in plaintext) and `sec` (one that
+/// locates it over connection security), admitting literals as [`literal_connector`] does.
+fn plain_and_secure_connector() -> Connector {
+    let view = Transports::new(vec![
+        Entry {
+            door: Arc::new(TestDoor::identity("plain")),
+            alpn: Vec::new(),
+        },
+        Entry {
+            door: Arc::new(TestDoor::new(
+                "sec",
+                &["sec"],
+                &[],
+                crate::support::Knobs {
+                    secure_name: Some("localhost"),
+                    ..crate::support::Knobs::default()
+                },
+            )),
+            alpn: Vec::new(),
+        },
+    ])
+    .unwrap();
+    Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}))
+}
+
+/// A config-targeted outbound need over `transport` in `class`.
+fn pinned_need(transport: &str, class: u32) -> ReadNeed {
+    let mut need = config_targeted_need("settings.url");
+    need.transport = transport.to_owned();
+    need.egress_class = class;
+    need
+}
+
+/// RED (1.5.5: a request-log webhook target that is not `https://` was refused when the sink was
+/// configured): an open-web need pinned to a plaintext target is REFUSED at declare, so the host's
+/// admission (`need_admit`) answers what every dial of it already met, and the need opens nothing.
+/// It holds for a literal and for a name alike: the scheme rule needs no resolution.
+#[test]
+fn an_open_web_need_pinned_to_a_plaintext_target_is_refused_at_declare() {
+    let c = plain_and_secure_connector();
+    let need = pinned_need("plain", EGRESS_OPEN_WEB);
+    for (id, target) in [(0, "127.0.0.1:4318"), (1, "localhost:4318")] {
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(id), &need, Some(target), None),
+            Err(ConnError::Refused),
+            "{target}"
+        );
+        assert_eq!(
+            DeclaredConns::declared(&c, OWNER, NeedId(id)),
+            Some(Err(ConnError::Refused)),
+            "{target}: the admission the plugin reads"
+        );
+        assert!(c
+            .open(
+                OWNER,
+                NeedId(id),
+                &OpenDesc {
+                    target,
+                    ..OpenDesc::default()
+                },
+            )
+            .is_err());
+    }
+}
+
+/// GREEN: the admission judges only what the dial would. An open-web need pinned to a secure target
+/// on an allowlisted literal is admitted, as is a name (no resolution happens at declare; its
+/// addresses stay the dial's), and a default-class need pinned to a plaintext loopback literal
+/// (operator infrastructure, the class a configured target is judged in) is admitted too.
+#[test]
+fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
+    let c = plain_and_secure_connector();
+    let secure = pinned_need("sec", EGRESS_OPEN_WEB);
+    assert_eq!(
+        DeclaredConns::declare(&c, OWNER, NeedId(0), &secure, Some("10.1.2.3:443"), None),
+        Ok(())
+    );
+    assert_eq!(
+        DeclaredConns::declare(
+            &c,
+            OWNER,
+            NeedId(1),
+            &secure,
+            Some("collector.example:443"),
+            None
+        ),
+        Ok(())
+    );
+    let plain = pinned_need("plain", crate::DEFAULT_CLASS);
+    assert_eq!(
+        DeclaredConns::declare(&c, OWNER, NeedId(2), &plain, Some("127.0.0.1:4318"), None),
+        Ok(())
+    );
+    assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(2)), Some(Ok(())));
+}
+
+/// RED: a pinned literal the guard refuses (a cloud metadata address, which no class and no
+/// configured target lifts) is refused at declare, over connection security too.
+#[test]
+fn a_pinned_metadata_literal_is_refused_at_declare() {
+    let c = plain_and_secure_connector();
+    let need = pinned_need("sec", EGRESS_OPEN_WEB);
+    assert_eq!(
+        DeclaredConns::declare(
+            &c,
+            OWNER,
+            NeedId(0),
+            &need,
+            Some("169.254.169.254:443"),
+            None
+        ),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(
+        DeclaredConns::declared(&c, OWNER, NeedId(0)),
+        Some(Err(ConnError::Refused))
+    );
+}

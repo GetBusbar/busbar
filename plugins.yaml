@@ -2,21 +2,23 @@
 #
 # Every system that needs the plugin list derives it from this file rather than carrying its own
 # copy: scripts/plugin-registry-check.sh (the CI gate that keeps the consumers honest),
-# dev-gate.yml's sibling checkouts, scripts/release-check.sh's per-plugin phases, and the release
+# qa-gate.yml's sibling checkouts, scripts/release-check.sh's per-plugin phases, and the release
 # tooling. Found necessary during the 1.5.0 ship: the list was duplicated across at least five
 # places, and the copies had drifted — the "full plugin gate" silently covered 6 of 8 plugins.
 #
 # Adding a plugin = adding ONE entry here. The registry gate then goes RED until every consumer
-# actually covers it (dev-gate checkout present, release-check phase present, release published) —
+# actually covers it (qa-gate checkout present, release-check phase present, release published) —
 # coverage is enforced, not remembered.
 #
 # Fields:
 #   repo:          GitHub repo under GetBusbar/
-#   kind:          store | auth | hook | secret  (busbar plugin kind; selects the C ABI)
+#   kind:          store | secret | auth | hook | export | plane | transport  (busbar plugin kind;
+#                  selects the C ABI; every kind ships as its own repo)
 #   alias:         short config name (busbar-plugin-pack --alias)
-#   crate:         the plugin cdylib's Cargo package name
-#   version_line:  the semver line current releases live on (headroom's 1.x is pre-plugin
-#                  1.4.2-era and must never be retagged)
+#   crate:         the plugin cdylib's Cargo package name: <repo>-plugin beside the <repo> logic
+#                  crate, or <repo> itself for a single-crate plugin (owner ruling: repo = crate =
+#                  artifact prefix; the registry gate refuses any other name)
+#   version_line:  the semver line current releases live on
 #   service:       real backend container its tests need (mysql|postgres|valkey|vault|none)
 #   release_gate:  required — release-check.sh hard-fails if the sibling checkout is missing
 #                  optional — release-check.sh loud-skips (still red in the registry gate's
@@ -45,15 +47,134 @@
 #                  adaptation to the unreleased core this gate exists to test. qa-gate-run.sh's
 #                  `siblings` documents the five legs that cost. Set this only for a repo that
 #                  departs from that model; it falls back to the default branch when `dev` is absent.
+#
+# Fleet fields (read by `busbar-release plugin sync` (GetBusbar/busbar-release), the ONE generator: it
+# renders every plugin repo's CI caller, toolchain, lint config, deny.toml, workspace dependency table,
+# LICENSE and README header from this file, its template/ and .github/fleet/deps.toml, and checks the repos
+# against the render). Defaults in brackets:
+#   manifest_name  the signed manifest's `name` (the plugin's identity at load) [repo; the
+#                  registry gate refuses any other value]
+#   asset_prefix   the published tarball's filename prefix [repo; likewise]
+#   description    the manifest's one-line description (also the README header's)
+#   ci_service     the backend plugin-ci.yml's Linux leg runs against [service]
+#   busbar_checkout  the end-to-end tests build and boot a real busbar from a checkout at the pin [false]
+#   macos_test     the macOS leg's test command [cargo test --workspace --locked]
+#   extra_test     an extra Linux test command [none]
+#   lib_only       build the cdylib with --lib [false]
+#   needs_prompt / needs_user   a hook's declared intent, signed into the manifest [none]
+#   declares       the plugin's `declares` file (repo-relative), signed into the manifest; it states
+#                  the contract-ABI range the plugin supports (`contract_abi`), which the loader
+#                  refuses a plugin outside of
+#   bundle_image / bundle_env   a runnable container bundle the consumer verification boots [none]
+#   keep           repo-specific paths the render does not own: a file under .github/, or a top-level
+#                  path (`Dockerfile`, `docker/`). Every repo is a TWIN (owner, 2026-09-30): anything
+#                  under .github/ or at the top level that is not rendered, not one of the two crate
+#                  dirs (`<kind>-<name>/`, `<kind>-<name>-plugin/`), not Cargo.lock and not kept is drift
+#   gitignore      lines the rendered .gitignore carries after the fleet's own [none]
+#   notice         lines the rendered NOTICE carries after the fleet's own (a third-party credit) [none]
+#   former_names   the signed manifest `name`s this plugin's earlier releases carried, which it still
+#                  answers to [none]: a 1.5.5 config naming `module: busbar-webrequest` resolves to the
+#                  1.6.0 `busbar-hook-webrequest` (ARCHITECT ruling: 1.5.5 configs load unchanged).
+#                  Signed into the manifest (busbar-plugin-pack --former-name, plugin-release.yml's
+#                  `former_names` input, the rendered release.yml); a LINKED row answers them too
+#                  through its `former.<alias>` row of the root legacy table. `cargo xtask plugin-gates
+#                  former-names` is RED on an entry whose repo shipped a 1.5.5-era release under a
+#                  manifest name (`legacy:`'s `name_1_5_5.<repo>` rows) that this list does not carry
+#   retired        the `module:` spellings this plugin answered to in an earlier release and no longer
+#                  does [none]. Each is a `retired.<kind>.<word>` row of the root legacy table
+#                  (`[package.metadata.busbar.legacy]` in crates/busbar/Cargo.toml), beside the plugin's
+#                  `manifest.<alias>` / `asset.<alias>` rows; boot refuses a retired spelling and
+#                  `busbar --migrate-config` rewrites it to the alias (BUSBAR-1.6.0.md §2)
+#   pending_crate  the repo is registered (it exists, it is rendered and seeded by `busbar-release plugin sync`) but its
+#                  crates have not moved in yet [false]. It stays OUT of plugin-registry-check.sh's
+#                  --list feed, so qa-gate and release-check neither clone nor test it; `busbar-release plugin check`
+#                  skips its crate-shaped checks with that reason (the whole repo while it is empty) and
+#                  goes RED once both crate dirs are in and the flag is stale. Drop it at the move.
+#   lang           rust | c [rust]. `c`: the plugin is C sources in `<kind>-<name>/`, built from
+#                  busbar_plugin.h alone (decision #84); its CI is plugin-ci.yml's C path (build from the
+#                  header at the pin, `dropped_conformance` through load_dropped, RED arm kept), its
+#                  callers pass `plugin_lang: c`, and it has no Cargo workspace. It stays OUT of the
+#                  --list feed (release-check's suite loop runs `cargo test` in a sibling checkout).
+
+# THE FLEET POLICY (`busbar-release plugin check` holds every repo to it; `busbar-release plugin sync` applies it).
+#   busbar_ref  ONE pin for every plugin repo: each repo's `.busbar-ref` is exactly this, every
+#               manifest's busbar git rev is its sha, and the rendered callers take busbar's reusable
+#               workflows at that sha. Moving it is one edit here, then `busbar-release plugin sync`.
+#   name_pattern  every plugin repo is `busbar-<kind>-<name>`, and <kind> is the entry's kind.
+#   branches    exactly these branches; dev, qa and main carry the repo ruleset `busbar-release plugin sync` applies (PR + plugin-ci green), main and
+#               qa are locked by the org ruleset "release branches: main + qa (owner say-so only)"; any
+#               other branch is stale.
+fleet:
+  busbar_ref: "7356bbfb6baeb0e9245a59dc74f8b4bfadb2c5a4 1.6.0"
+  name_pattern: "^busbar-(store|secret|auth|hook|export|plane|transport)-[a-z0-9]+(-[a-z0-9]+)*$"
+  branches: [dev, qa, main]
 
 # Org repos that MATCH the plugin naming pattern but are deliberately NOT plugins (the reverse
 # check in plugin-registry-check.sh flags any pattern-matching org repo that is neither listed
 # above nor excluded here — so a new plugin repo cannot exist unregistered).
 excluded_repos:
   - hindsight-hook # design docs only — no crate, no workflows, private
+  - busbar-hook-headroom # removed from busbar and the site (owner ruling 2026-09-30) — the repo is kept, not a busbar plugin
+
+# THE ROOT LEGACY TABLE'S FROZEN TEXT (BUSBAR-1.6.0.md §2): operator-visible
+# 1.5.5 text naming plugins that are not in the build, which `busbar --migrate-config` and the boot
+# refusals print. These rows, then every entry's `retired:` rows, are the root legacy table,
+# `[package.metadata.busbar.legacy]` (crates/busbar/Cargo.toml), which the composition root hands to the
+# kernel; crates/busbar/src/root/tests/legacy.rs renders it from here and is red on drift (printing the
+# table to paste). Every row cites the v1.5.5 tag line it is verbatim from; a value never changes.
+legacy:
+  # v1.5.5:crates/busbar/src/config/migrate.rs:267 (the legacy marker's "is Valkey — artifact")
+  renamed_display: Valkey
+  # The retired backend's own driver URL scheme, which the rewrite leaves untouched.
+  # v1.5.5:crates/busbar/src/config/migrate.rs:2075
+  retired_url_scheme: redis
+  # 1.4.x governance database. v1.5.5:crates/busbar/src/config/migrate.rs:817, :824, :828
+  gov14_module: sqlite
+  # v1.5.5:crates/busbar/src/config/migrate.rs:30 (DEFAULT_GOVERNANCE_DB_1_4)
+  gov14_db_path: busbar-governance.db
+  # v1.5.5:crates/busbar/src/config/migrate.rs:836
+  gov14_busy_timeout_key: sqlite_busy_timeout_ms
+  # v1.5.5:crates/busbar/src/config/migrate.rs:843
+  gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
+  # v1.5.5:crates/busbar/src/config_validate/mod.rs:1656 (the empty `store.module` refusal)
+  module_examples: "sqlite | postgres | valkey"
+  # v1.5.5:crates/busbar/src/export/projection.rs:134 (`module_streams`: the streams each built-in exporter carried, `module:stream`)
+  export_module_streams: "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
+  # v1.5.5:crates/busbar/src/config/mod.rs:3359 (`EXPORT_MODULES`: the order the unknown-exporter refusal lists the built-in exporters in)
+  export_modules: "prometheus | request-log-webhook | request-log-file | otlp"
+  # v1.5.5:crates/busbar/src/config/migrate_export.rs:245 (the instance `observability.otlp_url` folds into)
+  export_trace_instance: "traces"
+  # v1.5.5:crates/busbar/src/config/migrate_export.rs:249 (the module `observability.otlp_url` folds into)
+  export_trace_module: "otlp"
+  # v1.5.5:crates/busbar/src/config/migrate_export.rs:31 (`EXPORT_TYPE_KEY_TO_INSTANCE_NAME`: type key, instance name, module)
+  export_type_keys: "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
+  # THE 1.5.5 MANIFEST NAMES (`name_1_5_5.<repo>`): the signed manifest `name` each plugin repo's
+  # release beside busbar v1.5.5 carried, read off that release's published tarball (manifest.json
+  # `name`; every asset is digest-pinned in testing/shadow-oracle/plugin-digests.tsv). An entry whose
+  # repo has a row here declares that name in its `former_names:` (`cargo xtask plugin-gates
+  # former-names`). Built into 1.5.5 and so without a 1.5.5 manifest, and needing no row:
+  # admin-tokens, env, file, prometheus, request-log-file, request-log-webhook, otlp.
+  # GetBusbar/busbar-hook-webrequest release v1.0.6: busbar-webrequest-1.0.6-<target>.tar.gz manifest.json name
+  name_1_5_5.busbar-hook-webrequest: busbar-webrequest
+  # GetBusbar/busbar-secret-vault release v1.0.5: busbar-hashicorp-vault-1.0.5-<target>.tar.gz manifest.json name
+  name_1_5_5.busbar-secret-vault: busbar-hashicorp-vault
+  # GetBusbar/busbar-store-mysql release v1.0.6: busbar-store-mysql-1.0.6-<target>.tar.gz manifest.json name
+  name_1_5_5.busbar-store-mysql: busbar-store-mysql-plugin
+  # GetBusbar/busbar-store-postgres release v1.0.6: busbar-store-postgres-1.0.6-<target>.tar.gz manifest.json name
+  name_1_5_5.busbar-store-postgres: busbar-store-postgres-plugin
+  # GetBusbar/busbar-store-sqlite release v1.0.6: busbar-store-sqlite-1.0.6-<target>.tar.gz manifest.json name
+  name_1_5_5.busbar-store-sqlite: busbar-store-sqlite-plugin
+  # GetBusbar/busbar-store-valkey release v1.0.7: busbar-store-valkey-1.0.7-<target>.tar.gz manifest.json name
+  name_1_5_5.busbar-store-valkey: busbar-store-valkey-plugin
+  # GetBusbar/busbar-auth-oidc release v1.0.6: busbar-auth-oidc-plugin-1.0.6-<target>.tar.gz manifest.json name
+  name_1_5_5.busbar-auth-oidc: busbar-auth-oidc-plugin
+  # GetBusbar/busbar-auth-github release v1.0.3: busbar-auth-github-plugin-1.0.3-<target>.tar.gz manifest.json name
+  name_1_5_5.busbar-auth-github: busbar-auth-github-plugin
+  # GetBusbar/busbar-auth-ldap release v1.0.3: busbar-auth-ldap-plugin-1.0.3-<target>.tar.gz manifest.json name
+  name_1_5_5.busbar-auth-ldap: busbar-auth-ldap-plugin
 
 plugins:
-  - repo: store-mysql
+  - repo: busbar-store-mysql
     kind: store
     alias: mysql
     crate: busbar-store-mysql-plugin
@@ -61,7 +182,13 @@ plugins:
     service: mysql
     release_gate: optional
     gate: suite
-  - repo: store-postgres
+    description: "First-party signed kind:store plugin cdylib: the MySQL/MariaDB backend for busbar's durable governance store, exported over the store C ABI. Drop the built library into the plugins folder and set store.module: mysql to share virtual keys, budgets, and usage across a fleet of busbar nodes."
+    ci_service: "mysql"
+    busbar_checkout: true
+    macos_test: "env -u CI cargo test --locked -p busbar-store-mysql-plugin --test conformance -- --skip the_linked_and_the_dropped_in_door_are_one_plugin --skip red_a_moved_crossing_count_is_refused --skip red_a_failing_ready_refuses_the_boot"
+    declares: "store-mysql/declares.json"
+    former_names: [busbar-store-mysql-plugin]
+  - repo: busbar-store-postgres
     kind: store
     alias: postgres
     crate: busbar-store-postgres-plugin
@@ -69,7 +196,11 @@ plugins:
     service: postgres
     release_gate: required
     gate: suite
-  - repo: store-sqlite
+    description: "First-party signed kind:store plugin cdylib: the Postgres backend for busbar's durable governance store, exported over the store C ABI. Drop the built library into the plugins folder and set store.module: postgres to share virtual keys, budgets, and usage across a fleet of busbar nodes."
+    busbar_checkout: true
+    declares: "store-postgres/declares.json"
+    former_names: [busbar-store-postgres-plugin]
+  - repo: busbar-store-sqlite
     kind: store
     alias: sqlite
     crate: busbar-store-sqlite-plugin
@@ -77,7 +208,13 @@ plugins:
     service: none
     release_gate: optional
     gate: binary
-  - repo: store-valkey
+    description: "First-party signed kind:store plugin cdylib: the SQLite governance store packaged as a droppable busbar plugin exporting the store C ABI. Drop the built library into the plugins folder and set store.module: sqlite."
+    busbar_checkout: true
+    declares: "store-sqlite/declares.json"
+    former_names: [busbar-store-sqlite-plugin]
+    gitignore:
+      - "busbar-governance.db*"
+  - repo: busbar-store-valkey
     kind: store
     alias: valkey
     crate: busbar-store-valkey-plugin
@@ -85,15 +222,56 @@ plugins:
     service: valkey
     release_gate: optional
     gate: suite
-  - repo: hashicorp-vault
+    description: "The Valkey store as a droppable busbar plugin: a cdylib exporting the store C ABI. Drop it in the plugins folder and set store.module: valkey. One Valkey behind a fleet of busbar nodes means shared virtual keys, budgets, usage, and audit across the cluster."
+    busbar_checkout: true
+    extra_test: "cargo test -p busbar-store-valkey --locked -- --ignored --test-threads=1"
+    declares: "store-valkey/declares.json"
+    former_names: [busbar-store-valkey-plugin]
+    # The 1.5.3 rename. v1.5.5:crates/busbar/src/config/mod.rs:1057 (RETIRED_STORE_MODULES_1_5_3)
+    retired: [redis, busbar-store-redis, busbar-store-redis-plugin]
+  - repo: busbar-secret-vault
     kind: secret
     alias: vault
-    crate: busbar-hashicorp-vault-plugin
+    crate: busbar-secret-vault-plugin
     version_line: "1.0"
     service: vault
     release_gate: optional
     gate: suite
-  - repo: auth-oidc
+    description: "The HashiCorp Vault secret backend as a droppable busbar plugin: a cdylib exporting the secret C ABI. Drop it in the plugins folder, add vault to secrets: with its addr/token settings, and reference secrets as { module: vault, settings: { path: \"kv/data/name#field\" } }."
+    macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip roundtrip_against_live_vault"
+    declares: "secret-vault/declares.json"
+    former_names: [busbar-hashicorp-vault]
+  - repo: busbar-secret-env
+    kind: secret
+    alias: env
+    crate: busbar-secret-env-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:secret plugin cdylib: the environment-variable secret source (`{ env: VAR }`), packaged as a droppable busbar plugin. busbar links it in the default build; a build without it resolves `{ env: VAR }` only when the signed tarball is dropped into plugins/."
+    macos_test: "cargo test --workspace --locked --lib --test conformance"
+    declares: "secret-env/declares.json"
+    # Moved out of busbar into its own repo (THE DESIGN, "Plugins": env and file secrets are ordinary
+    # plugins, linked in the default build; ARCHITECT 2026-10-02 WIRE-SECRET). busbar LINKS it at a
+    # pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: busbar-secret-file
+    kind: secret
+    alias: file
+    crate: busbar-secret-file-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:secret plugin cdylib: the file secret source (`{ file: /path }`), packaged as a droppable busbar plugin. busbar links it in the default build; a build without it resolves `{ file: /path }` only when the signed tarball is dropped into plugins/."
+    macos_test: "cargo test --workspace --locked --lib --test conformance"
+    declares: "secret-file/declares.json"
+    # Moved out of busbar into its own repo (THE DESIGN, "Plugins": env and file secrets are ordinary
+    # plugins, linked in the default build; ARCHITECT 2026-10-02 WIRE-SECRET). busbar LINKS it at a
+    # pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: busbar-auth-oidc
     kind: auth
     alias: oidc
     crate: busbar-auth-oidc-plugin
@@ -101,7 +279,14 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-  - repo: auth-github
+    description: "The OIDC auth module as a droppable busbar plugin: a cdylib exporting the auth C ABI. Drop it in the plugins folder and add oidc to auth.chain with its settings nested under it."
+    busbar_checkout: true
+    macos_test: "cargo test --workspace --locked --lib --test conformance"
+    declares: "auth-oidc/declares.json"
+    former_names: [busbar-auth-oidc-plugin]
+    keep:
+      - .github/workflows/entra-live-check.yml
+  - repo: busbar-auth-github
     kind: auth
     alias: github
     crate: busbar-auth-github-plugin
@@ -109,7 +294,13 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-  - repo: auth-ldap
+    description: "The GitHub-OAuth login module as a droppable busbar plugin: a cdylib exporting the auth C ABI (login-capable). Drop it in the plugins folder and add github to auth.chain with a browser_login block (the core injects client_secret)."
+    ci_service: "wiremock"
+    busbar_checkout: true
+    macos_test: "cargo test --workspace --locked --lib --test conformance"
+    declares: "busbar-auth-github/declares.json"
+    former_names: [busbar-auth-github-plugin]
+  - repo: busbar-auth-ldap
     kind: auth
     alias: ldap
     crate: busbar-auth-ldap-plugin
@@ -117,24 +308,354 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-  - repo: webrequest-hook
+    description: "The AD/LDAP auth module as a droppable busbar plugin: a cdylib exporting the auth C ABI. Drop it in the plugins folder, define it once under identity-providers.<name> (module: ldap, settings: url, bind_dn_template, base_dn, group_attr) and reference that name from auth.chain."
+    ci_service: "openldap"
+    busbar_checkout: true
+    # macOS runners have no OpenLDAP: the published suite's two arms that log in against the live
+    # directory (through the suite's StartTLS front) run on the linux leg, against the service.
+    macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip the_linked_and_the_dropped_in_door_are_one_plugin --skip red_a_moved_crossing_count_is_refused"
+    declares: "auth-ldap/declares.json"
+    former_names: [busbar-auth-ldap-plugin]
+  - repo: busbar-auth-admin-tokens
+    kind: auth
+    alias: admin-tokens
+    crate: busbar-auth-admin-tokens-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:auth plugin cdylib: the built-in admin-tokens admin-auth module (the single operator admin token, compared in constant time), packaged as a droppable busbar plugin."
+    declares: "auth-admin-tokens/declares.json"
+    # The built-in operator admin-auth module, moved out of busbar (owner move-out ruling; ARCHITECT
+    # 2026-09-27). busbar LINKS it at a pinned rev (busbar-kernel, feature `auth-admin-tokens`); its
+    # first release is cut with the core version that pins it.
+    released: false
+  - repo: busbar-hook-webrequest
     kind: hook
     alias: webrequest
-    crate: busbar-webrequest-hook-plugin
+    crate: busbar-hook-webrequest-plugin
     version_line: "1.0"
     service: none
     release_gate: optional
     gate: smoke
-  - repo: headroom-hook
-    kind: hook
-    alias: headroom
-    crate: headroom-hook
-    version_line: "2.0"
+    description: "A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/notify/configure/describe/status) to an operator-configured URL and returns the capped JSON reply: a busbar first-party kind:hook plugin (dlopen cdylib)."
+    busbar_checkout: true
+    needs_prompt: "rw"
+    needs_user: "ro"
+    declares: "declares.json"
+    former_names: [busbar-webrequest]
+  - repo: busbar-export-file
+    kind: export
+    alias: request-log-file
+    crate: busbar-export-file-plugin
+    version_line: "1.0"
     service: none
     release_gate: optional
-    gate: smoke
-    # No `checkout_ref` here any more, and that is not a loosening. This entry used to pin `dev`
-    # because it carries the sibling-relative-path dependency fix the gate's build needs; `dev` is
-    # now the DEFAULT for every sibling (see the field doc above), so the pin said nothing the
-    # default does not. Restating it would imply the OTHER nine were deliberately on `main`, which
-    # is precisely the reading that cost qa-gate run 31059945604 five legs.
+    gate: suite
+    description: "First-party signed kind:export plugin cdylib: the request-log FILE sink (module: request-log-file), packaged as a droppable busbar plugin. Drop the signed tarball into plugins/ and name it from an export.<name>.module: request-log-file block."
+    declares: "export-file/declares.json"
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: busbar-export-otlp
+    kind: export
+    alias: otlp
+    crate: busbar-export-otlp-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:export plugin cdylib: the OTLP trace export sink (module: otlp), packaged as a droppable busbar plugin. Drop the signed tarball into plugins/ and name it from an export.<name>.module: otlp block."
+    declares: "export-otlp/declares.json"
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: busbar-export-prometheus
+    kind: export
+    alias: prometheus
+    crate: busbar-export-prometheus-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:export plugin cdylib: the prometheus export sink (module: prometheus), packaged as a droppable busbar plugin. Drop the signed tarball into plugins/ and name it from an export.<name>.module: prometheus block."
+    declares: "export-prometheus/declares.json"
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: busbar-export-webhook
+    kind: export
+    alias: request-log-webhook
+    crate: busbar-export-webhook-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:export plugin cdylib: the request-log WEBHOOK sink (module: request-log-webhook), packaged as a droppable busbar plugin. Drop the signed tarball into plugins/ and name it from an export.<name>.module: request-log-webhook block."
+    declares: "export-webhook/declares.json"
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: busbar-transport-tcp
+    kind: transport
+    alias: tcp
+    crate: busbar-transport-tcp-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:transport plugin cdylib: the tcp transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/ and the boot seal folds the wire beside the linked ones."
+    declares: "transport-tcp/declares.json"
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: busbar-plane-llm
+    kind: plane
+    alias: llm
+    crate: busbar-plane-llm-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:plane plugin cdylib: the llm plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "plane-llm/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-plane-mcp
+    kind: plane
+    alias: mcp
+    crate: busbar-plane-mcp-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:plane plugin cdylib: the mcp plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "plane-mcp/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-plane-a2a
+    kind: plane
+    alias: a2a
+    crate: busbar-plane-a2a-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:plane plugin cdylib: the a2a plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "plane-a2a/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-plane-streaming
+    kind: plane
+    alias: streaming
+    crate: busbar-plane-streaming-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:plane plugin cdylib: the streaming plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "plane-streaming/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-plane-decisions
+    kind: plane
+    alias: decisions
+    crate: busbar-plane-decisions-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:plane plugin cdylib: the decisions plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "plane-decisions/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-transport-http
+    kind: transport
+    alias: http
+    crate: busbar-transport-http-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:transport plugin cdylib: the http transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "transport-http/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-transport-ws
+    kind: transport
+    alias: ws
+    crate: busbar-transport-ws-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:transport plugin cdylib: the ws transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "transport-ws/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-transport-stdio
+    kind: transport
+    alias: stdio
+    crate: busbar-transport-stdio-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:transport plugin cdylib: the stdio transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "transport-stdio/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-transport-grpc
+    kind: transport
+    alias: grpc
+    crate: busbar-transport-grpc-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:transport plugin cdylib: the grpc transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "transport-grpc/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-transport-webrtc
+    kind: transport
+    alias: webrtc
+    crate: busbar-transport-webrtc-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:transport plugin cdylib: the webrtc transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "transport-webrtc/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-hook-ranking
+    kind: hook
+    alias: ranking
+    crate: busbar-hook-ranking-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:hook plugin cdylib: the ranking hook, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "hook-ranking/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-store-memory
+    kind: store
+    alias: memory
+    crate: busbar-store-memory-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:store plugin cdylib: the in-memory store, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "store-memory/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-auth-webhook-signature
+    kind: auth
+    alias: webhook-signature
+    crate: busbar-auth-webhook-signature-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:auth plugin cdylib: the webhook-signature auth module, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "auth-webhook-signature/declares.json"
+    # THE DESIGN §9's auth roster; the repo is created by `busbar-release plugin new auth
+    # webhook-signature` (PLUGIN-TEMPLATE, ARCHITECT 2026-10-02) with the template's skeleton crates;
+    # its door lands in it. First release with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-auth-header
+    kind: auth
+    alias: header
+    crate: busbar-auth-header-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:auth plugin cdylib: the header auth, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "auth-header/declares.json"
+    # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
+    # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
+    # repo). Created by `busbar-release plugin new auth header`; busbar's in-tree crate moves in with its
+    # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
+    # busbar links the logic crate on its `auths` axis at a pinned rev. First release with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-auth-sigv4
+    kind: auth
+    alias: sigv4
+    crate: busbar-auth-sigv4-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:auth plugin cdylib: the sigv4 auth, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "auth-sigv4/declares.json"
+    # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
+    # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
+    # repo). Created by `busbar-release plugin new auth sigv4`; busbar's in-tree crate moves in with its
+    # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
+    # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own SigV4, outbound and inbound, is deleted). First release with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-auth-oauth
+    kind: auth
+    alias: oauth
+    crate: busbar-auth-oauth-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:auth plugin cdylib: the oauth auth, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "auth-oauth/declares.json"
+    # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
+    # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
+    # repo). Created by `busbar-release plugin new auth oauth`; busbar's in-tree crate moves in with its
+    # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
+    # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own minting copies are deleted). First release with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-secret-c
+    kind: secret
+    alias: c
+    crate: busbar-secret-c
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:secret plugin library, written in C from busbar_plugin.h alone: the c secret, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "secret-c/declares.json"
+    # Decision #84's witness (OWNER RULING 2026-10-02: "just another plugin"): a plugin built from
+    # the generated C header alone, created by `busbar-release plugin new secret c --lang c` and
+    # tested by itself through plugin-ci.yml's C path at its pin. First release with the core
+    # version that pins it.
+    released: false
+    lang: c

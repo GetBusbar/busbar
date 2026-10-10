@@ -1,0 +1,283 @@
+{
+  "about": "The LLM dialects' shared wire helpers over one input set, as the host's originals answer: the plane's own copies must answer the same.",
+  "bearer_error_code": [
+    {
+      "code": "invalid_api_key",
+      "type": "authentication_error"
+    },
+    {
+      "code": "insufficient_quota",
+      "type": "insufficient_quota"
+    },
+    {
+      "code": null,
+      "type": "invalid_request_error"
+    },
+    {
+      "code": null,
+      "type": "permission_error"
+    },
+    {
+      "code": null,
+      "type": "not_found_error"
+    },
+    {
+      "code": null,
+      "type": "rate_limit_error"
+    },
+    {
+      "code": null,
+      "type": "server_error"
+    },
+    {
+      "code": null,
+      "type": "api_error"
+    },
+    {
+      "code": null,
+      "type": "overloaded_error"
+    },
+    {
+      "code": null,
+      "type": "something_else"
+    },
+    {
+      "code": null,
+      "type": ""
+    }
+  ],
+  "constants": {
+    "BASE62_ALPHABET": "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "BASE62_REJECT_THRESHOLD": 248,
+    "CODE_INVALID_API_KEY": "invalid_api_key",
+    "HDR_AUTHORIZATION": "authorization",
+    "MESSAGE_NAMES_SENTINEL": "__busbar_message_names",
+    "PROVIDER_SIGNAL_CONTEXT_LENGTH": "context_length",
+    "SSE_DONE_FRAME": "data: [DONE]\n\n",
+    "SSE_DONE_SENTINEL": "[DONE]"
+  },
+  "context_length_prose_scan": [
+    {
+      "context_length": true,
+      "text": "this model's maximum context length is 8192 tokens"
+    },
+    {
+      "context_length": true,
+      "text": "context length exceeded"
+    },
+    {
+      "context_length": true,
+      "text": "please reduce the length of the messages"
+    },
+    {
+      "context_length": true,
+      "text": "input exceeds the context window"
+    },
+    {
+      "context_length": true,
+      "text": "prompt exceeds token limit"
+    },
+    {
+      "context_length": false,
+      "text": "maximum number of tokens allowed per day"
+    },
+    {
+      "context_length": false,
+      "text": "exceeds quota"
+    },
+    {
+      "context_length": false,
+      "text": ""
+    }
+  ],
+  "rewrite_text_pairs": [
+    {
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "pairs": [
+        [
+          "user",
+          "hi"
+        ]
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "type": "text"
+            }
+          ],
+          "role": "assistant"
+        }
+      ],
+      "pairs": null
+    },
+    {
+      "messages": [],
+      "pairs": []
+    }
+  ],
+  "sse_frames": [
+    {
+      "event_type": "message_start",
+      "frame_hex": "6576656e743a206d6573736167655f73746172740a646174613a207b2261223a317d0a0a",
+      "parsed": [
+        "message_start",
+        "{\"a\":1}"
+      ]
+    },
+    {
+      "event_type": "",
+      "frame_hex": "646174613a207b2261223a317d0a0a",
+      "parsed": [
+        "",
+        "{\"a\":1}"
+      ]
+    },
+    {
+      "event_type": "b",
+      "frame_hex": "6576656e743a20610d0a6576656e743a20620d0a646174613a20780d0a646174613a20790d0a0d0a",
+      "parsed": [
+        "b",
+        "x\ny"
+      ]
+    },
+    {
+      "event_type": "message_start",
+      "frame_hex": "6576656e743a206d6573736167655f73746172740d646174613a207b7d0d0d",
+      "parsed": [
+        "message_start",
+        "{}"
+      ]
+    },
+    {
+      "event_type": "only",
+      "frame_hex": "6576656e743a206f6e6c790a0a",
+      "parsed": null
+    },
+    {
+      "event_type": "",
+      "frame_hex": "646174613a6e6f2d73706163650a0a",
+      "parsed": [
+        "",
+        "no-space"
+      ]
+    },
+    {
+      "event_type": "",
+      "frame_hex": "646174613a205b444f4e455d0a0a",
+      "parsed": [
+        "",
+        "[DONE]"
+      ]
+    },
+    {
+      "event_type": "",
+      "frame_hex": "fffe",
+      "parsed": null
+    },
+    {
+      "event_type": "",
+      "frame_hex": "",
+      "parsed": null
+    }
+  ],
+  "strip_top_level_usage_member": [
+    {
+      "json": "{\"id\":\"x\",\"usage\":null,\"choices\":[]}",
+      "stripped": "{\"id\":\"x\",\"choices\":[]}"
+    },
+    {
+      "json": "{\"usage\":{\"prompt_tokens\":1},\"id\":\"x\"}",
+      "stripped": "{\"id\":\"x\"}"
+    },
+    {
+      "json": "{\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"\\\"usage\\\":null\"}}],\"usage\":null}",
+      "stripped": "{\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"\\\"usage\\\":null\"}}]}"
+    },
+    {
+      "json": "{\"a\":{\"usage\":null}}",
+      "stripped": null
+    },
+    {
+      "json": "{\"usage\":1,\"usage\":2}",
+      "stripped": null
+    },
+    {
+      "json": "  { \"usage\" : [1,{\"x\":\"}\"}] , \"k\":true }",
+      "stripped": "  {  \"k\":true }"
+    },
+    {
+      "json": "[1,2]",
+      "stripped": null
+    },
+    {
+      "json": "{\"unterminated\":",
+      "stripped": null
+    },
+    {
+      "json": "",
+      "stripped": null
+    }
+  ],
+  "tool_arguments_to_string": [
+    {
+      "arguments": "{not json",
+      "input": "{not json"
+    },
+    {
+      "arguments": "{\"a\":[1,2,{\"b\":\"c\"}]}",
+      "input": {
+        "a": [
+          1,
+          2,
+          {
+            "b": "c"
+          }
+        ]
+      }
+    },
+    {
+      "arguments": "null",
+      "input": null
+    },
+    {
+      "arguments": "1.5",
+      "input": 1.5
+    }
+  ],
+  "write_sse_frame": [
+    {
+      "data": {
+        "usage": {
+          "output_tokens": 3
+        }
+      },
+      "event_type": "message_delta",
+      "frame_hex": "6576656e743a206d6573736167655f64656c74610a646174613a207b227573616765223a7b226f75747075745f746f6b656e73223a337d7d0a0a"
+    },
+    {
+      "data": {
+        "choices": [],
+        "s": "é \"q\""
+      },
+      "event_type": "",
+      "frame_hex": "646174613a207b2263686f69636573223a5b5d2c2273223a22c3a9205c22715c22227d0a0a"
+    },
+    {
+      "data": null,
+      "event_type": "x",
+      "frame_hex": "6576656e743a20780a646174613a206e756c6c0a0a"
+    }
+  ]
+}

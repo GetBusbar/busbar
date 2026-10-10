@@ -1,0 +1,34 @@
+# busbar-unit-auth — the authenticate step, as a unit.
+#
+# WHY IT DEPENDS ON NOTHING BUT THE CAPABILITY CRATE. A unit answers exactly one step and is handed
+# exactly one token for the length of one call. If it could name the kernel it could reach past the
+# token; if it could name a transport it would grow a second opinion about what a credential is. So
+# the only edge out of this crate is `busbar-caps`, which is where the token and the answer type
+# live. Everything the chain needs from the outside — the key verifier, the revocation set —
+# arrives as a trait the caller implements.
+[package]
+name = "busbar-kernel-identity"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The authenticate step as a unit: the credential chain, the challenge, and the protocol-claim ladder."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_kernel_identity"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+# The caller reference (`caller_ref`): its HKDF/HMAC on the one crypto backend, rendered as hex.
+hex = { workspace = true }
+ring = { workspace = true }
+
+[features]
+# The operator credential's kind-neutral stand-in words (`operator::STAND_IN`) for a TEST build that
+# has no composition root to hand the root legacy table's words in. busbar-kernel's own tests and
+# its `test-support` feature turn it on; a shipped build never does.
+stand-in = []
+
+# Temporary standalone root while the workspace members land in parallel.

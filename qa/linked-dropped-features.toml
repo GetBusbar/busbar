@@ -1,0 +1,21 @@
+# linked-dropped-features: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).
+# A plugin linked into the binary is built with the features its dropped-in cdylib
+# is built with. Each row is a plugin manifest and one feature that differs today.
+# Strike a row in the commit that drains it; never add one.
+# Regenerate with `cargo xtask gate linked-dropped-features --write`.
+
+[[finding]]
+rule = "linked-dropped-features:unified-deps"
+file = "crates/busbar-transport-stdio/Cargo.toml"
+item = "tokio/net"
+
+[[finding]]
+rule = "linked-dropped-features:unified-deps"
+file = "crates/busbar-transport-stdio/Cargo.toml"
+item = "tokio/rt-multi-thread"
+
+[[finding]]
+rule = "linked-dropped-features:unified-deps"
+file = "crates/busbar-transport-stdio/Cargo.toml"
+item = "tokio/signal"
+

@@ -1,0 +1,38 @@
+[package]
+name = "busbar"
+version = "0.0.0"
+
+[[bin]]
+name = "busbar"
+path = "src/main.rs"
+
+# The plugin crates' directories — where the gate looks for a plane's own `linked` entry module.
+[dependencies]
+busbar-llm = { path = "../busbar-llm", optional = true }
+# mcp's row links `busbar-plane-mcp`, the crate the real roster's mcp row names since P3 DEL-MCP
+# (ARCHITECT 2026-10-05). It stays a RIDER plane here: this fixture exercises the rider, Units-export
+# and fold mechanics on a sample plane, and the door arm is exercised on the decisions plane.
+busbar-plane-mcp = { path = "../busbar-plane-mcp", optional = true }
+busbar-a2a = { path = "../busbar-a2a", optional = true }
+busbar-voice = { path = "../busbar-voice", optional = true }
+busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
+
+# The linked table the real root's build script turns into the `LINKED` table `main.rs` includes.
+[package.metadata.busbar.linked]
+proto-llm = "busbar-llm"
+plane-mcp = "busbar-plane-mcp"
+plane-a2a = "busbar-a2a"
+plane-streaming = "busbar-voice"
+plane-decisions = "busbar-plane-decisions"
+
+# The axes each linked crate registers on; the plane axis is what `register_planes()` folds.
+[package.metadata.busbar.linked-axes]
+proto-llm = "plane protocols"
+plane-mcp = "plane protocols diagnostics"
+plane-a2a = "plane diagnostics"
+plane-streaming = "plane diagnostics"
+plane-decisions = "plane"
+
+# The decisions plane's entry module is in the composition root, as on the real tree.
+[package.metadata.busbar.linked-entry]
+busbar-plane-decisions = "crate::root::plane_decisions"

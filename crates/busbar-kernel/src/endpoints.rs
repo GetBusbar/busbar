@@ -1,0 +1,326 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+use std::sync::Arc;
+
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Extension, Json,
+};
+use serde_json::{json, Value};
+
+use crate::governance::{pool_allowed, GovCtx};
+use busbar_kernel::store::now;
+
+use crate::state::App;
+
+/// `/stats` reports the pool/lane topology. It is governance-scoped: a virtual key minted with an
+/// `allowed_scopes` list must NOT learn the full topology of pools and lanes it can never reach
+/// (info disclosure — a restricted tenant could otherwise enumerate every model, provider, and pool
+/// the gateway fronts). We FILTER the reported pools to those the caller may target, and the
+/// reported lanes to the union of lanes reachable via those visible pools.
+///
+/// Only an OMITTED list is a wildcard, exactly as the frozen `VirtualKey::scope_allowed` reads it: a
+/// key whose `allowed_scopes` is `None`, or no key at all (`key: None` — governance disabled, or the
+/// operator/admin default `GovCtx`), sees the full topology. An explicit EMPTY list is no scopes at
+/// all — never "all pools" — so such a key sees no pool and no lane.
+pub async fn stats(
+    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    Extension(gov): Extension<GovCtx>,
+) -> Response {
+    let t = now();
+
+    // Decide which pools are visible to this caller. No key => no restriction (the visible set is
+    // every pool). A key whose `allowed_scopes` was omitted at mint (None) admits every pool via
+    // `pool_allowed`, so an unrestricted key also sees everything; an explicit list (even empty)
+    // restricts.
+    let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
+
+    let visible_pool = |name: &str| -> bool {
+        match gov.key.as_ref() {
+            Some(key) => pool_allowed(key, name),
+            None => true,
+        }
+    };
+
+    // BTreeMap (not HashMap) so the serialized `pools` object has a stable, sorted key order —
+    // `app.pools` is a HashMap whose iteration order is randomized per process, which otherwise
+    // makes `/stats` output non-reproducible across restarts. Lane order is already deterministic
+    // (index order, and lane indices are now built sorted-by-model — see main.rs).
+    let view = app.engine_tables_view();
+    let pools: std::collections::BTreeMap<&str, Vec<&str>> = view
+        .pools()
+        .into_iter()
+        .filter(|(n, _)| visible_pool(n))
+        .map(|(n, members)| {
+            (
+                n,
+                members
+                    .iter()
+                    .map(|&idx| view.lane_view(idx).map(|l| l.model).unwrap_or(""))
+                    .collect(),
+            )
+        })
+        .collect();
+
+    // Lanes are filtered to those reachable via a visible pool ONLY when the caller is restricted.
+    // An unrestricted caller (no key, or a key with no `allowed_scopes` list) sees every lane — any
+    // lane not bound to a pool included. A restricted caller sees only the lanes its
+    // visible pools route to; lanes outside those pools (and pool-less lanes) stay hidden, so the
+    // lane list can't be used to enumerate the topology the pool filter just removed.
+    let lane_visible = |i: usize| -> bool {
+        if !restricted {
+            return true;
+        }
+        view.pools()
+            .iter()
+            .filter(|(n, _)| visible_pool(n))
+            .any(|(_, members)| members.contains(&i))
+    };
+
+    let lanes: Vec<Value> = (0..view.lane_count())
+        .filter(|&i| lane_visible(i))
+        .map(|i| {
+            let snap = app.store.snapshot(i, t);
+            // `availability` is rendered from the SHARED `Unavailable` taxonomy (the same
+            // `classify` routing dispatches on), so /stats can't drift from behaviour. `Ok` → the
+            // sentinel "available"; `Err` → the variant name + its `recovery_hint_ms` (null when the
+            // reason has no self-recovery, e.g. dead/budget). `breaker_state` and `at_capacity` remain
+            // SEPARATE, orthogonal axes: a saturated Open lane shows breaker_state="open" AND
+            // at_capacity=true AND availability="breaker_open", so operators can see why its recovery
+            // probe (which needs a dispatch it can't win) never fires — not collapsed into one string.
+            let (availability, recovery_hint_ms) = match snap.availability {
+                Ok(()) => ("available", Value::Null),
+                Err(reason) => (
+                    reason.variant_name(),
+                    match reason.recovery_hint_ms(t) {
+                        Some(ms) => json!(ms),
+                        None => Value::Null,
+                    },
+                ),
+            };
+            let breaker_state = match snap.breaker_state {
+                busbar_kernel::store::BreakerState::Closed => "closed",
+                busbar_kernel::store::BreakerState::Open { .. } => "open",
+                busbar_kernel::store::BreakerState::HalfOpen => "half_open",
+            };
+            json!({
+                "model": snap.model,
+                "provider": snap.provider,
+                "max_concurrent": snap.max_concurrent,
+                // Alias of `max_concurrent` under a shorter field name (the lane's concurrency
+                // limit). Kept alongside `max_concurrent` for backward compatibility: an unbounded
+                // lane reports the semaphore's max permit count, a bounded lane its configured cap.
+                "limit": snap.max_concurrent,
+                "inflight": snap.inflight,
+                "free_slots": snap.free_slots,
+                // Bug 1 capacity signal: a saturated lane is now externally distinguishable from an
+                // idle or unbounded one. `available` is the free permit count for a bounded lane, or
+                // the string "unbounded" when `max_concurrent` is omitted; `at_capacity` is true iff
+                // a bounded lane is at its limit (available == 0) and is therefore shedding/spilling.
+                "available": match snap.available {
+                    Some(n) => json!(n),
+                    None => json!("unbounded"),
+                },
+                "at_capacity": snap.at_capacity,
+                // Unified availability signal + independent breaker axis.
+                "availability": availability,
+                "recovery_hint_ms": recovery_hint_ms,
+                "breaker_state": breaker_state,
+                "ok": snap.ok,
+                "err": snap.err,
+                "client_fault": snap.client_fault,
+                "usable": snap.usable,
+                "dead": snap.dead,
+                "dead_reason": snap.dead_reason,
+                "cooldown_remaining_s": snap.cooldown_remaining_s,
+                "streak": snap.streak,
+                "budget": snap.budget,
+            })
+        })
+        .collect();
+
+    Json(json!({ "pools": pools, "lanes": lanes })).into_response()
+}
+
+/// `GET /v1/models` — a list-models discovery surface. This is often the first call an SDK
+/// (`client.models.list()`) or a self-hosted UI makes to populate a
+/// model picker, so busbar answers it with every name a client can put in a request body:
+/// configured model entries AND pool names (a pool is a routable model from the client's
+/// point of view).
+///
+/// Governance-scoped with the same rules as `/stats`: a virtual key with an `allowed_scopes` list
+/// (even an empty one) sees only its visible pools and the models reachable through them —
+/// the model list must not leak topology the pool ACL hides.
+pub async fn list_models(
+    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    Extension(gov): Extension<GovCtx>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    list_models_dialect(app, gov, &headers, false)
+}
+
+/// `GET /v1beta/models` — the same list under a second dialect's discovery path.
+pub async fn list_models_v1beta(
+    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    Extension(gov): Extension<GovCtx>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    list_models_dialect(app, gov, &headers, true)
+}
+
+/// Multiple registered dialects can put their list-models endpoint on the same noun, each with its
+/// own envelope: this build's dialects may share `GET /v1/models` outright, and a dialect may
+/// instead list at `GET /v1(beta)/models`. Primary (POST) surfaces are disjoint by path, so this is
+/// the one place busbar disambiguates callers by PROTOCOL FINGERPRINT instead: each dialect
+/// declares its own fingerprint headers (see `ProtocolDecl::list_models_fingerprint_headers`) or
+/// relies on the `/v1beta` path convention, the first dialect whose fingerprint matches renders the
+/// envelope, and anything left unmatched falls to the registry's residual default dialect.
+///
+/// The list itself is the same data in every dialect: the names a client may put in a
+/// request body. No privileged protocol - the data is one, the rendering is the caller's.
+fn list_models_dialect(
+    app: Arc<App>,
+    gov: GovCtx,
+    headers: &axum::http::HeaderMap,
+    gemini_path: bool,
+) -> Response {
+    let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
+    // The routing tables through the NEUTRAL read seam (money-path Phase 3-4 B): discovery reads the
+    // pool label space, the direct-model index, and pool membership as neutral projections, so
+    // `/v1/models` names no `Lane`/`WeightedLane` and need not relocate with the tables. `pools()`
+    // allocates its projection, so bind it once — the visible-name build reads membership repeatedly.
+    let view = app.engine_tables_view();
+    let pools = view.pools();
+
+    let visible_pool = |name: &str| -> bool {
+        match gov.key.as_ref() {
+            Some(key) => pool_allowed(key, name),
+            None => true,
+        }
+    };
+
+    // Stable order: pools first, then direct models, each sorted — SDK consumers and UIs
+    // render this list directly, and a deterministic order diffs cleanly in tests and docs.
+    let mut names: Vec<&str> = pools
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| visible_pool(n))
+        .collect();
+    names.sort_unstable();
+
+    let mut models: Vec<&str> = view
+        .model_indices()
+        .into_iter()
+        .filter_map(|(m, idx)| {
+            if !restricted {
+                return Some(m);
+            }
+            // A restricted key sees a direct model only if a visible pool routes to its lane
+            // (mirrors the /stats lane rule; pool-less lanes stay hidden from restricted keys).
+            let routed = pools
+                .iter()
+                .filter(|(n, _)| visible_pool(n))
+                .any(|(_, member_idxs)| member_idxs.contains(&idx));
+            routed.then_some(m)
+        })
+        .collect();
+    models.sort_unstable();
+    names.extend(models);
+    names.dedup();
+    // Each plane generation's listed names, appended after the routing tables' own, scope-filtered
+    // as the plane admits them; a name already listed is not listed twice. None listed: the list,
+    // and so the bytes, are unchanged.
+    for name in crate::plane::door::listed(&app.plane_slots, gov.key.as_deref()) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+
+    // Neutral dispatch: core resolves WHICH dialect answers from the request fingerprint, then hands
+    // that dialect's declaration the visible name list and lets IT shape the envelope. Each
+    // registered dialect's list-models envelope shape is plugin-specific and lives with that
+    // dialect behind `ProtocolDecl::models_list_envelope` — core names no dialect's envelope shape
+    // here.
+    // The dialect selection is the generic detection fold, restricted to the fingerprint headers
+    // each dialect declares (plus the `/v1beta` path convention) and defaulting to the registry's
+    // residual dialect — so core spells NO dialect name here.
+    // Restricting the sniff to those declared fingerprint headers (rather than the full router
+    // headers) keeps this byte-identical to prior behavior: an incidental, unrelated header on a
+    // models-list GET must not steer the envelope, only the fingerprints the dialects actually
+    // declare here do.
+    let mut sniff = axum::http::HeaderMap::new();
+    for &name in crate::proto::known_protocols() {
+        let Some(decl) = crate::proto::decl_for(name) else {
+            continue;
+        };
+        for &hn in decl.list_models_fingerprint_headers {
+            if let Some(v) = headers.get(hn) {
+                sniff.insert(hn, v.clone());
+            }
+        }
+    }
+    let sniff_path = if gemini_path {
+        "/v1beta/models/"
+    } else {
+        "/v1/models"
+    };
+    let dialect = crate::proto::detect_protocol(sniff_path, &sniff)
+        .or_else(crate::proto::residual_default_dialect);
+    match dialect
+        .and_then(crate::proto::decl_for)
+        .and_then(|d| d.models_list_envelope)
+    {
+        Some(build) => Json(build(&names)).into_response(),
+        // Unreachable while any dialect declaring this builder is installed (they always declare
+        // it). If a build ships without one, `/v1/models` still resolves but has no dialect to
+        // render for — an empty JSON object names no protocol and leaks no shape.
+        None => Json(json!({})).into_response(),
+    }
+}
+
+pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
+    let t = now();
+    // Side-effect-FREE readiness check: `/healthz` is unauthenticated and high-frequency (k8s
+    // liveness, load balancers), so it must NOT transition expired-Open lanes to HalfOpen or steal
+    // the single-flight recovery probe from organic traffic — use the non-mutating `is_ready_any_cell`,
+    // not the mutating `usable`. `is_ready_any_cell` (not the default-cell-only `is_ready`) checks the
+    // default cell AND every per-pool cell: production routes through NAMED pools whose per-pool cells
+    // trip independently, so reading only the default `""` cell would report 200 while every pool lane
+    // is circuit-broken (the default cell never moves for pool-routed traffic).
+    //
+    // A deployment with NO model lane (ARCHITECT 2026-10-07 K5-H1 ruling, PB-43, pending OWNER
+    // signature) is ready iff a configured plane OPENED this generation; with no plane configured it
+    // stays unready, as 1.5.5. A deployment with lanes is judged by its lanes alone.
+    let lanes = app.engine_tables_view().lane_count();
+    let ready = if lanes == 0 {
+        a_plane_opened(&app)
+    } else {
+        (0..lanes).any(|i| app.store.is_ready_any_cell(i, t))
+    };
+    if ready {
+        (StatusCode::OK, "ok").into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "no usable lanes").into_response()
+    }
+}
+
+/// Whether any configured non-model plane's generation opened: its runtime slot was built for this
+/// generation and, for a door plane, its open answered ([`crate::plane::door::opened`]).
+fn a_plane_opened(app: &crate::state::App) -> bool {
+    crate::plane::registry::plane_decls()
+        .iter()
+        .filter(|d| !d.fallback && app.plane_configured(d))
+        .filter_map(|d| app.plane_slot(d.key))
+        .any(|slot| crate::plane::door::opened(slot.as_ref()))
+}
+
+// `tests` (the `/stats`/`/v1/models` topology suite) MOVED to `tests/endpoints_cross_plane.rs` (the
+// "fix the 38" pass after the A6/HostCtx dev-dependency-cycle cleanup): every test in it builds real
+// lanes/pools, which only materialize through the REAL `busbar_llm` plane's `build_runtime`/`viewer`
+// — an integration-test target, never this `#[cfg(test)]` unit module. See that file's header.
+
+#[cfg(test)]
+#[path = "tests/endpoints_doc_tests.rs"]
+mod endpoints_doc_tests;

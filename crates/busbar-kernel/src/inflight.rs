@@ -1,0 +1,868 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Every live unit on this node, and every live session beside it.
+//!
+//! The in-flight table is the node's own memory of what it is doing. One slot per unit, and the
+//! slot owns four things: the unit's HOLD CELL, the count of children spending against it, its
+//! CANCELLATION token, and how far through the steps it got. The Teller borrows the slot while it
+//! runs; exactly three callers ever take the hold out of it — the exit path, a child's end into its
+//! parent's hold (both in the teller), and the tick sweep — and the cell makes whichever arrives
+//! second lose.
+//!
+//! It is also the node's admission control on itself. A unit enters the table before it does
+//! anything, and if the table is full it does not enter — whatever its origin. The heartbeat sweep
+//! and the administrative listener never occupy a counted slot: a node whose table is full still
+//! runs the thing that empties it and still answers the operator asking why. (No share of the table
+//! is held back for open sessions: that reserve was never enabled by any caller, and item 280
+//! deleted it rather than leave a money claim nothing honoured.)
+//!
+//! The session table next to it holds what a session is: whether its principal is cached, which
+//! unit owns each direction, how many upstreams it has dialled, and when it last did anything that
+//! was not a tick.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use busbar_contract::caps::{
+    Admittance, Grant, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId, StepName,
+    UnitKey,
+};
+
+use busbar_contract::Framing;
+
+use crate::pump::{Direction, StreamId};
+use crate::slice::LeaseCell;
+use crate::teller::Kernel;
+use crate::Millis;
+
+/// How many upstream connections one session may pair with.
+///
+/// The contract's number, not a second copy of it: a plane declares its legs against the contract's
+/// ceiling and the kernel admits pairings against this one, and two constants that drift apart are
+/// a plane refused at a number it was never told about.
+pub use busbar_contract::MAX_SESSION_UPSTREAMS;
+
+/// How many shards the tables are split across. A power of two so the shard is a mask, not a
+/// division, and large enough that a busy node's units rarely queue behind each other.
+pub const SHARDS: usize = 16;
+
+/// The step a unit has reached, or the fact that something took its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Progression {
+    /// Running, at this step.
+    At(StepName),
+    /// A later unit superseded this one before it reached the meter.
+    Superseded,
+    /// The unit has ended.
+    Ended,
+}
+
+// Out-of-range sentinels for the atomic byte `StepState` packs `Progression` into. `StepName::ALL`
+// is short, so any index at or above 200 is unreachable as a real step and the two values below
+// can never collide with one; that gap is what lets `StepState` hold three states in one byte
+// with no separate discriminant.
+const SUPERSEDED: u8 = 200;
+const ENDED: u8 = 201;
+
+// The index a real step is packed at: its position in `StepName::ALL`. Falls back to zero for a
+// step the table does not know, which only matters if `StepName::ALL` and its callers ever drift.
+fn step_index(step: StepName) -> u8 {
+    StepName::ALL
+        .iter()
+        .position(|s| *s == step)
+        .unwrap_or_default() as u8
+}
+
+// The inverse of `step_index`: only ever called with a byte this module itself produced, so the
+// index is always in range.
+fn step_at(index: u8) -> StepName {
+    StepName::ALL[index as usize]
+}
+
+/// How far through the loop a unit is, as one atomic byte.
+///
+/// It is an atomic and not a field behind a lock because the interrupt path has to change it from
+/// another task, once, without waiting for the unit that owns it.
+#[derive(Debug)]
+pub struct StepState(std::sync::atomic::AtomicU8);
+
+impl StepState {
+    /// A unit that has just arrived.
+    pub fn new() -> Self {
+        StepState(std::sync::atomic::AtomicU8::new(step_index(
+            StepName::Arrival,
+        )))
+    }
+
+    /// Where it is now.
+    pub fn get(&self) -> Progression {
+        match self.0.load(Ordering::Acquire) {
+            SUPERSEDED => Progression::Superseded,
+            ENDED => Progression::Ended,
+            index => Progression::At(step_at(index)),
+        }
+    }
+
+    /// Move to a step. Refused once the unit has been superseded or has ended, so a step cannot
+    /// resurrect a unit somebody else already closed.
+    ///
+    /// Compare-and-set rather than read-then-write: the interrupt runs on another task, and a plain
+    /// store would let a step that read "running" a moment ago overwrite a supersede that landed in
+    /// between — putting a unit somebody already replaced back on the loop, with two units relaying
+    /// one direction under two holds.
+    pub fn advance_to(&self, step: StepName) -> bool {
+        let wanted = step_index(step);
+        let mut current = self.0.load(Ordering::Acquire);
+        loop {
+            if current == SUPERSEDED || current == ENDED {
+                break false;
+            }
+            match self
+                .0
+                .compare_exchange_weak(current, wanted, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break true,
+                Err(seen) => current = seen,
+            }
+        }
+    }
+
+    /// Mark the unit ended.
+    pub fn end(&self) -> bool {
+        self.0.swap(ENDED, Ordering::AcqRel) != ENDED
+    }
+
+    /// The interrupt: one atomic compare-and-set from "before the meter" to superseded.
+    ///
+    /// A unit that has already reached the meter has priced what it did, so it is too late to
+    /// replace it; the compare-and-set fails, and the failure is recorded on the unit that tried,
+    /// which is a no-op rather than an error.
+    pub fn supersede(&self) -> bool {
+        let meter = step_index(StepName::Meter);
+        loop {
+            let current = self.0.load(Ordering::Acquire);
+            if current >= meter {
+                return false;
+            }
+            match self.0.compare_exchange_weak(
+                current,
+                SUPERSEDED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(_) => continue,
+            }
+        }
+    }
+}
+
+impl Default for StepState {
+    fn default() -> Self {
+        StepState::new()
+    }
+}
+
+/// The flag that says "stop, and here is why".
+///
+/// Checked at every await and before every codec call. Tripping it twice keeps the first reason:
+/// the first thing that decided to stop the unit is the thing that gets to say why.
+#[derive(Debug)]
+pub struct CancelToken {
+    tripped: AtomicBool,
+    reason: AtomicUsize,
+}
+
+const NO_REASON: usize = usize::MAX;
+
+impl CancelToken {
+    /// A token that has not been tripped.
+    pub fn new() -> Self {
+        CancelToken {
+            tripped: AtomicBool::new(false),
+            reason: AtomicUsize::new(NO_REASON),
+        }
+    }
+
+    /// Stop the unit, for this reason. True if this call is the one that decided it.
+    pub fn trip(&self, reason: ReasonCode) -> bool {
+        let index = ReasonCode::ALL
+            .iter()
+            .position(|r| *r == reason)
+            .unwrap_or(NO_REASON);
+        if self
+            .tripped
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.reason.store(index, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Why, if it has.
+    pub fn reason(&self) -> Option<ReasonCode> {
+        let index = self.reason.load(Ordering::Acquire);
+        ReasonCode::ALL.get(index).copied()
+    }
+}
+
+impl Default for CancelToken {
+    fn default() -> Self {
+        CancelToken::new()
+    }
+}
+
+/// One live unit's slot in the table.
+#[derive(Debug)]
+pub struct UnitSlot {
+    key: UnitKey,
+    origin: OriginKind,
+    session: Option<SessionId>,
+    cell: HoldCell,
+    leases: LeaseCell,
+    step: StepState,
+    cancel: CancelToken,
+    marked: AtomicBool,
+    last_progress: AtomicU64,
+}
+
+impl UnitSlot {
+    /// Which unit this is.
+    pub fn key(&self) -> UnitKey {
+        self.key
+    }
+
+    /// Where it came from.
+    pub fn origin(&self) -> OriginKind {
+        self.origin
+    }
+
+    /// Which session it belongs to, if any.
+    pub fn session(&self) -> Option<SessionId> {
+        self.session
+    }
+
+    /// The unit's hold cell. Borrowed by the Teller, taken by the exit path or the sweep.
+    pub fn cell(&self) -> &HoldCell {
+        &self.cell
+    }
+
+    /// The unit's concurrency leases, owned by the slot beside its hold.
+    ///
+    /// They are here rather than in the running task because the sweep is one of the unit's two
+    /// ends and cannot reach a task that has gone. A lease recorded here goes back at whichever
+    /// end arrives first, and a slot the sweep has reclaimed is one that holds nothing.
+    pub fn leases(&self) -> &LeaseCell {
+        &self.leases
+    }
+
+    /// How far through the steps it is.
+    pub fn step(&self) -> &StepState {
+        &self.step
+    }
+
+    /// Its cancellation token.
+    pub fn cancel(&self) -> &CancelToken {
+        &self.cancel
+    }
+
+    /// Note that the unit did something: advanced a step, or relayed a frame. The sweep reads
+    /// this, and reads nothing else, because those two are exactly what "making progress" means.
+    pub fn touch(&self, now: Millis) {
+        self.last_progress.store(now, Ordering::Release);
+    }
+
+    /// How long since it last did anything.
+    pub fn idle_for(&self, now: Millis) -> Millis {
+        now.saturating_sub(self.last_progress.load(Ordering::Acquire))
+    }
+
+    /// The drop guard MARKS; it never ends a unit. A marked slot whose task is gone is what the
+    /// sweep turns into `TaskLost`, and marking is all a guard is allowed to do because a guard
+    /// runs during an unwind, where taking a hold and settling it is exactly what must not happen.
+    pub fn mark(&self) {
+        self.marked.store(true, Ordering::Release);
+    }
+
+    /// Whether the guard marked it.
+    pub fn is_marked(&self) -> bool {
+        self.marked.load(Ordering::Acquire)
+    }
+}
+
+/// A unit that could not enter the table, with its arrival hold handed straight back.
+///
+/// The hold comes back rather than being dropped: refusing a unit is still an event that has to
+/// balance, and the caller settles or voids what it is given.
+#[derive(Debug)]
+#[must_use = "the arrival hold has to be settled or voided, not dropped"]
+pub struct CapRefused {
+    /// The step the refusal is stamped at: arrival for a client unit, decode for every other
+    /// origin, because that is where those units are constructed.
+    pub step: StepName,
+    /// The in-flight cap, or a unit key that is already live in the table (see
+    /// [`ReasonCode::InFlightCap`] and [`ReasonCode::InFlight`]).
+    pub reason: ReasonCode,
+    /// The hold the unit arrived with.
+    pub hold: Hold,
+}
+
+/// The door, as the in-flight table asks it for a unit's arrival hold.
+///
+/// The kernel does not open the hold. It lends the door its token for the length of one call —
+/// exactly as the loop does at the admission step — and the door is what calls the constructor.
+/// That is what makes "a hold exists only because the admission unit opened it" true of the arrival
+/// hold as well as of the reservation the door later swaps in; while the table minted its own, that
+/// claim had one place it was not true.
+pub trait ArrivalDoor {
+    /// Open the unit's arrival hold. It reserves nothing, and the door is the only thing that can
+    /// open it.
+    fn arrival_hold(&self, principal: PrincipalId, token: &Grant<Admittance>) -> Hold;
+}
+
+/// The in-memory hold a unit carries into the table, before it has reached the door.
+///
+/// It reserves nothing: a unit that is refused at the gate has spent nothing, and the point of the
+/// arrival hold is that even a refusal is an event with a cell of its own to settle. The door swaps
+/// it for the real reservation, once.
+pub fn arrival_hold(kernel: &Kernel, door: &dyn ArrivalDoor, principal: PrincipalId) -> Hold {
+    door.arrival_hold(principal, &kernel.admit_token())
+}
+
+/// Which step an in-flight-cap refusal is stamped at, by origin.
+pub fn cap_refusal_step(origin: OriginKind) -> StepName {
+    match origin {
+        OriginKind::Client => StepName::Arrival,
+        _ => StepName::Decode,
+    }
+}
+
+/// What a unit is asking the table for.
+#[derive(Debug)]
+#[must_use = "the request carries the arrival hold"]
+pub struct Enter {
+    /// The unit's key.
+    pub key: UnitKey,
+    /// Where the unit came from.
+    pub origin: OriginKind,
+    /// Its session, if it has one.
+    pub session: Option<SessionId>,
+    /// Whether it arrived on the administrative listener, which is outside the cap entirely.
+    pub admin_listener: bool,
+    /// Whether it is a zero-hold heartbeat or sweep unit, which never occupies a slot.
+    pub zero_hold_tick: bool,
+    /// The arrival hold minted at the door of the table.
+    pub arrival: Hold,
+    /// When the unit entered. The slot's progress clock starts here, so a unit is idle from the
+    /// moment it arrived and never from the moment the node booted.
+    pub now: Millis,
+}
+
+/// The node's live units.
+#[derive(Debug)]
+pub struct InFlight {
+    shards: Vec<Mutex<HashMap<UnitKey, Arc<UnitSlot>>>>,
+    count: AtomicUsize,
+    cap: usize,
+}
+
+impl InFlight {
+    /// A table bounded at `cap`.
+    pub fn new(cap: usize) -> Self {
+        InFlight {
+            shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
+            count: AtomicUsize::new(0),
+            cap,
+        }
+    }
+
+    /// How many units are live.
+    pub fn len(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// Whether the node is doing nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The cap it was built with.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
+    /// The ceiling this unit is measured against: none for the exempt origins, the whole table for
+    /// everything else.
+    fn ceiling(&self, request: &Enter) -> Option<usize> {
+        (!request.admin_listener && !request.zero_hold_tick).then_some(self.cap)
+    }
+
+    /// Would this unit fit right now?
+    ///
+    /// A question, not a reservation: [`InFlight::insert`] asks it and takes the slot in one atomic
+    /// step, because two units that both read "there is room" and then both entered is exactly how
+    /// the table stops being the bound the crash-exposure figure is computed from.
+    pub fn admits(&self, request: &Enter) -> bool {
+        match self.ceiling(request) {
+            None => true,
+            Some(ceiling) => self.len() < ceiling,
+        }
+    }
+
+    /// Take a slot for a unit whose ceiling is `ceiling`, or say the table is full.
+    fn claim_slot(&self, ceiling: Option<usize>) -> bool {
+        match ceiling {
+            None => {
+                self.count.fetch_add(1, Ordering::AcqRel);
+                true
+            }
+            Some(ceiling) => self
+                .count
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    (n < ceiling).then_some(n + 1)
+                })
+                .is_ok(),
+        }
+    }
+
+    /// Put a unit in the table, or hand its hold back with the refusal.
+    ///
+    /// Refuses a KEY the table already holds, rather than overwriting the slot at it. A second unit
+    /// carrying a key another live unit already carries did not race for a slot the way two units
+    /// with distinct keys can; it claims an identity that is not its own, which is a bug upstream in
+    /// whatever minted the key — not a normal admission event. Overwriting would ORPHAN the
+    /// displaced entry's [`HoldCell`] (nothing left holds the key that could ever reach it to
+    /// settle, so its reservation is stuck forever) and inflate `count` against the map (the table
+    /// would hold one fewer entry than the count says it does, for good). Both are silent, permanent
+    /// corruption of the money accounting, so this is caught and refused before either can happen —
+    /// through the exact channel a full table is already refused through: the same `Result`, the
+    /// same [`CapRefused`], the same handed-back hold. See the module doc for why a `Result` and not
+    /// a panic: every other "this cannot be, caller" seam in this file (`claim_slot`'s cap check
+    /// above, and `HoldCell::admit`'s "second hold" rejection the door swap goes through) answers
+    /// with a typed refusal that keeps the hold balanced and the node running, never with a panic —
+    /// so this follows the one convention already here rather than inventing a second.
+    ///
+    /// Checked and inserted under the SAME lock on the key's shard, with the slot's own count not
+    /// yet claimed: a duplicate is caught before `claim_slot` runs at all, so there is nothing to
+    /// roll back, and no window in which a second insert of the same key could interleave between
+    /// the check and the write.
+    pub fn insert(&self, request: Enter) -> Result<Arc<UnitSlot>, CapRefused> {
+        let mut shard = self
+            .shard(request.key)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if shard.contains_key(&request.key) {
+            return Err(CapRefused {
+                step: cap_refusal_step(request.origin),
+                reason: ReasonCode::InFlight,
+                hold: request.arrival,
+            });
+        }
+        if !self.claim_slot(self.ceiling(&request)) {
+            return Err(CapRefused {
+                step: cap_refusal_step(request.origin),
+                reason: ReasonCode::InFlightCap,
+                hold: request.arrival,
+            });
+        }
+        let slot = Arc::new(UnitSlot {
+            key: request.key,
+            origin: request.origin,
+            session: request.session,
+            cell: HoldCell::new(request.arrival),
+            leases: LeaseCell::new(),
+            step: StepState::new(),
+            cancel: CancelToken::new(),
+            marked: AtomicBool::new(false),
+            last_progress: AtomicU64::new(request.now),
+        });
+        shard.insert(request.key, Arc::clone(&slot));
+        Ok(slot)
+    }
+
+    /// Find a live unit.
+    pub fn get(&self, key: UnitKey) -> Option<Arc<UnitSlot>> {
+        self.shard(key)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .map(Arc::clone)
+    }
+
+    /// Take a unit out. The slot itself may outlive this — the exit path is holding it — but the
+    /// table's count drops here, which is what lets the next unit in.
+    pub fn remove(&self, key: UnitKey) -> Option<Arc<UnitSlot>> {
+        let removed = self
+            .shard(key)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+        if removed.is_some() {
+            self.count.fetch_sub(1, Ordering::AcqRel);
+        }
+        removed
+    }
+
+    /// Every live unit, for the sweep. Snapshots the slots so the sweep never holds a shard lock
+    /// while it settles anything.
+    pub fn snapshot(&self) -> Vec<Arc<UnitSlot>> {
+        let mut all = Vec::new();
+        for shard in &self.shards {
+            let guard = shard.lock().unwrap_or_else(|e| e.into_inner());
+            all.extend(guard.values().map(Arc::clone));
+        }
+        all
+    }
+
+    fn shard(&self, key: UnitKey) -> &Mutex<HashMap<UnitKey, Arc<UnitSlot>>> {
+        let index = (key.get() as usize) & (SHARDS - 1);
+        &self.shards[index]
+    }
+}
+
+/// Whether a session's principal is cached, or re-checked on every unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Binding {
+    /// The principal is cached until upgrade, revocation or a failed re-check.
+    Bound,
+    /// Every unit re-authenticates, and taking a credential from the session is refused.
+    Unbound,
+}
+
+/// One live session.
+#[derive(Debug)]
+pub struct SessionSlot {
+    id: SessionId,
+    binding: Binding,
+    principal: Mutex<Option<PrincipalId>>,
+    open: Mutex<HashMap<(StreamId, Direction), UnitKey>>,
+    upstreams: AtomicUsize,
+    last_non_tick: AtomicU64,
+    needmore: AtomicUsize,
+    closed: AtomicBool,
+}
+
+impl SessionSlot {
+    /// Which session this is.
+    pub fn id(&self) -> SessionId {
+        self.id
+    }
+
+    /// Whether its principal is cached.
+    pub fn binding(&self) -> Binding {
+        self.binding
+    }
+
+    /// The cached principal, on a bound session.
+    pub fn principal(&self) -> Option<PrincipalId> {
+        self.principal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Cache the principal. Only a bound session keeps one; on an unbound session this is a
+    /// record of who the last unit was, which is who an accrual between turns is charged to.
+    pub fn remember(&self, principal: PrincipalId) {
+        *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = Some(principal);
+    }
+
+    /// Claim the one open slot for a direction of a stream.
+    ///
+    /// One open unit per direction, and the second one is refused rather than queued: two units
+    /// relaying the same direction under two holds is two prices for one conversation.
+    pub fn claim_open(
+        &self,
+        stream: StreamId,
+        direction: Direction,
+        unit: UnitKey,
+    ) -> Result<(), ReasonCode> {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        match open.entry((stream, direction)) {
+            std::collections::hash_map::Entry::Occupied(_) => Err(ReasonCode::OpenSlotBusy),
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(unit);
+                Ok(())
+            }
+        }
+    }
+
+    /// Which unit owns a direction, if any.
+    pub fn open_unit(&self, stream: StreamId, direction: Direction) -> Option<UnitKey> {
+        self.open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(stream, direction))
+            .copied()
+    }
+
+    /// Give the direction back, but only if `unit` is the one holding it.
+    ///
+    /// An interrupt names a UNIT and the frame carrying it names a DIRECTION, and nothing makes a
+    /// plane put the two together. Freeing whatever happens to hold the direction would hand a
+    /// live conversation's slot to the unit taking over from a different one, which is two units
+    /// relaying one direction under two holds. Read and removed under one lock, because a check
+    /// the caller makes separately is a check another frame can land in the middle of.
+    pub fn release_open_by(&self, stream: StreamId, direction: Direction, unit: UnitKey) {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if open.get(&(stream, direction)) == Some(&unit) {
+            open.remove(&(stream, direction));
+        }
+    }
+
+    /// Pair another upstream connection with this session.
+    ///
+    /// The count is taken in one atomic step: two frames dialling at once must not both read the
+    /// eighth slot as free.
+    pub fn add_upstream(&self) -> Result<usize, ReasonCode> {
+        self.upstreams
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_SESSION_UPSTREAMS).then_some(n + 1)
+            })
+            .map_err(|_| ReasonCode::SessionBudget)
+    }
+
+    /// How many upstreams it has paired.
+    pub fn upstreams(&self) -> usize {
+        self.upstreams.load(Ordering::Acquire)
+    }
+
+    /// Count one more frame in a row that was not a whole anything yet, and say what the run is
+    /// now at. The run lives HERE and not in a table beside the pump: a counter keyed by session id
+    /// in a node-global map is a counter nothing takes out again, and one that a later session on
+    /// the same id inherits. On the slot it is born and closed with the connection it describes,
+    /// and no node-global lock is taken on the path every relayed frame walks.
+    pub fn asked_again(&self) -> usize {
+        self.needmore.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// A frame that WAS something ends the run.
+    pub fn made_progress(&self) {
+        self.needmore.store(0, Ordering::Release);
+    }
+
+    /// How long the current run of asks is.
+    pub fn asks(&self) -> usize {
+        self.needmore.load(Ordering::Acquire)
+    }
+
+    /// Note a unit that was not a tick. The idle clock reads this and nothing else, so a priced
+    /// accrual tick can run all night without making an idle session look busy.
+    pub fn touch_non_tick(&self, now: Millis) {
+        self.last_non_tick.store(now, Ordering::Release);
+    }
+
+    /// How long since the session did anything that was not a tick.
+    pub fn idle_for(&self, now: Millis) -> Millis {
+        now.saturating_sub(self.last_non_tick.load(Ordering::Acquire))
+    }
+
+    /// Close the session for good.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    /// Whether it is closed.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+}
+
+/// Every live session on this node.
+#[derive(Debug)]
+pub struct Sessions {
+    shards: Vec<Mutex<HashMap<SessionId, Arc<SessionSlot>>>>,
+    count: AtomicUsize,
+    budget: usize,
+}
+
+impl Sessions {
+    /// A session table bounded by the node-global session budget.
+    pub fn new(budget: usize) -> Self {
+        Sessions {
+            shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
+            count: AtomicUsize::new(0),
+            budget,
+        }
+    }
+
+    /// How many sessions are open.
+    pub fn len(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// Whether the node has none.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Open a session, at unit zero. Refused when the node's session budget is spent.
+    ///
+    /// The slot is CLAIMED in one atomic step, exactly as the in-flight table claims its own: two
+    /// connections that both read "there is room" and then both opened is how a node ends up
+    /// holding more sessions than the budget it computes its exposure from. An id already in the
+    /// table takes no new slot, so the claim is handed straight back rather than leaked.
+    pub fn open(
+        &self,
+        id: SessionId,
+        binding: Binding,
+        now: Millis,
+    ) -> Result<Arc<SessionSlot>, ReasonCode> {
+        if self
+            .count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < self.budget).then_some(n + 1)
+            })
+            .is_err()
+        {
+            return Err(ReasonCode::SessionBudget);
+        }
+        let slot = Arc::new(SessionSlot {
+            id,
+            binding,
+            principal: Mutex::new(None),
+            open: Mutex::new(HashMap::new()),
+            upstreams: AtomicUsize::new(0),
+            last_non_tick: AtomicU64::new(now),
+            needmore: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+        });
+        let displaced = self
+            .shard(id)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, Arc::clone(&slot));
+        if displaced.is_some() {
+            self.count.fetch_sub(1, Ordering::AcqRel);
+        }
+        Ok(slot)
+    }
+
+    /// Find a session.
+    pub fn get(&self, id: SessionId) -> Option<Arc<SessionSlot>> {
+        self.shard(id)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .map(Arc::clone)
+    }
+
+    /// Drop a session from the table, at close or at lease expiry.
+    pub fn remove(&self, id: SessionId) -> Option<Arc<SessionSlot>> {
+        let removed = self
+            .shard(id)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        if let Some(slot) = &removed {
+            slot.close();
+            self.count.fetch_sub(1, Ordering::AcqRel);
+        }
+        removed
+    }
+
+    /// Every live session, for the tick.
+    pub fn snapshot(&self) -> Vec<Arc<SessionSlot>> {
+        let mut all = Vec::new();
+        for shard in &self.shards {
+            let guard = shard.lock().unwrap_or_else(|e| e.into_inner());
+            all.extend(guard.values().map(Arc::clone));
+        }
+        all
+    }
+
+    fn shard(&self, id: SessionId) -> &Mutex<HashMap<SessionId, Arc<SessionSlot>>> {
+        let index = (id.get() as usize) & (SHARDS - 1);
+        &self.shards[index]
+    }
+}
+
+/// Why a session is being hard-closed.
+///
+/// The list is closed and short on purpose. Everything else — a bad credential on an unbound
+/// session, a refused unit, a decode the plane discarded — renders and the session continues,
+/// because "wrong credential, try again on this connection" is a normal thing for a client to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardClose {
+    /// A provider-origin unit was refused at the in-flight cap, or at the door for a money reason.
+    ProviderRefusedForMoney,
+    /// A frame could not be decoded on a stream transport, where the stream is now out of step.
+    DecodeFailedOnStream,
+    /// A plane call panicked, so the session's plane state is poisoned.
+    PlanePanic,
+    /// A bound session's cached principal failed its re-check.
+    BoundPrincipalFailed,
+    /// A credential was taken from an unbound session.
+    SessionUnbound,
+    /// The connection presenting the session-layer binding did not match the handoff fact.
+    HandoffMismatch,
+    /// The principal was revoked.
+    Revoked,
+}
+
+/// Does this ending hard-close the session it happened on?
+///
+/// The provider case is the one with money in it: content an upstream will invoice arrives on a
+/// session whose budget is dry, so the floor line is posted AND the session is closed, and a dry
+/// bucket therefore sees at most one such push.
+///
+/// The framing is the transport's own declaration and it is load-bearing for exactly one arm. A
+/// stream that could not decode a frame has lost sync and every later byte on it is suspect, so
+/// the session closes; a datagram that could not be decoded is one datagram, and the next is
+/// unaffected — it is discarded and the session stands. Without the framing this function read a
+/// forged packet as a reason to drop a session, which is a denial of service anyone can post.
+///
+/// The binding is load-bearing for exactly one other arm, and for the same kind of reason. A
+/// credential refused at the re-check means different things on the two kinds of session: on a
+/// BOUND one the cached principal is what every later unit runs as, and a session running as
+/// somebody it can no longer prove it is has nothing left to be, so it closes; on an unbound one
+/// every unit authenticates for itself and a bad credential is one bad unit. Without the binding
+/// there was no arm that could tell the two apart, and one of the two answers was never given.
+pub fn hard_closes(
+    origin: OriginKind,
+    step: StepName,
+    reason: ReasonCode,
+    framing: Framing,
+    binding: Binding,
+) -> Option<HardClose> {
+    let money_reason = matches!(
+        reason,
+        ReasonCode::OverBudget
+            | ReasonCode::GroupFrozen
+            | ReasonCode::Unpriced
+            | ReasonCode::OverdraftCeiling
+            | ReasonCode::StaleSlice
+            | ReasonCode::DurabilityUnavailable
+    );
+    match (origin, step, reason) {
+        (OriginKind::Provider, _, ReasonCode::InFlightCap) => {
+            Some(HardClose::ProviderRefusedForMoney)
+        }
+        (OriginKind::Provider, StepName::Admit, _) if money_reason => {
+            Some(HardClose::ProviderRefusedForMoney)
+        }
+        (_, _, ReasonCode::PlanePanic) => Some(HardClose::PlanePanic),
+        (_, _, ReasonCode::SessionUnbound) => Some(HardClose::SessionUnbound),
+        (_, _, ReasonCode::Revoked) => Some(HardClose::Revoked),
+        // The handoff arm. An upgrade neither leg declared leaves a session standing on a stack
+        // nobody wrote down, and there is no later point at which that becomes true again.
+        (_, _, ReasonCode::HandoffMismatch) => Some(HardClose::HandoffMismatch),
+        (_, StepName::Decode, ReasonCode::DecodeFailed) if framing == Framing::Stream => {
+            Some(HardClose::DecodeFailedOnStream)
+        }
+        // The re-check arm, on a bound session only.
+        (_, StepName::Authenticate, ReasonCode::Unauthenticated) if binding == Binding::Bound => {
+            Some(HardClose::BoundPrincipalFailed)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/inflight_tests.rs"]
+mod inflight_tests;

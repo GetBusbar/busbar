@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE GA `session` CONFIG OBJECT — the typed shape carried by `session.update` (client→server) and
+//! echoed by `session.created` (server→client). Design `BUSBAR-1.6.0.md` #18/#45.
+//!
+//! This is the ONE place in the plane where a serde-derived struct models the wire directly, rather
+//! than the hand-mapped `serde_json::Value` dispatch the event codec uses. The justification is the
+//! LLM-plane precedent: serde-derive is reserved for CONFIG shapes (stable, named, closed field sets),
+//! while streaming EVENTS are hand-mapped. The Realtime `session` object is exactly a config shape.
+//!
+//! This typed config IS the plane's neutral session-config IR — the cross-dialect superset both dialects
+//! (OpenAI Realtime + Gemini Live, `BUSBAR-1.6.0.md` #18/#45) read and write, now that the plane
+//! has earned a superset at its second wire format. The GA field set is modeled faithfully so a
+//! decode→encode round-trip is JSON-stable (opaque `tools` / `tool_choice` ride as `serde_json::Value`;
+//! the plane locks and reconciles them but never reshapes them).
+
+use crate::codec::ir::control::IrVad;
+use crate::codec::ir::media::AudioFormat;
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Deserialize a PRESENT key into `Some(_)`, so an `Option<Option<T>>` field can tell an absent key
+/// (`None`, supplied by `#[serde(default)]` because this function is never called) from an explicit
+/// `null` (`Some(None)`). Without it serde consumes a wire `null` at the outer `Option` and both
+/// states arrive as `None`.
+fn deserialize_some<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
+/// THE GA `max_output_tokens` FIELD — either an explicit cap or the `"inf"` sentinel (uncapped). A
+/// bespoke (de)serialize keeps the int-or-string wire union without dragging an untagged-enum null
+/// ambiguity into the config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxOutputTokens {
+    /// An explicit output-token ceiling for a response.
+    Limit(u32),
+    /// The `"inf"` sentinel — no plane-imposed ceiling.
+    Inf,
+}
+
+impl Serialize for MaxOutputTokens {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            MaxOutputTokens::Limit(n) => s.serialize_u32(*n),
+            MaxOutputTokens::Inf => s.serialize_str("inf"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MaxOutputTokens {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::String(s) if s == "inf" => Ok(MaxOutputTokens::Inf),
+            serde_json::Value::Number(n) => n
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .map(MaxOutputTokens::Limit)
+                .ok_or_else(|| D::Error::custom("max_output_tokens out of u32 range")),
+            other => Err(D::Error::custom(format!(
+                "max_output_tokens must be a u32 or \"inf\", got {other}"
+            ))),
+        }
+    }
+}
+
+/// serde glue for the optional negotiated audio formats — the enum carries its own dialect tokens
+/// (`pcm16` / `g711_ulaw`), so a small module bridges `Option<AudioFormat>` to the wire string.
+mod opt_audio_fmt {
+    use super::AudioFormat;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        v: &Option<AudioFormat>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(f) => s.serialize_str(f.wire_name()),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<AudioFormat>, D::Error> {
+        use serde::de::Error as _;
+        match Option::<String>::deserialize(d)? {
+            None => Ok(None),
+            Some(s) => AudioFormat::from_wire(&s)
+                .map(Some)
+                .ok_or_else(|| D::Error::custom(format!("unknown audio format: {s}"))),
+        }
+    }
+}
+
+/// THE GA `session` CONFIG OBJECT (`BUSBAR-1.6.0.md` #18/#45). Every field is optional on the wire (a partial
+/// `session.update` patches only what it names), so absent keys decode to `None`/empty and are
+/// omitted on re-encode — keeping a partial patch JSON-stable. `turn_detection` is the ONE field with
+/// THREE wire states rather than two, because GA gives `null` its own meaning: see the field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SessionConfig {
+    /// THE UPSTREAM MODEL ID the session targets. OpenAI Realtime carries this SERVER-SIDE (it appears
+    /// on `session.created`, not the writable `session.update` patch), so it stays `None` for the
+    /// OpenAI dialect; Gemini Live carries it as `setup.model`. Modeled here as the genuinely-shared
+    /// field the SECOND dialect (Gemini) earns into the superset IR (`BUSBAR-1.6.0.md` #18/#45). Optional — an OpenAI
+    /// `session.update` omits it (decodes to `None`, skipped on re-encode, so the OpenAI round-trip is
+    /// unaffected).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Requested modalities (e.g. `["audio", "text"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modalities: Vec<String>,
+    /// System instructions the plane locks (the browser cannot override them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// The synthesis voice (e.g. `alloy`, `marin`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    /// Negotiated INPUT (uplink) audio format.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "opt_audio_fmt"
+    )]
+    pub input_audio_format: Option<AudioFormat>,
+    /// Negotiated OUTPUT (downlink) audio format — the format the truncate math measures against.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "opt_audio_fmt"
+    )]
+    pub output_audio_format: Option<AudioFormat>,
+    /// Voice-activity-detection config — THREE-STATE, because the GA wire gives each state a
+    /// different meaning and a partial `session.update` patches only what it names:
+    ///
+    /// - `None` — the key was ABSENT. The patch says nothing about turn detection, so re-encoding
+    ///   omits the key and whatever the session already had keeps applying.
+    /// - `Some(None)` — the key was an explicit `null`. That is GA's "disable VAD"; the client
+    ///   drives turn boundaries. Re-encoded as `null`.
+    /// - `Some(Some(vad))` — a configured detector, re-encoded verbatim.
+    ///
+    /// Collapsing absent and `null` into one `None` (which is what a plain `Option` does) makes a
+    /// patch that merely renames the voice re-frame upstream with `"turn_detection": null`, which
+    /// silently DISABLES server VAD — the upstream then waits for a client-driven turn that a
+    /// VAD-expecting client never sends, and the model never answers. The `deserialize_some` shim is
+    /// required: serde maps a wire `null` onto the OUTER `Option` by default, which would collapse
+    /// the two states again no matter how the field is typed.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_some"
+    )]
+    pub turn_detection: Option<Option<IrVad>>,
+    /// The tool set, carried VERBATIM as opaque JSON (the plane locks the set but never reshapes a
+    /// definition — the plane's tool moat (`BUSBAR-1.6.0.md` #18/#45) normalizes call CORRELATION, not the argument/definition bytes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<serde_json::Value>,
+    /// Tool-choice policy (`"auto"` / `"none"` / `"required"` / a forced-call object), opaque.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
+    /// Per-response output-token ceiling, or `"inf"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<MaxOutputTokens>,
+}

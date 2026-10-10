@@ -1,0 +1,421 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Clause one and clause four: the single conversion from a configured decimal to an integer rate,
+//! and the pin that makes a posting immune to a later card edit.
+
+use super::*;
+use crate::cost::{nano_rate, History, LaneClass, RateCard, STANDARD_TIER_BP};
+
+/// The conversion rounds to NEAREST, half away from zero — it does not truncate. Fifteen
+/// ten-thousandths of a micro-unit is one and a half nano-units and must become two; fourteen is
+/// one and four tenths and must become one. A truncating conversion would silently under-price the
+/// finest rate an operator can configure.
+#[test]
+fn nano_rate_rounds_to_nearest_at_the_nano_boundary() {
+    assert_eq!(nano_rate(0.0015), 2, "one and a half rounds away from zero");
+    assert_eq!(nano_rate(0.0014), 1, "one and four tenths floors to one");
+}
+
+/// The clamp is "finite AND positive", not "finite OR positive". An infinite rate — reachable from
+/// a huge configured value times a thousand — is not finite but IS positive, and casting it to an
+/// integer would saturate at the largest integer there is: a garbage billing rate, not the
+/// defence. Not-a-number cannot tell the two spellings apart, so infinity is the case that does.
+#[test]
+fn nano_rate_clamps_a_non_finite_positive_rate_to_zero_not_the_maximum() {
+    assert_eq!(nano_rate(f64::INFINITY), 0);
+    assert_eq!(nano_rate(f64::NAN), 0);
+    assert_eq!(nano_rate(-1.0), 0, "a negative rate is not a discount");
+}
+
+/// A finite value can still be too large for a `u64` to hold — a config typo with too many zeros,
+/// not an infinity. The bare cast saturates just as it would for an infinite input: a garbage
+/// billing rate at the top of the range rather than the zero the doc promises for a value nobody
+/// can price. Finite-but-overflowing must clamp to zero exactly like the non-finite case, not slip
+/// through because `is_finite()` alone said yes.
+#[test]
+fn nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum() {
+    // 1e18 micro-units per unit, times a thousand, is 1e21 — finite, and far past `u64::MAX`
+    // (~1.8e19).
+    assert_eq!(nano_rate(1e18), 0);
+    // Comfortably inside range still converts normally: the clamp must not swallow legitimate
+    // large-but-representable rates.
+    assert_eq!(nano_rate(1e12), 1_000_000_000_000_000);
+}
+
+/// **THE BOUNDARY IS `2^64`, AND `u64::MAX as f64` IS NOT IT.**
+///
+/// `u64::MAX` is `2^64 - 1`: an odd integer sixty-four bits wide. An `f64` carries a fifty-three bit
+/// mantissa, so that value is NOT REPRESENTABLE and `u64::MAX as f64` rounds — UP — to exactly
+/// `2^64`. A guard spelled `v <= u64::MAX as f64` therefore admits a finite `v == 2^64`, which is
+/// one past the largest integer a `u64` holds, and the `v as u64` beneath it SATURATES to
+/// `u64::MAX`. That is the astronomical overcharge the doc on [`nano_rate`] promises this function
+/// never produces, arriving at the single input the guard exists to stop. There is exactly ONE
+/// `f64` in the gap the wrong spelling opens, and this test is standing on it.
+///
+/// It is reachable from operator config, not just from a unit test: `RateCard::from_micro_rates`
+/// converts a configured decimal through here, so a card quoting `2^64 / 1000`
+/// micro-units per unit is the whole of it.
+///
+/// WHY THIS SURVIVED, which is the more useful half. The test that NAMES this case
+/// ([`nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum`], above) feeds `1e18`
+/// — whose `×1000` is `1e21`, some thirty doublings past the ceiling — and so steps clean over the
+/// one point that fails. A case that is merely far outside the range does not test a boundary; only
+/// a case ON the boundary does.
+///
+/// This is a correction to the guard's own stated contract and nothing more. It does not settle what
+/// an out-of-range configured rate OUGHT to do — #42 rules that an unpriced class REFUSES rather
+/// than silently answering zero, so neither `u64::MAX` nor `0` is the ruled answer, and the finding
+/// that says so (U-1) stays open.
+#[test]
+fn nano_rate_refuses_the_one_value_past_the_ceiling_that_the_max_cast_admits() {
+    // The premise, asserted rather than trusted: the cast rounds UP, past what it names.
+    assert_eq!(
+        u64::MAX as f64,
+        2.0_f64.powi(64),
+        "u64::MAX as f64 rounds up to 2^64 — the whole defect is this one step"
+    );
+
+    // The admitted micro-rate: the value whose ×1000 lands exactly on 2^64. This is, character for
+    // character, the `CEILING_MICRO` the cross-crate agreement test has been feeding both copies.
+    let admitted_micro = (u64::MAX as f64) / 1000.0;
+    assert_eq!(
+        (admitted_micro * 1000.0).round(),
+        2.0_f64.powi(64),
+        "this case proves nothing unless it lands exactly on 2^64"
+    );
+    assert_eq!(
+        nano_rate(admitted_micro),
+        0,
+        "a rate of 2^64 nano-units is one past what a u64 holds: it must price at NOTHING, \
+         not saturate to u64::MAX ({})",
+        u64::MAX
+    );
+
+    // BYTE-NEUTRALITY AT THE SAME EDGE. The correction moves exactly one f64 and no other. The
+    // largest value the conversion could ever legitimately return is still returned: 2^64 - 2048 is
+    // the last f64 below the ceiling, and a rate a whisker under the top must convert, not fall to
+    // zero along with the one past it.
+    let last_below = f64::from_bits(2.0_f64.powi(64).to_bits() - 1);
+    assert_eq!(
+        last_below, 18_446_744_073_709_549_568.0,
+        "the last f64 strictly below 2^64 is 2^64 - 2048"
+    );
+    let near_ceiling_micro = last_below / 1000.0;
+    assert_eq!(
+        nano_rate(near_ceiling_micro),
+        18_446_744_073_709_547_520,
+        "a rate just under the ceiling still converts — the correction narrows the door by one \
+         value, it does not close it"
+    );
+}
+
+/// The card carries the integer rates straight through, per class, with no swapping between them.
+#[test]
+fn card_carries_integer_rates_per_class() {
+    let c = card4("quad", [1.0, 2.0, 0.5, 4.0], 0);
+    let r = c.lane_rates("quad").expect("the lane is priced");
+    assert_eq!(
+        (
+            r.nanos_per_unit(INPUT),
+            r.nanos_per_unit(OUTPUT),
+            r.nanos_per_unit(CACHE_READ),
+            r.nanos_per_unit(CACHE_WRITE),
+        ),
+        (1_000, 2_000, 500, 4_000)
+    );
+}
+
+/// The three outcomes of a rate lookup, which are the whole pricing posture: no card is a
+/// zero-rate view over every lane; a card that names the lane prices it; a card that does not name
+/// the lane yields nothing at all, so the caller fails closed rather than serving for free.
+#[test]
+fn lane_lookup_has_exactly_three_outcomes() {
+    let none = RateCard::absent(3);
+    assert!(!none.pricing_enabled());
+    assert!(
+        !none.lane_unpriced("anything"),
+        "with no card there is nothing to be missing from"
+    );
+    let view = none.lane_rates("anything").expect("a zero-rate view");
+    assert_eq!(view.nanos_per_unit(INPUT), 0);
+
+    let present = card("known", 1.0, 1.0, 0);
+    assert!(present.pricing_enabled());
+    assert!(!present.lane_unpriced("known"));
+    assert!(present.lane_unpriced("mystery"));
+    assert!(present.lane_rates("mystery").is_none());
+}
+
+/// A negative configured fee clamps to nothing at resolve. No request may bill a negative amount,
+/// which would credit a budget bucket back toward headroom.
+#[test]
+fn negative_per_request_fee_clamps_to_zero() {
+    let c = RateCard::absent(-5);
+    assert_eq!(c.fee(), 0);
+    assert_eq!(c.fee_unit_price_nanos(), 0);
+}
+
+/// The fee's unit price is its cents lifted to nano-units — an exact multiple of ten million,
+/// which is what makes summing it in before the single truncation give the same cents as adding it
+/// afterwards.
+#[test]
+fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
+    let c = RateCard::absent(3);
+    assert_eq!(c.fee_unit_price_nanos(), 30_000_000);
+    assert_eq!(c.fee_unit_price_nanos() % crate::cost::NANOS_PER_CENT, 0);
+}
+
+/// ITEM 22: A RATE THE CARD CANNOT HOLD IS NOT A RATE OF ZERO.
+///
+/// `0.0004` micro-units a unit is below the half-nano-unit quantum; `$0.10/GB` priced per byte is
+/// `0.00009313`. `nano_rate` maps both to `0` (it has no error channel), and the card used to record
+/// that `0` as a PRICED cell — so the class billed as nothing while the card claimed to price it, and
+/// #42's refusal could never fire. The card now records it UNPRICED: the lane is named, the class is
+/// silent, the one function REFUSES a hit on it, and the cell is listed for boot validation.
+#[test]
+fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero() {
+    let per_byte = 0.10 * 1_000_000.0 / 1_073_741_824.0; // $0.10/GB in micro-units a byte
+    let card = RateCard::from_micro_rates(
+        [
+            (LaneClass::new("m", "bytes"), per_byte),
+            (LaneClass::new("m", "tiny"), 0.0004),
+            (LaneClass::new("m", "output"), 2.0),
+            (LaneClass::new("m", "free"), 0.0),
+        ],
+        0,
+    );
+    let rates = card.lane_rates("m").expect("the lane is named");
+    assert!(
+        !rates.class_priced("bytes"),
+        "never priced-at-zero while claiming priced"
+    );
+    assert!(!rates.class_priced("tiny"));
+    assert!(rates.class_priced("output"));
+    assert!(
+        rates.class_priced("free"),
+        "a rate CONFIGURED at zero is the explicit zero row (#77(5)), not a refusal"
+    );
+    assert_eq!(
+        card.refused_cells(),
+        &[LaneClass::new("m", "bytes"), LaneClass::new("m", "tiny")]
+    );
+
+    // The one function refuses a hit on the unrepresentable class instead of pricing it at zero.
+    let history = History::opening(card, 0);
+    let one = crate::cost::price_ledger(
+        &[crate::cost::LedgerEntry::new("m", 0)
+            .with_whole("output", 10)
+            .with_whole("bytes", 1_000_000_000)],
+        &history,
+    );
+    assert!(
+        matches!(one, Err(crate::cost::MoneyError::ClassUnpriced { ref class, .. }) if class == "bytes"),
+        "#42: a hit class the card cannot price REFUSES; got {one:?}"
+    );
+
+    // And a representable rate is byte-identical to the quantisation it always had (#44).
+    assert_eq!(crate::cost::representable_nano_rate(0.0005), Some(1));
+    assert_eq!(crate::cost::representable_nano_rate(0.0015), Some(2));
+    assert_eq!(crate::cost::representable_nano_rate(0.0004), None);
+    assert_eq!(crate::cost::representable_nano_rate(0.0), Some(0));
+    assert_eq!(crate::cost::representable_nano_rate(f64::MAX), None);
+}
+
+/// A LANE'S RATES PRICE NO USAGE REPORT: a report is a spend, and every spend is `Tally`'s.
+///
+/// The lane's own report-sizing fold is gone. It summed a report at the lane's rates saturating,
+/// and sized a class the lane's card is silent about at NOTHING — right for a reservation size,
+/// wrong for a bill. What replaces it for every reader of a report's worth is the one spend fold:
+/// the priced classes come to `count × rate`, and a class the present card is silent about
+/// REFUSES rather than reading as a free line (#42).
+#[test]
+fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
+    let card = RateCard::from_micro_rates([(LaneClass::new("m", "input"), 2.5)], 0);
+    let mut priced = crate::cost::Tally::at_card(&card);
+    priced
+        .row(
+            "m",
+            0,
+            STANDARD_TIER_BP,
+            [("input", crate::cost::whole(1_000))],
+            crate::cost::whole(0),
+        )
+        .expect("a priced class prices");
+    assert_eq!(
+        crate::cost::nanos_of_exact(priced.exact().expect("in range")),
+        Ok(2_500_000),
+        "1,000 units at 2.5 micro-units is 2,500,000 nano-units"
+    );
+
+    let mut silent = crate::cost::Tally::at_card(&card);
+    assert!(
+        matches!(
+            silent.row(
+                "m",
+                0,
+                STANDARD_TIER_BP,
+                [("input", crate::cost::whole(1_000)), ("output", crate::cost::whole(7))],
+                crate::cost::whole(0),
+            ),
+            Err(crate::cost::MoneyError::ClassUnpriced { ref class, .. }) if class == "output"
+        ),
+        "a class the present card is silent about refuses; it is never sized at nothing"
+    );
+
+    let src = include_str!("../rate.rs");
+    assert!(
+        !src.contains("pub fn nanos(&self"),
+        "a lane's rates carry no report-sizing fold beside the spend fold"
+    );
+}
+
+/// **A CORRECTED CARD IS THE CARD WITH THE NAMED CELLS SET** (#79): every other lane,
+/// class and plane card and the unnamed fee stay; a named fee replaces the fee; a cell on a plane
+/// with no present card, or naming no lane, has nowhere to land.
+#[test]
+fn a_corrected_card_keeps_everything_it_does_not_name() {
+    use crate::cost::TierRates;
+    let tiers = |input, output| TierRates {
+        input,
+        output,
+        cache_read: 0.0,
+        cache_write: 0.0,
+    };
+    let card = RateCard::from_config(
+        Some([
+            ("lane-g", tiers(2.0, 8.0)),
+            ("lane-c", tiers(3.0, 15.0)),
+            ("plane-b\u{1f}search", tiers(5.0, 6.0)),
+        ]),
+        3,
+    );
+    let nanos = |card: &RateCard, lane: &str, class: &str| {
+        card.lane_rates(lane)
+            .filter(|r| r.class_priced(class))
+            .map(|r| r.nanos_per_unit(class))
+    };
+
+    let corrected = card
+        .corrected([(LaneClass::new("lane-g", "input"), 1_000)], None)
+        .expect("the flat card is present");
+    assert_eq!(nanos(&corrected, "lane-g", "input"), Some(1_000));
+    assert_eq!(nanos(&corrected, "lane-g", "output"), Some(8_000));
+    assert_eq!(nanos(&corrected, "lane-c", "output"), Some(15_000));
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "input"),
+        Some(5_000)
+    );
+    assert_eq!(corrected.fee(), 3, "a fee it does not name is kept");
+
+    let corrected = card
+        .corrected(
+            [(LaneClass::new("plane-b\u{1f}search", "input"), 9_000)],
+            Some(7),
+        )
+        .expect("plane-b's card is present");
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "input"),
+        Some(9_000)
+    );
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "output"),
+        Some(6_000)
+    );
+    assert_eq!(
+        nanos(&corrected, "lane-g", "input"),
+        Some(2_000),
+        "the flat card is untouched"
+    );
+    assert_eq!(corrected.fee(), 7, "a named fee replaces the fee");
+
+    assert!(
+        card.corrected([(LaneClass::new("plane-c\u{1f}hop", "bytes"), 1)], None)
+            .is_none(),
+        "a plane with no card of its own has billing off; a correction cannot switch it on"
+    );
+    assert!(
+        RateCard::absent(3)
+            .corrected([(LaneClass::new("lane-g", "input"), 1)], None)
+            .is_none(),
+        "an absent flat card has nowhere for a cell to land"
+    );
+    assert!(
+        card.corrected([(LaneClass::new("plane-b\u{1f}", "input"), 1)], None)
+            .is_none(),
+        "a cell naming no lane"
+    );
+    assert_eq!(
+        RateCard::absent(3)
+            .corrected(std::iter::empty(), Some(5))
+            .map(|c| (c.fee(), c.pricing_enabled())),
+        Some((5, false)),
+        "a fee alone corrects an absent card's fee and leaves billing off"
+    );
+}
+
+/// **A CORRECTED CELL IS NO LONGER A REFUSED ONE** (#79, #42). A card that could not represent
+/// its configured `lane-g`/`input` leaves that cell UNPRICED and lists it in `refused_cells`; a
+/// signed correction that prices the cell takes it off the list, on the flat card and on a plane's
+/// own card alike, and leaves every refused cell it did not name on it.
+#[test]
+fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
+    use crate::cost::TierRates;
+    let unrepresentable = 0.0001;
+    let card = RateCard::from_config(
+        Some([
+            (
+                "lane-g",
+                TierRates {
+                    input: unrepresentable,
+                    output: unrepresentable,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+            (
+                "plane-b\u{1f}search",
+                TierRates {
+                    input: unrepresentable,
+                    output: 1.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+        ]),
+        0,
+    );
+    let plane_refused = |card: &RateCard| {
+        card.plane_lane("plane-b\u{1f}search")
+            .0
+            .refused_cells()
+            .to_vec()
+    };
+    assert_eq!(
+        card.refused_cells(),
+        [
+            LaneClass::new("lane-g", "input"),
+            LaneClass::new("lane-g", "output")
+        ]
+    );
+    assert_eq!(plane_refused(&card), [LaneClass::new("search", "input")]);
+
+    let corrected = card
+        .corrected(
+            [
+                (LaneClass::new("lane-g", "input"), 1_000),
+                (LaneClass::new("plane-b\u{1f}search", "input"), 9_000),
+            ],
+            None,
+        )
+        .expect("both cards are present");
+    assert_eq!(
+        corrected.refused_cells(),
+        [LaneClass::new("lane-g", "output")],
+        "the corrected cell is priced, so it is not refused; the cell it did not name still is"
+    );
+    assert!(
+        plane_refused(&corrected).is_empty(),
+        "the plane's corrected cell is not refused either"
+    );
+}

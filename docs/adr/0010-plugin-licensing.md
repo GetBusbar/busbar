@@ -1,10 +1,11 @@
 # ADR-0010: Plugin licensing — plugin self-validates, core resolves & delivers
 
 > Status: accepted (1.5.0). `ADR-0010` is referenced in
-> `crates/busbar/src/config/secret.rs` (`resolve_settings`), the three plugin
-> open paths (`crates/busbar/src/main.rs`, `crates/busbar/src/auth/mod.rs`,
-> `crates/busbar/src/hooks/mod.rs`), and the demo plugin
-> `crates/auth-static-plugin/src/lib.rs`.
+> `crates/busbar-kernel/src/config/secret.rs` (`resolve_settings`), the three plugin
+> open paths (`crates/busbar/src/main.rs`, `crates/busbar-kernel/src/auth/mod.rs`,
+> `crates/busbar-kernel/src/hooks/mod.rs`). The in-tree demo plugin it once cited
+> (`crates/auth-static-plugin`) is deleted (owner, 1.6.0 "FIXTURES": real plugins are the
+> examples).
 
 ## Context
 
@@ -119,9 +120,12 @@ touch the wire ABI or the manifest signature format — those stay frozen.
   machinery they already use for every other credential.
 - The core carries no licensing/enforcement code and no new network dependency;
   it stays Apache-2.0 and phone-home-free.
-- The demo plugin `busbar-auth-static-plugin` reads a `licenseKey` setting
-  (delivered via a `SecretRef` in the e2e test) and validates it itself,
-  proving the whole path end-to-end.
+- The delivery path is proven end-to-end on a real plugin: busbar-kernel's
+  `auth/tests/plugin_chain_tests.rs` delivers a setting of the real OIDC module
+  (GetBusbar/busbar-auth-oidc) through a `SecretRef`, the engine resolves it before
+  `open`, the module uses it itself, and an unresolvable reference fails the load
+  closed. (The 1.5.x demo plugin that read a `licenseKey` this way was deleted in
+  1.6.0: real plugins are the examples.)
 
 ## See also
 

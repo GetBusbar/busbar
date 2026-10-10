@@ -1,0 +1,3376 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! OpenAI Responses API protocol reader/writer implementation.
+
+use crate::codec::dialect::ir_parse_error;
+use crate::codec::ir::IrStreamEvent;
+use crate::codec::keys;
+use busbar_contract::http::StatusCode;
+// `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
+// so this plugin names no `busbar-core` implementation path for them.
+use crate::codec::dialect::{bearer_error_code, CODE_INVALID_API_KEY};
+// The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
+// re-export, so this plugin names no `busbar-core` implementation path for it.
+use busbar_contract::protocol::*;
+use busbar_contract::protocol::{
+    ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
+    ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
+    ERR_TYPE_SERVER_ERROR,
+};
+#[cfg(test)]
+use busbar_contract::upstream::CanonicalSignal;
+use busbar_contract::upstream::StatusClass;
+// G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
+// protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
+// standalone (crate::codec::proto_codec) and netted into core (core::proto::proto_codec).
+#[allow(unused_imports)]
+// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
+use super::proto_codec::*;
+use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
+// See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
+// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
+#[allow(unused_imports)]
+use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+#[rustfmt::skip]
+#[path = "map.gen.rs"]
+mod map;
+pub mod handler;
+mod reader;
+mod slots;
+mod writer;
+
+/// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
+/// resolution: `ResponsesWriter` carries per-STREAM mutable state (`sequence`, `response_id`).
+pub fn protocol() -> Protocol {
+    Protocol::new(VENDOR_NAME, ResponsesReader, ResponsesWriter)
+}
+
+/// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
+/// `/v1/responses` (rung 10).
+fn claims(
+    _h: &busbar_contract::http::HeaderMap,
+    path: &str,
+) -> Option<busbar_contract::protocol::ClaimStrength> {
+    if path.ends_with("/v1/responses") {
+        return Some(busbar_contract::protocol::ClaimStrength(10));
+    }
+    None
+}
+
+/// THE RESPONSES RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder:
+/// an exact `/v1/responses` (rung 60).
+fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
+    if path == "/v1/responses" {
+        return Some(busbar_contract::protocol::ClaimStrength(60));
+    }
+    None
+}
+
+/// THE `/v1/responses` DECLARATION. Shares OpenAI's `call_…` tool-id shape (it is the same vendor's
+/// second surface) and declares its own name, because a metric label is a protocol's own.
+pub const DECL: ProtocolDecl = ProtocolDecl {
+    name: VENDOR_NAME,
+    codec: dialect_codec!(VENDOR_NAME),
+    handler: Some(&handler::ResponsesRequestHandler),
+    verbs: &[busbar_contract::operation::OpVerb::CHAT],
+    head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
+    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
+    array_stream_shim_key: None,
+    native_tool_id_prefix: Some("call_"),
+    ingress_auth: IngressAuth::Bearer,
+    // The `/v1/responses` surface shares OpenAI's plain `Authorization: Bearer <key>` — DECLARED here
+    // as data (#83a S2-a, #40(b)): the kernel's egress-auth unit presents the lane credential under
+    // it (lane-constant, so the boot path prebuilds it), and the key never passes through this plane.
+    egress_auth_headers: None,
+    egress_auth_lane_constant: false,
+    egress_scheme: Some(EgressScheme::bearer()),
+    stream_usage_requires_opt_in: false,
+    // ── Promoted writer facts (G6 step A1): the same constants the `ResponsesWriter` methods returned.
+    requires_max_tokens: false,
+    stop_sequence_cap: None,
+    cache_markers_model_gated: false,
+    fills_thought_signature: false,
+    frame_after_message_start: None,
+    reshapes_body_at_path_base: false,
+    max_cache_control_breakpoints: None,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    ingress_is_eventstream: false,
+    emits_sse_done_terminator: false,
+    max_citations_per_delta: None,
+    // Same OpenAI Python SDK UA as the Chat surface (one vendor, two surfaces). RELEASE OBLIGATION:
+    // re-verify/bump per release; `test_egress_ua_versions_are_pinned_and_present` guards drift.
+    egress_user_agent: "OpenAI/Python 1.54.0",
+    has_model_in_url: false,
+    auth_failure_status_and_kind: (
+        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
+    ),
+    ingress_relays_amzn_headers: false,
+    ingress_relayed_response_header_names: &[],
+    auth_failure_message: AUTH_FAILURE_MSG,
+    uses_array_stream_shim: false,
+    has_native_path_not_found: false,
+    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
+    // The Responses surface carries no list-models fingerprint of its own; a `/v1/models` GET
+    // resolves to the OpenAI Chat envelope.
+    models_list_envelope: None,
+    claims: Some(claims),
+    residual_claims: Some(residual_claims),
+    residual_default: false,
+    vendor_response_metadata: None,
+    // No wire-fingerprint header disambiguates OpenAI Responses on the shared list-models surface.
+    list_models_fingerprint_headers: &[],
+    static_headers: &[],
+};
+
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = ResponsesWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&ResponsesReader),
+    leaf: &crate::codec::leaf_codec::LeafCodecs::NONE,
+};
+
+/// Largest wire `output_index` we accept in a streaming Responses event before clamping. The
+/// Responses API, like Chat Completions, documents at most 128 parallel output items, so any larger
+/// index is malformed; clamp it to this value (the highest valid 0-based index, 127) before the
+/// `usize` cast so a crafted `u64::MAX` index can never participate in unbounded set growth or
+/// index arithmetic. Mirrors `openai_chat.rs::MAX_TOOL_INDEX`.
+const MAX_OUTPUT_INDEX: usize = 127;
+
+/// Fallback `model` name emitted when the IR carries none. The official OpenAI Responses SDK types
+/// `Response.model` as a REQUIRED non-nullable string, so a `response.created`/full response that
+/// omits `model` fails a strict Pydantic/Zod decoder — and a real `/v1/responses` endpoint never
+/// omits it, making the omission a distinguishability tell. On any cross-protocol path
+/// (Anthropic→Responses, Bedrock→Responses) the IR `model` is `None`; emit this fallback rather
+/// than dropping the key. One value with the Chat writer's (`dialect::FALLBACK_MODEL`).
+const DEFAULT_MODEL: &str = crate::codec::dialect::FALLBACK_MODEL;
+
+/// Hard cap on the number of DISTINCT output indices tracked per stream in `StreamDecodeState`
+/// (`open_tools`) and in the writer's open-item sets. Bounds per-request memory against a
+/// pathological backend that emits a unique `output_index` per event (a per-connection amplification
+/// DoS). The shared `dialect::MAX_OPEN_TOOL_CALLS` (OpenAI's documented parallel-tool-call limit, 128).
+const MAX_OPEN_TOOLS: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
+
+/// The BYTE ceiling any ONE of the writer's per-item accumulators may reach over the life of a
+/// stream. `MAX_OPEN_TOOLS` bounds how MANY items accumulate; this bounds how large one of them
+/// grows, which is the other half of the same memory-amplification exposure — a backend streaming an
+/// unbounded run of fragments against a single open index needs only one entry to exhaust memory.
+///
+/// The value is `busbar_contract::codec::max_translate_body_bytes()`, the operator-tunable,
+/// live-reconfigurable limit (default 32 MiB) that already bounds a buffered cross-protocol
+/// non-stream body and the Gemini writer's streamed tool-argument buffer. Reusing it — rather than
+/// minting another constant — means an operator who raises the one knob to admit larger payloads
+/// gets that headroom here too, instead of the paths silently diverging. It is read through the
+/// translate-cap reader the host installs (#83a SD-3), a function-pointer call over an atomic load,
+/// cheap enough to take per fragment.
+fn accum_byte_cap() -> usize {
+    busbar_contract::codec::max_translate_body_bytes()
+}
+
+/// Append `fragment` to the per-item string buffer at `index`, honouring BOTH bounds: a new index is
+/// refused once `MAX_OPEN_TOOLS` items are already accumulating, and an existing buffer stops
+/// growing at [`accum_byte_cap`]. Stop-growing, never slice: a fragment that would cross the cap is
+/// dropped whole, which is the policy the Gemini writer's tool-argument accumulator established.
+fn append_capped(
+    map: &mut std::collections::BTreeMap<usize, String>,
+    index: usize,
+    fragment: &str,
+) {
+    match map.get_mut(&index) {
+        Some(buf) => {
+            if buf.len().saturating_add(fragment.len()) <= accum_byte_cap() {
+                buf.push_str(fragment);
+            }
+        }
+        None => {
+            if map.len() >= MAX_OPEN_TOOLS || fragment.len() > accum_byte_cap() {
+                return;
+            }
+            map.entry(index).or_default().push_str(fragment);
+        }
+    }
+}
+
+/// The carried TEXT weight of one buffered citation — the owned strings it holds, which is the part
+/// an upstream controls and can therefore grow without bound. The fixed-width numeric fields are not
+/// counted; they cannot be inflated.
+fn citation_bytes(c: &crate::codec::ir::IrCitation) -> usize {
+    fn len(s: &Option<String>) -> usize {
+        s.as_ref().map_or(0, String::len)
+    }
+    len(&c.kind)
+        + len(&c.cited_text)
+        + len(&c.title)
+        + len(&c.url)
+        + len(&c.encrypted_index)
+        + c.raw.as_ref().map_or(0, |v| v.to_string().len())
+}
+
+/// Key offset under which the streaming reader tracks OPEN TEXT output indices inside the shared
+/// `StreamDecodeState::open_tools` set. A native /v1/responses stream can carry MULTIPLE message
+/// (text) output items, each at its OWN `output_index`, so a single index-blind `text_block_open`
+/// bool cannot pair a BlockStart/BlockStop per text index: a second text item's delta would emit a
+/// BlockDelta with no preceding BlockStart (orphan delta) and the terminal frame would close the
+/// wrong index. `StreamDecodeState` (in `ir.rs`) exposes only the `open_tools` set and the
+/// `text_block_open` bool, so to give text the SAME per-index discipline tool items already have —
+/// without a new shared field — text indices are stored as `idx + TEXT_INDEX_KEY_OFFSET`. Wire
+/// `output_index` is clamped to `MAX_OUTPUT_INDEX` (127), so a real tool index (<=127) and an
+/// offset text key (>=1000) can never collide; the function-call routing guards
+/// (`open_tools.contains(&idx)`) keep matching only raw tool indices, and the terminal arm
+/// distinguishes a tool close (`remove(&idx)`) from a text close (`remove(&(idx + offset))`).
+const TEXT_INDEX_KEY_OFFSET: usize = 1_000;
+
+/// Base62 alphabet the native Responses ids draw their opaque suffix from — the shared
+/// single-source-of-truth atom (see `crate::codec::dialect::BASE62_ALPHABET`), aliased locally. Used by
+/// [`synthesize_item_id`] and [`synthesize_response_id`].
+const BASE62: &[u8; 62] = crate::codec::dialect::BASE62_ALPHABET;
+
+/// Width of the opaque base62 suffix on a synthesized item id (`msg_…`/`fc_…`). Native Responses
+/// item ids carry a long opaque random token with no positional structure; 48 base62 chars matches
+/// the entropy/length profile of native ids so a client that length-checks or regex-validates the
+/// `item_id` cannot fingerprint a too-short or structured suffix as non-native.
+const ITEM_ID_TOKEN_LEN: usize = 48;
+
+/// Width of the opaque base62 suffix on a synthesized `resp_` id. Native OpenAI Responses ids are
+/// ~38+ chars of opaque random data after the `resp_` prefix; 48 base62 chars stays in that profile.
+const RESPONSE_ID_TOKEN_LEN: usize = 48;
+
+/// SSE event type names emitted / consumed on the `/v1/responses` wire.
+const EVT_RESPONSE_CREATED: &str = "response.created";
+const EVT_OUTPUT_ITEM_ADDED: &str = "response.output_item.added";
+const EVT_OUTPUT_ITEM_DONE: &str = "response.output_item.done";
+// The intermediate content-part lifecycle a native /v1/responses text stream emits BETWEEN
+// `output_item.added(message)` and the first `output_text.delta`: `content_part.added` establishes
+// the active content part, and `content_part.done` closes it (with the assembled part) just before
+// `output_item.done`. A strict Responses SDK (Codex CLI) that consumes a delta with no active
+// content part logs "OutputTextDelta without active item" and DROPS the output, so these brackets
+// are load-bearing on a cross-protocol egress re-framed into the Responses dialect.
+const EVT_CONTENT_PART_ADDED: &str = "response.content_part.added";
+const EVT_CONTENT_PART_DONE: &str = "response.content_part.done";
+const EVT_OUTPUT_TEXT_DELTA: &str = "response.output_text.delta";
+// The closing bracket of the `output_text.delta` run: a native stream emits `output_text.done`
+// (carrying the COMPLETE assembled text) after the last delta and before `content_part.done`.
+const EVT_OUTPUT_TEXT_DONE: &str = "response.output_text.done";
+// IR-02: a refusal part streams as `refusal.delta` frames closed by `refusal.done` (carrying the
+// assembled refusal), in place of the `output_text.delta`/`.done` pair.
+const EVT_REFUSAL_DELTA: &str = "response.refusal.delta";
+const EVT_REFUSAL_DONE: &str = "response.refusal.done";
+// A citation attached to the `output_text` part mid-stream: `{output_index, content_index,
+// annotation_index, annotation:{type:"url_citation", url, title, start_index, end_index}}`. It
+// arrives after the part's text deltas and before `output_text.done`, while the text block is open.
+const EVT_OUTPUT_TEXT_ANNOTATION_ADDED: &str = "response.output_text.annotation.added";
+const EVT_FUNCTION_CALL_ARGS_DELTA: &str = "response.function_call_arguments.delta";
+const EVT_REASONING_TEXT_DELTA: &str = "response.reasoning_text.delta";
+// The closing bracket of the `reasoning_text.delta` run (mirrors `output_text.done` for a text
+// part): carries the COMPLETE assembled reasoning text and precedes the reasoning item's
+// `output_item.done`.
+const EVT_REASONING_TEXT_DONE: &str = "response.reasoning_text.done";
+// IR-17: a SUMMARY reasoning block streams as one `summary_text` part —
+// `reasoning_summary_part.added`, `reasoning_summary_text.delta` runs, then
+// `reasoning_summary_text.done` and `reasoning_summary_part.done` before the item's `output_item.done`.
+const EVT_REASONING_SUMMARY_PART_ADDED: &str = "response.reasoning_summary_part.added";
+const EVT_REASONING_SUMMARY_TEXT_DELTA: &str = "response.reasoning_summary_text.delta";
+const EVT_REASONING_SUMMARY_TEXT_DONE: &str = "response.reasoning_summary_text.done";
+const EVT_REASONING_SUMMARY_PART_DONE: &str = "response.reasoning_summary_part.done";
+const EVT_RESPONSE_COMPLETED: &str = "response.completed";
+const EVT_RESPONSE_FAILED: &str = "response.failed";
+const EVT_RESPONSE_INCOMPLETE: &str = "response.incomplete";
+/// The Responses stream's TOP-LEVEL mid-stream failure event (`{"type":"error","code","message",
+/// "param"}`), distinct from the terminal `response.failed`.
+const EVT_ERROR: &str = keys::ERROR_WORD;
+/// The `include` entry that asks a Responses backend for per-token logprobs on every `output_text`
+/// part — the Responses spelling of the Chat Completions `logprobs: true` switch.
+const INCLUDE_OUTPUT_TEXT_LOGPROBS: &str = "message.output_text.logprobs";
+
+// One spelling per wire word (OWNER 2026-10-01): each word-shaped literal is written once.
+/// Wire word `call_id`.
+const CALL_ID: &str = "call_id";
+/// Wire word `code_interpreter`.
+const CODE_INTERPRETER: &str = "code_interpreter";
+/// Wire word `content_index`.
+const CONTENT_INDEX: &str = "content_index";
+/// Wire word `encrypted_content`.
+const ENCRYPTED_CONTENT: &str = "encrypted_content";
+/// Wire word `file_url`.
+const FILE_URL: &str = "file_url";
+/// Wire word `filters`.
+const FILTERS: &str = "filters";
+/// Wire word `function_call_output`.
+const FUNCTION_CALL_OUTPUT: &str = "function_call_output";
+/// Wire word `include`.
+const INCLUDE: &str = "include";
+/// Wire word `incomplete_details`.
+const INCOMPLETE_DETAILS: &str = "incomplete_details";
+/// Wire word `input_file`.
+const INPUT_FILE: &str = "input_file";
+/// Wire word `input_image`.
+const INPUT_IMAGE: &str = "input_image";
+/// Wire word `input_tokens_details`.
+const INPUT_TOKENS_DETAILS: &str = "input_tokens_details";
+/// Wire word `item`.
+const ITEM: &str = "item";
+/// Wire word `item_id`.
+const ITEM_ID: &str = "item_id";
+/// Wire word `output_index`.
+const OUTPUT_INDEX: &str = "output_index";
+/// Wire word `part`.
+const PART: &str = "part";
+/// Wire word `previous_response_id`.
+const PREVIOUS_RESPONSE_ID: &str = "previous_response_id";
+/// Wire word `store`.
+const FIELD_STORE: &str = "store";
+/// Wire word `summary`.
+const SUMMARY: &str = "summary";
+/// Wire word `summary_index`.
+const SUMMARY_INDEX: &str = "summary_index";
+/// Wire word `summary_text`.
+const SUMMARY_TEXT: &str = "summary_text";
+/// Wire word `top_p`.
+const TOP_P: &str = "top_p";
+
+/// Internal `provider_signal` sentinel emitted when a `response.failed` event carries no recognizable
+/// `error.code`/`error.type`. Distinct from the `EVT_RESPONSE_FAILED` wire event type ("response.failed"):
+/// this underscore form is the breaker/telemetry label, mapped to `StatusClass::ServerError` via
+/// `class_for_response_failed`'s catch-all arm.
+const SIGNAL_RESPONSE_FAILED: &str = "response_failed";
+
+/// Response status values on the `/v1/responses` wire.
+const STATUS_IN_PROGRESS: &str = "in_progress";
+const STATUS_COMPLETED: &str = "completed";
+const STATUS_FAILED: &str = "failed";
+const STATUS_INCOMPLETE: &str = "incomplete";
+
+/// Output item `type` values on the `/v1/responses` wire.
+// `pub(crate)`: also read by `proxy/hooks.rs`'s block-text dispatch (`block_text`), which must
+// enumerate the SAME Responses item-type vocabulary the reader uses rather than re-inventing
+// string literals — two independent copies of "what item types exist" is how a hook-visibility
+// gap recurs.
+pub const ITEM_TYPE_FUNCTION_CALL: &str = "function_call";
+const ITEM_TYPE_MESSAGE: &str = keys::MESSAGE;
+/// A provider-run web search's output item.
+const ITEM_TYPE_WEB_SEARCH_CALL: &str = "web_search_call";
+pub const ITEM_TYPE_REASONING: &str = keys::REASONING;
+
+/// Content part `type` values on the `/v1/responses` wire.
+pub const CONTENT_TYPE_OUTPUT_TEXT: &str = "output_text";
+const CONTENT_TYPE_REASONING_TEXT: &str = "reasoning_text";
+const CONTENT_TYPE_INPUT_TEXT: &str = "input_text";
+
+/// `incomplete_details.reason` values on the `/v1/responses` wire.
+const INCOMPLETE_REASON_MAX_OUTPUT: &str = "max_output_tokens";
+const INCOMPLETE_REASON_CONTENT_FILTER: &str = "content_filter";
+const INCOMPLETE_REASON_OTHER: &str = "other";
+
+/// Top-level `object` field value and vendor tag for the Responses protocol.
+const OBJ_RESPONSE: &str = keys::RESPONSE;
+const VENDOR_NAME: &str = "responses";
+/// The label this dialect's usage counts are logged under (the dialect's module name).
+const COUNT_LABEL: &str = "openai_responses";
+
+/// Synthesized id prefixes (bare prefix without trailing underscore for item ids).
+const RESPONSE_ID_PREFIX: &str = "resp_";
+const ITEM_ID_PREFIX_MSG: &str = "msg";
+const ITEM_ID_PREFIX_FC: &str = "fc";
+const ITEM_ID_PREFIX_RS: &str = "rs";
+
+/// OpenAI-family error `code` strings self-owned in this protocol module.
+const ERR_CODE_RATE_LIMIT: &str = "rate_limit_exceeded";
+const ERR_CODE_STRING_ABOVE_MAX: &str = "string_above_max_length";
+
+/// Human-readable authentication failure message returned by this protocol's `auth_failure_message`.
+const AUTH_FAILURE_MSG: &str = "Incorrect API key provided.";
+
+/// Fill a fixed-width base62 token ENTIRELY from the OS CSPRNG, with NO counter overlay. A counter
+/// overlaid into any fixed region of the token leaves those characters predictable/low-entropy (the
+/// counter stays small, so its high base62 digits are constant '0') — a structural fingerprint at
+/// whatever position it occupies that a native, fully-random vendor id never carries. The opaque
+/// suffixes here are wide (>= 48 chars ≈ 285 bits of base62 entropy), so pure CSPRNG output is
+/// collision-free in practice for a per-process id stream and needs no monotonic-counter backstop.
+/// On entropy failure the buffer stays zeroed (all '0'), so this never panics on the request path.
+/// Returns an owned `String` of exactly `N` base62 characters, each drawn from a UNIFORM base62
+/// distribution: a raw `byte % 62` reduction is biased (256 is not a multiple of 62, so bytes
+/// 248..=255 wrap to base62 digits 0..=7, making those eight chars ~1.25x more likely than 8..=61
+/// and leaving a faint statistical fingerprint a native uniform-random id never carries). We instead
+/// use REJECTION SAMPLING: any byte >= 248 (= 62 * 4, the largest multiple of 62 that fits in a u8)
+/// is rejected and a fresh CSPRNG byte is drawn for that slot, so every base62 character is
+/// equiprobable. Rejection keeps the function infallible/panic-free — on an entropy failure a slot
+/// simply keeps its all-zero fallback rather than retrying.
+///
+/// `N` MUST be >= 11. A token narrower than that carries too little base62 entropy to stay
+/// collision-free across a per-process id stream and falls below the opaque-suffix width a native
+/// vendor id never goes under — making a short synthesized id a distinguishability tell. The bound
+/// is enforced at COMPILE TIME by the `const _` assertion below: instantiating `synth_token` with a
+/// `const N < 11` fails to build (a monomorphization-time `assert!`), so a too-small width can never
+/// reach the wire. Both live callers use 48 (`ITEM_ID_TOKEN_LEN`/`RESPONSE_ID_TOKEN_LEN`), far above
+/// the floor.
+fn synth_token<const N: usize>() -> String {
+    // Compile-time guard: a too-small `N` fails to build rather than emitting a short, low-entropy,
+    // fingerprintable id at runtime. An inline `const` item cannot reference the outer fn's const
+    // generic (E0401), so the assertion lives on an associated const of a zero-sized generic carrier
+    // type; referencing `MinWidth::<N>::OK` below forces its evaluation per monomorphization, turning
+    // any `N < 11` instantiation into a build error.
+    struct MinWidth<const M: usize>;
+    impl<const M: usize> MinWidth<M> {
+        const OK: () = assert!(M >= 11, "synth_token<N>: N must be >= 11 base62 chars");
+    }
+    let () = MinWidth::<N>::OK;
+
+    // Largest multiple of 62 that fits in a u8 (62 * 4). A byte in `0..REJECT_THRESHOLD` maps to a
+    // base62 digit with NO modular bias; a byte >= this threshold (248..=255) is rejected so every
+    // base62 character stays equiprobable. See the docstring for the bias rationale.
+    const REJECT_THRESHOLD: u8 = crate::codec::dialect::BASE62_REJECT_THRESHOLD;
+
+    let mut token = [b'0'; N];
+    for slot in token.iter_mut() {
+        // Draw fresh bytes until one falls in the unbiased range. A small scratch buffer is refilled
+        // from the CSPRNG as needed; on an entropy failure the draw yields zeros, which are < the
+        // threshold and accepted, so the slot stays at base62 '0' (the existing all-zero fallback)
+        // and the loop still terminates — keeping the function infallible and panic-free.
+        let mut buf = [0u8; 1];
+        loop {
+            if !super::synth_rng::fill_entropy(&mut buf) {
+                // Entropy failure: leave this slot at its existing '0' fallback and move on.
+                break;
+            }
+            if buf[0] < REJECT_THRESHOLD {
+                *slot = BASE62[(buf[0] % 62) as usize];
+                break;
+            }
+            // buf[0] >= REJECT_THRESHOLD: biased region, reject and redraw.
+        }
+    }
+
+    // `token` is ASCII base62 by construction, hence always valid UTF-8; the fallback only guards an
+    // impossible non-ASCII byte and keeps the path panic-free (no unwrap/expect on the request path).
+    String::from_utf8(token.to_vec()).unwrap_or_else(|_| "0".repeat(N))
+}
+
+/// Synthesize a per-output-item id for the streaming writer. Native Responses events carry an
+/// `item_id` (`msg_…` for message parts, `fc_…` for function-call parts) that is constant across the
+/// `output_item.added` → deltas → `output_item.done` lifecycle of a single output item. The IR's
+/// block events carry only the integer `output_index` (and, for tool use, the call id), not a wire
+/// `item_id`, so the writer must mint one.
+///
+/// Per-INDEX determinism within a stream is what the lifecycle correlation needs: the
+/// added/delta/done events of one item must share an `item_id`. The previous implementation used a
+/// sequential zero-padded hex index (`msg_00000000`, `msg_00000001`, …) — a positional structure no
+/// native opaque id has, letting any observer fingerprint a proxied response from the id pattern.
+/// We replace the suffix with an opaque CSPRNG-backed base62 token of native length, while keeping
+/// per-`(prefix, index)` determinism within a stream via a per-writer cache (see
+/// `ResponsesWriter::item_id_for`). This free function mints a FRESH opaque id; callers that need
+/// the stream-stable id go through the writer's cache.
+fn synthesize_item_id(prefix: &str) -> String {
+    format!("{prefix}_{}", synth_token::<ITEM_ID_TOKEN_LEN>())
+}
+
+// THE CREATION TIME IS AN INPUT, NOT A CLOCK READ.
+//
+// This writer used to call `SystemTime::now()` for the `created_at` it stamps when the answer it is
+// writing carries none — the thing that made this writer's output different on two identical calls.
+// A codec that fabricates a timestamp cannot be checked against a
+// frozen output and cannot live in a pure kind, so the reading became a value the caller supplies:
+//
+//   * the buffered path fills `IrResponse::created` in the answer-normalization pass
+//     (`chat_handle::chat_prepare_for_ingress`, whose `now_epoch` argument is exactly this), so the
+//     writer reads it off the answer;
+//   * the streaming path has no answer to carry it, so the value rides the writer instance
+//     (`ResponsesWriter::stamped_at`), set once by whoever opened the stream.
+//
+// With neither supplied the writer stamps `UNSTAMPED_CREATED_AT`, which is what a caller that never
+// offered a time asked for.
+//
+// The rule is about FABRICATING a time, not about clocks as such. The crate does read a monotonic
+// clock in two places — the Bedrock writer and the stream framer both start an `Instant` to MEASURE
+// elapsed latency for the metrics they report. That is a duration of something that really
+// happened, not a timestamp invented to fill a field, and it stays.
+
+/// Build the Responses API `usage` object from the neutral [`crate::codec::ir::IrUsage`] with ALL fields the
+/// official SDKs require. `openai-python`'s `ResponseUsage` and `openai-node`'s
+/// `ResponseUsage` type `total_tokens`, `input_tokens_details` (with `cached_tokens`), and
+/// `output_tokens_details` (with `reasoning_tokens`) as REQUIRED, non-nullable fields - a strict
+/// Pydantic/Zod decoder RAISES when any is omitted, and a real Responses body always carries them (as
+/// `0` when there is nothing to report). The prior writer emitted only `input_tokens`/`output_tokens`
+/// and an `input_tokens_details` gated on a cache hit, so a client on the official SDK got a
+/// `ValidationError` and the missing-detail-objects shape was a distinguishability tell.
+///
+/// SCHEMA FIDELITY: the pinned OpenAI OpenAPI spec (`ResponseUsage`) requires BOTH
+/// `input_tokens_details.cached_tokens` AND `input_tokens_details.cache_write_tokens`, plus
+/// `output_tokens_details.reasoning_tokens`. An earlier revision dropped `cache_write_tokens` on
+/// the belief that the schema did not define it; the current published schema lists it as a
+/// required member, so it is emitted again here (the cache-creation count when the source reported
+/// one, `0` otherwise) and cache-creation tokens ALSO still fold into the `input_tokens` TOTAL below.
+///
+/// The IR stores UNCACHED input, but the Responses `input_tokens` is a TOTAL that includes the cached
+/// prefix, so `cache_read` (+ `cache_creation`) are added back. `cached_tokens` mirrors the cache-read
+/// count (`0` when absent - not omitted, matching the required-field contract). `reasoning_tokens`
+/// is the carried sub-bucket ([`crate::codec::ir::IrUsageDetail::reasoning_tokens`]), falling back to `0`
+/// ONLY when the source reported none - the SDK models the field as required and non-nullable, so it
+/// must be present; what changed is that a reasoning backend's real count now reaches it instead of
+/// every response asserting `0`. `total_tokens` = `input_total` + `output_tokens`.
+fn build_responses_usage(usage: &crate::codec::ir::IrUsage) -> serde_json::Value {
+    let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
+    let cache_write = usage.cache_creation_input_tokens.unwrap_or(0);
+    let input_total = usage
+        .input_tokens
+        .saturating_add(cache_read)
+        .saturating_add(cache_write);
+    let total = input_total.saturating_add(usage.output_tokens);
+    serde_json::json!({
+        (keys::INPUT_TOKENS): input_total,
+        (INPUT_TOKENS_DETAILS): {
+            (keys::CACHED_TOKENS): cache_read,
+            (keys::CACHE_WRITE_TOKENS): cache_write,
+        },
+        (keys::OUTPUT_TOKENS): usage.output_tokens,
+        (keys::OUTPUT_TOKENS_DETAILS): {
+            (keys::REASONING_TOKENS): usage.detail.reasoning_tokens.unwrap_or(0),
+        },
+        "total_tokens": total,
+    })
+}
+
+/// The Responses `usage` object for a response that has counted nothing yet (the opening
+/// `response.created` skeleton). The spec types `Response.usage` as a non-nullable `ResponseUsage`,
+/// so when the key is present it must be an object with every required member: all zeros here.
+fn zero_responses_usage() -> serde_json::Value {
+    build_responses_usage(&crate::codec::ir::IrUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        detail: crate::codec::ir::IrUsageDetail::default(),
+    })
+}
+
+/// Fill in the members the pinned spec marks REQUIRED on every `Response` object that the writer
+/// cannot derive from the IR: the request-echo fields (`instructions`, `tools`, `tool_choice`,
+/// `parallel_tool_calls`, `metadata`, `temperature`, `top_p`) and the nullable
+/// `incomplete_details`. Each is inserted ONLY when absent, so an arm that already set a real value
+/// (an `incomplete_details` object on a truncated response) keeps it.
+///
+/// `echo` is the ORIGINAL ingress request body — `Some` on every reachable cross-dialect path (a
+/// request in another dialect, or Responses itself, answered in Responses shape; see
+/// `IrResponse::request_echo` / `ResponsesWriter::store_request_echo`), `None` only when the caller
+/// had no parsed ingress body to thread. Each echo member reads the CLIENT'S actual value straight
+/// off the wire body when present there (own spelling: Responses request and response share these
+/// six field names byte-for-byte, so no re-typing through the IR is needed); an absent member (the
+/// client never set it, or `echo` itself is `None`) falls back to the spec's own default —
+/// `instructions: null`, `tools: []`, `tool_choice: "auto"`, `parallel_tool_calls: true`,
+/// `metadata: {}`, `temperature: 1`, `top_p: 1`. A same-protocol passthrough never reaches this
+/// writer at all (the upstream body is forwarded verbatim), so this only ever answers a genuine
+/// cross-dialect hop.
+fn fill_required_response_members(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    echo: Option<&serde_json::Value>,
+) {
+    let echoed = |key: &str| {
+        echo.and_then(|e| e.get(key))
+            .filter(|v| !v.is_null())
+            .cloned()
+    };
+    let defaults: [(&str, serde_json::Value); 8] = [
+        (INCOMPLETE_DETAILS, serde_json::Value::Null),
+        (
+            keys::INSTRUCTIONS,
+            echoed(keys::INSTRUCTIONS).unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            keys::TOOLS,
+            echoed(keys::TOOLS).unwrap_or_else(|| serde_json::json!([])),
+        ),
+        (
+            keys::TOOL_CHOICE,
+            echoed(keys::TOOL_CHOICE).unwrap_or_else(|| serde_json::json!(keys::AUTO)),
+        ),
+        (
+            keys::PARALLEL_TOOL_CALLS,
+            echoed(keys::PARALLEL_TOOL_CALLS).unwrap_or(serde_json::Value::Bool(true)),
+        ),
+        (
+            keys::METADATA,
+            echoed(keys::METADATA).unwrap_or_else(|| serde_json::json!({})),
+        ),
+        (
+            keys::TEMPERATURE,
+            echoed(keys::TEMPERATURE).unwrap_or_else(|| serde_json::json!(1.0)),
+        ),
+        (
+            TOP_P,
+            echoed(TOP_P).unwrap_or_else(|| serde_json::json!(1.0)),
+        ),
+    ];
+    for (key, value) in defaults {
+        obj.entry(key.to_string()).or_insert(value);
+    }
+}
+
+/// Neutral IR logprobs in the Responses `LogProb` shape carried on an `output_text` content part
+/// (`token`, `logprob`, `bytes`, `top_logprobs[{token, logprob, bytes}]`). This is the same
+/// per-token entry the shared logprob wire object carries (`crate::codec::logprob_wire`), so that
+/// encoder builds it and the `content` array is lifted out. Empty input yields `[]`, the spec-required present-but-empty form.
+fn write_responses_part_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> serde_json::Value {
+    if lps.is_empty() {
+        return serde_json::json!([]);
+    }
+    crate::codec::logprob_wire::write_token_logprobs(lps)
+        .get_mut(keys::CONTENT)
+        .map(serde_json::Value::take)
+        .unwrap_or_else(|| serde_json::json!([]))
+}
+
+/// Neutral IR logprobs in the Responses `ResponseLogProb` shape carried on the streaming
+/// `output_text.delta` / `output_text.done` events (`token`, `logprob`,
+/// `top_logprobs[{token, logprob}]` — no `bytes`). Empty input yields `[]`.
+fn write_responses_event_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> serde_json::Value {
+    let entries: Vec<serde_json::Value> = lps
+        .iter()
+        .map(|lp| {
+            let top: Vec<serde_json::Value> = lp
+                .top
+                .iter()
+                .map(|t| serde_json::json!({ (keys::TOKEN): t.token, (keys::LOGPROB): t.logprob }))
+                .collect();
+            serde_json::json!({
+                (keys::TOKEN): lp.token,
+                (keys::LOGPROB): lp.logprob,
+                (keys::TOP_LOGPROBS): top,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(entries)
+}
+
+/// A Responses `logprobs` ARRAY — the `LogProb` entries on an `output_text` part, or the
+/// `ResponseLogProb` entries on an `output_text.delta` (the same entry minus `bytes`) — into the
+/// neutral IR entries. The entry is the shared logprob wire entry, so `crate::codec::logprob_wire`
+/// reads it; this only supplies the `{content: [...]}` envelope that object wraps the array in. Absent, `null` or not an
+/// array yields no entries (the caller asked for none).
+fn read_responses_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::codec::ir::IrTokenLogprob> {
+    match v {
+        Some(arr @ serde_json::Value::Array(entries)) if !entries.is_empty() => {
+            crate::codec::logprob_wire::read_token_logprobs(Some(
+                &serde_json::json!({ (keys::CONTENT): arr }),
+            ))
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The Responses `reasoning.effort` word → the IR reasoning ask (RSP-14, IR-09). `none` is
+/// reasoning switched OFF (`IrReasoningAsk::Off`, not "the caller said nothing"); `xhigh` is the
+/// IR's `XHigh`, above `high`; the other words map 1:1. An unknown word is `None`.
+fn read_responses_reasoning_effort(word: &str) -> Option<crate::codec::ir::IrReasoningAsk> {
+    match word {
+        keys::NONE_WORD => Some(crate::codec::ir::IrReasoningAsk::Off),
+        other => crate::codec::ir::IrReasoningEffort::parse_extended(other)
+            .map(crate::codec::ir::IrReasoningAsk::Effort),
+    }
+}
+
+/// Synthesize a protocol-correct Responses id (`resp_<opaque base62>`) for cross-protocol responses
+/// where the backend supplied none. Native OpenAI Responses ids are `resp_` followed by ~38+ chars
+/// of opaque random data with NO embedded structure; the previous form encoded the unix timestamp as
+/// the leading hex segment (`resp_{timestamp_hex}{counter_hex}`), which both made the id shorter than
+/// native AND leaked the proxy's server clock to within one second to anyone holding a response id.
+/// The opaque CSPRNG token here matches the native length/entropy profile and embeds no timestamp;
+/// the whole token is drawn from the host entropy pool (via `synth_token`) with NO counter overlay — at >= 48
+/// base62 chars (~285 bits) the birthday bound makes a per-process collision astronomically unlikely,
+/// so a counter would only ADD a predictable low-entropy region (a structural fingerprint) for no
+/// uniqueness benefit. Native passthrough never calls this: it carries the upstream id verbatim.
+fn synthesize_response_id() -> String {
+    format!(
+        "{}{}",
+        RESPONSE_ID_PREFIX,
+        synth_token::<RESPONSE_ID_TOKEN_LEN>()
+    )
+}
+
+/// Accumulate the content of a Responses `system`/`developer` input turn into `system_blocks`
+/// (which feeds `IrRequest.system` -> the provider's top-level instructions/system prompt).
+/// These turns are NOT conversation messages; routing their text here prevents the system prompt
+/// from being silently dropped on a cross-protocol hop. Content may be a bare string or an array
+/// of `{"type":"input_text","text":...}` blocks (or `output_text`); both are handled. Empty text
+/// is skipped to avoid emitting blank system blocks.
+fn push_system_content(
+    system_blocks: &mut Vec<crate::codec::ir::IrBlock>,
+    content: Option<&serde_json::Value>,
+) {
+    let mut push_text = |text: &str| {
+        if !text.is_empty() {
+            system_blocks.push(crate::codec::ir::IrBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+                citations: Vec::new(),
+                refusal: false,
+            });
+        }
+    };
+    match content {
+        Some(serde_json::Value::String(s)) => push_text(s),
+        Some(serde_json::Value::Array(arr)) => {
+            for block in arr {
+                if let Some(text) = block.get(keys::TEXT).and_then(|t| t.as_str()) {
+                    push_text(text);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract the IR content blocks for a user/assistant conversation turn from a Responses
+/// `message`-item `content` field. The Responses surface allows `content` to be EITHER an array of
+/// typed content blocks (`[{"type":"input_text",...}, ...]`) OR a bare JSON string shorthand
+/// (`"content": "hello"`). The array-only path used previously silently DROPPED the entire turn
+/// when `content` was a bare string (`as_array()` -> None -> message never pushed), losing a
+/// user/assistant turn on a cross-protocol hop. This helper handles both shapes so neither arm
+/// loses a turn. A bare string becomes a single `Text` block (empty string -> empty content, but
+/// the message is still emitted so the turn survives).
+fn message_content_blocks(
+    content: Option<&serde_json::Value>,
+) -> Option<Vec<crate::codec::ir::IrBlock>> {
+    match content {
+        Some(serde_json::Value::String(s)) => Some(vec![crate::codec::ir::IrBlock::Text {
+            text: s.clone(),
+            cache_control: None,
+            citations: Vec::new(),
+            refusal: false,
+        }]),
+        Some(serde_json::Value::Array(arr)) => {
+            Some(arr.iter().filter_map(|b| responses_block(b).ok()).collect())
+        }
+        _ => None,
+    }
+}
+
+/// Normalize the Responses API `tool_choice` into the IR union.
+///
+/// The Responses surface shares Chat Completions' string forms (`"auto"`/`"none"`/`"required"`) but
+/// FLATTENS the targeted object: `{"type":"function","name":"X"}` carries `name` at the top level
+/// (Chat nests it under `function`). Accept both shapes (flat preferred, nested as a defensive
+/// fallback) so a forced/targeted tool survives the cross-protocol seam instead of degrading to
+/// `auto`. Absent / unrecognized → `None` (omitted), so a request that never carried a directive does
+/// not gain a spurious one.
+///
+/// IR-10 (RSP-15): the `allowed_tools` form returns the restricted SUBSET as the second member,
+/// with the directive `Auto` (`mode:"auto"`) or `Required` (`mode:"required"`).
+fn read_responses_tool_choice(
+    val: Option<&serde_json::Value>,
+) -> (Option<crate::codec::ir::IrToolChoice>, Option<Vec<String>>) {
+    let Some(val) = val else {
+        return (None, None);
+    };
+    if let Some((choice, names)) = val.as_object().and_then(slots::read_allowed_tools) {
+        return (Some(choice), Some(names));
+    }
+    (read_responses_tool_choice_directive(val), None)
+}
+
+/// The single-directive forms of [`read_responses_tool_choice`].
+fn read_responses_tool_choice_directive(
+    val: &serde_json::Value,
+) -> Option<crate::codec::ir::IrToolChoice> {
+    match val {
+        serde_json::Value::String(s) => match s.as_str() {
+            keys::AUTO => Some(crate::codec::ir::IrToolChoice::Auto),
+            keys::NONE_WORD => Some(crate::codec::ir::IrToolChoice::None),
+            keys::REQUIRED => Some(crate::codec::ir::IrToolChoice::Required),
+            _ => None,
+        },
+        serde_json::Value::Object(o) => {
+            if o.get(keys::TYPE).and_then(|t| t.as_str()) == Some(keys::FUNCTION) {
+                o.get(keys::NAME)
+                    .and_then(|n| n.as_str())
+                    .or_else(|| {
+                        o.get(keys::FUNCTION)
+                            .and_then(|f| f.get(keys::NAME))
+                            .and_then(|n| n.as_str())
+                    })
+                    .map(|name| crate::codec::ir::IrToolChoice::Tool {
+                        name: name.to_string(),
+                    })
+            } else {
+                // RSP-15: a hosted-tool choice (`{"type":"web_search"}` …) and a `custom` tool
+                // choice have no IR carrier (`allowed_tools` does — IR-10, read above); the
+                // directive is not carried and the target applies its default. Say so rather than
+                // drop it silently.
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire(keys::TOOL_CHOICE),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [tool_choice_type = o.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or(""),],
+                    "dropping Responses tool_choice on ir parse: this tool_choice form has no IR \
+                     carrier; the backend's default tool choice applies"
+                );
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Emit the IR tool-choice union in the Responses API's native shape — string forms for
+/// auto/none/required, the FLAT `{"type":"function","name":...}` object for a targeted tool.
+fn write_responses_tool_choice(tc: &crate::codec::ir::IrToolChoice) -> serde_json::Value {
+    match tc {
+        crate::codec::ir::IrToolChoice::Auto => serde_json::json!(keys::AUTO),
+        crate::codec::ir::IrToolChoice::None => serde_json::json!(keys::NONE_WORD),
+        crate::codec::ir::IrToolChoice::Required => serde_json::json!(keys::REQUIRED),
+        crate::codec::ir::IrToolChoice::Tool { name } => {
+            serde_json::json!({(keys::TYPE): keys::FUNCTION, (keys::NAME): name})
+        }
+    }
+}
+
+/// Map a terminal `response.failed` provider signal (the captured `error.code`/`error.type`) to the
+/// breaker `StatusClass` that drives disposition and failover.
+///
+/// A streamed `response.failed` carries the SAME OpenAI error envelope as the non-streaming HTTP
+/// error body, so the mid-stream failure class must be derived from that signal rather than
+/// hardcoded to `ServerError`. Hardcoding `ServerError` misclassifies an auth/rate-limit/
+/// context-length failure that arrives mid-stream: the breaker would treat a dead key (Auth →
+/// HardDown) or an oversized request (ContextLength → fail-over-no-penalty) as a transient 5xx,
+/// giving the wrong breaker disposition and the wrong failover decision.
+///
+/// The mapping mirrors the non-stream HTTP classifier's buckets (`classify`/`normalize_raw_error`):
+/// auth codes → Auth, quota/rate codes → RateLimit, context-window codes → ContextLength, and the
+/// 5xx/overloaded family → ServerError. The final arm explicitly binds the unrecognized signal and
+/// defaults to `ServerError` (the safe transient bucket — a retry/cooldown rather than a permanent
+/// HardDown) per the no-`_`-catch-all rule.
+fn class_for_response_failed(signal: &str) -> StatusClass {
+    match signal {
+        CODE_INVALID_API_KEY | ERR_TYPE_AUTHENTICATION => StatusClass::Auth,
+        ERR_CODE_RATE_LIMIT | ERR_TYPE_INSUFFICIENT_QUOTA => StatusClass::RateLimit,
+        busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
+            StatusClass::ContextLength
+        }
+        ERR_TYPE_SERVER_ERROR | ERR_TYPE_OVERLOADED => StatusClass::ServerError,
+        other => {
+            // Unrecognized provider signal: default to the transient ServerError bucket so the lane
+            // recovers via cooldown rather than being permanently penalized. Named binding (not `_`)
+            // keeps the arm explicit per the no-catch-all rule.
+            let _ = other;
+            StatusClass::ServerError
+        }
+    }
+}
+
+/// True when `signal` looks like an `error.code` ENUM TOKEN (a single snake/kebab identifier an SDK
+/// switch-cases on) rather than a HUMAN sentence. The discriminator is prose: a real code carries no
+/// whitespace and stays short, while a transport/cross-protocol signal like `STREAM_ABORT_DETAIL`
+/// ("The response stream was interrupted.") or "connection reset by peer" has spaces. This preserves
+/// arbitrary code-like upstream signals (`overloaded`, `rate_limit_exceeded`, …) on a round-trip
+/// while never leaking prose as the `code` enum.
+fn is_code_like_signal(signal: &str) -> bool {
+    !signal.is_empty()
+        && signal.len() <= 64
+        && signal
+            .bytes()
+            .all(|b| b == b'_' || b == b'-' || b == b'.' || b.is_ascii_alphanumeric())
+}
+
+/// The Responses `error.code` enum for a stream failure. A code-like `provider_signal` (a
+/// same-protocol / code-bearing round-trip) is preserved verbatim; otherwise — including the
+/// cross-protocol and transport-abort paths where `provider_signal` is a HUMAN sentence, not an enum
+/// — the code is DERIVED from the error class so the wire ALWAYS carries a valid enum an SDK can
+/// switch on, never a free-form string. Exhaustive over `StatusClass` (no `_`) per the no-catch-all
+/// rule.
+fn responses_error_code(err: &busbar_contract::protocol::IrError) -> String {
+    if let Some(s) = err.provider_signal.as_deref() {
+        if is_code_like_signal(s) {
+            return s.to_string();
+        }
+    }
+    match err.class {
+        StatusClass::RateLimit => ERR_TYPE_RATE_LIMIT,
+        StatusClass::Auth => ERR_TYPE_AUTHENTICATION,
+        StatusClass::Billing => ERR_TYPE_INSUFFICIENT_QUOTA,
+        StatusClass::ContextLength | StatusClass::ClientError => ERR_TYPE_INVALID_REQUEST,
+        StatusClass::Overloaded
+        | StatusClass::ServerError
+        | StatusClass::Timeout
+        | StatusClass::Network => ERR_TYPE_SERVER_ERROR,
+    }
+    .to_string()
+}
+
+#[derive(Clone)]
+pub struct ResponsesReader;
+
+fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::IrBlock, IrError> {
+    let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
+
+    let block_type = obj.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
+
+    match block_type {
+        CONTENT_TYPE_INPUT_TEXT | CONTENT_TYPE_OUTPUT_TEXT => {
+            let text_val = obj.get(keys::TEXT);
+            let text = text_val.and_then(|t| t.as_str()).unwrap_or("").to_string();
+            // A prior-turn assistant `output_text` part carries an `annotations` array (URL
+            // citations) exactly as the RESPONSE-side `output_text` part does. The prior reader
+            // dropped it here — so an assistant turn replayed as input lost its grounding sources on
+            // any hop. Read it into the Text block's `citations` (the same slot `read_response` uses,
+            // via the shared `read_url_annotations`), so a same-protocol round-trip re-emits the
+            // annotation and a cross-protocol hop carries the citation url/title. `input_text` never
+            // carries annotations, so this only fires for `output_text`.
+            let citations = obj
+                .get(keys::ANNOTATIONS)
+                .map(super::url_citation_wire::read_url_annotations)
+                .unwrap_or_default();
+            Ok(crate::codec::ir::IrBlock::Text {
+                text,
+                cache_control: None,
+                citations,
+                refusal: false,
+            })
+        }
+        INPUT_IMAGE => {
+            // Handle a file_id-referenced image (no inline `image_url`) faithfully rather than
+            // emitting an empty Image block. Shared with the request-input reader.
+            responses_input_image_block(block_val).ok_or_else(ir_parse_error)
+        }
+        // A file ATTACHMENT: `{"type":"input_file","file_data":"data:application/pdf;base64,…",
+        // "filename":"x.pdf"}`, or `{"file_url":"https://…"}`, or `{"file_id":"file-1"}`. It used to
+        // fall into the degrade arm below and reach the backend as `{"type":"input_text","text":""}`
+        // — the caller's PDF replaced by an empty turn on every cross-protocol hop, even though
+        // Gemini, Bedrock and Anthropic all have a native slot for it.
+        INPUT_FILE => {
+            let name = obj
+                .get(keys::FILENAME)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let source = if let Some(data_uri) = obj
+                .get(keys::FILE_DATA)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                super::ir_encode::parse_image_url(data_uri)
+            } else if let Some(url) = obj
+                .get(FILE_URL)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                crate::codec::ir::IrImageSource::Url(url.to_string())
+            } else {
+                // An OpenAI-hosted uploads handle: no neutral form, so the opaque `Vendor` escape.
+                crate::codec::ir::IrImageSource::Vendor {
+                    vendor: VENDOR_NAME,
+                    value: serde_json::json!({
+                        (keys::FILE_ID): obj.get(keys::FILE_ID).and_then(|v| v.as_str()).unwrap_or("")
+                    }),
+                }
+            };
+            let kind = match &source {
+                crate::codec::ir::IrImageSource::Base64 { media_type, .. } => {
+                    crate::codec::ir::IrMediaKind::from_media_type(media_type)
+                }
+                _ => crate::codec::ir::IrMediaKind::Document,
+            };
+            Ok(crate::codec::ir::IrBlock::Media {
+                kind,
+                source,
+                name,
+                cache_control: None,
+                citations: None,
+                context: None,
+            })
+        }
+        // RSP-09: an assistant-history `refusal` part (`{"type":"refusal","refusal":"..."}`) is the
+        // model's own prior refusal text. It is assistant text on every other surface — exactly
+        // what `read_response` makes of the same part — so it is carried as Text rather than
+        // degraded to an EMPTY text block (the refusal lost, and an Anthropic backend 400s on
+        // empty text).
+        // IR-02: the part IS a refusal, so the Text block says so — a Chat / Responses writer puts
+        // it back in its refusal slot; every other writer keeps it as ordinary assistant text.
+        keys::REFUSAL => Ok(crate::codec::ir::IrBlock::Text {
+            text: obj
+                .get(keys::REFUSAL)
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string(),
+            cache_control: None,
+            citations: Vec::new(),
+            refusal: true,
+        }),
+        // RSP-09: a user `input_audio` part (`{"type":"input_audio","input_audio":{"data":"<b64>",
+        // "format":"wav"|"mp3"}}`) is the same part Chat Completions carries, read the same way
+        // (`openai_chat`'s reader): the bare format token becomes the `audio/<format>` mime the
+        // neutral IR speaks, so a Gemini/Bedrock/Chat backend receives the clip.
+        keys::INPUT_AUDIO => {
+            let audio_obj = obj.get(keys::INPUT_AUDIO).ok_or_else(ir_parse_error)?;
+            let data = audio_obj
+                .get("data")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let format = audio_obj
+                .get(keys::FORMAT)
+                .and_then(|v| v.as_str())
+                .unwrap_or("wav");
+            Ok(crate::codec::ir::IrBlock::Media {
+                kind: crate::codec::ir::IrMediaKind::Audio,
+                source: crate::codec::ir::IrImageSource::Base64 {
+                    media_type: format!("audio/{format}"),
+                    data,
+                },
+                name: None,
+                cache_control: None,
+                citations: None,
+                context: None,
+            })
+        }
+        // A content kind this reader does not model: not read, and nothing put in its place. Every
+        // caller drops an `Err` (`filter_map(..ok())`), and a translate attempt names the dropped
+        // kind (`REQUEST_BLOCKS`), so nothing vanishes unsaid where something is dropped.
+        _ => Err(ir_parse_error()),
+    }
+}
+
+/// The Responses request content grammar (`codec::drops`): a message item's `content[]` and a tool
+/// output item's `output[]`. A block of any other kind does not cross a translate attempt, which
+/// names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["input[]", "content[]"],
+        tag: Some(keys::TYPE),
+        modelled: INPUT_KINDS,
+        companions: &[],
+    },
+    crate::codec::drops::Blocks {
+        at: &["input[]", "output[]"],
+        tag: Some(keys::TYPE),
+        modelled: INPUT_KINDS,
+        companions: &[],
+    },
+];
+
+/// The content kinds `responses_block` reads.
+const INPUT_KINDS: &[&str] = &[
+    CONTENT_TYPE_INPUT_TEXT,
+    CONTENT_TYPE_OUTPUT_TEXT,
+    INPUT_IMAGE,
+    INPUT_FILE,
+    keys::REFUSAL,
+    keys::INPUT_AUDIO,
+];
+
+/// The Responses answer content grammar: a message item's `content[]`.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    (crate::codec::drops::kind::TEXT, "type=input_text"),
+    (crate::codec::drops::kind::IMAGE, "type=input_image"),
+    (crate::codec::drops::kind::DOCUMENT, "type=input_file"),
+    (crate::codec::drops::kind::THINKING, "type=reasoning"),
+    (crate::codec::drops::kind::TOOL_USE, "type=function_call"),
+    (
+        crate::codec::drops::kind::TOOL_RESULT,
+        "type=function_call_output",
+    ),
+];
+
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (crate::codec::drops::name::RESPONSE_FORMAT, "text.format"),
+    (crate::codec::drops::name::TOP_LOGPROBS, keys::TOP_LOGPROBS),
+];
+
+/// The IR request members the reader never sets.
+// No candidate count, cache marks, stop sequences, `top_k` or output modalities.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::N,
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::STOP,
+    crate::codec::drops::name::TOP_K,
+    crate::codec::drops::name::OUTPUT_MODALITIES,
+];
+
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["output[]", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: &[CONTENT_TYPE_OUTPUT_TEXT, keys::REFUSAL],
+    companions: &[],
+}];
+
+/// What the Responses reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // The model is the route's (it rides the lane).
+    crate::codec::drops::Parked {
+        key: keys::MODEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // `text` minus its `format` (which crosses as the response format): each member the map file
+    // does not map is dropped.
+    crate::codec::drops::Parked {
+        key: keys::TEXT,
+        holds: crate::codec::drops::Holds::Members(&[]),
+    },
+    // The reasoning ask's effort crosses; its other members are dropped.
+    crate::codec::drops::Parked {
+        key: keys::REASONING,
+        holds: crate::codec::drops::Holds::Members(&[keys::EFFORT]),
+    },
+];
+
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// The terminal error and the lifecycle `queued` event are carried by code; the `.done` / part events
+// repeat what the deltas already carried; annotations are read into citations.
+const RESPONSE_CODE: &[&str] = &[];
+const STREAM_CODE: &[&str] = &[
+    "type=error",
+    "type=response.queued",
+    "type=response.function_call_arguments.done",
+    "type=response.reasoning_text.done",
+    "type=response.reasoning_summary_text.done",
+    "type=response.reasoning_summary_part.added",
+    "type=response.reasoning_summary_part.done",
+    "type=response.output_text.annotation.added",
+];
+
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "error.misalignment",
+    "instructions[].type=additional_tools",
+    "instructions[].type=apply_patch_call",
+    "instructions[].type=apply_patch_call_output",
+    "instructions[].type=code_interpreter_call",
+    "instructions[].type=compaction",
+    "instructions[].type=compaction_trigger",
+    "instructions[].type=computer_call",
+    "instructions[].type=computer_call_output",
+    "instructions[].type=configuration_update",
+    "instructions[].type=custom_tool_call",
+    "instructions[].type=custom_tool_call_output",
+    "instructions[].type=file_search_call",
+    "instructions[].type=function_call.async",
+    "instructions[].type=function_call.caller",
+    "instructions[].type=function_call.namespace",
+    "instructions[].type=function_call_output.caller",
+    "instructions[].type=function_call_output.namespace",
+    "instructions[].type=function_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "instructions[].type=function_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "instructions[].type=function_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "instructions[].type=image_generation_call",
+    "instructions[].type=local_shell_call",
+    "instructions[].type=local_shell_call_output",
+    "instructions[].type=mcp_approval_request",
+    "instructions[].type=mcp_approval_response",
+    "instructions[].type=mcp_call",
+    "instructions[].type=mcp_list_tools",
+    "instructions[].type=message.content[].type=input_file.prompt_cache_breakpoint",
+    "instructions[].type=message.content[].type=input_image.prompt_cache_breakpoint",
+    "instructions[].type=message.content[].type=input_text.prompt_cache_breakpoint",
+    "instructions[].type=message.content[].type=output_text.annotations[].type=container_file_citation",
+    "instructions[].type=message.content[].type=output_text.annotations[].type=file_citation",
+    "instructions[].type=message.content[].type=output_text.annotations[].type=file_path",
+    "instructions[].type=message.phase",
+    "instructions[].type=program",
+    "instructions[].type=program_output",
+    "instructions[].type=shell_call",
+    "instructions[].type=shell_call_output",
+    "instructions[].type=tool_search_call",
+    "instructions[].type=tool_search_output",
+    "instructions[].type=web_search_call",
+    "output[].type=additional_tools",
+    "output[].type=apply_patch_call",
+    "output[].type=apply_patch_call_output",
+    "output[].type=code_interpreter_call",
+    "output[].type=compaction",
+    "output[].type=computer_call",
+    "output[].type=computer_call_output",
+    "output[].type=custom_tool_call",
+    "output[].type=custom_tool_call_output",
+    "output[].type=file_search_call",
+    "output[].type=function_call.async",
+    "output[].type=function_call.caller",
+    "output[].type=function_call.namespace",
+    "output[].type=function_call_output.caller",
+    "output[].type=function_call_output.created_by",
+    "output[].type=function_call_output.namespace",
+    "output[].type=function_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "output[].type=function_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "output[].type=function_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "output[].type=image_generation_call",
+    "output[].type=local_shell_call",
+    "output[].type=local_shell_call_output",
+    "output[].type=mcp_approval_request",
+    "output[].type=mcp_approval_response",
+    "output[].type=mcp_call",
+    "output[].type=mcp_list_tools",
+    "output[].type=message.content[].type=output_text.annotations[].type=container_file_citation.container_id",
+    "output[].type=message.phase",
+    "output[].type=program",
+    "output[].type=program_output",
+    "output[].type=shell_call",
+    "output[].type=shell_call_output",
+    "output[].type=tool_search_call",
+    "output[].type=tool_search_output",
+    "output[].type=web_search_call.action.type=find_in_page",
+    "output[].type=web_search_call.action.type=open_page",
+    "output[].type=web_search_call.action.type=search.queries",
+];
+// The events themselves are carried (the map's stream rows, `STREAM_CODE`); these are the members
+// inside them that no code carries (DF-MAP-IR-GAPS section E).
+const STREAM_DROPS: &[&str] = &[
+    "type=response.content_part.added.part.type=output_text.annotations[].type=container_file_citation",
+    "type=response.content_part.added.part.type=output_text.annotations[].type=container_file_citation.container_id",
+    "type=response.content_part.added.part.type=output_text.annotations[].type=file_citation",
+    "type=response.content_part.added.part.type=output_text.annotations[].type=file_path",
+    "type=response.content_part.done.part.type=output_text.annotations[].type=container_file_citation",
+    "type=response.content_part.done.part.type=output_text.annotations[].type=container_file_citation.container_id",
+    "type=response.content_part.done.part.type=output_text.annotations[].type=file_citation",
+    "type=response.content_part.done.part.type=output_text.annotations[].type=file_path",
+    "type=response.output_item.added.item.type=additional_tools",
+    "type=response.output_item.added.item.type=additional_tools.tools[].external_web_access",
+    "type=response.output_item.added.item.type=additional_tools.tools[].search_content_types",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=apply_patch",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=apply_patch.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.file_ids",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.memory_limit",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=computer",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=computer_use_preview.display_height",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=computer_use_preview.display_width",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=computer_use_preview.environment",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.async",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.filters.filters[].value",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.filters.value",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.max_num_results",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search.embedding_weight",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search.text_weight",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.ranker",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.score_threshold",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.vector_store_ids",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=function.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=function.async",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=function.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=function.output_schema",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.action",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.background",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.input_fidelity",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.input_image_mask",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.output_compression",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.partial_images",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.size",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=local_shell",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.allowed_tools.read_only",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.allowed_tools.tool_names",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.connector_id",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.headers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.always",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.always.read_only",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.always.tool_names",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.never",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.never.read_only",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.never.tool_names",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.server_description",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.server_label",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.server_url",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.tunnel_id",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.async",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=function.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=function.async",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=function.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=function.output_schema",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=programmatic_tool_calling",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.file_ids",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.memory_limit",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=inline",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.skill_id",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.version",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_reference",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_reference.container_id",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=local",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=local.skills",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=local.skills[].path",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=tool_search",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=tool_search.execution",
+    "type=response.output_item.added.item.type=apply_patch_call",
+    "type=response.output_item.added.item.type=apply_patch_call.caller",
+    "type=response.output_item.added.item.type=apply_patch_call.caller.type=direct",
+    "type=response.output_item.added.item.type=apply_patch_call.caller.type=program",
+    "type=response.output_item.added.item.type=apply_patch_call.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=apply_patch_call.created_by",
+    "type=response.output_item.added.item.type=apply_patch_call.operation",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=create_file",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=create_file.diff",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=create_file.path",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=delete_file",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=delete_file.path",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=update_file",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=update_file.diff",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=update_file.path",
+    "type=response.output_item.added.item.type=apply_patch_call_output",
+    "type=response.output_item.added.item.type=apply_patch_call_output.caller",
+    "type=response.output_item.added.item.type=apply_patch_call_output.caller.type=direct",
+    "type=response.output_item.added.item.type=apply_patch_call_output.caller.type=program",
+    "type=response.output_item.added.item.type=apply_patch_call_output.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=apply_patch_call_output.created_by",
+    "type=response.output_item.added.item.type=code_interpreter_call",
+    "type=response.output_item.added.item.type=code_interpreter_call.container_id",
+    "type=response.output_item.added.item.type=code_interpreter_call.outputs",
+    "type=response.output_item.added.item.type=code_interpreter_call.outputs[].type=logs",
+    "type=response.output_item.added.item.type=code_interpreter_call.outputs[].type=logs.logs",
+    "type=response.output_item.added.item.type=compaction",
+    "type=response.output_item.added.item.type=compaction.created_by",
+    "type=response.output_item.added.item.type=computer_call",
+    "type=response.output_item.added.item.type=computer_call.action",
+    "type=response.output_item.added.item.type=computer_call.action.type=click",
+    "type=response.output_item.added.item.type=computer_call.action.type=click.button",
+    "type=response.output_item.added.item.type=computer_call.action.type=click.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=click.y",
+    "type=response.output_item.added.item.type=computer_call.action.type=double_click",
+    "type=response.output_item.added.item.type=computer_call.action.type=double_click.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=double_click.y",
+    "type=response.output_item.added.item.type=computer_call.action.type=drag",
+    "type=response.output_item.added.item.type=computer_call.action.type=drag.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=drag.path",
+    "type=response.output_item.added.item.type=computer_call.action.type=drag.path[].y",
+    "type=response.output_item.added.item.type=computer_call.action.type=keypress",
+    "type=response.output_item.added.item.type=computer_call.action.type=keypress.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=move",
+    "type=response.output_item.added.item.type=computer_call.action.type=move.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=move.y",
+    "type=response.output_item.added.item.type=computer_call.action.type=screenshot",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll.scroll_x",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll.scroll_y",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll.y",
+    "type=response.output_item.added.item.type=computer_call.action.type=wait",
+    "type=response.output_item.added.item.type=computer_call.actions",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=click",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=click.button",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=click.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=click.y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=double_click",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=double_click.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=double_click.y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=drag",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=drag.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=drag.path",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=drag.path[].y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=keypress",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=keypress.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=move",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=move.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=move.y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=screenshot",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll.scroll_x",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll.scroll_y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll.y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=wait",
+    "type=response.output_item.added.item.type=computer_call.pending_safety_checks",
+    "type=response.output_item.added.item.type=computer_call_output",
+    "type=response.output_item.added.item.type=computer_call_output.acknowledged_safety_checks",
+    "type=response.output_item.added.item.type=computer_call_output.created_by",
+    "type=response.output_item.added.item.type=custom_tool_call",
+    "type=response.output_item.added.item.type=custom_tool_call.async",
+    "type=response.output_item.added.item.type=custom_tool_call.caller",
+    "type=response.output_item.added.item.type=custom_tool_call.caller.type=direct",
+    "type=response.output_item.added.item.type=custom_tool_call.caller.type=program",
+    "type=response.output_item.added.item.type=custom_tool_call.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=custom_tool_call.namespace",
+    "type=response.output_item.added.item.type=custom_tool_call_output",
+    "type=response.output_item.added.item.type=custom_tool_call_output.caller",
+    "type=response.output_item.added.item.type=custom_tool_call_output.caller.type=direct",
+    "type=response.output_item.added.item.type=custom_tool_call_output.caller.type=program",
+    "type=response.output_item.added.item.type=custom_tool_call_output.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=custom_tool_call_output.created_by",
+    "type=response.output_item.added.item.type=custom_tool_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=custom_tool_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=custom_tool_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=file_search_call",
+    "type=response.output_item.added.item.type=file_search_call.queries",
+    "type=response.output_item.added.item.type=file_search_call.results[].attributes",
+    "type=response.output_item.added.item.type=file_search_call.results[].score",
+    "type=response.output_item.added.item.type=function_call.async",
+    "type=response.output_item.added.item.type=function_call.caller",
+    "type=response.output_item.added.item.type=function_call.caller.type=direct",
+    "type=response.output_item.added.item.type=function_call.caller.type=program",
+    "type=response.output_item.added.item.type=function_call.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=function_call.namespace",
+    "type=response.output_item.added.item.type=function_call_output.caller",
+    "type=response.output_item.added.item.type=function_call_output.caller.type=direct",
+    "type=response.output_item.added.item.type=function_call_output.caller.type=program",
+    "type=response.output_item.added.item.type=function_call_output.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=function_call_output.created_by",
+    "type=response.output_item.added.item.type=function_call_output.namespace",
+    "type=response.output_item.added.item.type=function_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=function_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=function_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=image_generation_call",
+    "type=response.output_item.added.item.type=image_generation_call.result",
+    "type=response.output_item.added.item.type=local_shell_call",
+    "type=response.output_item.added.item.type=local_shell_call.action",
+    "type=response.output_item.added.item.type=local_shell_call.action.command",
+    "type=response.output_item.added.item.type=local_shell_call.action.env",
+    "type=response.output_item.added.item.type=local_shell_call.action.timeout_ms",
+    "type=response.output_item.added.item.type=local_shell_call.action.working_directory",
+    "type=response.output_item.added.item.type=local_shell_call_output",
+    "type=response.output_item.added.item.type=mcp_approval_request",
+    "type=response.output_item.added.item.type=mcp_approval_request.server_label",
+    "type=response.output_item.added.item.type=mcp_approval_response",
+    "type=response.output_item.added.item.type=mcp_approval_response.approval_request_id",
+    "type=response.output_item.added.item.type=mcp_approval_response.approve",
+    "type=response.output_item.added.item.type=mcp_call",
+    "type=response.output_item.added.item.type=mcp_call.approval_request_id",
+    "type=response.output_item.added.item.type=mcp_call.error.type=http_error",
+    "type=response.output_item.added.item.type=mcp_call.error.type=mcp_protocol_error",
+    "type=response.output_item.added.item.type=mcp_call.error.type=mcp_tool_execution_error",
+    "type=response.output_item.added.item.type=mcp_call.server_label",
+    "type=response.output_item.added.item.type=mcp_list_tools",
+    "type=response.output_item.added.item.type=mcp_list_tools.server_label",
+    "type=response.output_item.added.item.type=message.content[].type=output_text.annotations[].type=container_file_citation",
+    "type=response.output_item.added.item.type=message.content[].type=output_text.annotations[].type=container_file_citation.container_id",
+    "type=response.output_item.added.item.type=message.content[].type=output_text.annotations[].type=file_citation",
+    "type=response.output_item.added.item.type=message.content[].type=output_text.annotations[].type=file_path",
+    "type=response.output_item.added.item.type=message.phase",
+    "type=response.output_item.added.item.type=program",
+    "type=response.output_item.added.item.type=program.fingerprint",
+    "type=response.output_item.added.item.type=program_output",
+    "type=response.output_item.added.item.type=program_output.result",
+    "type=response.output_item.added.item.type=shell_call",
+    "type=response.output_item.added.item.type=shell_call.action",
+    "type=response.output_item.added.item.type=shell_call.action.commands",
+    "type=response.output_item.added.item.type=shell_call.action.max_output_length",
+    "type=response.output_item.added.item.type=shell_call.action.timeout_ms",
+    "type=response.output_item.added.item.type=shell_call.caller",
+    "type=response.output_item.added.item.type=shell_call.caller.type=direct",
+    "type=response.output_item.added.item.type=shell_call.caller.type=program",
+    "type=response.output_item.added.item.type=shell_call.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=shell_call.created_by",
+    "type=response.output_item.added.item.type=shell_call.environment",
+    "type=response.output_item.added.item.type=shell_call.environment.type=container_reference",
+    "type=response.output_item.added.item.type=shell_call.environment.type=container_reference.container_id",
+    "type=response.output_item.added.item.type=shell_call.environment.type=local",
+    "type=response.output_item.added.item.type=shell_call_output",
+    "type=response.output_item.added.item.type=shell_call_output.caller",
+    "type=response.output_item.added.item.type=shell_call_output.caller.type=direct",
+    "type=response.output_item.added.item.type=shell_call_output.caller.type=program",
+    "type=response.output_item.added.item.type=shell_call_output.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=shell_call_output.created_by",
+    "type=response.output_item.added.item.type=shell_call_output.max_output_length",
+    "type=response.output_item.added.item.type=shell_call_output.output[].created_by",
+    "type=response.output_item.added.item.type=shell_call_output.output[].outcome",
+    "type=response.output_item.added.item.type=shell_call_output.output[].outcome.type=exit",
+    "type=response.output_item.added.item.type=shell_call_output.output[].outcome.type=exit.exit_code",
+    "type=response.output_item.added.item.type=shell_call_output.output[].stderr",
+    "type=response.output_item.added.item.type=shell_call_output.output[].stdout",
+    "type=response.output_item.added.item.type=tool_search_call",
+    "type=response.output_item.added.item.type=tool_search_call.created_by",
+    "type=response.output_item.added.item.type=tool_search_call.execution",
+    "type=response.output_item.added.item.type=tool_search_output",
+    "type=response.output_item.added.item.type=tool_search_output.created_by",
+    "type=response.output_item.added.item.type=tool_search_output.execution",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].external_web_access",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].search_content_types",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=apply_patch",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=apply_patch.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.file_ids",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.memory_limit",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=computer",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=computer_use_preview.display_height",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=computer_use_preview.display_width",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=computer_use_preview.environment",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.async",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.filters.filters[].value",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.filters.value",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.max_num_results",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search.embedding_weight",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search.text_weight",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.ranker",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.score_threshold",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.vector_store_ids",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=function.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=function.async",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=function.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=function.output_schema",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.action",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.background",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.input_fidelity",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.input_image_mask",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.output_compression",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.partial_images",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.size",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=local_shell",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.allowed_tools.read_only",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.allowed_tools.tool_names",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.connector_id",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.headers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.always",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.always.read_only",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.always.tool_names",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.never",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.never.read_only",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.never.tool_names",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.server_description",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.server_label",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.server_url",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.tunnel_id",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.async",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.async",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.output_schema",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=programmatic_tool_calling",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.file_ids",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.memory_limit",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=inline",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.skill_id",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.version",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_reference",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_reference.container_id",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=local",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=local.skills",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=local.skills[].path",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=tool_search",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=tool_search.execution",
+    "type=response.output_item.added.item.type=web_search_call",
+    "type=response.output_item.added.item.type=web_search_call.action",
+    "type=response.output_item.added.item.type=web_search_call.action.type=find_in_page",
+    "type=response.output_item.added.item.type=web_search_call.action.type=find_in_page.pattern",
+    "type=response.output_item.added.item.type=web_search_call.action.type=open_page",
+    "type=response.output_item.added.item.type=web_search_call.action.type=search",
+    "type=response.output_item.added.item.type=web_search_call.action.type=search.queries",
+    "type=response.output_item.added.item.type=web_search_call.action.type=search.sources",
+    "type=response.output_item.done.item.type=additional_tools",
+    "type=response.output_item.done.item.type=additional_tools.tools[].external_web_access",
+    "type=response.output_item.done.item.type=additional_tools.tools[].search_content_types",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=apply_patch",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=apply_patch.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.file_ids",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.memory_limit",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=computer",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=computer_use_preview.display_height",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=computer_use_preview.display_width",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=computer_use_preview.environment",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.async",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.filters.filters[].value",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.filters.value",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.max_num_results",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search.embedding_weight",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search.text_weight",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.ranker",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.score_threshold",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.vector_store_ids",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=function.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=function.async",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=function.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=function.output_schema",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.action",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.background",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.input_fidelity",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.input_image_mask",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.output_compression",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.partial_images",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.size",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=local_shell",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.allowed_tools.read_only",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.allowed_tools.tool_names",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.connector_id",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.headers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.always",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.always.read_only",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.always.tool_names",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.never",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.never.read_only",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.never.tool_names",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.server_description",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.server_label",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.server_url",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.tunnel_id",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.async",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=function.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=function.async",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=function.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=function.output_schema",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=programmatic_tool_calling",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.file_ids",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.memory_limit",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=inline",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.skill_id",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.version",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_reference",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_reference.container_id",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=local",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=local.skills",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=local.skills[].path",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=tool_search",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=tool_search.execution",
+    "type=response.output_item.done.item.type=apply_patch_call",
+    "type=response.output_item.done.item.type=apply_patch_call.caller",
+    "type=response.output_item.done.item.type=apply_patch_call.caller.type=direct",
+    "type=response.output_item.done.item.type=apply_patch_call.caller.type=program",
+    "type=response.output_item.done.item.type=apply_patch_call.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=apply_patch_call.created_by",
+    "type=response.output_item.done.item.type=apply_patch_call.operation",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=create_file",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=create_file.diff",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=create_file.path",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=delete_file",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=delete_file.path",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=update_file",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=update_file.diff",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=update_file.path",
+    "type=response.output_item.done.item.type=apply_patch_call_output",
+    "type=response.output_item.done.item.type=apply_patch_call_output.caller",
+    "type=response.output_item.done.item.type=apply_patch_call_output.caller.type=direct",
+    "type=response.output_item.done.item.type=apply_patch_call_output.caller.type=program",
+    "type=response.output_item.done.item.type=apply_patch_call_output.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=apply_patch_call_output.created_by",
+    "type=response.output_item.done.item.type=code_interpreter_call",
+    "type=response.output_item.done.item.type=code_interpreter_call.container_id",
+    "type=response.output_item.done.item.type=code_interpreter_call.outputs",
+    "type=response.output_item.done.item.type=code_interpreter_call.outputs[].type=logs",
+    "type=response.output_item.done.item.type=code_interpreter_call.outputs[].type=logs.logs",
+    "type=response.output_item.done.item.type=compaction",
+    "type=response.output_item.done.item.type=compaction.created_by",
+    "type=response.output_item.done.item.type=computer_call",
+    "type=response.output_item.done.item.type=computer_call.action",
+    "type=response.output_item.done.item.type=computer_call.action.type=click",
+    "type=response.output_item.done.item.type=computer_call.action.type=click.button",
+    "type=response.output_item.done.item.type=computer_call.action.type=click.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=click.y",
+    "type=response.output_item.done.item.type=computer_call.action.type=double_click",
+    "type=response.output_item.done.item.type=computer_call.action.type=double_click.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=double_click.y",
+    "type=response.output_item.done.item.type=computer_call.action.type=drag",
+    "type=response.output_item.done.item.type=computer_call.action.type=drag.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=drag.path",
+    "type=response.output_item.done.item.type=computer_call.action.type=drag.path[].y",
+    "type=response.output_item.done.item.type=computer_call.action.type=keypress",
+    "type=response.output_item.done.item.type=computer_call.action.type=keypress.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=move",
+    "type=response.output_item.done.item.type=computer_call.action.type=move.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=move.y",
+    "type=response.output_item.done.item.type=computer_call.action.type=screenshot",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll.scroll_x",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll.scroll_y",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll.y",
+    "type=response.output_item.done.item.type=computer_call.action.type=wait",
+    "type=response.output_item.done.item.type=computer_call.actions",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=click",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=click.button",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=click.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=click.y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=double_click",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=double_click.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=double_click.y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=drag",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=drag.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=drag.path",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=drag.path[].y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=keypress",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=keypress.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=move",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=move.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=move.y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=screenshot",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll.scroll_x",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll.scroll_y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll.y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=wait",
+    "type=response.output_item.done.item.type=computer_call.pending_safety_checks",
+    "type=response.output_item.done.item.type=computer_call_output",
+    "type=response.output_item.done.item.type=computer_call_output.acknowledged_safety_checks",
+    "type=response.output_item.done.item.type=computer_call_output.created_by",
+    "type=response.output_item.done.item.type=custom_tool_call",
+    "type=response.output_item.done.item.type=custom_tool_call.async",
+    "type=response.output_item.done.item.type=custom_tool_call.caller",
+    "type=response.output_item.done.item.type=custom_tool_call.caller.type=direct",
+    "type=response.output_item.done.item.type=custom_tool_call.caller.type=program",
+    "type=response.output_item.done.item.type=custom_tool_call.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=custom_tool_call.namespace",
+    "type=response.output_item.done.item.type=custom_tool_call_output",
+    "type=response.output_item.done.item.type=custom_tool_call_output.caller",
+    "type=response.output_item.done.item.type=custom_tool_call_output.caller.type=direct",
+    "type=response.output_item.done.item.type=custom_tool_call_output.caller.type=program",
+    "type=response.output_item.done.item.type=custom_tool_call_output.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=custom_tool_call_output.created_by",
+    "type=response.output_item.done.item.type=custom_tool_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=custom_tool_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=custom_tool_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=file_search_call",
+    "type=response.output_item.done.item.type=file_search_call.queries",
+    "type=response.output_item.done.item.type=file_search_call.results[].attributes",
+    "type=response.output_item.done.item.type=file_search_call.results[].score",
+    "type=response.output_item.done.item.type=function_call.async",
+    "type=response.output_item.done.item.type=function_call.caller",
+    "type=response.output_item.done.item.type=function_call.caller.type=direct",
+    "type=response.output_item.done.item.type=function_call.caller.type=program",
+    "type=response.output_item.done.item.type=function_call.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=function_call.namespace",
+    "type=response.output_item.done.item.type=function_call_output.caller",
+    "type=response.output_item.done.item.type=function_call_output.caller.type=direct",
+    "type=response.output_item.done.item.type=function_call_output.caller.type=program",
+    "type=response.output_item.done.item.type=function_call_output.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=function_call_output.created_by",
+    "type=response.output_item.done.item.type=function_call_output.namespace",
+    "type=response.output_item.done.item.type=function_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=function_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=function_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=image_generation_call",
+    "type=response.output_item.done.item.type=image_generation_call.result",
+    "type=response.output_item.done.item.type=local_shell_call",
+    "type=response.output_item.done.item.type=local_shell_call.action",
+    "type=response.output_item.done.item.type=local_shell_call.action.command",
+    "type=response.output_item.done.item.type=local_shell_call.action.env",
+    "type=response.output_item.done.item.type=local_shell_call.action.timeout_ms",
+    "type=response.output_item.done.item.type=local_shell_call.action.working_directory",
+    "type=response.output_item.done.item.type=local_shell_call_output",
+    "type=response.output_item.done.item.type=mcp_approval_request",
+    "type=response.output_item.done.item.type=mcp_approval_request.server_label",
+    "type=response.output_item.done.item.type=mcp_approval_response",
+    "type=response.output_item.done.item.type=mcp_approval_response.approval_request_id",
+    "type=response.output_item.done.item.type=mcp_approval_response.approve",
+    "type=response.output_item.done.item.type=mcp_call",
+    "type=response.output_item.done.item.type=mcp_call.approval_request_id",
+    "type=response.output_item.done.item.type=mcp_call.error.type=http_error",
+    "type=response.output_item.done.item.type=mcp_call.error.type=mcp_protocol_error",
+    "type=response.output_item.done.item.type=mcp_call.error.type=mcp_tool_execution_error",
+    "type=response.output_item.done.item.type=mcp_call.server_label",
+    "type=response.output_item.done.item.type=mcp_list_tools",
+    "type=response.output_item.done.item.type=mcp_list_tools.server_label",
+    "type=response.output_item.done.item.type=message.content[].type=output_text.annotations[].type=container_file_citation",
+    "type=response.output_item.done.item.type=message.content[].type=output_text.annotations[].type=container_file_citation.container_id",
+    "type=response.output_item.done.item.type=message.content[].type=output_text.annotations[].type=file_citation",
+    "type=response.output_item.done.item.type=message.content[].type=output_text.annotations[].type=file_path",
+    "type=response.output_item.done.item.type=message.phase",
+    "type=response.output_item.done.item.type=program",
+    "type=response.output_item.done.item.type=program.fingerprint",
+    "type=response.output_item.done.item.type=program_output",
+    "type=response.output_item.done.item.type=program_output.result",
+    "type=response.output_item.done.item.type=shell_call",
+    "type=response.output_item.done.item.type=shell_call.action",
+    "type=response.output_item.done.item.type=shell_call.action.commands",
+    "type=response.output_item.done.item.type=shell_call.action.max_output_length",
+    "type=response.output_item.done.item.type=shell_call.action.timeout_ms",
+    "type=response.output_item.done.item.type=shell_call.caller",
+    "type=response.output_item.done.item.type=shell_call.caller.type=direct",
+    "type=response.output_item.done.item.type=shell_call.caller.type=program",
+    "type=response.output_item.done.item.type=shell_call.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=shell_call.created_by",
+    "type=response.output_item.done.item.type=shell_call.environment",
+    "type=response.output_item.done.item.type=shell_call.environment.type=container_reference",
+    "type=response.output_item.done.item.type=shell_call.environment.type=container_reference.container_id",
+    "type=response.output_item.done.item.type=shell_call.environment.type=local",
+    "type=response.output_item.done.item.type=shell_call_output",
+    "type=response.output_item.done.item.type=shell_call_output.caller",
+    "type=response.output_item.done.item.type=shell_call_output.caller.type=direct",
+    "type=response.output_item.done.item.type=shell_call_output.caller.type=program",
+    "type=response.output_item.done.item.type=shell_call_output.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=shell_call_output.created_by",
+    "type=response.output_item.done.item.type=shell_call_output.max_output_length",
+    "type=response.output_item.done.item.type=shell_call_output.output[].created_by",
+    "type=response.output_item.done.item.type=shell_call_output.output[].outcome",
+    "type=response.output_item.done.item.type=shell_call_output.output[].outcome.type=exit",
+    "type=response.output_item.done.item.type=shell_call_output.output[].outcome.type=exit.exit_code",
+    "type=response.output_item.done.item.type=shell_call_output.output[].stderr",
+    "type=response.output_item.done.item.type=shell_call_output.output[].stdout",
+    "type=response.output_item.done.item.type=tool_search_call",
+    "type=response.output_item.done.item.type=tool_search_call.created_by",
+    "type=response.output_item.done.item.type=tool_search_call.execution",
+    "type=response.output_item.done.item.type=tool_search_output",
+    "type=response.output_item.done.item.type=tool_search_output.created_by",
+    "type=response.output_item.done.item.type=tool_search_output.execution",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].external_web_access",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].search_content_types",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=apply_patch",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=apply_patch.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.file_ids",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.memory_limit",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=computer",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=computer_use_preview.display_height",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=computer_use_preview.display_width",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=computer_use_preview.environment",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.async",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.filters.filters[].value",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.filters.value",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.max_num_results",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search.embedding_weight",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search.text_weight",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.ranker",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.score_threshold",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.vector_store_ids",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=function.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=function.async",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=function.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=function.output_schema",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.action",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.background",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.input_fidelity",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.input_image_mask",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.output_compression",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.partial_images",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.size",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=local_shell",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.allowed_tools.read_only",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.allowed_tools.tool_names",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.connector_id",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.headers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.always",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.always.read_only",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.always.tool_names",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.never",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.never.read_only",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.never.tool_names",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.server_description",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.server_label",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.server_url",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.tunnel_id",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.async",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.async",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.output_schema",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=programmatic_tool_calling",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.file_ids",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.memory_limit",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=inline",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.skill_id",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.version",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_reference",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_reference.container_id",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=local",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=local.skills",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=local.skills[].path",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=tool_search",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=tool_search.execution",
+    "type=response.output_item.done.item.type=web_search_call",
+    "type=response.output_item.done.item.type=web_search_call.action",
+    "type=response.output_item.done.item.type=web_search_call.action.type=find_in_page",
+    "type=response.output_item.done.item.type=web_search_call.action.type=find_in_page.pattern",
+    "type=response.output_item.done.item.type=web_search_call.action.type=open_page",
+    "type=response.output_item.done.item.type=web_search_call.action.type=search",
+    "type=response.output_item.done.item.type=web_search_call.action.type=search.queries",
+    "type=response.output_item.done.item.type=web_search_call.action.type=search.sources",
+    "type=response.output_text.annotation.added.annotation.type=container_file_citation",
+    "type=response.output_text.annotation.added.annotation.type=container_file_citation.container_id",
+    "type=response.output_text.annotation.added.annotation.type=file_citation",
+    "type=response.output_text.annotation.added.annotation.type=file_path",
+    "type=response.output_text.annotation.added.annotation_index",
+];
+
+/// Build an IR `Image` block from a Responses `input_image` content object. Prefers an inline
+/// `image_url` (parsed via the shared `parse_image_url` into a `Base64`/`Url` source). Otherwise, an
+/// uploaded-file reference becomes the typed `FileId` source so the writer reconstructs the native
+/// `file_id` form losslessly. Returns `None` when the block carries NEITHER (a degenerate reference).
+fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::codec::ir::IrBlock> {
+    // IR-08: `detail` ("low"/"high"/"auto") is the per-image fidelity knob Chat and Cohere carry
+    // too; it rides the IR `Image.detail` slot (an unknown word is dropped with a warn).
+    let detail = slots::read_image_detail(item);
+    let image_url = item.get(keys::IMAGE_URL).and_then(|u| u.as_str());
+    if let Some(url) = image_url.filter(|u| !u.is_empty()) {
+        return Some(crate::codec::ir::IrBlock::Image {
+            source: super::ir_encode::parse_image_url(url),
+            cache_control: None,
+            detail,
+        });
+    }
+    if let Some(file_id) = item
+        .get(keys::FILE_ID)
+        .and_then(|f| f.as_str())
+        .filter(|f| !f.is_empty())
+    {
+        return Some(crate::codec::ir::IrBlock::Image {
+            source: crate::codec::ir::IrImageSource::Vendor {
+                vendor: VENDOR_NAME,
+                value: serde_json::json!({ (keys::FILE_ID): file_id }),
+            },
+            cache_control: None,
+            detail,
+        });
+    }
+    None
+}
+
+/// Extract the chain-of-thought text from a Responses `reasoning` output item. A reasoning item
+/// carries its text in two possible arrays: `content[]` entries of type `reasoning_text` (the full
+/// reasoning text) and/or `summary[]` entries of type `summary_text` (a summarized form). Concatenate
+/// every `text` found in BOTH arrays WITHOUT a separator (mirrors the no-separator concat the rest of
+/// this module uses for fragment reassembly), preferring nothing — a real item carries one or the
+/// other, and concatenating both is lossless when only one is present (the other contributes nothing).
+/// Returns an empty string when neither array carries text, so the caller can skip an empty item.
+///
+/// `pub(crate)`: also called from `proxy/hooks.rs`'s `block_text` dispatch for the Responses
+/// summary-only-reasoning hook-visibility fix — the hook seam must walk `content[]`/`summary[]`
+/// with the EXACT SAME accept/skip rules the reader uses, not a second hand-rolled copy.
+///
+/// Returns `Cow<'_, str>` rather than an owned `String`: `total_text_chars` only needs a char
+/// count and immediately discards the text, so allocating for it on every call is wasted work.
+/// The common case — exactly ONE text-bearing part across BOTH `content[]` and `summary[]`
+/// combined — borrows straight from `item` (`Cow::Borrowed`); only a SECOND accepted part
+/// anywhere (either array, not per-array independently — a part in `content[]` followed by one
+/// in `summary[]` still must concatenate, not silently keep only the first) forces an allocation,
+/// and every further part appends into that same buffer. The empty case (no accepted part in
+/// either array) returns `Cow::Borrowed("")`, never `Cow::Owned(String::new())` — a caller that
+/// only wants a length must not pay an allocation for zero text.
+pub fn read_reasoning_text(item: &serde_json::Value) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let mut acc: Option<Cow<'_, str>> = None;
+    for (arr_key, type_key) in [
+        (keys::CONTENT, CONTENT_TYPE_REASONING_TEXT),
+        (SUMMARY, SUMMARY_TEXT),
+    ] {
+        if let Some(arr) = item.get(arr_key).and_then(|c| c.as_array()) {
+            for part in arr {
+                // Accept the part whether or not it carries the exact `type` literal — a missing or
+                // unexpected `type` should not silently drop reasoning text — but only when a `text`
+                // string is present. The `type_key` is checked only to skip a non-matching typed part
+                // (e.g. a future part kind) while still accepting an untyped `{text}` shorthand.
+                let type_ok = part
+                    .get(keys::TYPE)
+                    .and_then(|t| t.as_str())
+                    .is_none_or(|t| t == type_key);
+                if !type_ok {
+                    continue;
+                }
+                let Some(t) = part.get(keys::TEXT).and_then(|t| t.as_str()) else {
+                    continue;
+                };
+                acc = Some(match acc {
+                    None => Cow::Borrowed(t),
+                    Some(Cow::Borrowed(prev)) => {
+                        let mut owned = String::with_capacity(prev.len() + t.len());
+                        owned.push_str(prev);
+                        owned.push_str(t);
+                        Cow::Owned(owned)
+                    }
+                    Some(Cow::Owned(mut owned)) => {
+                        owned.push_str(t);
+                        Cow::Owned(owned)
+                    }
+                });
+            }
+        }
+    }
+    acc.unwrap_or(Cow::Borrowed(""))
+}
+
+/// Extract the opaque `encrypted_content` blob from a Responses `reasoning` item, applying the
+/// EXACT same accept/skip rule the reader uses at both its call sites (input-item arm and
+/// output-item arm, `reader.rs`): a string value, and non-empty. `None` for a missing key, a
+/// non-string value, or an empty string — the reader drops such an item entirely when it also
+/// carries no text (see both call sites' `!text.is_empty() || signature.is_some()` guard).
+///
+/// `pub(crate)`: also called from `proxy/hooks.rs`'s `block_text` dispatch (the Responses
+/// encrypted-content-only hook-visibility fix) so the hook seam recognizes the SAME opaque-blob
+/// shape the reader admits to the provider, instead of a second hand-rolled copy of this rule.
+pub fn read_reasoning_encrypted_content(item: &serde_json::Value) -> Option<&str> {
+    item.get(ENCRYPTED_CONTENT)
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+}
+
+/// Responses `incomplete_details.reason` → canonical [`crate::codec::ir::IrStopReason`]. The ONLY place that
+/// knows the Responses truncation-reason vocabulary; an unmodeled reason maps to `Other`.
+fn read_responses_incomplete_reason(reason: &str) -> crate::codec::ir::IrStopReason {
+    use crate::codec::ir::IrStopReason as S;
+    match reason {
+        INCOMPLETE_REASON_MAX_OUTPUT => S::MaxTokens,
+        INCOMPLETE_REASON_CONTENT_FILTER => S::Safety,
+        keys::REFUSAL => S::Refusal,
+        _ => S::Other,
+    }
+}
+
+/// [`crate::codec::ir::IrStopReason`] → Responses terminal `status`. Only a truncation (`max_tokens`) or a
+/// content-filter (`safety`) renders the turn `incomplete`; everything else (incl. tool_use, refusal)
+/// is `completed` (a refusal/tool-call is surfaced via output items, not the status).
+fn write_responses_status(reason: crate::codec::ir::IrStopReason) -> &'static str {
+    use crate::codec::ir::IrStopReason as S;
+    match reason {
+        S::MaxTokens | S::Safety => STATUS_INCOMPLETE,
+        _ => STATUS_COMPLETED,
+    }
+}
+
+/// [`crate::codec::ir::IrStopReason`] → Responses `incomplete_details.reason` (only consulted when the status
+/// is `incomplete`, i.e. for `MaxTokens`/`Safety`; any other reason defaults to `other`).
+fn write_responses_incomplete_reason(reason: crate::codec::ir::IrStopReason) -> &'static str {
+    use crate::codec::ir::IrStopReason as S;
+    match reason {
+        S::MaxTokens => INCOMPLETE_REASON_MAX_OUTPUT,
+        S::Safety => INCOMPLETE_REASON_CONTENT_FILTER,
+        _ => INCOMPLETE_REASON_OTHER,
+    }
+}
+
+/// Normalize a Responses `text` object's `format` into the IR's canonical `response_format` shape.
+/// The Responses API carries structured-output config at `text.format` with a FLAT json_schema
+/// shape (`{"type":"json_schema","name":...,"schema":...,"strict":...,"description":...}`), whereas
+/// the IR's canonical `response_format` (the shape the OpenAI Chat-Completions reader stores) NESTS
+/// those under a `json_schema` key (`{"type":"json_schema","json_schema":{name,schema,strict,...}}`).
+/// This converts the flat Responses form into the nested canonical form so a Responses structured-
+/// output request reaches an OpenAI/Anthropic backend faithfully. `text`/`json_object` formats carry
+/// no extra fields and pass through as `{"type":...}`. Returns `None` when `text.format` is absent so
+/// the IR field stays unset (no spurious response_format on a request that carried none). An
+/// unrecognized `type` is passed through verbatim rather than dropped.
+fn read_text_format(
+    text_val: Option<&serde_json::Value>,
+) -> Option<crate::codec::ir::IrResponseFormat> {
+    let format = text_val.and_then(|t| t.get(keys::FORMAT))?;
+    let o = format.as_object()?;
+    match o.get(keys::TYPE).and_then(|t| t.as_str()) {
+        Some(keys::TEXT) => Some(crate::codec::ir::IrResponseFormat {
+            json: false,
+            schema: None,
+            name: None,
+            strict: None,
+            description: None,
+        }),
+        // The Responses `text.format` json_schema form is FLAT — name/schema/strict/description sit
+        // beside `type` (not nested under `json_schema` as in OpenAI).
+        Some(keys::JSON_SCHEMA) => Some(crate::codec::ir::IrResponseFormat {
+            json: true,
+            schema: o.get(keys::SCHEMA).cloned(),
+            name: o.get(keys::NAME).and_then(|n| n.as_str()).map(String::from),
+            strict: o.get(keys::STRICT).and_then(|s| s.as_bool()),
+            description: o
+                .get(keys::DESCRIPTION)
+                .and_then(|d| d.as_str())
+                .map(String::from),
+        }),
+        // `json_object` / any unknown type → free-form JSON (safe default).
+        Some(_) => Some(crate::codec::ir::IrResponseFormat {
+            json: true,
+            schema: None,
+            name: None,
+            strict: None,
+            description: None,
+        }),
+        None => None,
+    }
+}
+
+/// Project the agnostic [`crate::codec::ir::IrResponseFormat`] into a Responses `text.format` object (inverse
+/// of [`read_text_format`]). The ONLY code that builds the Responses structured-output wire shape: the
+/// json_schema form is FLAT — `name`/`schema`/`strict`/`description` sit beside `type`. Returns the
+/// `format` value to place under `text.format`; the caller wraps it in `{"text":{"format":...}}`.
+fn write_text_format(rf: &crate::codec::ir::IrResponseFormat) -> serde_json::Value {
+    if !rf.json {
+        return serde_json::json!({(keys::TYPE): keys::TEXT});
+    }
+    match &rf.schema {
+        Some(schema) => {
+            let mut f = serde_json::Map::new();
+            f.insert(keys::TYPE.to_string(), serde_json::json!(keys::JSON_SCHEMA));
+            f.insert(
+                keys::NAME.to_string(),
+                serde_json::json!(rf.name.as_deref().unwrap_or(keys::RESPONSE)),
+            );
+            f.insert(keys::SCHEMA.to_string(), schema.clone());
+            if let Some(s) = rf.strict {
+                f.insert(keys::STRICT.to_string(), serde_json::json!(s));
+            }
+            if let Some(d) = &rf.description {
+                f.insert(keys::DESCRIPTION.to_string(), serde_json::json!(d));
+            }
+            serde_json::Value::Object(f)
+        }
+        None => serde_json::json!({(keys::TYPE): "json_object"}),
+    }
+}
+
+/// THE RESPONSES API'S USAGE COUNTS, AS DATA (#42). `input_tokens` is a TOTAL that already INCLUDES
+/// the cached prefix (`input_tokens_details.cached_tokens`) and the cache-write slice
+/// (`input_tokens_details.cache_write_tokens`, "the number of input tokens that were written to
+/// the cache"), so both are subtracted (saturating) to leave the uncached input and carried as the
+/// IR's ADDITIVE cache read / cache creation; `None` when absent, never a spurious `Some(0)`.
+/// `output_tokens_details.reasoning_tokens` is a SLICE of `output_tokens`, carried as attribution.
+/// The buffered response, the stream's terminal usage and a truncated-body recovery read this one
+/// table.
+const USAGE: &[UsageCount] = &[
+    (CountSlot::Input, CountRead::Zero(&[keys::INPUT_TOKENS])),
+    (
+        CountSlot::Input,
+        CountRead::Less(&[INPUT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
+    ),
+    (
+        CountSlot::Input,
+        CountRead::Less(&[INPUT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
+    ),
+    (CountSlot::Output, CountRead::Zero(&[keys::OUTPUT_TOKENS])),
+    (
+        CountSlot::CacheWrite,
+        CountRead::Opt(&[INPUT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
+    ),
+    (
+        CountSlot::CacheRead,
+        CountRead::Opt(&[INPUT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
+    ),
+    (
+        CountSlot::Reasoning,
+        CountRead::Lenient(&[keys::OUTPUT_TOKENS_DETAILS, keys::REASONING_TOKENS]),
+    ),
+];
+
+/// Stable identifier of the identity [`read_responses_usage`] checks `usage.total_tokens` against,
+/// carried on [`crate::codec::ir::UsageIdentityNote::identity`].
+const RESPONSES_USAGE_IDENTITY: &str = "openai_responses.usage";
+
+/// A Responses `usage` object (`None` when absent) → the IR usage, through [`USAGE`]; the tier that
+/// served the response (RSP-17) is a word on `response`, not a count.
+///
+/// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/responses.wire.json`) DECLARES
+/// UNDER `usage` IS EITHER LEDGERED OR A SLICE OF A LEDGERED TOTAL: `input_tokens` (input, less its
+/// cached and cache-write slices), `cached_tokens` (cache read), `cache_write_tokens` (cache
+/// write), `output_tokens` (output); `output_tokens_details.reasoning_tokens` is a slice of
+/// `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
+/// ledgered classes, a gap is WARN-logged and carried as the usage identity note, and a total ABOVE
+/// the itemized classes is the open class `unitemized_tokens` (owner LEDGER-100).
+fn read_responses_usage(
+    usage: Option<&serde_json::Value>,
+    response: Option<&serde_json::Value>,
+) -> Result<crate::codec::ir::IrUsage, IrError> {
+    let mut ir = crate::codec::usage_count::read_usage(COUNT_LABEL, usage, USAGE)?;
+    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
+        COUNT_LABEL,
+        RESPONSES_USAGE_IDENTITY,
+        usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
+        &ir,
+    );
+    ir.detail.service_tier = crate::codec::carry::read_word(
+        map::WORDS_SERVED_TIER,
+        response.and_then(|r| r.get(keys::SERVICE_TIER)),
+    );
+    Ok(ir)
+}
+
+/// OpenAI Responses streaming writer.
+///
+/// EVERY native `/v1/responses` SSE event carries a top-level monotonically-increasing integer
+/// `sequence_number` starting at 0 (a REQUIRED field on the official SDK's `Response*Event` types).
+/// That counter is PER STREAM, not per process or per worker thread.
+///
+/// A previous revision kept the counter in thread-local storage, keyed implicitly by the Tokio
+/// worker driving the stream. That is unsound on the multi-thread work-stealing runtime: two
+/// concurrent streams scheduled on the same worker share one cell, and the second stream's opening
+/// `response.created` (which resets the counter to 0) silently clobbers the first stream's in-flight
+/// counter — producing non-monotonic `sequence_number`s that a native SDK rejects. The bleed is
+/// invisible from any single stream's emitted JSON.
+///
+/// The counter therefore lives in per-stream INSTANCE state. `StreamTranslate::new` builds a FRESH
+/// `Protocol::responses()` (hence a fresh `ResponsesWriter` with a zeroed counter) for each stream,
+/// so the counter is stream-scoped by construction and the increments are plain `&self` atomics on
+/// that one owned instance — no thread affinity, so the counter follows the stream across Tokio
+/// worker migrations.
+/// The `created_at` a Responses answer wears when NO caller supplied a creation time.
+///
+/// Zero, and deliberately so: it is the unix epoch, it is obviously not a real reading, and it says
+/// "nobody offered one" without the writer having to invent an answer by reading a clock.
+pub const UNSTAMPED_CREATED_AT: u64 = 0;
+
+pub struct ResponsesWriter {
+    /// Per-stream `sequence_number` counter. Reset to 0 on the stream's opening `MessageStart`
+    /// (`response.created`) and advanced once per emitted event for the rest of the stream.
+    /// `AtomicU64` (not `Cell`) so the writer stays `Sync` as the `ProtocolWriter` trait requires;
+    /// the stream is single-threaded at any instant, so `Relaxed` ordering is sufficient.
+    sequence: AtomicU64,
+    /// Whether this stream's opening `MessageStart` has already been written. The per-stream reset
+    /// belongs to the FIRST one only, but the writer cannot assume it sees exactly one: five of the
+    /// six readers gate `MessageStart` on `state.started`, while the Anthropic reader emits it 1:1
+    /// with the upstream `message_start` frame. So a responses-egress stream fed from an Anthropic
+    /// ingress can carry a duplicate, and an ungated reset rewinds `sequence_number` to 0, mints a
+    /// different `response.id` between `response.created` and `response.completed`, and clears the
+    /// open-text set out from under an item that is still open. Latching here makes the reset
+    /// idempotent per stream. `AtomicBool` (not `Cell`) for the same `Sync` reason as `sequence`.
+    started: AtomicBool,
+    /// Per-stream `response.id`. Captured on the opening `MessageStart` (the synthesized-or-
+    /// forwarded id written into `response.created`) and replayed verbatim onto EVERY subsequent
+    /// lifecycle event (`response.completed`/`response.incomplete`/`response.failed`). A native
+    /// OpenAI Responses stream carries the SAME `id` on every event; the official SDK reads
+    /// `event.response.id` on the terminal event to finalize and correlate the `Response`. Before
+    /// this cell existed, `MessageDelta`/`Error` each minted a FRESH `resp_` id, so on any
+    /// cross-protocol stream (where the IR strips identity) the terminal event's id differed from
+    /// `response.created` — an SDK-breaking correctness failure and a hard distinguishability tell.
+    /// Per-stream INSTANCE state for the same reason as `sequence` (see the type doc); a poisoned
+    /// lock degrades to the synthesize-fresh fallback rather than panicking on the request path.
+    response_id: std::sync::Mutex<Option<String>>,
+    /// Per-stream `response.created_at` (unix seconds). Captured on the opening `MessageStart`
+    /// (`response.created`) and replayed verbatim onto EVERY subsequent lifecycle event
+    /// (`response.completed`/`response.incomplete`/`response.failed`). A native OpenAI Responses
+    /// stream carries the SAME `created_at` on every event for a given response. Before this cell
+    /// existed, the terminal `MessageDelta` (and error) events each called `now_unix_secs()`
+    /// directly, so on any stream where the opening event's `created_at` came from upstream IR — or
+    /// merely a wall-clock instant earlier than the terminal event — the terminal `created_at`
+    /// differed from `response.created`'s, a detectable proxy tell that breaks SDK consumers
+    /// comparing timestamps across events. Per-stream INSTANCE state for the same reason as
+    /// `response_id`; a poisoned lock degrades to the synthesize-fresh (`now_unix_secs`) fallback
+    /// rather than panicking on the request path.
+    created_at: std::sync::Mutex<Option<u64>>,
+    /// The creation time the CALLER supplied for this writer, in unix seconds — the streaming
+    /// path's counterpart of the buffered path's `IrResponse::created`. Set once, at the point the
+    /// stream is opened, by whoever holds a clock; a plain value, never a clock read of its own.
+    /// `UNSTAMPED_CREATED_AT` means the caller offered none.
+    stamped_created_at: u64,
+    /// Per-stream `response.model`. Captured on the opening `MessageStart` (the model written into
+    /// `response.created`, after the DEFAULT_MODEL fallback) and replayed verbatim onto EVERY
+    /// subsequent lifecycle event (`response.completed`/`response.incomplete`/`response.failed`). A
+    /// native OpenAI Responses stream carries the SAME `model` on the full `Response` object of
+    /// every event, and the official SDK types `Response.model` as a REQUIRED non-nullable string —
+    /// so a terminal event whose inner `response` omits `model` fails a strict decoder and is a
+    /// distinguishability tell. The IR `MessageDelta`/`Error` events carry no model, so the terminal
+    /// arms replay this captured value (falling back to DEFAULT_MODEL only if the cell was never
+    /// populated). Per-stream INSTANCE state for the same reason as `response_id`/`created_at`; a
+    /// poisoned lock degrades to the DEFAULT_MODEL fallback rather than panicking on the request path.
+    model: std::sync::Mutex<Option<String>>,
+    /// Output indices for which this writer emitted a function-call `output_item.added`. The IR
+    /// `BlockStop` carries only the integer index (no block kind), but a native Responses stream
+    /// emits `output_item.done` ONLY for items it previously `added` — and the Text `BlockStart`
+    /// arm emits no `added` (so a text block has no `output_item.added`/`.done` pair at all). Track
+    /// the tool-call opens here so `BlockStop` emits `output_item.done` for a function-call index
+    /// only, never for a text index. Without this a text block's BlockStop emitted a spurious
+    /// `output_item.done` with `type:"function_call"` for an item that was never opened — an
+    /// unmatched lifecycle event and a hard distinguishability tell. Per-stream INSTANCE state for
+    /// the same reason as `sequence` (see the type doc); `Relaxed`-equivalent `Mutex` access is
+    /// fine since a stream is single-threaded at any instant and the writer must stay `Sync`.
+    open_tool_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// Output indices for which this writer opened a TEXT message item (emitted
+    /// `output_item.added` type "message" + `content_part.added`). A native /v1/responses stream
+    /// ALWAYS brackets a text part with the full lifecycle
+    /// `output_item.added(message) → content_part.added → output_text.delta* → output_text.done →
+    /// content_part.done → output_item.done`; the official SDK builds `response.output[]` from the
+    /// added/done pair, so a stream of orphan `output_text.delta` frames leaves the assembled
+    /// Response with an empty output array. The IR `BlockStop` carries only the index, so track the
+    /// open text indices here (the same way `open_tool_indices` tracks tool items) so the matching
+    /// BlockStop emits the text terminal frames for THIS index only. Per-stream INSTANCE state for
+    /// the same reason as the other fields; a poisoned lock degrades safely.
+    open_text_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// IR-02: the open text indices whose BlockStart said `refusal` — their part is a `refusal`
+    /// part, not an `output_text` part, from `content_part.added` to `output_item.done`.
+    refusal_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// Per-stream cache of synthesized opaque `item_id`s, keyed by `(kind-prefix, output_index)`.
+    /// A native /v1/responses stream carries a CONSTANT `item_id` across the
+    /// `output_item.added → delta* → output_item.done` lifecycle of one output item; the official
+    /// SDK correlates that lifecycle by the shared id. The IR block events carry only the integer
+    /// `output_index`, so the writer mints the id — but it must be STABLE per `(prefix, index)` for
+    /// the duration of the stream, while still being an opaque CSPRNG token (not the old sequential
+    /// `msg_00000000` hex, whose positional structure fingerprinted a proxied response). This cache
+    /// gives both: the first reference to a `(prefix, index)` mints a fresh opaque id; every later
+    /// reference within the stream returns the same one. Per-stream INSTANCE state for the same
+    /// reason as the other fields; a poisoned lock degrades to a freshly-minted id (still opaque,
+    /// still valid) rather than panicking on the request path.
+    item_ids: std::sync::Mutex<std::collections::BTreeMap<(&'static str, usize), String>>,
+    /// Per-stream accumulator of function-call item fields, keyed by `output_index`. A native
+    /// /v1/responses stream's `response.output_item.done` for a function-call item carries the FULLY
+    /// finalized item — `call_id`, `name`, AND the complete accumulated `arguments` string — and the
+    /// official SDK reads `event.item.arguments`/`.name`/`.call_id` off the `done` event to
+    /// reconstruct the tool invocation. The IR `BlockStop` carries only the integer index, so the
+    /// writer must accumulate those fields across the lifecycle: `call_id`+`name` arrive on the
+    /// `BlockStart` (`IrBlockMeta::ToolUse`), and `arguments` is concatenated from the
+    /// `InputJsonDelta` fragments on each `BlockDelta`. Without this the `output_item.done` item was
+    /// `{"type":"function_call","id":…}` — missing `call_id`/`name`/`arguments`, an
+    /// impossible-from-real-OpenAI shape that breaks SDK tool-call handling and is a
+    /// distinguishability tell. Per-stream INSTANCE state for the same reason as the other fields; a
+    /// poisoned lock degrades to omitting the accumulated fields (still emits the `done`) rather than
+    /// panicking on the request path.
+    tool_calls: std::sync::Mutex<std::collections::BTreeMap<usize, ToolCallAccum>>,
+    /// Per-stream accumulator of streamed assistant TEXT, keyed by `output_index`. A native
+    /// /v1/responses terminal `response.completed`/`response.incomplete` event carries the FULLY
+    /// assembled `output[]` array, and a message item in it carries its `output_text` parts with the
+    /// complete text the stream delivered via `output_text.delta`. The IR streams text only as
+    /// `TextDelta` fragments, so the writer concatenates them here as they arrive and drains the
+    /// joined text into the terminal `output` message item at BlockStop. Per-stream INSTANCE state
+    /// for the same reason as the other fields; a poisoned lock degrades to omitting the accumulated
+    /// text (the item then carries empty text) rather than panicking on the request path.
+    text_accum: std::sync::Mutex<std::collections::BTreeMap<usize, String>>,
+    /// Per-stream buffer of the citations delivered for the message item at each `output_index`.
+    /// Responses carries citations as `annotations` on the assembled `output_text` part, not as a
+    /// standalone delta frame, so a streamed `CitationsDelta` has nowhere to go at arrival time and
+    /// is accumulated here until `BlockStop` builds that part. Dropping it, as the writer used to,
+    /// lost every grounding source on any cross-protocol stream into Responses.
+    citation_accum:
+        std::sync::Mutex<std::collections::BTreeMap<usize, Vec<crate::codec::ir::IrCitation>>>,
+    /// Per-stream buffer of the token logprobs delivered for the message item at each
+    /// `output_index`. The IR streams them as a standalone `LogprobsDelta` (separate from the text
+    /// fragment they score), while a native Responses stream carries them on the `output_text.done`
+    /// event and on the finalized `output_text` part, so they are buffered here until `BlockStop`
+    /// builds those frames. A poisoned lock degrades to an empty list rather than panicking.
+    logprob_accum:
+        std::sync::Mutex<std::collections::BTreeMap<usize, Vec<crate::codec::ir::IrTokenLogprob>>>,
+    /// Per-stream buffer of FINALIZED `output[]` items, keyed by `output_index` so the terminal
+    /// event emits them in stable index order. A native /v1/responses `response.completed`/
+    /// `response.incomplete` event's inner `response.output` is the fully assembled array (each
+    /// `message` item with its `output_text` parts, each finalized `function_call` item) — the
+    /// official SDK reads `event.response.output` to materialize the final `Response.output`. The IR
+    /// `MessageDelta` carries no assembled output, but the writer has already seen every delta, so it
+    /// records each item here as the matching `BlockStop` finalizes it and drains the map into the
+    /// terminal `response.output`. Before this, the terminal `output` was hard-coded to `[]` even
+    /// though real text/tool items streamed — an empty `output` with nonzero `usage.output_tokens`
+    /// is a shape real OpenAI never emits and breaks SDK consumers that read the assembled output off
+    /// the completed event. Per-stream INSTANCE state for the same reason as the other fields; a
+    /// poisoned lock degrades to an empty array (the prior behavior) rather than panicking.
+    output_items: std::sync::Mutex<std::collections::BTreeMap<usize, serde_json::Value>>,
+    /// Output indices for which this writer opened a REASONING item — emitted the
+    /// `output_item.added` typed "reasoning". Tracked separately from text/tool opens so the matching
+    /// `BlockStop` (which carries only the index) emits the `output_item.done` typed "reasoning" for
+    /// THIS index, and so a reasoning BlockStop is never mistaken for a text/tool close. Per-stream
+    /// INSTANCE state for the same reason as the other open-index sets; a poisoned lock degrades safely.
+    open_reasoning_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// IR-17: the open reasoning items whose Thinking block is a SUMMARY. Their
+    /// text streams as `reasoning_summary_text` and lands in the item's `summary[]` (the buffered
+    /// `insert_reasoning_text` shape); every other reasoning item keeps `content[]`.
+    summary_reasoning_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// Per-stream accumulator of streamed reasoning TEXT, keyed by `output_index`. The terminal
+    /// `response.output[]` reasoning item carries the COMPLETE reasoning text the stream delivered via
+    /// `reasoning_text.delta`; the IR streams it as `ThinkingDelta` fragments, so the writer
+    /// concatenates them here and drains the joined text into the finalized reasoning item at
+    /// BlockStop. A poisoned lock degrades to empty text rather than panicking.
+    reasoning_accum: std::sync::Mutex<std::collections::BTreeMap<usize, String>>,
+    /// Per-stream buffer of the thinking SIGNATURE streamed for the reasoning item at each
+    /// `output_index` (`IrDelta::SignatureDelta`). Responses has no signature delta frame: the blob is
+    /// the finalized reasoning item's `encrypted_content`, so it is buffered here until the matching
+    /// `BlockStop` builds that item (RSP-01). Bounded exactly as `reasoning_accum` is.
+    reasoning_sig_accum: std::sync::Mutex<std::collections::BTreeMap<usize, String>>,
+    /// Whether this stream has already written its `response.failed` terminal event. A Responses
+    /// stream ends at `response.failed`, so a `MessageDelta` arriving after it (a Cohere/Gemini
+    /// reader emits `Error` and THEN its `MessageDelta{Error}`) must write nothing rather than a
+    /// second, contradictory terminal (RSP-11). `AtomicBool` for the same `Sync` reason as `started`.
+    failed: AtomicBool,
+    /// Per-stream request-echo context: the ORIGINAL ingress request body, captured via
+    /// [`ProtocolWriter::set_request_echo`] before the first event is written. The pinned spec
+    /// requires every `Response` object to MIRROR certain request members verbatim (`temperature`,
+    /// `top_p`, `instructions`, `metadata`, `tool_choice`, `parallel_tool_calls`, `tools`); this is
+    /// the streaming twin of the buffered path's `IrResponse::request_echo` (which `write_response`
+    /// reads directly off its `resp` argument — no per-instance state needed there, one call, one
+    /// response). `None` when never set (same-protocol streams, which never reach this writer at
+    /// all, and any cross-protocol stream whose caller has no parsed ingress body). A poisoned lock
+    /// degrades to `None` (the spec DEFAULTS below), never to a panic on the request path.
+    request_echo: std::sync::Mutex<Option<serde_json::Value>>,
+}
+
+/// Accumulated function-call item fields for one open `output_index`, finalized into the
+/// `response.output_item.done` `item` object. `call_id`/`name` are captured from the opening
+/// `BlockStart`; `arguments` is built by concatenating the streamed `InputJsonDelta` fragments.
+#[derive(Clone, Default)]
+struct ToolCallAccum {
+    call_id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Value-namespace constructor for [`ResponsesWriter`]. A `const` and a struct may share a name
+/// (they live in the value and type namespaces respectively), so `Protocol::responses()` can keep
+/// writing the bare `ResponsesWriter` literal while the type now carries per-stream state. Each
+/// USE of the const inlines a fresh `ResponsesWriter { sequence: AtomicU64::new(0) }`, so every
+/// `Protocol::responses()` call mints an independent zeroed counter — exactly the per-stream
+/// scoping the `sequence_number` contract needs. `AtomicU64::new` is a const fn, so this is valid
+/// in const context (an `Arc` counter would not be).
+///
+/// `clippy::declare_interior_mutable_const` warns that a `const` with interior mutability is
+/// inlined per use rather than shared. That per-use fresh instance is PRECISELY the semantics we
+/// need: a `static` would share ONE counter across every stream in the process — reintroducing the
+/// cross-stream `sequence_number` bleed this change exists to fix. So the lint's suggestion is
+/// wrong for this site and is suppressed deliberately.
+#[allow(non_upper_case_globals)]
+#[allow(clippy::declare_interior_mutable_const)]
+pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
+    sequence: AtomicU64::new(0),
+    started: AtomicBool::new(false),
+    response_id: std::sync::Mutex::new(None),
+    created_at: std::sync::Mutex::new(None),
+    stamped_created_at: UNSTAMPED_CREATED_AT,
+    model: std::sync::Mutex::new(None),
+    open_tool_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    open_text_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    refusal_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    item_ids: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    tool_calls: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    text_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    citation_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    logprob_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    output_items: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    open_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    summary_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    reasoning_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    reasoning_sig_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    failed: AtomicBool::new(false),
+    request_echo: std::sync::Mutex::new(None),
+};
+
+impl Clone for ResponsesWriter {
+    fn clone(&self) -> Self {
+        // Preserve the current counter value on clone so a `Protocol::clone` mid-stream keeps the
+        // same `sequence_number` position rather than resetting to 0. The open-tool-index set is
+        // likewise carried across the clone so a mid-stream `Protocol::clone` keeps the in-flight
+        // function-call lifecycle correlation; a poisoned lock degrades to an empty set rather than
+        // panicking on the request path.
+        ResponsesWriter {
+            sequence: AtomicU64::new(self.sequence.load(Ordering::Relaxed)),
+            // Carry the started latch too: a mid-stream `Protocol::clone` is still the SAME stream,
+            // so a duplicate `MessageStart` arriving after the clone must not reset it either.
+            started: AtomicBool::new(self.started.load(Ordering::Relaxed)),
+            stamped_created_at: self.stamped_created_at,
+            response_id: std::sync::Mutex::new(
+                self.response_id.lock().map(|id| id.clone()).unwrap_or(None),
+            ),
+            // Carry the captured `created_at` across a mid-stream `Protocol::clone` so the cloned
+            // writer's terminal events replay the SAME timestamp; a poisoned lock degrades to None
+            // (terminal arm then falls back to `now_unix_secs`).
+            created_at: std::sync::Mutex::new(self.created_at.lock().map(|c| *c).unwrap_or(None)),
+            // Carry the captured `model` across a mid-stream `Protocol::clone` so the cloned
+            // writer's terminal events replay the SAME model; a poisoned lock degrades to None
+            // (terminal arm then falls back to DEFAULT_MODEL).
+            model: std::sync::Mutex::new(self.model.lock().map(|m| m.clone()).unwrap_or(None)),
+            open_tool_indices: std::sync::Mutex::new(
+                self.open_tool_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
+            open_text_indices: std::sync::Mutex::new(
+                self.open_text_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
+            refusal_indices: std::sync::Mutex::new(
+                self.refusal_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
+            // Carry the minted `item_id` cache across a mid-stream `Protocol::clone` so the cloned
+            // writer keeps emitting the SAME opaque id for an already-opened item's remaining
+            // lifecycle frames; a poisoned lock degrades to an empty cache (later refs re-mint).
+            item_ids: std::sync::Mutex::new(
+                self.item_ids.lock().map(|m| m.clone()).unwrap_or_default(),
+            ),
+            // Carry the in-flight function-call field accumulator across a mid-stream
+            // `Protocol::clone` so the cloned writer's `output_item.done` still emits the complete
+            // finalized item (call_id/name/accumulated arguments); a poisoned lock degrades to an
+            // empty map (the done then omits the accumulated fields).
+            tool_calls: std::sync::Mutex::new(
+                self.tool_calls
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            // Carry the in-flight text accumulator across a mid-stream `Protocol::clone` so the
+            // cloned writer's terminal `output` still assembles the full streamed text; a poisoned
+            // lock degrades to an empty map.
+            text_accum: std::sync::Mutex::new(
+                self.text_accum
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            // Carry the citation accumulator across the same clone, for the same reason.
+            citation_accum: std::sync::Mutex::new(
+                self.citation_accum
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            // Carry the logprob accumulator across the same clone, for the same reason.
+            logprob_accum: std::sync::Mutex::new(
+                self.logprob_accum
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            // Carry the finalized-output buffer across a mid-stream `Protocol::clone` so the cloned
+            // writer's terminal event still emits the assembled `output[]`; a poisoned lock degrades
+            // to an empty map (terminal `output` then falls back to `[]`).
+            output_items: std::sync::Mutex::new(
+                self.output_items
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            // Carry the in-flight reasoning open-set and text accumulator across a mid-stream
+            // `Protocol::clone` so the cloned writer's reasoning `output_item.done` still emits the
+            // assembled reasoning item; poisoned locks degrade to empty.
+            open_reasoning_indices: std::sync::Mutex::new(
+                self.open_reasoning_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
+            summary_reasoning_indices: std::sync::Mutex::new(
+                self.summary_reasoning_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
+            reasoning_accum: std::sync::Mutex::new(
+                self.reasoning_accum
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            // Carry the signature buffer and the failed latch across the same clone, for the same
+            // reason: a mid-stream clone is still the SAME stream.
+            reasoning_sig_accum: std::sync::Mutex::new(
+                self.reasoning_sig_accum
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            failed: AtomicBool::new(self.failed.load(Ordering::Relaxed)),
+            // Carry the captured request-echo context across a mid-stream `Protocol::clone` so the
+            // cloned writer's remaining terminal events still answer with the client's actual
+            // request values; a poisoned lock degrades to `None` (the spec defaults then apply).
+            request_echo: std::sync::Mutex::new(
+                self.request_echo.lock().map(|e| e.clone()).unwrap_or(None),
+            ),
+        }
+    }
+}
+
+impl ResponsesWriter {
+    /// Reset the per-stream `sequence_number` counter to 0. Called when the stream's opening
+    /// `response.created` event is written so every stream's sequence starts from 0. The reader
+    /// gates `MessageStart` on `state.started`, so exactly one reset happens per stream. The
+    /// open-tool-index set is also cleared so a reused/cloned writer does not carry a stale
+    /// function-call index into a fresh stream.
+    fn reset_sequence_number(&self) {
+        self.sequence.store(0, Ordering::Relaxed);
+        if let Ok(mut set) = self.open_tool_indices.lock() {
+            set.clear();
+        }
+        if let Ok(mut set) = self.open_text_indices.lock() {
+            set.clear();
+        }
+        if let Ok(mut set) = self.refusal_indices.lock() {
+            set.clear();
+        }
+        // Clear the per-stream `item_id` cache so a reused/cloned writer mints fresh opaque ids for
+        // the new stream rather than replaying a previous stream's item ids.
+        if let Ok(mut map) = self.item_ids.lock() {
+            map.clear();
+        }
+        // Clear the per-stream function-call field accumulator so a reused/cloned writer does not
+        // carry a previous stream's call_id/name/arguments into a new stream's `output_item.done`.
+        if let Ok(mut map) = self.tool_calls.lock() {
+            map.clear();
+        }
+        // Clear the per-stream text accumulator and the finalized-output buffer so a reused/cloned
+        // writer does not leak a previous stream's text/items into a new stream's terminal `output`.
+        if let Ok(mut map) = self.text_accum.lock() {
+            map.clear();
+        }
+        if let Ok(mut map) = self.output_items.lock() {
+            map.clear();
+        }
+        // Clear the per-stream citation and logprob buffers for the same reason: an entry left under
+        // an index the new stream reuses would attach a previous stream's sources and token
+        // logprobs to this stream's text part.
+        if let Ok(mut map) = self.citation_accum.lock() {
+            map.clear();
+        }
+        if let Ok(mut map) = self.logprob_accum.lock() {
+            map.clear();
+        }
+        // Clear the per-stream reasoning open-set and text accumulator so a reused/cloned writer does
+        // not leak a previous stream's reasoning into a new stream's output.
+        if let Ok(mut set) = self.open_reasoning_indices.lock() {
+            set.clear();
+        }
+        if let Ok(mut set) = self.summary_reasoning_indices.lock() {
+            set.clear();
+        }
+        if let Ok(mut map) = self.reasoning_accum.lock() {
+            map.clear();
+        }
+        if let Ok(mut map) = self.reasoning_sig_accum.lock() {
+            map.clear();
+        }
+        // A new stream has not failed.
+        self.failed.store(false, Ordering::Relaxed);
+        // Clear the carried `response.id` alongside the sequence counter: a reused/cloned writer
+        // must not leak a previous stream's id onto a new stream's terminal events. The new id is
+        // stored when this stream's `MessageStart` is written.
+        if let Ok(mut id) = self.response_id.lock() {
+            *id = None;
+        }
+        // Clear the carried `created_at` alongside the id: a reused/cloned writer must not leak a
+        // previous stream's creation timestamp onto a new stream's terminal events. The new value
+        // is stored when this stream's `MessageStart` is written.
+        if let Ok(mut created) = self.created_at.lock() {
+            *created = None;
+        }
+        // Clear the carried `model` alongside the id/created_at: a reused/cloned writer must not
+        // leak a previous stream's model onto a new stream's terminal events. The new value is
+        // stored when this stream's `MessageStart` is written.
+        if let Ok(mut model) = self.model.lock() {
+            *model = None;
+        }
+    }
+
+    /// Store the per-stream `response.id` captured on `MessageStart` so terminal events replay it
+    /// verbatim. Lock poisoning degrades to a no-op (the terminal arm then synthesizes a fresh id)
+    /// rather than panicking on the request path.
+    fn set_response_id(&self, id: &str) {
+        if let Ok(mut slot) = self.response_id.lock() {
+            *slot = Some(id.to_string());
+        }
+    }
+
+    /// Return the per-stream `response.id` captured on `MessageStart`, or `None` if it was never
+    /// set (a malformed stream whose terminal event preceded `MessageStart`, or a poisoned lock).
+    /// The caller falls back to synthesizing a fresh id in that case.
+    fn carried_response_id(&self) -> Option<String> {
+        self.response_id.lock().ok().and_then(|id| id.clone())
+    }
+
+    /// Store the per-stream `created_at` captured on `MessageStart` so terminal events replay it
+    /// verbatim. Lock poisoning degrades to a no-op (the terminal arm then falls back to
+    /// `now_unix_secs`) rather than panicking on the request path.
+    fn set_created_at(&self, created_at: u64) {
+        if let Ok(mut slot) = self.created_at.lock() {
+            *slot = Some(created_at);
+        }
+    }
+
+    /// Return the per-stream `created_at` captured on `MessageStart`, falling back to the current
+    /// unix time if it was never set (a malformed stream whose terminal event preceded
+    /// `MessageStart`, or a poisoned lock). Replaying the captured value keeps every event's
+    /// `created_at` identical, matching a native Responses stream.
+    pub fn carried_created_at(&self) -> u64 {
+        self.created_at
+            .lock()
+            .ok()
+            .and_then(|c| *c)
+            .unwrap_or(self.stamped_created_at)
+    }
+
+    /// This writer, stamped with the creation time the caller read.
+    ///
+    /// The streaming path has no answer object to carry a creation time on, so it rides the writer:
+    /// whoever opens the stream reads its own clock once and hands the reading here, and every
+    /// event this writer emits stamps that one value. Two writers stamped with the same reading
+    /// produce the same bytes.
+    #[must_use]
+    pub fn stamped_at(created_at_unix: u64) -> ResponsesWriter {
+        ResponsesWriter {
+            stamped_created_at: created_at_unix,
+            ..ResponsesWriter
+        }
+    }
+
+    /// Store the per-stream `model` captured on `MessageStart` so terminal events replay it
+    /// verbatim. Lock poisoning degrades to a no-op (the terminal arm then falls back to
+    /// `DEFAULT_MODEL`) rather than panicking on the request path.
+    fn set_model(&self, model: &str) {
+        if let Ok(mut slot) = self.model.lock() {
+            *slot = Some(model.to_string());
+        }
+    }
+
+    /// Return the per-stream `model` captured on `MessageStart`, falling back to `DEFAULT_MODEL` if
+    /// it was never set (a malformed stream whose terminal event preceded `MessageStart`, or a
+    /// poisoned lock). Replaying the captured value keeps every event's `model` identical and
+    /// non-null, matching a native Responses stream and the SDK's required-field contract.
+    fn carried_model(&self) -> String {
+        self.model
+            .lock()
+            .ok()
+            .and_then(|m| m.clone())
+            .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+    }
+
+    /// Store the ORIGINAL ingress request body for this stream (see [`ProtocolWriter::set_request_echo`]).
+    /// Lock poisoning degrades to a no-op (the request-echo members then fall back to the spec's
+    /// bare defaults) rather than panicking on the request path.
+    fn store_request_echo(&self, body: &serde_json::Value) {
+        if let Ok(mut slot) = self.request_echo.lock() {
+            *slot = Some(body.clone());
+        }
+    }
+
+    /// Return the request-echo context captured for this stream, or `None` if never set (a
+    /// same-protocol stream, a cross-protocol stream whose caller had no parsed ingress body, or a
+    /// poisoned lock). `fill_required_response_members` treats `None` exactly like an empty object —
+    /// every echo member falls back to the spec's default.
+    fn carried_request_echo(&self) -> Option<serde_json::Value> {
+        self.request_echo.lock().ok().and_then(|e| e.clone())
+    }
+
+    /// Return the next `sequence_number` for this stream and advance the counter. The first call
+    /// after a [`Self::reset_sequence_number`] returns 0, the next 1, and so on — matching the
+    /// native monotonic-from-0 contract.
+    fn next_sequence_number(&self) -> u64 {
+        self.sequence.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Open a function-call item at `index`, so the matching `BlockStop` knows to emit
+    /// `output_item.done` for it. Returns true when the item actually opened; false when the open
+    /// was REFUSED — the index is already open, or the `MAX_OPEN_TOOLS` cap is reached. Lock
+    /// poisoning degrades to `false` (refuse) rather than panicking on the request path.
+    ///
+    /// Applies the same cardinality discipline as `open_text_item`, and reports it the same way: a
+    /// `contains` guard makes the open idempotent (a re-opened index does not grow the set), and
+    /// `MAX_OPEN_TOOLS` bounds per-stream memory so a pathological backend streaming an unbounded
+    /// run of distinct function-call indices cannot grow `open_tool_indices` without limit
+    /// (resource exhaustion).
+    ///
+    /// The boolean is the whole point: a refusal means no item was opened, and `take_tool_open`
+    /// will therefore never emit its `output_item.done`. The caller must not write the
+    /// `output_item.added` frame either, or the wire carries a lifecycle open for an item that
+    /// never existed and is never closed.
+    fn mark_tool_open(&self, index: usize) -> bool {
+        self.open_tool_indices
+            .lock()
+            .map(|mut set| {
+                if set.contains(&index) {
+                    return false;
+                }
+                if set.len() >= MAX_OPEN_TOOLS {
+                    return false;
+                }
+                set.insert(index);
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    /// Return true and forget `index` if it was a previously-opened function-call item; false if no
+    /// function-call item was opened at `index` (e.g. a text block, whose `BlockStop` must NOT emit
+    /// `output_item.done`). Lock poisoning degrades to `false` (suppress the `done`) rather than
+    /// panicking on the request path.
+    fn take_tool_open(&self, index: usize) -> bool {
+        self.open_tool_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
+            .unwrap_or(false)
+    }
+
+    /// Record the `call_id`/`name` for a function-call item opened at `index`, captured from the
+    /// `BlockStart`'s `IrBlockMeta::ToolUse`, so the matching `output_item.done` can emit the fully
+    /// finalized item. Lock poisoning degrades to a no-op (the `done` then omits these fields)
+    /// rather than panicking on the request path.
+    fn record_tool_meta(&self, index: usize, call_id: &str, name: &str) {
+        if let Ok(mut map) = self.tool_calls.lock() {
+            let entry = map.entry(index).or_default();
+            entry.call_id = call_id.to_string();
+            entry.name = name.to_string();
+        }
+    }
+
+    /// Append a streamed `arguments` fragment for the function-call item at `index`. Native
+    /// `response.output_item.done` carries the COMPLETE accumulated arguments string, so the writer
+    /// concatenates the `InputJsonDelta` fragments here. Lock poisoning degrades to a no-op.
+    /// Bounded on BOTH axes, like every accumulator on this writer (see [`accum_byte_cap`]): a NEW
+    /// index is refused once `MAX_OPEN_TOOLS` distinct items are already accumulating (the same line
+    /// `mark_tool_open` holds), and an existing buffer stops growing at the translate-body cap.
+    /// A refused fragment is dropped WHOLE rather than sliced at the boundary — a cap-truncated
+    /// `arguments` string is unparseable JSON either way, and the writer's `output_item.done` already
+    /// degrades an unparseable accumulation to the empty-arguments fallback, so the call's identity
+    /// (`call_id`/`name`) always survives and no new failure mode is introduced.
+    fn append_tool_arguments(&self, index: usize, fragment: &str) {
+        if let Ok(mut map) = self.tool_calls.lock() {
+            match map.get_mut(&index) {
+                Some(entry) => {
+                    if entry.arguments.len().saturating_add(fragment.len()) <= accum_byte_cap() {
+                        entry.arguments.push_str(fragment);
+                    }
+                }
+                None => {
+                    if map.len() >= MAX_OPEN_TOOLS || fragment.len() > accum_byte_cap() {
+                        return;
+                    }
+                    map.entry(index).or_default().arguments.push_str(fragment);
+                }
+            }
+        }
+    }
+
+    /// Remove and return the accumulated function-call fields for `index` (call_id, name, fully
+    /// accumulated arguments) so the matching `output_item.done` emits the finalized item. Returns
+    /// `None` if nothing was accumulated (e.g. a poisoned lock); the caller then emits the `done`
+    /// without the accumulated fields rather than panicking on the request path.
+    fn take_tool_accum(&self, index: usize) -> Option<ToolCallAccum> {
+        self.tool_calls
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&index))
+    }
+
+    /// Append a streamed text fragment for the message item at `index`. The native terminal
+    /// `response.output` carries the COMPLETE assembled text per message item, so the writer
+    /// concatenates the `TextDelta` fragments here. Lock poisoning degrades to a no-op (the terminal
+    /// item then carries empty text) rather than panicking on the request path.
+    /// Bounded on both axes exactly as `append_tool_arguments` is: a new index is refused past
+    /// `MAX_OPEN_TOOLS`, and an existing buffer stops growing at [`accum_byte_cap`]. A truncated
+    /// text item is what the client already gets from any capped stream; an unbounded one is a
+    /// per-connection memory-amplification DoS.
+    fn append_text(&self, index: usize, fragment: &str) {
+        if let Ok(mut map) = self.text_accum.lock() {
+            append_capped(&mut map, index, fragment);
+        }
+    }
+
+    /// Buffer streamed citations for the message item at `index` until `BlockStop` assembles the
+    /// `output_text` part they annotate. Lock poisoning degrades to a no-op.
+    /// Bounded on both axes, as `append_text` is: a new index is refused past `MAX_OPEN_TOOLS`, and
+    /// an item's buffered citations stop accumulating once their carried text weight
+    /// ([`citation_bytes`]) would cross [`accum_byte_cap`]. The whole batch is refused rather than
+    /// split, so an annotation is never emitted half-formed.
+    fn append_citations(&self, index: usize, cits: &[crate::codec::ir::IrCitation]) {
+        if cits.is_empty() {
+            return;
+        }
+        let added: usize = cits.iter().map(citation_bytes).sum();
+        if let Ok(mut map) = self.citation_accum.lock() {
+            match map.get_mut(&index) {
+                Some(entry) => {
+                    let held: usize = entry.iter().map(citation_bytes).sum();
+                    if held.saturating_add(added) <= accum_byte_cap() {
+                        entry.extend_from_slice(cits);
+                    }
+                }
+                None => {
+                    if map.len() >= MAX_OPEN_TOOLS || added > accum_byte_cap() {
+                        return;
+                    }
+                    map.entry(index).or_default().extend_from_slice(cits);
+                }
+            }
+        }
+    }
+
+    /// Remove and return the accumulated citations for the message item at `index`.
+    fn take_citation_accum(&self, index: usize) -> Vec<crate::codec::ir::IrCitation> {
+        self.citation_accum
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&index))
+            .unwrap_or_default()
+    }
+
+    /// Buffer streamed token logprobs for the message item at `index` until `BlockStop` builds the
+    /// `output_text.done` event and the finalized part that carry them. Lock poisoning degrades to
+    /// a no-op.
+    fn append_logprobs(&self, index: usize, lps: &[crate::codec::ir::IrTokenLogprob]) {
+        if lps.is_empty() {
+            return;
+        }
+        if let Ok(mut map) = self.logprob_accum.lock() {
+            map.entry(index).or_default().extend_from_slice(lps);
+        }
+    }
+
+    /// Remove and return the accumulated token logprobs for the message item at `index`.
+    fn take_logprob_accum(&self, index: usize) -> Vec<crate::codec::ir::IrTokenLogprob> {
+        self.logprob_accum
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&index))
+            .unwrap_or_default()
+    }
+
+    /// Remove and return the accumulated text for the message item at `index`. Returns an empty
+    /// string if nothing was accumulated (a text block with no deltas, or a poisoned lock).
+    fn take_text_accum(&self, index: usize) -> String {
+        self.text_accum
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&index))
+            .unwrap_or_default()
+    }
+
+    /// Record a FINALIZED `output[]` item at `index`, captured as the matching `BlockStop`
+    /// assembles it, so the terminal `response.completed`/`response.incomplete` event can emit the
+    /// fully assembled `output` array (keyed by index for stable order). Lock poisoning degrades to
+    /// a no-op (that item is omitted from the terminal `output`) rather than panicking.
+    fn record_output_item(&self, index: usize, item: serde_json::Value) {
+        if let Ok(mut map) = self.output_items.lock() {
+            map.insert(index, item);
+        }
+    }
+
+    /// Drain the finalized `output[]` items into an index-ordered array for the terminal event.
+    /// `BTreeMap` iteration is key-ordered, so the items come out in `output_index` order, matching
+    /// the order a native /v1/responses stream assembled them. A poisoned lock degrades to an empty
+    /// array (the prior `[]` behavior) rather than panicking on the request path.
+    fn drain_output_items(&self) -> Vec<serde_json::Value> {
+        self.output_items
+            .lock()
+            .map(|mut map| std::mem::take(&mut *map).into_values().collect())
+            .unwrap_or_default()
+    }
+
+    /// Mark a TEXT message item open at `index` IF it is not already open and there is room under
+    /// the cardinality cap, returning true when this call performed the open (so the caller emits
+    /// the opening `output_item.added`/`content_part.added` frames exactly once). Returns false if
+    /// the index was already open (a subsequent text delta — no re-open) or the cap is reached
+    /// (skip the frames; bounds per-stream memory against a pathological backend). Lock poisoning
+    /// degrades to false. Mirrors the cardinality discipline of the reader's `open_tools` cap.
+    fn open_text_item(&self, index: usize) -> bool {
+        self.open_text_indices
+            .lock()
+            .map(|mut set| {
+                if set.contains(&index) {
+                    return false;
+                }
+                if set.len() >= MAX_OPEN_TOOLS {
+                    return false;
+                }
+                set.insert(index);
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    /// IR-02: record that the text item at `index` is a refusal (its BlockStart said so).
+    fn mark_refusal(&self, index: usize) {
+        if let Ok(mut set) = self.refusal_indices.lock() {
+            set.insert(index);
+        }
+    }
+
+    /// IR-02: whether the open text item at `index` is a refusal.
+    fn is_refusal(&self, index: usize) -> bool {
+        self.refusal_indices
+            .lock()
+            .map(|set| set.contains(&index))
+            .unwrap_or(false)
+    }
+
+    /// IR-02: forget and return whether the text item at `index` was a refusal (at its BlockStop).
+    fn take_refusal(&self, index: usize) -> bool {
+        self.refusal_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
+            .unwrap_or(false)
+    }
+
+    /// Return true and forget `index` if a TEXT message item was open at it (so the matching
+    /// `BlockStop` emits the text terminal frames for THIS index only). Returns false for a
+    /// non-text index. Lock poisoning degrades to false.
+    fn take_text_open(&self, index: usize) -> bool {
+        self.open_text_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
+            .unwrap_or(false)
+    }
+
+    /// Mark a REASONING item open at `index` IF not already open and under the cardinality cap,
+    /// returning true when this call performed the open (so the caller emits the `output_item.added`
+    /// typed "reasoning" exactly once). Mirrors `open_text_item`'s discipline. Lock poisoning → false.
+    fn open_reasoning_item(&self, index: usize) -> bool {
+        self.open_reasoning_indices
+            .lock()
+            .map(|mut set| {
+                if set.contains(&index) || set.len() >= MAX_OPEN_TOOLS {
+                    return false;
+                }
+                set.insert(index);
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    /// IR-17: remember that the reasoning item at `index` is a summary (`mark`), or ask whether it
+    /// is. Lock poisoning degrades to "not a summary" (the pre-slot `content[]` shape).
+    fn mark_summary_reasoning(&self, index: usize) {
+        if let Ok(mut set) = self.summary_reasoning_indices.lock() {
+            set.insert(index);
+        }
+    }
+
+    fn is_summary_reasoning(&self, index: usize) -> bool {
+        self.summary_reasoning_indices
+            .lock()
+            .map(|set| set.contains(&index))
+            .unwrap_or(false)
+    }
+
+    fn take_summary_reasoning(&self, index: usize) -> bool {
+        self.summary_reasoning_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
+            .unwrap_or(false)
+    }
+
+    /// Return true and forget `index` if a REASONING item was open at it (so the matching `BlockStop`
+    /// emits the reasoning terminal frame for THIS index only). False for a non-reasoning index. Lock
+    /// poisoning degrades to false.
+    fn take_reasoning_open(&self, index: usize) -> bool {
+        self.open_reasoning_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
+            .unwrap_or(false)
+    }
+
+    /// Append a streamed reasoning-text fragment for the reasoning item at `index`. Lock
+    /// poisoning degrades to a no-op (the terminal item then carries empty reasoning text).
+    /// Bounded on both axes, as `append_text` is.
+    fn append_reasoning(&self, index: usize, fragment: &str) {
+        if let Ok(mut map) = self.reasoning_accum.lock() {
+            append_capped(&mut map, index, fragment);
+        }
+    }
+
+    /// Remove and return the accumulated reasoning text for the item at `index`, or an empty string
+    /// if none was accumulated (a poisoned lock or a signature-only Thinking block).
+    fn take_reasoning_accum(&self, index: usize) -> String {
+        self.reasoning_accum
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&index))
+            .unwrap_or_default()
+    }
+
+    /// Buffer a streamed thinking-signature fragment for the reasoning item at `index` until its
+    /// `BlockStop` writes it as the item's `encrypted_content` (RSP-01). Bounded on both axes, as
+    /// `append_reasoning` is. Lock poisoning degrades to a no-op.
+    fn append_reasoning_signature(&self, index: usize, fragment: &str) {
+        if fragment.is_empty() {
+            return;
+        }
+        if let Ok(mut map) = self.reasoning_sig_accum.lock() {
+            append_capped(&mut map, index, fragment);
+        }
+    }
+
+    /// Remove and return the buffered signature for the reasoning item at `index`; `None` when the
+    /// stream carried none (the item then has no `encrypted_content`, as a signature-less buffered
+    /// Thinking block has none).
+    fn take_reasoning_signature(&self, index: usize) -> Option<String> {
+        self.reasoning_sig_accum
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&index))
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Return the stream-stable opaque `item_id` for the output item identified by
+    /// `(prefix, index)`, minting a fresh CSPRNG-backed token on first reference and returning the
+    /// cached one thereafter. This is what keeps the `output_item.added → delta* → output_item.done`
+    /// frames of a single item sharing one `item_id` (the SDK's lifecycle-correlation key) while the
+    /// id itself stays opaque — no positional/sequential structure for an observer to fingerprint.
+    /// A poisoned lock degrades to a freshly-minted opaque id (still structurally native, just not
+    /// cached) rather than panicking on the request path.
+    fn item_id_for(&self, prefix: &'static str, index: usize) -> String {
+        match self.item_ids.lock() {
+            Ok(mut map) => map
+                .entry((prefix, index))
+                .or_insert_with(|| synthesize_item_id(prefix))
+                .clone(),
+            Err(_) => synthesize_item_id(prefix),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "tests/input_hardening_tests.rs"]
+mod input_hardening_tests;
+
+// The field carry instruments: each test FAILS if its field stops surviving the read→IR→write hop.
+#[cfg(test)]
+#[path = "tests/field_carry_tests.rs"]
+mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/float_usage_tests.rs"]
+mod float_usage_tests;
+
+// Item 305: streamed `output_text.annotation.added` citations equal the buffered read.
+#[cfg(test)]
+#[path = "tests/annotation_stream_tests.rs"]
+mod annotation_stream_tests;
+
+// IR mapping wave (owner directive Q57): one probe per RSP defect id, driving the production
+// reader → seam → writer steps and the stream translator on real bodies.
+#[cfg(test)]
+#[path = "tests/ir_mapping_tests.rs"]
+mod ir_mapping_tests;
+
+// IR mapping: the typed IR slots the Responses reader fills and writer emits
+// (ir-slots-landed.md) — RSP-13/15, SHR-03, IR-02/03..08/10/11/14/17/18.
+#[cfg(test)]
+#[path = "tests/ir_slot_wiring_tests.rs"]
+mod ir_slot_wiring_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_round3_tests.rs"]
+mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;
+
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;
+
+// ── DF-MAP answer slots (ARCHITECT rulings 2026-10-02, items 2 and 5) ──────────────────────────────
+
+const ACTION: &str = "action";
+const SOURCES: &str = "sources";
+const SEARCH: &str = "search";
+const FILE_CITATION: &str = "file_citation";
+const CONTAINER_FILE_CITATION: &str = "container_file_citation";
+const FILE_PATH: &str = "file_path";
+const FILE_ID: &str = "file_id";
+const FILENAME: &str = "filename";
+const INDEX: &str = "index";
+
+/// A `web_search_call` output item -> [`crate::codec::ir::IrBlock::HostedToolRecord`]: its `id`, its
+/// `status`, and its search action's `sources[].url` as results (the query has no IR member).
+fn read_web_search_call(item: &serde_json::Value) -> crate::codec::ir::IrBlock {
+    let text = |k: &str| item.get(k).and_then(|v| v.as_str()).map(String::from);
+    let results = item
+        .get(ACTION)
+        .and_then(|a| a.get(SOURCES))
+        .and_then(|s| s.as_array())
+        .map(|sources| {
+            sources
+                .iter()
+                .filter_map(|src| {
+                    Some(crate::codec::ir::IrSearchResult {
+                        url: src.get(keys::URL)?.as_str()?.to_string(),
+                        title: None,
+                        snippet: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::codec::ir::IrBlock::HostedToolRecord {
+        kind: crate::codec::ir::IrHostedToolKind::WebSearch,
+        call_id: text(keys::ID),
+        status: text(keys::STATUS),
+        results,
+    }
+}
+
+/// A hosted web-search record -> a `web_search_call` output item (`id` synthesized when the record
+/// carries none, `status` `completed` when it names none, its results as the search action's
+/// `sources`).
+fn write_web_search_call(
+    call_id: Option<&str>,
+    status: Option<&str>,
+    results: &[crate::codec::ir::IrSearchResult],
+) -> serde_json::Value {
+    let sources: Vec<serde_json::Value> = results
+        .iter()
+        .map(|r| serde_json::json!({ (keys::TYPE): keys::URL, (keys::URL): r.url }))
+        .collect();
+    serde_json::json!({
+        (keys::TYPE): ITEM_TYPE_WEB_SEARCH_CALL,
+        (keys::ID): call_id.map_or_else(|| synthesize_item_id(ITEM_ID_PREFIX_WEB_SEARCH), String::from),
+        (keys::STATUS): status.unwrap_or(STATUS_COMPLETED),
+        (ACTION): { (keys::TYPE): SEARCH, (SOURCES): sources },
+    })
+}
+
+/// The id prefix of a synthesized web-search item.
+const ITEM_ID_PREFIX_WEB_SEARCH: &str = "ws";
+
+/// The file annotations of an `output_text` part (`file_citation`, `container_file_citation`,
+/// `file_path`) -> IR citations carrying [`crate::codec::ir::IrFileLocation`]; url citations are
+/// read by `url_citation_wire`.
+fn read_file_annotations(
+    annotations: Option<&serde_json::Value>,
+) -> Vec<crate::codec::ir::IrCitation> {
+    let Some(items) = annotations.and_then(|a| a.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|a| {
+            let kind = a.get(keys::TYPE)?.as_str()?;
+            if ![FILE_CITATION, CONTAINER_FILE_CITATION, FILE_PATH].contains(&kind) {
+                return None;
+            }
+            let text = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
+            Some(crate::codec::ir::IrCitation {
+                kind: Some(kind.to_string()),
+                file: Some(crate::codec::ir::IrFileLocation {
+                    file_id: text(FILE_ID),
+                    filename: text(FILENAME),
+                    index: a.get(INDEX).and_then(|v| v.as_i64()),
+                }),
+                raw: Some(a.clone()),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// The IR file citations of a text block as Responses `file_citation` annotations (a citation that
+/// arrived as a container or path annotation keeps its own kind, from `raw`).
+fn file_annotations(citations: &[crate::codec::ir::IrCitation]) -> Vec<serde_json::Value> {
+    citations
+        .iter()
+        .filter_map(|c| {
+            let f = c.file.as_ref()?;
+            if let Some(raw) = &c.raw {
+                return Some(raw.clone());
+            }
+            let mut a = serde_json::Map::new();
+            a.insert(keys::TYPE.to_string(), serde_json::json!(FILE_CITATION));
+            if let Some(id) = &f.file_id {
+                a.insert(FILE_ID.to_string(), serde_json::json!(id));
+            }
+            if let Some(name) = &f.filename {
+                a.insert(FILENAME.to_string(), serde_json::json!(name));
+            }
+            a.insert(INDEX.to_string(), serde_json::json!(f.index.unwrap_or(0)));
+            Some(serde_json::Value::Object(a))
+        })
+        .collect()
+}
+
+const MODERATION: &str = "moderation";
+const MODERATION_INPUT: &str = "input";
+const MODERATION_OUTPUT: &str = "output";
+const MODERATION_CATEGORIES: &str = "categories";
+
+/// A response's `moderation.{input,output}` (each a `moderation_result`) -> the IR's safety verdicts
+/// (DF-MAP item 1): one flagged verdict per category set `true`; scores do not cross.
+fn read_moderation(body: &serde_json::Value) -> Vec<crate::codec::ir::IrSafetyVerdict> {
+    [MODERATION_INPUT, MODERATION_OUTPUT]
+        .into_iter()
+        .flat_map(|side| {
+            crate::codec::ir::IrSafetyVerdict::flagged_categories(
+                body.get(MODERATION)
+                    .and_then(|m| m.get(side))
+                    .and_then(|r| r.get(MODERATION_CATEGORIES)),
+            )
+        })
+        .collect()
+}

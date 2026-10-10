@@ -1,0 +1,895 @@
+# THE SCRIPT ALLOWLIST: every tracked .py, .sh and .bash file in this tree, and why it is still here.
+#
+# OWNER 2026-10-02: "drop as much python ... as possible to rust", "minimal to no .sh". Product checks
+# and gates are `cargo xtask`; release tooling is busbar-release. `cargo xtask gate script-allowlist`
+# is RED on a script this file does not list, on an entry whose file is gone, and on an entry with
+# no class or a reason too short to be one. A port or a deletion strikes its entry in the same
+# commit; a new script needs an entry here and a reviewer who agrees with its reason.
+#
+# class:  port     becomes Rust (the reason says where); still here until the port proves itself
+#         keep     minimal glue or user-facing content where Rust is worse; the bar is high
+#         external an upstream suite we run but do not own, fetched pinned at run time
+#         retire   dead, held only by the named blocker
+#         oracle-driver  an oracle cell driver, rig or conformance runner; held for 1.6.0 (ARCHITECT
+#                  2026-10-02): porting it would re-stamp the 1.5.5 golden, which is forbidden
+
+[[script]]
+path = ".github/scripts/bump_cargo.py"
+class = "port"
+reason = "release step in RELEASE.md (version bump, changelog roll): becomes a busbar-release subcommand on the CLI-AUDIT tree"
+
+[[script]]
+path = ".github/scripts/roll_changelog.py"
+class = "port"
+reason = "release step in RELEASE.md (version bump, changelog roll): becomes a busbar-release subcommand on the CLI-AUDIT tree"
+
+[[script]]
+path = "examples/claude-code-bedrock/bedrock-usage.sh"
+class = "keep"
+reason = "user-facing example the README tells an operator to run (env.sh must be sourced into their own shell); product docs, not tooling"
+
+[[script]]
+path = "examples/claude-code-bedrock/env.sh"
+class = "keep"
+reason = "user-facing example the README tells an operator to run (env.sh must be sourced into their own shell); product docs, not tooling"
+
+[[script]]
+path = "examples/claude-code-bedrock/run-busbar.sh"
+class = "keep"
+reason = "user-facing example the README tells an operator to run (env.sh must be sourced into their own shell); product docs, not tooling"
+
+[[script]]
+path = "examples/claude-code-bedrock/workspace/app.py"
+class = "keep"
+reason = "the example's demo workload Claude Code edits in the walkthrough; sample content, not tooling"
+
+[[script]]
+path = "examples/claude-code-bedrock/workspace/solver.py"
+class = "keep"
+reason = "the example's demo workload Claude Code edits in the walkthrough; sample content, not tooling"
+
+[[script]]
+path = "scripts/a2a-subject/boot.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-admit-refusal.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-audit-record.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-card-epoch.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-class-price.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-exit-terminal.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-ledger-unconditional.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-lib.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-meter-row.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-route-failover.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-unpriced-refuses.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/a2a-subject/h2-verify-refusal.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/bolt-pass.sh"
+class = "port"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+
+[[script]]
+path = "scripts/build-provenance-gate.sh"
+class = "port"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+
+[[script]]
+path = "scripts/capability-equality-summary.py"
+class = "port"
+reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
+
+[[script]]
+path = "scripts/ci-branch-protection.sh"
+class = "port"
+reason = "writes the qa/main branch-protection floor (RELEASE.md): becomes a busbar-release subcommand over the shared GitHub crate"
+
+[[script]]
+path = "scripts/cost-watch.py"
+class = "port"
+reason = "the CI cost gate BUSBAR-1.6.0.md #78 requires: becomes a busbar-release subcommand"
+
+[[script]]
+path = "scripts/fleet/pin-check.sh"
+class = "port"
+reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"
+
+[[script]]
+path = "scripts/fleet/repin.sh"
+class = "port"
+reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"
+
+[[script]]
+path = "scripts/fleet/verify-abi-completeness.sh"
+class = "port"
+reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"
+
+[[script]]
+path = "scripts/mcp-conformance.sh"
+class = "oracle-driver"
+reason = "the MCP conformance rig the oracle drives (rigs.rs): moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-fixture-absence-gate.sh"
+class = "port"
+reason = "test fixtures absent from a real build (GOAL-1.5.5 item 24): becomes an xtask gate"
+
+[[script]]
+path = "scripts/mcp-subject/boot.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/client-arm.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-admit-refusal.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-audit-record.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-authenticate-refusal.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-card-epoch.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-class-price.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-exit-terminal.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-ledger-unconditional.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-lib.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-meter-row.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-unpriced-refuses.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/h2-verify-refusal.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/mcp-subject/seam-arm.sh"
+class = "oracle-driver"
+reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "scripts/no-plugins-gate.sh"
+class = "port"
+reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
+
+[[script]]
+path = "scripts/pgo-build.sh"
+class = "port"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+
+[[script]]
+path = "scripts/pgo-drift-check.sh"
+class = "port"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+
+[[script]]
+path = "scripts/plane-config-noun-gate.sh"
+class = "port"
+reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
+
+[[script]]
+path = "scripts/plane-delete-test.sh"
+class = "port"
+reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
+
+[[script]]
+path = "scripts/plane-grep-gate.sh"
+class = "port"
+reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
+
+[[script]]
+path = "scripts/plane-keys.sh"
+class = "port"
+reason = "the plane-key list the plane gates and capability_equality.rs read: becomes data an xtask gate owns, ported with the plane gates"
+
+[[script]]
+path = "scripts/plane-noun-gate.sh"
+class = "port"
+reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
+
+[[script]]
+path = "scripts/plugin-registry-check.sh"
+class = "port"
+reason = "plugins.yaml vs the org's repos: folds into busbar-release plugin (the registry tool CLI-AUDIT is porting); its check 3/3b read the retired release-check scripts and have no subject now, so the port drops them"
+
+[[script]]
+path = "scripts/profile-lock.sh"
+class = "port"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+
+[[script]]
+path = "scripts/proto-deletion-gate.sh"
+class = "port"
+reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
+
+[[script]]
+path = "scripts/public-hygiene-lint.py"
+class = "port"
+reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
+
+[[script]]
+path = "scripts/release-build.sh"
+class = "port"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+
+[[script]]
+path = "scripts/release-gate/binfmt.py"
+class = "port"
+reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+
+[[script]]
+path = "scripts/release-gate/channel-checks.sh"
+class = "port"
+reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+
+[[script]]
+path = "scripts/release-gate/docker-checks.sh"
+class = "port"
+reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+
+[[script]]
+path = "scripts/release-gate/expected-ids.sh"
+class = "port"
+reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+
+[[script]]
+path = "scripts/release-gate/gate.sh"
+class = "port"
+reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+
+[[script]]
+path = "scripts/release-gate/ledger-selftest.sh"
+class = "port"
+reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+
+[[script]]
+path = "scripts/release-gate/lib.sh"
+class = "port"
+reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+
+[[script]]
+path = "scripts/release-gate/platform-checks.sh"
+class = "port"
+reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+
+[[script]]
+path = "scripts/release-gate/site-curl.sh"
+class = "port"
+reason = "post-publish channel checks (docker, platform, site): become a busbar-release subcommand; nothing runs them today"
+
+[[script]]
+path = "scripts/release-key-guard.sh"
+class = "port"
+reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
+
+[[script]]
+path = "scripts/signing-gate.sh"
+class = "port"
+reason = "plugin-ci.yml's signing gate: becomes an xtask fleet subcommand the reusable workflow calls"
+
+[[script]]
+path = "scripts/verify-1.6.0-done.sh"
+class = "port"
+reason = "the 1.6.0 done verifier (busbar-release status reads its groups): becomes `cargo xtask verify-done`, group for group"
+
+[[script]]
+path = "scripts/verify-artifact.py"
+class = "port"
+reason = "release artifact verifier: becomes part of the busbar-release release-binaries build"
+
+[[script]]
+path = "testing/a2a-governance/a2agov/__init__.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-governance/a2agov/__main__.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-governance/a2agov/cli.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-governance/a2agov/tests_governance.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/__init__.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/__main__.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/cli.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/deviations.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/fakes.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/jcs.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/model.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/runner.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/spec.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/target.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/tests_adversarial.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/tests_auth.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/tests_card.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/tests_client.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/tests_core.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/tests_hostile.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/transport.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/a2aht/validate.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/scripts/harness-selftest.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/scripts/install-control.sh"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/scripts/swap-proof.sh"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-harness/scripts/tz-is-load-bearing.sh"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/__init__.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/__main__.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/checks_auth.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/checks_bind.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/checks_card.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/checks_ver.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/model.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/runner.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/spec.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/target.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/transport.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/a2asup/verifier_probe.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/run-supplement.sh"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-supplement/selftest.py"
+class = "oracle-driver"
+reason = "our own A2A battery behind an oracle rig and teller-steps cells: becomes Rust in busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-tck/check-baseline-selftest.py"
+class = "oracle-driver"
+reason = "drives the pinned upstream a2aproject/a2a-tck (fetched at run time, not vendored) through our subject: the runner moves into busbar-release-oracle HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-tck/check-baseline.py"
+class = "oracle-driver"
+reason = "drives the pinned upstream a2aproject/a2a-tck (fetched at run time, not vendored) through our subject: the runner moves into busbar-release-oracle HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-tck/run-tck.sh"
+class = "oracle-driver"
+reason = "drives the pinned upstream a2aproject/a2a-tck (fetched at run time, not vendored) through our subject: the runner moves into busbar-release-oracle HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-tck/scenario-agent/scenario_agent.py"
+class = "oracle-driver"
+reason = "drives the pinned upstream a2aproject/a2a-tck (fetched at run time, not vendored) through our subject: the runner moves into busbar-release-oracle HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/a2a-tck/scenario-agent/serve.sh"
+class = "oracle-driver"
+reason = "drives the pinned upstream a2aproject/a2a-tck (fetched at run time, not vendored) through our subject: the runner moves into busbar-release-oracle HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/fleet-fixtures/lib.sh"
+class = "oracle-driver"
+reason = "the store functional fixtures the oracle sources (harness-rev hashes lib.sh and verdict.sh): moves into busbar-release-oracle HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/fleet-fixtures/probe-store.sh"
+class = "oracle-driver"
+reason = "the store functional fixtures the oracle sources (harness-rev hashes lib.sh and verdict.sh): moves into busbar-release-oracle HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/fleet-fixtures/store-services.sh"
+class = "oracle-driver"
+reason = "the store functional fixtures the oracle sources (harness-rev hashes lib.sh and verdict.sh): moves into busbar-release-oracle HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/fleet-fixtures/verdict.sh"
+class = "oracle-driver"
+reason = "the store functional fixtures the oracle sources (harness-rev hashes lib.sh and verdict.sh): moves into busbar-release-oracle HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/llm-conformance/fixtures/gen-errors-fixture.py"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/llm-conformance/run.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/llm-conformance/selftest.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/llm-conformance/validate.py"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/llm-conformance/vendor.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/mcp-conformance/control/control_client.py"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/mcp-conformance/control/control_server.py"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/mcp-conformance/scripts/negative-control.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/mcp-conformance/scripts/run-control.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/mcp-conformance/scripts/run-subject.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/mcp-conformance/scripts/setup-control.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/rigs-ledger.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/apply-deferred-decisions.py"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/cooldown-trip.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/documented-admin-restart.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/documented-docker-defaults.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/documented-overlay-refused.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/documented-providers-env-wins.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/documented-tls.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/documented-validate-checks.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/durable-governance-precondition.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/hazard-no-data-dir.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/key-expired-out-of-band.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/key-expiry.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/key-revoke.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/key-rotate.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/oracle-box-store-services.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/plugin-list.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/plugins-fetch-reload-miss.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/rate-card-history.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/refund-across-window.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/scrape-after-reload.sh"
+class = "oracle-driver"
+reason = "the driver of oracle cell ops.scrape|reload|sink-removed (the reload-then-scrape cell, golden recorded from published 1.5.5): it boots busbar, scrapes, rewrites config.yaml without the exporter, POSTs /config/reload and scrapes again, which no http or capture cell can do; an oracle cell driver (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/store-persist.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/teller-admit-refusal.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/teller-audit-record.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/teller-authenticate-refusal.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/teller-exit-terminal.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/teller-meter-row.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/teller-route-failover.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/teller-verify-refusal.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/admit-refusal.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/audit-record.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/cross-parity.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/exit-terminal.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/gemini-live-route.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/governance.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/metering-lease.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/provider-credential.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/provider-dial.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/replay.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/route-failover.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/session-scope.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/spec-per-dialect.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/tool-reply.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/lib/conform-bin.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/voice-conformance.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/ws-conformance/scripts/run.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "tests/migration-corpus/refresh.sh"
+class = "port"
+reason = "regenerates the migration corpus (a verify-1.6.0-done.sh step): becomes a `cargo xtask` generator"
+

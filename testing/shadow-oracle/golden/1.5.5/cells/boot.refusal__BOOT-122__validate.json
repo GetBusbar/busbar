@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] providers.yaml: invalid YAML: gemini.protocol: invalid type: sequence, expected a string at line 12 column 3\n"},"headers":{},"status":1}

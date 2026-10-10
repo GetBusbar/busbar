@@ -37,3 +37,26 @@ pools:
   default:
     members:
       - model: claude
+
+# A store is required in 1.6.0 (`busbar --migrate-config` inserts this). memory is the store 1.5.5
+# ran with no block: keys/usage/ledgers/audit reset on restart (one WARN at boot).
+store:
+  module: memory
+
+# ── Durable store (optional; commented out — this image ships plugin-free) ────────────────────────
+# Replaces the memory store above. Turning this on needs all FOUR of the keys below, not just a
+# writable volume — see
+# docs/getting-started.md#durable-store-giving-persistence-a-writable-volume for the full recipe
+# and the exact refusal text for each way this goes wrong, and docker/docker-compose.yml for a
+# working end-to-end example (docker/config.persistent.yaml is that example's active config, i.e.
+# this same block un-commented).
+# store:                                         # replaces `store: {module: memory}` above
+#   module: sqlite
+#   settings:
+#     db_path: /var/lib/busbar/governance.db     # directory must exist on a writable volume
+#
+# plugins:
+#   enabled: true                                # master switch — default false
+#   dir: /etc/busbar/plugins                     # ABSOLUTE — the default ("plugins") resolves to /plugins here
+#   fetch:
+#     - github: "GetBusbar/busbar-store-sqlite@v1.0.0"  # or omit `fetch` and bind-mount the signed tarball yourself

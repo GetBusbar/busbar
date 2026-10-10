@@ -1,0 +1,867 @@
+use super::*;
+use crate::codec::dialect::ir_parse_error;
+use crate::codec::keys;
+
+impl ProtocolReader for AnthropicReader {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
+        let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
+        // The whole usage table, as the buffered read takes it: a truncated turn that ran web
+        // searches ledgers them exactly as its complete twin does. An unreadable billed count
+        // yields NO recovered usage, never a zero one (#42): the caller then bills its
+        // conservative floor estimate for the truncated body instead of $0.
+        Some(
+            crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE)
+                .ok()?
+                .to_token_usage(),
+        )
+    }
+
+    fn extract_error(
+        &self,
+        status: StatusCode,
+        body: &[u8],
+    ) -> busbar_contract::upstream::RawUpstreamError {
+        // Parse the error body once and pull both fields from the single JSON tree, rather than
+        // re-parsing the same bytes per field (error paths are already degraded; avoid the extra
+        // parse+alloc on every non-2xx response).
+        let (provider_code, structured_type) =
+            match crate::codec::json::parse::<serde_json::Value>(body) {
+                Ok(json) => {
+                    let error = json.get(keys::ERROR_WORD);
+                    let provider_code = error
+                        .and_then(|e| e.get(keys::CODE))
+                        .and_then(|c| c.as_str())
+                        .map(String::from);
+                    let structured_type = error
+                        .and_then(|e| e.get(keys::TYPE))
+                        .and_then(|t| t.as_str())
+                        .map(String::from);
+                    (provider_code, structured_type)
+                }
+                Err(_) => (None, None),
+            };
+
+        // Anthropic signals context-length via the error MESSAGE (no distinct code).
+        // Surface the canonical code so the breaker pipeline (normalize_raw_error) → ContextLength.
+        //
+        // GATE the message-scan override on a request-SIZE status (400 Bad Request / 413 Payload Too
+        // Large) — the only statuses under which an oversized-prompt body is the authoritative signal.
+        // Cross-protocol sibling of the Cohere `body_signals_context_length` gate. Without
+        // the gate, ANY non-2xx whose body merely mentions a token/length phrase was reclassified to
+        // context_length: a 401/403 ("...invalid token...") or a 429 ("...rate limit on tokens...")
+        // would be turned into a non-penalizing ContextLength fail-over, so the breaker never recorded
+        // the auth/rate-limit fault and the lane stayed "healthy" while hard-down or throttled. By
+        // confining the override to 400/413, a 401/403/429 that happens to mention tokens keeps its
+        // auth/rate-limit disposition and is penalized by the breaker as it should be.
+        let status_code = status.as_u16();
+        let is_request_size_status = status_code == 400 || status_code == 413;
+        let provider_code = provider_code.or_else(|| {
+            if !is_request_size_status {
+                return None;
+            }
+            let lower = String::from_utf8_lossy(body).to_lowercase();
+            if lower.contains("prompt is too long")
+                || (lower.contains("exceeds the maximum")
+                    && (lower.contains(keys::TOKEN) || lower.contains(keys::CONTEXT)))
+            {
+                Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+            } else {
+                None
+            }
+        });
+
+        busbar_contract::upstream::RawUpstreamError {
+            http_status: status.as_u16(),
+            provider_code,
+            structured_type,
+            retry_after_secs: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
+        let text = String::from_utf8_lossy(body);
+
+        // context-length-exceeded (Anthropic returns 400 invalid_request_error). The lane
+        // is healthy; this must fail over (to a larger-context model), not penalize the breaker.
+        // Check before the generic 400/client-error path so it wins.
+        let lower = text.to_lowercase();
+        if lower.contains("prompt is too long")
+            || (lower.contains("exceeds the maximum")
+                && (lower.contains(keys::TOKEN) || lower.contains(keys::CONTEXT)))
+        {
+            return CanonicalSignal {
+                class: StatusClass::ContextLength,
+                provider_signal: Some("context_length".to_string()),
+                retry_after: None,
+            };
+        }
+
+        // Prefer the HTTP status, then structured error codes, then substrings as a fallback.
+        // Parse the JSON once and examine `error.code` and `error.message` INDEPENDENTLY: the
+        // message-substring billing/auth checks must fire even when the structured `code` field is
+        // absent (some Anthropic error shapes carry a 200/non-401-403 body with only a message), so
+        // they live OUTSIDE the `if let Some(code_val)` guard rather than nested inside it.
+        if let Ok(json) = crate::codec::json::parse::<serde_json::Value>(body) {
+            let error = json.get(keys::ERROR_WORD);
+
+            if let Some(code_val) = error.and_then(|e| e.get(keys::CODE)) {
+                if code_val.as_str() == Some("400") || code_val.as_str() == Some("422") {
+                    return CanonicalSignal {
+                        class: StatusClass::ClientError,
+                        provider_signal: Some("client_error".to_string()),
+                        retry_after: None,
+                    };
+                }
+            }
+
+            // Message-substring billing/auth detection — independent of `error.code` presence.
+            if let Some(msg_str) = error
+                .and_then(|e| e.get(keys::MESSAGE))
+                .and_then(|m| m.as_str())
+            {
+                if msg_str.contains("nsufficient balance") {
+                    return CanonicalSignal {
+                        class: StatusClass::Billing,
+                        provider_signal: Some("billing".to_string()),
+                        retry_after: None,
+                    };
+                }
+                if msg_str.contains(keys::UNAUTHORIZED) || msg_str.contains("invalid token") {
+                    return CanonicalSignal {
+                        class: StatusClass::Auth,
+                        provider_signal: Some("auth".to_string()),
+                        retry_after: None,
+                    };
+                }
+            }
+        }
+
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return CanonicalSignal {
+                class: StatusClass::Auth,
+                provider_signal: None,
+                retry_after: None,
+            };
+        }
+
+        if status.as_u16() == 429 {
+            // Reuse the single lower-cased copy computed at the top of `classify` rather than
+            // allocating a second one — on a verbose 429 body this avoids a redundant heap copy.
+            if lower.contains("quota") && lower.contains("exhausted") {
+                return CanonicalSignal {
+                    class: StatusClass::Billing,
+                    provider_signal: Some("429-quota-exhausted".to_string()),
+                    retry_after: None,
+                };
+            }
+            return CanonicalSignal {
+                class: StatusClass::RateLimit,
+                provider_signal: Some("429-slowdown".to_string()),
+                retry_after: None,
+            };
+        }
+
+        if status.as_u16() >= 500 {
+            return CanonicalSignal {
+                class: StatusClass::ServerError,
+                provider_signal: Some("5xx".to_string()),
+                retry_after: None,
+            };
+        }
+
+        if status.is_client_error() {
+            return CanonicalSignal {
+                class: StatusClass::ClientError,
+                provider_signal: None,
+                retry_after: None,
+            };
+        }
+
+        CanonicalSignal {
+            class: StatusClass::ClientError,
+            provider_signal: None,
+            retry_after: None,
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn ProtocolReader> {
+        Box::new(self.clone())
+    }
+
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::STREAM_PATHS,
+            code: super::STREAM_CODE,
+            drops: super::STREAM_DROPS,
+        })
+    }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
+    }
+
+    /// IR-18: a `signature_delta` on the Anthropic wire is Claude's.
+    fn stream_signature_origin(
+        &self,
+        _state: &crate::codec::ir::StreamDecodeState,
+    ) -> Option<crate::codec::ir::IrSignatureOrigin> {
+        Some(crate::codec::ir::IrSignatureOrigin::Anthropic)
+    }
+
+    fn read_request(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<crate::codec::ir::IrRequest, IrError> {
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
+
+        let mut extra = serde_json::Map::new();
+        let mut system_blocks: Vec<crate::codec::ir::IrBlock> = Vec::new();
+        // Count of `role:"system"` entries folded out of `messages` below (a real Anthropic wire body
+        // never carries one, but a cross-protocol-shaped or malformed body legally can) — restores the
+        // 1.5.5 `message_count` semantics (the raw `messages` array length) onto `IrFacts::shape()`.
+        let mut system_turns_folded: usize = 0;
+        // Where each folded entry stood, for the hook view (`IrRequest::system_folds`).
+        let mut system_folds: Vec<crate::codec::ir::IrSystemFold> = Vec::new();
+
+        // Handle system field (string or array)
+        if let Some(system_val) = obj.get(keys::SYSTEM) {
+            if system_val.is_string() {
+                let text = system_val.as_str().unwrap_or("").to_string();
+                system_blocks.push(crate::codec::ir::IrBlock::Text {
+                    text,
+                    cache_control: None,
+                    citations: Vec::new(),
+                    refusal: false,
+                });
+            } else if let Some(arr) = system_val.as_array() {
+                system_blocks.extend(read_blocks(arr)?);
+            }
+        }
+
+        // Handle messages array. Anthropic's Messages API has NO `system` role inside `messages` —
+        // system instructions live in the top-level `system` field. A cross-protocol IR, however, can
+        // carry an `IrRole::System` message (e.g. translated from an OpenAI `system` message), and a
+        // wire body could nominally present a `role:"system"` message too. PROMOTE any such message
+        // into `system_blocks` here at the root rather than pushing it into `req.messages`, so the
+        // writer never sees an `IrRole::System` message and can never emit the INVALID Anthropic
+        // `role:"system"` (which upstream rejects with a 400). System blocks are appended in order,
+        // preserving their position relative to any top-level `system` field already read above.
+        let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
+        // Positions (post system-filter, matching `write_request`'s indexing) of any raw content
+        // block the IR does not hold whole — parked here so an Anthropic-to-Anthropic hop that
+        // goes through the IR (not the byte-verbatim same-protocol relay) splices the ORIGINAL
+        // block back at its position. A block the IR does not read at all has nothing standing
+        // in for it (design F3 "Drops": never a substitution).
+        let mut unmodeled_blocks: Vec<serde_json::Value> = Vec::new();
+        if let Some(messages_val) = obj.get(keys::MESSAGES) {
+            // EDGE-VALIDATE the top-level `messages` TYPE: a PRESENT-but-wrong-typed `messages`
+            // (string/number/object where an array is required) is a genuine structural violation.
+            // Reject it with a 400 rather than silently coercing to an empty conversation (matching
+            // the strict openai_chat/cohere readers). An ABSENT `messages` stays lenient above.
+            let messages_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
+            for msg_val in messages_arr {
+                let msg = read_message(msg_val)?;
+                if msg.role == crate::codec::ir::IrRole::System {
+                    system_turns_folded += 1;
+                    let blocks_before = system_blocks.len();
+                    system_blocks.extend(msg.content);
+                    crate::codec::ir::IrSystemFold::record(
+                        &mut system_folds,
+                        messages.len(),
+                        crate::codec::ir::IrSystemRole::System,
+                        blocks_before,
+                        system_blocks.len(),
+                    );
+                } else {
+                    stash_unmodeled_blocks(msg_val, messages.len(), &mut unmodeled_blocks);
+                    messages.push(msg);
+                }
+            }
+        }
+        if !unmodeled_blocks.is_empty() {
+            extra.insert(
+                ANTHROPIC_UNMODELED_BLOCKS_SENTINEL.to_string(),
+                serde_json::Value::Array(unmodeled_blocks),
+            );
+        }
+
+        // Handle tools array
+        let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
+        // IR-11 (ANT-13): an Anthropic server tool whose KIND the IR models (web search, web fetch,
+        // code execution) crosses the seam in the typed slot, NOT as a raw hosted `IrTool`.
+        let mut hosted_tools: Vec<crate::codec::ir::IrHostedTool> = Vec::new();
+        if let Some(tools_val) = obj.get(keys::TOOLS) {
+            // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
+            // `messages` type-check above) rather than coercing to empty, which would forward a
+            // tool-less request upstream at HTTP 200 and silently strip the caller's tools.
+            let tools_arr = tools_val.as_array().ok_or_else(ir_parse_error)?;
+            for tool_val in tools_arr {
+                match read_hosted_tool(tool_val) {
+                    Some(hosted) => hosted_tools.push(hosted),
+                    None => tools.push(read_tool(tool_val)?),
+                }
+            }
+        }
+
+        // Extract scalar fields and extra
+        // Checked `u32::try_from` rather than a raw `as u32`: a `max_tokens`/`top_k` larger than
+        // `u32::MAX` would silently TRUNCATE under `as` (e.g. 4294967297 → 1), forwarding a wildly
+        // wrong cap upstream. An out-of-range value drops to `None` here, matching the sibling
+        // readers; the upstream then applies its own default rather than receiving a corrupted limit.
+        let max_tokens = obj
+            .get(keys::MAX_TOKENS)
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+            // Treat `max_tokens: 0` as absent (matches the OpenAI/Gemini/Bedrock/Cohere/Responses
+            // readers). A zero cap is meaningless (no output budget) and would force an invalid body
+            // on egress; dropping it to None lets the target apply its own default.
+            .filter(|&v| v > 0);
+        // temperature / top_p / top_k / stop_sequences are rows of the mapping file, read below.
+        // Anthropic `tool_choice` is an object: {type:"auto"|"any"|"tool"|"none", name?}. Normalize
+        // into the IR union so forced/targeted tool use survives the cross-protocol seam.
+        let tool_choice = read_anthropic_tool_choice(obj.get(keys::TOOL_CHOICE));
+        // `disable_parallel_tool_use` rides INSIDE Anthropic's tool_choice object; normalize it
+        // inverted ("parallel allowed?") so it carries to OpenAI's top-level `parallel_tool_calls`.
+        let parallel_tool_calls = obj
+            .get(keys::TOOL_CHOICE)
+            .and_then(|tc| tc.get(super::DISABLE_PARALLEL_TOOL_USE))
+            .and_then(|v| v.as_bool())
+            .map(|disabled| !disabled);
+        // `metadata.user_id` is Anthropic's spelling of OpenAI's `user`; promote it so it carries
+        // across the seam. The `metadata` object itself still rides `extra` (unmodeled), keeping
+        // same-protocol fidelity byte-exact.
+        let user = obj
+            .get(keys::METADATA)
+            .and_then(|m| m.get(super::USER_ID))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        // The request-level `thinking` param (the ASK, not the response content blocks), plus the
+        // effort word Anthropic carries in `output_config.effort`:
+        //   * `{type:"enabled", budget_tokens:N}` → `Budget(N)` (a straight number to Gemini's
+        //     thinkingBudget, bucketed to a word for OpenAI's reasoning_effort);
+        //   * `{type:"adaptive"}` → `Effort(<output_config.effort>)` when an effort word is given,
+        //     else `Dynamic` — "the model decides", Gemini's `thinkingBudget:-1` (ANT-09);
+        //   * no `thinking` but an `output_config.effort` word → `Effort(word)`: the caller asked for
+        //     that reasoning depth, and the adaptive-by-default models honour it;
+        //   * `{type:"disabled"}` → `Off` (IR-09, ANT-09): the caller switched reasoning OFF, which a
+        //     reasoning-by-default foreign model must hear (Chat/Responses `"none"`, Gemini
+        //     `thinkingBudget:0`) rather than read as "never said";
+        //   * a malformed `thinking` → no ask.
+        // Everything stays in `extra` too except a promoted budget-form `thinking` (removed below),
+        // so a same-protocol hop through the IR still re-emits the caller's exact objects.
+        let thinking_type = obj
+            .get(keys::THINKING)
+            .and_then(|t| t.get(keys::TYPE))
+            .and_then(|v| v.as_str());
+        let effort = obj
+            .get(keys::OUTPUT_CONFIG)
+            .and_then(|c| c.get(keys::EFFORT))
+            .and_then(|v| v.as_str())
+            .and_then(read_anthropic_effort_word);
+        let reasoning = match thinking_type {
+            Some(keys::ENABLED) => obj
+                .get(keys::THINKING)
+                .and_then(|t| t.get(keys::BUDGET_TOKENS))
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+                .map(crate::codec::ir::IrReasoningAsk::Budget),
+            Some(THINKING_TYPE_ADAPTIVE) => Some(
+                effort
+                    .map(crate::codec::ir::IrReasoningAsk::Effort)
+                    .unwrap_or(crate::codec::ir::IrReasoningAsk::Dynamic),
+            ),
+            Some(THINKING_TYPE_DISABLED) => Some(crate::codec::ir::IrReasoningAsk::Off),
+            None => effort.map(crate::codec::ir::IrReasoningAsk::Effort),
+            Some(_) => None,
+        };
+        let reasoning_is_budget =
+            matches!(reasoning, Some(crate::codec::ir::IrReasoningAsk::Budget(_)));
+        // Native structured outputs: `output_config.format` (GA) or the deprecated top-level
+        // `output_format` of the same shape. Both used to ride `extra` and die at the seam, so an
+        // Anthropic caller's JSON schema never reached a foreign backend (ANT-06).
+        let output_format_legacy = obj.get(keys::OUTPUT_FORMAT);
+        let response_format = obj
+            .get(keys::OUTPUT_CONFIG)
+            .and_then(|c| c.get(keys::FORMAT))
+            .or(output_format_legacy)
+            .and_then(read_anthropic_output_format);
+        let stream = obj
+            .get(keys::STREAM)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Collect unmodeled top-level keys into `extra`: the modelled keys are the mapping file's
+        // top-level rows.
+        crate::codec::carry::keep_unmodelled(super::map::REQUEST, obj, &mut extra);
+        // A PROMOTED thinking ask must not also ride extra (the writer re-emits it from the typed
+        // field; a duplicate from extra would double-emit on a translated same-protocol hop).
+        if reasoning_is_budget {
+            extra.remove(keys::THINKING);
+        }
+        // The deprecated spelling is promoted to the typed field and re-emitted by the writer in its
+        // GA spelling; leaving it in `extra` too would put BOTH spellings on a same-protocol hop.
+        if response_format.is_some() && output_format_legacy.is_some() {
+            extra.remove(keys::OUTPUT_FORMAT);
+        }
+
+        // (No ingress sentinel scrub needed anymore: a client cannot forge a redacted-reasoning block.
+        // `redacted` is a TYPED flag only the Anthropic/Bedrock readers set on a genuine
+        // `redacted_thinking`/`redactedContent` block — a client-supplied `signature` string can never
+        // mark a block redacted, so the old `__busbar` sentinel forgery vector is structurally closed.)
+
+        let mut ir = crate::codec::ir::IrRequest {
+            reasoning,
+            user,
+            parallel_tool_calls,
+            system: system_blocks,
+            system_turns_folded,
+            system_folds,
+            messages,
+            tools,
+            max_tokens,
+            tool_choice,
+            stream,
+            response_format,
+            extra,
+            hosted_tools,
+            ..Default::default()
+        };
+        crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
+        Ok(ir)
+    }
+
+    fn read_response_event(
+        &self,
+        event_type: &str,
+        data: &serde_json::Value,
+    ) -> Option<IrStreamEvent> {
+        match event_type {
+            EVT_MESSAGE_START => {
+                let msg = data.get(keys::MESSAGE)?;
+                let role_str = msg.get(keys::ROLE).and_then(|r| r.as_str())?;
+                let role = match role_str {
+                    keys::USER => crate::codec::ir::IrRole::User,
+                    keys::ASSISTANT => crate::codec::ir::IrRole::Assistant,
+                    _ => return None,
+                };
+                // BILLED COUNTS: absent is zero, UNREADABLE REFUSES (#42) — the stream ends in an
+                // error instead of ledgering "no work happened" for a count the provider sent.
+                let usage = match data
+                    .get(keys::MESSAGE)
+                    .and_then(|m| m.get(keys::USAGE))
+                    .map(|u| read_anthropic_usage(Some(u)))
+                    .transpose()
+                {
+                    Ok(usage) => usage,
+                    Err(refusal) => return Some(IrStreamEvent::Error(refusal)),
+                };
+                // Capture the stream's native identity so an anthropic→anthropic passthrough
+                // re-emits the exact `message_start.message` an SDK expects (it reads
+                // `message.id`/`message.model` to populate the assembled `Message`). Anthropic's
+                // `message_start` has no `created` field, so `created` stays None on this path; the
+                // writer synthesizes one only when translating from a protocol that omitted it.
+                let id = msg.get(keys::ID).and_then(|i| i.as_str()).map(String::from);
+                // Empty `model` maps to `None`: the writer emits `model: ""` as the mandatory-field
+                // fallback when no source model exists, so reading it back as `None` keeps the
+                // stream-event round-trip idempotent (a real model id is never empty).
+                let model = msg
+                    .get(keys::MODEL)
+                    .and_then(|m| m.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                Some(IrStreamEvent::MessageStart {
+                    role,
+                    usage,
+                    id,
+                    created: None,
+                    model,
+                })
+            }
+            EVT_CONTENT_BLOCK_START => {
+                let index = read_clamped_block_index(data)?;
+                let block = data.get(super::CONTENT_BLOCK)?;
+                let block_type = block.get(keys::TYPE).and_then(|t| t.as_str())?;
+                let meta = match block_type {
+                    keys::TEXT => IrBlockMeta::Text,
+                    keys::THINKING => IrBlockMeta::Thinking { kind: None },
+                    STOP_TOOL_USE => {
+                        let id = block
+                            .get(keys::ID)
+                            .and_then(|i| i.as_str())
+                            .map(String::from)?;
+                        let name = block
+                            .get(keys::NAME)
+                            .and_then(|n| n.as_str())
+                            .map(String::from)?;
+                        IrBlockMeta::ToolUse { id, name }
+                    }
+                    keys::IMAGE => IrBlockMeta::Image,
+                    _ => return None,
+                };
+                Some(IrStreamEvent::BlockStart {
+                    index,
+                    block: meta,
+                    refusal: false,
+                })
+            }
+            EVT_CONTENT_BLOCK_DELTA => {
+                let index = read_clamped_block_index(data)?;
+                let delta_val = data.get(keys::DELTA)?;
+                let delta_type = delta_val.get(keys::TYPE).and_then(|t| t.as_str())?;
+                let delta = match delta_type {
+                    DELTA_TYPE_TEXT => {
+                        let text = delta_val
+                            .get(keys::TEXT)
+                            .and_then(|t| t.as_str())
+                            .map(String::from)?;
+                        IrDelta::TextDelta(text)
+                    }
+                    DELTA_TYPE_THINKING => {
+                        let thinking = delta_val
+                            .get(keys::THINKING)
+                            .and_then(|t| t.as_str())
+                            .map(String::from)?;
+                        IrDelta::ThinkingDelta(thinking)
+                    }
+                    DELTA_TYPE_INPUT_JSON => {
+                        let json = delta_val
+                            .get(super::PARTIAL_JSON)
+                            .or_else(|| delta_val.get("input_json"))
+                            .and_then(|j| j.as_str())
+                            .map(String::from)?;
+                        IrDelta::InputJsonDelta(json)
+                    }
+                    DELTA_TYPE_SIGNATURE => {
+                        let signature = delta_val
+                            .get(keys::SIGNATURE)
+                            .and_then(|s| s.as_str())
+                            .map(String::from)?;
+                        IrDelta::SignatureDelta(signature)
+                    }
+                    // STREAMING citation: a native Anthropic `content_block_delta` whose
+                    // `delta.type == "citations_delta"` carries a single `citation` object (one of
+                    // the four citation variants). Reuse `read_citation` so the neutral fields AND
+                    // the byte-exact `raw` escape hatch are filled (same as the non-stream path),
+                    // then carry it as `IrDelta::CitationsDelta` (one citation per delta). Without
+                    // this arm a streamed grounding/web-search citation was silently dropped.
+                    DELTA_TYPE_CITATIONS => {
+                        let citation_val = delta_val.get(keys::CITATION)?;
+                        IrDelta::CitationsDelta(vec![read_citation(citation_val)])
+                    }
+                    _ => return None,
+                };
+                Some(IrStreamEvent::BlockDelta { index, delta })
+            }
+            EVT_CONTENT_BLOCK_STOP => {
+                let index = read_clamped_block_index(data)?;
+                Some(IrStreamEvent::BlockStop { index })
+            }
+            EVT_MESSAGE_DELTA => {
+                let delta = data.get(keys::DELTA)?;
+                let stop_reason = delta
+                    .get(super::STOP_REASON)
+                    .and_then(|r| r.as_str())
+                    .map(read_anthropic_stop_reason);
+                // `message_delta.delta.stop_sequence` — the matched stop string, present (as a
+                // string) only when a stop sequence actually triggered the stop, `null`/absent
+                // otherwise. Carry it through so the same-protocol writer can re-emit it.
+                let stop_sequence = delta
+                    .get(keys::STOP_SEQUENCE)
+                    .and_then(|s| s.as_str())
+                    .map(String::from);
+                // `usage` is OPTIONAL on read here: do NOT `?` it. `message_delta` is the terminal
+                // event that carries `stop_reason`/`stop_sequence`, so propagating `None` out of this
+                // closure when `usage` is absent would silently DROP the whole event — the client then
+                // never sees the stop reason and cannot tell whether generation completed. A native
+                // Anthropic stream always includes `usage`, but an Anthropic-compatible backend that
+                // doesn't implement usage counting (or makes it conditional) may omit it; preserve the
+                // event regardless by zero-defaulting the counters when `usage` is missing. This mirrors
+                // the `message_start` reader above, which already maps a missing `usage` to defaults
+                // rather than bailing.
+                // An ABSENT count still zero-defaults (above); a present-but-UNREADABLE one refuses
+                // (#42) — the stream ends in an error rather than billing the count as zero.
+                let usage_val = data.get(keys::USAGE);
+                let usage = match read_anthropic_usage(usage_val) {
+                    Ok(usage) => usage,
+                    Err(refusal) => return Some(IrStreamEvent::Error(refusal)),
+                };
+                // IR-16 / IR-02: the context-window refinement of a length stop (ANT-11) and a
+                // refusal's `stop_details` category, carried beside the coarse reason.
+                let stop_detail = read_anthropic_stop_detail(
+                    delta.get(super::STOP_REASON).and_then(|r| r.as_str()),
+                    delta.get(super::STOP_DETAILS),
+                );
+                Some(IrStreamEvent::MessageDelta {
+                    stop_reason,
+                    stop_sequence,
+                    usage,
+                    stop_detail,
+                })
+            }
+            EVT_MESSAGE_STOP => Some(IrStreamEvent::MessageStop),
+            keys::ERROR_WORD => {
+                let err_val = data.get(keys::ERROR_WORD)?;
+                // Carry the upstream error `type` through as-is: `Some("rate_limit_error")` when
+                // present, `None` when the event omits it. Do NOT `unwrap_or_default()` into
+                // `Some("")` — an empty-string type would make the writer emit `"type": ""` where a
+                // native Anthropic error event carries either a real type or `null`. The writer
+                // (write_response_event) already renders `None` as JSON `null`, so the absence
+                // round-trips faithfully.
+                let type_token = err_val.get(keys::TYPE).and_then(|t| t.as_str());
+                let provider_signal = type_token.map(String::from);
+                // Derive the breaker class from the upstream error `type`, mirroring the HTTP
+                // classifier intent (see `classify`/`write_error`'s Anthropic error vocabulary)
+                // instead of hardcoding ClientError. A mid-stream `overloaded_error`/
+                // `rate_limit_error`/`api_error` is a TRANSIENT upstream fault, not a client fault —
+                // hardcoding ClientError mapped every one of them to Disposition::ClientFault, so the
+                // breaker never recorded the transient/hard-down signal and took the wrong transition.
+                let class = stream_error_class(type_token);
+                Some(IrStreamEvent::Error(IrError {
+                    class,
+                    provider_signal,
+                    retry_after: None,
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    fn read_response_events(
+        &self,
+        event_type: &str,
+        data: &serde_json::Value,
+        state: &mut crate::codec::ir::StreamDecodeState,
+    ) -> Vec<IrStreamEvent> {
+        // SUPPRESSED BLOCKS (ANT-14). A content block whose type the IR does not model on a stream
+        // (`server_tool_use`, `web_search_tool_result`, `mcp_tool_use`, a future type) produces no
+        // `BlockStart` — but its `input_json_delta`s and its `content_block_stop` still arrived at
+        // the same index and were translated, so a foreign client received tool-argument deltas and
+        // a block stop for a block it was never shown opening. Remember every index whose start was
+        // suppressed and drop everything that arrives at it. The index set lives in the per-stream
+        // decode state (`open_tools`, which no other part of this reader uses): the Anthropic
+        // reader's only per-stream memory, reset with the stream.
+        if event_type == EVT_CONTENT_BLOCK_START {
+            let block_type = data
+                .get(super::CONTENT_BLOCK)
+                .and_then(|b| b.get(keys::TYPE))
+                .and_then(|t| t.as_str());
+            if let (Some(index), Some(t)) = (read_clamped_block_index(data), block_type) {
+                if !is_streamed_anthropic_block_type(t) {
+                    state.open_tools.insert(index);
+                    return vec![];
+                }
+            }
+        }
+        if event_type == EVT_CONTENT_BLOCK_DELTA || event_type == EVT_CONTENT_BLOCK_STOP {
+            if let Some(index) = read_clamped_block_index(data) {
+                if state.open_tools.contains(&index) {
+                    if event_type == EVT_CONTENT_BLOCK_STOP {
+                        state.open_tools.remove(&index);
+                    }
+                    return vec![];
+                }
+            }
+        }
+        // A streamed `redacted_thinking` block carries its full opaque encrypted `data` INLINE on the
+        // `content_block_start` event (Anthropic sends NO deltas for redacted blocks), so the 1:1
+        // single-event reader dropped it entirely (`_ => return None`). Emit the pair the IR models
+        // for redacted reasoning — a `Thinking` BlockStart plus a `RedactedReasoningDelta` carrying
+        // the opaque bytes — from this one start event (the natural `content_block_stop` that follows
+        // produces the BlockStop). Mirrors the Bedrock streaming reader + the non-stream `read_block`.
+        if event_type == EVT_CONTENT_BLOCK_START {
+            if let Some(block) = data.get(super::CONTENT_BLOCK) {
+                if block.get(keys::TYPE).and_then(|t| t.as_str())
+                    == Some(BLOCK_TYPE_REDACTED_THINKING)
+                {
+                    if let Some(index) = read_clamped_block_index(data) {
+                        let bytes = block
+                            .get(keys::DATA)
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        return vec![
+                            // A REDACTED start (not plaintext `Thinking`): the writer needs to know at
+                            // block-start time so it emits the native `redacted_thinking` start (with
+                            // the bytes from the delta), never a plaintext `thinking` seed.
+                            IrStreamEvent::BlockStart {
+                                index,
+                                block: IrBlockMeta::RedactedThinking,
+                                refusal: false,
+                            },
+                            IrStreamEvent::BlockDelta {
+                                index,
+                                delta: IrDelta::RedactedReasoningDelta(bytes),
+                            },
+                        ];
+                    }
+                }
+            }
+        }
+        // Anthropic events are otherwise already block-structured (1:1): wrap the singular.
+        match self.read_response_event(event_type, data) {
+            Some(ev) => vec![ev],
+            None => vec![],
+        }
+    }
+
+    fn read_response(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<crate::codec::ir::IrResponse, IrError> {
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
+
+        // Parse role (should be "assistant" for responses)
+        let role_str = obj.get(keys::ROLE).and_then(|r| r.as_str()).unwrap_or("");
+        let role = match role_str {
+            keys::ASSISTANT => crate::codec::ir::IrRole::Assistant,
+            _ => return Err(ir_parse_error()),
+        };
+
+        // Parse content blocks
+        let content_val = obj.get(keys::CONTENT).ok_or_else(ir_parse_error)?;
+        let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
+        if let Some(arr) = content_val.as_array() {
+            // A block kind the reader does not model is dropped, never answered as an empty text
+            // block; a translate attempt names it (`RESPONSE_BLOCKS`).
+            for block_val in arr
+                .iter()
+                .filter(|b| super::RESPONSE_BLOCKS.iter().all(|g| g.models(b)))
+            {
+                content.push(read_block(block_val)?);
+            }
+        }
+
+        // Parse stop_reason (optional)
+        // A lane WITH native structured outputs (`LaneCaps::native_structured_output`) asks through
+        // `output_config.format`, so its answer is ordinary text. A lane without it asks through the
+        // synthetic forced tool (the pre-capability default), whose answer is mapped back here.
+        let mut stop_reason = obj
+            .get(super::STOP_REASON)
+            .and_then(|r| r.as_str())
+            .map(read_anthropic_stop_reason);
+
+        // response_format tool-forcing MAP-BACK. When busbar translated a cross-protocol
+        // `response_format` directive into Anthropic tool-forcing (see the Anthropic WRITER's
+        // RESPONSE_FORMAT_TOOL_NAME injection), the model answers with a single `tool_use` block whose
+        // name is that sentinel and whose `input` is the schema-conforming JSON. The caller asked for
+        // structured OUTPUT, not a tool CALL, so project that block back to a plain assistant TEXT
+        // block carrying the JSON, and normalize a `tool_use` stop_reason to `end_turn` (a structured
+        // answer is a completed turn, not a tool-call handoff). Only fires on the sentinel name, so a
+        // genuine Anthropic tool_use is never disturbed. Buffered (non-streaming) path only.
+        let mut mapped_forced_tool = false;
+        for block in &mut content {
+            if let crate::codec::ir::IrBlock::ToolUse { name, input, .. } = block {
+                if name == RESPONSE_FORMAT_TOOL_NAME {
+                    let text = serde_json::to_string(input).unwrap_or_default();
+                    *block = crate::codec::ir::IrBlock::Text {
+                        text,
+                        cache_control: None,
+                        citations: Vec::new(),
+                        refusal: false,
+                    };
+                    mapped_forced_tool = true;
+                }
+            }
+        }
+        if mapped_forced_tool && stop_reason == Some(crate::codec::ir::IrStopReason::ToolUse) {
+            stop_reason = Some(crate::codec::ir::IrStopReason::EndTurn);
+        }
+
+        // Parse usage. `usage` is OPTIONAL on read here: do NOT `ok_or?` it. A native Anthropic
+        // non-streaming `Message` always carries `usage`, but an Anthropic-compatible backend that
+        // doesn't implement usage counting (or makes it conditional) may omit it — hard-requiring the
+        // field turned an otherwise-valid 200 body into a 400, inconsistent with this protocol's own
+        // streaming readers (`message_start`/`message_delta` above already zero-default a missing
+        // `usage` rather than bailing) and with the gemini/cohere reader tolerance. When `usage` is
+        // absent each counter defaults to zero (`Some` → parse, `None` → 0). A counter that is
+        // PRESENT and unreadable is not absent: it refuses (#42) instead of ledgering zero.
+        let usage_val = obj.get(keys::USAGE);
+        // The 5m/1h cache-creation TIER SPLIT rides the same table as the totals (see `USAGE`):
+        // the kernel counts the two tiers separately, so collapsing them would leave a total that
+        // reconciles in aggregate and cannot be reconciled per line.
+        let usage = read_anthropic_usage(usage_val)?;
+
+        // Treat an empty `model` string as absent (`None`). The writer emits `model: ""` as the
+        // mandatory-field fallback when the source carried no model (see `write_response`); mapping
+        // that empty string back to `None` keeps a write→read round-trip IR-idempotent and never
+        // mistakes the placeholder for a real model identifier (a genuine model id is never empty).
+        let model = obj
+            .get(keys::MODEL)
+            .and_then(|m| m.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        // Capture the native response identity so a same-protocol (anthropic→anthropic) passthrough
+        // preserves it byte-for-byte. An official SDK's `Message` carries `id` ("msg_<rand>"),
+        // `type` ("message"), `role`, `model`, `stop_reason`, `stop_sequence`, and `usage`; the
+        // first four plus `stop_sequence` round-trip through these IR fields (role/model/stop_reason
+        // are already parsed above; `type` is a constant the writer re-emits).
+        let id = obj.get(keys::ID).and_then(|i| i.as_str()).map(String::from);
+        // Anthropic's non-streaming `Message` has no `created` field, so there is nothing to carry
+        // through; the writer synthesizes one only on the cross-protocol path (where the IR field is
+        // None) for SDKs that read it. `system_fingerprint` is an OpenAI concept Anthropic never
+        // emits — left None so a same-protocol round-trip does not invent one.
+        let stop_sequence = obj
+            .get(keys::STOP_SEQUENCE)
+            .and_then(|s| s.as_str())
+            .map(String::from);
+
+        Ok(crate::codec::ir::IrResponse {
+            logprobs: Vec::new(),
+            role,
+            content,
+            stop_reason,
+            usage,
+            model,
+            id,
+            created: None,
+            system_fingerprint: None,
+            stop_sequence,
+
+            request_echo: None,
+            // IR-16 / IR-02 (buffered twin of the `message_delta` read above).
+            stop_detail: read_anthropic_stop_detail(
+                obj.get(super::STOP_REASON).and_then(|r| r.as_str()),
+                obj.get(super::STOP_DETAILS),
+            ),
+            ..Default::default()
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/unreadable_count_refusal_tests.rs"]
+mod unreadable_count_refusal_tests;

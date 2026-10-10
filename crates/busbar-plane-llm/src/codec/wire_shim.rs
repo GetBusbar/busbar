@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE BODY-SHAPING HELPERS ON EITHER SIDE OF A TRANSLATE.
+//!
+//! These three lived in `busbar-llm`'s engine because the engine is what calls them on the money
+//! path. They are pure over the plane's own declarations and the neutral billing carrier — they read
+//! no socket, no clock and no configuration but the host's translation cap — and the suites that pin
+//! them are codec suites (the translate-parity goldens, the IR usage projection). So they travel
+//! with the codecs, and the engine reaches them here.
+
+use serde_json::Value;
+
+/// Remove the router-internal SHIM KEYS the route layer injects into the request body for PATH-MODEL
+/// ingress protocols (`gemini`, `bedrock`), where the native wire carries the model in the URL and
+/// stream intent in the path, not the body. Two keys, handled differently relative to `rewrite_model`
+/// because their correct egress treatment differs:
+///
+///   - The gemini JSON-array key is NEVER a native egress body field for ANY backend (it only
+///     influences RESPONSE framing), so it is stripped UNCONDITIONALLY on every branch and for every
+///     egress.
+///   - `stream` is a body field only for the BODY-MODEL protocols (openai/anthropic/cohere/responses),
+///     where the egress writer authoritatively writes `"stream": <ir.stream>` and the backend reads it
+///     to decide streaming. It is a PATH shim only for the PATH-MODEL egress protocols
+///     (`gemini`/`bedrock`), whose native wire conveys stream intent via the URL/path, never the body.
+///     So `stream` is stripped iff the EGRESS is gemini/bedrock — NOT based on the ingress. An
+///     ingress-gated strip would delete the writer-authored `"stream": true` on a gemini/bedrock-
+///     ingress → body-model-egress streaming hop, so the backend would see no stream flag, answer
+///     non-streaming, and the client would get a wrong (buffered / mis-framed) response.
+///   - `model` is never stripped here: a body-model egress REQUIRES `model` and `rewrite_model`
+///     installs the authoritative one. Within one dialect the relay removes the spliced `model`.
+///
+/// The gemini array key is stripped for body-model ingress too (it is never native to any protocol).
+///
+/// Returns whether the body actually CHANGED (a key was present and removed). It runs on a
+/// translated body only: within one dialect the relay removes the same members by byte splices
+/// (`exchange::attempt::relay_request`).
+pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
+    let mut changed = false;
+    if let Some(obj) = v.as_object_mut() {
+        // A protocol's array-stream shim key is never native to ANY backend wire → strip every
+        // key this plane's dialects declare, unconditionally (also closes the leak where a
+        // body-model client smuggles a key in its own controlled body). Reading the declarations
+        // keeps this strip from naming any shim-key literal; the six-entry table is this plane's own
+        // (Law 5), so the walk allocates nothing. `remove` returns the previous value iff the key
+        // was present → a real mutation (#1).
+        for key in crate::codec::DECLS
+            .iter()
+            .filter_map(|d| d.array_stream_shim_key)
+        {
+            if obj.remove(key).is_some() {
+                changed = true;
+            }
+        }
+        // `stream` is a path-model shim for the EGRESS protocols gemini/bedrock (stream intent and
+        // model both ride the URL there; `has_model_in_url()` covers both). For body-model egress
+        // `stream` is the writer-authored field the backend needs to start streaming, so it must be
+        // PRESERVED. Gate on egress, never ingress.
+        if crate::codec::decl_of(egress_protocol)
+            .map(|d| d.has_model_in_url)
+            .unwrap_or(false)
+            && obj.remove("stream").is_some()
+        {
+            // #2: `stream` was present AND the egress is path-model → real mutation.
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// The per-response translation cap, read from the host at each use site.
+///
+/// The cap is COUPLED with the inbound request-body limit so any completion the gateway would accept
+/// inbound can also be buffered for translation, while still bounding the per-response allocation.
+/// ONE knob (`limits.request_body_max_bytes`) drives BOTH the inbound body limit and this egress cap,
+/// so they can never diverge. A function (not a `const`) so the host's live value is read at each use
+/// site, through the translate-cap reader the host installs (#83a SD-3; the plane holds no limit of
+/// its own); a process whose host installed none reads the historical 32 MiB default.
+#[must_use]
+pub fn max_translated_body_bytes() -> usize {
+    busbar_contract::codec::max_translate_body_bytes()
+}
+
+/// Bytes-per-token divisor for the truncated-tail billing FLOOR. Deliberately conservative
+/// (~4 bytes/token is typical for English prose; a JSON response envelope with field names and
+/// escaping runs HIGHER), so the estimate UNDER-counts the true consumption: the retained tail is
+/// already only the LAST `cap` bytes of a strictly larger body, making this a genuine floor that
+/// cannot over-charge relative to the tokens actually generated. Its only job is to keep a
+/// truncated-beyond-recovery response from billing ZERO.
+pub const TRUNCATED_TAIL_BYTES_PER_TOKEN: u64 = 4;
+
+/// Project the IR's normalized usage into the neutral name-keyed [`busbar_contract::billing::Usage`]
+/// carrier: the four reserved units (`input`/`output`/`cache_read`/`cache_write`) as canonical map
+/// keys, and every open class the reader counted beside them (`TokenUsage::open_units`, a turn's
+/// billed searches) under its declared class. Readers normalize `input_tokens` to UNCACHED and keep
+/// the cache fields ADDITIVE, so the mapping is direct: cache-creation is the `cache_write` unit.
+/// Zero counts are omitted so the map stays sparse (no-zero-entry).
+#[must_use]
+pub fn tier_usage(u: &busbar_contract::billing::TokenUsage) -> busbar_contract::billing::Usage {
+    let mut usage_units: std::collections::BTreeMap<String, u64> = (u.open_units.iter())
+        .filter(|(_, n)| **n != 0)
+        .map(|(class, n)| (class.clone(), *n))
+        .collect();
+    for (k, v) in [
+        (busbar_contract::records::UNIT_INPUT, u.input),
+        (busbar_contract::records::UNIT_OUTPUT, u.output),
+        (
+            busbar_contract::records::UNIT_CACHE_READ,
+            u.cache_read.unwrap_or(0),
+        ),
+        (
+            busbar_contract::records::UNIT_CACHE_WRITE,
+            u.cache_creation.unwrap_or(0),
+        ),
+    ] {
+        if v != 0 {
+            usage_units.insert(k.to_string(), v);
+        }
+    }
+    busbar_contract::billing::Usage { usage_units }
+}
+
+#[cfg(test)]
+#[path = "tests/wire_shim_tests.rs"]
+mod tests;

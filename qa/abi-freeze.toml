@@ -1,0 +1,14 @@
+# abi-freeze: THE CONDEMNED ABI LANES ARE FROZEN (`cargo xtask gate abi-freeze`).
+# `BUSBAR-1.6.0.md` THE DESIGN, §11 replaces the HOT and COLD plugin lanes with the one memory ABI,
+# and both directories are deleted when the last plugin moves onto it. Until then each is frozen at
+# its measured size: every line of every file under it. A directory above its row is RED (the lane
+# grew). A directory below its row is RED stale slack: lower the row in the commit that deleted the
+# lines, and strike it when the directory is gone. Never raise a row.
+
+[[frozen]]
+dir = "crates/busbar-contract/src/abi/hot"
+lines = "6224"
+
+[[frozen]]
+dir = "crates/busbar-contract/src/abi/cold"
+lines = "1138"

@@ -1,0 +1,1654 @@
+//! `cargo xtask gate workspace-deps` — ONE VERSION REQUIREMENT PER EXTERNAL DEPENDENCY, STATED
+//! ONCE, IN THE WORKSPACE TABLE.
+//!
+//! The Rust successor to `scripts/workspace-deps-lint.py`. `[workspace.dependencies]` makes a
+//! single source of truth POSSIBLE; it does not make it TRUE. Nothing in Cargo stops a member from
+//! writing `serde = "1"` and quietly opening a second opinion, and nothing stops the workspace
+//! table from accumulating entries no member uses. Before the table existed, `hex`, `sha2` and
+//! `tracing` were each declared two different ways and all three happened to resolve identically —
+//! a property everyone believed, asserted nowhere, checked by nothing. Moving that property into a
+//! table without a lint relocates the defect instead of removing it.
+//!
+//! Nine rules, nine ledger rows. The Python returned one flat list of failure strings, which
+//! meant a floor and the rule it protects were indistinguishable in the output and a floor could be
+//! deleted with the self-test still green:
+//!
+//! 1. `workspace-deps:table` — `[workspace.dependencies]` exists and is non-empty. An absent table
+//!    is not a clean tree; it is no source of truth to check.
+//! 2. `workspace-deps:inheritance` — every external dependency in every member inherits
+//!    (`workspace = true`). A literal version string in a member is a failure, in `dependencies`,
+//!    `dev-dependencies`, `build-dependencies` AND the per-target forms of all three: a rule
+//!    enforced on one table only is a rule scoped to where the bug was first seen.
+//! 3. `workspace-deps:inherit-target-exists` — a dependency that inherits has an entry to inherit
+//!    FROM. Cargo errors on this too, but a gate that defers to the build has not checked anything.
+//! 4. `workspace-deps:no-orphans` — every `[workspace.dependencies]` entry is used by at least one
+//!    member. An unused pin is a version requirement nothing obeys.
+//! 5. `workspace-deps:set-equality` — the members this gate inspected are exactly the members the
+//!    workspace declares, AND exactly the crates on disk. A manifest that is skipped is a manifest
+//!    that is UNCHECKED, which is not the same as clean. The third set is the one that was missing:
+//!    `inspected` is DERIVED from `declared`, so deleting a member line shrank both and the row
+//!    stayed green at 60 where it had been green at 61 — a live, path-depended crate dropped out of
+//!    every `--workspace` test, clippy and deny run with nothing red anywhere. The manifests that
+//!    are not crates of this tree come off `kind-isolation`'s own off-tree list, so the two gates
+//!    give one answer.
+//! 6. `workspace-deps:member-floor` — at least [`MIN_MEMBERS`] member manifests were inspected.
+//! 7. `workspace-deps:inherited-floor` — at least [`MIN_INHERITED`] inheriting declarations were
+//!    seen. Either the table is not actually in use or the walk is broken; both are RED.
+//! 8. `workspace-deps:discovery` — the `crates/` walk finds a `Cargo.toml` for EVERY declared
+//!    `crates/` member, and names any it missed (ARCHITECT 2026-10-02: exact, not a floor). Rules 6
+//!    and 7 are counted off the DECLARED member list; this row walks the directory itself, so an
+//!    emptied or moved `crates/` cannot read as a clean tree.
+//! 9. `workspace-deps:test-support-dev-only` — no release feature set can reach a `test-support`
+//!    feature (ARCHITECT RULING Q-GG3). See [`test_support_scan`] for the exact semantics.
+//!
+//! Every count has a floor because "for each X, assert Y" is vacuously true when X is empty, and a
+//! discovery step that finds nothing is RED, never a pass.
+//!
+//! GIT DEPENDENCIES ARE EXTERNAL — and, exactly as the Python has it, they are not routed through
+//! the workspace table and are therefore handled by the same arm that excuses path dependencies:
+//! neither carries a version requirement the table could hold, so neither is counted as inheriting,
+//! as using a pin, or as restating a version. See [`DepSpec::is_path_or_git`].
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::ledger::{Row, Verdict};
+use crate::toml_lite;
+
+pub const ROW_TABLE: &str = "workspace-deps:table";
+pub const ROW_INHERITANCE: &str = "workspace-deps:inheritance";
+pub const ROW_INHERIT_TARGET: &str = "workspace-deps:inherit-target-exists";
+pub const ROW_ORPHANS: &str = "workspace-deps:no-orphans";
+pub const ROW_SET_EQUALITY: &str = "workspace-deps:set-equality";
+pub const ROW_MEMBER_FLOOR: &str = "workspace-deps:member-floor";
+pub const ROW_INHERITED_FLOOR: &str = "workspace-deps:inherited-floor";
+pub const ROW_DISCOVERY: &str = "workspace-deps:discovery";
+pub const ROW_TEST_SUPPORT: &str = "workspace-deps:test-support-dev-only";
+
+/// The feature ARCHITECT RULING Q-GG3 confines to test builds: a crate may expose it, OFF by
+/// default, and it may be turned on ONLY from a `[dev-dependencies]` edge.
+pub const TEST_SUPPORT: &str = "test-support";
+
+/// Floors. Deliberately well under today's counts (~50 members, ~200 inherited declarations, 49
+/// manifests under `crates/`) so ordinary work never trips them, but far enough above zero that a
+/// discovery bug cannot pass. They are `const`s with no environment override: the only way to lower
+/// one is a reviewable source edit.
+pub const MIN_MEMBERS: usize = 8;
+pub const MIN_INHERITED: usize = 40;
+
+const SECTIONS: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
+
+pub struct WorkspaceDepsGate;
+
+/// A dependency's right-hand side, in the two shapes a manifest can write it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DepSpec {
+    /// `serde = "1.0"`.
+    Version(String),
+    /// `serde = { workspace = true }`, or a `[dependencies.serde]` sub-table.
+    Table(BTreeMap<String, String>),
+}
+
+impl DepSpec {
+    /// A path or git dependency. NEITHER carries an external version requirement the workspace
+    /// table could hold — a path dependency is workspace-internal, and a git dependency pins its
+    /// source by revision rather than by a semver requirement — so both are excused from the
+    /// inheritance, orphan and count arms together, which is the rule the Python states.
+    fn is_path_or_git(&self) -> bool {
+        match self {
+            DepSpec::Version(_) => false,
+            DepSpec::Table(t) => t.contains_key("path") || t.contains_key("git"),
+        }
+    }
+
+    fn inherits(&self) -> bool {
+        match self {
+            DepSpec::Version(_) => false,
+            DepSpec::Table(t) => t.get("workspace").map(String::as_str) == Some("true"),
+        }
+    }
+
+    /// What the FAIL text shows for a dependency that states its own version.
+    fn shown(&self) -> String {
+        match self {
+            DepSpec::Version(v) => format!("{v:?}"),
+            DepSpec::Table(t) => match t.get("version") {
+                Some(v) => format!("{v:?}"),
+                None => format!("{t:?}"),
+            },
+        }
+    }
+}
+
+fn unquote(tok: &str) -> String {
+    let t = tok.trim();
+    if t.len() >= 2
+        && ((t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')))
+    {
+        t[1..t.len() - 1].to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+/// Split an inline table's body on the commas that are not inside a nested array, a nested table or
+/// a string. A naive `split(',')` would cut `features = ["a", "b"]` in half and lose the key.
+fn split_top_level(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    for c in body.chars() {
+        if in_str {
+            cur.push(c);
+            if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                cur.push(c);
+            }
+            '[' | '{' => {
+                depth += 1;
+                cur.push(c);
+            }
+            ']' | '}' => {
+                depth -= 1;
+                cur.push(c);
+            }
+            ',' if depth == 0 => {
+                out.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out.into_iter().filter(|s| !s.trim().is_empty()).collect()
+}
+
+/// `toml_lite` hands an inline table back as the raw text between the braces, because nothing else
+/// in the tree needed it decomposed. Decomposing it here rather than in the shared reader keeps the
+/// reader's "deliberately small" contract intact.
+fn parse_spec(raw: &str) -> DepSpec {
+    let t = raw.trim();
+    match t.strip_prefix('{') {
+        Some(body) => {
+            let body = body.trim_end().strip_suffix('}').unwrap_or(body);
+            let mut map = BTreeMap::new();
+            for item in split_top_level(body) {
+                if let Some((k, v)) = item.split_once('=') {
+                    map.insert(unquote(k.trim()), unquote(v.trim()));
+                }
+            }
+            DepSpec::Table(map)
+        }
+        None => DepSpec::Version(t.to_string()),
+    }
+}
+
+/// True for `dependencies`, `dev-dependencies`, `build-dependencies` and every
+/// `target.<cfg>.<section>` form of the three.
+fn is_dep_section(path: &str) -> bool {
+    SECTIONS.contains(&path)
+        || (path.starts_with("target.")
+            && SECTIONS.iter().any(|s| path.ends_with(&format!(".{s}"))))
+}
+
+/// Every declared dependency in a manifest, as `(section label, name, spec)`.
+///
+/// Both spellings are read. `[dependencies]` with an inline table is the common one; the
+/// `[dependencies.serde]` sub-table form is rare in this tree, and a reader that skipped it would
+/// let a member state a version in a shape the gate is blind to — the same class of bypass the
+/// scanner-scope audit findings are all about.
+fn dep_entries(doc: &toml_lite::Document) -> Vec<(String, String, DepSpec)> {
+    let mut out = Vec::new();
+    for (path, table) in &doc.tables {
+        if is_dep_section(path) {
+            for (name, values) in &table.values {
+                let raw = values.first().cloned().unwrap_or_default();
+                out.push((path.clone(), name.clone(), parse_spec(&raw)));
+            }
+            continue;
+        }
+        let Some((section, name)) = path.rsplit_once('.') else {
+            continue;
+        };
+        if !is_dep_section(section) {
+            continue;
+        }
+        let map: BTreeMap<String, String> = table
+            .values
+            .iter()
+            .map(|(k, v)| (k.clone(), v.first().cloned().unwrap_or_default()))
+            .collect();
+        out.push((section.to_string(), name.to_string(), DepSpec::Table(map)));
+    }
+    out.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    out
+}
+
+// ── rule 9: `test-support` is enabled from dev edges only ──────────────────────────────────────────
+//
+// WHAT "THE RELEASE FEATURE SET" MEANS HERE, TRANSITIVELY. Under `resolver = "2"` a dev-dependency's
+// features are never unified into a non-test build, so a `features = ["test-support"]` on a
+// `[dev-dependencies]` edge cannot reach a release binary. Every OTHER way a manifest can turn a
+// `test-support` feature on can:
+//
+// * a normal or build edge (any target form, inline, dotted-key or `[dependencies.x]` sub-table);
+// * an entry in `[workspace.dependencies]`, which every inheriting edge — normal ones included —
+//   receives;
+// * a `[features]` entry OTHER than the crate's own `test-support` (`default`, or any named feature,
+//   which a default, a non-dev edge or a `--features` on the release command line can switch on).
+//
+// The one sanctioned forward is the crate's OWN `test-support` feature naming another crate's
+// (`test-support = ["busbar-kernel/test-support"]`). That is sound by induction, not by trust: the
+// forwarder is itself a `test-support` feature, so this same rule holds it to dev edges and other
+// `test-support` features, and the chain bottoms out in a dev edge or in nothing. Refusing every
+// other enabling site is what makes the closure hold without computing it.
+//
+// WHY A TEXT SCAN AND NOT `toml_lite`. The shared reader keeps the first line of a multi-line value,
+// so a `{ path = "..", features = [\n "test-support",\n] }` edge would be read with no features at
+// all — the blind spot this rule exists to close. This scan reads every quoted string in the
+// manifest and attributes it to its section and top-level key, so no spelling can hide one.
+
+/// Where a manifest table sits, for the purpose of rule 9.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestSupportSection {
+    /// `[dev-dependencies]`, its per-target form, or a `[dev-dependencies.x]` sub-table.
+    Dev,
+    /// `[dependencies]` / `[build-dependencies]`, their per-target forms and sub-tables.
+    NonDev,
+    /// `[workspace.dependencies]` or a `[workspace.dependencies.x]` sub-table.
+    WorkspaceTable,
+    /// `[features]`.
+    Features,
+    /// Anything else (`[package]`, `[[test]]`'s `required-features`, `[lib]`, metadata): nothing
+    /// there ENABLES a feature.
+    Other,
+}
+
+fn test_support_section(section: &str) -> TestSupportSection {
+    // Cargo still accepts the legacy underscore spellings in older editions; a rule blind to
+    // `[build_dependencies]` is a rule with a documented bypass.
+    let s = section.replace("_dependencies", "-dependencies");
+    if s == "workspace.dependencies" || s.starts_with("workspace.dependencies.") {
+        return TestSupportSection::WorkspaceTable;
+    }
+    if s == "features" {
+        return TestSupportSection::Features;
+    }
+    let table = if is_dep_section(&s) {
+        Some(s.as_str())
+    } else {
+        s.rsplit_once('.')
+            .map(|(prefix, _)| prefix)
+            .filter(|p| is_dep_section(p))
+    };
+    match table {
+        Some(t) if t == "dev-dependencies" || t.ends_with(".dev-dependencies") => {
+            TestSupportSection::Dev
+        }
+        Some(_) => TestSupportSection::NonDev,
+        None => TestSupportSection::Other,
+    }
+}
+
+/// `test-support`, `dep/test-support` or `dep?/test-support`.
+fn names_test_support(lit: &str) -> bool {
+    lit == TEST_SUPPORT || lit.rsplit_once('/').is_some_and(|(_, f)| f == TEST_SUPPORT)
+}
+
+/// A `[table]` or `[[array-of-tables]]` header line. An array continuation line starts with a
+/// quote or a bracket, never a bare letter, so the first character after the brackets decides.
+fn header_name(trimmed: &str) -> Option<String> {
+    let line = trimmed.split_once('#').map_or(trimmed, |(h, _)| h).trim();
+    let inner = line.strip_prefix('[')?.strip_suffix(']')?;
+    let inner = inner
+        .strip_prefix('[')
+        .and_then(|i| i.strip_suffix(']'))
+        .unwrap_or(inner)
+        .trim();
+    inner
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        .then(|| inner.to_string())
+}
+
+/// What one manifest says about `test-support`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct TestSupportScan {
+    /// Enabling sites on a `[dev-dependencies]` edge.
+    dev_edges: usize,
+    /// Forwards inside the crate's own `test-support` feature.
+    forwards: usize,
+    /// Every enabling site that can reach a release build, as FAIL text.
+    offenders: Vec<String>,
+}
+
+impl TestSupportScan {
+    fn absorb(&mut self, other: TestSupportScan) {
+        self.dev_edges += other.dev_edges;
+        self.forwards += other.forwards;
+        self.offenders.extend(other.offenders);
+    }
+}
+
+/// RULE 9 OVER ONE MANIFEST'S TEXT: every quoted string naming a `test-support` feature, attributed
+/// to the table and top-level key it sits under, and judged by where that is.
+fn test_support_scan(rel: &str, text: &str) -> TestSupportScan {
+    let mut out = TestSupportScan::default();
+    let mut section = String::new();
+    // The top-level key whose value is open (it stays open across the lines of a multi-line value).
+    let mut key = String::new();
+    let mut depth = 0i32;
+    // Inside a `"""` or `'''` string that did not close on its own line.
+    let mut open_multiline: Option<&'static str> = None;
+
+    for (idx, raw) in text.lines().enumerate() {
+        let line_no = idx + 1;
+        if let Some(delim) = open_multiline {
+            if raw.contains(delim) {
+                open_multiline = None;
+            }
+            continue;
+        }
+        let trimmed = raw.trim();
+        if let Some(name) = header_name(trimmed) {
+            section = name;
+            key.clear();
+            depth = 0;
+            continue;
+        }
+
+        let chars: Vec<char> = trimmed.chars().collect();
+        let mut at_key = depth == 0;
+        let mut key_buf = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            match c {
+                '#' => break,
+                '"' | '\'' => {
+                    let triple: &'static str = if c == '"' { "\"\"\"" } else { "'''" };
+                    if chars[i..].starts_with(&[c, c, c]) {
+                        // Prose (`description = """…"""`); it enables nothing, so it is skipped.
+                        let rest: String = chars[i + 3..].iter().collect();
+                        match rest.find(triple) {
+                            Some(end) => {
+                                i += 3 + rest[..end].chars().count() + 3;
+                                continue;
+                            }
+                            None => {
+                                open_multiline = Some(triple);
+                                break;
+                            }
+                        }
+                    }
+                    let mut lit = String::new();
+                    i += 1;
+                    while i < chars.len() && chars[i] != c {
+                        if c == '"' && chars[i] == '\\' && i + 1 < chars.len() {
+                            i += 1;
+                        }
+                        lit.push(chars[i]);
+                        i += 1;
+                    }
+                    if at_key {
+                        key_buf.push_str(&lit);
+                    } else if names_test_support(&lit) {
+                        judge_test_support(&mut out, rel, line_no, &section, &key, &lit);
+                    }
+                }
+                '=' if at_key => {
+                    key = key_buf
+                        .split('.')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    at_key = false;
+                }
+                '[' | '{' => depth += 1,
+                ']' | '}' => depth -= 1,
+                _ if at_key => key_buf.push(c),
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+fn judge_test_support(
+    out: &mut TestSupportScan,
+    rel: &str,
+    line_no: usize,
+    section: &str,
+    key: &str,
+    lit: &str,
+) {
+    match test_support_section(section) {
+        TestSupportSection::Dev => out.dev_edges += 1,
+        TestSupportSection::Features if key == TEST_SUPPORT => out.forwards += 1,
+        TestSupportSection::Features => out.offenders.push(format!(
+            "{rel}:{line_no}: [features] `{key}` enables `{lit}`. Only a crate's own \
+             `{TEST_SUPPORT}` feature may forward to another `{TEST_SUPPORT}`: `{key}` can be on \
+             in a release build (a default, a non-dev edge, a `--features` flag), and it would \
+             carry the test surface with it."
+        )),
+        TestSupportSection::NonDev => out.offenders.push(format!(
+            "{rel}:{line_no}: [{section}] `{key}` enables `{lit}` on a non-dev edge. A \
+             `{TEST_SUPPORT}` feature is enabled ONLY from [dev-dependencies] (ARCHITECT RULING \
+             Q-GG3); on a normal or build edge it is in the release feature set."
+        )),
+        TestSupportSection::WorkspaceTable => out.offenders.push(format!(
+            "{rel}:{line_no}: [{section}] `{key}` enables `{lit}` in the workspace table, so every \
+             member that inherits it — normal and build edges included — gets it. Put the feature \
+             on the [dev-dependencies] declaration instead."
+        )),
+        TestSupportSection::Other => {}
+    }
+}
+
+/// Staging counter, so two manifests parsed in the same process (or two tests in the same run)
+/// never collide on a scratch file name.
+static STAGE_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+/// Is `name` pinned in the root manifest `root_manifest` as a git dependency at an exact `rev`
+/// (`[workspace.dependencies] name = { git = "…", rev = "…" }`)? That is how a plugin crate that
+/// MOVED OUT of this repo (TODO PATH TO DEV-GREEN P5, the extraction recipe) is pulled back: one
+/// git dependency at one commit. A branch, a tag or a path is not a pin.
+pub(crate) fn pinned_git_dep(root_manifest: &str, name: &str) -> bool {
+    toml_lite::parse_text(root_manifest)
+        .table("workspace.dependencies")
+        .get_one(name)
+        .map(parse_spec)
+        .is_some_and(|spec| match spec {
+            DepSpec::Table(t) => t.contains_key("git") && t.contains_key("rev"),
+            DepSpec::Version(_) => false,
+        })
+}
+
+/// Read a manifest THROUGH the context, then parse it with the shared `toml_lite` reader.
+///
+/// `toml_lite::parse` takes a path because every other caller reads a file that is really on disk.
+/// A gate whose self-test plants a manifest cannot use that directly without bypassing the overlay
+/// and grading the real tree instead of the planted one, so the overlaid bytes are staged into the
+/// context's own proven-writable scratch directory and parsed from there. One reader, one set of
+/// TOML quirks, for planted and real manifests alike.
+fn read_manifest(cx: &Ctx, rel: &str) -> Result<toml_lite::Document, String> {
+    let text = cx.read(rel)?;
+    let staged = cx.scratch().join(format!(
+        "workspace-deps-{}-{}.toml",
+        std::process::id(),
+        STAGE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&staged, &text).map_err(|e| format!("{}: {e}", staged.display()))?;
+    let doc = toml_lite::parse(&staged);
+    let _ = std::fs::remove_file(&staged);
+    Ok(doc)
+}
+
+/// The `crates/` walk, held to the member list. Separate from the survey on purpose: the two
+/// instruments fail for different reasons and must be able to fail apart.
+///
+/// EXACT, NOT A FLOOR (ARCHITECT 2026-10-02). Every `[workspace.members]` entry under `crates/`
+/// must be a `Cargo.toml` this walk found, and a member it missed is RED by name. A number fought
+/// the roster (spec #39 ends the repo at 15 crates); the member list is right at any size, and an
+/// extraction strikes the member line with the crate, so it is never a miss.
+fn rule_discovery(cx: &Ctx) -> Row {
+    let declared: Vec<String> = match cx.read("Cargo.toml") {
+        Ok(root) => crate::manifest::workspace_members(&root)
+            .into_iter()
+            .filter(|m| m.starts_with("crates/"))
+            .collect(),
+        Err(e) => {
+            return Row::fail(
+                ROW_DISCOVERY,
+                "the crates/ manifest walk has no member list to be held to",
+                format!("the workspace root manifest is unreadable ({e})"),
+            )
+        }
+    };
+    let spec = WalkSpec::new(["crates"]).ext("toml").min_files(1);
+    let files = match cx.walk(&spec) {
+        Ok(f) => f,
+        Err(e) => {
+            return Row::fail(
+                ROW_DISCOVERY,
+                "the crates/ manifest walk could not run or collapsed",
+                e.to_string(),
+            )
+        }
+    };
+    let found: BTreeSet<String> = files
+        .iter()
+        .map(|f| f.rel_str())
+        .filter_map(|p| p.strip_suffix("/Cargo.toml").map(str::to_string))
+        .collect();
+    let missed: Vec<&str> = declared
+        .iter()
+        .map(String::as_str)
+        .filter(|m| !found.contains(*m))
+        .collect();
+    if !missed.is_empty() {
+        return Row::fail(
+            ROW_DISCOVERY,
+            "the crates/ manifest walk missed declared members",
+            format!(
+                "{} declared crates/ member(s) the walk did not find a Cargo.toml for: {}. A walk \
+                 that misses a member passes everything about it.",
+                missed.len(),
+                missed.join(", ")
+            ),
+        );
+    }
+    Row::pass(
+        ROW_DISCOVERY,
+        "the crates/ walk found every declared crates/ member",
+        format!(
+            "{} Cargo.toml file(s) under crates/, every one of the {} declared crates/ member(s) \
+             among them",
+            found.len(),
+            declared.len()
+        ),
+    )
+}
+
+/// Everything rules 1-7 are computed from, in one pass over the declared members.
+struct Survey {
+    declared: Vec<String>,
+    inspected: Vec<String>,
+    unreadable: Vec<String>,
+    table: BTreeSet<String>,
+    used: BTreeSet<String>,
+    inherited_count: usize,
+    version_offenders: Vec<String>,
+    inherit_target_offenders: Vec<String>,
+    /// Rule 9, over the root manifest and every inspected member.
+    test_support: TestSupportScan,
+}
+
+fn survey(cx: &Ctx, root: &toml_lite::Document) -> Survey {
+    let ws = root.table("workspace");
+    let mut declared = ws.get_list("members");
+    declared.sort();
+    let table: BTreeSet<String> = root
+        .table("workspace.dependencies")
+        .values
+        .keys()
+        .cloned()
+        .collect();
+
+    let mut s = Survey {
+        declared,
+        inspected: Vec::new(),
+        unreadable: Vec::new(),
+        table,
+        used: BTreeSet::new(),
+        inherited_count: 0,
+        version_offenders: Vec::new(),
+        inherit_target_offenders: Vec::new(),
+        test_support: TestSupportScan::default(),
+    };
+
+    // The root's `[workspace.dependencies]` is an enabling site too: every inheriting edge, normal
+    // ones included, receives the features written there.
+    match cx.read("Cargo.toml") {
+        Ok(text) => s
+            .test_support
+            .absorb(test_support_scan("Cargo.toml", &text)),
+        Err(e) => s.test_support.offenders.push(format!(
+            "Cargo.toml: the root manifest could not be read for its workspace table ({e}), so \
+             no inherited `{TEST_SUPPORT}` could be ruled out."
+        )),
+    }
+
+    for member in s.declared.clone() {
+        let rel = format!("{member}/Cargo.toml");
+        let doc = match read_manifest(cx, &rel) {
+            Ok(d) => d,
+            Err(e) => {
+                s.unreadable.push(format!(
+                    "{member}: declared in [workspace] members but has no Cargo.toml ({e}). A \
+                     member that cannot be read is UNCHECKED, which is not the same as clean."
+                ));
+                continue;
+            }
+        };
+        s.inspected.push(member.clone());
+        match cx.read(&rel) {
+            Ok(text) => s.test_support.absorb(test_support_scan(&rel, &text)),
+            Err(e) => s.test_support.offenders.push(format!(
+                "{rel}: parsed but could not be re-read for its `{TEST_SUPPORT}` edges ({e}); an \
+                 unread manifest is UNCHECKED, not clean."
+            )),
+        }
+
+        for (label, name, spec) in dep_entries(&doc) {
+            if spec.is_path_or_git() {
+                // Workspace-internal, or pinned by git revision: carries no external version.
+                continue;
+            }
+            if spec.inherits() {
+                s.inherited_count += 1;
+                s.used.insert(name.clone());
+                if !s.table.contains(&name) {
+                    s.inherit_target_offenders.push(format!(
+                        "{member} [{label}]: `{name}` inherits, but there is no `{name}` entry in \
+                         [workspace.dependencies] to inherit FROM."
+                    ));
+                }
+                continue;
+            }
+            s.version_offenders.push(format!(
+                "{member} [{label}]: `{name} = {}` states its own version. Move the version to \
+                 [workspace.dependencies] and inherit with `{name} = {{ workspace = true }}` \
+                 (features may still be added per-member).",
+                spec.shown()
+            ));
+        }
+    }
+    s
+}
+
+/// EVERY CRATE ON DISK THAT NO MEMBER LINE DECLARES.
+///
+/// The walk is the whole repository, because a crate outside `crates/` is exactly the one a member
+/// list can silently drop. The manifests that are NOT crates of this tree — the runner, the gate
+/// fixtures, the standalone documentation example — are read off
+/// [`crate::gates::kind_isolation::off_tree_manifest_reason`], which is the same list
+/// `kind-isolation:registry` scores its own `off-tree-crate` finding against: two lists would be
+/// two answers to one question.
+///
+/// THE WALK IS SCOPED TO THE ROOTS THE MEMBER LIST ITSELF CLAIMS — the top-level directory of every
+/// declared member, which in this tree is `crates/` and `xtask/`. That is not a softening: it is
+/// the difference between "a member line was deleted", which is this row's question, and "a crate
+/// appeared somewhere nobody declared", which is `kind-isolation:registry`'s `off-tree-crate` and
+/// is refused there with no scoping at all. Without it this row would also grade the real
+/// repository whenever a self-test plants a SYNTHETIC workspace over it, and a row that reds on
+/// its neighbour's fixtures is a row nobody can read.
+fn on_disk_unmembered(cx: &Ctx, declared: &[String]) -> Vec<String> {
+    let claimed: BTreeSet<&str> = declared
+        .iter()
+        .filter_map(|m| m.split('/').next())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let Ok(files) = cx.walk(&WalkSpec::new(["."]).ext("toml")) else {
+        return vec![
+            "the manifest walk did not run, so no crate on disk could be compared with the member \
+             list — a walk that did not read is not a walk that found nothing."
+                .to_string(),
+        ];
+    };
+    let mut out = Vec::new();
+    for f in &files {
+        let rel = f.rel_str();
+        // The workspace root declares the members; it is not one of them.
+        if rel == "Cargo.toml" || !rel.ends_with("/Cargo.toml") {
+            continue;
+        }
+        if crate::gates::kind_isolation::off_tree_manifest_reason(&rel).is_some() {
+            continue;
+        }
+        if !rel
+            .split('/')
+            .next()
+            .is_some_and(|top| claimed.contains(top))
+        {
+            continue;
+        }
+        if !f.text.contains("[package]") {
+            continue;
+        }
+        let dir = rel.trim_end_matches("/Cargo.toml").to_string();
+        if !declared.iter().any(|d| d.trim_end_matches('/') == dir) {
+            out.push(format!(
+                "{dir}: a crate on disk that no [workspace] members entry declares. --workspace \
+                 compiles, tests, clippies and denies every crate BUT this one, and a path \
+                 dependency reaches it regardless — so it ships unchecked. Add the member line or \
+                 delete the crate."
+            ));
+        }
+    }
+    out
+}
+
+impl Gate for WorkspaceDepsGate {
+    fn name(&self) -> &'static str {
+        "workspace-deps"
+    }
+
+    fn owed(&self) -> Vec<String> {
+        vec![
+            ROW_TABLE.to_string(),
+            ROW_INHERITANCE.to_string(),
+            ROW_INHERIT_TARGET.to_string(),
+            ROW_ORPHANS.to_string(),
+            ROW_SET_EQUALITY.to_string(),
+            ROW_MEMBER_FLOOR.to_string(),
+            ROW_INHERITED_FLOOR.to_string(),
+            ROW_DISCOVERY.to_string(),
+            ROW_TEST_SUPPORT.to_string(),
+        ]
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        let mut rows = vec![rule_discovery(cx)];
+
+        let root = match read_manifest(cx, "Cargo.toml") {
+            Ok(d) => d,
+            Err(e) => {
+                rows.extend(unproven(&format!(
+                    "the workspace root manifest is unreadable ({e}) — nothing can be checked \
+                     against a source of truth that could not be read"
+                )));
+                return Verdict::of(rows);
+            }
+        };
+
+        let s = survey(cx, &root);
+
+        if s.table.is_empty() {
+            rows.push(Row::fail(
+                ROW_TABLE,
+                "[workspace.dependencies] is missing or empty",
+                "there is no source of truth to check.",
+            ));
+            rows.extend(unproven(
+                "unproven: [workspace.dependencies] is missing or empty, so every rule below it \
+                 would hold vacuously",
+            ));
+            return Verdict::of(rows);
+        }
+        rows.push(Row::pass(
+            ROW_TABLE,
+            "[workspace.dependencies] is the source of truth and is populated",
+            format!("{} pin(s)", s.table.len()),
+        ));
+
+        rows.push(if s.version_offenders.is_empty() {
+            Row::pass(
+                ROW_INHERITANCE,
+                "every external dependency in every member inherits from the workspace table",
+                format!(
+                    "{} inheriting declaration(s) across {} member(s)",
+                    s.inherited_count,
+                    s.inspected.len()
+                ),
+            )
+        } else {
+            Row::fail(
+                ROW_INHERITANCE,
+                "a member states its own version instead of inheriting",
+                s.version_offenders.join(" | "),
+            )
+        });
+
+        rows.push(if s.inherit_target_offenders.is_empty() {
+            Row::pass(
+                ROW_INHERIT_TARGET,
+                "every inheriting dependency has a workspace entry to inherit from",
+                format!("{} pin(s) available", s.table.len()),
+            )
+        } else {
+            Row::fail(
+                ROW_INHERIT_TARGET,
+                "a dependency inherits from an entry that is not in the workspace table",
+                s.inherit_target_offenders.join(" | "),
+            )
+        });
+
+        let orphans: Vec<String> = s.table.difference(&s.used).cloned().collect();
+        rows.push(if orphans.is_empty() {
+            Row::pass(
+                ROW_ORPHANS,
+                "every workspace pin is inherited by at least one member",
+                format!("{} pin(s), all used", s.table.len()),
+            )
+        } else {
+            Row::fail(
+                ROW_ORPHANS,
+                "a workspace pin is declared but no member inherits it",
+                format!(
+                    "{} — an unused pin is a version requirement nothing obeys: delete it, or wire \
+                     up the member that was supposed to use it.",
+                    orphans
+                        .iter()
+                        .map(|n| format!(
+                            "[workspace.dependencies] `{n}` is declared but no member inherits it."
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                ),
+            )
+        });
+
+        // THE THIRD SET, AND IT IS THE ONE THAT WAS MISSING: what is ON DISK.
+        //
+        // This row compared `inspected` with `declared`, and `inspected` is DERIVED from `declared`
+        // — so deleting a member line shrinks both and the row stays green at 60 where it was green
+        // at 61. A red-team pass struck `crates/busbar-plane-llm` from the list, left the path
+        // dependency that reaches it in place, and dropped a live crate out of every `--workspace`
+        // test, clippy and deny run with nothing red anywhere in the tree. A set-equality row that
+        // reads one set twice is not a set-equality row.
+        let unmembered = on_disk_unmembered(cx, &s.declared);
+        rows.push(
+            if s.unreadable.is_empty()
+                && s.inspected.len() == s.declared.len()
+                && unmembered.is_empty()
+            {
+                Row::pass(
+                    ROW_SET_EQUALITY,
+                    "the members inspected are exactly the members the workspace declares, and \
+                     exactly the crates on disk",
+                    format!("{} member(s)", s.inspected.len()),
+                )
+            } else {
+                let missing: Vec<&String> = s
+                    .declared
+                    .iter()
+                    .filter(|m| !s.inspected.contains(m))
+                    .collect();
+                let mut detail = s.unreadable.clone();
+                detail.extend(unmembered.iter().cloned());
+                detail.push(format!(
+                    "inspected {} members but the workspace declares {}; unreadable: {missing:?}",
+                    s.inspected.len(),
+                    s.declared.len()
+                ));
+                Row::fail(
+                    ROW_SET_EQUALITY,
+                    "the inspected member set is not the declared member set, or a crate on disk \
+                     is on no member list",
+                    detail.join(" | "),
+                )
+            },
+        );
+
+        rows.push(if s.inspected.len() < MIN_MEMBERS {
+            Row::fail(
+                ROW_MEMBER_FLOOR,
+                "the member walk collapsed below its floor",
+                format!(
+                    "only {} member manifests were discovered (floor {MIN_MEMBERS}). A discovery \
+                     step that finds almost nothing passes almost everything.",
+                    s.inspected.len()
+                ),
+            )
+        } else {
+            Row::pass(
+                ROW_MEMBER_FLOOR,
+                "enough member manifests were inspected for the rules above to mean anything",
+                format!("{} member(s) (floor {MIN_MEMBERS})", s.inspected.len()),
+            )
+        });
+
+        rows.push(if s.inherited_count < MIN_INHERITED {
+            Row::fail(
+                ROW_INHERITED_FLOOR,
+                "too few inheriting declarations were found",
+                format!(
+                    "only {} inherited declarations were found (floor {MIN_INHERITED}). Either the \
+                     table is not actually in use or the walk is broken; both are RED.",
+                    s.inherited_count
+                ),
+            )
+        } else {
+            Row::pass(
+                ROW_INHERITED_FLOOR,
+                "the workspace table is actually in use",
+                format!(
+                    "{} inherited declaration(s) (floor {MIN_INHERITED})",
+                    s.inherited_count
+                ),
+            )
+        });
+
+        let ts = &s.test_support;
+        rows.push(if ts.offenders.is_empty() {
+            Row::pass(
+                ROW_TEST_SUPPORT,
+                "no release feature set reaches a `test-support` feature: every site enabling one \
+                 is a dev-dependency edge or a crate's own `test-support`",
+                format!(
+                    "{} dev-dependency edge(s), {} forward(s) inside a crate's own `{TEST_SUPPORT}`, \
+                     across the root manifest and {} member(s)",
+                    ts.dev_edges,
+                    ts.forwards,
+                    s.inspected.len()
+                ),
+            )
+        } else {
+            Row::fail(
+                ROW_TEST_SUPPORT,
+                "a `test-support` feature is enabled from outside a dev-dependency edge",
+                ts.offenders.join(" | "),
+            )
+        });
+
+        Verdict::of(rows)
+    }
+
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        let mut report = Report::new();
+        report.push(prove_green(
+            cx,
+            self,
+            "every dependency in the real workspace goes through the table",
+            &self.owed().iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
+        // THE MEMBER LINE, DELETED. This is the one case that has to run against the REAL tree:
+        // the hole was that `inspected` is derived from `declared`, so a synthetic workspace whose
+        // member list is the whole truth cannot show it. Strike one line from the real root
+        // manifest and the crate is still on disk, still path-depended, and no longer in a single
+        // `--workspace` run.
+        let mut ov = Overlay::new();
+        ov.set(
+            "Cargo.toml",
+            cx.read("Cargo.toml").unwrap_or_default().replacen(
+                "    \"crates/busbar-plane-llm\",\n",
+                "",
+                1,
+            ),
+        );
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "a member line deleted leaves a live crate on disk and out of every --workspace run",
+            &[ROW_SET_EQUALITY],
+            ov,
+            &["crates/busbar-plane-llm", "no [workspace] members entry"],
+        ));
+        for plant in plants() {
+            report.push(plant.case(cx, self));
+        }
+        report
+    }
+
+    /// THE SAME PLANTED WORKSPACES, DRIVEN THROUGH BOTH IMPLEMENTATIONS.
+    ///
+    /// One probe per planted violation, reusing [`plants`] rather than a second set of fixtures: a
+    /// parity probe built from an overlay the self-test never drove is comparing something neither
+    /// side has proven.
+    ///
+    /// The legacy script takes `--root`, so the harness points it at a scratch tree holding exactly
+    /// the paths named in `materialize` — the synthetic root manifest and one manifest per declared
+    /// member. That list is derived from the plant itself, not written out again, because a member
+    /// left off it is a member the Python reads out of the REAL repository, and the probe would
+    /// then grade a tree nobody planted.
+    fn parity_probes(&self, _cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        plants()
+            .into_iter()
+            .map(|p| {
+                let probe = crate::gates::ParityProbe::red(
+                    p.label,
+                    p.overlay,
+                    p.materialize,
+                    p.rule.to_string(),
+                );
+                match legacy_wording(p.rule) {
+                    Some(w) => probe.named_by(w),
+                    // The one rule with no legacy counterpart at all. The Python walks the DECLARED
+                    // member list and never looks at `crates/`, so a layout change the root
+                    // manifest was edited to match is invisible to it.
+                    None => probe.diverges(crate::gates::Divergence::LegacyGreen {
+                        reason: legacy_blind_reason(p.rule).to_string(),
+                    }),
+                }
+            })
+            .collect()
+    }
+}
+
+/// What the LEGACY script calls each rule this gate owes.
+///
+/// The two vocabularies differ because the row ids here are namespaced and the Python prints prose,
+/// so a parity probe that compared only this gate's id would be asserting nothing about the legacy
+/// half. `None` means the rule has no legacy counterpart at all, which is a declared divergence
+/// rather than a missing mapping — the difference matters, so it is a distinct return value and not
+/// an empty string.
+fn legacy_wording(rule: &str) -> Option<&'static str> {
+    match rule {
+        ROW_TABLE => Some("there is no source of truth to check"),
+        ROW_INHERITANCE => Some("states its own version"),
+        ROW_INHERIT_TARGET => Some("to inherit FROM"),
+        ROW_ORPHANS => Some("no member inherits it"),
+        ROW_SET_EQUALITY => Some("has no Cargo.toml"),
+        ROW_MEMBER_FLOOR => Some("member manifests were discovered (floor 8)"),
+        ROW_INHERITED_FLOOR => Some("inherited declarations were found (floor 40)"),
+        _ => None,
+    }
+}
+
+/// Why the legacy script is green on a rule it never had.
+fn legacy_blind_reason(rule: &str) -> &'static str {
+    match rule {
+        ROW_TEST_SUPPORT => {
+            "the legacy only ever compared version requirements against the workspace table; it \
+             never read a `features` list, so a `test-support` feature switched on from a normal \
+             edge or a non-test feature (ARCHITECT RULING Q-GG3) is not something it can see."
+        }
+        _ => {
+            "the legacy walks the declared member list and never reads `crates/`, so a directory \
+             that moved out from under the workspace is not something it can see. This gate's walk \
+             is held to the member list, and a member it missed is a named failure rather than a \
+             clean tree."
+        }
+    }
+}
+
+/// One planted workspace: the overlay, the owed row it must be reported by, the substring the RED
+/// report has to contain, and every path the legacy script must be shown. Shared by
+/// [`Gate::selftest`] and [`Gate::parity_probes`] so the two cannot drift apart.
+struct Plant {
+    label: String,
+    rule: &'static str,
+    naming: Vec<String>,
+    overlay: Overlay,
+    materialize: Vec<String>,
+}
+
+impl Plant {
+    fn case<'a>(self, cx: &'a Ctx, gate: &'a dyn Gate) -> crate::gates::CasePlan<'a> {
+        let naming: Vec<&str> = self.naming.iter().map(String::as_str).collect();
+        prove_red(cx, gate, self.label, &[self.rule], self.overlay, &naming)
+    }
+}
+
+/// Build one plant out of a member list and a workspace table, with `absent` naming the manifests
+/// the plant deliberately removes — those are dropped from `materialize`, because the harness
+/// writes the overlaid view of every path it is given and a file the overlay says is gone cannot be
+/// written.
+fn planted(
+    label: &str,
+    rule: &'static str,
+    naming: &[&str],
+    members: &[(String, String)],
+    table: &str,
+    absent: &[&str],
+) -> Plant {
+    let mut overlay = plant(members, table);
+    let mut materialize = vec!["Cargo.toml".to_string()];
+    for (path, _) in members {
+        materialize.push(format!("{path}/Cargo.toml"));
+    }
+    for gone in absent {
+        // WITHDRAWN OR REMOVED, AND THE TWO ARE NOT THE SAME CLAIM. `absent` carries both shapes:
+        // a manifest of a FABRICATED member — one the loop above wrote and the tree never had — and
+        // a manifest of a REAL crate, which the collapse case takes out by the hundred. Un-saying
+        // the first is what its case means; `Overlay::remove` there would assert the absence of a
+        // path that is absent anyway, which removes nothing and is what `prove_red` now refuses a
+        // plant for. The second must really be removed, and is.
+        let fabricated = members
+            .iter()
+            .any(|(path, _)| format!("{path}/Cargo.toml") == *gone);
+        if fabricated {
+            overlay.unset(gone);
+        } else {
+            overlay.remove(gone);
+        }
+        materialize.retain(|p| p != gone);
+    }
+    Plant {
+        label: label.to_string(),
+        rule,
+        naming: naming.iter().map(|s| (*s).to_string()).collect(),
+        overlay,
+        materialize,
+    }
+}
+
+/// The planted violations, at least one per rule this gate enforces.
+fn plants() -> Vec<Plant> {
+    let mut out = Vec::new();
+
+    // Rule 2, three plants, because "dependencies" is three tables plus their per-target forms and
+    // a rule enforced on one of them is scoped to where the bug was first seen.
+    let mut restated = clean_members();
+    restated[3].1 = member_body(&["dep0", "dep1", "dep3", "dep4", "dep5"], "dep2 = \"1\"");
+    out.push(planted(
+        "a member restates a version",
+        ROW_INHERITANCE,
+        &["states its own version"],
+        &restated,
+        &clean_table(),
+        &[],
+    ));
+
+    let mut dev = clean_members();
+    dev[5].1 = format!(
+        "{}\n\n[dev-dependencies]\ndep9 = \"3\"",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a dev-dependency restates a version",
+        ROW_INHERITANCE,
+        &["states its own version", "[dev-dependencies]"],
+        &dev,
+        &clean_table(),
+        &[],
+    ));
+
+    let mut per_target = clean_members();
+    per_target[6].1 = format!(
+        "{}\n\n[target.'cfg(unix)'.dependencies]\ndep9 = \"3\"",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a per-target dependency restates a version",
+        ROW_INHERITANCE,
+        &["states its own version", "target."],
+        &per_target,
+        &clean_table(),
+        &[],
+    ));
+
+    // Rule 3, alone.
+    let mut orphaned_inherit = clean_members();
+    orphaned_inherit[1].1 = format!(
+        "{}\nnot_in_table = {{ workspace = true }}",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a dependency inherits from an entry that is not there",
+        ROW_INHERIT_TARGET,
+        &["no `not_in_table` entry"],
+        &orphaned_inherit,
+        &clean_table(),
+        &[],
+    ));
+
+    // Rule 4, alone: a pin nothing obeys — it looks like governance and governs nothing.
+    out.push(planted(
+        "an orphaned workspace entry",
+        ROW_ORPHANS,
+        &["no member inherits it"],
+        &clean_members(),
+        &format!("{}\nunused_dep = \"9\"", clean_table()),
+        &[],
+    ));
+
+    // Rule 5, alone: a declared member with no manifest. Eight members still inspect, so neither
+    // floor moves.
+    let mut ghost = clean_members();
+    ghost.push(("ws-plant/never-existed".to_string(), String::new()));
+    out.push(planted(
+        "a declared member has no manifest",
+        ROW_SET_EQUALITY,
+        &["has no Cargo.toml"],
+        &ghost,
+        &clean_table(),
+        &["ws-plant/never-existed/Cargo.toml"],
+    ));
+
+    // Rule 6 gets its OWN discriminating fixture: two members carrying TWENTY inherited
+    // declarations apiece, so the inherited-declaration floor is comfortably clear and only the
+    // member floor can go red. A floor proven alongside its neighbour is a floor that could be
+    // deleted with this self-test still green.
+    let wide: Vec<String> = (0..20).map(|i| format!("dep{i}")).collect();
+    let wide_refs: Vec<&str> = wide.iter().map(String::as_str).collect();
+    let few_members: Vec<(String, String)> = (0..2)
+        .map(|j| (format!("ws-plant/w{j}"), member_body(&wide_refs, "")))
+        .collect();
+    out.push(planted(
+        "too few members discovered",
+        ROW_MEMBER_FLOOR,
+        &[&format!("floor {MIN_MEMBERS}")],
+        &few_members,
+        &table_of(&wide_refs),
+        &[],
+    ));
+
+    // Rule 7 gets its own the other way round: eight members — clear of the member floor — each
+    // carrying four inherited declarations, so only the inherited-declaration floor can fire.
+    let narrow = ["dep0", "dep1", "dep2", "dep3"];
+    let thin_members: Vec<(String, String)> = (0..8)
+        .map(|j| (format!("ws-plant/t{j}"), member_body(&narrow, "")))
+        .collect();
+    out.push(planted(
+        "too few inherited declarations",
+        ROW_INHERITED_FLOOR,
+        &[&format!("floor {MIN_INHERITED}")],
+        &thin_members,
+        &table_of(&narrow),
+        &[],
+    ));
+
+    // Rule 1, alone: the table the whole gate reads against is gone.
+    out.push(planted(
+        "the workspace table is missing",
+        ROW_TABLE,
+        &["no source of truth to check"],
+        &clean_members(),
+        "",
+        &[],
+    ));
+
+    // Rule 8: a declared `crates/` member the directory walk does not find. The member is declared
+    // and its manifest withdrawn, so the walk has nothing at that path; the row names the member,
+    // not a count (ARCHITECT 2026-10-02: exact, not a floor).
+    //
+    // THE LEGACY SCRIPT CANNOT SEE THIS ONE. It never looks at `crates/` — it walks the declared
+    // member list and nothing else. The probe stays: a rule the Rust gate enforces and the Python
+    // never did is a finding to report at the call-site switch, not a probe to drop so the run
+    // comes out quiet.
+    let mut missed = clean_members();
+    missed.push((
+        "crates/ws-plant-missed".to_string(),
+        member_body(CLEAN_DEPS, ""),
+    ));
+    out.push(planted(
+        "the crates/ manifest walk missed a declared member",
+        ROW_DISCOVERY,
+        &["crates/ws-plant-missed"],
+        &missed,
+        &clean_table(),
+        &["crates/ws-plant-missed/Cargo.toml"],
+    ));
+
+    // Rule 9, twice: the two ways a release build can reach a `test-support` feature. Every other
+    // rule is green on both (the edges are path dependencies, which the inheritance arms excuse).
+    //
+    // A NORMAL EDGE turning it on — the shape ARCHITECT RULING Q-GG3 forbids by name.
+    let mut normal_edge = clean_members();
+    normal_edge[2].1 = member_body(
+        CLEAN_DEPS,
+        "m3 = { path = \"../m3\", features = [\"test-support\"] }",
+    );
+    normal_edge[3].1 = format!(
+        "{}\n\n[features]\ntest-support = []",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a normal dependency edge enables another crate's test-support",
+        ROW_TEST_SUPPORT,
+        &["ws-plant/m2/Cargo.toml", "non-dev edge", "m3"],
+        &normal_edge,
+        &clean_table(),
+        &[],
+    ));
+
+    // A NON-TEST FEATURE forwarding to it, beside a sanctioned dev edge: the dev edge alone is
+    // green, and `default -> fixtures -> m3/test-support` puts it in every release build anyway.
+    let mut forwarded = clean_members();
+    forwarded[2].1 = format!(
+        "{}\n\n[dev-dependencies]\nm3 = {{ path = \"../m3\", features = [\"test-support\"] }}\n\n\
+         [features]\ndefault = [\"fixtures\"]\nfixtures = [\"m3/test-support\"]",
+        member_body(CLEAN_DEPS, "m3 = { path = \"../m3\" }")
+    );
+    forwarded[3].1 = format!(
+        "{}\n\n[features]\ntest-support = []",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a non-test feature forwards to another crate's test-support",
+        ROW_TEST_SUPPORT,
+        &["[features] `fixtures`", "m3/test-support"],
+        &forwarded,
+        &clean_table(),
+        &[],
+    ));
+
+    out
+}
+
+/// The FAIL rows every rule downstream of an unreadable root manifest or an absent workspace table
+/// must still emit. Silence is DID NOT RUN and a PASS would be a claim nothing checked.
+fn unproven(why: &str) -> Vec<Row> {
+    [
+        (ROW_INHERITANCE, "inheritance is unproven"),
+        (ROW_INHERIT_TARGET, "inherit targets are unproven"),
+        (ROW_ORPHANS, "the orphan check is unproven"),
+        (ROW_SET_EQUALITY, "the member set is unproven"),
+        (ROW_MEMBER_FLOOR, "the member count is unknown"),
+        (ROW_INHERITED_FLOOR, "the inherited count is unknown"),
+        (ROW_TEST_SUPPORT, "the test-support edges are unproven"),
+    ]
+    .iter()
+    .map(|(id, title)| Row::fail(*id, *title, why))
+    .collect()
+}
+
+// ── fixture construction for the self-test ───────────────────────────────────────────────────────
+//
+// Every RED case below is a WHOLE synthetic workspace planted into the overlay: a root manifest and
+// its members, none of which touch the real tree. That is deliberate. Editing one real member to
+// plant one violation moves several counts at once, and a case that reds three rules cannot tell
+// you which rule is still alive.
+
+const CLEAN_DEPS: &[&str] = &["dep0", "dep1", "dep2", "dep3", "dep4", "dep5"];
+
+fn table_of(names: &[&str]) -> String {
+    names
+        .iter()
+        .map(|n| format!("{n} = \"1\""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn clean_table() -> String {
+    table_of(CLEAN_DEPS)
+}
+
+/// A `[dependencies]` table inheriting `names`, plus one optional extra raw line.
+fn member_body(names: &[&str], extra: &str) -> String {
+    let mut body = String::from("[dependencies]");
+    for n in names {
+        body.push_str(&format!("\n{n} = {{ workspace = true }}"));
+    }
+    if !extra.is_empty() {
+        body.push('\n');
+        body.push_str(extra);
+    }
+    body
+}
+
+/// Eight members, six inherited declarations apiece: forty-eight, clear of both floors, so a case
+/// that moves ONE of them still moves only the rule it is aimed at.
+fn clean_members() -> Vec<(String, String)> {
+    (0..8)
+        .map(|j| (format!("ws-plant/m{j}"), member_body(CLEAN_DEPS, "")))
+        .collect()
+}
+
+/// The overlay: a synthetic root manifest plus one manifest per member.
+fn plant(members: &[(String, String)], table: &str) -> Overlay {
+    let mut ov = Overlay::new();
+    let list = members
+        .iter()
+        .map(|(path, _)| format!("    \"{path}\",\n"))
+        .collect::<String>();
+    ov.set(
+        "Cargo.toml",
+        format!("[workspace]\nresolver = \"2\"\nmembers = [\n{list}]\n\n[workspace.dependencies]\n{table}\n"),
+    );
+    for (path, body) in members {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        ov.set(
+            format!("{path}/Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n\n{body}\n"),
+        );
+    }
+    ov
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cx() -> Ctx {
+        Ctx::workspace().expect("workspace context")
+    }
+
+    #[test]
+    fn an_inline_table_decomposes_into_its_keys() {
+        assert_eq!(
+            parse_spec("{ workspace = true }"),
+            DepSpec::Table(BTreeMap::from([(
+                "workspace".to_string(),
+                "true".to_string()
+            )]))
+        );
+        assert!(parse_spec("{ workspace = true }").inherits());
+        assert!(!parse_spec("\"1.0\"").inherits());
+        assert_eq!(parse_spec("1.0"), DepSpec::Version("1.0".to_string()));
+    }
+
+    /// A features array holds commas. A reader that split on every comma would drop the keys after
+    /// it and read a version-restating dependency as an inheriting one.
+    #[test]
+    fn a_features_array_does_not_hide_the_keys_after_it() {
+        let spec =
+            parse_spec(r#"{ version = "0.27", features = ["a", "b"], default-features = false }"#);
+        assert!(!spec.inherits());
+        assert!(!spec.is_path_or_git());
+        assert!(spec.shown().contains("0.27"));
+    }
+
+    /// Path AND git are the same arm: neither is routed through the workspace table.
+    #[test]
+    fn path_and_git_dependencies_are_both_external_to_the_table() {
+        assert!(parse_spec(r#"{ path = "../busbar-core" }"#).is_path_or_git());
+        assert!(
+            parse_spec(r#"{ git = "https://example.invalid/x", rev = "abc" }"#).is_path_or_git()
+        );
+        assert!(!parse_spec(r#"{ version = "1" }"#).is_path_or_git());
+    }
+
+    #[test]
+    fn every_dependency_table_spelling_is_a_dependency_table() {
+        assert!(is_dep_section("dependencies"));
+        assert!(is_dep_section("dev-dependencies"));
+        assert!(is_dep_section("build-dependencies"));
+        assert!(is_dep_section("target.'cfg(unix)'.dependencies"));
+        assert!(is_dep_section(
+            "target.'cfg(not(target_env = \"msvc\"))'.dev-dependencies"
+        ));
+        assert!(!is_dep_section("workspace.dependencies"));
+        assert!(!is_dep_section("package"));
+    }
+
+    /// The `[dependencies.serde]` sub-table spelling must not be a blind spot: a member could state
+    /// a version there and a reader that only knows inline tables would call the tree clean.
+    #[test]
+    fn a_dependency_sub_table_is_read_like_an_inline_one() {
+        let ov = {
+            let mut ov = Overlay::new();
+            ov.set(
+                "ws-plant/sub/Cargo.toml",
+                "[package]\nname = \"sub\"\n\n[dependencies.serde]\nversion = \"1\"\n",
+            );
+            ov
+        };
+        let planted = cx().with_overlay(ov);
+        let doc = read_manifest(&planted, "ws-plant/sub/Cargo.toml").expect("planted manifest");
+        let entries = dep_entries(&doc);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].0, "dependencies");
+        assert_eq!(entries[0].1, "serde");
+        assert!(!entries[0].2.inherits());
+    }
+
+    /// The control case, in the Python's words: if a clean synthetic tree fails, every rejection
+    /// the self-test makes proves nothing, because a lint that fails everything is as useless as
+    /// one that passes everything.
+    #[test]
+    fn the_clean_synthetic_workspace_passes() {
+        let planted = cx().with_overlay(plant(&clean_members(), &clean_table()));
+        let verdict = crate::gates::execute(&WorkspaceDepsGate, &planted);
+        assert!(
+            !verdict.red,
+            "the control fixture is RED: {:?}",
+            verdict.problems
+        );
+    }
+
+    /// The ids that went FAIL under a planted overlay.
+    fn failed_ids(ov: Overlay) -> Vec<String> {
+        let planted = cx().with_overlay(ov);
+        crate::gates::execute(&WorkspaceDepsGate, &planted)
+            .rows
+            .iter()
+            .filter(|r| r.status != crate::ledger::Status::Pass)
+            .map(|r| r.id.clone())
+            .collect()
+    }
+
+    /// THE TWO FLOORS MUST FAIL APART. A fixture that trips both proves neither: either one could
+    /// be deleted and the self-test would stay green on the other. This is the defect the audit
+    /// found in the shell gates' floors, asserted here rather than assumed.
+    #[test]
+    fn each_floor_has_a_fixture_that_only_it_rejects() {
+        let wide: Vec<String> = (0..20).map(|i| format!("dep{i}")).collect();
+        let wide_refs: Vec<&str> = wide.iter().map(String::as_str).collect();
+        let few: Vec<(String, String)> = (0..2)
+            .map(|j| (format!("ws-plant/w{j}"), member_body(&wide_refs, "")))
+            .collect();
+        assert_eq!(
+            failed_ids(plant(&few, &table_of(&wide_refs))),
+            vec![ROW_MEMBER_FLOOR.to_string()],
+            "the member-floor fixture must reject on the member floor and nothing else"
+        );
+
+        let narrow = ["dep0", "dep1", "dep2", "dep3"];
+        let thin: Vec<(String, String)> = (0..8)
+            .map(|j| (format!("ws-plant/t{j}"), member_body(&narrow, "")))
+            .collect();
+        assert_eq!(
+            failed_ids(plant(&thin, &table_of(&narrow))),
+            vec![ROW_INHERITED_FLOOR.to_string()],
+            "the inherited-floor fixture must reject on the inherited floor and nothing else"
+        );
+    }
+
+    /// THE WALK READS EXACTLY THE DECLARED MEMBERS (ARCHITECT 2026-10-02). The `crates/` walk is
+    /// held to the root manifest's own member list rather than to a number: a declared `crates/`
+    /// member the walk did not find is RED by name, the real tree is green, and an extraction
+    /// (manifest AND member line gone) is not a miss, however few crates are left.
+    const MISSED: &str = "crates/busbar-kernel-scope";
+
+    #[test]
+    fn a_crates_walk_that_misses_a_declared_member_is_red_naming_it() {
+        let mut ov = Overlay::new();
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        let row = rule_discovery(&cx().with_overlay(ov));
+        assert_ne!(row.status, crate::ledger::Status::Pass, "{row:?}");
+        assert!(row.detail.contains(MISSED), "the miss is named: {row:?}");
+
+        let real = rule_discovery(&cx());
+        assert_eq!(real.status, crate::ledger::Status::Pass, "{real:?}");
+    }
+
+    #[test]
+    fn an_extracted_crate_is_not_a_missed_member() {
+        let root = cx().read("Cargo.toml").expect("the root manifest reads");
+        let line = format!("    \"{MISSED}\",\n");
+        assert!(root.contains(&line), "the root declares {MISSED}");
+        let mut ov = Overlay::new();
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        ov.set("Cargo.toml", root.replace(&line, ""));
+        let row = rule_discovery(&cx().with_overlay(ov));
+        assert_eq!(row.status, crate::ledger::Status::Pass, "{row:?}");
+    }
+
+    /// Every shape ARCHITECT RULING Q-GG3 sanctions, in one manifest: dev edges in all three
+    /// spellings (inline, per-target, sub-table), a crate's own `test-support` forwarding across a
+    /// multi-line array, and the places the word appears without enabling anything (a comment, a
+    /// `[[test]]`'s `required-features`, prose).
+    #[test]
+    fn the_sanctioned_test_support_shapes_are_green() {
+        let text = "[package]\nname = \"ok\"\ndescription = \"\"\"\nturns on \"test-support\" = [\n\"\"\"\n\n\
+                    [[test]]\nname = \"t\"\nrequired-features = [\"runtime\", \"test-support\"]\n\n\
+                    [features]\n# default = [\"test-support\"] is a comment\ntest-support = [\n    \
+                    \"busbar-kernel/test-support\",\n    \"dep:reqwest\",\n    \"a?/test-support\",\n]\n\n\
+                    [dev-dependencies]\nbusbar-kernel = { path = \"../busbar-kernel\", features = [\"test-support\"] }\n\n\
+                    [target.'cfg(unix)'.dev-dependencies]\nb = { path = \"../b\", features = [\n    \"test-support\",\n] }\n\n\
+                    [dev-dependencies.c]\npath = \"../c\"\nfeatures = [\"test-support\"]\n";
+        let scan = test_support_scan("ok/Cargo.toml", text);
+        assert_eq!(scan.offenders, Vec::<String>::new());
+        assert_eq!((scan.dev_edges, scan.forwards), (3, 2), "{scan:?}");
+    }
+
+    /// Every spelling of an enabling site a release build can reach is RED, one manifest each, so a
+    /// spelling the scan went blind to fails on its own line.
+    #[test]
+    fn every_release_reachable_enabling_site_is_red() {
+        let cases = [
+            ("normal inline", "[dependencies]\nk = { path = \"../k\", features = [\"test-support\"] }\n"),
+            ("normal multi-line", "[dependencies]\nk = { path = \"../k\", features = [\n  \"x\",\n  \"test-support\",\n] }\n"),
+            ("normal dotted key", "[dependencies]\nk.path = \"../k\"\nk.features = [\"test-support\"]\n"),
+            ("normal sub-table", "[dependencies.k]\npath = \"../k\"\nfeatures = [\"test-support\"]\n"),
+            ("build edge", "[build-dependencies]\nk = { path = \"../k\", features = [\"test-support\"] }\n"),
+            ("legacy underscore", "[build_dependencies]\nk = { path = \"../k\", features = [\"test-support\"] }\n"),
+            ("per-target normal", "[target.'cfg(unix)'.dependencies]\nk = { path = \"../k\", features = [\"test-support\"] }\n"),
+            ("workspace table", "[workspace.dependencies]\nk = { path = \"crates/k\", features = [\"test-support\"] }\n"),
+            ("default on itself", "[features]\ndefault = [\"test-support\"]\ntest-support = []\n"),
+            ("named feature forwards", "[features]\nfixtures = [\"k/test-support\"]\n"),
+            ("weak forward", "[features]\nfixtures = [\"k?/test-support\"]\n"),
+        ];
+        for (label, text) in cases {
+            let scan = test_support_scan("bad/Cargo.toml", text);
+            assert_eq!(scan.offenders.len(), 1, "{label}: {scan:?}");
+            assert!(
+                scan.offenders[0].starts_with("bad/Cargo.toml:"),
+                "{label}: the finding names its manifest and line: {scan:?}"
+            );
+        }
+    }
+
+    /// THE RED ARM, through the whole gate: a normal edge enabling `test-support` reds this row and
+    /// nothing else, and the same edge moved to `[dev-dependencies]` (with the target's own
+    /// `test-support` forwarding on) is green.
+    #[test]
+    fn a_non_dev_test_support_edge_reds_only_its_row() {
+        let mut bad = clean_members();
+        bad[2].1 = member_body(
+            CLEAN_DEPS,
+            "m3 = { path = \"../m3\", features = [\"test-support\"] }",
+        );
+        assert_eq!(
+            failed_ids(plant(&bad, &clean_table())),
+            vec![ROW_TEST_SUPPORT.to_string()]
+        );
+
+        let mut good = clean_members();
+        good[2].1 = format!(
+            "{}\n\n[dev-dependencies]\nm3 = {{ path = \"../m3\", features = [\"test-support\"] }}",
+            member_body(CLEAN_DEPS, "")
+        );
+        good[3].1 = format!(
+            "{}\n\n[features]\ntest-support = [\"m4/test-support\"]\n\n\
+             [dev-dependencies]\nm4 = {{ path = \"../m4\", features = [\"test-support\"] }}",
+            member_body(CLEAN_DEPS, "")
+        );
+        assert_eq!(
+            failed_ids(plant(&good, &clean_table())),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The scan is not blind on the real tree: today's manifests carry dev edges AND forwards, and a
+    /// reader that saw neither would pass the row over nothing.
+    #[test]
+    fn the_real_tree_has_sanctioned_test_support_sites() {
+        let cx = cx();
+        let root = read_manifest(&cx, "Cargo.toml").expect("root manifest");
+        let s = survey(&cx, &root);
+        assert!(
+            s.test_support.offenders.is_empty(),
+            "{:?}",
+            s.test_support.offenders
+        );
+        assert!(
+            s.test_support.dev_edges > 0 && s.test_support.forwards > 0,
+            "{:?}",
+            s.test_support
+        );
+    }
+
+    #[test]
+    fn the_gate_is_green_on_the_workspace() {
+        let verdict = crate::gates::execute(&WorkspaceDepsGate, &cx());
+        assert!(
+            !verdict.red,
+            "workspace-deps is RED on the real tree: {:?}",
+            verdict.problems
+        );
+    }
+
+    #[test]
+    fn the_selftest_proves_every_owed_row() {
+        let cx = cx();
+        let report = WorkspaceDepsGate.selftest(&cx);
+        crate::gates::verify_report(&WorkspaceDepsGate, &report)
+            .unwrap_or_else(|errs| panic!("workspace-deps selftest: {errs:#?}"));
+        assert_eq!(report.skipped(), 0, "a case had nothing to plant");
+    }
+}

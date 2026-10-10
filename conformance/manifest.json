@@ -1,0 +1,179 @@
+{
+  "_generated": "by `cargo xtask gate conformance-sync --write`; DO NOT EDIT — the drift gate is fatal",
+  "commit": "",
+  "generated_at": "2026-09-28T19:37:44Z",
+  "release": "1.6.0",
+  "schema": "busbar.conformance.manifest/1",
+  "suites": [
+    {
+      "claim": null,
+      "plan": "official a2aproject/a2a-tck + a2a-harness + a2a-go reference peer",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "Agent2Agent (A2A) Protocol",
+      "status": "not-run",
+      "suite": "a2a",
+      "tier": "conformant"
+    },
+    {
+      "claim": null,
+      "plan": "OIDF FAPI2 conformance suite (self-hosted)",
+      "public": true,
+      "reason": "planned 1.6.0 — PAR/DPoP/client-assertion wiring in flight; paid OIDF listing is owner-owned, the code is built to pass the suite (MATRIX-RULING owner ruling 2026-09-19)",
+      "standard": "FAPI 2.0 Security Profile",
+      "status": "not-run",
+      "suite": "fapi2",
+      "tier": "conformant"
+    },
+    {
+      "claim": null,
+      "plan": "h2spec over TLS (ALPN h2) against the tls: listener",
+      "public": true,
+      "reason": "planned 1.6.0 — h2spec leg not yet green (MATRIX-RULING B-tier report card)",
+      "standard": "HTTP/2 (RFC 9113)",
+      "status": "not-run",
+      "suite": "h2",
+      "tier": "conformant"
+    },
+    {
+      "claim": null,
+      "plan": "plane battery + served POST /v1/systemone on a booted busbar (systemone only; GET /v1/models keeps its 1.5.5 bytes)",
+      "public": true,
+      "reason": "not served: POST /v1/systemone answers 404, the absence code on this boot; the decisions plane is registered and configured but no route serves its operation (the kernel plane driver serves it)",
+      "standard": "jev decision plane",
+      "status": "fail",
+      "suite": "jev",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
+      "plan": "spec battery vs pinned vendor OpenAPI",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "Anthropic Messages API",
+      "status": "not-run",
+      "suite": "llm-anthropic",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
+      "plan": "spec battery vs pinned botocore models",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "Amazon Bedrock Runtime API",
+      "status": "not-run",
+      "suite": "llm-bedrock",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
+      "plan": "spec battery vs pinned vendor OpenAPI",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "Cohere Chat API",
+      "status": "not-run",
+      "suite": "llm-cohere",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
+      "plan": "spec battery vs pinned discovery document",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "Google Gemini API",
+      "status": "not-run",
+      "suite": "llm-gemini",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
+      "plan": "spec battery vs pinned vendor OpenAPI",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "OpenAI Chat Completions API",
+      "status": "not-run",
+      "suite": "llm-openai",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
+      "plan": "spec battery vs pinned vendor OpenAPI",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "OpenAI Responses API",
+      "status": "not-run",
+      "suite": "llm-responses",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
+      "plan": "official modelcontextprotocol TCK + in-house battery",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "Model Context Protocol",
+      "status": "not-run",
+      "suite": "mcp",
+      "tier": "conformant"
+    },
+    {
+      "claim": null,
+      "plan": "self-hosted OIDF OAuth2 plan (openid=plain_oauth)",
+      "public": true,
+      "reason": "planned 1.6.0 — self-hosted OIDF leg not yet green; claim is 'passes the suite', NEVER 'certified' (MATRIX-RULING owner ruling 2026-09-19)",
+      "standard": "OpenID Foundation OAuth2 conformance suite",
+      "status": "not-run",
+      "suite": "oidf-oauth2",
+      "tier": "conformant"
+    },
+    {
+      "claim": null,
+      "plan": "slsa-verifier over the release attestations",
+      "public": true,
+      "reason": "planned 1.6.0 — slsa-verifier leg not yet wired as an arm-or-red verdict",
+      "standard": "SLSA provenance (v1.0)",
+      "status": "not-run",
+      "suite": "slsa-verifier",
+      "tier": "conformant"
+    },
+    {
+      "claim": null,
+      "plan": "testssl.sh grade against a loopback subject",
+      "public": true,
+      "reason": "planned 1.6.0 — testssl leg not yet green (MATRIX-RULING B-tier report card)",
+      "standard": "TLS (rustls, no OpenSSL)",
+      "status": "not-run",
+      "suite": "tls",
+      "tier": "conformant"
+    },
+    {
+      "claim": null,
+      "plan": "spec battery + replay",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "Google Gemini Live API",
+      "status": "not-run",
+      "suite": "voice-gemini-live",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
+      "plan": "spec battery + replay",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "OpenAI Realtime API",
+      "status": "not-run",
+      "suite": "voice-openai-realtime",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
+      "plan": "Autobahn|Testsuite against busbar-transport-ws",
+      "public": true,
+      "reason": "127 of 517 cases FAIL (216 UNIMPLEMENTED -- RFC 7692 permessage-deflate, out of this suite's RFC 6455 claim, not counted). Root cause diagnosed and singular: busbar-transport-ws's wire Frame carries no text/binary discriminator, so every inbound WS TEXT frame is echoed back as BINARY -- content, close code and close cleanliness all now match (the close-handshake defects this same commit range fixed are gone from the failure set). Fix in flight as PIECE_TEXT (abi/transport vocabulary bit); this verdict is expected to flip to pass once that lands and Autobahn is re-run clean.",
+      "standard": "WebSocket (RFC 6455)",
+      "status": "fail",
+      "suite": "ws",
+      "tier": "conformant"
+    }
+  ]
+}

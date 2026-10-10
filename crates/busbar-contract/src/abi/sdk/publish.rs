@@ -1,0 +1,524 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! PUBLISHED GENERATION DATA, OWNED BY THE SDK (THE DESIGN, the plugin ABI: memory a plugin returns is
+//! plugin-owned and valid until that plugin's next refresh generation; a plugin crate stays
+//! `#![forbid(unsafe_code)]`). A plugin that publishes a value the host reads across calls — a
+//! plane's generation snapshot and the claims and routes it points at — hands the SDK an OWNED
+//! description of it (a [`Publish::Spec`]: `String`s and `Vec`s). The SDK copies every list and
+//! string into an [`Arena`] it owns, lowers the description into the ABI value over that arena, and
+//! keeps both until `retire` of that generation ([`Generations::retire`]) or the instance closes.
+//!
+//! So no safe code can hand the host a pointer into memory it later frees: the plugin never builds
+//! the pointer-bearing ABI value itself (only the SDK implements [`Publish`]), and whatever the
+//! plugin does with its description after publishing, the host reads the SDK's copy.
+//!
+//! ```
+//! use busbar_contract::abi::plane::PlaneSnapshot;
+//! use busbar_contract::abi::sdk::publish::{ClaimSpec, Generations, SnapshotSpec};
+//! let gens: Generations<PlaneSnapshot> = Generations::new();
+//! let mut target = String::from("/echo");
+//! let spec = SnapshotSpec {
+//!     claims: vec![ClaimSpec::new("POST", &target, "door", 0)],
+//!     ..SnapshotSpec::default()
+//! };
+//! let _snapshot = gens.publish(1, &spec);
+//! drop(spec);
+//! target.clear(); // the host still reads "/echo": the SDK holds its own copy
+//! assert_eq!(gens.live(), 1);
+//! gens.retire(1);
+//! assert_eq!(gens.live(), 0);
+//! ```
+//!
+//! A plugin cannot publish an ABI value it built itself, pointers and all:
+//!
+//! ```compile_fail,E0308
+//! use busbar_contract::abi::plane::PlaneSnapshot;
+//! use busbar_contract::abi::sdk::publish::Generations;
+//! let gens: Generations<PlaneSnapshot> = Generations::new();
+//! let raw: PlaneSnapshot = unimplemented!();
+//! let _ = gens.publish(1, &raw); // expects a `SnapshotSpec`
+//! ```
+
+use std::any::Any;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use crate::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
+use crate::abi::plane::{AdminRoute, Claim, PlaneSnapshot};
+
+/// The storage one published generation points into. Only the SDK makes one and writes into it;
+/// its contents never move (every piece is its own heap allocation) and are freed only when the
+/// generation is retired.
+pub struct Arena {
+    bytes: Vec<Box<[u8]>>,
+    lists: Vec<Box<dyn Any + Send + Sync>>,
+}
+
+impl std::fmt::Debug for Arena {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Arena")
+            .field("bytes", &self.bytes.len())
+            .field("lists", &self.lists.len())
+            .finish()
+    }
+}
+
+/// A list the arena holds: plain ABI values whose pointers point into the same arena.
+struct List<T> {
+    _items: Box<[T]>,
+}
+
+// SAFETY: `T` is one of the SDK's sealed `Publish` types or an `AbiStr`: integers and raw
+// pointers into the arena that owns this list, which nothing reads through on a safe path and
+// nothing mutates.
+unsafe impl<T> Send for List<T> {}
+// SAFETY: as `Send`.
+unsafe impl<T> Sync for List<T> {}
+
+impl Arena {
+    const fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            lists: Vec::new(),
+        }
+    }
+
+    /// `bytes`, copied into the arena; the pointer to the copy (NULL when empty).
+    fn copy(&mut self, bytes: &[u8]) -> *const u8 {
+        if bytes.is_empty() {
+            return std::ptr::null();
+        }
+        let held: Box<[u8]> = bytes.into();
+        let p = held.as_ptr();
+        self.bytes.push(held);
+        p
+    }
+
+    /// `s`, copied, as a present string (an empty string is present, zero-length).
+    fn str(&mut self, s: &str) -> AbiStr {
+        let ptr = if s.is_empty() {
+            // Present but empty: a non-NULL, never-read address.
+            std::ptr::NonNull::<u8>::dangling().as_ptr().cast_const()
+        } else {
+            self.copy(s.as_bytes())
+        };
+        AbiStr { ptr, len: s.len() }
+    }
+
+    /// `s` copied, or absent (NULL) for `None`.
+    fn opt_str(&mut self, s: Option<&str>) -> AbiStr {
+        s.map_or(
+            AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            |s| self.str(s),
+        )
+    }
+
+    /// `b` copied as a JSON blob, or absent for `None`.
+    fn json(&mut self, b: Option<&[u8]>) -> Blob {
+        match b {
+            Some(b) => Blob {
+                ptr: self.copy(b),
+                len: b.len(),
+                fmt: BLOB_JSON,
+                flags: 0,
+            },
+            None => Blob {
+                ptr: std::ptr::null(),
+                len: 0,
+                fmt: BLOB_ABSENT,
+                flags: 0,
+            },
+        }
+    }
+
+    /// Each of `names` copied, held as one list of strings; its pointer (NULL when empty) and
+    /// length.
+    fn strs(&mut self, names: &[String]) -> (*const AbiStr, usize) {
+        if names.is_empty() {
+            return (std::ptr::null(), 0);
+        }
+        let items: Box<[AbiStr]> = names.iter().map(|n| self.str(n)).collect();
+        let p = items.as_ptr();
+        self.lists.push(Box::new(List { _items: items }));
+        (p, names.len())
+    }
+
+    /// Each of `specs` lowered and held as one list; its pointer (NULL when empty) and length.
+    fn list<T: Publish>(&mut self, specs: &[T::Spec]) -> (*const T, usize) {
+        if specs.is_empty() {
+            return (std::ptr::null(), 0);
+        }
+        let items: Box<[T]> = specs.iter().map(|s| T::lower(s, 0, self)).collect();
+        let p = items.as_ptr();
+        self.lists.push(Box::new(List { _items: items }));
+        (p, specs.len())
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for crate::abi::plane::PlaneSnapshot {}
+    impl Sealed for crate::abi::plane::Claim {}
+    impl Sealed for crate::abi::plane::AdminRoute {}
+}
+
+/// An ABI value a plugin publishes, and the owned description it publishes it from. Only the SDK
+/// implements it: lowering is where pointers are made, and they are made into the SDK's arena only.
+pub trait Publish: sealed::Sealed + Copy + 'static {
+    /// The owned description a plugin hands the SDK.
+    type Spec;
+    /// Lower `spec` for `generation`, every list and string copied into `arena`.
+    #[doc(hidden)]
+    fn lower(spec: &Self::Spec, generation: u64, arena: &mut Arena) -> Self;
+}
+
+/// One claim, owned: see [`Claim`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClaimSpec {
+    /// The verb.
+    pub verb: String,
+    /// The target path.
+    pub target: String,
+    /// The transport claim it arrives over.
+    pub carrier: String,
+    /// `CLAIM_OPEN` | `CLAIM_EXACT`.
+    pub flags: u32,
+    /// The dialect a refusal on this route wears before `arrive` has read the arrival (see
+    /// [`Claim::refusal_dialect`]); `0` for a plane with no dialects.
+    pub refusal_dialect: u16,
+}
+
+impl ClaimSpec {
+    /// A claim of `verb` on `target` over `carrier`.
+    #[must_use]
+    pub fn new(verb: &str, target: &str, carrier: &str, flags: u32) -> Self {
+        Self {
+            verb: verb.to_string(),
+            target: target.to_string(),
+            carrier: carrier.to_string(),
+            flags,
+            refusal_dialect: 0,
+        }
+    }
+}
+
+impl Publish for Claim {
+    type Spec = ClaimSpec;
+    fn lower(spec: &ClaimSpec, _: u64, arena: &mut Arena) -> Self {
+        Self {
+            verb: arena.str(&spec.verb),
+            target: arena.str(&spec.target),
+            carrier: arena.str(&spec.carrier),
+            flags: spec.flags,
+            refusal_dialect: spec.refusal_dialect,
+            _pad: 0,
+        }
+    }
+}
+
+/// One admin route, owned: see [`AdminRoute`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AdminRouteSpec {
+    /// The verb.
+    pub verb: String,
+    /// The target path.
+    pub target: String,
+    /// `ROUTE_PUBLIC` or `0`.
+    pub flags: u32,
+    /// The word the kernel audits it under; empty = never audited.
+    pub audit_verb: String,
+}
+
+impl AdminRouteSpec {
+    /// A route of `verb` on `target`, never audited.
+    #[must_use]
+    pub fn new(verb: &str, target: &str, flags: u32) -> Self {
+        Self {
+            verb: verb.to_string(),
+            target: target.to_string(),
+            flags,
+            audit_verb: String::new(),
+        }
+    }
+
+    /// The route, audited under `word`.
+    #[must_use]
+    pub fn audited(mut self, word: &str) -> Self {
+        self.audit_verb = word.to_string();
+        self
+    }
+}
+
+impl Publish for AdminRoute {
+    type Spec = AdminRouteSpec;
+    fn lower(spec: &AdminRouteSpec, _: u64, arena: &mut Arena) -> Self {
+        Self {
+            verb: arena.str(&spec.verb),
+            target: arena.str(&spec.target),
+            flags: spec.flags,
+            _reserved: 0,
+            audit_verb: arena.str(&spec.audit_verb),
+        }
+    }
+}
+
+/// A generation snapshot, owned: see [`PlaneSnapshot`]. Its generation is the one it is published
+/// under.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SnapshotSpec {
+    /// The paths it answers on.
+    pub claims: Vec<ClaimSpec>,
+    /// Its admin routes.
+    pub admin_routes: Vec<AdminRouteSpec>,
+    /// Its OpenAPI contribution (JSON); `None` = none.
+    pub openapi: Option<Vec<u8>>,
+    /// The audience it binds; `None` = no receiving side.
+    pub audience: Option<String>,
+    /// Its resource metadata; `None` = none.
+    pub resource_metadata: Option<String>,
+    /// Its protected-resource facts (JSON, [`PlaneSnapshot::resource_facts`]); `None` = none.
+    pub resource_facts: Option<Vec<u8>>,
+    /// The names it lists ([`PlaneSnapshot::listed`]), each non-empty; empty = none.
+    pub listed: Vec<String>,
+}
+
+impl Publish for PlaneSnapshot {
+    type Spec = SnapshotSpec;
+    fn lower(spec: &SnapshotSpec, generation: u64, arena: &mut Arena) -> Self {
+        let (claims, claims_len) = arena.list::<Claim>(&spec.claims);
+        let (admin_routes, admin_routes_len) = arena.list::<AdminRoute>(&spec.admin_routes);
+        let (listed, listed_len) = arena.strs(&spec.listed);
+        Self {
+            size: std::mem::size_of::<Self>() as u32,
+            _reserved: 0,
+            generation,
+            claims,
+            claims_len,
+            admin_routes,
+            admin_routes_len,
+            openapi: arena.json(spec.openapi.as_deref()),
+            audience: arena.opt_str(spec.audience.as_deref()),
+            resource_metadata: arena.opt_str(spec.resource_metadata.as_deref()),
+            resource_facts: arena.json(spec.resource_facts.as_deref()),
+            listed,
+            listed_len,
+        }
+    }
+}
+
+/// One published generation: the value (boxed: its address is what the host holds), the arena
+/// it points into, and the plugin's own payload for that generation.
+struct Generation<T, P> {
+    generation: u64,
+    _value: Box<T>,
+    _arena: Arena,
+    payload: Arc<P>,
+}
+
+// SAFETY: `T: Publish` is plain data whose pointers point into `_arena`, owned by the same value;
+// nothing reads through them on a safe path, and nothing mutates either after publishing. The
+// payload is the plugin's own `Send + Sync` value behind an `Arc`.
+unsafe impl<T, P: Send + Sync> Send for Generation<T, P> {}
+// SAFETY: as `Send`.
+unsafe impl<T, P: Send + Sync> Sync for Generation<T, P> {}
+
+/// THE PUBLISHED GENERATIONS of one instance: instance state (`Send + Sync`), holding each
+/// published value and its storage, and the plugin's payload `P` for that generation (what it
+/// built from that generation's settings), until `retire` of its generation, or until it drops
+/// (`close`).
+///
+/// [`Generations::current`] is the NEWEST live generation's payload: what a request arriving now
+/// is answered from. A plugin keeps the `Arc` it took for as long as that request lives, so a
+/// request keeps reading the generation it arrived under while a refresh publishes the next one.
+pub struct Generations<T: Publish, P = ()> {
+    live: Mutex<Vec<Generation<T, P>>>,
+    /// Alive while these generations are: an answer that published from them is FAULT when they
+    /// are gone by the time the body returns (`abi::sdk::out::Holders`).
+    pub(crate) alive: crate::abi::sdk::out::Alive,
+}
+
+impl<T: Publish, P> std::fmt::Debug for Generations<T, P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Generations")
+            .field("live", &self.live())
+            .finish()
+    }
+}
+
+impl<T: Publish, P> Default for Generations<T, P> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Publish> Generations<T, ()> {
+    /// Publish `spec` as `generation`, with no payload: the SDK's copy, lowered; the address the
+    /// host reads, valid until [`Generations::retire`] of `generation` or until this drops.
+    pub fn publish(&self, generation: u64, spec: &T::Spec) -> *const T {
+        self.publish_with(generation, spec, ())
+    }
+}
+
+impl<T: Publish, P> Generations<T, P> {
+    /// None published.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            live: Mutex::new(Vec::new()),
+            alive: crate::abi::sdk::out::Alive::new(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Generation<T, P>>> {
+        self.live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Publish `spec` as `generation` with the plugin's `payload` for it: the SDK's copy, lowered;
+    /// the address the host reads. Both are held until [`Generations::retire`] of `generation` or
+    /// until this drops.
+    pub fn publish_with(&self, generation: u64, spec: &T::Spec, payload: P) -> *const T {
+        let mut arena = Arena::new();
+        let value = Box::new(T::lower(spec, generation, &mut arena));
+        let p = std::ptr::from_ref::<T>(&*value);
+        self.lock().push(Generation {
+            generation,
+            _value: value,
+            _arena: arena,
+            payload: Arc::new(payload),
+        });
+        p
+    }
+
+    /// The newest live generation's payload; `None` when none is live.
+    #[must_use]
+    pub fn current(&self) -> Option<Arc<P>> {
+        self.lock()
+            .iter()
+            .max_by_key(|g| g.generation)
+            .map(|g| Arc::clone(&g.payload))
+    }
+
+    /// The payload of `generation`, while it is live.
+    #[must_use]
+    pub fn at(&self, generation: u64) -> Option<Arc<P>> {
+        self.lock()
+            .iter()
+            .rev()
+            .find(|g| g.generation == generation)
+            .map(|g| Arc::clone(&g.payload))
+    }
+
+    /// Drop every value published as `generation`, its storage, and the SDK's hold on its
+    /// payload (a request still holding the `Arc` keeps its own).
+    pub fn retire(&self, generation: u64) {
+        let gone: Vec<Generation<T, P>> = {
+            let mut live = self.lock();
+            let (gone, keep) = std::mem::take(&mut *live)
+                .into_iter()
+                .partition(|g| g.generation == generation);
+            *live = keep;
+            gone
+        };
+        drop(gone);
+    }
+
+    /// How many published values are held.
+    #[must_use]
+    pub fn live(&self) -> usize {
+        self.lock().len()
+    }
+}
+
+/// PER-INSTANCE KEYED STATE: a map the SDK locks for the plugin, so a `forbid(unsafe_code)` plugin
+/// that holds no lock of its own can keep per-session and per-request state (what a session set,
+/// what a request was admitted under) across calls.
+///
+/// It lives INSIDE the instance state and nowhere else: a plugin holds no process-global state, so
+/// what it keeps is per-instance and dropped with the instance (`close`). It is not `const`
+/// constructible, so it cannot be a `static`. The plugin bounds it: [`Keyed::len`] is what it
+/// checks before an insert that grows it.
+pub struct Keyed<K, V> {
+    map: Mutex<BTreeMap<K, V>>,
+}
+
+impl<K, V> std::fmt::Debug for Keyed<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Keyed").field("len", &self.len()).finish()
+    }
+}
+
+impl<K: Ord, V> Default for Keyed<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> Keyed<K, V> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<K, V>> {
+        self.map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// How many entries are held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Whether none is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+}
+
+impl<K: Ord, V> Keyed<K, V> {
+    /// None held.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            map: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Hold `value` under `key`, answering what it replaced.
+    pub fn insert(&self, key: K, value: V) -> Option<V> {
+        self.lock().insert(key, value)
+    }
+
+    /// Drop what `key` holds, answering it.
+    pub fn remove(&self, key: &K) -> Option<V> {
+        self.lock().remove(key)
+    }
+
+    /// Run `f` over the entry `key` names, or `None`, under the lock. `f` must not reach this
+    /// same `Keyed` again.
+    pub fn with<R>(&self, key: &K, f: impl FnOnce(Option<&mut V>) -> R) -> R {
+        f(self.lock().get_mut(key))
+    }
+
+    /// Run `f` over the whole map, under the lock. `f` must not reach this same `Keyed` again.
+    pub fn with_all<R>(&self, f: impl FnOnce(&mut BTreeMap<K, V>) -> R) -> R {
+        f(&mut self.lock())
+    }
+
+    /// A copy of what `key` holds.
+    #[must_use]
+    pub fn get(&self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
+        self.lock().get(key).cloned()
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/publish_tests.rs"]
+mod tests;

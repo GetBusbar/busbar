@@ -1,0 +1,1 @@
+{"applied":["hdr.date","hdr.length","ts.unix"],"body":{"json":{"global_hooks":[],"hooks":{},"principal":"system","summary":"boot","ts":0,"version":0}},"effects":{"audit":{"added":0,"items":[]},"egress":[],"metrics":{},"usage":{}},"headers":{"content-length":"<LEN>","content-type":"application/json"},"status":200}

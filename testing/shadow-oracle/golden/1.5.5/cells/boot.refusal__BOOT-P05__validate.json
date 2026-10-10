@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config.yaml: environment variable 'ORACLE_CTRL_VAR' contains a control character (U+0009) that could inject YAML structure during config interpolation; remove it\n"},"headers":{},"status":1}

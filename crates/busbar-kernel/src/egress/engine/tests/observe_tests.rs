@@ -1,0 +1,270 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE R1 SPIKE AND THE CONNECTOR-LAYER PROOFS. The design's keystone is that `Connected::extra`
+//! extras propagate through hyper_util's legacy pool onto EVERY response a pooled connection
+//! serves — the spike test here pins it with two sequential requests over ONE connection, both
+//! carrying [`PeerKeyPin`]. Beside it: SNI stays on the hostname under an address pin (and the
+//! certificate NAME check runs against the hostname, so a wrong-name cert at the pinned address
+//! is refused), the URI's port beats any port a resolver answers, and the connect deadline
+//! bounds a black-holing TLS peer that hyper's TCP-only connect timeout never would.
+//!
+//! These tests hand-build the connector stack (the stack shape is `EngineConnector` exactly) over
+//! the TLS test double (`egress::fixtures::TlsDouble`): the TLS itself is the connector's, which this
+//! crate cannot name, so what is proven here is the engine's side — the name it hands the wrap, the
+//! leaf it observes, the deadline over the whole connect. The real-TLS twins (the ClientHello's SNI
+//! on the wire, the wrong-name refusal, the observed pin of a real handshake) are the connector's
+//! `tls/engine_tests.rs`, which drives this engine over the connector's wrap.
+
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use http_body_util::BodyExt;
+
+use super::resolve::ResolveNames;
+use super::*;
+use crate::egress::fixtures::{ca_and_leaf, spawn_double, CannedResponse, DoublePeer, TlsDouble};
+
+/// Build the ENGINE'S connector shape over the TLS double: the same
+/// `SpkiObserve<ConnectDeadline<HttpsConnector<TunnelConnector>>>` stack `build_client` wires, its
+/// https arm secured by `tls` (no ALPN offer — the h1 rows).
+fn fixture_connector(
+    tls: &TlsDouble,
+    resolver: EgressResolver,
+    deadline: Duration,
+    observe: bool,
+) -> EngineConnector {
+    let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
+    http.enforce_http(false);
+    http.set_nodelay(true);
+    let http = tunnel::TunnelConnector::new(
+        http,
+        None,
+        tunnel::connects_per_shard_for_tests(),
+        tunnel::loopback_listed_for_tests(),
+    );
+    let client = tls
+        .layer()
+        .client(&crate::secure::ClientTlsSpec {
+            extra_roots: None,
+            identity: None,
+            alpn: &[],
+        })
+        .expect("the double builds");
+    let https = https::HttpsConnector::new(http, Some(client));
+    KeyPinObserve::new(ConnectDeadline::new(https, deadline), observe)
+}
+
+/// A recording far end behind the double, presenting `leaf`.
+fn presenting(leaf: &[u8], body: &str) -> crate::egress::fixtures::DoubleFixture {
+    spawn_double(
+        DoublePeer {
+            leaf: Some(leaf.to_vec()),
+            ..DoublePeer::default()
+        },
+        CannedResponse::ok(body),
+        4,
+    )
+}
+
+fn pooled_client(connector: EngineConnector) -> EngineClient {
+    // The OWNED pool over the fixture connector — the same knobs the legacy builder took here
+    // (idle cap 4, idle timeout 300s), so the spike below now pins OUR pool's extras replay.
+    EngineClient::assemble(
+        connector,
+        super::client::PoolConfig {
+            idle_cap_per_host: 4,
+            idle_timeout: Duration::from_secs(300),
+            http1_only: false,
+            h2_prior_knowledge: false,
+            h2_keepalive: None,
+            dial_bound: 4,
+        },
+    )
+}
+
+fn get(uri: String) -> http::Request<Full<Bytes>> {
+    egress_request(
+        uri.parse().expect("uri"),
+        http::HeaderMap::new(),
+        Bytes::new(),
+    )
+}
+
+/// R1 — THE MANDATORY SPIKE. Two sequential requests ride ONE pooled connection (the fixture's
+/// per-connection request count is the proof of reuse), and BOTH responses carry the connection's
+/// [`PeerKeyPin`] in their extensions, equal to a pin computed directly from the served leaf. If
+/// hyper_util ever stopped copying `Connected` extras onto pooled-reuse responses, this goes red
+/// and the design's fallback (a per-connection slot keyed through the pin pool) activates.
+#[tokio::test]
+async fn extras_propagate_through_pooled_reuse_both_responses_carry_the_peer_pin() {
+    let material = ca_and_leaf(&["pinned.test"]);
+    let fixture = presenting(&material.leaf_der, "observed");
+    let resolver = EgressResolver::Pinned {
+        host: Arc::from("pinned.test"),
+        addr: fixture.addr.ip(),
+    };
+    let client = pooled_client(fixture_connector(
+        &TlsDouble::default(),
+        resolver,
+        Duration::from_secs(10),
+        true,
+    ));
+    let expected = crate::plane_host::spki::pin(&material.leaf_der).expect("fixture leaf");
+
+    for round in 1..=2 {
+        let resp = client
+            .request(get(format!(
+                "https://pinned.test:{}/v1/x",
+                fixture.addr.port()
+            )))
+            .await
+            .expect("the observed hop answers");
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            peer_key_pin(&resp),
+            Some(expected.as_str()),
+            "request {round} must carry the connection's observed SPKI"
+        );
+        // Drain the body so the connection returns to the pool for the next round.
+        let _ = resp.into_body().collect().await.expect("body");
+    }
+
+    let records = fixture.records();
+    assert_eq!(records.len(), 1, "both requests must ride ONE connection");
+    assert_eq!(
+        records[0].requests, 2,
+        "the fixture must have served two requests on that connection"
+    );
+}
+
+/// SNI preservation under the pin: the socket goes to the pinned loopback address, but the server
+/// name the engine hands the TLS wrap — the SNI, and therefore the name the certificate is checked
+/// against — stays on the hostname. (The refusing twin, a wrong-name certificate at the pinned
+/// address refused at the handshake, is a check the connector's TLS makes on that name: the
+/// connector's `tls/engine_tests.rs` drives it over the real wrap.)
+#[tokio::test]
+async fn sni_stays_on_the_hostname_under_the_pin() {
+    let right = ca_and_leaf(&["pinned.test"]);
+    let fixture = presenting(&right.leaf_der, "named");
+    let tls = TlsDouble::default();
+    let client = pooled_client(fixture_connector(
+        &tls,
+        EgressResolver::Pinned {
+            host: Arc::from("pinned.test"),
+            addr: fixture.addr.ip(),
+        },
+        Duration::from_secs(10),
+        true,
+    ));
+    let resp = client
+        .request(get(format!(
+            "https://pinned.test:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect("the rightly-named hop answers");
+    assert_eq!(resp.status(), 200);
+    let records = fixture.records();
+    assert_eq!(records[0].sni.as_deref(), Some("pinned.test"));
+    assert!(records[0].handshake_ok);
+    assert_eq!(
+        tls.hellos()[0].server_name,
+        "pinned.test",
+        "the name handed to the wrap is the hostname, never the pinned address"
+    );
+}
+
+/// R2 — the URI's port wins over any port a resolver answers. A scripted resolver answers the
+/// fixture's ADDRESS with a garbage port; the request still lands on the URI's explicit port,
+/// because `HttpConnector` overwrites the resolved port with the destination's — the same
+/// layering that makes the pinned arm's port-0 answer correct.
+#[tokio::test]
+async fn the_uri_port_wins_over_a_garbage_resolver_port() {
+    struct GarbagePort {
+        ip: std::net::IpAddr,
+        calls: AtomicUsize,
+    }
+    impl ResolveNames for GarbagePort {
+        fn resolve(
+            &self,
+            _name: &str,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<Vec<SocketAddr>, Box<dyn std::error::Error + Send + Sync>>,
+        > {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let answer = SocketAddr::new(self.ip, 1); // a port nothing listens on
+            Box::pin(std::future::ready(Ok(vec![answer])))
+        }
+    }
+
+    let material = ca_and_leaf(&["ported.test"]);
+    let fixture = presenting(&material.leaf_der, "right port");
+    let scripted = Arc::new(GarbagePort {
+        ip: fixture.addr.ip(),
+        calls: AtomicUsize::new(0),
+    });
+    let client = pooled_client(fixture_connector(
+        &TlsDouble::default(),
+        EgressResolver::Custom(Arc::clone(&scripted) as Arc<dyn ResolveNames>),
+        Duration::from_secs(10),
+        true,
+    ));
+    let resp = client
+        .request(get(format!(
+            "https://ported.test:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect("the hop lands on the URI's port, not the resolver's");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(scripted.calls.load(Ordering::SeqCst), 1);
+}
+
+/// The connect deadline bounds the WHOLE connect: a peer that completes TCP and then black-holes
+/// the TLS handshake fails at the deadline — the case hyper's TCP-only connect timeout never
+/// catches and reqwest's `connect_timeout` always did.
+#[tokio::test]
+async fn a_black_holed_tls_handshake_fails_at_the_connect_deadline() {
+    // A listener that accepts and then says NOTHING: TCP succeeds, the handshake never answers.
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            held.push(stream); // hold the socket open, never write a byte
+        }
+    });
+
+    let client = pooled_client(fixture_connector(
+        &TlsDouble::default(),
+        EgressResolver::Pinned {
+            host: Arc::from("hole.test"),
+            addr: addr.ip(),
+        },
+        Duration::from_millis(250),
+        true,
+    ));
+    let started = Instant::now();
+    let err = client
+        .request(get(format!("https://hole.test:{}/v1/x", addr.port())))
+        .await
+        .expect_err("a black-holed handshake must fail at the deadline");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the deadline must fire promptly, not at some request-level timeout"
+    );
+    assert!(
+        err.is_connect(),
+        "a deadline on the connect is connect-class"
+    );
+    let rendered = crate::egress::with_cause(&err);
+    assert!(
+        rendered.contains("exceeded the connect deadline"),
+        "the refusal names the deadline: {rendered}"
+    );
+}

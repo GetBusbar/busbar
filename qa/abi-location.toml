@@ -1,0 +1,47 @@
+# abi-location drain-only ledger — `cargo xtask gate abi-location`.
+#
+# THE RULE (OWNER 2026-09-27): "edit one crate to add something to abi and all those plugin kinds
+# then can implement it." Every ABI SHAPE — a #[repr(C)] struct/enum/union, an extern "C" slot
+# body or fn-pointer type, an ABI version constant — is defined under
+# crates/busbar-contract/src/abi/ and nowhere else. Test doubles may live under tests/, benches/ or
+# #[cfg(test)] only.
+#
+# ARMED AT TODAY'S COUNT (Law 9, TODO rule 9.4): one [[offender]] row per shape the gate measured
+# outside abi/ on the day it landed. These rows ARE the work list for the one-ABI kernel-side slot.
+#
+#   * a shape with no row is a NEW offender  -> RED on abi-location:{repr-c,extern-fn,version-const}.
+#     Define it in abi/; never add a row here.
+#   * a row with no shape is STALE           -> RED on abi-location:ledger. A drain strikes its row
+#     in the SAME commit, so this file only ever shrinks.
+#
+# AN IMPLEMENTATION IS NOT A SHAPE: an extern "C" fn whose parameter and return
+# types equal one of the extern "C" fn types written under abi/ (Op, DoorFn, WakeFn, the hot lane's
+# slot types, ...) implements that shape and is not counted. Drained on that rule: the 47 kernel
+# host slot bodies, 10 plugin-loader host slots and the 9 example-plane slots.
+#
+# Key = (file, shape, item), never a line number. shape = repr-c | extern-fn | fn-ptr | version-const.
+# A fn-pointer type has no name, so its item is its ordinal in the file (fn-ptr-1, ...).
+# An external plugin checkout's row carries repo = "<plugins.yaml repo>" and is checked only when a
+# local clone of that repo exists under [external].root.
+
+[external]
+# Where sibling plugin checkouts are looked for, relative to the workspace root (or absolute).
+root = ".."
+
+# An extern "C" fn that is NOT a plugin/host slot. Each needs a why; a stale one is RED.
+[[not_abi]]
+file = "crates/busbar-kernel/src/timing/mod.rs"
+item = "timing_atexit"
+why = "the atexit(3) callback of the timing dump: libc calls it at process exit; no plugin or host table carries it"
+
+# ── THE CONTRACT CRATE, OUTSIDE abi/ — store/transport contracts that must move under abi/ (1)
+[[offender]]
+file = "crates/busbar-contract/src/transport/registry.rs"
+shape = "version-const"
+item = "TRANSPORT_ABI"
+
+# ── THE PLUGIN LOADER — a slot fn-pointer type (1)
+[[offender]]
+file = "crates/plugin-loader/src/plane.rs"
+shape = "fn-ptr"
+item = "fn-ptr-1"

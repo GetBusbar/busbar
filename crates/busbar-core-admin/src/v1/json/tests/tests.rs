@@ -1,0 +1,671 @@
+use super::*;
+
+/// The OpenAPI 3 Operation Object's status-keyed field, spelled once. It is the OpenAPI
+/// specification's own key, not a busbar or instance word, and every read of an operation's
+/// documented statuses below goes through it.
+///
+/// Read from `tests/fixtures/openapi_operation_statuses_key.txt`: the key is the specification's
+/// text, so it is golden input data the test loads, not a literal spelled here.
+#[cfg(feature = "openapi-schema")]
+const OAS_OPERATION_STATUSES: &str =
+    include_str!("../../../../tests/fixtures/openapi_operation_statuses_key.txt").trim_ascii();
+
+/// Collect an axum Response into (status, content-type, parsed JSON body) for the wire-helper
+/// micro-tests below.
+async fn parts(resp: Response) -> (StatusCode, String, serde_json::Value) {
+    let status = resp.status();
+    let ct = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    use http_body_util::BodyExt;
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body = serde_json::from_slice(&bytes).expect("body is JSON");
+    (status, ct, body)
+}
+
+/// The error envelope projection is `{"error":{"code","message"}}` with the error's status — the
+/// shape v1 tooling parses — served as application/json.
+#[tokio::test]
+async fn err_json_uses_stable_envelope() {
+    let (status, ct, body) = parts(err_json(&AdminError::not_found("hook"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(ct, busbar_kernel::proxy::APPLICATION_JSON);
+    assert_eq!(body["error"]["code"], "not_found");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty()),
+        "message is human text, never empty"
+    );
+    assert_eq!(
+        body["error"].as_object().unwrap().len(),
+        2,
+        "the envelope is exactly code+message (additive changes go OUTSIDE error)"
+    );
+}
+
+/// `ok_json` serializes the view verbatim with the GIVEN status and application/json.
+#[tokio::test]
+async fn ok_json_serializes_view_with_given_status() {
+    #[derive(Serialize)]
+    struct View {
+        name: &'static str,
+        n: u32,
+    }
+    let (status, ct, body) = parts(ok_json(StatusCode::CREATED, &View { name: "x", n: 7 })).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(ct, busbar_kernel::proxy::APPLICATION_JSON);
+    assert_eq!(body, json!({"name": "x", "n": 7}));
+}
+
+/// `respond` — the single seam every v1 handler funnels through — maps Ok to the given status
+/// and Err to the error's own status + envelope (the Ok-status never leaks onto an error).
+#[tokio::test]
+async fn respond_maps_ok_and_err() {
+    let ok: Result<serde_json::Value, AdminError> = Ok(json!({"ok": true}));
+    let (status, _, body) = parts(respond(StatusCode::OK, ok)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], true);
+
+    let err: Result<serde_json::Value, AdminError> = Err(AdminError::RateLimited);
+    let (status, _, body) = parts(respond(StatusCode::OK, err)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "rate_limited");
+}
+
+/// Structural lock on the discovery doc: OpenAPI 3.1, an info.version that matches the crate,
+/// and every path under the ONE contract prefix (whose literal value is pinned by the golden
+/// test in contract.rs) — the doc never mixes prefixes.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_doc_is_31_and_v1_prefixed() {
+    let doc = openapi_doc_seamed();
+    assert!(
+        doc["openapi"].as_str().unwrap().starts_with("3.1"),
+        "discovery doc is OpenAPI 3.1"
+    );
+    assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
+    let prefix = format!("{}/", crate::v1::contract::ADMIN_PREFIX);
+    for path in doc["paths"].as_object().unwrap().keys() {
+        assert!(
+            path.starts_with(&prefix),
+            "{path} escaped the frozen {prefix} prefix"
+        );
+    }
+}
+
+/// Release tooling, not a behavioral assertion. Publishing the OpenAPI schema is a release chore —
+/// an operator gets the doc from the live `GET /openapi.json` endpoint or the release
+/// asset, so it earns no user-facing CLI surface. This test is the build-time handle CI uses to
+/// capture the artifact straight from the same `openapi_doc()` the gateway serves, guaranteeing the
+/// published file matches the shipped binary. A normal `cargo test` (no env var) just re-asserts
+/// the doc is well-formed; the release workflow sets `BUSBAR_EMIT_OPENAPI=<path>` to also write the
+/// pretty-printed document there, then uploads it to the GitHub Release.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn emit_openapi_artifact() {
+    let doc = openapi_doc_seamed();
+    assert!(
+        doc["openapi"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("3.1"),
+        "OpenAPI document must be 3.1"
+    );
+    if let Ok(path) = std::env::var("BUSBAR_EMIT_OPENAPI") {
+        let json = serde_json::to_string_pretty(&doc).expect("serialize OpenAPI document");
+        std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {path}: {e}"));
+    }
+}
+
+/// CONTRACT LOCK: every openapi path+method is annotated with `x-busbar-required-scope`, and
+/// the annotation matches the enforced `required_scope` matrix exactly (one source of truth —
+/// this test guards against a future hand-written path entry forgetting or contradicting it).
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_paths_annotate_required_scope() {
+    // Re-derives `required_scope`'s decision INDEPENDENTLY (not by calling it) so a change to the
+    // production matrix moves only the annotation side, not this expectation — `required_scope` is
+    // the single producer that stamps BOTH the OpenAPI annotation (`handlers.rs`'s stamping loop)
+    // and enforces the auth middleware, so comparing the annotation against a call to that same
+    // function is a tautology: editing the matrix moves both sides together and can never fail.
+    fn expected_scope(method: &str, path: &str) -> &'static str {
+        use crate::v1::contract::{ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
+        if method == "get" || method == "head" {
+            return "read-only";
+        }
+        let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
+        if rel == PATH_CONFIG_VALIDATE || rel == PATH_PLUGINS_INSPECT {
+            return "read-only";
+        }
+        // 1.5.2 scope collapse: every other mutation is full-only.
+        "full"
+    }
+
+    let doc = openapi_doc_seamed();
+    let paths = doc["paths"].as_object().expect("paths object");
+    assert!(!paths.is_empty());
+    let mut checked = 0usize;
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("methods") {
+            match method.as_str() {
+                "get" | "post" | "put" | "patch" | "delete" => {}
+                // Path-item `x-*` specification extensions (e.g. `x-busbar-error-envelope`) are
+                // valid OpenAPI and are not operations — they carry no scope annotation.
+                ext if ext.starts_with("x-") => continue,
+                other => panic!("unexpected method {other} on {path}"),
+            };
+            let annotated = op["x-busbar-required-scope"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{method} {path} missing scope annotation"));
+            let golden = expected_scope(method, path);
+            assert_eq!(
+                annotated, golden,
+                "{method} {path} annotation drifted from the independently-derived golden scope"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no operations were checked");
+}
+
+/// The document must never contain a boolean `items`
+/// sub-schema (`"items": true`/`"items": false`) — `kin-openapi` (the parser under `oapi-codegen`,
+/// which every published SDK generates through) cannot represent a JSON-Schema-2020-12 boolean
+/// sub-schema at all and aborts the parse. `HookStatusView.metrics` was the one offender
+/// (`serde_json::Value`'s blanket schemars impl renders as boolean `true`, which is fine as a bare
+/// schema but fatal nested under `items`); it now overrides to `{}` via `schema_with`. This test is
+/// a structural sweep, not a one-field regression check, so any FUTURE `Vec<serde_json::Value>` (or
+/// equivalent) added anywhere in the doc is caught the same way. `additionalProperties: true/false`
+/// is a different, non-fatal position and is deliberately not checked here.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_never_emits_a_boolean_items_subschema() {
+    fn walk(v: &serde_json::Value, path: &str, offenders: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(items) = map.get("items") {
+                    if items.is_boolean() {
+                        offenders.push(format!("{path}/items = {items}"));
+                    }
+                }
+                for (k, vv) in map {
+                    walk(vv, &format!("{path}/{k}"), offenders);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for (i, vv) in arr.iter().enumerate() {
+                    walk(vv, &format!("{path}[{i}]"), offenders);
+                }
+            }
+            _ => {}
+        }
+    }
+    let doc = openapi_doc_seamed();
+    let mut offenders = Vec::new();
+    walk(&doc, "", &mut offenders);
+    assert!(
+        offenders.is_empty(),
+        "boolean `items` sub-schema(s) found — fatal to kin-openapi/oapi-codegen: {offenders:?}"
+    );
+}
+
+/// CONTRACT LOCK: the openapi Error-schema `code` enum must EXACTLY match the frozen `AdminError`
+/// codes — no drift between the discovery doc and the taxonomy tooling actually receives. Every
+/// variant's `code()` must appear in the enum, and the enum must list nothing else.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_error_enum_matches_admin_error_codes() {
+    use std::collections::BTreeSet;
+    let doc = openapi_doc_seamed();
+    let enum_codes: BTreeSet<String> = doc["components"]["schemas"]["Error"]["properties"]["error"]
+        ["properties"]["code"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    // The exhaustive set of AdminError codes — kept in lock-step with `AdminError::code`.
+    let actual_codes: BTreeSet<String> = [
+        AdminError::not_found(""),
+        AdminError::Unauthorized,
+        AdminError::Forbidden {
+            needed: crate::v1::contract::Scope::Full,
+        },
+        AdminError::MethodNotAllowed,
+        AdminError::Validation(String::new()),
+        AdminError::VersionConflict(String::new()),
+        AdminError::Conflict(String::new()),
+        AdminError::RateLimited,
+        AdminError::Internal,
+        AdminError::UnpricedClass {
+            lane: String::new(),
+            class: None,
+        },
+    ]
+    .iter()
+    .map(|e| e.code().to_string())
+    // The node's administrative loop answers `503 unavailable` (the root's `answer_for` /
+    // `unavailable_answer`) on every operation it walks, in the same envelope.
+    .chain(std::iter::once("unavailable".to_string()))
+    .collect();
+    assert_eq!(
+        enum_codes, actual_codes,
+        "openapi error-code enum drifted from AdminError::code"
+    );
+}
+
+/// THE LOOP'S `503 unavailable` IS DOCUMENTED WHEREVER THE LOOP CAN ANSWER IT (architect ruling
+/// 2026-09-24). Every operation the closed table declares is walked through the node's
+/// administrative loop, which answers `503` with code `unavailable` when it cannot take the unit or
+/// cannot record what the operation would do — legacy operations included. So each of them
+/// documents a `503` in the one `Error` envelope, and the enum names the code. An operation the
+/// loop never walks (a plane's section or trust verb) documents none.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
+    let doc = openapi_doc_seamed();
+    let codes =
+        &doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]["enum"];
+    assert!(
+        codes
+            .as_array()
+            .is_some_and(|c| c.iter().any(|v| v == "unavailable")),
+        "the Error code enum must name `unavailable`: {codes}"
+    );
+    let mut walked = 0usize;
+    for (path, item) in doc["paths"].as_object().expect("paths") {
+        for (method, op) in item.as_object().expect("path item") {
+            if method.starts_with("x-") {
+                continue;
+            }
+            let loop_walks =
+                crate::admin_codec::verbs::resolve(&method.to_ascii_uppercase(), path).is_some();
+            let documented = &op[OAS_OPERATION_STATUSES]["503"];
+            if loop_walks {
+                walked += 1;
+                assert_eq!(
+                    documented["content"]["application/json"]["schema"]["$ref"],
+                    "#/components/schemas/Error",
+                    "{method} {path}: the loop can answer `503 unavailable`, so the operation \
+                     documents it in the one Error envelope"
+                );
+            } else {
+                assert!(
+                    documented.is_null(),
+                    "{method} {path} is not walked through the loop but documents a 503"
+                );
+            }
+        }
+    }
+    assert!(
+        walked >= 66,
+        "only {walked} loop-walked operations were checked"
+    );
+}
+
+/// The escalation 403 fires on PUT `/hooks/{name}` and PATCH
+/// `/hooks/{name}/settings` (a `hooks-register` principal touching a content-seeing / global
+/// hook), exactly as it does on POST `/hooks` — so all three must DOCUMENT the 403.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_hook_escalation_endpoints_document_403() {
+    let doc = openapi_doc_seamed();
+    let cases = [
+        ("/api/v1/admin/hooks", "post"),
+        ("/api/v1/admin/hooks/{name}", "put"),
+        ("/api/v1/admin/hooks/{name}", "delete"),
+        ("/api/v1/admin/hooks/{name}/settings", "patch"),
+    ];
+    for (path, method) in cases {
+        assert!(
+            doc["paths"][path][method][OAS_OPERATION_STATUSES]["403"].is_object(),
+            "{method} {path} can 403 on escalation but its openapi omits it"
+        );
+    }
+}
+
+/// The committed static OpenAPI document the LIVE handler serves (via `include_str!`). The release
+/// binary can't regenerate it (schemars is CI-only), so this path is what every build ships.
+#[cfg(feature = "openapi-schema")]
+const COMMITTED_OPENAPI_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/src/v1/json/openapi.json");
+
+/// SEAM PRECONDITION for every openapi test: `openapi_doc()` reads the process-global plane registry,
+/// which is populated by `crate::ensure_seam()` (the linked plane decls that contribute the
+/// `tools:`/`agents:` admin trust-verb operations). Only `openapi_json_matches_committed_file` used to
+/// install it, so any OTHER openapi test that read the document before that test's `ensure_seam()`
+/// happened to run first saw a PLANE-LESS document (5 operations short) — deterministic single-threaded
+/// (definition order), but a race under `--test-threads > 1`. `ensure_seam()` is `Once`-guarded and
+/// idempotent, so routing every read through this helper makes the document plane-complete regardless
+/// of harness thread count or test order. (Test-harness setup, not a production ordering bug — the
+/// composition root installs the planes before the binary ever serves the document.)
+#[cfg(feature = "openapi-schema")]
+fn openapi_doc_seamed() -> serde_json::Value {
+    crate::ensure_seam();
+    openapi_doc()
+}
+
+/// The string the live handler serves (the inflate of the embedded gz) must be BYTE-IDENTICAL to
+/// the committed file — i.e. `include_bytes!` compiled in a gz of exactly the bytes the drift test
+/// checks. (Guards a stale build-cache embed AND a hand-edited/stale `.gz` twin.)
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn served_openapi_equals_committed_file() {
+    let committed =
+        std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi");
+    assert_eq!(super::handlers::openapi_json(), committed);
+}
+
+/// THE PLANES' COMPONENT SCHEMAS ARE THE COMMITTED ONES (ARCHITECT Q2): every component schema a
+/// plane's `openapi_schemas` registers equals the committed document's entry of that name. A linked
+/// plane's come from schemars; a door plane's are the data its admin OpenAPI blob states under
+/// `components.schemas`, which the kernel's fold inserts as written, so this is the drift test that
+/// holds a door's stated schemas to the committed openapi.json. Not vacuous: some plane registers one.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_plane_component_schemas_are_the_committed_ones() {
+    crate::ensure_seam();
+    let committed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi"),
+    )
+    .expect("committed openapi parses");
+    let committed = committed["components"]["schemas"]
+        .as_object()
+        .expect("committed component schemas");
+    // The two generators `openapi_doc` hands every contributor, configured as it configures them.
+    let generator = |serialize: bool| {
+        let settings = schemars::generate::SchemaSettings::draft2020_12().with(|s| {
+            s.definitions_path = "/components/schemas".into();
+            s.meta_schema = None;
+        });
+        if serialize {
+            settings.for_serialize().into_generator()
+        } else {
+            settings.for_deserialize().into_generator()
+        }
+    };
+    let mut seen = 0usize;
+    for decl in busbar_kernel::plane::registry::plane_decls() {
+        let Some(schemas) = decl.openapi_schemas else {
+            continue;
+        };
+        let (mut gen, mut req_gen) = (generator(true), generator(false));
+        let mut paths = match decl.openapi.map(|openapi| openapi()) {
+            Some(serde_json::Value::Object(paths)) => paths,
+            _ => serde_json::Map::new(),
+        };
+        schemas(&mut gen, &mut req_gen, &mut paths);
+        for (name, schema) in gen.definitions().iter().chain(req_gen.definitions()) {
+            assert_eq!(
+                committed.get(name),
+                Some(schema),
+                "plane `{}` registers component schema `{name}` unlike the committed openapi.json",
+                decl.key
+            );
+            seen += 1;
+        }
+    }
+    assert!(seen > 0, "no plane registered a component schema");
+}
+
+/// `POST /restart`'s handler explicitly treats an absent body as `RestartReq::default()`
+/// (`handlers.rs`'s own doc comment on `restart()` — "Absent is the same as `{}`"), but `body_raw!`
+/// hardcodes `"required": true` on every attached request body, so the openapi contract asserts the
+/// no-body call (the common one — an operator with a supervisor never needs `confirm`) is invalid. A
+/// generated client honouring `required: true` would refuse to emit the call the server supports.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn restart_request_body_is_documented_optional() {
+    let doc = openapi_doc_seamed();
+    let required = &doc["paths"]["/api/v1/admin/restart"]["post"]["requestBody"]["required"];
+    assert_eq!(
+        required.as_bool(),
+        Some(false),
+        "POST /restart's body must be documented optional, matching the handler's \
+         absent-body-is-default() behavior; got: {required:?}"
+    );
+}
+
+/// COVERAGE LOCK: 100% of operations carry a typed success-response BODY schema. Every operation
+/// (each method under each path, excluding `x-*` path-item extensions) must have — for its success
+/// status (204 No Content excepted — it has no body) — a `content.application/json.schema` that is a
+/// `$ref` into `components.schemas`, and every referenced component must be defined. This is the
+/// machine proof that no operation regressed to a bodyless `{"description":"OK"}`.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_every_operation_has_a_typed_response_schema() {
+    let doc = openapi_doc_seamed();
+    let schemas = doc["components"]["schemas"].as_object().expect("schemas");
+    let paths = doc["paths"].as_object().expect("paths");
+    let mut op_count = 0usize;
+    let mut with_body = 0usize;
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("methods") {
+            if method.starts_with("x-") {
+                continue;
+            }
+            op_count += 1;
+            let by_status = op[OAS_OPERATION_STATUSES]
+                .as_object()
+                .expect("documented statuses");
+            // The success response: the single 2xx entry (200/201). 204 (No Content) has no body.
+            let success = by_status
+                .keys()
+                .find(|s| s.starts_with('2') && s.as_str() != "204");
+            let Some(status) = success else {
+                // A 204-only op (DELETE) legitimately has no success body.
+                assert!(
+                    by_status.contains_key("204"),
+                    "{method} {path} has no 2xx success response"
+                );
+                continue;
+            };
+            with_body += 1;
+            let schema = &by_status[status]["content"]["application/json"]["schema"];
+            // The discovery endpoint (`GET /openapi.json`) returns an OpenAPI document — described by
+            // an inline object schema, not a component `$ref` (no named struct, and modeling the
+            // OpenAPI meta-schema would be circular). Every OTHER operation must be a `$ref`.
+            if path.ends_with("/openapi.json") {
+                assert_eq!(
+                    schema["type"], "object",
+                    "{method} {path} must at least declare an object body"
+                );
+                continue;
+            }
+            let reference = schema["$ref"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{method} {path} {status} has no $ref response schema"));
+            let name = reference
+                .strip_prefix("#/components/schemas/")
+                .unwrap_or_else(|| {
+                    panic!("{method} {path} $ref is not a component ref: {reference}")
+                });
+            assert!(
+                schemas.contains_key(name),
+                "{method} {path} references undefined schema {name}"
+            );
+        }
+    }
+    // Sanity: the surface is ~34 operations; every non-204 op carries a body.
+    assert!(op_count >= 30, "unexpectedly few operations: {op_count}");
+    assert!(
+        with_body >= 28,
+        "too few operations with a response body: {with_body}/{op_count}"
+    );
+}
+
+/// EXHAUSTIVENESS BRIDGE: every `AdminError` variant is classified — either as a
+/// per-endpoint-declarable `ErrKind` or as ALGORITHMIC (`None`, stamped on every operation). The
+/// bridge itself is `err_kind_of`'s `match`, which will not COMPILE once a new variant exists; this
+/// test locks the other half: that the declarable kinds round-trip to the same frozen code + status
+/// the taxonomy already froze, and that the algorithmic bucket is exactly the universal errors.
+///
+/// Together with the golden, this subsumes `openapi_error_enum_matches_admin_error_codes`: the code
+/// enum can no longer be right while a per-endpoint response set is wrong.
+#[test]
+fn err_kind_bridges_every_admin_error_variant() {
+    use crate::v1::contract::taxonomy::{err_kind_of, ErrKind};
+    let declarable = [
+        (AdminError::not_found(""), ErrKind::NotFound),
+        (AdminError::Validation(String::new()), ErrKind::Validation),
+        (
+            AdminError::VersionConflict(String::new()),
+            ErrKind::VersionConflict,
+        ),
+        (AdminError::Conflict(String::new()), ErrKind::Conflict),
+        (
+            AdminError::Forbidden {
+                needed: crate::v1::contract::Scope::Full,
+            },
+            ErrKind::Forbidden,
+        ),
+    ];
+    for (e, kind) in declarable {
+        assert_eq!(err_kind_of(&e), Some(kind), "{e:?} lost its ErrKind");
+        assert_eq!(
+            kind.code(),
+            e.code(),
+            "{kind:?} code drifted from AdminError"
+        );
+        assert_eq!(
+            kind.status(),
+            e.http_status(),
+            "{kind:?} status drifted from AdminError"
+        );
+    }
+    // The universal half: emitted for EVERY operation, so never declarable per endpoint.
+    for e in [
+        AdminError::Unauthorized,
+        AdminError::MethodNotAllowed,
+        AdminError::RateLimited,
+        AdminError::Internal,
+    ] {
+        assert_eq!(
+            err_kind_of(&e),
+            None,
+            "{e:?} is algorithmic — declaring it per endpoint would be noise AND a drift vector"
+        );
+    }
+}
+
+/// TOTALITY of the declaration itself: every entry resolves to a real 4xx with a non-empty phrase,
+/// and no operation names the same condition twice (which would render a duplicated clause). Cheap,
+/// always-on, and it makes a typo'd table entry impossible rather than merely unlikely.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn declared_errors_is_total_and_well_formed() {
+    use crate::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
+    let doc = openapi_doc_seamed();
+    let prefix = crate::v1::contract::ADMIN_PREFIX;
+    for (path, methods) in doc["paths"].as_object().expect("paths") {
+        let rel = path.strip_prefix(prefix).unwrap_or(path);
+        for (key, op) in methods.as_object().expect("methods") {
+            let Some(method) = MethodTag::from_op_key(key) else {
+                continue;
+            };
+            let declared = declared_errors(method, rel);
+            let mut seen = std::collections::BTreeSet::new();
+            for de in declared {
+                assert!(
+                    (400..500).contains(&de.kind.status()),
+                    "{key} {rel} declares {:?}, whose status {} is not a 4xx — only client-visible \
+                     failures are per-endpoint declarable",
+                    de.kind,
+                    de.kind.status()
+                );
+                assert!(
+                    !de.cond.phrase().is_empty(),
+                    "{key} {rel}: {:?} has no phrase",
+                    de.cond
+                );
+                assert!(
+                    seen.insert((de.kind, de.cond)),
+                    "{key} {rel} declares {:?}/{:?} twice",
+                    de.kind,
+                    de.cond
+                );
+            }
+            // The document IS the projection: every status the declaration produces is present in
+            // the generated operation, with exactly the projected description.
+            let by_status = op[OAS_OPERATION_STATUSES]
+                .as_object()
+                .expect("documented statuses");
+            for (status, description) in declared_responses(method, rel) {
+                assert_eq!(
+                    by_status[&status]["description"].as_str(),
+                    Some(description.as_str()),
+                    "{key} {rel} {status} is not the projection of its declaration — a response \
+                     body was hand-written instead of projected"
+                );
+            }
+        }
+    }
+}
+
+/// An operation summary must not advertise a body field the request schema forbids. The keys PATCH
+/// summary listed `allowed_pools` and `labels`, which are mint-only — `UpdateKeyReq` is
+/// `deny_unknown_fields` over `{enabled, group}`, so a client following the document got a 400.
+/// Now that the operation also publishes a schema, the two would contradict each other in one file.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
+    let doc = openapi_doc_seamed();
+    let schemas = doc["components"]["schemas"].as_object().expect("schemas");
+    let paths = doc["paths"].as_object().expect("paths");
+
+    // Every field name declared by any closed request schema. A name in this set means something
+    // specific to a client, so naming it in a summary is a promise the schema must keep.
+    let mut known: Vec<String> = Vec::new();
+    for schema in schemas.values() {
+        if schema["additionalProperties"] != serde_json::Value::Bool(false) {
+            continue;
+        }
+        if let Some(props) = schema["properties"].as_object() {
+            known.extend(props.keys().cloned());
+        }
+    }
+    known.sort();
+    known.dedup();
+
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("methods") {
+            if method.starts_with("x-") {
+                continue;
+            }
+            let Some(reference) = op["requestBody"]["content"]["application/json"]["schema"]
+                ["$ref"]
+                .as_str()
+                .and_then(|r| r.strip_prefix("#/components/schemas/"))
+            else {
+                continue;
+            };
+            let schema = &schemas[reference];
+            if schema["additionalProperties"] != serde_json::Value::Bool(false) {
+                continue;
+            }
+            let declared: Vec<&str> = schema["properties"]
+                .as_object()
+                .map(|p| p.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            let summary = op["summary"].as_str().unwrap_or("");
+            for name in &known {
+                if declared.contains(&name.as_str()) {
+                    continue;
+                }
+                // Only a word-boundary hit counts, so a summary mentioning `group` does not trip on
+                // a schema that declares `groups`.
+                let named = summary
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| w == name);
+                assert!(
+                    !named,
+                    "{method} {path} summary advertises `{name}`, which {reference} forbids: {summary}"
+                );
+            }
+        }
+    }
+}

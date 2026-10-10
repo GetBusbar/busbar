@@ -1,0 +1,235 @@
+# one-memory-abi: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).
+# Plugins speak the memory ABI only: one exported symbol, no COLD/JSON lane, no
+# blocking thread in the loader or dispatcher, extern "C" slots. Each row is one
+# the tree carries today. Strike a row in the commit that drains it; never add one.
+# Regenerate with `cargo xtask gate one-memory-abi --write`.
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/cold/mod.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/host/conn/mod.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/hot/decl.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/hot/host.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/hot/mod.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/hot/pod.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/hot/services.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/hot/transport.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/hot/workitem.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/mod.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/audit/auditlog.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/calllog.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/plane_host/breaker.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/plane_host/dispatch.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/plane_host/egress.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/plane_host/guard.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/plane_host/identity_admit.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/plane_host/pipe.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/plane_host/trust.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/busbar-kernel/src/plane_host/vtable.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/plugin-loader/src/carrier.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/plugin-loader/src/plane.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:c-unwind"
+file = "crates/plugin-loader/src/transport.rs"
+item = "extern 'C-unwind'"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-contract/src/abi/sdk/boundary.rs"
+item = "abi::cold"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "ColdEntry"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "abi::cold"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_call"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/plugin-loader/src/auth.rs"
+item = "abi::cold"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/plugin-loader/src/hostlog.rs"
+item = "abi::cold"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/plugin-loader/src/lib.rs"
+item = "ColdEntry"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/plugin-loader/src/lib.rs"
+item = "abi::cold"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/plugin-loader/src/registry.rs"
+item = "ColdEntry"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/plugin-loader/src/registry.rs"
+item = "abi::cold"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_abi"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_call"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_close"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_free"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_open"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_plane_arm"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_plane_decl"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_plugin_kind"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_set_log_sink"
+
+[[finding]]
+rule = "one-memory-abi:exported-symbol"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "busbar_transport_decl"

@@ -1,0 +1,745 @@
+//! THE ONE SOURCE SCANNER. Comment stripping and `#[cfg(test)]`-scope stripping, moved out of
+//! `denylist.rs` unchanged so every text gate points at one implementation instead of the seven
+//! copies of `TEST_SCOPE_AWK` the shell carried (`structure-lint.sh`, `plane-purity-lint.sh`,
+//! `blocking-ffi-lint.sh`, `settings-leak-lint.sh`, `response-header-lint.sh`, `tracing-lint.sh`,
+//! `kernel-token-wire-purity-lint.sh`).
+//!
+//! It is a single point of failure by design — which is why it carries its own cases in
+//! `xtask/tests/infra.rs` and why the denylist's own self-test, which was written against this
+//! code when it lived in `denylist.rs`, still drives it byte-for-byte.
+
+/// Comments stripped (line + block, string contents preserved), `#[cfg(test)] mod { .. }` bodies
+/// dropped, one production-code line per output entry, 1-based line numbers.
+pub fn production_lines(src: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut in_block_comment = false;
+    let mut pending_test_attr = false;
+    let mut test_mod_depth: Option<i32> = None;
+    let mut depth: i32 = 0;
+    let mut lex = LexState::default();
+
+    for (i, raw_line) in src.lines().enumerate() {
+        let stripped = strip_comment_line(raw_line, &mut in_block_comment);
+        let trimmed = stripped.trim();
+        // THE BRACES ARE COUNTED HERE AND NOWHERE ELSE. `stripped` still carries literal contents
+        // by design (a needle inside a `"…"` is still the file naming it), so the depth arithmetic
+        // reads the blanked copy instead: `out.push('{')` in a test module used to leave the depth
+        // permanently one too high and drop every production line after it.
+        let counted = blank_code(&stripped, &mut lex);
+
+        let this_line_is_test = test_mod_depth.is_some();
+
+        if !this_line_is_test && trimmed.contains("#[cfg(test)]") {
+            pending_test_attr = true;
+        } else if !this_line_is_test && !trimmed.is_empty() && !trimmed.starts_with('#') {
+            // an attribute only pends across attribute/blank lines; anything else clears it
+            if !trimmed.contains("mod ") {
+                pending_test_attr = false;
+            }
+        }
+
+        if !this_line_is_test
+            && pending_test_attr
+            && trimmed.contains("mod ")
+            && counted.contains('{')
+        {
+            test_mod_depth = Some(depth);
+            pending_test_attr = false;
+        }
+
+        let opens = counted.matches('{').count() as i32;
+        let closes = counted.matches('}').count() as i32;
+        depth += opens - closes;
+
+        let was_test = test_mod_depth.is_some();
+        if let Some(d) = test_mod_depth {
+            if depth <= d && (opens > 0 || closes > 0) {
+                test_mod_depth = None;
+            }
+        }
+
+        if !was_test && !this_line_is_test {
+            out.push((i + 1, stripped));
+        }
+    }
+    out
+}
+
+/// One line as `TEST_SCOPE_AWK` saw it: the raw text, the CODE portion, and the two answers the
+/// structure-lint scanners branch on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeLine {
+    /// 1-based, per file — awk's `FNR`, not `NR`.
+    pub no: usize,
+    pub raw: String,
+    /// Empty for a whole-line comment; a trailing `// …` stripped only when the line holds no
+    /// string literal, so a `//` inside a `"…"` cannot eat the line's braces.
+    pub code: String,
+    /// [`code`](Self::code) with every literal and comment body blanked, carried across lines.
+    /// THE ONLY FIELD A DELIMITER COUNT MAY READ: `code` deliberately keeps literal contents so a
+    /// rule can search them, and `rel.contains('{')` in production source used to be counted as an
+    /// open brace off exactly that.
+    pub counted: String,
+    pub is_comment: bool,
+    pub gated: bool,
+}
+
+/// `structure-lint.sh`'s `TEST_SCOPE_AWK`, THE ONE ANSWER TO "IS THIS LINE TEST CODE?", ported line
+/// for line.
+///
+/// It is a second entry point beside [`production_lines`] rather than a replacement for it, and the
+/// difference is deliberate. [`production_lines`] answers "give me the production code" and hands
+/// back the STRIPPED text; the structure-lint scanners match their patterns against the RAW line
+/// (awk's `$0`) and need `is_comment` and `gated` as separate facts — the inline-test rule's entire
+/// trigger is the EDGE from ungated to gated, which a filtered list cannot express. Porting the
+/// answers rather than approximating them is what lets the parity run compare hit sets instead of
+/// hoping two state machines agree.
+///
+/// The two bugs the shell's own self-test proved exploitable are fixed here for the same reasons:
+/// the attribute is read only off a line that IS the attribute (a doc comment MENTIONING
+/// `#[cfg(test)]` does not arm it), and it is resolved against the item it applies to — brace-less
+/// items included — with a bounded search that fails CLOSED rather than shadowing the rest of a
+/// file it does not model.
+pub fn test_scope(src: &str) -> Vec<ScopeLine> {
+    let mut out = Vec::new();
+    let mut in_test = false;
+    let mut pending = false;
+    let mut pend_age = 0u32;
+    let mut depth: i32 = 0;
+    let mut lex = LexState::default();
+
+    for (i, raw) in src.lines().enumerate() {
+        let is_comment = raw.trim_start().starts_with("//");
+        // Read off the RAW line, so the blanker sees the comment markers and the multi-line
+        // literals. The blanker is also the ONE answer to "where does this line's comment start" —
+        // it is the only reader in the crate that knows a `//` inside a `"…"` is not one.
+        let (counted, comment_at) = blank_code_marking(raw, &mut lex);
+        let code = code_of(raw, comment_at);
+        let mut gated = false;
+
+        if in_test {
+            gated = true;
+            depth += braces(&counted);
+            if depth <= 0 {
+                in_test = false;
+                depth = 0;
+            }
+        } else if pending {
+            gated = true;
+            let t = code.trim_start();
+            if code.trim().is_empty() || t.starts_with("#[") {
+                pend_age += 1;
+            } else if counted.contains('{') {
+                pending = false;
+                depth = braces(&counted);
+                if depth > 0 {
+                    in_test = true;
+                } else {
+                    depth = 0;
+                }
+            } else if code.trim_end().ends_with(';') {
+                // A BRACE-LESS item: gates this line and no more.
+                pending = false;
+            } else {
+                pend_age += 1;
+            }
+            // An attribute never applies across arbitrary distance. Unresolved after a handful of
+            // lines, the file is shaped in a way this scanner does not model: drop the arm and go
+            // back to scanning production rather than shadowing everything after it.
+            if pending && pend_age > 10 {
+                pending = false;
+                pend_age = 0;
+            }
+        }
+
+        if !in_test && !pending && arms_test_cfg(&code) {
+            gated = true;
+            let rest = strip_cfg_attr(&code);
+            // The attribute holds no literal, so the blanked line strips to the same remainder —
+            // and that remainder is the one the braces are counted off.
+            let rest_counted = strip_cfg_attr(&counted);
+            if rest.trim().is_empty() {
+                pending = true;
+                pend_age = 0;
+            } else if rest_counted.contains('{') {
+                depth = braces(&rest_counted);
+                if depth > 0 {
+                    in_test = true;
+                } else {
+                    depth = 0;
+                }
+            } else if rest.trim_end().ends_with(';') {
+                // `#[cfg(test)] use x;` — gates its own line and stops.
+            } else {
+                pending = true;
+                pend_age = 0;
+            }
+        }
+
+        out.push(ScopeLine {
+            no: i + 1,
+            raw: raw.to_string(),
+            code,
+            counted,
+            is_comment,
+            gated,
+        });
+    }
+    out
+}
+
+/// The code content of a line: empty for a whole-line comment, and with the trailing `//` comment
+/// stripped — at the position [`blank_code_marking`] found it, which is the only reader that can
+/// tell a comment marker from a `"//"` inside a literal.
+///
+/// It used to give up and hand back the WHOLE line whenever the line held a `"` anywhere, so
+/// `let s = "x"; // and then }` kept its trailer, and every rule reading `code` read a comment as
+/// code: the brace above closed a scope that was never opened, a text ban matched prose, and a
+/// `#[cfg(test)]` written in a trailing comment armed the test-scope machine. The literal was never
+/// the problem — not knowing where the literal ENDED was.
+fn code_of(line: &str, comment_at: Option<usize>) -> String {
+    if line.trim_start().starts_with("//") {
+        return String::new();
+    }
+    match comment_at {
+        Some(at) => line.chars().take(at).collect(),
+        None => line.to_string(),
+    }
+}
+
+/// Brace depth of ONE ALREADY-BLANKED line. Takes [`blank_code`] output and nothing else, which is
+/// the whole point: there is one counter, and it cannot be reached without blanking first.
+fn braces(blanked: &str) -> i32 {
+    delta(blanked, '{', '}')
+}
+
+/// Arm only on a line that IS the attribute: anchored at the start of a CODE line, with `test` as a
+/// cfg predicate (`#[cfg(test)]`, `#[cfg(all(test, …))]`) — never `#[cfg(not(test))]`, which is
+/// production-only code, and never `#[cfg(feature = "test-utils")]`, which is not a test gate.
+fn arms_test_cfg(code: &str) -> bool {
+    if !code.trim_start().starts_with("#[cfg(") {
+        return false;
+    }
+    if !has_test_predicate(code) {
+        return false;
+    }
+    !has_not_test(code)
+}
+
+/// `[(,][[:space:]]*test[[:space:]]*[,)]`, spelled out.
+fn has_test_predicate(code: &str) -> bool {
+    let c: Vec<char> = code.chars().collect();
+    for i in 0..c.len() {
+        if c[i] != '(' && c[i] != ',' {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < c.len() && c[j].is_whitespace() {
+            j += 1;
+        }
+        if !c[j..].starts_with(&['t', 'e', 's', 't']) {
+            continue;
+        }
+        let mut k = j + 4;
+        while k < c.len() && c[k].is_whitespace() {
+            k += 1;
+        }
+        if matches!(c.get(k), Some(',') | Some(')')) {
+            return true;
+        }
+    }
+    false
+}
+
+/// `not[[:space:]]*\([[:space:]]*test[[:space:]]*\)`, spelled out.
+fn has_not_test(code: &str) -> bool {
+    let c: Vec<char> = code.chars().collect();
+    for i in 0..c.len() {
+        if !c[i..].starts_with(&['n', 'o', 't']) {
+            continue;
+        }
+        let mut j = i + 3;
+        while j < c.len() && c[j].is_whitespace() {
+            j += 1;
+        }
+        if c.get(j) != Some(&'(') {
+            continue;
+        }
+        j += 1;
+        while j < c.len() && c[j].is_whitespace() {
+            j += 1;
+        }
+        if !c[j..].starts_with(&['t', 'e', 's', 't']) {
+            continue;
+        }
+        j += 4;
+        while j < c.len() && c[j].is_whitespace() {
+            j += 1;
+        }
+        if c.get(j) == Some(&')') {
+            return true;
+        }
+    }
+    false
+}
+
+/// `sub(/^[[:space:]]*#\[cfg\(.*\)\][[:space:]]*/, "", rest)` — the GREEDY `.*`, so `#[cfg(test)]`
+/// followed by a second attribute leaves the second one as the remainder.
+fn strip_cfg_attr(code: &str) -> String {
+    let trimmed = code.trim_start();
+    if !trimmed.starts_with("#[cfg(") {
+        return code.to_string();
+    }
+    // The greedy answer: the LAST `)]` on the line.
+    let Some(end) = code.rfind(")]") else {
+        return code.to_string();
+    };
+    code[end + 2..].trim_start().to_string()
+}
+
+/// What [`blank_code`] was in the middle of when the previous line ended. Rust's string literals
+/// and its block comments both span lines, so a per-line blanker that starts clean re-reads the
+/// body of a multi-line literal as code; carrying this across the file is what makes the answer
+/// the same one the compiler would give.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LexState {
+    /// `/* … */` nesting depth. Rust block comments NEST, so this is a depth and not a flag.
+    block: u32,
+    /// The literal still open at end of line, if any.
+    open: Option<OpenLit>,
+}
+
+/// The one literal shape that can still be open when a line ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenLit {
+    /// A `"…"` (or `b"…"`, `c"…"`) literal: closed by the next unescaped `"`.
+    Quoted,
+    /// A raw literal (`r"…"`, `r#"…"#`, `br##"…"##`): closed by `"` followed by exactly this many
+    /// `#`. No escape processing at all — that is what makes it raw.
+    Raw(usize),
+}
+
+/// Blank the CONTENTS of every string, byte-string, raw-string and char literal, and of every
+/// comment, keeping the delimiters and the line's length. `tracing-lint.sh` counted parens inside
+/// string literals, so a message containing `"f("` started a runaway that absorbed the rest of the
+/// file and reported every later `#[instrument]` as clean. Any rule that counts delimiters, or that
+/// looks for a token that could equally be a literal (a scanner searching for `use busbar_` must
+/// not match its own needle), blanks first.
+///
+/// THIS IS THE ONLY LEXER IN THE CRATE THAT DELIMITER COUNTS MAY READ. Everything it has to know
+/// about is a shape that really occurs in this tree: `rel.contains('{')` (a char literal holding a
+/// brace), `assert_eq!(x, "a{b")` (a brace in a test message), `'\u{7f}'` (a brace inside a char
+/// ESCAPE), `r#"{"a":1}"#` (a raw string, where `\` is not an escape), `b'{'` (a byte char), and
+/// `/* /* */ */` (a nested block comment). A lifetime (`&'a str`) is NOT a char literal and is left
+/// alone.
+///
+/// `st` carries the multi-line state; pass `&mut LexState::default()` for a standalone line, which
+/// is what [`blank_literals`] does.
+pub fn blank_code(line: &str, st: &mut LexState) -> String {
+    blank_code_marking(line, st).0
+}
+
+/// The same blanking, plus the CHAR INDEX at which this line's `//` comment began, if it has one.
+///
+/// The blanker already decides that question — it has to, to know whether a `//` opens a comment or
+/// sits inside a literal — and it was the only reader that knew. Handing the answer back is what
+/// lets [`code_of`] strip a trailer off a line that also holds a string.
+pub fn blank_code_marking(line: &str, st: &mut LexState) -> (String, Option<usize>) {
+    let chars: Vec<char> = line.chars().collect();
+    let mut comment_at: Option<usize> = None;
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if st.block > 0 {
+            if c == '/' && chars.get(i + 1) == Some(&'*') {
+                st.block += 1;
+                out.push_str("  ");
+                i += 2;
+            } else if c == '*' && chars.get(i + 1) == Some(&'/') {
+                st.block -= 1;
+                out.push_str("  ");
+                i += 2;
+            } else {
+                out.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+
+        match st.open {
+            Some(OpenLit::Quoted) => {
+                if c == '\\' {
+                    out.push(' ');
+                    if i + 1 < chars.len() {
+                        out.push(' ');
+                    }
+                    i += 2;
+                } else if c == '"' {
+                    st.open = None;
+                    out.push('"');
+                    i += 1;
+                } else {
+                    out.push(' ');
+                    i += 1;
+                }
+                continue;
+            }
+            Some(OpenLit::Raw(hashes)) => {
+                if c == '"' && closes_raw(&chars, i + 1, hashes) {
+                    st.open = None;
+                    out.push('"');
+                    out.extend(std::iter::repeat_n(' ', hashes));
+                    i += 1 + hashes;
+                } else {
+                    out.push(' ');
+                    i += 1;
+                }
+                continue;
+            }
+            None => {}
+        }
+
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            st.block = 1;
+            out.push_str("  ");
+            i += 2;
+            continue;
+        }
+        // A line comment runs to end of line and carries no state with it.
+        if c == '/' && chars.get(i + 1) == Some(&'/') {
+            comment_at = Some(i);
+            out.extend(std::iter::repeat_n(' ', chars.len() - i));
+            break;
+        }
+
+        // A literal PREFIX (`b`, `c`, `r`, `br`, `cr`) only reads as a prefix when it is not the
+        // tail of an identifier — `for_r"x"` is not Rust, but `char_r` followed by nothing is, and
+        // a scanner that guessed wrong here would blank live code.
+        let prefixed = st.open.is_none() && !is_ident_char(prev_char(&chars, i));
+        if prefixed {
+            if let Some((consumed, lit)) = opens_literal(&chars, i) {
+                out.extend(std::iter::repeat_n(' ', consumed - 1));
+                out.push('"');
+                st.open = Some(lit);
+                i += consumed;
+                continue;
+            }
+            if let Some(end) = char_literal_end(&chars, i) {
+                out.push('\'');
+                out.extend(std::iter::repeat_n(' ', end - i - 1));
+                out.push('\'');
+                i = end + 1;
+                continue;
+            }
+            // A byte char: `b'{'`. The `b` is code, the literal after it is not.
+            if c == 'b' {
+                if let Some(end) = char_literal_end(&chars, i + 1) {
+                    out.push('b');
+                    out.push('\'');
+                    out.extend(std::iter::repeat_n(' ', end - i - 2));
+                    out.push('\'');
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+
+        out.push(c);
+        i += 1;
+    }
+    (out, comment_at)
+}
+
+/// The same blanking for a line read on its own, with no carried state.
+pub fn blank_literals(line: &str) -> String {
+    blank_code(line, &mut LexState::default())
+}
+
+/// `open` minus `close` over text [`blank_code`] has already blanked. THE ONE COUNTER: every gate
+/// that tracks brace or paren depth calls this and nothing else, so there is no second copy to
+/// forget the blanking step.
+pub fn delta(blanked: &str, open: char, close: char) -> i32 {
+    blanked.matches(open).count() as i32 - blanked.matches(close).count() as i32
+}
+
+fn prev_char(chars: &[char], i: usize) -> Option<char> {
+    i.checked_sub(1).and_then(|p| chars.get(p)).copied()
+}
+
+fn is_ident_char(c: Option<char>) -> bool {
+    c.is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// `"` followed by exactly `hashes` `#` and then something that is not another `#`.
+fn closes_raw(chars: &[char], from: usize, hashes: usize) -> bool {
+    (0..hashes).all(|k| chars.get(from + k) == Some(&'#'))
+}
+
+/// A quoted literal opening at `i`: returns how many chars the OPENER spans (prefix + hashes +
+/// the `"`) and which shape is now open. `None` when `i` does not open one.
+fn opens_literal(chars: &[char], i: usize) -> Option<(usize, OpenLit)> {
+    let mut j = i;
+    // `b`/`c` byte- or C-string prefix.
+    if matches!(chars.get(j), Some('b') | Some('c'))
+        && matches!(chars.get(j + 1), Some('r') | Some('"'))
+    {
+        j += 1;
+    }
+    if chars.get(j) == Some(&'r') {
+        let mut hashes = 0;
+        let mut k = j + 1;
+        while chars.get(k) == Some(&'#') {
+            hashes += 1;
+            k += 1;
+        }
+        if chars.get(k) == Some(&'"') {
+            return Some((k + 1 - i, OpenLit::Raw(hashes)));
+        }
+        return None;
+    }
+    (chars.get(j) == Some(&'"')).then_some((j + 1 - i, OpenLit::Quoted))
+}
+
+/// The index of the closing `'` of a char literal opening at `i`, or `None` when the `'` is a
+/// LIFETIME. `'a` and `'static` are not literals; `'x'`, `'\''` and `'\u{7f}'` are.
+fn char_literal_end(chars: &[char], i: usize) -> Option<usize> {
+    if chars.get(i) != Some(&'\'') {
+        return None;
+    }
+    if chars.get(i + 1) == Some(&'\\') {
+        // The escaped char cannot itself close the literal, so the search starts past it. This is
+        // what keeps `'\''` and `'\u{7f}'` whole.
+        return (i + 3..chars.len()).find(|&k| chars[k] == '\'');
+    }
+    // Exactly one char between the quotes, or it is a lifetime.
+    (chars.get(i + 1).is_some() && chars.get(i + 2) == Some(&'\'')).then_some(i + 2)
+}
+
+/// One line split into **(code, comment)** — the same single pass as [`strip_comment_line`], which
+/// now delegates here, except the comment text is HANDED BACK rather than dropped on the floor.
+///
+/// There is one lexer so the two halves cannot disagree: anything absent from `code` is present in
+/// `comment` and vice versa. String literals stay verbatim in the CODE half, so a `//` inside a
+/// `"…"` is not a comment — which is precisely the distinction
+/// [`crate::gates::no_deferral`]'s Class-B comment tags stand on. A `TODO(migrate):` inside a
+/// `format!("# TODO(migrate): {t}")` is **data the program emits**, not a label its author attached
+/// to this code, and only the second of those is a deferral marker.
+pub fn split_comment_line(line: &str, in_block: &mut bool) -> (String, String) {
+    let mut code = String::new();
+    let mut comment = String::new();
+    let bytes: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    let mut in_str = false;
+    while i < bytes.len() {
+        if *in_block {
+            if bytes[i] == '*' && bytes.get(i + 1) == Some(&'/') {
+                *in_block = false;
+                i += 2;
+            } else {
+                comment.push(bytes[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if in_str {
+            code.push(bytes[i]);
+            if bytes[i] == '\\' {
+                if let Some(c) = bytes.get(i + 1) {
+                    code.push(*c);
+                }
+                i += 2;
+                continue;
+            }
+            if bytes[i] == '"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == '/' && bytes.get(i + 1) == Some(&'*') {
+            *in_block = true;
+            i += 2;
+            continue;
+        }
+        if bytes[i] == '/' && bytes.get(i + 1) == Some(&'/') {
+            comment.extend(bytes[i + 2..].iter());
+            break;
+        }
+        if bytes[i] == '"' {
+            in_str = true;
+            code.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        code.push(bytes[i]);
+        i += 1;
+    }
+    (code, comment)
+}
+
+/// One line with `//` and `/* */` comments removed. `in_block` carries block-comment state across
+/// lines. String literals are preserved verbatim, so a `//` inside a `"…"` is not a comment.
+pub fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
+    split_comment_line(line, in_block).0
+}
+
+/// EVERY FILE WHOSE MODULE IS DECLARED UNDER A TEST-ONLY `cfg`, among `files` (repo-relative path,
+/// text) — and, transitively, every file a test-scoped file declares. A file's scope is set by how
+/// it is DECLARED, never by what it is called: a `tests.rs`, a `*_tests.rs` or a file under a
+/// `tests/` directory that some module declares WITHOUT the gate is compiled into the crate, and is
+/// production.
+///
+/// "Gated" is [`test_scope`]'s answer for the brace-less `mod name;` line, so `#[cfg(test)]`,
+/// `#[cfg(any(test, …))]` and an attribute stacked over a `#[path]` all count, and
+/// `#[cfg(not(test))]` does not. A declaration resolves to `#[path = "…"]` against the declaring
+/// file's directory, or to `<base>/name.rs` and `<base>/name/mod.rs`, where `<base>` is the
+/// declaring file's directory for `mod.rs`/`lib.rs`/`main.rs` and `<dir>/<stem>` otherwise.
+///
+/// Each item is (repo-relative path, text, STABLE KEY). A stable key (the file's absolute path, say)
+/// is a promise that those bytes are the same for the life of the process — true of a file read from
+/// disk and not of a planted overlay — and lets the declarations be read once per process instead of
+/// once per call; `None` reads them fresh.
+///
+/// The answer is only as wide as `files`: a file whose declaring parent is not in the set is NOT
+/// marked, so it reads as production — the direction that reds rather than the direction that
+/// passes. A crate's top-level `tests/` directory (separate test targets, declared by nobody) is
+/// the caller's to leave out of `files`.
+pub fn cfg_test_module_files<'a, I>(files: I) -> std::collections::BTreeSet<String>
+where
+    I: IntoIterator<Item = (String, &'a str, Option<String>)>,
+{
+    use std::collections::{BTreeMap, BTreeSet};
+    // parent -> [(child, gated)]
+    let edges: BTreeMap<String, std::sync::Arc<Vec<(String, bool)>>> = files
+        .into_iter()
+        .map(|(rel, text, stable)| {
+            let e = match stable {
+                Some(key) => module_edges_stable(key, &rel, text),
+                None => std::sync::Arc::new(module_edges(&rel, text)),
+            };
+            (rel, e)
+        })
+        .collect();
+    let mut test: BTreeSet<String> = edges
+        .values()
+        .flat_map(|e| e.iter())
+        .filter(|(_, gated)| *gated)
+        .map(|(c, _)| c.clone())
+        .collect();
+    loop {
+        let more: Vec<String> = test
+            .iter()
+            .filter_map(|f| edges.get(f))
+            .flat_map(|e| e.iter())
+            .map(|(c, _)| c.clone())
+            .filter(|c| !test.contains(c))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        test.extend(more);
+    }
+    test
+}
+
+/// [`module_edges`] MEMOISED on a stable key (see [`cfg_test_module_files`]). A gate re-asks for the
+/// same unchanged disk files once per selftest case; keying on the bytes would hash the whole tree
+/// every time, which is the cost the memo exists to avoid.
+fn module_edges_stable(key: String, rel: &str, text: &str) -> std::sync::Arc<Vec<(String, bool)>> {
+    type Memo = std::collections::BTreeMap<String, std::sync::Arc<Vec<(String, bool)>>>;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(found) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return std::sync::Arc::clone(found);
+    }
+    let out = std::sync::Arc::new(module_edges(rel, text));
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, std::sync::Arc::clone(&out));
+    out
+}
+
+/// The `mod` declarations of one file as (child path, gated).
+fn module_edges(rel: &str, text: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    if let Some((dir, name)) = rel.rsplit_once('/') {
+        let stem = name.strip_suffix(".rs").unwrap_or(name);
+        let base = if matches!(stem, "mod" | "lib" | "main") {
+            dir.to_string()
+        } else {
+            format!("{dir}/{stem}")
+        };
+        let mut path_attr: Option<String> = None;
+        for l in test_scope(text) {
+            let code = l.code.trim();
+            // `#[path = "…"]` on its own line, or ahead of the `mod` on the same line.
+            if let Some(p) = code.find("#[path").and_then(|i| path_attribute(&code[i..])) {
+                path_attr = Some(p);
+                if brace_less_mod(code).is_none() {
+                    continue;
+                }
+            }
+            let Some(m) = brace_less_mod(code) else {
+                if !code.is_empty() && !code.starts_with("#[") {
+                    path_attr = None;
+                }
+                continue;
+            };
+            match path_attr.take() {
+                Some(p) => out.push((normalize_rel(&format!("{dir}/{p}")), l.gated)),
+                None => {
+                    out.push((format!("{base}/{m}.rs"), l.gated));
+                    out.push((format!("{base}/{m}/mod.rs"), l.gated));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `#[path = "tests/x.rs"]` → `tests/x.rs`.
+fn path_attribute(code: &str) -> Option<String> {
+    let rest = code.strip_prefix("#[path")?;
+    let rest = rest.trim_start().strip_prefix('=')?;
+    let rest = rest.trim_start().strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// `pub mod x;` / `#[cfg(test)] mod x;` → `x`, for the BRACE-LESS form only (an inline
+/// `mod x { … }` declares no file). A leading attribute on the same line is read past.
+fn brace_less_mod(code: &str) -> Option<String> {
+    let mut rest = code.strip_suffix(';')?.trim();
+    while rest.starts_with("#[") {
+        let close = rest.find(']')?;
+        rest = rest[close + 1..].trim_start();
+    }
+    let rest = rest
+        .strip_prefix("pub(crate) ")
+        .or_else(|| rest.strip_prefix("pub(super) "))
+        .or_else(|| rest.strip_prefix("pub "))
+        .unwrap_or(rest);
+    let name = rest.strip_prefix("mod ")?.trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// `a/./b/../c` → `a/c`, so a `#[path]` that climbs resolves to the key a walk yields.
+fn normalize_rel(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "." | "" => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}

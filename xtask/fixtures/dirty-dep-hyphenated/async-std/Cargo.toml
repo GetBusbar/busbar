@@ -1,0 +1,6 @@
+# A local stand-in carrying the banned published name `async-std`, so the fixture needs no network.
+[package]
+name = "async-std"
+version = "0.0.0"
+edition = "2021"
+publish = false

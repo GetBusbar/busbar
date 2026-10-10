@@ -37,6 +37,64 @@ listen: "0.0.0.0:8080"
 #   client_ca: { file: /etc/busbar/admin-client-ca.pem }   # present ⇒ mTLS required on the admin plane
 # admin_require_mtls: true                               # false ⇒ waive the exposed-admin mTLS guard
 
+# ── busbar AS an OAuth 2.1 authorization server (oauth_as:) ──────────────────────────────────────
+# ABSENT BY DEFAULT, and absent means nothing is built: no server, no store, no signing key, no
+# background sweep and no route. Uncomment it only if agents must log in to busbar WITHOUT an
+# identity provider - which is the case Codex, ChatGPT and Claude.ai are in, because enterprise IdPs
+# do not enable RFC 7591 dynamic client registration.
+#
+# With an IdP, leave this out: busbar is the OAuth RESOURCE server, tokens come from Okta/Entra/
+# Auth0, and `mcp.authorization_servers` names them. The two modes are independent and both ship.
+#
+# oauth_as:
+#   # RFC 8414 `issuer`: this authorization server's identity, and the base every endpoint is
+#   # derived from - `{issuer}/authorize`, `{issuer}/token`, `{issuer}/jwks`, `{issuer}/consent`,
+#   # and `/.well-known/oauth-authorization-server` with the issuer's PATH appended AFTER it
+#   # (RFC 8414 s3.1 puts the well-known segment first; RFC 9728 puts it last - the two documents
+#   # this deployment serves build their paths in opposite orders).
+#   # No trailing slash, no query, no fragment: all three are boot refusals, because RFC 9207 has
+#   # clients compare this value byte-for-byte.
+#   issuer: "https://gw.example.com"
+#
+#   # The ES256 signing key: base64 of a PKCS#8 v1 DER P-256 private key. Produce one with
+#   #   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -outform DER | base64
+#   # OMITTED is legal and generates an EPHEMERAL key at boot, with a warning: every token the
+#   # deployment issued stops verifying when the process restarts. Fine for a trial, wrong for
+#   # anything else. There is deliberately no default key - a default would be a published private
+#   # key that signs valid tokens for every deployment that never set this field.
+#   signing_key: { env: BUSBAR_AS_SIGNING_KEY }
+#
+#   # WHAT A SELF-REGISTERED CLIENT GETS, AND NOTHING MORE. Empty by default, so a client that
+#   # registers itself and asks for a scope is REFUSED (`invalid_client_metadata`) rather than
+#   # quietly narrowed. This is a ceiling, and nothing at runtime moves it.
+#   default_grant: []
+#
+#   # There is NO registration toggle. With `oauth_as:` configured, all three ways a client
+#   # obtains a client_id are ON: pre-registration, Client ID Metadata Documents, and RFC 7591
+#   # dynamic client registration at {issuer}/register. What keeps that safe is the ceiling
+#   # above: registration confers nothing beyond `default_grant`, which is empty until you
+#   # widen it.
+#
+#   # Access token lifetime in seconds; default 600. Short on purpose - clients refresh.
+#   access_token_ttl_secs: 600
+#
+#   # The FAPI 2.0 Security Profile posture (plain OAuth, private_key_jwt, DPoP); default false.
+#   # true makes RFC 9126 pushed authorization requests MANDATORY at {issuer}/par (with
+#   # redirect_uri required), requires an RFC 9449 DPoP proof on every token request, reuses
+#   # refresh tokens rather than rotating them, accepts a client assertion only with aud = the
+#   # issuer as a string, and verifies ES256/PS256 only. Every client must then speak all of it.
+#   fapi2: false
+#
+#   # Confidential private_key_jwt (RFC 7523) clients you provision yourself; none by default.
+#   # Registration over the wire cannot carry a key, so this is how a FAPI 2.0 client gets a
+#   # client_id. PUBLIC keys only, EC P-256 (ES256) or RSA of 2048+ bits (PS256), one algorithm per
+#   # client; a key carrying `d` is refused.
+#   # Each client may ask for no more than default_grant.
+#   clients:
+#     - client_id: payments-app
+#       redirect_uris: ["https://app.example.com/cb"]
+#       jwks: { keys: [ { kty: EC, crv: P-256, kid: k1, x: "<base64url>", y: "<base64url>" } ] }
+
 # ── Client authentication ────────────────────────────────────────────────────────────────────────
 # identity-providers - DEFINE each identity provider ONCE (name -> {module, settings,
 # max_admin_scope, token}); auth.chain / auth.admin_auth / role_bindings then REFERENCE it BY BARE
@@ -266,6 +324,44 @@ pools:
       base_cooldown_secs: 5      # quick first probe-back…
       max_cooldown_secs: 60      # …backing off exponentially up to a minute
 
+# ── MCP: busbar as an MCP server (optional; ABSENT by default) ───────────────────────────────────
+# Presence of this block is what makes this deployment an MCP server. Absent, busbar mounts no MCP
+# ingress and no `.well-known` document at all — a gateway that is not an MCP server does not answer
+# as one.
+#
+# WHAT AN AGENT DOES, end to end, with no prior configuration:
+#   1. It POSTs to the endpoint with no credential and gets `401` with
+#      `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`.
+#   2. It fetches that document (RFC 9728) and learns which authorization servers may mint tokens
+#      for this resource, and what this resource calls itself.
+#   3. It does ordinary OAuth against your IdP, asking for a token whose audience is `canonical_uri`.
+#   4. It comes back, and busbar checks the token's audience is ITSELF before anything else happens.
+#
+# busbar is the RESOURCE SERVER here, never the authorization server: the tokens are minted by your
+# existing IdP (Okta, Entra, Auth0) and nothing in busbar issues one.
+#
+# mcp:
+#   # The RFC 8707 resource indicator. This is THE audience every inbound token must carry, compared
+#   # for exact equality. Its path MUST be `/mcp`: the endpoint is served there and nowhere else,
+#   # and a URI naming any other path refuses boot. The scheme, host and port are yours. It is
+#   # configured rather than taken from the request's Host header on purpose: deriving it from the
+#   # request would let a caller choose its own audience, which is the whole defence, undone.
+#   canonical_uri: "https://gateway.example.com/mcp"
+#
+#   # Your IdP's issuer(s), advertised in the metadata document. At least one is REQUIRED: it is the
+#   # entire content of the answer a client with no credential came here for.
+#   authorization_servers:
+#     - "https://login.example.com"
+#
+#   # Advisory metadata. Authorization is decided by the caller's grant, never by this list.
+#   scopes_supported: ["mcp:tools:list", "mcp:tools:call"]
+#
+#   # Browser origins accepted on the ingress (the DNS-rebinding defence). EMPTY IS THE DEFAULT and
+#   # it means no browser origin is accepted. Agents send no `Origin` at all and are unaffected;
+#   # loopback origins are always accepted, because a browser only sends one for a document served
+#   # from loopback, which the rebinding attacker's page never is.
+#   allowed_origins: []
+
 # ── Observability (optional) ─────────────────────────────────────────────────────────────────────
 # ALL telemetry egress is the single `export:` NAMED map (1.5.3): `<name>: { module, settings }`,
 # presence = the switch. Zero-config default: collection is inert. The four built-in modules:
@@ -312,17 +408,48 @@ pools:
 
 # ── Pricing: the ONE cost source (optional) ──────────────────────────────────────────────────────
 # Per-model token pricing in MICRO-units per token (abstract cost units - busbar attaches no
-# currency). ALL-OR-NOTHING: absent = tokens price 0; present = EVERY configured model needs an
-# entry (--validate prints a paste-ready stub otherwise). Keys are the CONFIG model names above.
+# currency). ALL-OR-NOTHING at two levels: absent = billing off (tokens price 0); present = EVERY
+# configured model needs an entry (--validate prints a paste-ready stub otherwise), AND every
+# billable class the LLM plane declares must be configured on some entry — the four reserved
+# *_utok tiers below count as configured just by the card's presence (an omitted tier is 0), but
+# the OPEN classes are not reserved and each needs an explicit `units: { <class>: <rate> }` on at
+# least one entry; `0` makes one free but still counts as configured. The LLM plane ledgers every
+# count a provider reports beside its tokens under its own open class: `search_units` (a rerank's
+# search units, an Anthropic turn's web searches), `classifications` (Cohere), `web_fetch_requests`
+# (Anthropic), `unitemized_tokens` (the tokens a provider's stated total counts above its itemized
+# buckets), `images` (per-image answers), `audio_ms` (a transcription's reported duration) and the
+# nine Bedrock `guardrail_*` policy-unit classes. A card silent about a declared class fails boot
+# naming it. Keys are the CONFIG model names above.
+#
+# UPGRADING FROM 1.5.5: a card that priced only the four reserved tiers (no `units:` at all) now
+# fails boot. Add the `units:` below to any one entry (0 keeps each free, as 1.5.5 billed them).
 # rate_card:
-#   claude-sonnet: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75 }
+#   claude-sonnet: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
+#                    units: { search_units: 0, classifications: 0, web_fetch_requests: 0,
+#                             unitemized_tokens: 0, images: 0, audio_ms: 0,
+#                             guardrail_automated_reasoning_policies: 0,
+#                             guardrail_automated_reasoning_policy_units: 0,
+#                             guardrail_content_policy_image_units: 0, guardrail_content_policy_units: 0,
+#                             guardrail_contextual_grounding_policy_units: 0,
+#                             guardrail_sensitive_information_policy_free_units: 0,
+#                             guardrail_sensitive_information_policy_units: 0,
+#                             guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }
 #   gpt-4o:        { input_utok: 2.5, output_utok: 10.0 }
 # per_request_fee: 0                       # flat per-request budget charge (default 0)
+#
+# Non-LLM planes take the SAME reserved `rate_card` key under their OWN section instead — e.g.
+# `tools.rate_card` (MCP, keyed by tool name, prices `tool_calls`/`bytes`) or `agents.rate_card`
+# (A2A, keyed `agent:<id>`, prices `bytes` = request + response body bytes per hop) — each
+# independent of this flat card and of each other; see docs/mcp.md and docs/a2a.md. A plane
+# section with no card of its own bills that plane's traffic at 0 (no refusal).
 
-# ── Store (optional) ─────────────────────────────────────────────────────────────────────────────
-# The durable store as a plugin: `{ module, settings }`. Absent = ephemeral RAM (keys/usage reset
-# on restart). A non-memory module requires plugins.enabled below; settings are the module's own
-# config, passed through verbatim.
+# ── Store (required) ─────────────────────────────────────────────────────────────────────────────
+# Where keys/usage/audit live: `{ module, settings }`. `memory` is the compiled-in RAM store (keys/
+# usage reset on restart). A config with no `store:` block is refused; `busbar --migrate-config`
+# inserts `store: { module: memory }`. A non-memory module requires plugins.enabled below; settings
+# are the module's own config, passed through verbatim.
+store:
+  module: memory
 # store:
 #   module: sqlite                          # busbar-store-sqlite (single-node durable)
 #   settings: { db_path: /var/lib/busbar/governance.db }

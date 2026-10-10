@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config validation failed:\n  - pool name 'm-gemini' conflicts with model name 'm-gemini'; pools and models must have distinct names\n"},"headers":{},"status":1}

@@ -1,0 +1,2035 @@
+//! THE KIND, CEILING AND MONEY RULES: the zero-armed `busbar-unit-*` tripwire, the section 1.2
+//! manifest allow-list and source denylist, the sealed traits, the hold discipline, the capability
+//! seal sites, and the plane/price wall.
+//!
+//! The second half of the `scripts/construction-gate/rules.py` port. Same contract as its sibling:
+//! every `detail` column is the Python's, verbatim, because that is what parity compares.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::ctx::Ctx;
+use crate::gates::construction::model::{need_int, need_str, plain, py_list, CRow, Cfg, VACUOUS};
+use crate::gates::construction::rules::call_sites;
+use crate::gates::construction::tree::{
+    crate_name_of_dir, dirs_for_globs, fnmatch, memo_file_scan, read_cargo_deps_text, Tree,
+};
+use crate::rx::{self, Regex};
+use crate::toml_doc::Table;
+
+fn join_or_none(items: &[String]) -> String {
+    if items.is_empty() {
+        "none".to_string()
+    } else {
+        items.join("; ")
+    }
+}
+
+fn head(items: &[String], n: usize) -> String {
+    if items.is_empty() {
+        "none".to_string()
+    } else {
+        items.iter().take(n).cloned().collect::<Vec<_>>().join("; ")
+    }
+}
+
+/// Every scanned file whose path matches one of the globs, in path order. `fnmatch`'s `*` crosses
+/// directory separators, so `crates/busbar-unit-*/src/*` reaches nested modules too.
+fn scoped_files(tree: &Tree, globs: &[String]) -> Vec<String> {
+    tree.files
+        .keys()
+        .filter(|rel| globs.iter().any(|g| fnmatch(rel, g)))
+        .cloned()
+        .collect()
+}
+
+fn kind_crate_dirs(cx: &Ctx, cfg: &Cfg, kind: &str) -> Result<Vec<String>, String> {
+    Ok(dirs_for_globs(cx, &cfg.kind_globs(kind)?))
+}
+
+// ── 14. no-unit-crates ───────────────────────────────────────────────────────────────────────────
+
+/// The row id of the zero-armed `busbar-unit-*` tripwire.
+pub const ROW_NO_UNIT_CRATES: &str = "no-unit-crates";
+
+/// NO `busbar-unit-*` CRATE, ARMED AT ZERO. Fold F14 2/2 deleted the last unit crate; a crate that
+/// matches `unit_crate_glob` coming back is an architecture regression, not a size, so this row is
+/// a STRUCTURAL tripwire with no figure to raise. It replaces the `loc-ceilings` family, whose size
+/// ceilings are gone: size is not a CI check (owner 2026-10-02) and is measured by hand at PERF.
+///
+/// A unit crate the TREE holds source for counts whether or not its directory is on disk: the
+/// directory listing reads the filesystem only, so a crate in the tree this rule was handed (a
+/// selftest plant) and not in the checkout would otherwise be invisible.
+pub fn no_unit_crates(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule(ROW_NO_UNIT_CRATES)?;
+    let unit_glob = need_str(c, "unit_crate_glob", ROW_NO_UNIT_CRATES)?;
+    let mut unit_crates: BTreeSet<String> = dirs_for_globs(cx, &[format!("crates/{unit_glob}")])
+        .iter()
+        .map(|d| crate_name_of_dir(d))
+        .collect();
+    for rel in tree.files.keys() {
+        let name = tree.crate_of(rel);
+        if rel.starts_with("crates/") && fnmatch(&name, unit_glob) {
+            unit_crates.insert(name);
+        }
+    }
+    let found: Vec<String> = unit_crates.into_iter().collect();
+    let n = found.len() as i64;
+    Ok(vec![plain(
+        ROW_NO_UNIT_CRATES,
+        found.is_empty(),
+        format!("no {unit_glob} crate exists (armed at 0)"),
+        format!(
+            "{n} {unit_glob} crate(s) (ceiling 0): {}",
+            join_or_none(&found)
+        ),
+        n,
+        0,
+        found,
+    )])
+}
+
+// ── 15. manifest-allowlist ───────────────────────────────────────────────────────────────────────
+
+pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("manifest-allowlist")?;
+    // THE KEYS OF `[gate.plugin_kinds]`, SPELLED THE WAY THAT FILE SPELLS THEM. `pure_auth` and
+    // `egress_auth` stood here until 2026-09-22 and neither is a key: DECISIONS #3 collapsed the
+    // split into ONE `auth` kind, because direction is a property of the leg — this transport,
+    // this auth, this direction — and never a kind. Both stale spellings resolved to zero crates,
+    // so `crates/auth-admin-tokens` and `crates/auth-static-plugin` were scanned by nothing and
+    // this rule printed twelve green rows where fourteen were owed. `Cfg::kind_globs` now refuses
+    // a key the config does not declare, so the next such typo is a RED instead of a silence.
+    //
+    // AND `transport` WAS MISSING TOO (item 120): the list named six of the seven plugin kinds of
+    // `[gate.plugin_kinds]` (DECISIONS #3), so the seven `busbar-transport-*` crates got no row at
+    // all and this rule printed green while `busbar-transport-tls` (since deleted) path-depended on
+    // `busbar-unit-transport-key`. A transport is a plugin behind the wall like any other kind.
+    let kinds = [
+        "plane",
+        "store",
+        "auth",
+        "hook",
+        "export",
+        "secret",
+        "transport",
+    ];
+    let unit_names: BTreeSet<String> = match cfg.rule(ROW_NO_UNIT_CRATES) {
+        Ok(lc) => dirs_for_globs(
+            cx,
+            &[format!(
+                "crates/{}",
+                lc.str_of("unit_crate_glob").unwrap_or("")
+            )],
+        )
+        .iter()
+        .map(|d| crate_name_of_dir(d))
+        .collect(),
+        Err(_) => BTreeSet::new(),
+    };
+    let mut plane_names: BTreeSet<String> = cfg.plane_crates()?.into_iter().collect();
+    plane_names.extend(
+        kind_crate_dirs(cx, cfg, "plane")?
+            .iter()
+            .map(|d| crate_name_of_dir(d)),
+    );
+    let transport_names: BTreeSet<String> = kind_crate_dirs(cx, cfg, "transport")?
+        .iter()
+        .map(|d| crate_name_of_dir(d))
+        .collect();
+    // The contract, and the closed grammar the contract is written on and re-exports as `spans`.
+    let mut global_ok: BTreeSet<String> = c.list_of("reviewed_allowlist").into_iter().collect();
+    global_ok.insert("busbar-contract".to_string());
+    global_ok.insert("busbar-grammar".to_string());
+    let extra = cfg
+        .doc
+        .table_or_empty("rules.manifest-allowlist.reviewed_extra");
+    let known_red = cfg
+        .doc
+        .table_or_empty("rules.manifest-allowlist.known_red_deps");
+
+    let mut rows = Vec::new();
+    let mut seen_dirs: Vec<(&str, String)> = Vec::new();
+    for kind in kinds {
+        for d in kind_crate_dirs(cx, cfg, kind)? {
+            seen_dirs.push((kind, d));
+        }
+    }
+    for (kind, d) in seen_dirs {
+        let crate_name = crate_name_of_dir(&d);
+        let deps = read_cargo_deps_text(&cx.read(format!("{d}/Cargo.toml")).unwrap_or_default());
+        let mut ok = global_ok.clone();
+        ok.extend(extra.list_of(&crate_name));
+        let tracked: Vec<String> = known_red.list_of(&crate_name);
+        let (mut red, mut tracked_red, mut unreviewed) = (Vec::new(), Vec::new(), Vec::new());
+        for dep in deps {
+            let is_red = dep == "busbar-kernel"
+                || dep == "busbar-caps"
+                || unit_names.contains(&dep)
+                || (plane_names.contains(&dep) && dep != crate_name)
+                || transport_names.contains(&dep);
+            if is_red && tracked.contains(&dep) {
+                tracked_red.push(dep);
+            } else if is_red {
+                red.push(dep);
+            } else if !ok.contains(&dep) {
+                unreviewed.push(dep);
+            }
+        }
+        let current = (red.len() + unreviewed.len()) as i64;
+        let mut parts = Vec::new();
+        if !red.is_empty() {
+            parts.push(format!(
+                "RED (kernel/caps/unit/plane/transport): {}",
+                red.join(", ")
+            ));
+        }
+        if !unreviewed.is_empty() {
+            parts.push(format!(
+                "not on the reviewed list: {}",
+                unreviewed.join(", ")
+            ));
+        }
+        if !tracked_red.is_empty() {
+            parts.push(format!(
+                "tracked migration debt (qa/construction.toml known_red_deps): {}",
+                tracked_red.join(", ")
+            ));
+        }
+        let detail = format!(
+            "{crate_name} ({kind}): {}",
+            if parts.is_empty() {
+                "every dependency is busbar-contract or reviewed".to_string()
+            } else {
+                parts.join("; ")
+            }
+        );
+        let mut offenders = red;
+        offenders.extend(unreviewed);
+        rows.push(plain(
+            format!("manifest-allowlist:{crate_name}"),
+            current == 0,
+            format!("{crate_name} depends only on busbar-contract plus reviewed crates"),
+            detail,
+            current,
+            0,
+            offenders,
+        ));
+    }
+    if rows.is_empty() {
+        rows.push(plain(
+            "manifest-allowlist",
+            true,
+            "depends only on busbar-contract plus reviewed crates",
+            "vacuous: no plugin-kind crate exists yet under gate.plugin_kinds",
+            0,
+            0,
+            vec![],
+        ));
+    }
+    let _ = tree;
+    Ok(rows)
+}
+
+// ── 16. source-denylist ──────────────────────────────────────────────────────────────────────────
+
+pub fn source_denylist(
+    cx: &Ctx,
+    tree: &Tree,
+    cfg: &Cfg,
+    xtask_hits: Result<&BTreeMap<String, Vec<String>>, &str>,
+) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("source-denylist")?;
+    let patterns = c.list_of("patterns");
+    let pat_rx = Regex::new(
+        &patterns
+            .iter()
+            .map(|p| rx::escape(p))
+            .collect::<Vec<_>>()
+            .join("|"),
+    )?;
+    let allow = cfg.doc.table_or_empty("rules.source-denylist.allowlist");
+    // `Err` = the transitive-closure half never answered (or answered with its own defects). Every
+    // row then says so, with the reason, and is RED: an unproven half of an invariant is not a met
+    // one.
+    let mut rows = Vec::new();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for kind in c.list_of("kinds") {
+        for d in kind_crate_dirs(cx, cfg, &kind)? {
+            seen.push((kind.clone(), d));
+        }
+    }
+    for (kind, d) in seen {
+        let crate_name = crate_name_of_dir(&d);
+        let allowed_here = allow.list_of(&crate_name);
+        let mut offenders = Vec::new();
+        for rel in tree.crate_files(&crate_name) {
+            for l in tree.files[&rel].iter() {
+                if l.intest {
+                    continue;
+                }
+                if let Some(m) = pat_rx.search(l.code_bytes()) {
+                    let hit = m.str_of(l.code_bytes(), 0).unwrap_or_default();
+                    if !allowed_here.contains(&hit) {
+                        offenders.push(format!("`{hit}` at {rel}:{}", l.no));
+                    }
+                }
+            }
+        }
+        match xtask_hits {
+            Err(why) => offenders.push(format!(
+                "UNPROVEN: `cargo xtask denylist` did not answer, so no transitive dependency was \
+                 checked ({why})"
+            )),
+            Ok(h) => offenders.extend(h.get(&crate_name).cloned().unwrap_or_default()),
+        }
+        let current = offenders.len() as i64;
+        let detail = format!(
+            "{crate_name} ({kind}): {current} denylisted path(s)/transitive dep(s) (ceiling 0): {}",
+            head(&offenders, 5)
+        );
+        rows.push(plain(
+            format!("source-denylist:{crate_name}"),
+            current == 0,
+            format!("{crate_name} performs no I/O of its own (pure kind)"),
+            detail,
+            current,
+            0,
+            offenders,
+        ));
+    }
+    if rows.is_empty() {
+        rows.push(plain(
+            "source-denylist",
+            true,
+            "pure kinds perform no I/O of their own",
+            "vacuous: no plane/hook/pure-auth/egress-auth crate exists yet",
+            0,
+            0,
+            vec![],
+        ));
+    }
+    Ok(rows)
+}
+
+// ── 17. lean-core ────────────────────────────────────────────────────────────────────────────────
+
+pub fn lean_core(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("lean-core")?;
+    let max_hits = need_int(c, "max_hits", "lean-core")?;
+    let words = c.list_of("words");
+    let word_rx = Regex::new(&format!(
+        r"(?i)\b({})\b",
+        words
+            .iter()
+            .map(|w| rx::escape(w))
+            .collect::<Vec<_>>()
+            .join("|")
+    ))?;
+    let mut crates = c.list_of("crates_kernel");
+    let glob = need_str(c, "crate_glob", "lean-core")?;
+    crates.extend(
+        dirs_for_globs(cx, &[format!("crates/{glob}")])
+            .iter()
+            .map(|d| crate_name_of_dir(d)),
+    );
+
+    // A SITE-LEVEL review, not a file-level one: a busbar-kernel file this size is otherwise-neutral
+    // and a directory-wide excuse would hide a genuinely new dialect word landing anywhere else in
+    // it. Each entry is `<path> :: <literal text>` (ARCHITECT 2026-10-02, STANDING-REDS lean-core
+    // option 2): the reviewed STRING in the reviewed FILE, so the review follows its code when lines
+    // move above it, and a different literal in the same file is still unreviewed. A `path:line`
+    // entry went stale on every edit above it, and five reviewed literals turned this row red that
+    // way. An entry that matches no literal is reported, so the list cannot carry a dead waiver.
+    let mut known: BTreeMap<String, bool> = BTreeMap::new();
+    for entry in c.list_of("known_sites") {
+        if entry.split_once(LEAN_CORE_SEP).is_none() {
+            return Err(format!(
+                "lean-core known_sites entry `{entry}` is not `<path>{LEAN_CORE_SEP}<literal text>`"
+            ));
+        }
+        known.insert(entry, false);
+    }
+
+    let (mut offenders, mut tracked) = (Vec::new(), Vec::new());
+    for crate_name in &crates {
+        for rel in tree.crate_files(crate_name) {
+            // The per-file hits, memoised on the file's scan (`memo_file_scan`); the review list is
+            // applied after, so it is not an input of the memoised half.
+            let tag = format!("lean-core\u{1}{rel}\u{1}{}", word_rx.as_str());
+            let hits = memo_file_scan(tag, &tree.files[&rel], |lines| {
+                let mut out = Vec::new();
+                for l in lines {
+                    if l.intest {
+                        continue;
+                    }
+                    for (_, (bs, be)) in tree.lexer.string_literals(&l.code) {
+                        let content = &l.code.as_bytes()[bs..be];
+                        if word_rx.is_match(content) {
+                            let text = String::from_utf8_lossy(content);
+                            out.push(format!("{text}\u{1}\"{text}\" at {rel}:{}", l.no));
+                        }
+                    }
+                }
+                out
+            });
+            for h in hits.iter() {
+                let (text, where_) = h.split_once('\u{1}').unwrap_or(("", h));
+                match known.get_mut(&lean_core_key(&rel, text)) {
+                    Some(seen) => {
+                        *seen = true;
+                        tracked.push(where_.to_string());
+                    }
+                    None => offenders.push(where_.to_string()),
+                }
+            }
+        }
+    }
+    for (entry, seen) in &known {
+        if !seen {
+            offenders.push(format!(
+                "stale known_sites entry `{entry}`: no such literal in that file; strike it"
+            ));
+        }
+    }
+    let current = offenders.len() as i64;
+    let mut parts = vec![head(&offenders, 8)];
+    if !tracked.is_empty() {
+        parts.push(format!(
+            "reviewed frozen-wire/schema sites (qa/construction.toml known_sites): {} of {}",
+            tracked.len().min(3),
+            tracked.len()
+        ));
+    }
+    let detail = format!(
+        "{current} string literal(s) in {} naming a dialect or the section 1.3 pinned word list \
+         (ceiling {max_hits}): {}",
+        py_list(&crates),
+        parts.join("; ")
+    );
+    Ok(vec![plain(
+        "lean-core",
+        current <= max_hits,
+        "the kernel and unit crates name no dialect and no open-vocabulary word",
+        detail,
+        current,
+        max_hits,
+        offenders,
+    )])
+}
+
+/// The separator of a `lean-core` `known_sites` entry: `<path> :: <literal text>`.
+pub const LEAN_CORE_SEP: &str = " :: ";
+
+/// The `known_sites` entry that reviews `text` (a string literal's body, as written) in `rel`.
+pub fn lean_core_key(rel: &str, text: &str) -> String {
+    format!("{rel}{LEAN_CORE_SEP}{text}")
+}
+
+/// The `known_sites` entry that would review one `lean-core` offender (`"<text>" at <rel>:<line>`),
+/// or `None` for an offender that is not a literal (a stale entry).
+pub fn lean_core_key_of(offender: &str) -> Option<String> {
+    let body = offender.strip_prefix('"')?;
+    let (text, loc) = body.rsplit_once("\" at ")?;
+    let (rel, _line) = loc.rsplit_once(':')?;
+    Some(lean_core_key(rel, text))
+}
+
+// ── 18. no-default-bodies ────────────────────────────────────────────────────────────────────────
+
+/// `(start_line, end_line)` of `trait <name>` in `rel`, by brace matching on the blanked text.
+fn trait_span(tree: &Tree, rel: &str, name: &str) -> Result<Option<(usize, usize)>, String> {
+    let Some(lines) = tree.files.get(rel) else {
+        return Ok(None);
+    };
+    let joined: String = lines
+        .iter()
+        .map(|l| l.blank.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = joined.as_bytes();
+    let rx_trait = Regex::new(&format!(
+        r"trait\s+{}(?![A-Za-z0-9_])[^{{]*\{{",
+        rx::escape(name)
+    ))?;
+    let Some(m) = rx_trait.search(text) else {
+        return Ok(None);
+    };
+    let mut starts = Vec::with_capacity(lines.len());
+    let mut off = 0usize;
+    for l in lines.iter() {
+        starts.push(off);
+        off += l.blank.len() + 1;
+    }
+    let line_of = |pos: usize| -> usize {
+        match starts.binary_search(&pos) {
+            Ok(i) => i + 1,
+            Err(0) => 1,
+            Err(i) => i,
+        }
+    };
+    let mut depth: i64 = 0;
+    let mut i = m.end - 1;
+    let mut end: i64 = -1;
+    while i < text.len() {
+        match text[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i as i64;
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if end < 0 {
+        return Ok(None);
+    }
+    Ok(Some((line_of(m.start), line_of(end as usize))))
+}
+
+pub fn no_default_bodies(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("no-default-bodies")?;
+    let max_defaulted = need_int(c, "max_defaulted", "no-default-bodies")?;
+    // The three declaring files, in the order the ceilings file names them. Each configured trait
+    // lives in exactly one of them, so the order decides nothing; it is fixed anyway, because a
+    // rule whose answer depends on a hash order is a rule that can change without an edit.
+    let files = [
+        need_str(c, "file", "no-default-bodies")?,
+        need_str(c, "plane_file", "no-default-bodies")?,
+        need_str(c, "transport_file", "no-default-bodies")?,
+    ];
+    let (mut offenders, mut missing) = (Vec::new(), Vec::new());
+    for name in c.list_of("traits") {
+        let mut found: Option<(&str, (usize, usize))> = None;
+        for rel in files {
+            if let Some(span) = trait_span(tree, rel, &name)? {
+                found = Some((rel, span));
+                break;
+            }
+        }
+        let Some((home, (start, end))) = found else {
+            missing.push(name);
+            continue;
+        };
+        for f in tree.fns.get(home).into_iter().flat_map(|v| v.iter()) {
+            if start <= f.start && f.start <= end && !f.intest {
+                offenders.push(format!(
+                    "{name}::{} has a default body at {home}:{}",
+                    f.name, f.start
+                ));
+            }
+        }
+    }
+    let current = offenders.len() as i64;
+    let detail = format!(
+        "{current} defaulted kind-trait method(s) (ceiling {max_defaulted}): {}{}",
+        join_or_none(&offenders),
+        if missing.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; trait(s) NOT FOUND in any declaring file, so they were not scanned at all: {} \
+                 — a trait this rule cannot find is a trait it cannot judge, and a ceiling of 0 \
+                 met by scanning nothing is the passing answer to every ban. Point the rule's \
+                 `file`/`plane_file`/`transport_file` at the trait's real home, or strike the \
+                 trait from `traits` in the same commit that deletes it",
+                py_list(&missing)
+            )
+        }
+    );
+    // A MISSING TRAIT IS A FAILURE, NOT A FOOTNOTE. This used to be `current <= max_defaulted`
+    // alone, with the missing set mentioned only in a detail string that a green run never prints.
+    // Measured 2026-09-22: with `transport_file` naming `crates/busbar-contract/src/transport.rs`
+    // (the value this file carried until a197ad2f5 moved the trait into `transport/mod.rs`), a
+    // default body planted on `Transport` scored `PASS ... 0 defaulted kind-trait method(s)
+    // (ceiling 0): none; trait(s) not found yet: ['Transport']`. The identical plant on `Store`,
+    // whose declaring file the rule still named correctly, scored FAIL. The only difference was
+    // whether the configured path still existed, and the rule already KNEW — it said so in the
+    // detail and passed anyway.
+    Ok(vec![plain(
+        "no-default-bodies",
+        current <= max_defaulted && missing.is_empty(),
+        "every kind-trait method is bodiless; implementing the trait is the only way to answer it",
+        detail,
+        current,
+        max_defaulted,
+        offenders,
+    )])
+}
+
+// ── 19. sealed-unit-traits ───────────────────────────────────────────────────────────────────────
+
+pub fn sealed_unit_traits(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("sealed-unit-traits")?;
+    let max_unsealed = need_int(c, "max_unsealed", "sealed-unit-traits")?;
+    let seal_word = Regex::new(r"[Ss]eal")?;
+    let (mut offenders, mut checked, mut missing) = (Vec::new(), Vec::new(), Vec::new());
+    for (_key, spec) in cfg.doc.children("rules.sealed-unit-traits.traits") {
+        let rel = need_str(spec, "file", "sealed-unit-traits.traits")?;
+        let trait_name = need_str(spec, "trait", "sealed-unit-traits.traits")?;
+        let crate_name = need_str(spec, "crate", "sealed-unit-traits.traits")?;
+        let Some(lines) = tree.files.get(rel) else {
+            missing.push(format!(
+                "{crate_name}::{trait_name} (file {rel} is not in the tree)"
+            ));
+            continue;
+        };
+        let joined: String = lines
+            .iter()
+            .map(|l| l.blank.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rx_trait = Regex::new(&format!(
+            r"trait\s+{}(?![A-Za-z0-9_])[^{{]*\{{",
+            rx::escape(trait_name)
+        ))?;
+        let Some(m) = rx_trait.search(joined.as_bytes()) else {
+            missing.push(format!(
+                "{crate_name}::{trait_name} (no `trait {trait_name}` declaration in {rel})"
+            ));
+            continue;
+        };
+        checked.push(trait_name.to_string());
+        let header = &joined.as_bytes()[m.start..m.end];
+        if !seal_word.is_match(header) {
+            offenders.push(format!(
+                "{crate_name}::{trait_name} has no private-supertrait seal ({rel})"
+            ));
+        }
+    }
+    let current = offenders.len() as i64;
+    let unresolved = if missing.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; configured trait(s) NOT FOUND, so they were not judged at all: {} — a trait this \
+             rule cannot find is a trait it cannot judge. Point the entry's `file` at the trait's \
+             real home, or strike the entry in the same commit that deletes the trait",
+            missing.join(", ")
+        )
+    };
+    let detail = if checked.is_empty() && missing.is_empty() {
+        "vacuous: none of the configured unit traits exist in this tree yet".to_string()
+    } else {
+        format!(
+            "{current} of {} configured unit trait(s) unsealed (ceiling {max_unsealed}): {}{unresolved}",
+            checked.len() + missing.len(),
+            join_or_none(&offenders)
+        )
+    };
+    // ITEMS 191/192: A MISSING TRAIT IS A FAILURE, the fix `no-default-bodies` above already
+    // carries. This dropped a configured trait whose file moved or whose header no longer matched
+    // — not counted, not named — and passed on the shrunken set: moving `Breaker`'s file made the
+    // one sealed trait vanish from the denominator and the row stayed green.
+    Ok(vec![plain(
+        "sealed-unit-traits",
+        current <= max_unsealed && missing.is_empty(),
+        "a unit's kernel-facing trait is sealed on a private supertrait",
+        detail,
+        current,
+        max_unsealed,
+        offenders,
+    )])
+}
+
+// ── 20. hold-discipline ──────────────────────────────────────────────────────────────────────────
+
+pub fn hold_discipline(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("hold-discipline")?;
+    let mut crates = c.list_of("scope_crates_kernel");
+    let glob = need_str(c, "scope_crate_glob", "hold-discipline")?;
+    crates.extend(
+        dirs_for_globs(cx, &[format!("crates/{glob}")])
+            .iter()
+            .map(|d| crate_name_of_dir(d)),
+    );
+    let files: Vec<String> = crates.iter().flat_map(|cr| tree.crate_files(cr)).collect();
+    let take_rx = Regex::new(need_str(c, "take_pattern", "hold-discipline")?)?;
+    let settle_rx = Regex::new(need_str(c, "settle_pattern", "hold-discipline")?)?;
+    let return_rx = Regex::new(r"\breturn\b")?;
+    let mut rows = Vec::new();
+
+    // (a) no `?` / early `return` between a take and its settle, in the same function.
+    let mut early_exit = Vec::new();
+    for rel in &files {
+        for f in tree.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
+            if f.intest {
+                continue;
+            }
+            let body = &tree.files[rel][f.start - 1..f.end];
+            let take_i = body.iter().position(|l| take_rx.is_match(l.code_bytes()));
+            let settle_i = body.iter().position(|l| settle_rx.is_match(l.code_bytes()));
+            let (Some(take_i), Some(settle_i)) = (take_i, settle_i) else {
+                continue;
+            };
+            if settle_i <= take_i {
+                continue;
+            }
+            for l in &body[take_i..settle_i] {
+                if l.blank.contains('?') || return_rx.is_match(l.code_bytes()) {
+                    early_exit.push(format!("{} at {rel}:{}", f.name, l.no));
+                }
+            }
+        }
+    }
+    let max_early = need_int(c, "max_early_exit", "hold-discipline")?;
+    let any_take = files
+        .iter()
+        .flat_map(|rel| tree.files[rel].iter())
+        .any(|l| take_rx.is_match(l.code_bytes()));
+    rows.push(plain(
+        "hold-discipline:no-early-exit",
+        early_exit.len() as i64 <= max_early,
+        "no `?` or early return between a Hold take and its settle",
+        if any_take {
+            format!(
+                "{} finding(s) (ceiling {max_early}): {}",
+                early_exit.len(),
+                join_or_none(&early_exit)
+            )
+        } else {
+            format!("{VACUOUS}no take/settle pair found in scope")
+        },
+        early_exit.len() as i64,
+        max_early,
+        early_exit,
+    ));
+
+    // (b) no Hold captured in a catch_unwind closure — an over-approximation, stated honestly.
+    let hold_word = need_str(c, "hold_word", "hold-discipline")?;
+    let hold_rx = Regex::new(&format!(
+        "(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])",
+        rx::escape(hold_word)
+    ))?;
+    let catch_rx = Regex::new(need_str(c, "catch_unwind_pattern", "hold-discipline")?)?;
+    let catch_sites = tree.grep(&catch_rx, true, None);
+    let mut captured = Vec::new();
+    for (rel, l) in &catch_sites {
+        let Some(f) = tree.enclosing_fn(rel, l.no) else {
+            continue;
+        };
+        let body: String = tree.files[*rel][f.start - 1..f.end]
+            .iter()
+            .map(|x| x.code.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if hold_rx.is_match_str(&body) {
+            captured.push(format!("{} at {rel}:{}", f.name, l.no));
+        }
+    }
+    let max_catch = need_int(c, "max_catch_unwind_capture", "hold-discipline")?;
+    rows.push(plain(
+        "hold-discipline:no-catch-unwind-capture",
+        captured.len() as i64 <= max_catch,
+        "no `Hold` is captured in a `catch_unwind` closure",
+        if catch_sites.is_empty() {
+            format!("{VACUOUS}no catch_unwind site found in scope")
+        } else {
+            format!(
+                "{} finding(s) (ceiling {max_catch}): {}",
+                captured.len(),
+                join_or_none(&captured)
+            )
+        },
+        captured.len() as i64,
+        max_catch,
+        captured,
+    ));
+
+    // (c) no JoinHandle::abort, and (d) no mem::forget/drop of a value named like a hold.
+    for (id, pat_key, ceil_key, title) in [
+        (
+            "hold-discipline:no-join-abort",
+            "abort_pattern",
+            "max_join_abort",
+            "no `JoinHandle::abort` in scope",
+        ),
+        (
+            "hold-discipline:no-forget-or-drop",
+            "forget_or_drop_pattern",
+            "max_forget_or_drop",
+            "no `mem::forget`/`drop(...)` of a value named like a Hold",
+        ),
+    ] {
+        let rx_pat = Regex::new(need_str(c, pat_key, "hold-discipline")?)?;
+        let hits: Vec<String> = tree
+            .grep(&rx_pat, true, Some(&files))
+            .into_iter()
+            .map(|(rel, l)| format!("{rel}:{}", l.no))
+            .collect();
+        let ceiling = need_int(c, ceil_key, "hold-discipline")?;
+        rows.push(plain(
+            id,
+            hits.len() as i64 <= ceiling,
+            title,
+            format!(
+                "{} finding(s) (ceiling {ceiling}): {}",
+                hits.len(),
+                join_or_none(&hits)
+            ),
+            hits.len() as i64,
+            ceiling,
+            hits,
+        ));
+    }
+
+    // (e) The route step it once scanned is sync, so the row was vacuous there. Its real subject is the dispatcher's deadline/cancel path: in
+    // every function of `cancel_scope_dirs` that names a cancel or a deadline, a money hold open at
+    // or after that point is released or settled BEFORE any `.await` or `return` that follows it.
+    let dirs = c.list_of("cancel_scope_dirs");
+    let cancel_rx = Regex::new(need_str(c, "cancel_path_pattern", "hold-discipline")?)?;
+    let open_rx = Regex::new(need_str(c, "hold_open_pattern", "hold-discipline")?)?;
+    let close_rx = Regex::new(need_str(c, "hold_close_pattern", "hold-discipline")?)?;
+    let cancel_files: Vec<&String> = tree
+        .files
+        .keys()
+        .filter(|r| dirs.iter().any(|d| r.starts_with(d.as_str())))
+        .collect();
+    let (mut open_across, mut cancel_fns) = (Vec::new(), 0usize);
+    for rel in cancel_files {
+        for f in tree.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
+            if f.intest {
+                continue;
+            }
+            let body = &tree.files[rel][f.start - 1..f.end];
+            let Some(cancel_i) = body.iter().position(|l| cancel_rx.is_match(l.code_bytes()))
+            else {
+                continue;
+            };
+            cancel_fns += 1;
+            let mut open = false;
+            for (i, l) in body.iter().enumerate() {
+                if open_rx.is_match(l.code_bytes()) {
+                    open = true;
+                }
+                if close_rx.is_match(l.code_bytes()) {
+                    open = false;
+                }
+                let exits = l.code.contains(".await") || return_rx.is_match(l.code_bytes());
+                if open && exits && i >= cancel_i {
+                    open_across.push(format!("{} at {rel}:{}", f.name, l.no));
+                }
+            }
+        }
+    }
+    let max_open = need_int(c, "max_await_with_open_hold", "hold-discipline")?;
+    rows.push(plain(
+        "hold-discipline:cancellation-before-await",
+        open_across.len() as i64 <= max_open,
+        "a money hold is released or settled before any `.await` or `return` after a cancel or deadline",
+        if cancel_fns > 0 {
+            format!(
+                "{} `.await`/`return` with a hold open after a cancel or deadline, over {cancel_fns} \
+                 cancel-path function(s) in {} (ceiling {max_open}): {}",
+                open_across.len(),
+                dirs.join(", "),
+                join_or_none(&open_across)
+            )
+        } else {
+            format!("{VACUOUS}no cancel-path function found in {}", dirs.join(", "))
+        },
+        open_across.len() as i64,
+        max_open,
+        open_across,
+    ));
+    Ok(rows)
+}
+
+// ── 21. kernel-seal-impls and forbid-unsafe ──────────────────────────────────────────────────────
+
+pub fn kernel_seal_impls(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("kernel-seal-impls")?;
+    let allowed_root = need_str(c, "allowed_root", "kernel-seal-impls")?;
+    let root = format!("{}/", allowed_root.trim_end_matches('/'));
+    let max_sites = need_int(c, "max_sites", "kernel-seal-impls")?;
+    let known = c.list_of("known_sites");
+    let pat = Regex::new(need_str(c, "pattern", "kernel-seal-impls")?)?;
+
+    let (mut offenders, mut tracked) = (Vec::new(), Vec::new());
+    // Scans test code as well as production: every forging impl in the tree lives in a test module,
+    // so a production-only reading would be vacuous by construction.
+    for (rel, l) in tree.grep(&pat, false, None) {
+        if rel.starts_with(root.as_str()) {
+            continue;
+        }
+        let where_ = format!("{rel}:{}", l.no);
+        if known.iter().any(|k| k == rel) {
+            tracked.push(where_);
+        } else {
+            offenders.push(where_);
+        }
+    }
+    let current = offenders.len() as i64;
+    let mut parts = Vec::new();
+    if !offenders.is_empty() {
+        parts.push(format!(
+            "forging the contract's seal: {}",
+            offenders.join("; ")
+        ));
+    }
+    if !tracked.is_empty() {
+        parts.push(format!(
+            "tracked debt (qa/construction.toml known_sites): {}",
+            tracked.join("; ")
+        ));
+    }
+    let detail = format!(
+        "{current} impl(s) of the contract's KernelSeal outside {allowed_root} (ceiling \
+         {max_sites}): {}",
+        join_or_none(&parts)
+    );
+    Ok(vec![plain(
+        "kernel-seal-impls",
+        current <= max_sites,
+        "the contract's sealing trait is implemented only inside busbar-caps",
+        detail,
+        current,
+        max_sites,
+        offenders,
+    )])
+}
+
+pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("forbid-unsafe")?;
+    // THE CRATE-LEVEL INNER ATTRIBUTE, IN THE CRATE ROOT, AND NOTHING ELSE COUNTS (item 89).
+    //
+    // This matched `forbid(unsafe_code)` anywhere in any file of the crate, over the `code` text,
+    // which keeps string literals intact. So `assert!(lib.contains("#![forbid(unsafe_code)]"))` in
+    // `crates/busbar-plane-{a2a,llm,mcp,decision}/tests/*.rs` — a TEST ABOUT the attribute — was
+    // scored as the attribute itself, and stripping the real one from `src/lib.rs` left every one
+    // of those rows PASS: the self-test's "every crate of this kind loses its attribute" plant went
+    // GREEN, which is this rule unable to see the one thing it exists for. A module-level
+    // `#![forbid(unsafe_code)]` (busbar-contract's `json_grammar.rs`, `caps/mod.rs`) does not bind
+    // the crate either. So: the blanked text (literal bodies emptied), production lines only, the
+    // `#![...]` inner-attribute spelling, in `src/lib.rs` or `src/main.rs`.
+    let forbid_rx = Regex::new(r"#!\s*\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]")?;
+    let deny_rx = Regex::new(r"#!\s*\[\s*(forbid|deny)\s*\(\s*unsafe_code\s*\)\s*\]")?;
+    let mut rows = Vec::new();
+    for (kinds_key, level, rid_prefix, label, missing_key, rx_pat) in [
+        (
+            "forbid_kinds",
+            "forbid",
+            "forbid-unsafe",
+            "#![forbid(unsafe_code)]",
+            "known_missing_forbid",
+            &forbid_rx,
+        ),
+        (
+            "deny_kinds",
+            "deny",
+            "forbid-unsafe-deny",
+            "#![deny(unsafe_code)] (or stronger)",
+            "known_missing_deny",
+            &deny_rx,
+        ),
+    ] {
+        let known_missing = c.list_of(missing_key);
+        let mut seen = Vec::new();
+        for kind in c.list_of(kinds_key) {
+            seen.extend(kind_crate_dirs(cx, cfg, &kind)?);
+        }
+        let mut out = Vec::new();
+        for d in seen {
+            let crate_name = crate_name_of_dir(&d);
+            let roots = [format!("{d}/src/lib.rs"), format!("{d}/src/main.rs")];
+            let has_it = roots.iter().any(|rel| {
+                tree.files.get(rel.as_str()).is_some_and(|lines| {
+                    lines
+                        .iter()
+                        .any(|l| !l.intest && rx_pat.is_match(l.blank.as_bytes()))
+                })
+            });
+            let current = i64::from(!has_it);
+            let is_known = known_missing.contains(&crate_name);
+            let ceiling = i64::from(is_known);
+            let debt_note = if is_known {
+                " (tracked debt, ratcheted in qa/construction.toml)"
+            } else {
+                ""
+            };
+            out.push(plain(
+                format!("{rid_prefix}:{crate_name}"),
+                current <= ceiling,
+                format!("{crate_name} carries `#![{level}(unsafe_code)]`"),
+                format!(
+                    "{crate_name}: {} `{label}`{}",
+                    if has_it { "present" } else { "MISSING" },
+                    if has_it { "" } else { debt_note }
+                ),
+                current,
+                ceiling,
+                if has_it {
+                    vec![]
+                } else {
+                    vec![format!("{crate_name}: missing {label}")]
+                },
+            ));
+        }
+        if out.is_empty() {
+            out.push(plain(
+                rid_prefix,
+                true,
+                format!("{label} present"),
+                "vacuous: no crate of this kind exists yet",
+                0,
+                0,
+                vec![],
+            ));
+        }
+        rows.extend(out);
+    }
+    Ok(rows)
+}
+
+// ── 22/23. hold-escapes and seal-sites, one scan shared ──────────────────────────────────────────
+
+fn symbol_table_scan(
+    cx: &Ctx,
+    tree: &Tree,
+    cfg: &Cfg,
+    rule: &str,
+    title: &str,
+    noun: &str,
+) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule(rule)?;
+    let max_sites = need_int(c, "max_sites", rule)?;
+    let dirs = dirs_for_globs(cx, &c.list_of("scan_globs"));
+    let mut files: Vec<String> = Vec::new();
+    for d in &dirs {
+        let prefix = format!("{d}/");
+        files.extend(
+            tree.files
+                .keys()
+                .filter(|rel| rel.starts_with(prefix.as_str()))
+                .cloned(),
+        );
+    }
+    let known = c.list_of("known_sites");
+
+    let reviewed = |rel: &str, fname: &str| -> bool {
+        known.iter().any(|entry| {
+            if entry.ends_with('/') {
+                rel.starts_with(entry.as_str())
+            } else if let Some((path, want)) = entry.split_once("::") {
+                rel == path && fname == want
+            } else {
+                rel == entry
+            }
+        })
+    };
+
+    let (mut offenders, mut tracked) = (Vec::new(), Vec::new());
+    for (_key, spec) in cfg.doc.children(&format!("rules.{rule}.symbols")) {
+        let symbol = need_str(spec, "symbol", rule)?;
+        let because = need_str(spec, "because", rule)?;
+        let confined: Vec<String> = spec.list_of("confined_to_paths");
+        let sym_rx = Regex::new(&rx::escape(symbol))?;
+        // THE SITES INSIDE THE HOME, counted where a spec states how many there are (item 130).
+        // Confinement alone says WHERE a symbol may appear and nothing about how often: a fourth
+        // `HoldCell::take` written next to the other three sat inside the confined file and the
+        // row stayed PASS. A `sites = N` spec holds the home to exactly N, so a fourth goes red and
+        // so does a site that stops spelling the literal the count is taken over.
+        let mut homed: Vec<String> = Vec::new();
+        for (rel, l) in tree.grep(&sym_rx, true, Some(&files)) {
+            // ANCHORED, and matched as a path prefix: `confined_to` is the busbar-caps fixture's
+            // prose spelling and excuses any path containing those characters; the resolved
+            // `confined_to_paths` excuses a file exactly, or a directory and everything under it.
+            let here = confined.iter().any(|p| {
+                let p = p.trim_end_matches('/');
+                !p.is_empty() && (rel == p || rel.starts_with(&format!("{p}/")))
+            });
+            if here {
+                homed.push(format!("{rel}:{}", l.no));
+                continue;
+            }
+            let fname = tree
+                .enclosing_fn(rel, l.no)
+                .map_or(String::new(), |f| f.name.clone());
+            let where_ = format!("`{symbol}` at {rel}:{} ({because})", l.no);
+            if reviewed(rel, &fname) {
+                tracked.push(where_);
+            } else {
+                offenders.push(where_);
+            }
+        }
+        if let Some(want) = spec.int_of("sites") {
+            if homed.len() as i64 != want {
+                offenders.push(format!(
+                    "`{symbol}` has {} site(s) inside its home, the spec says exactly {want} \
+                     ({because}): {}",
+                    homed.len(),
+                    join_or_none(&homed)
+                ));
+            }
+        }
+    }
+    let current = offenders.len() as i64;
+    let mut parts = Vec::new();
+    if !offenders.is_empty() {
+        parts.push(offenders.join("; "));
+    }
+    if !tracked.is_empty() {
+        parts.push(format!(
+            "reviewed escapes (qa/construction.toml known_sites): {}",
+            tracked.join("; ")
+        ));
+    }
+    let detail = format!(
+        "{current} {noun} in production source (ceiling {max_sites}): {}",
+        join_or_none(&parts)
+    );
+    Ok(vec![plain(
+        rule,
+        current <= max_sites,
+        title,
+        detail,
+        current,
+        max_sites,
+        offenders,
+    )])
+}
+
+pub fn hold_escapes(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    symbol_table_scan(
+        cx,
+        tree,
+        cfg,
+        "hold-escapes",
+        "no production source deliberately forgets, leaks or unwind-smuggles a hold",
+        "deliberate hold escape(s)",
+    )
+}
+
+pub fn seal_sites(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    symbol_table_scan(
+        cx,
+        tree,
+        cfg,
+        "seal-sites",
+        "no production source outside its one reviewed home names a capability-minting symbol",
+        "capability-minting symbol(s) out of place",
+    )
+}
+
+// ── 24. secret-carrier-debug ─────────────────────────────────────────────────────────────────────
+
+pub fn secret_carrier_debug(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("secret-carrier-debug")?;
+    let max_derived = need_int(c, "max_derived", "secret-carrier-debug")?;
+    let stop_rx = Regex::new(r"[};]|(?:^|[^A-Za-z0-9_])(?:struct|enum|fn)(?![A-Za-z0-9_])")?;
+    let derive_rx = Regex::new(r"derive\s*\([^)]*\bDebug\b")?;
+
+    let (mut offenders, mut checked) = (Vec::new(), 0usize);
+    for name in c.list_of("carriers") {
+        let decl_rx = Regex::new(&format!(
+            r"(?:^|[^A-Za-z0-9_])(?:struct|enum)\s+{}(?![A-Za-z0-9_])",
+            rx::escape(&name)
+        ))?;
+        for (rel, l) in tree.grep(&decl_rx, true, None) {
+            checked += 1;
+            let lines = &tree.files[rel];
+            // Walk back over the attribute block sitting directly on the declaration. A blank line
+            // (which is also what a doc comment strips to) or the end of the item above stops the
+            // walk, so no other item's derives are read as this one's.
+            let mut attrs: Vec<&str> = Vec::new();
+            let mut i = l.no as i64 - 2;
+            while i >= 0 {
+                let above = lines[i as usize].code.trim();
+                if above.is_empty() || stop_rx.is_match_str(above) {
+                    break;
+                }
+                attrs.push(above);
+                i -= 1;
+            }
+            attrs.reverse();
+            if derive_rx.is_match_str(&attrs.join(" ")) {
+                offenders.push(format!("`{name}` derives Debug at {rel}:{}", l.no));
+            }
+        }
+    }
+    let current = offenders.len() as i64;
+    let detail = if checked == 0 {
+        format!("{VACUOUS}no named secret carrier is declared in the scanned tree")
+    } else {
+        format!(
+            "{current} secret carrier(s) with a derived Debug (ceiling {max_derived}): {}",
+            join_or_none(&offenders)
+        )
+    };
+    Ok(vec![plain(
+        "secret-carrier-debug",
+        current <= max_derived,
+        "a type carrying secret bytes hand-rolls its Debug",
+        detail,
+        current,
+        max_derived,
+        offenders,
+    )])
+}
+
+// ── 25. no-escaped-newline-doc-comment ───────────────────────────────────────────────────────────
+
+pub fn no_escaped_newline_doc_comment(
+    cx: &Ctx,
+    tree: &Tree,
+    cfg: &Cfg,
+) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("no-escaped-newline-doc-comment")?;
+    let max_hits = need_int(c, "max_hits", "no-escaped-newline-doc-comment")?;
+    // Scanned on the RAW file text, not the comment-stripped view, because the escape sequence
+    // lives inside the doc comment itself.
+    let rx_pat = Regex::new(r"\\n//[!/]")?;
+    let mut offenders = Vec::new();
+    for rel in tree.files.keys() {
+        if !rel.starts_with("crates/") {
+            continue;
+        }
+        let Ok(text) = cx.read(rel) else { continue };
+        for (i, raw) in text.split('\n').enumerate() {
+            if rx_pat.is_match_str(raw) {
+                offenders.push(format!("{rel}:{}", i + 1));
+            }
+        }
+    }
+    let current = offenders.len() as i64;
+    let detail = format!(
+        "{current} line(s) under crates/ carrying a literal backslash-n immediately before \
+         `//!`/`///` (ceiling {max_hits}): {}",
+        join_or_none(&offenders)
+    );
+    Ok(vec![plain(
+        "no-escaped-newline-doc-comment",
+        current <= max_hits,
+        "no doc comment carries a literal backslash-n instead of a real line break",
+        detail,
+        current,
+        max_hits,
+        offenders,
+    )])
+}
+
+// ── 26. unit-no-wall-clock ───────────────────────────────────────────────────────────────────────
+
+pub fn unit_no_wall_clock(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("unit-no-wall-clock")?;
+    let max_hits = need_int(c, "max_hits", "unit-no-wall-clock")?;
+    let exempt = c.list_of("exempt_files");
+    let files: Vec<String> = scoped_files(tree, &c.list_of("scope_globs"))
+        .into_iter()
+        .filter(|rel| !exempt.contains(rel))
+        .collect();
+    let rx_pat = Regex::new(
+        &c.list_of("forbidden")
+            .iter()
+            .map(|v| rx::escape(v))
+            .collect::<Vec<_>>()
+            .join("|"),
+    )?;
+    let offenders: Vec<String> = tree
+        .grep(&rx_pat, true, Some(&files))
+        .into_iter()
+        .map(|(rel, l)| format!("{rel}:{}", l.no))
+        .collect();
+    let current = offenders.len() as i64;
+    let detail = if files.is_empty() {
+        format!("{VACUOUS}no unit crate source is present in the scanned tree")
+    } else {
+        format!(
+            "{current} clock read(s) in unit-crate production code (ceiling {max_hits}): {}",
+            join_or_none(&offenders)
+        )
+    };
+    Ok(vec![plain(
+        "unit-no-wall-clock",
+        current <= max_hits,
+        "no unit crate reads the wall or monotonic clock",
+        detail,
+        current,
+        max_hits,
+        offenders,
+    )])
+}
+
+// ── 27. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
+
+pub fn unit_no_finding_ids(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("unit-no-finding-ids")?;
+    let max_hits = need_int(c, "max_hits", "unit-no-finding-ids")?;
+    // The shapes are regular expressions, not literals; escaping them here would search for the
+    // backslash the ceilings file spells.
+    let rx_pat = Regex::new(&c.list_of("patterns").join("|"))?;
+    let exempt = c.list_of("exempt_crates");
+    let scoped = scoped_files(tree, &c.list_of("scope_globs"));
+    let mut offenders = Vec::new();
+    for rel in &scoped {
+        if exempt.contains(&tree.crate_of(rel)) {
+            continue;
+        }
+        let lines = &tree.files[rel];
+        // Read on the RAW file text, because the citations live in comments.
+        let Ok(text) = cx.read(rel) else { continue };
+        for (i, raw) in text.split('\n').enumerate() {
+            if i < lines.len() && lines[i].intest {
+                continue;
+            }
+            if rx_pat.is_match_str(raw) {
+                offenders.push(format!("{rel}:{}", i + 1));
+            }
+        }
+    }
+    let current = offenders.len() as i64;
+    let detail = if scoped.is_empty() {
+        format!("{VACUOUS}no unit crate source is present in the scanned tree")
+    } else {
+        format!(
+            "{current} finding-identifier citation(s) in unit-crate production code (ceiling \
+             {max_hits}): {}",
+            join_or_none(&offenders)
+        )
+    };
+    Ok(vec![plain(
+        "unit-no-finding-ids",
+        current <= max_hits,
+        "a unit crate states its rule in words, not as a finding identifier",
+        detail,
+        current,
+        max_hits,
+        offenders,
+    )])
+}
+
+// ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────
+
+/// The whole identifier containing `pos`, so a match on a fragment is judged as the word a reader
+/// sees: `priced` inside `unpriced_message` is that field's name, not a price.
+fn identifier_at(ident_rx: &Regex, code: &[u8], pos: usize) -> Option<String> {
+    ident_rx
+        .find_iter(code)
+        .into_iter()
+        .find(|m| m.start <= pos && pos < m.end)
+        .and_then(|m| m.str_of(code, 0))
+}
+
+pub fn plane_no_money(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("plane-no-money")?;
+    let max_hits = need_int(c, "max_hits", "plane-no-money")?;
+    let scope_globs = c.list_of("scope_globs");
+    let files = scoped_files(tree, &scope_globs);
+    let allowed = c.list_of("allowed_vocabulary");
+    let allowlist: &Table = &cfg.doc.table_or_empty("rules.plane-no-money.allowlist");
+    let symbols = c.list_of("symbols");
+    let sym_rx = Regex::new(
+        &symbols
+            .iter()
+            .map(|s| {
+                if s.starts_with('_') {
+                    rx::escape(s)
+                } else {
+                    crate::gates::construction::model::word(s)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("|"),
+    )?;
+    let path_rx = Regex::new(
+        &c.list_of("forbidden_module_paths")
+            .iter()
+            .map(|p| rx::escape(p))
+            .collect::<Vec<_>>()
+            .join("|"),
+    )?;
+    let ident_rx = Regex::new(r"[A-Za-z_][A-Za-z0-9_]*")?;
+
+    let mut offenders = Vec::new();
+    for rel in &files {
+        let here = allowlist.list_of(rel);
+        // Every input of the per-file scan is in the tag; see `memo_file_scan`.
+        let tag = format!(
+            "plane-no-money\u{1}{rel}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+            sym_rx.as_str(),
+            path_rx.as_str(),
+            allowed.join("\u{2}"),
+            here.join("\u{2}")
+        );
+        let found = memo_file_scan(tag, &tree.files[rel], |lines| {
+            let mut out = Vec::new();
+            for l in lines {
+                if l.intest {
+                    continue;
+                }
+                let bytes = l.code_bytes();
+                for m in sym_rx.find_iter(bytes) {
+                    let raw = m.str_of(bytes, 0).unwrap_or_default();
+                    let w = identifier_at(&ident_rx, bytes, m.start).unwrap_or_else(|| raw.clone());
+                    if allowed.contains(&w) || here.contains(&w) || here.contains(&raw) {
+                        continue;
+                    }
+                    out.push(format!("`{w}` at {rel}:{}", l.no));
+                    break;
+                }
+                if let Some(pm) = path_rx.search(bytes) {
+                    out.push(format!(
+                        "`{}` at {rel}:{}",
+                        pm.str_of(bytes, 0).unwrap_or_default(),
+                        l.no
+                    ));
+                }
+            }
+            out
+        });
+        offenders.extend(found.iter().cloned());
+    }
+    let forbidden_deps = c.list_of("forbidden_deps");
+    let mut crates: Vec<String> = files.iter().map(|rel| tree.crate_of(rel)).collect();
+    crates.sort();
+    crates.dedup();
+    for crate_name in crates {
+        for dep in read_cargo_deps_text(
+            &cx.read(format!("crates/{crate_name}/Cargo.toml"))
+                .unwrap_or_default(),
+        ) {
+            if forbidden_deps.contains(&dep) {
+                offenders.push(format!("{crate_name}/Cargo.toml depends on `{dep}`"));
+            }
+        }
+    }
+    let current = offenders.len() as i64;
+    let empty: Vec<String> = scope_globs
+        .iter()
+        .filter(|g| scoped_files(tree, std::slice::from_ref(g)).is_empty())
+        .cloned()
+        .collect();
+    let detail = if files.is_empty() {
+        format!("{VACUOUS}no plane crate, plane codec or plane unit module is present in this tree")
+    } else {
+        format!(
+            "{current} money symbol(s) in the plane crates, plane codecs and plane unit modules \
+             (ceiling {max_hits}): {}{}",
+            head(&offenders, 8),
+            if empty.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; scope glob(s) matching no file yet (not a finding): {}",
+                    empty.join(", ")
+                )
+            }
+        )
+    };
+    Ok(vec![plain(
+        "plane-no-money",
+        current <= max_hits,
+        "a plane names usage classes and quantities, never a price",
+        detail,
+        current,
+        max_hits,
+        offenders,
+    )])
+}
+
+// ── 29. one-pricing-site ─────────────────────────────────────────────────────────────────────────
+
+/// THE ONE FUNCTION UNDER ANOTHER NAME: every production function in the cost unit (`cost_path`)
+/// whose signature names one of `wrapper_inputs` (the one function's own input, the ledger slice)
+/// and whose body reaches a pricing entry. "Reaches" is a call matching an `entry_path_patterns`
+/// tail (`price_in_view(`, `price_exact(`, `apply_tier(`), one of `wrapper_reaches` (the
+/// accumulator itself), or a call to a wrapper already found, so a wrapper around a wrapper is
+/// found too. The NAME plays no part: renaming a wrapper does not hide it.
+///
+/// Returns the wrappers the path patterns do NOT already see (those are counted there), and how
+/// many functions matched in all, the one function itself included. A count of zero is a blind
+/// scan, not a clean one.
+fn pricing_wrappers(
+    tree: &Tree,
+    c: &Table,
+    cost_path: &str,
+    path_rx: &Regex,
+) -> Result<(Vec<String>, usize), String> {
+    use crate::gates::construction::model::word;
+    const COST_PATH: &str = "busbar_kernel_ledger::cost::";
+    let inputs = c.list_of("wrapper_inputs");
+    if inputs.is_empty() {
+        return Err(
+            "[rules.one-pricing-site] lists no `wrapper_inputs`, so a pricing entry under another \
+             name is invisible"
+                .to_string(),
+        );
+    }
+    let input_rx = Regex::new(&inputs.iter().map(|t| word(t)).collect::<Vec<_>>().join("|"))?;
+    let mut reach: Vec<String> = c
+        .list_of("entry_path_patterns")
+        .iter()
+        .map(|p| {
+            let tail = p.strip_prefix(COST_PATH).unwrap_or(p);
+            format!(r"(?<![A-Za-z0-9_])(?:{tail})[A-Za-z0-9_]*\s*\(")
+        })
+        .collect();
+    reach.extend(c.list_of("wrapper_reaches"));
+
+    // (name, signature, body), over the blanked text so a string literal neither opens a body nor
+    // reads as a call.
+    let mut candidates: Vec<(String, String, String)> = Vec::new();
+    for (rel, fns) in &tree.fns {
+        if !(rel == cost_path || rel.starts_with(&format!("{cost_path}/"))) {
+            continue;
+        }
+        let Some(lines) = tree.files.get(rel) else {
+            continue;
+        };
+        for f in fns.iter().filter(|f| !f.intest) {
+            let text = lines
+                .iter()
+                .filter(|l| l.no >= f.start && l.no <= f.end)
+                .map(|l| l.blank.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let Some(open) = text.find('{') else {
+                continue;
+            };
+            candidates.push((
+                f.name.clone(),
+                text[..open].to_string(),
+                text[open..].to_string(),
+            ));
+        }
+    }
+
+    let mut found: Vec<String> = Vec::new();
+    loop {
+        let mut pats = reach.clone();
+        pats.extend(found.iter().map(|n| format!(r"{}\s*\(", word(n))));
+        let reach_rx = Regex::new(&pats.join("|"))?;
+        let before = found.len();
+        for (name, sig, body) in &candidates {
+            if !found.contains(name) && input_rx.is_match_str(sig) && reach_rx.is_match_str(body) {
+                found.push(name.clone());
+            }
+        }
+        if found.len() == before {
+            break;
+        }
+    }
+    let seen = found.len();
+    let mut wrappers: Vec<String> = found
+        .into_iter()
+        .filter(|n| !path_rx.is_match_str(&format!("{COST_PATH}{n}")))
+        .collect();
+    wrappers.sort();
+    wrappers.dedup();
+    Ok((wrappers, seen))
+}
+
+pub fn one_pricing_site(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("one-pricing-site")?;
+    let max_extra = need_int(c, "max_extra_sites", "one-pricing-site")?;
+    let homes: Vec<(String, String)> = cfg
+        .doc
+        .children("rules.one-pricing-site.allowed")
+        .into_iter()
+        .map(|(k, t)| {
+            (
+                k,
+                t.str_of("path")
+                    .unwrap_or("")
+                    .trim_end_matches('/')
+                    .to_string(),
+            )
+        })
+        .collect();
+    let home_of = |rel: &str| -> Option<&String> {
+        homes
+            .iter()
+            .find(|(_, p)| rel == p || rel.starts_with(&format!("{p}/")))
+            .map(|(k, _)| k)
+    };
+
+    let mut sites: Vec<(String, String, usize)> = Vec::new();
+    for verb in c.list_of("entry_verbs") {
+        for (rel, l) in call_sites(tree, &verb, None)? {
+            sites.push((format!("`{verb}(`"), rel.to_string(), l.no));
+        }
+    }
+    let path_rx = Regex::new(&c.list_of("entry_path_patterns").join("|"))?;
+    for (rel, l) in tree.grep(&path_rx, true, None) {
+        let hit = path_rx
+            .search(l.code_bytes())
+            .and_then(|m| m.str_of(l.code_bytes(), 0))
+            .unwrap_or_default();
+        sites.push((format!("`{hit}`"), rel.to_string(), l.no));
+    }
+    // THE ONE FUNCTION UNDER ANOTHER NAME (ARCHITECT 2026-09-30). A cost-unit function that
+    // takes the one function's own input and hands it on to a pricing entry IS that entry, whatever
+    // it is called, so a call to it from outside the homes is counted like a call to the entry.
+    let cost_home = need_str(c, "wrapper_home", "one-pricing-site")?;
+    let cost_path = homes
+        .iter()
+        .find(|(k, _)| k == cost_home)
+        .map(|(_, p)| p.clone())
+        .ok_or_else(|| {
+            format!(
+                "[rules.one-pricing-site] wrapper_home = \"{cost_home}\" names no \
+                 [rules.one-pricing-site.allowed.*] home"
+            )
+        })?;
+    let (wrappers, seen_inputs) = pricing_wrappers(tree, c, &cost_path, &path_rx)?;
+    for w in &wrappers {
+        for (rel, l) in call_sites(tree, w, None)? {
+            let names_cost_unit = tree
+                .files
+                .get(rel)
+                .is_some_and(|ls| ls.iter().any(|x| x.code.contains("busbar_kernel_ledger")));
+            if names_cost_unit {
+                sites.push((
+                    format!("`busbar_kernel_ledger::cost::{w}` (a renamed pricing entry)"),
+                    rel.to_string(),
+                    l.no,
+                ));
+            }
+        }
+    }
+    let (mut extra, mut inside) = (Vec::new(), Vec::new());
+    for (what, rel, no) in &sites {
+        match home_of(rel) {
+            Some(key) => inside.push(format!("{what} at {rel}:{no} ({key})")),
+            None => extra.push(format!("{what} at {rel}:{no}")),
+        }
+    }
+    // BLIND, NOT CLEAN: the wrapper scan must at least see the one function itself take its input.
+    // Zero means the input type was renamed under the scan, and every wrapper would go unseen.
+    if seen_inputs == 0 {
+        extra.push(format!(
+            "the wrapper scan is BLIND: no function in {cost_path} takes any of {} and reaches a \
+             pricing entry, not even the one function",
+            py_list(&c.list_of("wrapper_inputs"))
+        ));
+    }
+    let current = extra.len() as i64;
+    let mut home_keys: Vec<String> = homes.iter().map(|(k, _)| k.clone()).collect();
+    home_keys.sort();
+    let detail = format!(
+        "{current} pricing-entry call site(s) outside the reviewed homes {} (ceiling \
+         {max_extra}): {}; reviewed sites seen: {}; entries under another name: {}",
+        py_list(&home_keys),
+        join_or_none(&extra),
+        if inside.is_empty() {
+            "NONE \u{2014} no production code prices at all today".to_string()
+        } else {
+            inside.join("; ")
+        },
+        join_or_none(&wrappers)
+    );
+    let mut rows = vec![plain(
+        "one-pricing-site",
+        current <= max_extra,
+        "only the root's meter/admission wiring and the kernel's settle sites price a unit",
+        detail,
+        current,
+        max_extra,
+        extra,
+    )];
+
+    let fee_fields = c.list_of("fee_fields");
+    let fee_crates = c.list_of("fee_reader_crates");
+    let max_fee = need_int(c, "max_fee_readers", "one-pricing-site")?;
+    let fee_rx = Regex::new(
+        &fee_fields
+            .iter()
+            .map(|f| crate::gates::construction::model::word(f))
+            .collect::<Vec<_>>()
+            .join("|"),
+    )?;
+    let all_hits = tree.grep(&fee_rx, true, None);
+    let mut sorted_crates = fee_crates.clone();
+    sorted_crates.sort();
+    if all_hits.is_empty() {
+        // Zero hits for every spelling this rule knows means the rule is BLIND, not that the fee
+        // is priced nowhere: a field rename can silently retire every spelling in `fee_fields`
+        // while the rule keeps reporting whatever count it last saw. Zero is only ever read as
+        // "I cannot see the fee" — it is always a FAIL, independent of `max_fee_readers`.
+        rows.push(plain(
+            "one-pricing-site:fee-fields",
+            false,
+            "the per-request fee is read only where the card lives",
+            format!(
+                "0 production read(s) anywhere in the tree of any of {} — the rule cannot see the \
+                 fee (a spelling in `fee_fields` may no longer match the field the card uses), not \
+                 evidence that the fee is priced nowhere",
+                py_list(&fee_fields)
+            ),
+            0,
+            max_fee,
+            Vec::new(),
+        ));
+    } else {
+        // THE REVIEWED FEE HOMES, and why this half has them at all. The entry-verb half above is
+        // scoped by PATH (`[rules.one-pricing-site.allowed.*]`), and one of its homes is
+        // `crates/busbar/src/root/` — "the composition root's meter and admission wiring". This
+        // half was scoped by CRATE only, so the same rule said two different things about the same
+        // root in the same breath. A crate list cannot express "this one reviewed file", and the
+        // only widening it can offer is the whole `busbar` crate, which would bless `main.rs` and
+        // every `units_*.rs` in one unargued stroke. So the grant is per PATH, with a COUNT, and
+        // both halves of it bite: a read above `max` at a home is reported exactly like a read with
+        // no home at all, and a home whose count falls to ZERO is reported too, because a grant
+        // that describes nothing is the dead name this file has already been bitten by five times
+        // — it stops applying in silence, and the next real read at that path inherits a waiver
+        // nobody reviewed.
+        let fee_homes: Vec<(String, String, i64)> = cfg
+            .doc
+            .children("rules.one-pricing-site.fee_allowed")
+            .into_iter()
+            .map(|(k, t)| {
+                (
+                    k,
+                    t.str_of("path").unwrap_or("").to_string(),
+                    t.int_of("max").unwrap_or(0),
+                )
+            })
+            .collect();
+        let mut seen_at_home: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut readers: Vec<String> = Vec::new();
+        for (rel, l) in all_hits {
+            if fee_crates.contains(&tree.crate_of(rel)) {
+                continue;
+            }
+            let site = format!("{rel}:{}", l.no);
+            match fee_homes
+                .iter()
+                .find(|(_, p, _)| !p.is_empty() && (rel == *p || rel.starts_with(&format!("{p}/"))))
+            {
+                Some((key, _, _)) => seen_at_home.entry(key.clone()).or_default().push(site),
+                None => readers.push(site),
+            }
+        }
+        let mut homes_detail: Vec<String> = Vec::new();
+        for (key, _, max) in &fee_homes {
+            let at = seen_at_home.get(key).cloned().unwrap_or_default();
+            homes_detail.push(format!("{key} {}/{max}", at.len()));
+            if at.is_empty() {
+                readers.push(format!(
+                    "[rules.one-pricing-site.fee_allowed.{key}] grants a reviewed fee home that \
+                     reads no fee on this tree — a dead grant, to be deleted or repointed"
+                ));
+            }
+            // Over the reviewed count, the SURPLUS is named. Which of the reads is the new one is
+            // not knowable from a count, so the whole home is named once rather than an arbitrary
+            // tail of it being blamed.
+            if at.len() as i64 > *max {
+                readers.push(format!(
+                    "{key}: {} read(s) where {max} were reviewed ({})",
+                    at.len(),
+                    at.join(", ")
+                ));
+            }
+        }
+        let detail = format!(
+            "{} production read(s) of {} outside {} (ceiling {max_fee}){}: {}",
+            readers.len(),
+            py_list(&fee_fields),
+            py_list(&sorted_crates),
+            if homes_detail.is_empty() {
+                String::new()
+            } else {
+                format!(" and the reviewed fee homes [{}]", homes_detail.join(", "))
+            },
+            join_or_none(&readers)
+        );
+        rows.push(plain(
+            "one-pricing-site:fee-fields",
+            readers.len() as i64 <= max_fee,
+            "the per-request fee is read only where the card lives",
+            detail,
+            readers.len() as i64,
+            max_fee,
+            readers,
+        ));
+    }
+    Ok(rows)
+}
+
+// ── 30. legacy-reach ─────────────────────────────────────────────────────────────────────────────
+
+fn split_top(text: &str, sep: char) -> Vec<String> {
+    let (mut out, mut depth, mut cur) = (Vec::new(), 0i64, String::new());
+    for ch in text.chars() {
+        if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            depth -= 1;
+        }
+        if ch == sep && depth == 0 {
+            out.push(std::mem::take(&mut cur));
+            continue;
+        }
+        cur.push(ch);
+    }
+    out.push(cur);
+    out
+}
+
+/// One entry of a `use` group, which may itself be a path or another group.
+fn expand_item(item: &str, base: &str, out: &mut BTreeSet<String>) {
+    let item = item.split(" as ").next().unwrap_or(item).trim();
+    if item.is_empty() || item == "self" || item == "*" {
+        return;
+    }
+    if item.contains('{') {
+        let (head, rest) = match item.split_once("::{") {
+            Some((h, r)) => (h, r),
+            None => (item, ""),
+        };
+        let inner = rest.trim_end().trim_end_matches('}');
+        for sub in split_top(inner, ',') {
+            expand_item(&sub, &format!("{base}{head}::"), out);
+        }
+        return;
+    }
+    out.insert(format!("{base}{item}"));
+}
+
+/// Every distinct symbol named through `prefix` in production code, with where each is named. A
+/// grouped `use a::{b, c::{d, e}}` is expanded, because a symbol imported in a brace group is named
+/// exactly as much as one spelled in full.
+fn named_symbols(
+    tree: &Tree,
+    files: &[String],
+    prefix: &str,
+    exclude: &[String],
+) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let path_rx = Regex::new(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")?;
+    let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for rel in files {
+        for l in tree.files.get(rel).into_iter().flat_map(|v| v.iter()) {
+            if l.intest {
+                continue;
+            }
+            let code = l.code.as_bytes();
+            let mut pos = 0usize;
+            while let Some(i) = find_from(code, prefix.as_bytes(), pos) {
+                let j = i + prefix.len();
+                pos = j;
+                let mut found: BTreeSet<String> = BTreeSet::new();
+                if code.get(j) == Some(&b'{') {
+                    let mut depth = 0i64;
+                    let mut k = j;
+                    while k < code.len() {
+                        if code[k] == b'{' {
+                            depth += 1;
+                        } else if code[k] == b'}' {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        k += 1;
+                    }
+                    let inner =
+                        String::from_utf8_lossy(&code[(j + 1).min(code.len())..k.min(code.len())]);
+                    for entry in split_top(&inner, ',') {
+                        expand_item(&entry, prefix, &mut found);
+                    }
+                    pos = k + 1;
+                } else if let Some(m) = path_rx.match_at(code, j) {
+                    if m.end > j {
+                        found.insert(format!(
+                            "{prefix}{}",
+                            String::from_utf8_lossy(&code[j..m.end])
+                        ));
+                        pos = m.end;
+                    }
+                }
+                for s in found {
+                    if exclude.iter().any(|e| s.starts_with(e.as_str())) {
+                        continue;
+                    }
+                    seen.entry(s).or_default().push(format!("{rel}:{}", l.no));
+                }
+            }
+        }
+    }
+    Ok(seen)
+}
+
+fn find_from(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if from > haystack.len() || needle.is_empty() {
+        return None;
+    }
+    haystack[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + from)
+}
+
+pub fn legacy_reach(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("legacy-reach")?;
+    let ceiling = need_int(c, "ceiling", "legacy-reach")?;
+    let files = scoped_files(tree, &c.list_of("scope_globs"));
+    let prefixes = cfg.doc.children("rules.legacy-reach.prefixes");
+
+    let (mut rows, mut total_offenders, mut total) = (Vec::new(), Vec::new(), 0i64);
+    for (key, spec) in &prefixes {
+        let prefix = need_str(spec, "prefix", "legacy-reach.prefixes")?;
+        let figure = need_int(spec, "figure", "legacy-reach.prefixes")?;
+        let seen = named_symbols(tree, &files, prefix, &spec.list_of("exclude"))?;
+        let current = seen.len() as i64;
+        total += current;
+        let offenders: Vec<String> = seen
+            .iter()
+            .map(|(s, sites)| format!("{s} ({} site(s), first {})", sites.len(), sites[0]))
+            .collect();
+        total_offenders.extend(offenders.clone());
+        let detail = if files.is_empty() {
+            format!("{VACUOUS}no composition-root source is present in this tree")
+        } else {
+            format!(
+                "the root names {current} distinct `{prefix}` symbol(s) (ratchet {figure}, pinned \
+                 to the measurement and may only go down): {}",
+                if seen.is_empty() {
+                    "none".to_string()
+                } else {
+                    format!(
+                        "{}{}",
+                        seen.keys().take(6).cloned().collect::<Vec<_>>().join(", "),
+                        if current > 6 { " \u{2026}" } else { "" }
+                    )
+                }
+            )
+        };
+        // GATING, AND EXACT. This row was `informational()` — PASS whatever it measured, titled
+        // `WARN` — on the reasoning that the total was the claim and a per-crate figure could
+        // legitimately rise while the total fell. What that bought was `busbar_substrate` at 47
+        // against a figure of 26, twenty-one over, PASSING, for as long as the total held: the
+        // slack mechanism firing exactly as designed, inside the row built to make it invisible. A
+        // figure nothing fails on is a comment. Both directions are the gate now — over its figure
+        // is this row, under it is `ceiling-slack` — and the intermediate step the WARN posture
+        // existed to permit is a re-pin of the two figures in the commit that makes it.
+        rows.push(plain(
+            format!("legacy-reach:{key}"),
+            current <= figure,
+            format!("the root's reach into `{prefix}` only shrinks"),
+            detail,
+            current,
+            figure,
+            offenders,
+        ));
+    }
+    let named = prefixes
+        .iter()
+        .map(|(_, s)| format!("`{}`", s.str_of("prefix").unwrap_or("")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let detail = if files.is_empty() {
+        format!("{VACUOUS}no composition-root source is present in this tree")
+    } else {
+        format!(
+            "the root names {total} distinct symbol(s) across the retiring crates ({named}) \
+             (ratchet {ceiling}, may only go down); per-crate figures are in the WARN sub-rows above"
+        )
+    };
+    rows.push(plain(
+        "legacy-reach",
+        total <= ceiling,
+        "the root's total reach into the retiring crates only shrinks",
+        detail,
+        total,
+        ceiling,
+        total_offenders,
+    ));
+    Ok(rows)
+}
+
+// ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
+
+pub fn no_test_doubles_in_production(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("no-test-doubles-in-production")?;
+    let max_unlisted = need_int(c, "max_unlisted", "no-test-doubles-in-production")?;
+    let max_doubles = need_int(c, "max_doubles", "no-test-doubles-in-production")?;
+    let files = scoped_files(tree, &c.list_of("scope_globs"));
+    let forbidden = c.list_of("forbidden");
+    // Enumerated by file and spelling rather than by line: a line number moves under an edit that
+    // changes nothing about what is constructed.
+    let mut known: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
+    for (_k, entry) in cfg
+        .doc
+        .children("rules.no-test-doubles-in-production.known_sites")
+    {
+        let file = need_str(entry, "file", "no-test-doubles-in-production.known_sites")?;
+        let symbol = need_str(entry, "symbol", "no-test-doubles-in-production.known_sites")?;
+        let verdict = need_str(
+            entry,
+            "verdict",
+            "no-test-doubles-in-production.known_sites",
+        )?;
+        let because = need_str(
+            entry,
+            "because",
+            "no-test-doubles-in-production.known_sites",
+        )?;
+        known.insert(
+            (file.to_string(), symbol.to_string()),
+            (verdict.to_string(), because.to_string()),
+        );
+    }
+
+    let (mut unlisted, mut doubles) = (Vec::new(), Vec::new());
+    for rel in &files {
+        for l in tree.files[rel].iter() {
+            if l.intest {
+                continue;
+            }
+            for symbol in &forbidden {
+                if !l.code.contains(symbol.as_str()) {
+                    continue;
+                }
+                match known.get(&(rel.clone(), symbol.clone())) {
+                    None => unlisted.push(format!("`{symbol}` at {rel}:{}", l.no)),
+                    Some((verdict, because)) if verdict == "double" => {
+                        doubles.push(format!("`{symbol}` at {rel}:{} \u{2014} {because}", l.no))
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+    let (detail, listed_detail) = if files.is_empty() {
+        let v = format!("{VACUOUS}no composition-root source is present in this tree");
+        (v.clone(), v)
+    } else {
+        (
+            format!(
+                "{} stand-in construction(s) on a production line of the composition root that no \
+                 reviewed site names (ceiling {max_unlisted}): {}",
+                unlisted.len(),
+                join_or_none(&unlisted)
+            ),
+            format!(
+                "{} reviewed site(s) that are a test double in the shipped binary (ratchet \
+                 {max_doubles}, may only go down): {}",
+                doubles.len(),
+                join_or_none(&doubles)
+            ),
+        )
+    };
+    Ok(vec![
+        plain(
+            "no-test-doubles-in-production",
+            unlisted.len() as i64 <= max_unlisted,
+            "a stand-in the shipped binary constructs is one somebody reviewed",
+            detail,
+            unlisted.len() as i64,
+            max_unlisted,
+            unlisted,
+        ),
+        plain(
+            "no-test-doubles-in-production:doubles",
+            doubles.len() as i64 <= max_doubles,
+            "the reviewed stand-ins that are doubles rather than real values only shrink",
+            listed_detail,
+            doubles.len() as i64,
+            max_doubles,
+            doubles,
+        ),
+    ])
+}

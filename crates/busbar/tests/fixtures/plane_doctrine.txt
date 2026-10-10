@@ -1,0 +1,62 @@
+# THE PLANE DOCTRINE (capability_equality.rs, plane_isomorphism.rs) — data, so the test sources
+# name no plugin.
+#
+# plane <column>: the owner's directional plane list, verbatim — the five planes (llm, mcp, a2a,
+# streaming, decisions; U14), each a single column when it declares needs in one direction alone
+# (llm, decisions) and counted in both directions otherwise. Must equal qa/capability-equality.json
+# `planes`.
+plane llm
+plane decisions
+plane mcp-client
+plane mcp-server
+plane a2a-client
+plane a2a-server
+plane streaming-client
+plane streaming-server
+#
+# dialect <name>: a plane's dialect, never a column (U14: `voice` is the streaming plane's).
+dialect voice
+#
+# root-leg <leg> <cargo feature that compiles it into this build>: the six root legs. Must equal
+# qa/capability-equality.json `root_legs`. The mcp, a2a and voice legs are the served kernel-loop
+# rider (the voice leg its session rider), so the feature that links the plane gates them.
+root-leg root-a2a plane-a2a
+root-leg root-admin root-admin
+root-leg root-llm proto-llm
+root-leg root-mcp plane-mcp
+root-leg root-voice plane-streaming
+root-leg root-decisions plane-decisions
+#
+# crate <crates/busbar-<suffix>> <ledger column>...: the columns each workspace plane crate answers
+# to (both halves of every plane; plane-streaming is the plane voice is a dialect of).
+crate llm llm
+# (`crate mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: crates/busbar-mcp is deleted; the mcp plane is
+# `plane-mcp` below.)
+crate a2a a2a-client a2a-server
+crate voice streaming-client streaming-server
+crate plane-llm llm
+crate plane-mcp mcp-client mcp-server
+crate plane-a2a a2a-client a2a-server
+crate plane-streaming streaming-client streaming-server
+crate plane-decisions decisions
+#
+# owed <crate suffix>: workspace plane crates that answer to no ledger column yet, pinned exactly
+# (none since U14 gave the decisions plane its column).
+#
+# installed <plane key> <ledger column>...: the doctrine's installed-plane axis (plane_isomorphism.rs)
+# — each plane the composition root installs from its own linked entry, and the directional ledger
+# column(s) it answers to.
+installed llm llm
+# (`installed mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: the mcp plane is served through its
+# memory-ABI door alone and installs no PlaneDecl, so it is not on the reflected axis; its columns are
+# still answered by the `root-mcp` leg.)
+installed a2a a2a-client a2a-server
+installed streaming streaming-client streaming-server
+#
+# owned-section <plane key> <declaring section> <owned section>...: the linked planes that own the
+# grammar of a top-level section, and those sections (plane_owned_sections_boot.rs).
+# (`owned-section mcp tools mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: these rows pin the LINKED
+# PlaneDecl planes' owned sections, and the mcp plane installs no PlaneDecl any more. Its `tools` /
+# `mcp` sections are declared by its door's Statement, which the config-schema gate reads as a
+# door-only plane's declaration (xtask/src/gates/config_schema/declared.rs).)
+owned-section streaming streams streams

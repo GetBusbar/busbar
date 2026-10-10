@@ -1,0 +1,372 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# plane-noun-gate.sh — THE LLM-NOUN DEBT METER for the NEUTRAL crates. REPORT-ONLY (today).
+#
+# WHY THIS EXISTS. The 1.6.0 audit found ONE bounded root cause behind the plane-extraction debt:
+# LLM-SHAPED NOUNS — the vocabulary of one protocol's billing and prompting — frozen into the
+# NEUTRAL crates (busbar-core, busbar-substrate, api, busbar-plugin) that every plane is supposed to
+# share as a protocol-agnostic ABI. `tokens_input`, `max_tokens`, `rate_card`, `reasoning_effort`,
+# `Billing::Tokens`: each is an LLM concept the MCP / A2A / voice planes do not own, and each one
+# that lives in the neutral surface is a place the ABI leaks one protocol's shape into all of them.
+#
+# This is a METER, not a gate — YET. The neutral crates are RED today (the eviction is moves M1–M5,
+# and the money-path relocation is its own tracked move); a blocking gate now would only paint CI red
+# with work already queued. So this prints a DEBT COUNT and EXITS 0. It exists so the debt has a
+# NUMBER that later moves drive down, and so the day it reaches zero, arming the hard gate is a
+# one-flag flip — exactly the posture of scripts/plane-grep-gate.sh.
+#
+# MODES / ENV (mirrors plane-grep-gate.sh):
+#   (no arg) | --report | --check   Scan, print the per-needle table + TOTAL debt, then:
+#     GREP_GATE_REPORT_ONLY=1 (DEFAULT)  → report-only: EXIT 0 regardless of the count.
+#     GREP_GATE_REPORT_ONLY=0            → future hard gate: exit 1 if TOTAL>0. NOT used in CI today.
+#   PLANE_NOUN_HITS_OUT=<path>          Optional: copy the raw file:line hit list there.
+#
+# WHAT COUNTS (path-scoped, word-boundary, CURATED — a homonym is not a leak):
+#   * Compound LLM nouns, matched with word boundaries so an unrelated identifier that merely
+#     contains the stem is not swept in: tokens_input / tokens_output / tokens_cache* / max_tokens /
+#     default_max_tokens / rate_card / reasoning_effort / ModelTokens / TierTokens / Billing::Tokens.
+#   * The bare nouns `provider` and `model` ONLY on lines that ALSO carry metering/pricing context
+#     (price|pricing|cost|billing|rate_card|meter|metering|budget|spend|charge|invoice|quota). A
+#     bare `provider`/`model` elsewhere is a HOMONYM — a TLS/identity provider, a data model, a
+#     route template, an auth-token line — and is deliberately NOT counted.
+#
+# WHAT IS ALLOWLISTED (genuine homonyms that would otherwise drown the signal):
+#   * bare `token`     — auth/session/CSRF tokens (~1171 hits); only the LLM COMPOUNDS above count.
+#   * bare `provider`  — TLS / identity / config providers (~579 hits); only pricing-context counts.
+#   * bare `model`     — data models, MVC, DB models; only pricing-context counts.
+#   * route templates and doc-comment prose — whole-line comments are stripped before matching.
+#   * test code — `.../tests/...`, `*_tests.rs`, `*_test.rs`, `test_support` — a fixture exercising a
+#     noun is not the shipped-ABI leak this meter is about.
+#
+# The count is a DEBT METER, NOT a verdict: a non-zero number here is expected and is the queue the
+# eviction moves burn down. Which makes the LOW reading the dangerous one — 0 is the signal to arm the
+# hard gate — so `--selftest` (run FIRST in CI, like every sibling lint) drives the whole pipeline over
+# fixture roots and proves the meter counts a planted noun, ignores prose, and REFUSES to report a
+# number at all when its roots are missing or its file list is empty. bash 3.2 + POSIX grep/awk, same
+# bare-runner posture as its siblings.
+set -uo pipefail
+# Resolved BEFORE the cd, so --selftest can re-invoke this exact file as a child process (the root
+# guard below exits the process, which a `$(…)` subshell would swallow).
+SELF="$(cd "$(dirname "$0")" >/dev/null && pwd)/$(basename "$0")"
+# `|| exit 1`: with no `set -e`, a failed cd would leave every relative root below resolving against
+# the CALLER's directory instead of the repo — a whole scan aimed somewhere nobody chose.
+cd "$(dirname "$0")/.." || exit 1
+
+red()  { printf '\033[31m%s\033[0m\n' "$*"; }
+grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
+ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
+note() { printf '  %s\n' "$*"; }
+hdr()  { printf '\n== %s ==\n' "$*"; }
+
+# ── THE NEUTRAL SURFACE (the ABI side; the only place these nouns are a leak) ─────────────────────
+# The ABI-side roots are single-sourced from scripts/plane-keys.sh — the same list
+# plane-purity-lint.sh and the plane-transport-neutrality gate scan, so they cannot disagree about
+# what "neutral" means and a drained crate leaves the set by ONE named deletion there.
+#
+# NO ROOT IS HAND-ADDED HERE ANY MORE. This line used to append `crates/busbar-contract/src/abi` on the
+# ground that "the plugin ABI is the surface a third-party plugin compiles against" -- and on that
+# same ground omitted `crates/busbar-contract/src`, which is the other half of that surface and
+# carried 14 real leak lines (records.rs `ModelTokens`, config.rs `default_max_tokens`) that this
+# meter reported as zero. A per-gate addition is a second list, and a second list is what drifted.
+# Both ABI crates are in the one list now; the self-test's ABI-SURFACE case holds that.
+# shellcheck source=scripts/plane-keys.sh
+. "$(dirname "$0")/plane-keys.sh"
+# The ABI surfaces a third-party plugin compiles against. The default root set MUST carry each of
+# them exactly once (absent = its leaks read 0; twice = its raw hits double).
+ABI_SURFACE_ROOTS="crates/busbar-contract/src"
+default_neutral_roots() { neutral_src_roots; }
+# The env override exists for ONE caller: the --selftest fixtures below. Nothing in CI sets it.
+NEUTRAL_ROOTS="${PLANE_NOUN_NEUTRAL_ROOTS:-$(default_neutral_roots)}"
+
+# ── THE ROOT GUARD — a missing root is RED, never silence ──────────────────────────────────────────
+# `find $ROOTS … 2>/dev/null` swallows the diagnostic for a root that has been renamed, split or
+# drained, and the pipe loses find's status. The result is an EMPTY file list, an empty code stream,
+# a DEBT_TOTAL of 0 and the "CLEAN — arm the hard gate" verdict printed over a tree this meter never
+# opened. Every root is proven to be a directory first, and a missing one aborts. Exits the PROCESS,
+# so it is called from run_report directly, never inside a `$(…)`.
+require_roots() {
+  local r missing=""
+  for r in "$@"; do
+    [ -d "$r" ] || missing="${missing:+$missing }$r"
+  done
+  [ -z "$missing" ] && return 0
+  red "plane-noun gate: FAIL — neutral root(s) listed but not present on disk: $missing"
+  note "A listed root that does not exist is scanned as ZERO files, and zero is this meter's CLEAN."
+  note "If the crate is legitimately gone, DELETE its entry from scripts/plane-keys.sh in a reviewed"
+  note "diff that says so. Never leave a"
+  note "stale root in the list: the meter must not be able to read 0 by accident."
+  exit 1
+}
+
+count_files() { [ -n "$1" ] || { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
+# shellcheck disable=SC2086  # the split is the measurement
+count_roots() { local n; set -f; set -- $1; n=$#; set +f; printf '%d' "$n"; }
+
+# The metering/pricing context that promotes a bare `provider`/`model` from homonym to leak.
+CTX_RE='price|pricing|cost|billing|rate_card|meter|metering|budget|spend|charge|invoice|quota'
+
+# The curated word-boundary compound needles. `tokens_cache` is a prefix (tokens_cache_read/write).
+WB_NEEDLES="tokens_input tokens_output max_tokens default_max_tokens rate_card reasoning_effort ModelTokens TierTokens"
+
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/plane-noun-gate.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+HITS="$TMP/hits"       # NEEDLE<TAB>file:line
+CODE="$TMP/code"       # file:line:content  — comment-only lines dropped
+: > "$HITS"
+
+# Non-test .rs under the neutral roots. A test file is `tests/…`, `test(s).rs` or `*_test(s).rs`:
+# the separator before `test` is `/` OR `_` -- it used to be `_` only, and this repo's module-style
+# test files are plain `tests.rs`, so every one of them was metered as neutral-crate debt.
+# No `2>/dev/null` — require_roots has already proven every
+# root exists, so any remaining find diagnostic is real and must be seen.
+neutral_files() {
+  # shellcheck disable=SC2086
+  find $NEUTRAL_ROOTS -name '*.rs' \
+    | grep -vE '/tests/|(^|[/_])tests?\.rs$|/test_support/' | sort
+}
+
+# Build the comment-stripped code stream ONCE: every non-comment line as "file:line:content", so a
+# noun discussed in doc-comment prose (`//`, `///`, `//!`, block `*`/`/*`) is not counted as a
+# frozen ABI noun. awk has no `\b`, so word-boundary matching is done by grep -w over THIS stream.
+build_code_stream() {
+  local f
+  while IFS= read -r f; do
+    awk '
+      { s=$0; sub(/^[ \t]+/,"",s) }
+      s ~ /^\/\// || s ~ /^\*/ || s ~ /^\/\*/ { next }
+      { printf "%s:%d:%s\n", FILENAME, FNR, $0 }
+    ' "$f"
+  done < <(neutral_files) > "$CODE"
+}
+
+# Record a needle by grepping the code stream. $3 = "word" → grep -w (portable word boundaries);
+# anything else → grep -E substring. Extracts file:line (path has no ':'; line is field 2).
+record() {   # $1 = label ; $2 = pattern ; $3 = mode(word|sub)
+  local label="$1" pat="$2" mode="${3:-sub}" flags='-E'
+  [ "$mode" = word ] && flags='-wE'
+  grep $flags -e "$pat" "$CODE" 2>/dev/null \
+    | awk -F: -v L="$label" '{print L"\t"$1":"$2}' >> "$HITS"
+}
+
+run_report() {
+  # shellcheck disable=SC2086  # a space-separated root list; splitting is the point
+  require_roots $NEUTRAL_ROOTS
+  local n_nf n_nr
+  n_nf="$(count_files "$(neutral_files)")"; n_nr="$(count_roots "$NEUTRAL_ROOTS")"
+
+  # ── THE ZERO-FILE GUARD — trusted before DEBT_TOTAL is ───────────────────────────────────────────
+  # require_roots has ruled out a missing directory; this catches every OTHER way the list comes back
+  # empty (a root that exists but holds no non-test .rs, a layout move that left the sources one level
+  # down). A zero-file scan and a fully-evicted tree produce the IDENTICAL number — 0 leak lines — and
+  # this meter's 0 is the signal to ARM the hard gate, so the two must never be confused. Unlike the
+  # debt itself, this is an instrument failure, not a queue: it exits non-zero even in report-only mode.
+  if [ "$n_nf" -eq 0 ]; then
+    red "plane-noun gate: FAIL — scanned $n_nf file(s) across $n_nr neutral root(s); zero is RED"
+    note "A scan of zero files reports zero leak lines, which reads as CLEAN — the arm-the-gate signal."
+    note "neutral roots: $NEUTRAL_ROOTS"
+    note "Fix the root list in scripts/plane-keys.sh rather than letting the meter read 0 on an empty list."
+    exit 1
+  fi
+
+  hdr "LLM-noun debt in the neutral crates (report-only)"
+  note "neutral roots: $NEUTRAL_ROOTS ($n_nf non-test .rs file(s) across $n_nr root(s))"
+  build_code_stream
+
+  # Curated compounds, word-bounded so an identifier that merely contains the stem is not swept in.
+  local n
+  for n in $WB_NEEDLES; do
+    record "$n" "$n" word
+  done
+  record "tokens_cache*"   "tokens_cache" sub
+  record "Billing::Tokens" "Billing::Tokens" sub
+
+  # Bare provider/model ONLY in pricing/metering context (word-bounded noun + a context word).
+  #
+  # MATCH THE CODE, NOT THE PATH. `$CODE` is a `file:line:content` stream, so applying the context
+  # test to the whole line asks it of the FILE PATH as well: every `provider`/`model` line in
+  # `plane/cost.rs`, `billing.rs` or anything else whose path spells a context word was promoted from
+  # homonym to leak on the strength of its directory. Measured on this tree that was 12 of 38
+  # `model@pricing` hits — a third of the reading, invented by the path. The direction is fail-safe
+  # (it over-reports, never under-), but this is a meter whose ZERO is the signal to arm a hard gate,
+  # and a count with a permanent floor of path artifacts can never reach zero however much debt is
+  # evicted. So the `file:line:` prefix is stripped before the context test, exactly as
+  # plane-abi-neutrality.sh strips it before its ban test and for the same reason. The file:line
+  # printed is still taken from the full stream, so a real hit is still reported with its location.
+  grep -wE -e 'provider' "$CODE" 2>/dev/null \
+    | awk -v ctx="$CTX_RE" '{ c = $0; sub(/^[^:]*:[0-9]+:/, "", c); if (tolower(c) ~ ctx) print }' \
+    | awk -F: '{print "provider@pricing\t"$1":"$2}' >> "$HITS"
+  grep -wE -e 'model' "$CODE" 2>/dev/null \
+    | awk -v ctx="$CTX_RE" '{ c = $0; sub(/^[^:]*:[0-9]+:/, "", c); if (tolower(c) ~ ctx) print }' \
+    | awk -F: '{print "model@pricing\t"$1":"$2}' >> "$HITS"
+
+  # Per-needle table (raw hit lines).
+  hdr "per-needle hits"
+  awk -F'\t' '{c[$1]++} END{for(k in c) printf "  %-18s %6d\n", k, c[k]}' "$HITS" | sort
+
+  # The DEBT: distinct file:line locations (a line hit by two needles is one leak).
+  DEBT_TOTAL=$(cut -f2 "$HITS" | sort -u | grep -c . || true)
+  RAW_TOTAL=$(grep -c . "$HITS" || true)
+
+  hdr "top 15 files by leak lines"
+  cut -f2 "$HITS" | sort -u | awk -F: '{f[$1]++} END{for(k in f) printf "%6d  %s\n", f[k], k}' \
+    | sort -rn | head -15 | sed 's/^/  /'
+
+  cut -f2 "$HITS" | sort -u > "${PLANE_NOUN_HITS_OUT:-/dev/null}" 2>/dev/null || true
+}
+
+# ── SELF-TEST — the meter cannot be lied to ───────────────────────────────────────────────────────
+# This gate is a DEBT METER, and its most dangerous reading is the LOW one: 0 leak lines is the signal
+# to arm the hard gate. So the self-test drives the WHOLE pipeline (roots → file list → code stream →
+# needles → DEBT_TOTAL) as a child process over fixture roots, and proves the three ways it can be
+# wrong: a planted noun that must be COUNTED, a comment-only mention that must NOT be, and the two
+# blind-scan cases where the meter would read 0 because it opened nothing.
+run_selftest() {
+  hdr "plane-noun-gate SELF-TEST (the debt meter cannot be lied to)"
+  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  local fail=0 hits
+
+  # ── RED: a planted compound needle and a pricing-context bare noun must both be counted. ──
+  mkdir -p "$tmp/red"
+  cat >"$tmp/red/leak.rs" <<'RED'
+pub struct Budget { pub max_tokens: u32 }
+pub fn cost_for(provider: &str) -> u64 { 0 }
+RED
+  hits="$tmp/red.hits"
+  PLANE_NOUN_NEUTRAL_ROOTS="$tmp/red" PLANE_NOUN_HITS_OUT="$hits" \
+    bash "$SELF" --report >"$tmp/red.log" 2>&1
+  if [ "$(grep -c . "$hits" 2>/dev/null || true)" -ge 2 ]; then
+    note "RED: a planted max_tokens and a pricing-context bare provider are both counted"
+  else
+    fail=1; note "RED FAILED: planted nouns not counted (hits: $(cat "$hits" 2>/dev/null | tr '\n' ' '))"
+  fi
+
+  # ── GREEN: the SAME nouns in comment prose are stripped before matching and count for nothing. ──
+  mkdir -p "$tmp/green"
+  cat >"$tmp/green/prose.rs" <<'GRN'
+// max_tokens and rate_card discussed in prose, and a provider priced per token
+/// doc-comment naming reasoning_effort and a cost model
+pub fn neutral() {}
+GRN
+  hits="$tmp/green.hits"
+  PLANE_NOUN_NEUTRAL_ROOTS="$tmp/green" PLANE_NOUN_HITS_OUT="$hits" \
+    bash "$SELF" --report >"$tmp/green.log" 2>&1
+  if [ "$(grep -c . "$hits" 2>/dev/null || true)" -eq 0 ]; then
+    note "GREEN: the same nouns in comment / doc-comment prose count for nothing"
+  else
+    fail=1; note "GREEN FAILED: prose-only mentions were counted (hits: $(cat "$hits" 2>/dev/null | tr '\n' ' '))"
+  fi
+
+  # ── THE PATH IS NOT THE CODE. A bare `provider`/`model` counts only in pricing CONTEXT, and the
+  # code stream is `file:line:content` — so the context test used to be answered by the PATH, and every
+  # bare noun in a file called `cost.rs` or `billing.rs` was promoted to a leak by its own directory.
+  # The fixture below is a file whose PATH says cost and whose CODE says nothing of the kind. ──
+  mkdir -p "$tmp/cost_root/billing"
+  cat >"$tmp/cost_root/billing/cost.rs" <<'PATHCTX'
+pub fn pick(model: &str) -> u8 { 0 }
+pub fn dial(provider: &str) -> u8 { 0 }
+PATHCTX
+  hits="$tmp/pathctx.hits"
+  PLANE_NOUN_NEUTRAL_ROOTS="$tmp/cost_root" PLANE_NOUN_HITS_OUT="$hits" \
+    bash "$SELF" --report >"$tmp/pathctx.log" 2>&1
+  if [ "$(grep -c . "$hits" 2>/dev/null || true)" -eq 0 ]; then
+    note "PATH: a bare provider/model in a file whose PATH says cost/billing is NOT promoted to a leak"
+  else
+    fail=1; note "PATH FAILED: the path answered the pricing-context test (hits: $(tr '\n' ' ' <"$hits"))"
+  fi
+  # …and the CONTROL: the same nouns with a real context word in the CODE still count, so the case
+  # above is the prefix being stripped and not the context rule being switched off.
+  printf 'pub fn rate(model: &str) -> u64 { let price = 1; price }\n' >"$tmp/cost_root/billing/cost.rs"
+  hits="$tmp/pathctx2.hits"
+  PLANE_NOUN_NEUTRAL_ROOTS="$tmp/cost_root" PLANE_NOUN_HITS_OUT="$hits" \
+    bash "$SELF" --report >"$tmp/pathctx2.log" 2>&1
+  if [ "$(grep -c . "$hits" 2>/dev/null || true)" -ge 1 ]; then
+    note "PATH CONTROL: a pricing word in the CODE still promotes the bare noun (the rule still works)"
+  else
+    fail=1; note "PATH CONTROL FAILED: a real pricing-context line stopped counting"
+  fi
+
+  # ── TEST FILES: a module-style `tests.rs` (and `test.rs`) is test code exactly like `foo_tests.rs`;
+  # a production file whose name merely ends in `test.rs` (`latest.rs`) is still metered. ──
+  mkdir -p "$tmp/tf"
+  local tf
+  for tf in tests.rs test.rs foo_tests.rs latest.rs; do
+    printf 'pub struct B { pub max_tokens: u32 }\n' >"$tmp/tf/$tf"
+  done
+  hits="$tmp/tf.hits"
+  PLANE_NOUN_NEUTRAL_ROOTS="$tmp/tf" PLANE_NOUN_HITS_OUT="$hits" \
+    bash "$SELF" --report >"$tmp/tf.log" 2>&1
+  if [ "$(cut -d: -f1 "$hits" 2>/dev/null | sed 's|.*/||' | sort -u | tr '\n' ' ')" = "latest.rs " ]; then
+    note "TEST FILES: tests.rs / test.rs / foo_tests.rs are not metered; latest.rs is"
+  else
+    fail=1; note "TEST FILES FAILED: metered files were: $(cut -d: -f1 "$hits" 2>/dev/null | sort -u | tr '\n' ' ')"
+  fi
+
+  # ── ABI SURFACE: the DEFAULT root set (the one CI meters) carries every ABI crate exactly once. ──
+  # The fixtures above all override the roots, so none of them can see what the real run scans. The
+  # contract crate was missing from it while the plugin crate was hand-added, and the meter read 0
+  # for the contract's leaks.
+  local abi n
+  for abi in $ABI_SURFACE_ROOTS; do
+    # shellcheck disable=SC2046
+    n="$(printf '%s\n' $(default_neutral_roots) | grep -cxF "$abi" || true)"
+    if [ "$n" -eq 1 ]; then
+      note "ABI SURFACE: the default neutral roots scan $abi exactly once"
+    else
+      fail=1; note "ABI SURFACE FAILED: the default neutral roots list $abi $n time(s), not once"
+    fi
+  done
+
+  # ── THE BLIND-SCAN CASES: the meter must not be able to read 0 by scanning NOTHING ──────────────
+  # A 0 here is the "arm the hard gate" signal, so a 0 produced by an empty file list is the worst
+  # reading this script can print. Both cases run as CHILD processes: the guards exit by design.
+  if PLANE_NOUN_NEUTRAL_ROOTS="crates/busbar-core-does-not-exist/src" \
+     bash "$SELF" --report >"$tmp/missing.log" 2>&1; then
+    fail=1; note "BLIND-SCAN FAILED: a non-existent neutral root still exited 0 (the meter read 0 having opened nothing)"
+  else
+    note "BLIND-SCAN: a non-existent neutral root exits non-zero (a missing root is RED, not silence)"
+  fi
+  mkdir -p "$tmp/emptyroot"
+  if PLANE_NOUN_NEUTRAL_ROOTS="$tmp/emptyroot" bash "$SELF" --report >"$tmp/empty.log" 2>&1; then
+    fail=1; note "BLIND-SCAN FAILED: a zero-file neutral root still exited 0 (0 leak lines read as CLEAN)"
+  else
+    note "BLIND-SCAN: a real-but-empty neutral root exits non-zero (zero files scanned is RED)"
+  fi
+
+  if [ "$fail" -ne 0 ]; then
+    red "plane-noun-gate SELF-TEST FAILED — the meter would misreport the neutral-crate debt"
+    return 1
+  fi
+  grn "plane-noun-gate self-test: ALL GREEN (meter RED/GREEN discipline proven)"
+  return 0
+}
+
+case "${1:-}" in
+  --selftest)
+    run_selftest; exit $?
+    ;;
+  --report | --check | "")
+    run_report
+    hdr "verdict"
+    note "raw needle hits: $RAW_TOTAL"
+    printf '  \033[1mLLM-NOUN DEBT (distinct neutral-crate leak lines): %s\033[0m\n' "$DEBT_TOTAL"
+    report_only="${GREP_GATE_REPORT_ONLY:-1}"
+    if [ "$DEBT_TOTAL" -eq 0 ]; then
+      grn "plane-noun gate: CLEAN — no LLM-noun leak in the neutral crates. Arm the hard gate."
+      exit 0
+    fi
+    if [ "$report_only" = "0" ]; then
+      red "plane-noun gate: FAIL — $DEBT_TOTAL LLM-noun leak line(s) in the neutral crates."
+      note "Evict each into its plane (M1–M5) or a neutral op-vocabulary; then this meter reaches 0."
+      exit 1
+    fi
+    ylw "plane-noun gate: $DEBT_TOTAL LLM-noun leak line(s) — REPORT-ONLY (GREP_GATE_REPORT_ONLY=1, non-blocking)."
+    note "Expected RED today; M1–M5 evict the nouns and drive this to 0. Set GREP_GATE_REPORT_ONLY=0 to arm."
+    exit 0
+    ;;
+  *)
+    echo "usage: $0 [--selftest|--report|--check]   (env: GREP_GATE_REPORT_ONLY=1 default, PLANE_NOUN_HITS_OUT=path)" >&2
+    exit 2
+    ;;
+esac

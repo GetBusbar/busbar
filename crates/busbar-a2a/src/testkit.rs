@@ -1,0 +1,241 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE A2A PLANE'S TEST-KIT — the fixture surface that names A2A plane types, kept ON THE PLANE, so
+//! busbar-core's neutral `test_support::TestApp` names none of them.
+//!
+//! Before the plane split, `TestApp` in busbar-core built the A2A plane runtime itself (naming
+//! `crate::a2a::*` back INTO core through the `#[path]` dual-compile). Now the `agents:` builder
+//! methods live here as an extension trait over the neutral `busbar_kernel::test_support::TestAppSeam`
+//! (which core implements for its `TestApp`), and they lower to the real, externally-linked
+//! `busbar-a2a` crate through core's neutral install seams
+//! (`install_plane_runtime`, `mount_plane`/`admit_plane`, `set_container_hooks`,
+//! `set_plane_defs_any`), reading `public_url` / the card issuer back through the neutral getters.
+
+use crate::a2a::config::{AgentDefCfg, AgentsCfg};
+use crate::a2a::plane::A2aPlane;
+// `pub(crate)` so the host's warn-capture layer is named ONCE for the plane's test batteries (the
+// SSE reader's coded-drop test, the relay's resume-cursor and rewrite-leg tests) as
+// `crate::testkit::WarnCapture`.
+// Only the plane's own test binary reads that name, so a library build does not.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use busbar_kernel::test_support::{
+    seam::{ErrorSurfaceDriver, TestPlaneSeam},
+    warn_capture::WarnCapture,
+    TestAppSeam, TestAppSeamExt,
+};
+use std::sync::Arc;
+
+// The engine test-kit binding (`engine()`): the ONE function the plane's tests reach the engine's
+// fixture through, in a `tests/`-path file the neutral-purity lint excludes. Not gated
+// on `cfg(test)`: the admin-verb battery compiles into the library under `test-support` (the shape
+// core's own test-support build takes) and binds through it there too, so every configuration that
+// compiles it has a caller.
+#[path = "a2a/tests/engine_boot.rs"]
+pub(crate) mod engine_boot;
+
+/// The A2A plane's scratch key — the same string as `PLANE_DECLARATION.key`.
+const SCRATCH_KEY: &str = "a2a";
+
+/// INSTALL THE A2A CROSS-PLANE TEST SEAMS the composition root (`main`) installs in production — the
+/// parse-time section-list provider (the self-enveloping admin-verb backing is core-admin's, bound by
+/// `busbar_core_admin::install()`). Idempotent set-once
+/// installs. The durable task set (`crate::taskstore::TASKS`) is owned by the plane and drives the
+/// generic `PlaneRecord` store directly, so there is no task codec/reader seam to install here any
+/// more (both were deleted with the relocation).
+pub fn install_test_seams() {
+    busbar_kernel::plane::config::install_plane_sections(
+        busbar_kernel::plane::config::default_plane_sections,
+    );
+    // The self-enveloping admin-verb backing is core-admin's, bound by `busbar_core_admin::install()`
+    // with the admin mount it is served under (P2 D4).
+    // Register the A2A plane in the process registry too (config sections / cross-plane refusal), the
+    // same thing the finalizer does for plane-building tests.
+    busbar_kernel::plane::registry::register_test_plane(&PLANE_ROW);
+}
+
+/// The A2A plane's accumulated fixture state, mutated across the fluent chain and consumed once by
+/// [`finalize`] at build time.
+#[derive(Default)]
+pub(crate) struct A2aScratch {
+    agent_defs: AgentsCfg,
+    registered: bool,
+}
+
+fn scratch(app: &mut dyn TestAppSeam) -> &mut A2aScratch {
+    let needs_register = !app.plane_scratch::<A2aScratch>(SCRATCH_KEY).registered;
+    if needs_register {
+        app.plane_scratch::<A2aScratch>(SCRATCH_KEY).registered = true;
+        app.register_plane_finalizer(Box::new(finalize));
+    }
+    app.plane_scratch::<A2aScratch>(SCRATCH_KEY)
+}
+
+/// BUILD-TIME FINALIZER: consume the accumulated [`A2aScratch`] and install the real A2A plane through
+/// core's neutral seams. Mirrors what busbar-core's `TestApp::build`/`build_a2a_plane_runtime` did.
+fn finalize(app: &mut dyn TestAppSeam) {
+    // Register this plane in the process registry the way production's composition root does.
+    busbar_kernel::plane::registry::register_test_plane(&PLANE_ROW);
+    let scratch = app.take_plane_scratch::<A2aScratch>(SCRATCH_KEY);
+
+    // Always carry the type-erased `agents:` handle onto the App (production fidelity; no test-path
+    // consumer downcasts it — the plane reads its `AgentsCfg` off its runtime object).
+    app.set_plane_defs_any(
+        crate::PLANE_DECLARATION.key,
+        Arc::new(scratch.agent_defs.clone()),
+    );
+
+    // The per-agent hook SPECS as neutral strings — core resolves the gates like production does.
+    let containers: Vec<(String, Vec<String>)> = scratch
+        .agent_defs
+        .agents
+        .iter()
+        .map(|(n, d)| (n.clone(), d.hooks.clone()))
+        .collect();
+    app.set_container_hooks(
+        crate::PLANE_DECLARATION.key,
+        containers,
+        scratch.agent_defs.all_agent_hooks.clone(),
+    );
+
+    // THE A2A RUNTIME, when a receiving side is configured. MIRROR production's `a2a_start` hook:
+    // stamp busbar's PUBLIC card-issuer key (off governance, via the neutral getter) onto the plane.
+    if let Some(plane) = A2aPlane::from_config(&scratch.agent_defs, app.configured_public_url()) {
+        if let Some(issuer) = app.card_issuer(crate::PLANE_DECLARATION.key) {
+            plane.set_card_issuer(issuer);
+        }
+        let admission = plane.admission();
+        app.install_plane_runtime(crate::PLANE_DECLARATION.key, plane);
+        // Mount the JSON-RPC front door AND the gRPC path (a claimed path is where the RFC 8707
+        // audience is found), and wire the admission when the plane claims/admits anything.
+        app.mount_plane(
+            crate::PLANE_DECLARATION.key,
+            crate::a2a::serve::MOUNT_PATH,
+            busbar_kernel::plane::WIRE_JSONRPC,
+        );
+        app.mount_plane(
+            crate::PLANE_DECLARATION.key,
+            crate::a2a::serve::GRPC_MOUNT_PATH,
+            busbar_kernel::plane::WIRE_GRPC,
+        );
+        if let Some(admission) = admission {
+            app.admit_plane(crate::PLANE_DECLARATION.key, admission);
+        }
+    }
+}
+
+/// An UNPINNED receiving `agents:` entry at `url`, for busbar-core integration tests that register a
+/// custom agent. Built here because `AgentDefCfg`/`AgentPinCfg` fields are crate-private.
+pub fn unpinned_agent(url: &str) -> AgentDefCfg {
+    use crate::a2a::config::{AgentPinCfg, PinMechanism};
+    AgentDefCfg {
+        url: url.to_string(),
+        pin: AgentPinCfg {
+            mechanism: PinMechanism::Unpinned,
+            key: None,
+            fingerprint: None,
+        },
+        reverify_ttl: None,
+        recovery_backoff: None,
+        protocol_version: None,
+        allow_private: false,
+        upstream_credentials: None,
+        upstream_credential: None,
+        egress_scopes: Vec::new(),
+        client_identity: None,
+        hooks: Vec::new(),
+    }
+}
+
+/// An `agents:` config with ONE receiving agent (`planner`), for busbar-core's cross-plane
+/// integration tests (they set it on `RootCfg::agent_defs` and boot through `build_app_from_config`).
+/// Lives here because the `AgentsCfg`/`AgentDefCfg` fields are crate-private; core names only the
+/// returned `AgentsCfg`.
+pub fn agents_cfg_with_one_receiving_agent() -> AgentsCfg {
+    use crate::a2a::config::{AgentPinCfg, PinMechanism};
+    let mut cfg = AgentsCfg::default();
+    cfg.agents.insert(
+        "planner".to_string(),
+        AgentDefCfg {
+            url: "https://agent.example/planner".to_string(),
+            pin: AgentPinCfg {
+                mechanism: PinMechanism::Unpinned,
+                key: None,
+                fingerprint: None,
+            },
+            reverify_ttl: None,
+            recovery_backoff: None,
+            protocol_version: None,
+            allow_private: false,
+            upstream_credentials: None,
+            upstream_credential: None,
+            egress_scopes: Vec::new(),
+            client_identity: None,
+            hooks: Vec::new(),
+        },
+    );
+    cfg
+}
+
+/// The A2A plane's fixture builder methods, as an extension of the neutral `TestApp`. Every method
+/// keeps the exact name/shape the in-core builders had, so the plane's own tests read unchanged aside
+/// from a `use busbar_a2a::testkit::TestAppA2aExt;`.
+pub trait TestAppA2aExt {
+    /// Seed an `agents:` DEFINITION into the App's effective named map.
+    fn agent_def(self, name: &str, cfg: AgentDefCfg) -> Self;
+    /// The reserved section-level `agents.hooks:` attach — the all-A2A hook list.
+    fn agents_hooks(self, names: &[&str]) -> Self;
+}
+
+impl<A: TestAppSeam> TestAppA2aExt for A {
+    fn agent_def(mut self, name: &str, cfg: AgentDefCfg) -> Self {
+        scratch(&mut self)
+            .agent_defs
+            .agents
+            .insert(name.into(), cfg);
+        self
+    }
+
+    fn agents_hooks(mut self, names: &[&str]) -> Self {
+        scratch(&mut self).agent_defs.all_agent_hooks =
+            names.iter().map(|n| (*n).to_string()).collect();
+        self
+    }
+}
+
+/// THIS PLANE'S SERVED-LEG WITNESSES — `(capability key, [(loop step or core capability, witness)])`.
+///
+/// What a test binary that links this crate without naming it runs through ITS registered runner for
+/// this plane's key (the composition root's kernel-loop rider): each witness drives an inbound call on
+/// the served path through the real router, asserts one capability or one loop step on what came out,
+/// and returns how many units it expects to have reached this plane's `drive`. See
+/// `a2a/tests/served_witness.rs`.
+pub const SERVED: (&str, &[(&str, crate::a2a::relay::served_witness::Witness)]) = (
+    crate::PLANE_KEY,
+    crate::a2a::relay::served_witness::WITNESSES,
+);
+
+/// THIS PLANE'S LINKED-TEST-SEAM ENTRY — what a test binary that links this crate without naming it
+/// registers into the kernel's test-seam registry and loops: the cross-plane install, the trust
+/// verbs' error-surface driver and the carried verify-gate reader.
+pub const TEST_SEAM: TestPlaneSeam = TestPlaneSeam {
+    name: SCRATCH_KEY,
+    install: install_test_seams,
+    error_surface_driver: ERROR_SURFACE_DRIVER,
+    served_call: None,
+    // The verify-on-call gate this plane's runtime object carries across a config apply, read off
+    // the plane's own slot — so a cross-plane test observes the carried gate without naming the
+    // plane's runtime type.
+    verify_gate: Some(|slots| crate::a2a::runtime_off_slots(slots).map(A2aPlane::verify_arc)),
+};
+
+const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> =
+    Some(|| Box::pin(crate::a2a::verbs::adminverbs_tests::drive_a2a_verb_errors()));
+
+/// This plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static PLANE_ROW: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        crate::PLANE_DECLARATION,
+        crate::PLANE_HOOKS,
+    );

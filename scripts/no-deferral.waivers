@@ -1,0 +1,155 @@
+# no-deferral.waivers — the committed allowlist for `cargo xtask gate no-deferral`.
+#
+# FORMAT:  <MATCHER><TAB><reason> [owner: <role>] [retires: <TODO-ID>]
+#   MATCHER is an EXACT `path:line`. A matcher without a trailing `:<digits>` is REFUSED at load —
+#   see "ONE GLOB USED TO STAND HERE" below. A marker (file:line) is WAIVED when a row equals it.
+#   Every row must end in `[retires: <ID>]` naming the docs/design/1.6.0-TODO.md item that retires
+#   it: `KP-<step>` (a row of the KERNEL<>PLUGINS table) or `ITEM-<n>` (a numbered work item, table
+#   row or `## ITEM <n>` heading). A row with no such tag, or one naming an item the TODO does not
+#   carry, is RED; so is one whose item is CLOSED (struck, or its Status reads done/landed).
+#
+# ── RE-POINTED FROM THE TRACKER TO THE TODO, 2026-09-27 ─────────────────────────────────────────
+# docs/design/1.6.0-TRACKER.md is retired (owner: docs/design holds the spec, the TODO and their
+# three companions only). The history below still names its rows; the live expiries are:
+#   H5 (the 52 hot/* STUB fixtures)          -> KP-36  the step that deletes the old plane ABI
+#                                                      slots and closes the coexistence window
+#   N3, cimd.rs:209 (oauth-as 0.9.3 note)     -> ITEM-572  RETIRED: restated as a fact (busbar validates; the feature stays off), row dropped
+#   N1, signal.rs:80 (CandidateLatencyP95Ms)  -> ITEM-587  RETIRED: computed (2816713da), row dropped
+#   N2, signal.rs:94 (ResponseTokensOut)      -> ITEM-588  RETIRED: computed at the completion tap, row dropped
+#   N3, sign.rs:90 (TODO(release-keys))       -> ITEM-589  RETIRED: relabelled as the release-key contract naming its three guards, row dropped
+# The allowlist is a FLOOR CHECKED BOTH WAYS: a marker not waived is RED (over-count); a waiver that
+# matches no marker is RED (stale — the marker was resolved). See xtask/src/gates/no_deferral.rs
+# and docs/design/BUSBAR-1.6.0.md #15.
+#
+# no-deferral-strict-done (what scripts/verify-1.6.0-done.sh runs) additionally FAILS if ANY row below is not a
+# */hot/* row: the hot/* foundation fixtures are the ONE permanent exemption; the voice skeleton rows
+# are TRACKED 1.6.0 debt that MUST be gone before 1.6.0 is done.
+#
+# ── WHY THIS FILE WAS REGENERATED, 2026-09-22 ────────────────────────────────────────────────────
+# The previous revision DID NOT DESCRIBE THIS TREE, and both halves of the gate said so at once:
+#
+#     52 waiver rows      39 pointed at a line holding NO marker        (`:stale-waiver` RED)
+#     52 real markers     38 of them were waived by nothing at all      (`:unwaived`     RED)
+#
+# Not one of the 44 `host.rs` rows matched a marker: the rows named lines 855–1217, the markers were
+# at 997–1359 — the first off by +142, the last by +142, with the drift NOT constant across the file
+# (decl.rs had not moved at all). The record described that as "a mechanical +1 line-number resync of
+# 44 rows … verified: 44 rows". It was not +1, it was not verified, and a "+1 resync" cannot be
+# mechanical when one of the two files did not move. **A waiver file that describes a different tree
+# excuses nothing and hides everything** — the 38 real markers it failed to name were, for as long as
+# it stood, undeclared deferrals in shipped source with no reason and no owner.
+#
+# REGENERATE, NEVER HAND-PATCH. The line numbers below were not typed; they came out of the gate:
+#
+#     cp scripts/no-deferral.waivers /tmp/w.bak
+#     grep '^#' scripts/no-deferral.waivers > scripts/no-deferral.waivers   # rows removed, header kept
+#     cargo xtask gate no-deferral        # `:unwaived` now enumerates EVERY real marker, in order
+#     cp /tmp/w.bak scripts/no-deferral.waivers                             # restore, then re-emit rows
+#
+# With zero rows loaded every marker is un-waived, so the gate's own `:unwaived` line IS the marker
+# census. That is the only source a row's line number may come from. Reading them off the file by eye
+# is what produced the revision this one replaces.
+#
+# ── ONE GLOB USED TO STAND HERE, AND IT WAIVED WHATEVER APPEARED ─────────────────────────────────
+# The single row `crates/busbar-contract/src/abi/hot/*` covered all 52 markers, never expired, and matched
+# every marker any future edit put anywhere under that tree. The stale-waiver check could not fire on
+# it either: one glob matching 52 markers stays "used" until the last one goes, so 51 could be
+# resolved and the row would still look live. It was, in effect, a permanent unreviewed exemption for
+# a whole directory.
+#
+# So the markers are enumerated one per line, each naming the slot it exempts and the tracker row
+# that retires it. This costs a line-number edit whenever these files move — which is the point: the
+# gate's stale-waiver check then reports exactly which exemptions no longer describe the tree,
+# instead of a glob absorbing the change in silence.
+#
+# ── WHAT THESE 52 ROWS ARE, STATED SO IT CANNOT BE MISREAD AS A SKIP ─────────────────────────────
+# `mod stub` / `PlaneHostVtable::STUB` / `PlaneDecl::STUB` are a COMPILE-SURFACE PROOF, not a
+# postponed capability. Each fn has the exact fn-pointer signature of its vtable slot, so the module
+# type-checks that every `extern "C-unwind"` slot in the ABI has a real, well-typed signature; a STUB
+# slot panics BY DESIGN because nothing is ever meant to dispatch through it. Measured: the only
+# consumers of either constant in the whole tree are this crate's own tests —
+#   crates/busbar-contract/src/abi/hot/tests/host_tests.rs:84,140,150,157,169,234
+#   crates/busbar-contract/src/abi/hot/tests/decl_tests.rs:29
+# A fixture whose callers are the tests that check its types is not a deferral, and these rows do not
+# claim a future release will fix it. They are exempt because the thing they mark is FINISHED.
+#
+# ── THE THING THAT *IS* OPEN, AND IT IS 1.6.0 WORK: H6 ───────────────────────────────────────────
+# The previous revision retired all 52 rows against H5, whose text read "Out of 1.6.0 scope; the work
+# lands with docs/design/1.6.0-protocols-as-plugins.md" — a DECISIONS #15 banned phrase pointing at a
+# file that has never existed in this repository (`git cat-file -e HEAD:docs/design/1.6.0-protocols-as-plugins.md`
+# fails; the same non-existent file is cited four more times in a since-retired duplex-plane note).
+# 52 markers were waived, in banned words, against a document that is not there.
+#
+# **AND THAT IS THE WORSE HALF OF THE DEFECT, NOT THE LESSER ONE.** The 39 bad line-anchors were loud:
+# the gate reported them by name every run. An unreachable EXIT CONDITION is silent. A waiver whose
+# retirement test cannot be evaluated never retires — it is permanent by accident rather than by
+# decision, and it looks identical to a healthy row while it happens. Every row below now retires
+# against H5, whose condition is a COMMAND THAT RUNS AGAINST THIS TREE:
+#
+#     grep -rn "PlaneHostVtable::STUB\|PlaneDecl::STUB" crates/     # empty => H5 is done
+#
+# and H5 in turn names H6, whose condition is also a command:
+#
+#     grep -rln "PlaneHostVtable" crates/busbar-plane-*             # non-empty => H6 is done
+#
+# Neither names a document. A retirement condition that cannot be run is not a condition.
+#
+# That framing also hid a real 1.6.0 row. BUSBAR-1.6.0.md §11a makes *"`PlaneHost` (+ cost carrier) has
+# REAL production riders (dogfooded, step 2) — no '0-caller ABI'"* a **CUT GATE** for 1.6.0, and the tree
+# does not meet it. **State the gap precisely, because the obvious reading is wrong and this file made
+# that mistake once already:** the HOST IS BUILT. `build_plane_host_vtable()`
+# (crates/busbar-kernel/src/plane_host/vtable.rs:36) wires 44 of 44 slots to real implementations across
+# 13,054 lines in crates/busbar-kernel/src/plane_host/ — including cost_reserve/cost_settle at
+# vtable.rs:121-122 over cost_host.rs (224 lines). The 52 markers below are NOT that host and never were.
+# What is missing is a RIDER: `grep -rln "PlaneHostVtable" crates/busbar-plane-* crates/busbar-{llm,mcp,a2a,voice}`
+# returns ZERO — every installed plane rides the neutral Rust seam (EngineHost), not the C-ABI vtable.
+# So the FIXTURES are finished (H5) and the DOGFOODING is owed (H6). Splitting them is what lets these
+# rows be permanent without that permanence quietly covering an open cut gate.
+#
+# Rows tagged `HOT:` mark a slot a plane already exercises through the NEUTRAL seam — cost_reserve and
+# cost_settle, ported at crates/busbar-voice/src/runtime/metering.rs:350,389. Their fixture is still just
+# a fixture and the waiver stands unchanged; the tag exists so nobody reads "waived" as "unridden", which
+# is exactly backwards for those two.
+#
+# ── busbar-voice: the SKELETON / "dev-only until DoD" markers are CLEARED ───────────────────────────
+# The voice plane's IR + both dialect codecs + T2 runtime + both topologies are implemented (behind the
+# "runtime" feature) and the plane is installed at boot behind `plane-streaming`; the stale SKELETON /
+# "dev-only until DoD" marker prose in busbar-voice src has been reworded to truthful current-state, so
+# no waiver rows remain for it. (Any residual "dev-only until DoD" prose outside busbar-voice src — e.g.
+# the config-schema tracking note or the composition-root feature comment — is its own row, not this one's.)
+
+crates/busbar-contract/src/abi/hot/decl.rs:463	class-B the `PlaneDecl::STUB` label on the stub module's doc comment: it DOCUMENTS the fixture below it; the marker is the word `PlaneDecl::STUB` in prose, not a capability anyone can call. [owner: architect] [retires: KP-36]
+crates/busbar-contract/src/abi/hot/decl.rs:475	class-A STUB fn-pointer slot `PlaneDecl::config_validate`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
+crates/busbar-contract/src/abi/hot/decl.rs:482	class-A STUB fn-pointer slot `PlaneDecl::build`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
+crates/busbar-contract/src/abi/hot/decl.rs:486	class-A STUB fn-pointer slot `PlaneDecl::hydrate`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
+crates/busbar-contract/src/abi/hot/decl.rs:490	class-A STUB fn-pointer slot `PlaneDecl::start`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
+crates/busbar-contract/src/abi/hot/decl.rs:499	class-A STUB fn-pointer slot `PlaneDecl::admin_routes`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
+crates/busbar-contract/src/abi/hot/decl.rs:508	class-A STUB fn-pointer slot `PlaneDecl::openapi`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
+crates/busbar-contract/src/abi/hot/decl.rs:517	class-A STUB fn-pointer slot `PlaneDecl::claims`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
+crates/busbar-contract/src/abi/hot/decl.rs:526	class-A STUB fn-pointer slot `PlaneDecl::admission`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
+crates/busbar-contract/src/abi/hot/decl.rs:533	class-A STUB fn-pointer slot `PlaneDecl::dispatch`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
+
+# ── THE FOUR COMMENT TAGS, DECLARED FOR THE FIRST TIME, 2026-09-23 ──────────────────────────────
+# Until 2026-09-23 this gate matched `TODO` / `FIXME` / `XXX` / `HACK` WITH NOTHING. The playbook
+# (docs/design/BUSBAR-1.6.0.md #15) has listed all four under Class B since the gate was
+# specified; xtask/src/gates/no_deferral.rs carried the five PHRASE forms and none of the tags. So the
+# four rows below are not new markers — they are markers that were always there, in the marker class
+# the rule is NAMED after, in front of an instrument that could not see them. The 1.6.0 ledger's G55
+# called it "the headline blind spot" and it was right.
+#
+# THEY ARE NOT `hot/` ROWS, AND THAT IS THE POINT. `no-deferral-strict-done` FAILS while any non-hot
+# row stands, so the release done-oracle is now RED with four named reasons instead of green with
+# none. That is the correct reading of BUSBAR-1.6.0.md:1218, which already lists NO-DEFERRAL among
+# the RED drift groups — before today the gate and the spec disagreed and the gate was wrong.
+#
+# WHY WAIVED AND NOT FIXED. Two of the four (N3) are stale or mislabelled prose whose repair is a
+# one-word relabel. §3 of the playbook is explicit that this gate "cannot be satisfied by renaming a
+# marker", and an agent that renames `TODO:` to `NOTE:` to turn its own finding green has performed
+# precisely the evasion the gate exists to resist — however sound its reasoning. Declaring a marker
+# with a reason, an owner and a retirement condition is what this file is FOR; erasing it is not.
+#
+# RETIREMENT, AS COMMANDS THAT RUN AGAINST THIS TREE (no row names a document):
+#   N1  grep -n 'Signal::CandidateLatencyP95Ms' crates/busbar-llm/src/engine/hooks.rs  # non-empty => computed  (RETIRED: computed from a declaration-gated per-lane reservoir; row removed)
+#   N2  grep -n 'Signal::ResponseTokensOut'     crates/busbar-llm/src/engine/hooks.rs  # non-empty => computed  (RETIRED: computed at the completion tap from the unit's reported output count; row removed)
+#   (for N1/N2 the other honest retirement is deletion from `Signal::ALL`, which drops the whole row)
+#   N3  the owner rules; the marker then either goes away or stops being spelled as a deferral tag

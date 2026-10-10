@@ -1,0 +1,175 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Tests for `crates/busbar-contract/src/redacted.rs`.
+
+use super::*;
+
+/// The core guarantee: neither `Debug` nor `Display` ever contains the secret material.
+#[test]
+fn debug_and_display_never_reveal_the_secret() {
+    let secret = "sk-super-secret-value-12345";
+    let r = Redacted::new(secret.to_string());
+    assert_eq!(format!("{r:?}"), "[REDACTED]");
+    assert_eq!(format!("{r}"), "[REDACTED]");
+    assert!(!format!("{r:?}").contains(secret));
+    assert!(!format!("{r}").contains(secret));
+    // And it is reachable only through the explicit audit point.
+    assert_eq!(r.expose_secret(), secret);
+}
+
+/// A struct that embeds a `Redacted` field and derives `Debug` inherits the redaction — proving
+/// the guarantee is STRUCTURAL (the whole point: no call site has to remember to redact).
+#[test]
+fn embedded_in_a_derived_debug_struct_is_redacted() {
+    #[derive(Debug)]
+    #[allow(dead_code)] // fields are read via the derived Debug, which dead-code analysis ignores
+    struct Holder {
+        id: String,
+        token: Redacted<String>,
+    }
+    let h = Holder {
+        id: "acct-1".into(),
+        token: Redacted::new("token-abc-XYZ".to_string()),
+    };
+    let dbg = format!("{h:?}");
+    assert!(
+        dbg.contains("acct-1"),
+        "non-secret fields still show: {dbg}"
+    );
+    assert!(
+        !dbg.contains("token-abc-XYZ"),
+        "the secret must not appear in a derived Debug: {dbg}"
+    );
+    assert!(dbg.contains("[REDACTED]"));
+}
+
+#[test]
+fn clone_and_eq_operate_on_the_secret() {
+    let a = Redacted::new("v".to_string());
+    let b = a.clone();
+    assert_eq!(a, b);
+    assert_ne!(a, Redacted::new("w".to_string()));
+}
+
+/// Equality is CONSTANT-TIME: it routes through the crate's `constant_time_eq` over the secret
+/// bytes rather than a plain `==`. This asserts the correctness contract that primitive must uphold
+/// for every case — equal, equal-length-but-differing, and different-length secrets — so the
+/// comparison stays a genuine equality even after being made timing-safe.
+#[test]
+fn eq_is_constant_time_and_correct() {
+    // Equal secrets compare equal.
+    assert_eq!(
+        Redacted::new("sk-abc-123".to_string()),
+        Redacted::new("sk-abc-123".to_string())
+    );
+    // Equal length, differing bytes (the case a data-dependent `memcmp` would short-circuit) — the
+    // constant-time compare still returns not-equal.
+    assert_ne!(
+        Redacted::new("sk-abc-123".to_string()),
+        Redacted::new("sk-abc-124".to_string())
+    );
+    // Differing lengths compare not-equal.
+    assert_ne!(
+        Redacted::new("sk-abc".to_string()),
+        Redacted::new("sk-abc-123".to_string())
+    );
+    // Empty vs empty is equal.
+    assert_eq!(Redacted::new(String::new()), Redacted::new(String::new()));
+}
+
+/// `Drop` for `Redacted<T>` MUST actually call `T::zeroize` — the whole point of the wrapper is
+/// that the backing memory is overwritten when it goes out of scope, not left as freed-but-intact
+/// plaintext. A test type that records whether `zeroize` ran (rather than asserting on process
+/// memory, which isn't reliably observable from safe Rust) pins this directly: mutating the `Drop`
+/// body to a no-op `()` must fail this test.
+#[test]
+fn drop_actually_calls_zeroize() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct FlagOnZeroize(Arc<AtomicBool>);
+    impl zeroize::Zeroize for FlagOnZeroize {
+        fn zeroize(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let flag = Arc::new(AtomicBool::new(false));
+    {
+        let _r = Redacted::new(FlagOnZeroize(flag.clone()));
+        assert!(!flag.load(Ordering::SeqCst), "must not zeroize before drop");
+    }
+    assert!(
+        flag.load(Ordering::SeqCst),
+        "Redacted's Drop must call the backing value's zeroize"
+    );
+}
+
+/// `Redacted` must NOT implement `serde::Serialize`, so a secret held in engine memory has no
+/// implicit path into JSON (the credential-transport boundary uses a plain wire `String`, on
+/// purpose). This uses AUTOREF SPECIALIZATION to actually detect the impl at test time: the
+/// inherent `ser` (which requires `T: Serialize`) shadows the trait-default `ser` IFF a
+/// `Serialize` impl exists — so unlike an unconstrained generic, this test FLIPS to red the moment
+/// someone adds `#[derive(Serialize)]` to `Redacted`.
+#[test]
+fn redacted_does_not_implement_serialize() {
+    use core::marker::PhantomData;
+    struct Probe<T>(PhantomData<T>);
+    trait ViaTraitDefault {
+        fn ser(&self) -> bool {
+            false
+        }
+    }
+    impl<T> ViaTraitDefault for Probe<T> {}
+    // Inherent method: exists ONLY when T: Serialize, and shadows the trait default when present.
+    impl<T: serde::Serialize> Probe<T> {
+        fn ser(&self) -> bool {
+            true
+        }
+    }
+    let probe = Probe::<Redacted<String>>(PhantomData);
+    assert!(
+        !probe.ser(),
+        "Redacted<T> must NOT implement Serialize (add one and this test goes red)"
+    );
+    // Sanity: the probe DOES report true for a type that is Serialize (proving it detects impls).
+    let control = Probe::<String>(PhantomData);
+    assert!(control.ser(), "probe must detect a real Serialize impl");
+}
+
+// The credential-primitive suite that came with `constant_time_eq` and `sha256_hex` when
+// `busbar-api` retired (it was that crate's `auth` test module).
+
+#[test]
+fn constant_time_eq_basics() {
+    assert!(constant_time_eq("secret", "secret"));
+    assert!(!constant_time_eq("short", "longer"));
+    assert!(!constant_time_eq("secret1", "secret2"));
+}
+
+#[test]
+fn sha256_hex_is_lowercase_64() {
+    let h = sha256_hex(b"busbar");
+    assert_eq!(h.len(), 64);
+    assert_eq!(h, h.to_lowercase());
+}
+
+/// KNOWN-ANSWER VECTORS. The shape assertions above -- 64 chars, lower-case -- are satisfied by a
+/// `sha256_hex` that hashed the wrong bytes, truncated and padded, or returned a fixed 64-char hex
+/// constant; the second one compares the value to a transform of itself. Every admin and plugin
+/// credential compare in the tree routes through this function
+/// (`crates/auth-admin-tokens/src/lib.rs:46,51`), and
+/// until this test nothing anywhere pinned its actual output. The two vectors are FIPS 180-2's,
+/// so they are checkable against any independent implementation rather than against ours.
+#[test]
+fn sha256_hex_matches_the_published_test_vectors() {
+    assert_eq!(
+        sha256_hex(b""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}

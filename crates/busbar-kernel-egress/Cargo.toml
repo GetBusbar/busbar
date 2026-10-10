@@ -1,0 +1,50 @@
+# busbar-unit-egress — the egress unit: the pool, the walk, its terminals.
+#
+# WHAT THIS CRATE IS. The design (docs/design/BUSBAR-1.6.0.md THE DESIGN, §1 route step, §5) gives
+# the egress unit the route step: it owns the pool per (transport, destination); it walks the
+# verified set in the pick order, ONE stepper that answers the next member or the pool's exhaustion
+# terminal for every attempt the far end runs; and it bounds each attempt's wait for its first
+# answer by what the walk has left. The pick order, the hop count, the deadline rule and the
+# terminal bodies are the ones 1.5.5 shipped (`busbar-llm`'s `engine/select.rs`'s `pick_among`,
+# `engine/exhaustion/**` and the failover loop in `engine/pipeline.rs`), moved rather than
+# rewritten. The attempt's I/O is the far end's, in the kernel.
+#
+# WHAT IS DELIBERATELY NOT HERE. The dialect codecs, and any read of a body. The breaker state
+# machine is the BREAKER unit's (this crate consults it through one trait and records against it;
+# the 31-row classification table is data the breaker trait consumes, not a match arm here). The
+# money is the admission and ledger units'.
+#
+# DEPENDENCIES. One workspace crate: `busbar-contract`, for the capability tokens that seal the
+# step and the destination ids. Every other seam — the breaker, the journal, the pool's own permit
+# store — enters through a `// contract:`-marked trait in `ports`, for the integrator to bind.
+# `futures` is here for exactly one item: the chunk `Stream` `upstream::read_capped` reads. There is
+# no async runtime dependency; the clock and the sleep are ports too, so a test drives the walk on
+# one thread with no timer wheel.
+[package]
+name = "busbar-kernel-egress"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The egress unit: the pool per (transport, destination), the ordered walk, the attempt's bound, and the on_exhausted terminals."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_kernel_egress"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+futures = { workspace = true }
+# The capped upstream-body read (`upstream::read_capped`) is generic over any chunk stream; `Bytes`
+# is the chunk type it reads and the prefix it returns. Opens nothing.
+bytes = { workspace = true }
+
+# Test-only. `busbar-unit-breaker` is never named by this crate's library code — the breaker seam
+# enters production code through `ports::Breaker` alone, and the composition root binds the two
+# units. This dev-dependency exists only so a test can hold the two units' at-capacity floors to one
+# value (`tests/exhaustion_tests.rs`); the seam proof itself (minting a step token) and the scripted
+# node the route-step tests drive live in busbar-kernel's `src/tests/members/egress/`, where
+# minting is legal.
+[dev-dependencies]
+busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }

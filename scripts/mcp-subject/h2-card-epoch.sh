@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# Gating scenario `mcp.rig|h2-card-epoch` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 6, METER) for the MCP
+# plane: the DATED-CARD question (#79). It is the mcp twin of the oracle cell
+# `billing|rate-card|history-mid-window` (testing/shadow-oracle/scripts/rate-card-history.sh), which
+# asks the same thing of the llm plane and can never ask it of this one -- the golden is 1.5.5, 1.5.5
+# had no mcp plane, and every one of the corpus's 912 mcp rows reads SKIP.
+#
+# THE RULE, in the decision's own words: "'Price against the latest rate card' means the latest card
+# whose `effective_from` had arrived at the posting's instant -- NOT the latest card ever authored
+# ... Publishing a new card never reprices the window before its `effective_from`." The resolution
+# key is the posting's own arrival instant (`arrived_ms`), not a version stamped into the posting.
+#
+# THE DIMENSION THIS LEG MOVES IS THIS PLANE'S OWN FLAT FEE, `tools.fees.per_request`, and both halves
+# of that are decision-backed. FLAT FEE: #44, "A flat/static fee is ONE plane-agnostic pricing
+# dimension on the rate card (applied per-request or per-session), identical for every plane, and
+# NEVER rounded" -- never rounded is what makes the arithmetic below exact rather than approximate.
+# THIS PLANE'S OWN: #47 makes `rate_card` + `fees` per-plane RESERVED keys, and the OWNER's Q129
+# ruling (2026-10-01) places them: "a plane's fees live in its own section (`fees:`; the root
+# `per_request_fee:` is the `pools` plane's key)". This leg used to move the ROOT `per_request_fee`,
+# which is the `pools` plane's fee and not this plane's; it now moves the mcp plane's own.
+#
+# HOW IT MOVES IT: `POST /api/v1/admin/config/apply`, carrying THIS BOOT'S OWN DOCUMENT with that one
+# key changed (`h2_apply_plane_fee`). ARCHITECT ruling (card-epoch): "Under #47 fees are per-plane
+# reserved keys, so the rig moves the mcp plane's own fee. A live change goes through /config/apply,
+# which accepts EXACTLY the shape boot config accepts, plane sections included (no 'unknown
+# field')." The apply used to refuse the `tools:`/`mcp:` sections as unknown fields; that defect is
+# fixed beside this change (busbar-core-admin `apply_config`, and its test
+# `config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee`).
+#
+# THE SHAPE. Two dated cards, one call under each:
+#
+#   boot                    card 0: tools.fees.per_request 1   (effective_from 0 --
+#                                                        `HistorySeq::OPENING`, because
+#                                                        `RootHistory::apply` dates a node's FIRST
+#                                                        card from zero)
+#   call A                  arrives inside card 0's window
+#   POST /config/apply      card 1: tools.fees.per_request 7   (effective_from = the apply's instant,
+#                                                        and it CLOSES NOTHING -- card 0 goes on
+#                                                        answering for every instant before it)
+#   re-approve              the live apply rebuilds the App and the registry returns unapproved
+#   call B                  arrives inside card 1's window
+#   GET keys/<kid>/usage
+#
+# THE THREE HYPOTHESES SEPARATE ARITHMETICALLY, which is why there are two calls and not one -- one
+# call could not tell a correct resolution from one that always returns the opening entry:
+#
+#   #79, the card in force at each call's own arrived_ms   ->  1 + 7 =  8   EXPECTED
+#   reprice off the NEWEST card ever authored              ->  7 + 7 = 14
+#   resolve everything to HistorySeq::OPENING, forever     ->  1 + 1 =  2
+#
+# THE READ IS THE BUDGET CELL (`GET /api/v1/admin/keys/<kid>/usage`), not the metering series:
+# `derived_bucket_usage` (governance/state.rs:1581) reads a cell that survives the live config swap,
+# while the write-behind metering buffer does not -- a leg that spans an apply and read
+# `GET /admin/usage` would be measuring the swap as well as the card.
+set -uo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=h2-lib.sh
+source "${here}/h2-lib.sh"
+
+WORK="${H2_WORK:-${here}/../../target/h2-scratch/mcp-card-epoch.$$}"
+trap 'h2_stop' EXIT
+
+H2_GROUPS_YAML="groups:
+  h2-oracle:
+    limits:
+      - { budget: 1000000, per: day }"
+
+h2_boot "$WORK" "$H2_GROUPS_YAML" || { echo "FAIL	boot failed, see $WORK/busbar.log" ; exit 1; }
+
+failures=0
+detail=""
+
+read -r kid tok <<<"$(h2_mint h2-oracle)"
+[ -n "$tok" ] || { h2_verdict FAIL "mint failed"; exit 1; }
+bound="$(h2_bind "$tok")"
+
+# ── CALL A, under card 0 (fee 1) ──────────────────────────────────────────────────────────────────
+read -r a_status _ <<<"$(h2_call "$bound" "under-card-0")"
+[ "$a_status" = "200" ] || { failures=$((failures+1)); detail="${detail}call_A_status=${a_status}(want 200); "; }
+spend_a="$(h2_usage_field "$kid" spend_cents)"
+[ "$spend_a" -eq 1 ] || { failures=$((failures+1)); detail="${detail}spend after call A = ${spend_a}(want 1, card 0's fee -- the rest of this leg is meaningless if the opening card does not price its own window); "; }
+
+# ── CARD 1 ────────────────────────────────────────────────────────────────────────────────────────
+apply="$(h2_apply_plane_fee 7)"
+case "$apply" in
+  *'"applied":true'*) ;;
+  *) failures=$((failures+1)); detail="${detail}the second card (tools.fees.per_request 7, through POST /config/apply) did not apply: ${apply}; " ;;
+esac
+
+# THE SAME ONE CALL, READ AGAIN. Nothing has been served since, so any movement here is a reprice of
+# a window that closed before card 1 was even authored -- the exact act #79 forbids.
+spend_reread="$(h2_usage_field "$kid" spend_cents)"
+[ "$spend_reread" -eq 1 ] || { failures=$((failures+1)); detail="${detail}publishing card 1 moved call A's price from 1 to ${spend_reread} with nothing served in between (#79: publishing a new card never reprices the window before its effective_from); "; }
+
+# ── CALL B, under card 1 (fee 7) ──────────────────────────────────────────────────────────────────
+h2_approve_server || { failures=$((failures+1)); detail="${detail}re-approval after the live apply failed; "; }
+read -r b_status _ <<<"$(h2_call "$bound" "under-card-1")"
+[ "$b_status" = "200" ] || { failures=$((failures+1)); detail="${detail}call_B_status=${b_status}(want 200); "; }
+
+total="$(h2_usage_field "$kid" spend_cents)"
+# THE OTHER READ, always taken, never asserted here. Since `root/kernel.rs:497` installs the dated
+# history for `GET /api/v1/admin/usage` and NOT for `GET /keys/<id>/usage`, the two admin money reads
+# can now answer different money for the same window. Both figures go in the failure text so a reader
+# does not have to guess which one moved. Units differ by construction: cents here, micro-units there
+# (1 cent = 10000 micro-units), so 8 cents is 80000 micros.
+other="$(h2_admin_usage_total spend_micros)"
+# Asked through h2_int_is so an empty or non-numeric read is a FAILURE: the bare `[ "$total" -ne 8 ]`
+# errored on one, took the false arm and let the leg PASS on money it never read (item 498).
+if ! h2_int_is "$total" -eq 8; then
+  failures=$((failures+1))
+  case "$total" in
+    14) why="every posting priced at the NEWEST card ever authored" ;;
+    2)  why="every posting priced at HistorySeq::OPENING, forever" ;;
+    *)  why="neither of the two named wrong answers (14 = newest-card reprice, 2 = opening-forever)" ;;
+  esac
+  detail="${detail}two calls either side of a dated card total ${total} cents on GET /keys/<id>/usage (want 8 = 1 + 7, each call at the card in force at its own arrived_ms): ${why}. The OTHER admin money read, GET /admin/usage, says ${other} micro-units for the same window (80000 == 8 cents would agree); "
+fi
+
+if [ "$failures" -eq 0 ]; then
+  h2_verdict PASS "two calls either side of a dated card totalled 8 = 1 + 7: each priced at the card in force at its own arrived_ms, not the newest and not the opening entry"
+else
+  h2_verdict FAIL "$detail"
+fi

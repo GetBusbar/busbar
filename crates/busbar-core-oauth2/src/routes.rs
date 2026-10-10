@@ -1,0 +1,735 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE MOUNT: which paths this plane serves, at what admission bar, and why each one is what it is.
+//!
+//! Every route here goes through [`crate::core_routes::CoreRouter`], which wires the handler and
+//! declares its admission bar in the same act. `oauth-as` also ships an `axum` feature that hands
+//! back a ready-made `Router`, and busbar does not use it: that router is a single `fallback`, so
+//! its paths would enter the tree with NO entry in `CoreRouteTable` — and a served path the table
+//! does not describe is the one state that table exists to make unrepresentable. The paths are
+//! therefore registered here, concretely, derived from the operator's issuer at mount time, exactly
+//! as every other served surface registers its own.
+//!
+//! ## The bars, and the one that looks wrong until you read the RFC
+//!
+//! | route | bar | why |
+//! |---|---|---|
+//! | metadata, JWKS | `None` | RFC 8414 §3 and RFC 7517: read by a client that has no credential yet. Requiring one is a discovery loop with no entrance. |
+//! | authorize | `None` | A browser endpoint. The resource owner is authenticated by the consent screen, and by nothing before it. |
+//! | par (FAPI 2.0 posture only) | `None` | RFC 9126: the client authenticates in the body (`private_key_jwt`), which `oauth-as` performs, exactly as at the token endpoint. |
+//! | token, register | `None` | These carry OAuth's OWN client authentication in the request, which `oauth-as` performs. busbar's data-plane bar knows nothing about a `client_secret_post` body and would refuse every conforming client. |
+//! | consent | `Admin` | The one route here that busbar authenticates itself, through the EXISTING admin chain. See [`super::consent`] on why the operator is the resource owner on this plane. |
+//!
+//! `RouteAuth::None` on four of them is not an absence of authentication; it is authentication that
+//! belongs to a different protocol and is performed by the library that implements it. What it does
+//! mean is that those four handlers must never read anything from busbar's governance state, and
+//! they do not: each one forwards bytes to `oauth-as` and returns what it answers.
+
+use std::sync::Arc;
+
+use axum::response::{IntoResponse, Response};
+use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_kernel::core_routes::CoreRouter;
+use busbar_kernel::state::AppHandle;
+
+/// The seam-typed mount (`busbar_kernel::oauth_as::seam::AsPlaneSeam::mount`): downcasts the
+/// type-erased plane object core hands in and defers to [`mount`]. Core cannot call [`mount`]
+/// directly — it would have to name `AsPlane`, the reverse edge Cargo refuses — so this is the
+/// function pointer `busbar_core_oauth2::install` actually registers.
+pub(crate) fn seam_mount(
+    router: CoreRouter,
+    plane: Option<&Arc<dyn std::any::Any + Send + Sync>>,
+) -> CoreRouter {
+    mount(
+        router,
+        plane.and_then(|p| p.downcast_ref::<super::plane::AsPlane>()),
+    )
+}
+
+/// Mount the authorization server's routes, or none of them.
+///
+/// `None` returns the router untouched — no route, no table entry, nothing for the auth middleware
+/// to consult. That is the zero-cost-when-off property at the routing layer.
+pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -> CoreRouter {
+    let Some(plane) = plane else {
+        return router;
+    };
+    let id = plane.identity();
+    // RFC 9126 pushed authorization requests: mounted ONLY under the FAPI 2.0 posture, the same
+    // gate `plane::fapi2_posture` sets `config.par` behind, so the route table and the advertised
+    // document cannot disagree.
+    let router = if id.fapi2() {
+        router.route(
+            id.par_path().to_string(),
+            RouteMethod::Post,
+            RouteAuth::None,
+            forward,
+        )
+    } else {
+        router
+    };
+    router
+        .route(
+            id.metadata_path().to_string(),
+            RouteMethod::Get,
+            RouteAuth::None,
+            forward,
+        )
+        .route(
+            id.jwks_path().to_string(),
+            RouteMethod::Get,
+            RouteAuth::None,
+            forward,
+        )
+        .route(
+            id.authorize_path().to_string(),
+            RouteMethod::Get,
+            RouteAuth::None,
+            authorize,
+        )
+        .route(
+            id.token_path().to_string(),
+            RouteMethod::Post,
+            RouteAuth::None,
+            forward,
+        )
+        .route(
+            id.consent_path().to_string(),
+            RouteMethod::Get,
+            RouteAuth::Admin,
+            consent_screen,
+        )
+        .route(
+            id.consent_path().to_string(),
+            RouteMethod::Post,
+            RouteAuth::Admin,
+            consent_submit,
+        )
+        // RFC 7591 registration, mounted UNCONDITIONALLY: the 1.6.0 ruling is that all three
+        // registration mechanisms are on whenever the plane is, with no toggles. The advertised
+        // `registration_endpoint` in `policy::registration_config` is likewise unconditional, so
+        // the metadata document and the route table cannot disagree about this path.
+        .route(
+            id.register_path().to_string(),
+            RouteMethod::Post,
+            RouteAuth::None,
+            forward,
+        )
+}
+
+/// Downcast the `App`'s type-erased authorization-server slot back to the concrete plane, for the
+/// three request handlers below. The ONLY place outside [`seam_mount`] this crate downcasts
+/// `App::oauth_as_any()` — every other reach in this file already holds a `&AsPlane` (from `mount`
+/// or from a handler that already called this once).
+fn as_plane(app: &busbar_kernel::state::App) -> Option<&super::plane::AsPlane> {
+    app.oauth_as_any()
+        .and_then(|p| p.downcast_ref::<super::plane::AsPlane>())
+}
+
+/// Hand one request to `oauth-as` and return what it answers, unchanged.
+///
+/// The whole of busbar's OAuth wire surface is this function. Nothing is inspected, rewritten or
+/// re-decided on the way through: the RFCs define these responses down to the header, and a gateway
+/// that "improves" one of them is a gateway that fails a conformance suite for a reason nobody can
+/// find.
+async fn forward(
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(plane) = as_plane(&app) else {
+        // Unreachable while the mount and the config are created in the same act, and a clean
+        // refusal rather than an unwrap because this is a request path.
+        return not_found();
+    };
+    into_axum(plane.handle(request).await)
+}
+
+fn into_axum(response: oauth_as::http::Response) -> Response {
+    response
+        .map(|body| axum::body::Body::from(body.into_bytes()))
+        .into_response()
+}
+
+/// `GET {issuer}/authorize` — [`forward`], with the two things a BROWSER endpoint owes a browser.
+///
+/// 1. **A pushed request is decided before `oauth-as` sees it.** Under RFC 9126 the URL carries only
+///    `client_id` and `request_uri`, and `oauth-as` spends the handle on arrival. Sent to the
+///    library undecided, the request would be spent by merely loading the page, and the operator's
+///    answer would come back to a handle that no longer exists. So an undecided pushed request goes
+///    straight to the consent screen, and reaches the library only once an approval or a refusal is staked for
+///    it — one-time use enforced at the point of authorization (FAPI 2.0 s5.3.2.2 NOTE 3). A
+///    `request_uri` this store does not hold, or one presented by a client that did not push it,
+///    goes to the library, which refuses it.
+/// 2. **A refusal is a page.** `oauth-as` answers a request it will not redirect (RFC 6749
+///    s4.1.2.1: never to an unvalidated `redirect_uri`) with a direct JSON error, which a browser
+///    shows as raw text. The same status and the same error code go back as HTML instead.
+async fn authorize(
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(plane) = as_plane(&app) else {
+        return not_found();
+    };
+    if let Some(undecided) = pushed_request_gate(plane, &request) {
+        return into_axum(undecided);
+    }
+    error_page(plane.handle(request).await)
+}
+
+/// The consent redirect for a pushed request nobody has answered yet, or `None` to let the request
+/// through. See [`authorize`].
+fn pushed_request_gate(
+    plane: &super::plane::AsPlane,
+    request: &axum::extract::Request,
+) -> Option<oauth_as::http::Response> {
+    let pairs = form_urlencoded_pairs(request.uri().query()?);
+    let param = |name: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    };
+    let (client_id, request_uri) = (param("client_id")?, param("request_uri")?);
+    let pushed = plane.pushed(request_uri)?;
+    if pushed.client_id != client_id {
+        return None;
+    }
+    let key = super::consent::pushed_key(client_id, request_uri);
+    let decided = super::consent::session_id(request.headers())
+        .is_some_and(|session| plane.sessions().is_staked(&session, &key));
+    if decided {
+        return None;
+    }
+    let target = request.uri().path_and_query()?.as_str();
+    Some(super::consent::login_redirect(
+        &plane.identity().consent_url(),
+        target,
+    ))
+}
+
+/// A direct 4xx JSON error from the authorization endpoint, re-rendered as an HTML page with the same
+/// status and the same RFC 6749 `error` code. Anything else passes through untouched.
+fn error_page(response: oauth_as::http::Response) -> Response {
+    let json = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"));
+    if !response.status().is_client_error() || !json {
+        return into_axum(response);
+    }
+    let (parts, body) = response.into_parts();
+    let error: serde_json::Value = serde_json::from_slice(&body.into_bytes()).unwrap_or_default();
+    let code = error["error"]
+        .as_str()
+        .map_or_else(|| format!("HTTP {}", parts.status.as_u16()), str::to_string);
+    let description = error["error_description"].as_str().unwrap_or_default();
+    let page = format!(
+        "<!doctype html><meta charset=utf-8><title>busbar — authorization error</title>\
+         <h1>Authorization error</h1>\
+         <p>error: <code>{code}</code></p>\
+         <p>{description}</p>",
+        code = escape(&code),
+        description = escape(description),
+    );
+    (
+        parts.status,
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        axum::response::Html(page),
+    )
+        .into_response()
+}
+
+/// `GET {issuer}/consent` — the screen that names the client and the scopes and asks the operator.
+///
+/// Reached ONLY after the admin chain has identified the caller, because the route declares
+/// `RouteAuth::Admin`. There is therefore no credential check in this handler, and there must not
+/// be: a second opinion about who an operator is, held by the authorization server, is the exact
+/// duplication this plane was built not to have.
+async fn consent_screen(
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    axum::extract::Query(query): axum::extract::Query<ConsentQuery>,
+) -> Response {
+    let Some(plane) = as_plane(&app) else {
+        return not_found();
+    };
+    let Some(target) = query.return_to.as_deref().filter(|t| is_local_path(t)) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::response::Html(PAGE_NO_REQUEST.to_string()),
+        )
+            .into_response();
+    };
+    // The session is opened HERE, not at the POST: the operator has already been authenticated by
+    // the admin chain to get this far, so this is the moment the fact is true. The id is opaque and
+    // unguessable, and it is the value the cookie carries.
+    //
+    // NO SESSION WITHOUT ENTROPY. `new_session_id` answers `None` when the platform RNG failed, and
+    // the refusal is the point: the previous code substituted an EMPTY id, which `Sessions::open`
+    // would have stored happily and which any request could then present, because an empty cookie
+    // value is not a secret anybody has to guess.
+    let Some(id) = new_session_id() else {
+        return no_entropy();
+    };
+    plane.sessions().open(ADMIN_SUBJECT, id.clone());
+    let page = consent_page(target, &pending_request(plane, target));
+
+    let mut response = axum::response::Html(page).into_response();
+    let headers = response.headers_mut();
+    for cookie in session_cookies(plane.identity(), &id) {
+        // `HeaderValue::from_str` rather than an unwrap, and the refusal is not theatre: the `Path`
+        // is derived from the operator's `issuer`, whose path component is not character-checked at
+        // boot, so a control character there would be a response-splitting vector. Refused whole.
+        let Ok(value) = axum::http::HeaderValue::from_str(&cookie) else {
+            return not_representable();
+        };
+        // APPEND, not insert: there is more than one cookie and the second must not replace the
+        // first. See `session_cookies` for why there is more than one.
+        headers.append(axum::http::header::SET_COOKIE, value);
+    }
+    // A page naming a client and a scope set is a per-request answer. Cached, it would show the
+    // next request's operator a previous request's answer.
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+/// EVERY `Set-Cookie` that opens one consent session, and why there is more than one of them.
+///
+/// A cookie is only sent to the paths RFC 6265 §5.1.4 path-matches, which is a PREFIX match at a
+/// `/` boundary — so a cookie scoped to `/consent` is never sent to `/authorize`. The two paths are
+/// siblings, and the session is read at BOTH:
+///
+/// | reader | path | what reads it |
+/// |---|---|---|
+/// | the approval, and the resource owner behind it | `{issuer}/authorize` | [`super::consent::subject_resolver`] and [`super::consent::approval_resolver`], which `oauth-as` calls from its authorization handler |
+/// | the approval submission | `{issuer}/consent` | [`consent_submit`], which takes the session from the cookie and never from the form |
+///
+/// That is the WHOLE list: it is the two mounts in [`mount`] whose handlers reach a
+/// `session_id(...)` call, and no other mounted path does. The metadata document, the JWKS, the
+/// token endpoint and the registration endpoint never read it — and the token endpoint is the one
+/// that matters, because it is spoken to by the CLIENT rather than by the browser and a session
+/// cookie arriving there would be an operator's credential handed to a party the flow exists to
+/// keep it from.
+///
+/// So the narrowest scope that works is not one path, it is these TWO exact paths — one
+/// `Set-Cookie` each. `Path=/` would be one line shorter and would send this cookie to every route
+/// busbar serves, including the token endpoint above and every data-plane path on the same origin;
+/// `Path={issuer}/` is the same mistake wearing a prefix. Two cookies of one name at two disjoint
+/// paths is unambiguous by construction: no request path can match both, so no request ever carries
+/// two of them, and [`super::consent::session_id`] never has to choose.
+pub(super) fn session_cookies(identity: &crate::config::AsIdentity, id: &str) -> [String; 2] {
+    // `Secure` follows the ISSUER'S SCHEME rather than being unconditional. Unconditional would be
+    // the stricter-looking choice and it would break the `http://` deployment outright — a browser
+    // discards a `Secure` cookie arriving over plain HTTP, so the flow would fail exactly as it did
+    // before this fix, and it would fail in a way that looks like a busbar bug rather than like a
+    // deployment that is not using TLS. An `https:` issuer is the production posture and gets the
+    // attribute; an `http:` one is a developer's loopback and gets a cookie that works.
+    let secure = if identity.issuer().starts_with("https://") {
+        "; Secure"
+    } else {
+        ""
+    };
+    // `SameSite=Lax`, NOT `Strict`. The browser arrives at `/authorize` by a top-level navigation
+    // from the client's own site, which is cross-site: `Strict` withholds the cookie on exactly
+    // that hop and would reintroduce this defect from the other end. `Lax` sends it on a top-level
+    // GET navigation and withholds it from cross-site POSTs, which is what the consent submission
+    // needs — that POST is same-site, issued by a form on this server's own page.
+    //
+    // `Max-Age` is `SESSION_TTL`, so the browser stops presenting a session at the moment the
+    // server stops honouring it; a longer cookie would send a credential that is already dead.
+    let attrs = format!(
+        "HttpOnly{secure}; SameSite=Lax; Max-Age={}",
+        super::consent::SESSION_TTL.as_secs()
+    );
+    let name = super::consent::SESSION_COOKIE;
+    [
+        format!("{name}={id}; Path={}; {attrs}", identity.authorize_path()),
+        format!("{name}={id}; Path={}; {attrs}", identity.consent_path()),
+    ]
+}
+
+/// `POST {issuer}/consent` — the operator approved. Stake ONE approval and hand the browser back to
+/// `/authorize`, which will spend it.
+///
+/// The approval is staked against the exact client and scope set the pending authorization request
+/// carries, which the handler learns by re-reading the `return` URL it is about to redirect to
+/// rather than from the form: a form field naming the scope would be a value the browser could
+/// change between being shown one thing and approving another.
+async fn consent_submit(
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    headers: axum::http::HeaderMap,
+    axum::extract::Form(form): axum::extract::Form<ConsentForm>,
+) -> Response {
+    let Some(plane) = as_plane(&app) else {
+        return not_found();
+    };
+    let Some(target) = form.return_to.as_deref().filter(|t| is_local_path(t)) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::response::Html(PAGE_NO_REQUEST.to_string()),
+        )
+            .into_response();
+    };
+    // The session comes from the COOKIE, never from the form. A form field naming the session
+    // would be a value the page could be made to carry, which turns "the operator approved" into
+    // "somebody submitted a form that says so".
+    let Some(session) = super::consent::session_id(&headers) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::response::Html(PAGE_NO_REQUEST.to_string()),
+        )
+            .into_response();
+    };
+    // Absent is Approve: the answer the screen's only button gave before it grew a second one.
+    let approve = match form.answer.as_deref() {
+        None | Some("approve") => true,
+        Some("deny") => false,
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::response::Html(PAGE_NO_REQUEST.to_string()),
+            )
+                .into_response()
+        }
+    };
+    // The stake key is the request itself: the `return` target this answer hands the browser back
+    // to, which is the path and query `/authorize` spends under (`consent::request_key`). A PUSHED
+    // request is keyed by its single-use handle instead (`consent::pushed_key`), which names its
+    // scope already.
+    if let Some((client_id, _scope, _redirect_host)) = client_and_scope_of(target) {
+        let key = match query_value(target, "request_uri") {
+            Some(handle) => super::consent::pushed_key(&client_id, &handle),
+            None => super::consent::request_key(&client_id, target),
+        };
+        plane.sessions().stake(&session, key, approve);
+    }
+    (
+        axum::http::StatusCode::FOUND,
+        [
+            (axum::http::header::LOCATION, target.to_string()),
+            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+    )
+        .into_response()
+}
+
+/// The subject an approval on this plane is granted BY. One value, because there is one party this
+/// deployment can authenticate without an identity provider; see [`super::consent`].
+const ADMIN_SUBJECT: &str = "busbar-operator";
+
+/// `?return=` on the consent screen.
+#[derive(serde::Deserialize)]
+struct ConsentQuery {
+    #[serde(rename = "return")]
+    return_to: Option<String>,
+}
+
+/// The consent form's fields: the pending request, and which button was pressed.
+#[derive(serde::Deserialize)]
+struct ConsentForm {
+    #[serde(rename = "return")]
+    return_to: Option<String>,
+    /// `approve` or `deny`.
+    answer: Option<String>,
+}
+
+/// One query parameter of a local `/authorize?...` target, decoded.
+fn query_value(target: &str, name: &str) -> Option<String> {
+    form_urlencoded_pairs(target.split_once('?')?.1)
+        .into_iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v)
+}
+
+/// What the screen shows for the request at `target`: client, scope and redirect host, and whether
+/// it was shown before. A plain request carries all three in its URL. A PUSHED one carries only
+/// `client_id` and `request_uri`, so the three come from the store's note of what was pushed
+/// (`cimd::Pushed`), and only while the handle is live and belongs to that client.
+struct Pending {
+    client_id: String,
+    scope: String,
+    redirect_host: String,
+    /// A pushed request this screen has shown before.
+    revisit: bool,
+}
+
+fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending {
+    let (client_id, scope, redirect_host) = client_and_scope_of(target)
+        .unwrap_or_else(|| ("(unnamed)".to_string(), String::new(), String::new()));
+    let pushed = query_value(target, "request_uri").and_then(|handle| {
+        plane
+            .pushed(&handle)
+            .filter(|p| p.client_id == client_id)
+            .map(|p| (p, plane.mark_pushed_shown(&handle)))
+    });
+    match pushed {
+        Some((p, revisit)) => Pending {
+            client_id,
+            scope: p.scope,
+            redirect_host: host_of(&p.redirect_uri),
+            revisit,
+        },
+        None => Pending {
+            client_id,
+            scope,
+            redirect_host,
+            revisit: false,
+        },
+    }
+}
+
+/// Is this a path on THIS server rather than a URL somewhere else?
+///
+/// The consent screen redirects a browser to this value once the operator presses Approve or Deny,
+/// so an unchecked one is an open redirect — and an open redirect on an OAuth server's own origin is
+/// the single most useful thing an attacker can find there. A browser does not read a `Location`
+/// the way a prefix check does: it drops every tab and newline anywhere in it, trims leading
+/// controls and spaces, and reads `\` as `/`, so `/\t/evil.example` and `/\n/evil.example` are
+/// `//evil.example` to it, a scheme-relative URL on someone else's host.
+///
+/// So the value is held to the ONE shape a local absolute path has, byte by byte, and anything else
+/// is refused rather than cleaned: it opens with exactly one `/`; its second byte is neither `/` nor
+/// `\`; and no byte anywhere is a backslash, a control (C0, DEL, or a C1 control), or whitespace.
+/// What the authorization endpoint sends here is the request target the browser itself sent, which
+/// is percent-encoded and carries none of those.
+fn is_local_path(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes.next() == Some(b'/')
+        && !matches!(bytes.next(), Some(b'/' | b'\\'))
+        && !value
+            .chars()
+            .any(|c| c == '\\' || c.is_control() || c.is_whitespace())
+}
+
+/// The `client_id` and `scope` of a pending authorization request, read out of its query string.
+///
+/// Returns the RAW values: the approval key is compared against what `oauth-as` reports for the same
+/// request, so the two only agree if nothing normalised one of them on the way past.
+fn client_and_scope_of(target: &str) -> Option<(String, String, String)> {
+    let query = target.split_once('?')?.1;
+    let mut client_id = None;
+    let mut scope = String::new();
+    let mut redirect_uri = String::new();
+    for (name, value) in form_urlencoded_pairs(query) {
+        match name.as_str() {
+            "client_id" => client_id = Some(value),
+            "scope" => scope = value,
+            "redirect_uri" => redirect_uri = value,
+            _ => {}
+        }
+    }
+    Some((client_id?, scope, host_of(&redirect_uri)))
+}
+
+/// The host authority of an absolute `redirect_uri` — the part of it an operator can judge.
+///
+/// The consent screen names this rather than the whole URI: the host is what decides WHO receives
+/// the credential, and a full URI puts an attacker-chosen path and query on the screen next to it,
+/// which is room to write text that argues with the page around it.
+///
+/// Read by the one shared URL reader ([`busbar_kernel::net_guard::parse_url`], WHATWG rules for
+/// `https`), so the host named here is the host the browser contacts: a userinfo before the last
+/// `@` is dropped (`https://client.example@evil.example/cb` names `evil.example`), and a `\` ends the
+/// authority (`https://evil.example\@trusted.example/cb` names `evil.example`, not the
+/// `trusted.example` a reader splitting only at `/` showed). A URI with no readable host names
+/// nothing, and the screen says so.
+fn host_of(redirect_uri: &str) -> String {
+    let Ok(parts) = busbar_kernel::net_guard::parse_url(redirect_uri) else {
+        return String::new();
+    };
+    let host = if parts.host.contains(':') {
+        format!("[{}]", parts.host)
+    } else {
+        parts.host
+    };
+    match parts.port {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    }
+}
+
+/// `a=b&c=d` with `+` and `%xx` decoded. Hand-written because the one caller reads two names out of
+/// a query this server itself produced, and a general-purpose parser here would be a dependency
+/// bought for eight lines.
+pub(super) fn form_urlencoded_pairs(query: &str) -> Vec<(String, String)> {
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(k, v)| (percent_decode(k), percent_decode(v)))
+        .collect()
+}
+
+/// ASCII hex digit (`0-9`, `a-f`, `A-F`) to its nibble value.
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            // Decode the two hex digits from the raw bytes, not `&s[i+1..i+3]`: `s` is a `&str`,
+            // and slicing it by byte index panics if that index falls inside a multibyte UTF-8
+            // character (e.g. a query value containing a raw non-ASCII byte next to a stray `%`).
+            // Byte-indexing `bytes` has no such requirement, so this can't panic.
+            b'%' if i + 2 < bytes.len() => {
+                match (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi << 4) | lo);
+                        i += 3;
+                    }
+                    // A stray `%` is kept verbatim rather than dropped: dropping it would let two
+                    // different query strings decode to one value.
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// An unguessable session id. 256 bits from the platform RNG, hex — or `None`.
+///
+/// `None` rather than a fallback string, and that is the whole of the change: the previous version
+/// answered `String::new()` when the RNG failed, and an EMPTY session id is one every caller
+/// already knows. It would have been opened as a live session, set as `busbar_as_session=`, and
+/// accepted from anyone who sent the same empty value. A session id is a bearer credential, and the
+/// only safe answer to "I could not generate a secret" is to not issue one.
+fn new_session_id() -> Option<String> {
+    let mut bytes = [0u8; 32];
+    match ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes) {
+        Ok(()) => Some(bytes.iter().map(|b| format!("{b:02x}")).collect()),
+        Err(_) => None,
+    }
+}
+
+/// The platform RNG failed, so no session was opened. A 503 rather than a page that pretends: the
+/// operator's next action is to retry, and the deployment is in a state where it cannot sign a
+/// token either.
+fn no_entropy() -> Response {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        axum::response::Html(PAGE_NO_SESSION.to_string()),
+    )
+        .into_response()
+}
+
+/// A `Set-Cookie` this deployment's own configuration cannot express as a header value — which
+/// means a control character in the operator's `issuer` path. Refused whole rather than emitted
+/// partially, because a half-written `Set-Cookie` is a response-splitting primitive.
+fn not_representable() -> Response {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        axum::response::Html(PAGE_NO_SESSION.to_string()),
+    )
+        .into_response()
+}
+
+fn not_found() -> Response {
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({ "error": "not_found" })),
+    )
+        .into_response()
+}
+
+/// What the operator sees when they land on the consent screen with no pending request — which is
+/// what a bookmark, a refresh after approval, or a link somebody sent them all produce.
+const PAGE_NO_REQUEST: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
+    <p>There is no authorization request waiting. Start the login from your agent.</p>";
+
+/// What the operator sees when this server could not open a session at all. It names no cause: the
+/// two ways to get here are a failed platform RNG and a malformed issuer, and neither is something
+/// a browser should be told about.
+const PAGE_NO_SESSION: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
+    <p>This server could not start a session. Try again, and tell your operator if it persists.</p>";
+
+/// The consent screen.
+///
+/// Everything interpolated is HTML-escaped, and the client's name is NOT among the interpolations:
+/// the screen names the `client_id` the request carried, because a `client_name` is a string the
+/// client chose and a screen that renders it is a screen that can be made to say anything. The
+/// registration policy refuses a name impersonating this deployment as well, which is defence in
+/// depth rather than an alternative.
+fn consent_page(return_to: &str, pending: &Pending) -> String {
+    let scope = if pending.scope.is_empty() {
+        "no scopes"
+    } else {
+        &pending.scope
+    };
+    let redirect_host = if pending.redirect_host.is_empty() {
+        "(unnamed)"
+    } else {
+        &pending.redirect_host
+    };
+    // A pushed request is single use, so a second showing of the same one is worth saying: the
+    // operator either reloaded, or is being shown a request somebody else started.
+    let revisit = if pending.revisit {
+        "<p id=\"revisit\">This request was shown before.</p>"
+    } else {
+        ""
+    };
+    format!(
+        "<!doctype html><meta charset=utf-8><title>busbar — authorize</title>\
+         <h1>Authorize this client?</h1>\
+         <p>Client: <code>{client}</code></p>\
+         <p>Requesting: <code>{scope}</code></p>\
+         <p>Sends the credential to: <code>{host}</code></p>{revisit}\
+         <form method=post>\
+         <input type=hidden name=return value=\"{ret}\">\
+         <button type=submit id=approve name=answer value=approve>Approve</button>\
+         <button type=submit id=deny name=answer value=deny>Deny</button>\
+         </form>",
+        client = escape(&pending.client_id),
+        scope = escape(scope),
+        host = escape(redirect_host),
+        ret = escape(return_to),
+    )
+}
+
+/// The five characters that change the meaning of surrounding markup.
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// Handlers take `Arc<AppHandle>` state through the `CurrentApp` extractor; naming the type here
+/// keeps the mount signature honest about what it is building against.
+type _State = Arc<AppHandle>;
+
+#[cfg(test)]
+#[path = "tests/percent_decode_tests.rs"]
+mod percent_decode_tests;
+
+#[cfg(test)]
+#[path = "tests/consent_host_tests.rs"]
+mod consent_host_tests;
+
+#[cfg(test)]
+#[path = "tests/local_path_tests.rs"]
+mod local_path_tests;

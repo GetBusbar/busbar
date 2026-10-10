@@ -1,0 +1,204 @@
+//! The smallest thing that can call a plane.
+//!
+//! The loop hands a plane an arena, a clock, a configuration view, a transport view and a label
+//! set, and it hands the kernel-built values — a unit, a verified destination — through a seal. All
+//! of that is here, at the minimum size that lets the plane be called for real. Nothing here is
+//! shipped; it exists so the tests exercise the same entry points the kernel does rather than a
+//! private back door.
+//!
+//! Each test binary includes this module and uses the part of it that it needs, so the unused-item
+//! warning is turned off here rather than in each of them: an item unused by one test file is used
+//! by another, and splitting the harness per file would mean maintaining several harnesses.
+
+#![allow(dead_code)]
+
+use busbar_contract::bounded::SlabBytes;
+use busbar_contract::bounded::{
+    Facts, Ir, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, Span,
+};
+use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
+use busbar_contract::ids::{LaneId, OpClassId, StreamId};
+use busbar_contract::unit::{Clock, ConfigView, Ctx, Origin, TransportView, Unit};
+use busbar_contract::wire::{Direction, Frame, FrameMeta};
+use std::sync::Arc;
+
+/// An arena that never reuses a byte.
+///
+/// The shipped arena is a bump allocator the kernel resets per unit; a test does not need the reset
+/// and does need the borrow to outlive the call, so this one hands out memory it never reclaims.
+/// A test process is short.
+#[derive(Debug, Default)]
+pub struct LeakPlaneAlloc;
+
+impl PlaneAlloc for LeakPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
+        Ok(ScratchBytes::new(Box::leak(
+            src.to_vec().into_boxed_slice(),
+        )))
+    }
+
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
+        Ok(Box::leak(src.to_string().into_boxed_str()))
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
+    }
+
+    fn remaining(&self) -> usize {
+        usize::MAX
+    }
+}
+
+/// A configuration block with nothing in it, so every default is the declared one.
+#[derive(Debug, Default)]
+pub struct EmptyConfig;
+
+impl ConfigView for EmptyConfig {
+    fn get_str(&self, _key: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, _key: &str) -> Option<i64> {
+        None
+    }
+    fn get_bool(&self, _key: &str) -> Option<bool> {
+        None
+    }
+}
+
+/// A transport stack that publishes a request target and a header set as facts.
+#[derive(Debug)]
+pub struct HttpStack {
+    facts: Vec<(String, String)>,
+}
+
+impl HttpStack {
+    /// A stack that saw this request target and these headers.
+    #[must_use]
+    pub fn new(path: &str, headers: &[(&str, &str)]) -> Self {
+        let mut facts = vec![("path".to_string(), path.to_string())];
+        for (name, value) in headers {
+            facts.push(((*name).to_string(), (*value).to_string()));
+        }
+        Self { facts }
+    }
+}
+
+impl TransportView for HttpStack {
+    fn key(&self) -> &'static str {
+        "http"
+    }
+    fn chain(&self) -> &[&'static str] {
+        &["tcp", "tls", "http"]
+    }
+    fn fact(&self, key: &str) -> Option<&str> {
+        self.facts
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// The marker the kernel-built constructors take.
+///
+/// The blessed TEST seal (#65). `KernelSeal` is SEALED — no crate outside `busbar-contract` can
+/// implement it — so a fixture names the contract's own `test-seal` type instead of forging one.
+/// The type system stops a plugin now, not the manifest allow-list alone.
+pub use busbar_contract::plugin::TestKernelSeal as TestSeal;
+
+/// Build a context over the pieces above.
+#[must_use]
+pub fn ctx<'u>(
+    arena: &'u LeakPlaneAlloc,
+    config: &'u EmptyConfig,
+    transport: &'u HttpStack,
+    labels: &'u Labels<'u>,
+) -> Ctx<'u> {
+    ctx_at(arena, config, transport, labels, 1_752_000_000)
+}
+
+/// The same context, with the clock reading chosen by the caller.
+///
+/// A test that asks whether an answer follows the values it was handed needs two readings to hand
+/// over; every other test wants the one fixed reading, which is what `ctx` supplies.
+#[must_use]
+pub fn ctx_at<'u>(
+    arena: &'u LeakPlaneAlloc,
+    config: &'u EmptyConfig,
+    transport: &'u HttpStack,
+    labels: &'u Labels<'u>,
+    unix_secs: u64,
+) -> Ctx<'u> {
+    Ctx::new(
+        Clock {
+            unix_secs,
+            monotonic_nanos: 0,
+        },
+        config,
+        None,
+        transport,
+        labels,
+        arena,
+    )
+}
+
+/// One inbound frame carrying a whole body.
+#[must_use]
+pub fn frame(bytes: &[u8]) -> Frame {
+    Frame {
+        direction: Direction::Inbound,
+        stream: StreamId(0),
+        bytes: SlabBytes::new(Arc::from(bytes.to_vec().into_boxed_slice())),
+        meta: FrameMeta::default(),
+    }
+}
+
+/// A unit built the way the kernel builds one, over a decoded body.
+#[must_use]
+pub fn unit<'u>(op: OpClassId, body: Ir<'u>, facts: Facts<'u>) -> Unit<'u> {
+    Unit::new(
+        &TestSeal,
+        busbar_contract::UnitKey::new(1),
+        Origin::Client,
+        None,
+        Some(StreamId(0)),
+        Direction::Inbound,
+        None,
+        op,
+        body,
+        facts,
+        None,
+    )
+}
+
+/// A destination sealed the way the trust unit seals one.
+#[must_use]
+pub fn destination(host: &'static str, lane: LaneId) -> VerifiedDestination {
+    VerifiedDestination::seal(
+        &TestSeal,
+        DestinationFacts::Upstream {
+            transport: "http",
+            address: busbar_contract::UpstreamAddress::socket(host),
+            lane,
+        },
+        "http",
+        None,
+    )
+}
+
+/// The request target that names each dialect on the detection ladder.
+#[must_use]
+pub fn path_for(dialect: &str) -> &'static str {
+    match dialect {
+        "anthropic" => "/v1/messages",
+        "openai" => "/v1/chat/completions",
+        "gemini" => "/v1beta/models/gemini-2.0-flash:generateContent",
+        "bedrock" => "/model/claude/converse",
+        "cohere" => "/v2/chat",
+        "responses" => "/v1/responses",
+        other => panic!("no request target is declared for the dialect {other}"),
+    }
+}

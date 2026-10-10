@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE SERVED ROUTE ASKS THE KERNEL'S BUDGET VIEW, AND A SERVED SESSION LEDGERS THE PLANE'S COUNTS.
+//!
+//! OWNER RULING Q21b replaced the per-key D2 lease with the kernel's session account. Two facts,
+//! proven through the mounted open (`open_governed`) rather than the runtime alone:
+//!
+//!  1. THE GATE IS THE KERNEL'S. A presenting key whose chain the kernel's budget view reads dry is
+//!     refused `402` before any session opens; the same key with room is served.
+//!  2. THE COUNTS ARE THE PLANE'S. A turn of the session the route opened lands on the presenting key's
+//!     ledger as the streaming plane's classes, under the voice lane.
+
+use crate::ir::codec::WireEvent;
+use crate::mount::{open_governed, GovernedOpen, Ingress};
+use crate::runtime::{EchoToolExecutor, VoiceRuntime};
+use crate::testkit::fixture_host::FixtureHost;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane_host::EngineHost;
+use std::sync::Arc;
+
+fn key() -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
+        id: "vk-voice-session".to_string(),
+        name: "streaming-session".to_string(),
+        ..Default::default()
+    }
+}
+
+/// The runtime every test here opens through, over `engine`.
+fn runtime(engine: Arc<DurableHandleEngine>) -> VoiceRuntime {
+    VoiceRuntime::new(engine, Arc::new(EchoToolExecutor))
+}
+
+async fn open(host: &Arc<FixtureHost>, rt: &VoiceRuntime, call_id: &str) -> axum::http::StatusCode {
+    open_governed(GovernedOpen {
+        rt,
+        host: Arc::clone(host) as Arc<dyn EngineHost>,
+        provider: None,
+        ingress: Ingress::Mint,
+        owner: "acct-meter".to_string(),
+        call_id: call_id.to_string(),
+        vkey: Some(key()),
+        body: axum::body::Bytes::new(),
+        headers: axum::http::HeaderMap::new(),
+        now: 5,
+    })
+    .await
+    .status()
+}
+
+#[tokio::test]
+async fn a_served_open_is_refused_when_the_kernel_reads_the_chain_dry() {
+    let rt = runtime(Arc::new(DurableHandleEngine::new()));
+    let dry = Arc::new(FixtureHost::new().governed().with_count_cap(0));
+    assert_eq!(
+        open(&dry, &rt, "call-dry").await,
+        axum::http::StatusCode::PAYMENT_REQUIRED,
+        "a dry chain is refused before any session opens"
+    );
+    let room = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
+    assert_eq!(
+        open(&room, &rt, "call-room").await,
+        axum::http::StatusCode::NOT_IMPLEMENTED,
+        "the same key with room is served (nothing to dial here)"
+    );
+}
+
+#[tokio::test]
+async fn a_served_sessions_turn_lands_the_planes_counts_on_the_presenting_key() {
+    let host = Arc::new(FixtureHost::new().governed());
+    let rt = crate::runtime::build_runtime_hosted(
+        &runtime(Arc::new(DurableHandleEngine::new())),
+        Arc::clone(&host) as Arc<dyn EngineHost>,
+    );
+    let meter = crate::runtime::TurnMeter::new(
+        Arc::clone(&host) as Arc<dyn EngineHost>,
+        key(),
+        "streaming-server",
+        crate::OPENAI_REALTIME,
+    );
+    let (core, _handle) = crate::topology::begin_session(
+        &rt,
+        crate::ir::codec::OpenAiRealtimeCodec,
+        "acct-meter",
+        "call-turn",
+        None,
+        crate::runtime::Carrier::sideband(),
+        Some(meter),
+        5,
+    )
+    .expect("the session opens");
+    let done = serde_json::json!({
+        "type": "response.done",
+        "response": { "usage": {
+            "input_token_details": { "audio_tokens": 120 },
+            "output_token_details": { "audio_tokens": 80 },
+        }},
+    });
+    let _ = core
+        .on_server_frame(WireEvent(bytes::Bytes::from(
+            serde_json::to_vec(&done).unwrap(),
+        )))
+        .await;
+    let rows = host.ledger_rows(&key().id);
+    let lane = "streaming\u{1f}openai_realtime".to_string();
+    assert_eq!(
+        rows.get(&(lane.clone(), "audio_tokens_in".to_string())),
+        Some(&120)
+    );
+    assert_eq!(rows.get(&(lane, "audio_tokens_out".to_string())), Some(&80));
+    assert_eq!(rows.len(), 2, "only the classes the turn carried");
+}
+
+/// #47 `streams.fees.per_session` (OWNER RULING Q32): each session the kernel's account opens and
+/// serves keeps ONE session on the presenting key's budget book — through the one metering path, a
+/// count and never a figure — and a refused open counts none. An open the route could not serve (no
+/// provider composed here, so the mint answers `501`) is a failed open: its fee is given back (TODO
+/// 17(b)), so the book keeps none for it. What a session costs is the kernel's read of the plane's
+/// fees.
+#[tokio::test]
+async fn each_served_session_keeps_one_session_and_a_failed_or_refused_open_keeps_none() {
+    let rt = runtime(Arc::new(DurableHandleEngine::new()));
+    let sessions = |host: &FixtureHost| host.ledger_usage(&key().id).map_or(0, |u| u.sessions);
+    let room = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
+    open(&room, &rt, "call-one").await;
+    assert_eq!(
+        sessions(&room),
+        0,
+        "a mint with no provider served nothing, so its fee is back"
+    );
+    let hosted =
+        crate::runtime::build_runtime_hosted(&rt, Arc::clone(&room) as Arc<dyn EngineHost>);
+    for call in ["call-two", "call-three"] {
+        let meter = crate::runtime::TurnMeter::new(
+            Arc::clone(&room) as Arc<dyn EngineHost>,
+            key(),
+            "streaming-server",
+            crate::OPENAI_REALTIME,
+        );
+        let (core, _handle) = crate::topology::begin_session(
+            &hosted,
+            crate::ir::codec::OpenAiRealtimeCodec,
+            "acct-meter",
+            call,
+            None,
+            crate::runtime::Carrier::sideband(),
+            Some(meter),
+            5,
+        )
+        .expect("the session opens");
+        crate::runtime::session::serve_with_sweep(core, async {}).await;
+    }
+    assert_eq!(sessions(&room), 2, "two served sessions, two counts");
+    let dry = Arc::new(FixtureHost::new().governed().with_count_cap(0));
+    open(&dry, &rt, "call-dry").await;
+    assert_eq!(sessions(&dry), 0, "a refused open counts nothing");
+}
+
+/// TODO 17(b) (ARCHITECT R4): a session whose durable open fails never opened, so it keeps no
+/// `fees.per_session`. The kernel's account counted the fee AT THE OPEN, under the same dry check and
+/// before the durable open; the failed durable open gives that count back on the budget book, exactly
+/// once, and the metering row keeps it. A kept session served beforehand on the same key proves the
+/// refund takes back one fee and not two. RED with the fee counted at `served()`: the open counted
+/// nothing, so the metering row read the kept session alone.
+#[tokio::test]
+async fn a_failed_durable_open_gives_back_its_session_fee() {
+    let host = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
+    let healthy = crate::runtime::build_runtime_hosted(
+        &runtime(Arc::new(DurableHandleEngine::new())),
+        Arc::clone(&host) as Arc<dyn EngineHost>,
+    );
+    let meter = crate::runtime::TurnMeter::new(
+        Arc::clone(&host) as Arc<dyn EngineHost>,
+        key(),
+        "streaming-server",
+        crate::OPENAI_REALTIME,
+    );
+    let (core, handle) = crate::topology::begin_session(
+        &healthy,
+        crate::ir::codec::OpenAiRealtimeCodec,
+        "acct-meter",
+        "call-kept",
+        None,
+        crate::runtime::Carrier::sideband(),
+        Some(meter),
+        5,
+    )
+    .expect("the kept session opens");
+    crate::runtime::session::serve_with_sweep(core, async {}).await;
+    handle.finish(5);
+
+    let engine = Arc::new(DurableHandleEngine::new());
+    engine.set_sink(Arc::new(super::mount_tests::MemStore::down()));
+    let rt = runtime(engine);
+    let status = open(&host, &rt, "call-down").await;
+    assert!(
+        status.is_server_error(),
+        "a durable open that cannot land is refused, got {status}"
+    );
+    assert_eq!(
+        host.session_rows(&key().id),
+        2,
+        "the failed open counted its session fee at the open, under the dry check"
+    );
+    assert_eq!(
+        host.ledger_usage(&key().id).map_or(0, |u| u.sessions),
+        1,
+        "the failed durable open's fee is given back exactly once; the kept session's stays"
+    );
+}

@@ -1,0 +1,23 @@
+# The `limits:` token surface: an operator-overridden `default_max_tokens` (the value injected when
+# a cross-protocol translation targets a backend that REQUIRES max_tokens and the request omitted
+# it) and a fully custom `reasoning_effort_budgets` ladder (minimal/low/medium/high token budgets).
+# Both are projected onto `LimitsResolved` by `resolve`. Per-model `default_max_tokens` overrides sit
+# alongside so the snapshot pins model-level vs global-default precedence.
+listen: "0.0.0.0:8080"
+providers:
+  openai:
+    api_key: { env: OPENAI_API_KEY }
+models:
+  o3:
+    provider: openai
+    default_max_tokens: 32768
+    reasoning: true
+  gpt-4o:
+    provider: openai
+limits:
+  default_max_tokens: 2048
+  reasoning_effort_budgets:
+    minimal: 512
+    low: 2000
+    medium: 10000
+    high: 50000

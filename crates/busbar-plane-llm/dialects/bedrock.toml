@@ -1,0 +1,153 @@
+# crates/busbar-plane-llm/dialects/bedrock.toml: the HAND-WRITTEN wire <> IR mapping of the
+# Bedrock Converse dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
+
+[dialect]
+wire = "bedrock"  # the wire lock: dialects/bedrock.wire.json (notation A paths)
+request = ["structure", "inference_config", "tier", "output_config", "blocks"]
+response = ["response"]
+stream = ["stream"]
+drop_warn = "dropping a request control on Bedrock egress: Converse has no form for it"
+
+# Members the dialect's own code models (`prim`). Everything else rides `extra` raw.
+[rows.structure]
+"messages" = { prim = "messages" }
+"model" = { prim = "model", off_wire = "Converse carries the model in the URL path; the arrival step writes it into the body for the codec" }
+"stream" = { prim = "stream", off_wire = "Converse picks a streamed answer by its URL path (converse-stream); the arrival step writes it into the body for the codec" }
+"system" = { prim = "system" }
+"inferenceConfig.maxTokens" = { prim = "max_output" }
+"toolConfig.tools" = { prim = "tools" }
+"toolConfig.toolChoice" = { prim = "tool_choice" }
+"messages[].content[].toolUse.input" = { prim = "tool_arguments" }
+
+# `inferenceConfig` rides `extra` raw; these rows overlay it. Thinking: Claude refuses a modified
+# sampling knob beside a thinking ask; the ask wins, observably. Temperature is clamped to
+# Converse's [0.0, 1.0] (a 400 ValidationException above). `top_k` lives in
+# `additionalModelRequestFields` under either spelling, kept as the writer's own code.
+[rows.inference_config]
+"inferenceConfig.temperature" = { ir = "temperature", clamp = [0.0, 1.0], clamp_warn = "clamping temperature to Bedrock's [0.0, 1.0] range; the requested value was out of range and would be rejected with a 400 ValidationException", drop_if = "thinking", drop_warn = "omitting temperature on Bedrock egress: not compatible with thinking" }
+"inferenceConfig.topP" = { ir = "top_p", drop_if = "thinking", drop_warn = "omitting topP on Bedrock egress: not compatible with thinking" }
+"inferenceConfig.stopSequences" = { ir = "stop" }
+
+# BED-14 / IR-04: Converse `serviceTier: {type}`; `reserved` has no IR tier and Auto / Scale no
+# Converse word. The raw member rides `extra` and wins on the same dialect.
+[rows.tier]
+"serviceTier.type" = { ir = "service_tier", words = "service_tier" }
+
+# The reasoning effort word Converse spells `outputConfig.effort`, read when no
+# `additionalModelRequestFields` reasoning ask was given (that ask wins). Read only: the writer
+# states a reasoning ask in `additionalModelRequestFields` (BED-06).
+[rows.output_config]
+"outputConfig.effort" = { ir = "reasoning_effort", words = "effort" }
+
+[words.effort]
+"low" = { wire = "low", dir = "read" }
+"medium" = { wire = "medium", dir = "read" }
+"high" = { wire = "high", dir = "read" }
+"xhigh" = { wire = "xhigh", dir = "read" }
+"max" = { wire = "max", dir = "read" }
+
+[words.service_tier]
+"priority" = { wire = "priority" }
+"default" = { wire = "default" }
+"flex" = { wire = "flex" }
+
+# The request members inside the message, tool and config structure that the dialect's own code
+# reads and writes (`prim`: structure is code; the walker does not walk these rows).
+[rows.blocks]
+"messages[].role" = { prim = "role" }
+"messages[].content" = { prim = "content" }
+"messages[].content[].text" = { prim = "text" }
+"messages[].content[].image.format" = { prim = "format" }
+"messages[].content[].image.source.bytes" = { prim = "bytes" }
+"messages[].content[].document.format" = { prim = "format" }
+"messages[].content[].document.name" = { prim = "name" }
+"messages[].content[].document.source.bytes" = { prim = "bytes" }
+"messages[].content[].video.format" = { prim = "format" }
+"messages[].content[].video.source.bytes" = { prim = "bytes" }
+"messages[].content[].toolUse.toolUseId" = { prim = "tool_use_id" }
+"messages[].content[].toolUse.name" = { prim = "name" }
+"messages[].content[].toolResult.toolUseId" = { prim = "tool_use_id" }
+"messages[].content[].toolResult.content" = { prim = "content" }
+"messages[].content[].toolResult.status" = { prim = "status" }
+"messages[].content[].reasoningContent.reasoningText.text" = { prim = "text" }
+"messages[].content[].reasoningContent.reasoningText.signature" = { prim = "signature" }
+"messages[].content[].reasoningContent.redactedContent" = { prim = "redacted_content" }
+"messages[].content[].image.source.s3Location" = { prim = "s3_location" }
+"messages[].content[].document.source.s3Location" = { prim = "s3_location" }
+"messages[].content[].document.citations" = { prim = "citations" }
+"messages[].content[].document.context" = { prim = "context" }
+"messages[].content[].video.source.s3Location" = { prim = "s3_location" }
+"messages[].content[].cachePoint.type" = { prim = "type" }
+"messages[].content[].guardContent" = { prim = "guard_content" }
+"messages[].content[].document.source.content" = { prim = "content" }
+"messages[].content[].document.source.text" = { prim = "text" }
+"messages[].content[].guardContent.text.text" = { prim = "text" }
+"messages[].content[].toolResult.content[].document.citations" = { prim = "citations" }
+"messages[].content[].searchResult.source" = { prim = "source" }
+"messages[].content[].searchResult.title" = { prim = "title" }
+"messages[].content[].searchResult.content" = { prim = "content" }
+"messages[].content[].searchResult.content[].text" = { prim = "text" }
+"messages[].content[].searchResult.citations" = { prim = "citations" }
+"messages[].content[].toolResult.content[].searchResult.source" = { prim = "source" }
+"messages[].content[].toolResult.content[].searchResult.title" = { prim = "title" }
+"messages[].content[].toolResult.content[].searchResult.content" = { prim = "content" }
+"messages[].content[].toolResult.content[].searchResult.content[].text" = { prim = "text" }
+"messages[].content[].toolResult.content[].searchResult.citations" = { prim = "citations" }
+"messages[].content[].toolResult.content[].document.context" = { prim = "context" }
+"messages[].content[].toolResult.content[].document.source.content" = { prim = "content" }
+"messages[].content[].toolResult.content[].document.source.text" = { prim = "text" }
+"system[].guardContent.text.text" = { prim = "text" }
+"messages[].content[].citationsContent.content[].text" = { prim = "text" }
+"messages[].content[].document.source.content[].text" = { prim = "text" }
+"messages[].content[].toolResult.content[].document.source.content[].text" = { prim = "text" }
+"messages[].content[].toolResult.content[].text" = { prim = "text" }
+
+# The answer members the dialect's reader and writer carry (`prim`: code carries them).
+[rows.response]
+"serviceTier.type" = { prim = "served_tier" }
+"trace.guardrail.inputAssessment{}.contentPolicy.filters[].type" = { ir = "safety_verdict" }
+"trace.guardrail.inputAssessment{}.contentPolicy.filters[].action" = { ir = "safety_verdict" }
+"trace.guardrail.inputAssessment{}.contentPolicy.filters[].detected" = { ir = "safety_verdict" }
+"trace.guardrail.outputAssessments{}[].contentPolicy.filters[].type" = { ir = "safety_verdict" }
+"trace.guardrail.outputAssessments{}[].contentPolicy.filters[].action" = { ir = "safety_verdict" }
+"trace.guardrail.outputAssessments{}[].contentPolicy.filters[].detected" = { ir = "safety_verdict" }
+"output.message.role" = { prim = "role" }
+"output.message.content" = { prim = "content" }
+"stopReason" = { prim = "finish_reason" }
+"usage.inputTokens" = { prim = "input_tokens" }
+"usage.outputTokens" = { prim = "output_tokens" }
+"usage.totalTokens" = { prim = "total_tokens" }
+"usage.cacheReadInputTokens" = { prim = "cache_read_tokens" }
+"usage.cacheWriteInputTokens" = { prim = "cache_write_tokens" }
+"metrics.latencyMs" = { prim = "latency_ms" }
+"trace.guardrail" = { prim = "guardrail" }
+"trace.promptRouter" = { prim = "prompt_router" }
+"additionalModelResponseFields" = { prim = "additional_model_response_fields" }
+"performanceConfig" = { prim = "performance_config" }
+
+# The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
+[rows.stream]
+"metadata.serviceTier.type" = { prim = "served_tier" }
+"messageStart" = { prim = "message_start" }
+"contentBlockStart" = { prim = "content_block_start" }
+"contentBlockDelta" = { prim = "content_block_delta" }
+"contentBlockStop" = { prim = "content_block_stop" }
+"messageStop" = { prim = "message_stop" }
+"metadata" = { prim = "metadata" }
+
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
+[unmapped.request]
+
+# Controls beyond the rows. `requestMetadata` (validated per entry), `top_k` (either spelling) and
+# the hosted tool kinds are the writer's own code. Converse has no penalties, seed or candidate
+# count: 1.5.5 omitted them with no warn and no audit (1.5.5:
+# crates/busbar/src/proto/bedrock/reader.rs:703 reads none, its writer writes none).
+[controls]
+"metadata" = { code = "bedrock_request_metadata" }
+"top_k" = { code = "bedrock_top_k" }
+"custom_tool" = { code = "bedrock_hosted_tools" }
+"frequency_penalty" = { silent = true }
+"presence_penalty" = { silent = true }
+"seed" = { silent = true }
+"n" = { silent = true }

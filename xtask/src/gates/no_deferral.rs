@@ -1,0 +1,1498 @@
+//! `cargo xtask gate no-deferral` — THE NO-DEFERRAL GATE. The successor to
+//! `scripts/no-deferral-gate.sh`, claim for claim, plus its `--strict-done` twin registered under
+//! its own name (`no-deferral-strict-done`) rather than hidden behind a boolean.
+//!
+//! THE SINGLE CLAIM: the shipped source tree contains nothing known-and-deferred. Every capability
+//! the tree DECLARES it also IMPLEMENTS — no `todo!()` a caller can reach, no self-labelled
+//! "SKELETON / dev-only until DoD" a shipping feature depends on. Two orthogonal detectors:
+//!
+//! * **Class A** — a deferral MACRO invocation, matched ANYWHERE on the COMMENT-STRIPPED line. It
+//!   is the comment strip that excludes prose, never a position anchor: an anchor at line start
+//!   also excluded `_ => todo!(…)`, `let v = unimplemented!();` and `fn f() -> u8 { todo!() }`,
+//!   which are reachable deferrals and are how most of them are actually written.
+//! * **Class B** — a deferral LABEL the author self-declares, because comments are exactly where
+//!   those labels live. Two halves: five PHRASE forms (`SKELETON`, `dev-only until`, `until DoD`,
+//!   `HONEST PENDING`, `PlaneDecl::STUB`) matched on the RAW line, and the four CONVENTIONAL TAGS
+//!   `TODO` / `FIXME` / `XXX` / `HACK` matched in TAG form on the COMMENT text — see
+//!   [`comment_tag`] for both narrowings and what each one costs.
+//!
+//! **THE FOUR TAGS WERE MATCHED BY NOTHING UNTIL 2026-09-23.** The playbook
+//! (`docs/design/BUSBAR-1.6.0.md` #15) has listed `\bTODO\b \bFIXME\b \bXXX\b
+//! \bHACK\b` under Class B since the gate was specified; the implementation carried the five
+//! phrases and none of the tags. The gate was therefore structurally incapable of saying NO about
+//! the marker class the rule is named after, and both of the tree's un-owned source deferrals
+//! (`busbar-contract/src/signal.rs`) lived in that hole — declared in the signal catalog,
+//! implemented by nothing, invisible to the instrument that exists to find exactly that. A green
+//! `:unwaived` row means "every marker I look for is waived"; it never meant "there are no
+//! markers", and the gap between those two sentences was four tags wide.
+//!
+//! **SCOPE IS `crates/**/*.rs`, AND `xtask/` IS OUT ON PURPOSE.** The intended file scope is
+//! `crates/**/*.rs` and the gate's single claim is about the SHIPPED source tree; `xtask/` is build
+//! tooling that ships to nobody. The 1.6.0 map-proof census grep read
+//! `crates/` + `xtask/`, which is the AUDITOR's scope, not the rule's — all 17 `todo!` and all 4
+//! `XXX` hits in that census are in `xtask/`, and every one of them is a gate's own test corpus or
+//! a `\uXXXX` JSON escape. Widening discovery to `xtask/` would make this gate red on the fixture
+//! strings in its OWN `selftest`, which is a gate failing on its test data, not a finding.
+//!
+//! `#[cfg(test)]` scaffolding is out of scope for both — but the predicate is matched AS A
+//! PREDICATE, not hunted for as a substring: `#[cfg(not(test))]` is the arm that SHIPS, and a
+//! substring hunt for the word `test` turned the scaffolding exclusion into a way to hide a
+//! deferral in the one place that guarantees users reach it.
+//!
+//! ## Four rows, and each is a refusal the shell learned the hard way
+//!
+//! | row | the refusal |
+//! | --- | --- |
+//! | `:waiver-shape` | every waiver row is an exact `path:line` carrying an expiry that RESOLVES |
+//! | `:discovery-floor` | a scan below [`DISCOVERY_FLOOR`] files is UNPROVEN, never PASS |
+//! | `:unwaived` | over-count: a marker nobody waived is a new, undeclared deferral |
+//! | `:stale-waiver` | under-count: a waiver matching no marker outlived the thing it excused |
+//! | `:strict-done` | (strict only) the only permanent exemptions are the `*/hot/*` fixtures |
+//!
+//! **THE FLOOR IS ON THE RUN PATH.** In the shell it lived only in `--selftest`, and the self-test
+//! is not the mode anything blocks on: a tree where discovery came back empty printed PASS, and
+//! `--strict-done` — the mode the release verification calls to decide this version is done — went
+//! on to certify that the tracked debt was cleared having examined nothing at all. Below the floor
+//! the floor row is FAIL and every other row is SKIP, which the reconciler reds by name: "did not
+//! run" and "ran and found nothing" are two facts and this gate keeps them apart.
+//!
+//! **NO GLOBS.** One un-expiring glob row (`crates/busbar-contract/src/abi/hot/*`) once covered all 52
+//! markers of a whole directory and would have covered any number more, forever: the stale-waiver
+//! check cannot fire on a glob while even one of its markers survives, so 51 could be resolved with
+//! the row still reading as live. A matcher that is not an exact `path:line` is refused at load.
+
+use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::ledger::{Row, Verdict};
+use crate::parity::LegacyRun;
+use crate::scan;
+
+pub const ROW_WAIVER_SHAPE: &str = "no-deferral:waiver-shape";
+pub const ROW_DISCOVERY_FLOOR: &str = "no-deferral:discovery-floor";
+pub const ROW_UNWAIVED: &str = "no-deferral:unwaived";
+pub const ROW_STALE_WAIVER: &str = "no-deferral:stale-waiver";
+pub const ROW_STRICT_DONE: &str = "no-deferral:strict-done";
+
+/// The denominator floor, a `const` in the gate's own module with no environment override. It is
+/// pinned AT the measured count: discovery found 932 shipped source files on predev 6ca8584fc0 (it
+/// was 50, about 5% of the tree), and a drop below 932 is refused as UNPROVEN until a reviewed diff
+/// re-measures. The selftest plant cuts the scan set to one file under the floor and must go red.
+/// The only way to lower one is a reviewable source edit.
+pub const DISCOVERY_FLOOR: usize = 932;
+
+const WAIVERS: &str = "scripts/no-deferral.waivers";
+/// The plan every waiver's expiry is looked up in. It was `docs/design/1.6.0-TRACKER.md` until
+/// 2026-09-27, when the owner cut docs/design down to the spec, the TODO and their three companions;
+/// the TODO is the one list of work that survives, so it is the one a waiver may name. See
+/// [`todo_item_open`] for the two id spaces it answers.
+const TODO: &str = "docs/design/1.6.0-TODO.md";
+/// The TODO section whose table rows are the `KP-<step>` ids.
+const KP_SECTION: &str = "## KERNEL<>PLUGINS";
+
+#[derive(Debug, Clone)]
+struct Waiver {
+    matcher: String,
+    /// A `*/hot/*` matcher is the ONE permanent exemption `--strict-done` still accepts.
+    hot: bool,
+}
+
+// ── THE SCANNER ──────────────────────────────────────────────────────────────────────────────────
+
+/// Is `needle` present in `hay` with neither neighbour an identifier character? `extra` names the
+/// characters that also disqualify a left neighbour (`.` for the macro classes, so `x.todo!()` and
+/// `my_todo!()` are both non-matches).
+fn word_at(hay: &str, needle: &str, extra_left: &[char]) -> bool {
+    let bytes: Vec<char> = hay.chars().collect();
+    let want: Vec<char> = needle.chars().collect();
+    if want.is_empty() || bytes.len() < want.len() {
+        return false;
+    }
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    for i in 0..=bytes.len() - want.len() {
+        if bytes[i..i + want.len()] != want[..] {
+            continue;
+        }
+        if i > 0 {
+            let prev = bytes[i - 1];
+            if ident(prev) || extra_left.contains(&prev) {
+                continue;
+            }
+        }
+        let after = bytes.get(i + want.len()).copied();
+        match after {
+            Some(c) if ident(c) => continue,
+            _ => return true,
+        }
+    }
+    false
+}
+
+/// `mod` as a word, requiring a character after it — the shell's
+/// `(^|[^A-Za-z0-9_])mod([^A-Za-z0-9_])`, which does not match a line ending in a bare `mod`.
+fn has_mod(code: &str) -> bool {
+    let bytes: Vec<char> = code.chars().collect();
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    for i in 0..bytes.len().saturating_sub(2) {
+        if bytes[i] != 'm' || bytes[i + 1] != 'o' || bytes[i + 2] != 'd' {
+            continue;
+        }
+        if i > 0 && ident(bytes[i - 1]) {
+            continue;
+        }
+        match bytes.get(i + 3) {
+            Some(c) if !ident(*c) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A deferral macro invocation: `(^|[^A-Za-z0-9_.])(unimplemented|todo|unreachable_placeholder)!\s*\(`
+fn class_a(code: &str) -> bool {
+    for name in ["unimplemented", "todo", "unreachable_placeholder"] {
+        let mut from = 0usize;
+        while let Some(pos) = code[from..].find(name) {
+            let at = from + pos;
+            from = at + name.len();
+            let prev_ok = at == 0
+                || code[..at]
+                    .chars()
+                    .next_back()
+                    .map(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+                    .unwrap_or(true);
+            if !prev_ok {
+                continue;
+            }
+            let rest = &code[from..];
+            let Some(rest) = rest.strip_prefix('!') else {
+                continue;
+            };
+            if rest.trim_start().starts_with('(') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// A self-declared debt label. The five phrase forms are matched on the RAW line; the four
+/// CONVENTIONAL COMMENT TAGS are matched on the COMMENT text only — see [`comment_tag`].
+fn class_b(raw: &str, comment: &str) -> bool {
+    word_at(raw, "SKELETON", &[])
+        || two_words(raw, "dev-only", "until")
+        || two_words(raw, "until", "DoD")
+        || two_words(raw, "HONEST", "PENDING")
+        || raw.contains("PlaneDecl::STUB")
+        || comment_tag(comment)
+}
+
+/// THE FOUR COMMENT TAGS THE RULE IS NAMED AFTER — `TODO` / `FIXME` / `XXX` / `HACK`.
+///
+/// `docs/design/BUSBAR-1.6.0.md` #15 lists all four under Class B. **This gate matched
+/// none of them with anything for as long as it existed**, so the four tags that define the rule
+/// were enforced by nothing and the tree's only un-owned source deferrals sat in exactly that hole
+/// (the 1.6.0 ledger's G55). A marker class the gate never looks at cannot be waived, cannot go
+/// stale, and cannot make the gate say NO — it is a green row about a question never asked.
+///
+/// Two deliberate narrowings, each stated because each is a thing this detector does NOT see:
+///
+/// * **TAG FORM, not the bare word.** The tag must be immediately followed by `:` or `(` — the
+///   universal `TODO:` / `TODO(owner):` convention, and the same shape Class A already demands of
+///   `todo!(`. The bare English noun is not a marker: measured over this gate's own scan set, the
+///   bare word matches **44** lines of which **39** are `config/migrate.rs`, `migrate_export.rs`
+///   and `root/cli.rs` PROSE ABOUT THE MIGRATOR'S TODO-EMITTING PRODUCT FEATURE ("prints TODO
+///   comments wherever a human must decide"). Banning the noun would red the gate permanently on a
+///   shipped feature's documentation, and a gate that is always red is read exactly as often as one
+///   that is always green. **The cost: `// TODO fix this` — tagless — is NOT matched.** Nothing in
+///   the tree is written that way today; if that changes the rule, not the spelling list, is what
+///   should move.
+/// * **IN A COMMENT, not in a string literal.** `format!("# TODO(migrate): {t}")` at
+///   `config/migrate.rs:428` is the migrator WRITING a TODO into an operator's YAML. That is data
+///   the program emits, not a label its author attached to this code. Class A deliberately reads
+///   literals (a reachable `todo!()` is reachable however it is spelled); Class B deliberately does
+///   not. **The cost: a tag hidden inside a `"…"` is NOT matched** — it is also not a self-label.
+fn comment_tag(comment: &str) -> bool {
+    for tag in ["TODO", "FIXME", "XXX", "HACK"] {
+        let mut from = 0usize;
+        while let Some(pos) = comment[from..].find(tag) {
+            let at = from + pos;
+            from = at + tag.len();
+            let prev_ok = comment[..at]
+                .chars()
+                .next_back()
+                .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(true);
+            // `\uXXXX` is excluded twice over: `u` is an identifier character on the left, and the
+            // character on the right is `X`, not `:` or `(`.
+            if prev_ok && matches!(comment[from..].chars().next(), Some(':') | Some('(')) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// `first` followed by one-or-more spaces/tabs and then `second`.
+fn two_words(hay: &str, first: &str, second: &str) -> bool {
+    let mut from = 0usize;
+    while let Some(pos) = hay[from..].find(first) {
+        let at = from + pos;
+        from = at + first.len();
+        let rest = &hay[from..];
+        let trimmed = rest.trim_start_matches([' ', '\t']);
+        if trimmed.len() < rest.len() && trimmed.starts_with(second) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A BARE `test` predicate — `test` as a member of a `cfg(...)`/`any(...)`/`all(...)` list.
+fn bare_test_pred(code: &str) -> bool {
+    if !code.contains("#[cfg(") {
+        return false;
+    }
+    let bytes: Vec<char> = code.chars().collect();
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        if bytes[i..].starts_with(&['t', 'e', 's', 't']) {
+            // walk left over whitespace to a `(` or `,`
+            let mut l = i;
+            while l > 0 && (bytes[l - 1] == ' ' || bytes[l - 1] == '\t') {
+                l -= 1;
+            }
+            let left_ok = l > 0 && (bytes[l - 1] == '(' || bytes[l - 1] == ',');
+            // ...and right over whitespace to a `,` or `)`
+            let mut r = i + 4;
+            while r < bytes.len() && (bytes[r] == ' ' || bytes[r] == '\t') {
+                r += 1;
+            }
+            let right_ok = r < bytes.len() && (bytes[r] == ',' || bytes[r] == ')');
+            if left_ok && right_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// A NEGATED test predicate — `not(test)`, `not(any(test…))`, `not(all(test…))`. What disqualifies
+/// a block from being scaffolding is `not(` wrapping the TEST predicate itself, so
+/// `#[cfg(all(test, not(target_env = "musl")))]` is still scaffolding.
+fn negated_test_pred(code: &str) -> bool {
+    let squeezed: String = code.chars().filter(|c| *c != ' ' && *c != '\t').collect();
+    squeezed.contains("not(test)")
+        || squeezed.contains("not(any(test,")
+        || squeezed.contains("not(any(test)")
+        || squeezed.contains("not(all(test,")
+        || squeezed.contains("not(all(test)")
+}
+
+/// Every marker in one file, as `file:line` — the form a waiver matcher is written in. One entry
+/// per detector that fired, so a line carrying both a macro and a label counts twice, exactly as
+/// the shell's marker file does. `#[cfg(test)] mod { … }` bodies are excluded from BOTH classes.
+fn markers_in(rel: &str, text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    let mut testdepth: i32 = 0;
+    let mut pend = false;
+    let mut lex = scan::LexState::default();
+
+    for (i, raw) in text.lines().enumerate() {
+        // ONE PASS, BOTH HALVES. `code` is what Class A reads (literals kept, comments gone);
+        // `comment` is what Class B's four tags read (comments only, literals gone). They come out
+        // of the same lexer so a line can never be both "not code" and "not comment".
+        let (code, comment) = scan::split_comment_line(raw, &mut in_block);
+        // `code` keeps literal contents so `class_a` can still see a marker spelled in one; the
+        // brace arithmetic reads the blanked copy, or a `'{'` in a test module leaves `testdepth`
+        // permanently open and every marker after it goes unreported.
+        let counted = scan::blank_code(raw, &mut lex);
+        let nopen = counted.matches('{').count() as i32;
+        let nclose = counted.matches('}').count() as i32;
+
+        // THE TEST-SCOPE MACHINE READS THE BLANKED LINE, NOT `code`. `code` keeps literal contents
+        // on purpose, so `let s = "#[cfg(test)] mod x {";` used to arm the attribute, open a test
+        // block and swallow every marker after it — the same class of bug as counting a brace
+        // inside a literal, one layer up: not the delimiter but the KEYWORD read out of a string.
+        // The attribute and the `mod` keyword hold no literal, so blanking cannot hide a real one.
+        let is_cfgtest = bare_test_pred(&counted) && !negated_test_pred(&counted);
+        let modded = has_mod(&counted);
+        let mut entered = false;
+
+        // The attribute and the `mod` it governs may be on one line or two, so the block opens on
+        // whichever line carries the `mod` — the attribute's own line when they share one, or the
+        // line the pending attribute is still waiting for.
+        if (is_cfgtest || pend) && modded {
+            testdepth = (nopen - nclose).max(0);
+            entered = testdepth > 0;
+            pend = false;
+        } else if pend && !counted.trim().is_empty() && !is_cfgtest {
+            pend = false;
+        } else if testdepth > 0 {
+            testdepth = (testdepth + nopen - nclose).max(0);
+        }
+        if is_cfgtest && !modded {
+            pend = true;
+        }
+        if testdepth > 0 || entered {
+            continue;
+        }
+
+        let loc = format!("{rel}:{}", i + 1);
+        if class_a(&code) {
+            out.push(loc.clone());
+        }
+        if class_b(raw, &comment) {
+            out.push(loc);
+        }
+    }
+    out
+}
+
+// ── DISCOVERY ────────────────────────────────────────────────────────────────────────────────────
+
+/// `find crates/*/src -name '*.rs' | grep -vE '/tests/|/test_support/|_tests?\.rs$' | sort`.
+fn discover(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
+    let files = cx
+        .walk(
+            &WalkSpec::new(["crates"])
+                .ext("rs")
+                .exclude(["/tests/", "/test_support/"]),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for f in files {
+        let rel = f.rel_str();
+        let mut parts = rel.split('/');
+        let under_src =
+            parts.next() == Some("crates") && parts.next().is_some() && parts.next() == Some("src");
+        if !under_src {
+            continue;
+        }
+        if rel.ends_with("_test.rs") || rel.ends_with("_tests.rs") {
+            continue;
+        }
+        out.push((rel, f.text));
+    }
+    Ok(out)
+}
+
+/// How many files the one-short plant removes from a scan set of `discovered` files: enough to
+/// leave exactly `DISCOVERY_FLOOR - 1`, however far the tree has grown past the pin. A cut of one
+/// from the live count left the set at or above the floor on every tree that had grown past the
+/// pin, and the plant read GREEN in the #627 merge group.
+fn one_short_cut(discovered: usize) -> usize {
+    discovered.saturating_sub(DISCOVERY_FLOOR - 1)
+}
+
+/// THE ONE-SHORT PLANT: an overlay over `cx` that removes shipped source files until discovery
+/// finds one fewer than [`DISCOVERY_FLOOR`]. `None` when discovery cannot read the tree.
+pub fn one_short_of_floor(cx: &Ctx) -> Option<Overlay> {
+    let files = discover(cx).ok()?;
+    let mut ov = Overlay::new();
+    for (rel, _) in files.iter().rev().take(one_short_cut(files.len())) {
+        ov.remove(rel);
+    }
+    Some(ov)
+}
+
+// ── WAIVERS ──────────────────────────────────────────────────────────────────────────────────────
+
+/// Load the committed allowlist, refusing every shape a waiver must not have. A reason says why a
+/// marker is exempt today; it says nothing about when it stops being exempt, so each row also names
+/// the TODO item that retires it, and that item is LOOKED UP: a `[retires: X]` pointing at nothing
+/// is a promise nobody made.
+fn load_waivers(cx: &Ctx) -> Result<Vec<Waiver>, String> {
+    let text = cx
+        .read(WAIVERS)
+        .map_err(|e| format!("the waivers file {WAIVERS} could not be read: {e}"))?;
+    let todo = cx.read(TODO).map_err(|e| {
+        format!("the plan {TODO} could not be read, so no waiver's expiry can be checked: {e}")
+    })?;
+
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_end();
+        if t.trim().is_empty() || t.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some(split) = t.find(char::is_whitespace) else {
+            return Err(format!("waiver row has no reason: '{t}'"));
+        };
+        let matcher = t[..split].to_string();
+        let reason = t[split..].trim().to_string();
+        if reason.is_empty() {
+            return Err(format!("waiver row has no reason: '{t}'"));
+        }
+        if !is_exact_location(&matcher) {
+            return Err(format!(
+                "waiver matcher `{matcher}` is not an exact path:line — a glob absorbs whatever \
+                 appears under it, in silence, and its stale check cannot fire while even one of \
+                 its markers survives: '{t}'"
+            ));
+        }
+        let Some(id) = expiry_id(&reason) else {
+            return Err(format!(
+                "waiver row carries no expiry: '{t}'. Every row must end in `[retires: <ID>]` \
+                 naming the {TODO} item (`KP-<step>` or `ITEM-<n>`) that retires it; a waiver \
+                 that cannot expire is a permanent unreviewed exemption."
+            ));
+        };
+        match todo_item_open(&todo, &id) {
+            None => {
+                return Err(format!(
+                    "waiver names expiry `{id}`, which is not an item in {TODO}: '{t}'. The \
+                     waiver outlived the work that was supposed to retire it, or the id is a typo. \
+                     An expiry is `KP-<step>` (a {KP_SECTION} step) or `ITEM-<n>` (a numbered \
+                     work item)."
+                ));
+            }
+            // THE EXPIRY FIRED (item 212). A closed item is the authorisation withdrawn: the work
+            // that was to retire this marker is recorded as done, and the marker is still here.
+            // Accepting a closed item as well as an open one meant no state existed in which a
+            // waiver was expired.
+            Some(false) => {
+                return Err(format!(
+                    "waiver's expiry `{id}` is EXPIRED — {TODO} carries it closed (struck, or \
+                     its status reads done/landed), yet the waiver still excuses a marker: '{t}'. \
+                     Resolve the marker and drop the row, or re-open / re-point the TODO item \
+                     that authorises it."
+                ));
+            }
+            Some(true) => {}
+        }
+        out.push(Waiver {
+            hot: matcher.contains("/hot/"),
+            matcher,
+        });
+    }
+    Ok(out)
+}
+
+/// A matcher ends in `:<digits>`, the only shape this gate accepts.
+fn is_exact_location(matcher: &str) -> bool {
+    match matcher.rsplit_once(':') {
+        Some((head, tail)) => {
+            !head.is_empty() && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
+/// The `[retires: <ID>]` tag's id.
+fn expiry_id(reason: &str) -> Option<String> {
+    let at = reason.find("[retires:")?;
+    let rest = &reason[at + "[retires:".len()..];
+    let end = rest.find(']')?;
+    let id = rest[..end].trim();
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+/// Look an expiry id up in the TODO: `Some(true)` while the item is OPEN, `Some(false)` once it is
+/// CLOSED, `None` when no such item exists. An open copy anywhere wins, so a duplicated id is judged
+/// by whichever copy still authorises the waiver.
+///
+/// Two id spaces, PREFIXED because they overlap numerically — the KERNEL<>PLUGINS steps run 1-41
+/// and so do the first 41 work items, and a bare `36` would resolve to whichever table came first:
+///
+/// * `KP-<step>` — a row of the table under the [`KP_SECTION`] heading (to the next `## `), whose
+///   first cell is `<step>` (`C0` included). CLOSED when that cell is struck (`~~36~~`) or the row's
+///   last cell, its Status, begins `done` or `landed` (bold ignored). `PARTLY LANDED` is open.
+/// * `ITEM-<n>` — a numbered work item: a table row OUTSIDE that section whose first cell is `<n>`,
+///   or an `ITEM <n> ` heading. CLOSED when struck (`| ~~n~~ |`, `## ~~ITEM n~~`) — the TODO's own
+///   convention for a superseded or struck item.
+fn todo_item_open(todo: &str, id: &str) -> Option<bool> {
+    let mut state = None;
+    let mut in_kp = false;
+    for l in todo.lines() {
+        if l.starts_with("## ") {
+            in_kp = l.starts_with(KP_SECTION);
+        }
+        match item_on_line(l, in_kp, id) {
+            Some(true) => return Some(true),
+            Some(false) => state = Some(false),
+            None => {}
+        }
+    }
+    state
+}
+
+/// Is `l` (inside the KERNEL<>PLUGINS section when `in_kp`) a copy of TODO item `id`? `Some(open)`
+/// when it is, `None` when it is not — see [`todo_item_open`] for the two id spaces.
+fn item_on_line(l: &str, in_kp: bool, id: &str) -> Option<bool> {
+    let unstrike = |c: &str| -> (bool, String) {
+        let c = c.trim();
+        match c.strip_prefix("~~").and_then(|r| r.strip_suffix("~~")) {
+            Some(inner) => (true, inner.trim().to_string()),
+            None => (false, c.to_string()),
+        }
+    };
+    let row = l.trim_start().starts_with('|');
+    if let Some(step) = id.strip_prefix("KP-") {
+        if !(row && in_kp) {
+            return None;
+        }
+        let cells = table_cells(l);
+        let (struck, first) = unstrike(cells.first().map_or("", String::as_str));
+        if first != step {
+            return None;
+        }
+        let status = cells
+            .iter()
+            .rev()
+            .find(|c| !c.trim().is_empty())
+            .map(|c| c.replace('*', "").trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        return Some(!(struck || status.starts_with("done") || status.starts_with("landed")));
+    }
+    let n = id.strip_prefix("ITEM-")?;
+    if row {
+        if in_kp {
+            return None;
+        }
+        let cells = table_cells(l);
+        let (struck, first) = unstrike(cells.first().map_or("", String::as_str));
+        return (first == n).then_some(!struck);
+    }
+    if !l.starts_with('#') {
+        return None;
+    }
+    let head = l.trim_start_matches('#').trim_start();
+    let (struck, head) = match head.strip_prefix("~~") {
+        Some(rest) => (true, rest),
+        None => (false, head),
+    };
+    let tail = head.strip_prefix("ITEM ")?.strip_prefix(n)?;
+    (tail.is_empty() || tail.starts_with([' ', '~'])).then_some(!struck)
+}
+
+/// A markdown table row's cells, split on every `|` not escaped as `\|` (the TODO escapes the
+/// pipes inside backticked cell text, and a naive split would move the Status cell).
+fn table_cells(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    let mut cells = Vec::new();
+    let mut cur = String::new();
+    let mut prev_backslash = false;
+    for ch in t.chars() {
+        if ch == '|' && !prev_backslash {
+            cells.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(ch);
+        }
+        prev_backslash = ch == '\\';
+    }
+    cells.push(cur);
+    cells
+}
+
+// ── THE ROWS ─────────────────────────────────────────────────────────────────────────────────────
+
+/// The row constructors, used by BOTH [`Gate::run`] and the legacy translator, so the prose in a
+/// row's title and detail comes from one place and cannot differ for a reason that is not about the
+/// tree. The only thing the two sides can disagree on is the offender set, which is the only thing
+/// worth comparing.
+fn row_waiver_shape(rows: Option<usize>, why: Option<&str>) -> Row {
+    match why {
+        None => Row::pass(
+            ROW_WAIVER_SHAPE,
+            "every waiver is an exact location with an expiry that resolves",
+            format!(
+                "{} waiver row(s) loaded from {WAIVERS}",
+                rows.unwrap_or_default()
+            ),
+        ),
+        Some(why) => Row::fail(
+            ROW_WAIVER_SHAPE,
+            "the allowlist does not load",
+            why.to_string(),
+        ),
+    }
+}
+
+fn row_discovery_floor(found: Option<usize>, why: Option<&str>) -> Row {
+    match why {
+        None => Row::pass(
+            ROW_DISCOVERY_FLOOR,
+            "discovery found a scan set worth drawing a verdict from",
+            match found {
+                Some(n) => format!(
+                    "{n} shipped source file(s) discovered, at or above the floor of \
+                     {DISCOVERY_FLOOR}"
+                ),
+                None => {
+                    format!("at or above the floor of {DISCOVERY_FLOOR} shipped source file(s)")
+                }
+            },
+        ),
+        Some(why) => Row::fail(
+            ROW_DISCOVERY_FLOOR,
+            "the scan set is below its floor, so the verdict is UNPROVEN",
+            match found {
+                Some(n) => format!(
+                    "discovery found only {n} shipped source file(s) (floor {DISCOVERY_FLOOR}). \
+                     {why}"
+                ),
+                None => why.to_string(),
+            },
+        ),
+    }
+}
+
+fn row_unwaived(total: usize, offenders: &[String]) -> Row {
+    if offenders.is_empty() {
+        Row::pass(
+            ROW_UNWAIVED,
+            "every deferral marker is a floor-checked allowlist entry",
+            format!("{total} marker(s) found, every one waived"),
+        )
+    } else {
+        Row::fail(
+            ROW_UNWAIVED,
+            "the shipped tree defers something the allowlist does not account for",
+            format!(
+                "{} un-waived marker(s): {}",
+                offenders.len(),
+                offenders.join(", ")
+            ),
+        )
+    }
+}
+
+fn row_stale(offenders: &[String]) -> Row {
+    if offenders.is_empty() {
+        Row::pass(
+            ROW_STALE_WAIVER,
+            "every waiver still describes a marker that is really there",
+            "no allowlist row matched zero markers".to_string(),
+        )
+    } else {
+        Row::fail(
+            ROW_STALE_WAIVER,
+            "a waiver outlived the marker it excused",
+            format!(
+                "{} stale waiver(s): {}",
+                offenders.len(),
+                offenders.join(", ")
+            ),
+        )
+    }
+}
+
+fn row_strict(offenders: &[String]) -> Row {
+    if offenders.is_empty() {
+        Row::pass(
+            ROW_STRICT_DONE,
+            "the tree carries ONLY the permanent hot/* foundation fixtures",
+            "every waiver is a */hot/* row".to_string(),
+        )
+    } else {
+        Row::fail(
+            ROW_STRICT_DONE,
+            "a non-hot/* waiver is still present, so the tracked debt has not cleared",
+            format!(
+                "{} non-hot waiver(s): {}",
+                offenders.len(),
+                offenders.join(", ")
+            ),
+        )
+    }
+}
+
+/// The rows below a refusal: SKIP, never PASS. Every SKIP is RED at the reconciler unless
+/// allowlisted, which is what makes "did not run" reportable rather than silent.
+fn unproven(id: &str, why: &str) -> Row {
+    Row::skip(
+        id,
+        "unproven — the run stopped above this check",
+        why.to_string(),
+    )
+}
+
+// ── THE GATE ─────────────────────────────────────────────────────────────────────────────────────
+
+pub struct NoDeferralGate {
+    /// The `--strict-done` form the release verification calls: a named twin, not a boolean read
+    /// from the environment. `DONE_GROUP_FLOOR`'s env-overridability is the cautionary case.
+    pub strict: bool,
+}
+
+impl NoDeferralGate {
+    pub fn check() -> NoDeferralGate {
+        NoDeferralGate { strict: false }
+    }
+
+    pub fn strict_done() -> NoDeferralGate {
+        NoDeferralGate { strict: true }
+    }
+
+    fn stopped(&self, at: &str, why: &str, first: Row) -> Verdict {
+        let mut rows = vec![first];
+        for id in [
+            ROW_WAIVER_SHAPE,
+            ROW_DISCOVERY_FLOOR,
+            ROW_UNWAIVED,
+            ROW_STALE_WAIVER,
+        ] {
+            if id != at && self.owed().iter().any(|o| o == id) {
+                rows.push(unproven(id, why));
+            }
+        }
+        if self.strict {
+            rows.push(unproven(ROW_STRICT_DONE, why));
+        }
+        Verdict::of(rows)
+    }
+}
+
+impl Gate for NoDeferralGate {
+    fn name(&self) -> &'static str {
+        if self.strict {
+            "no-deferral-strict-done"
+        } else {
+            "no-deferral"
+        }
+    }
+
+    fn owed(&self) -> Vec<String> {
+        let mut ids = vec![
+            ROW_WAIVER_SHAPE.to_string(),
+            ROW_DISCOVERY_FLOOR.to_string(),
+            ROW_UNWAIVED.to_string(),
+            ROW_STALE_WAIVER.to_string(),
+        ];
+        if self.strict {
+            ids.push(ROW_STRICT_DONE.to_string());
+        }
+        ids
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        // (0) THE ALLOWLIST, FIRST. Without it there is nothing to reconcile against and every
+        //     count below is a number with no claim attached.
+        let waivers = match load_waivers(cx) {
+            Ok(w) => w,
+            Err(why) => {
+                return self.stopped(
+                    ROW_WAIVER_SHAPE,
+                    "the allowlist did not load, so nothing below it was reconciled",
+                    row_waiver_shape(None, Some(&why)),
+                )
+            }
+        };
+
+        // (1) THE FLOOR. Broken discovery reports a clean tree.
+        let files = match discover(cx) {
+            Ok(f) => f,
+            Err(why) => {
+                return self.stopped(
+                    ROW_DISCOVERY_FLOOR,
+                    "discovery failed, so no marker set was scanned",
+                    row_discovery_floor(None, Some(&why)),
+                )
+            }
+        };
+        if files.len() < DISCOVERY_FLOOR {
+            let mut v = self.stopped(
+                ROW_DISCOVERY_FLOOR,
+                "discovery came back below its floor, so no verdict was drawn",
+                row_discovery_floor(
+                    Some(files.len()),
+                    Some("Broken discovery reports a clean tree. This verdict is UNPROVEN, not PASS."),
+                ),
+            );
+            // The allowlist DID load; say so rather than reporting it unproven.
+            v.rows.retain(|r| r.id != ROW_WAIVER_SHAPE);
+            v.rows.push(row_waiver_shape(Some(waivers.len()), None));
+            return Verdict::of(v.rows);
+        }
+
+        // (2) SCAN, then reconcile BOTH WAYS.
+        let mut markers: Vec<String> = Vec::new();
+        for (rel, text) in &files {
+            markers.extend(markers_in(rel, text));
+        }
+
+        let mut unwaived: Vec<String> = Vec::new();
+        let mut hit = vec![false; waivers.len()];
+        for m in &markers {
+            match waivers.iter().position(|w| &w.matcher == m) {
+                Some(i) => hit[i] = true,
+                None => unwaived.push(m.clone()),
+            }
+        }
+        unwaived.sort();
+        unwaived.dedup();
+
+        let stale: Vec<String> = waivers
+            .iter()
+            .zip(&hit)
+            .filter(|(_, h)| !**h)
+            .map(|(w, _)| w.matcher.clone())
+            .collect();
+
+        let mut rows = vec![
+            row_waiver_shape(Some(waivers.len()), None),
+            row_discovery_floor(Some(files.len()), None),
+            row_unwaived(markers.len(), &unwaived),
+            row_stale(&stale),
+        ];
+        if self.strict {
+            let nonhot: Vec<String> = waivers
+                .iter()
+                .filter(|w| !w.hot)
+                .map(|w| w.matcher.clone())
+                .collect();
+            rows.push(row_strict(&nonhot));
+        }
+        Verdict::of(rows)
+    }
+
+    fn has_legacy_adapter(&self) -> bool {
+        true
+    }
+
+    fn legacy_rows(&self, _cx: &Ctx, runs: &[LegacyRun]) -> Option<Result<Vec<Row>, String>> {
+        let run = &runs[0];
+        Some(translate(self.strict, run))
+    }
+
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        let mut report = Report::new();
+
+        // THE BASELINE EVERY CASE IS ASKED OVER is the committed tree, for both forms. The allowlist
+        // holds only `*/hot/*` rows, so `--strict-done` is green on the tree itself and its green
+        // controls are asked over the real files (item 594). A non-hot waiver coming back turns the
+        // strict gate RED and its self-test IMPOSSIBLE, both: the proof is never moved off the tree.
+        let base = cx;
+        let owed: Vec<String> = self.owed();
+        let all: Vec<&str> = owed.iter().map(String::as_str).collect();
+        // The expiry every planted waiver names: the one the committed `hot/*` rows retire against,
+        // read off the allowlist rather than typed here, so a re-pointed plan cannot leave these
+        // plants naming an item that is gone (they named tracker row `H5` for as long as it lived).
+        let live = hot_expiry(base).unwrap_or_else(|| "KP-36".to_string());
+
+        report.push(prove_green(
+            base,
+            self,
+            "the committed tree's every marker is a waived one, and every waiver is live",
+            &all,
+        ));
+
+        // ── CLASS A, AWAY FROM LINE START. Each of these compiles, ships and panics when a caller
+        //    gets there; the anchored scanner reported this whole file as zero markers.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+            "pub fn dispatch(kind: u8) -> u8 {\n    match kind {\n        0 => 1,\n        _ => \
+             todo!(\"the duplex dialect is not wired yet\"),\n    }\n}\npub fn other() -> u8 { let \
+             v = unimplemented!(); v }\n",
+        );
+        report.push(prove_red(
+            base,
+            self,
+            "a match arm and an initialiser are reachable deferrals, wherever they sit on the line",
+            &[ROW_UNWAIVED],
+            ov,
+            &[
+                "xtask_no_deferral_plant.rs:4",
+                "xtask_no_deferral_plant.rs:7",
+            ],
+        ));
+
+        // ── CLASS B, on the raw line.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+            "// SKELETON: this plane mounts nothing yet\npub fn q() -> u8 { 1 }\n",
+        );
+        report.push(prove_red(
+            base,
+            self,
+            "a self-declared debt label in a comment is the whole point of Class B",
+            &[ROW_UNWAIVED],
+            ov,
+            &["xtask_no_deferral_plant.rs:1"],
+        ));
+
+        // ── THE FOUR COMMENT TAGS THE RULE IS NAMED AFTER. Every one of these ran GREEN until
+        //    2026-09-23: the playbook specified them, the scanner matched none of them, and the
+        //    tree's only un-owned source deferrals were written in exactly this shape.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+            "/// TODO(latency-p95): wire a reservoir once the collection cost is justified.\npub \
+             fn a() -> u8 { 1 }\n// FIXME: the resolver reads slot 0 and the second cert is \
+             unreachable\npub fn b() -> u8 { 2 }\n/* HACK(sni): bypasses the ceiling until the \
+             real one lands */\npub fn c() -> u8 { 3 }\n//! XXX: this module's invariants are \
+             documented and unenforced\n",
+        );
+        report.push(prove_red(
+            base,
+            self,
+            "TODO / FIXME / HACK / XXX in tag form are the four labels the rule is named after",
+            &[ROW_UNWAIVED],
+            ov,
+            &[
+                "xtask_no_deferral_plant.rs:1",
+                "xtask_no_deferral_plant.rs:3",
+                "xtask_no_deferral_plant.rs:5",
+                "xtask_no_deferral_plant.rs:7",
+            ],
+        ));
+
+        // ── ...AND THE TAG RULE DID NOT WIDEN INTO "BAN THE WORD". The migrator DOCUMENTS that it
+        //    emits TODO comments and EMITS them from a format string; 39 of the 44 bare-word hits
+        //    in the real scan set are that one product feature. Prose and emitted data are both
+        //    silent, planted together so the green is not one case's luck.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+            "// The migrator prints TODO comments wherever a human must decide, never a panic.\npub \
+             fn emit(t: &str) -> String { format!(\"# TODO(migrate): {t}\\n\") }\n/// Look for the \
+             `# TODO` the migrator emitted for that exact path.\npub fn d() -> u8 { 4 }\n/// Every \
+             non-ASCII character becomes a `\\uXXXX` escape.\npub fn e() -> u8 { 5 }\n",
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "the bare noun, an EMITTED `# TODO(migrate):` and `\\uXXXX` are all silent",
+            &[ROW_UNWAIVED],
+        ));
+
+        // ── `#[cfg(not(test))]` IS THE CODE THAT SHIPS. The one attribute that guarantees code
+        //    reaches users was the one attribute that guaranteed the scanner would not look.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+            "#[cfg(not(test))]\nmod production {\n    // SKELETON: the real session is not \
+             implemented\n    pub fn q() -> u8 {\n        todo!(\"dev-only until DoD\")\n    }\n}\n",
+        );
+        report.push(prove_red(
+            base,
+            self,
+            "a cfg(not(test)) module is scanned, not excused as scaffolding",
+            &[ROW_UNWAIVED],
+            ov,
+            &[
+                "xtask_no_deferral_plant.rs:3",
+                "xtask_no_deferral_plant.rs:5",
+            ],
+        ));
+
+        // ── ...AND THE RULE DID NOT WIDEN INTO "SCAN EVERYTHING". Genuine scaffolding, prose and
+        //    the lowercase domain word are all still silent, planted together so a green here is
+        //    not one case's luck.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+            "// no `unimplemented!()` stub remains — the fan-out filled every slot.\n/* a design \
+             note mentioning todo!() in prose is not a deferral */\nfn writer() { let _ = \"the \
+             full message skeleton is emitted here\"; }\n#[cfg(all(test, unix))]\nmod tests {\n    \
+             // SKELETON fixture\n    fn f() { todo!() }\n}\n",
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "prose, a lowercase 'skeleton' and a real cfg(all(test,…)) module are all silent",
+            &[ROW_UNWAIVED],
+        ));
+
+        // ── A WAIVER THAT MATCHES NOTHING. Under-count: the marker was resolved and the row lied
+        //    about the tree for as long as nobody looked.
+        report.push(prove_red(
+            base,
+            self,
+            "a waiver matching zero markers is a stale exemption",
+            &[ROW_STALE_WAIVER],
+            waivers_overlay(
+                base,
+                &format!(
+                    "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing \
+                     [retires: {live}]"
+                ),
+            ),
+            &["no-such-file.rs:1"],
+        ));
+
+        // ── THE THREE WAIVER-SHAPE REFUSALS, each its own case, each driving the real loader.
+        report.push(prove_red(
+            base,
+            self,
+            "a waiver row carrying no [retires: …] is refused",
+            &[ROW_WAIVER_SHAPE],
+            waivers_overlay(base, "crates/x/src/a.rs:1\ta reason with no expiry at all"),
+            &["carries no expiry"],
+        ));
+        // Both id spaces, each naming an item the TODO does not carry, and an id in neither space.
+        for (why, id) in [
+            ("a KERNEL<>PLUGINS step that does not exist", "KP-999"),
+            ("a work item that does not exist", "ITEM-99999"),
+            (
+                "an id in neither TODO id space (a retired TRACKER row)",
+                "H5",
+            ),
+        ] {
+            report.push(prove_red(
+                base,
+                self,
+                format!("an expiry naming {why} is refused"),
+                &[ROW_WAIVER_SHAPE],
+                waivers_overlay(
+                    base,
+                    &format!("crates/x/src/a.rs:1\ta reason [retires: {id}]"),
+                ),
+                &["not an item in", id],
+            ));
+        }
+        // ── ITEM 212: A WAIVER WHOSE EXPIRY FIRED. Close the TODO item every `hot/*` waiver names
+        //    while the 52 markers stay; before this case the closed row still "resolved" and the
+        //    waivers could never expire.
+        match close_todo_item(&base.read(TODO).unwrap_or_default(), &live) {
+            Some(closed) => {
+                let mut ov = Overlay::new();
+                ov.set(TODO, closed);
+                report.push(prove_red(
+                    base,
+                    self,
+                    "a waiver whose [retires: …] item is closed in the TODO is EXPIRED, not resolved",
+                    &[ROW_WAIVER_SHAPE],
+                    ov,
+                    &["EXPIRED", &live],
+                ));
+            }
+            None => report.note_infra_failure(
+                "the expired-waiver case could not be planted: the committed hot/* waivers' expiry \
+                 names no open KP-/ITEM- row in the TODO to close",
+            ),
+        }
+        report.push(prove_red(
+            base,
+            self,
+            "a directory glob is refused: one absorbed 52 markers and could never go stale",
+            &[ROW_WAIVER_SHAPE],
+            waivers_overlay(
+                base,
+                &format!("crates/busbar-contract/src/abi/hot/*\ta whole tree [retires: {live}]"),
+            ),
+            &["not an exact path:line"],
+        ));
+
+        // ── THE FLOOR, ON THE RUN PATH. Discovery emptied: every other row must go UNPROVEN rather
+        //    than report a clean tree, and `--strict-done` must not certify anything at all.
+        let emptied = match discover(base) {
+            Ok(files) => {
+                let mut ov = Overlay::new();
+                for (rel, _) in &files {
+                    ov.remove(rel);
+                }
+                Some(ov)
+            }
+            Err(_) => None,
+        };
+        match emptied {
+            Some(ov) => report.push(prove_red(
+                base,
+                self,
+                "a tree discovery came back empty over is UNPROVEN, never a clean one",
+                &[ROW_DISCOVERY_FLOOR],
+                ov,
+                &["UNPROVEN, not PASS"],
+            )),
+            None => report.note_infra_failure(
+                "the floor case could not be planted: discovery does not read the real tree",
+            ),
+        }
+
+        // ── THE FLOOR BITES AT ITS OWN VALUE. The scan set is cut to exactly one file under
+        //    DISCOVERY_FLOOR, however many files the tree has gained since it was measured (a cut of
+        //    one from the live count passed on every tree that grew past the pin, so the case was red
+        //    only on the tree it was written against).
+        match one_short_of_floor(base) {
+            Some(ov) => report.push(prove_red(
+                base,
+                self,
+                "a scan set one file short of the floor is UNPROVEN, never a clean one",
+                &[ROW_DISCOVERY_FLOOR],
+                ov,
+                &["UNPROVEN, not PASS"],
+            )),
+            None => report.note_infra_failure(
+                "the one-file-short floor case could not be planted: discovery does not read the real tree",
+            ),
+        }
+
+        if self.strict {
+            // A NON-HOT WAIVER IS THE TRACKED DEBT. Planted as a real marker outside hot/ with a
+            // well-formed waiver for it, so the over/under-count rows stay green and the only
+            // finding is the one --strict-done exists for.
+            let mut ov = waivers_overlay(
+                base,
+                &format!(
+                    "crates/busbar-core/src/xtask_no_deferral_plant.rs:1\tplanted voice-shaped \
+                     debt [retires: {live}]"
+                ),
+            );
+            ov.set(
+                "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+                "pub fn q() -> u8 { todo!() }\n",
+            );
+            report.push(prove_red(
+                base,
+                self,
+                "a waiver outside hot/* means the tracked debt has not cleared",
+                &[ROW_STRICT_DONE],
+                ov,
+                &["non-hot waiver"],
+            ));
+        }
+
+        report
+    }
+}
+
+/// The expiry the first committed `*/hot/*` waiver names — the id every planted waiver reuses.
+fn hot_expiry(cx: &Ctx) -> Option<String> {
+    let text = cx.read(WAIVERS).ok()?;
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter(|l| {
+            l.split(char::is_whitespace)
+                .next()
+                .is_some_and(|m| m.contains("/hot/"))
+        })
+        .find_map(expiry_id)
+}
+
+/// The TODO with item `id` CLOSED — every open copy of a `KP-` row gets its Status cell rewritten
+/// to `done`, every open `ITEM-` row or heading is struck — or `None` when the TODO carries no open
+/// copy to close. The expired-waiver case's plant; it goes through [`item_on_line`], the parse the
+/// gate itself uses, so the two cannot disagree about which line is the item.
+fn close_todo_item(todo: &str, id: &str) -> Option<String> {
+    let mut in_kp = false;
+    let mut closed_any = false;
+    let mut out: Vec<String> = Vec::new();
+    for l in todo.lines() {
+        if l.starts_with("## ") {
+            in_kp = l.starts_with(KP_SECTION);
+        }
+        if item_on_line(l, in_kp, id) != Some(true) {
+            out.push(l.to_string());
+            continue;
+        }
+        closed_any = true;
+        let n = id.split_once('-').map_or(id, |(_, n)| n);
+        let rewritten = if id.starts_with("KP-") {
+            let mut cells = table_cells(l);
+            if let Some(last) = cells.iter_mut().rev().find(|c| !c.trim().is_empty()) {
+                *last = " done ".to_string();
+            }
+            format!("|{}|", cells.join("|"))
+        } else if l.starts_with('#') {
+            l.replacen(&format!("ITEM {n}"), &format!("~~ITEM {n}~~"), 1)
+        } else {
+            let mut cells = table_cells(l);
+            cells[0] = format!(" ~~{n}~~ ");
+            format!("|{}|", cells.join("|"))
+        };
+        out.push(rewritten);
+    }
+    closed_any.then(|| out.join("\n"))
+}
+
+/// The committed allowlist plus one planted row. Built from what the gate would otherwise READ, so
+/// a case is expressed against the real file rather than against a hand-written copy of it.
+fn waivers_overlay(cx: &Ctx, extra: &str) -> Overlay {
+    let mut ov = Overlay::new();
+    let base = cx.read(WAIVERS).unwrap_or_default();
+    ov.set(WAIVERS, format!("{base}{extra}\n"));
+    ov
+}
+
+// ── THE LEGACY TRANSLATOR ────────────────────────────────────────────────────────────────────────
+
+/// Read `scripts/no-deferral-gate.sh`'s own output into the rows this gate would emit for the same
+/// tree. It writes no ledger — it prints prose and exits 0 or 1 — and a harness that could only
+/// compare two exit statuses would be proving that both sides said red, never that they said red
+/// about the same marker of the same file.
+fn translate(strict: bool, run: &LegacyRun) -> Result<Vec<Row>, String> {
+    let lines: Vec<String> = run.lines().map(decolour).collect();
+
+    let mut waiver_rows: Option<usize> = None;
+    let mut waiver_why: Option<String> = None;
+    let mut total: Option<usize> = None;
+    let mut floor_why: Option<String> = None;
+    let mut found: Option<usize> = None;
+    let mut unwaived: Vec<String> = Vec::new();
+    let mut stale: Vec<String> = Vec::new();
+    let mut nonhot: Vec<String> = Vec::new();
+    let mut strict_clean = false;
+
+    #[derive(PartialEq)]
+    enum Section {
+        None,
+        Unwaived,
+        Stale,
+        Strict,
+    }
+    let mut section = Section::None;
+
+    for line in &lines {
+        let t = line.trim();
+        if t.starts_with("== ") {
+            section = match t {
+                s if s.contains("UN-WAIVED deferral markers") => Section::Unwaived,
+                s if s.contains("STALE waivers") => Section::Stale,
+                s if s.contains("STRICT-DONE: non-hot") => Section::Strict,
+                _ => Section::None,
+            };
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("waivers:") {
+            // The FIRST paren: the tail of this line is `(52 row(s))`, and reading from the last
+            // one finds `(s))` and parses it as no waivers at all — which is the passing answer to
+            // "does every waiver expire".
+            waiver_rows = rest
+                .split_once('(')
+                .and_then(|(_, tail)| tail.split_whitespace().next())
+                .and_then(|n| n.parse().ok());
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("markers found:") {
+            total = rest.split_whitespace().next().and_then(|n| n.parse().ok());
+            continue;
+        }
+        if t.contains("no-deferral gate: waiver") || t.contains("waivers file") {
+            waiver_why = Some(t.to_string());
+            continue;
+        }
+        if t.contains("the tracker") && t.contains("is missing") {
+            waiver_why = Some(t.to_string());
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("no-deferral gate: discovery found only ") {
+            found = rest.split_whitespace().next().and_then(|n| n.parse().ok());
+            floor_why = Some(
+                "Broken discovery reports a clean tree. This verdict is UNPROVEN, not PASS."
+                    .to_string(),
+            );
+            continue;
+        }
+        if t.starts_with("strict-done: every waiver is a") {
+            strict_clean = true;
+            continue;
+        }
+        match section {
+            Section::Unwaived => {
+                // `  <file:line>   <CLASS>: <text>`
+                let mut it = t.split_whitespace();
+                if let (Some(loc), Some(cls)) = (it.next(), it.next()) {
+                    let cls = cls.trim_end_matches(':');
+                    // The CLASS is what identifies this as a marker line rather than a note; the
+                    // location is what the two implementations are compared on. The shell prints
+                    // the first marker's class for every marker at one location, so a line
+                    // carrying both a macro and a label reports class A twice — a display artefact
+                    // that says nothing about the tree and must not be compared as though it did.
+                    if cls == "A" || cls == "B" {
+                        unwaived.push(loc.to_string());
+                    }
+                }
+            }
+            Section::Stale => {
+                if let Some(m) = t.split_whitespace().next() {
+                    stale.push(m.to_string());
+                }
+            }
+            Section::Strict => {
+                if let Some(m) = t.split_whitespace().next() {
+                    nonhot.push(m.to_string());
+                }
+            }
+            Section::None => {}
+        }
+    }
+
+    let mut rows = Vec::new();
+    if let Some(why) = waiver_why {
+        rows.push(row_waiver_shape(None, Some(&why)));
+        let note = "the allowlist did not load, so nothing below it was reconciled";
+        rows.push(unproven(ROW_DISCOVERY_FLOOR, note));
+        rows.push(unproven(ROW_UNWAIVED, note));
+        rows.push(unproven(ROW_STALE_WAIVER, note));
+        if strict {
+            rows.push(unproven(ROW_STRICT_DONE, note));
+        }
+        return Ok(rows);
+    }
+
+    rows.push(row_waiver_shape(waiver_rows, None));
+
+    if let Some(why) = floor_why {
+        rows.push(row_discovery_floor(found, Some(&why)));
+        let note = "discovery came back below its floor, so no verdict was drawn";
+        rows.push(unproven(ROW_UNWAIVED, note));
+        rows.push(unproven(ROW_STALE_WAIVER, note));
+        if strict {
+            rows.push(unproven(ROW_STRICT_DONE, note));
+        }
+        return Ok(rows);
+    }
+
+    let Some(total) = total else {
+        return Err(format!(
+            "the legacy translator found no marker count in `{}`'s output. Silence read as a clean \
+             tree is the exact defect this gate exists for. stdout: {}",
+            run.argv.join(" "),
+            run.stdout.trim()
+        ));
+    };
+    rows.push(row_discovery_floor(None, None));
+    unwaived.sort();
+    unwaived.dedup();
+    rows.push(row_unwaived(total, &unwaived));
+    rows.push(row_stale(&stale));
+    if strict {
+        if !strict_clean && nonhot.is_empty() {
+            return Err(format!(
+                "`{}` printed no --strict-done verdict at all, so the strictest claim this gate \
+                 makes would be compared against nothing",
+                run.argv.join(" ")
+            ));
+        }
+        rows.push(row_strict(&nonhot));
+    }
+    Ok(rows)
+}
+
+/// Drop the SGR escapes the shell's `red()`/`grn()` wrap their lines in.
+fn decolour(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        for c in chars.by_ref() {
+            if c == 'm' {
+                break;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod one_short_tests {
+    use super::{one_short_cut, DISCOVERY_FLOOR};
+
+    /// THE PLANT LANDS ONE UNDER THE FLOOR AT EVERY TREE SIZE, not only at the size it was written
+    /// against: a tree at the pin, one file past it, and one that has grown by hundreds.
+    #[test]
+    fn the_one_short_cut_leaves_one_file_under_the_floor_however_far_the_tree_grew() {
+        for discovered in [DISCOVERY_FLOOR, DISCOVERY_FLOOR + 1, DISCOVERY_FLOOR + 500] {
+            assert_eq!(
+                discovered - one_short_cut(discovered),
+                DISCOVERY_FLOOR - 1,
+                "a scan set of {discovered} must be cut to one under the floor of {DISCOVERY_FLOOR}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod todo_expiry_tests {
+    use super::{close_todo_item, todo_item_open};
+
+    /// A TODO in the committed shape: numbered items before and after the KERNEL<>PLUGINS table,
+    /// whose step numbers overlap theirs, plus an `ITEM <n>` heading.
+    const TODO_DOC: &str = "\
+# THE PLAN
+## PHASE 4
+| # | item | exit |
+|---|---|---|
+| 36 | a work item that shares step 36's number | x |
+| ~~41~~ | a superseded item | x |
+## KERNEL<>PLUGINS — the migration
+| # | Step | Depends on | Gate | Status |
+|---|---|---|---|---|
+| C0 | CAP: `llm\\|*\\|x` | – | | open |
+| 5 | BOOT-LOOP | 1 | | **PARTLY LANDED.** steps 1-2 landed |
+| 36 | Delete the engine | 33 | perf | open. **BLOCKED** half |
+| 37 | FLEET | 2 | | done |
+| 38 | postgres | 3 | | **LANDED** at abc |
+| ~~39~~ | struck | 21 | | open |
+### LANDED
+| commit | what | feeds step |
+| a2312c5cc | fixture | 5 |
+## KERNEL: A DIFFERENT SECTION
+| 40 | not a KP step | x |
+## ITEM 572 — `oauth-as` 0.9.3 → 1.0.0
+## ~~ITEM 573~~ — struck
+";
+
+    #[test]
+    fn kp_steps_resolve_inside_their_section_only() {
+        assert_eq!(todo_item_open(TODO_DOC, "KP-36"), Some(true));
+        assert_eq!(todo_item_open(TODO_DOC, "KP-C0"), Some(true));
+        // PARTLY LANDED is open; done / LANDED / struck are closed.
+        assert_eq!(todo_item_open(TODO_DOC, "KP-5"), Some(true));
+        assert_eq!(todo_item_open(TODO_DOC, "KP-37"), Some(false));
+        assert_eq!(todo_item_open(TODO_DOC, "KP-38"), Some(false));
+        assert_eq!(todo_item_open(TODO_DOC, "KP-39"), Some(false));
+        // `## KERNEL: …` is another section; its row 40 is not a step.
+        assert_eq!(todo_item_open(TODO_DOC, "KP-40"), None);
+        assert_eq!(todo_item_open(TODO_DOC, "KP-999"), None);
+    }
+
+    #[test]
+    fn items_resolve_outside_the_kp_table_and_by_heading() {
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-36"), Some(true));
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-41"), Some(false));
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-572"), Some(true));
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-573"), Some(false));
+        // Step 37 is a KP row, never an item; `ITEM-57` is not a prefix match of 572.
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-37"), None);
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-57"), None);
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-40"), Some(true));
+    }
+
+    #[test]
+    fn unprefixed_ids_name_nothing() {
+        // The retired TRACKER ids, and a bare number that would be ambiguous between the spaces.
+        for id in ["H5", "N1", "36", "C0"] {
+            assert_eq!(todo_item_open(TODO_DOC, id), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_expired_plant_closes_exactly_the_named_item() {
+        for id in ["KP-36", "KP-C0", "KP-5", "ITEM-36", "ITEM-572"] {
+            let closed = close_todo_item(TODO_DOC, id).expect(id);
+            assert_eq!(todo_item_open(&closed, id), Some(false), "{id}");
+            // Nothing else moved: the other space's same number is still open.
+            let other = if id.starts_with("KP-") {
+                id.replacen("KP-", "ITEM-", 1)
+            } else {
+                id.replacen("ITEM-", "KP-", 1)
+            };
+            assert_eq!(
+                todo_item_open(&closed, &other),
+                todo_item_open(TODO_DOC, &other),
+                "{id} closed {other} too"
+            );
+        }
+        // Already closed, or absent: nothing to close.
+        assert_eq!(close_todo_item(TODO_DOC, "KP-37"), None);
+        assert_eq!(close_todo_item(TODO_DOC, "ITEM-99999"), None);
+    }
+}

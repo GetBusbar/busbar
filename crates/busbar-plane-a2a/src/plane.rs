@@ -1,0 +1,1008 @@
+//! The plane itself: seventeen methods, each of them a few lines over the codec's own vocabulary.
+//!
+//! Every method here returns FACTS AND LOCATORS. Not an amount, not a decision, not a credential,
+//! not a price. Nothing in this file opens a connection, reads a file, reads a clock other than the
+//! one the context hands it, or keeps a byte across a call.
+//!
+//! ## The one shape worth reading before the code
+//!
+//! The intermediate representation the contract asks a plane to build carries the body AND the
+//! resolved pointer spans, and `view` builds both: it resolves the pointers this plane declares
+//! through the contract's own span grammar and allocates the resulting table in the unit's arena,
+//! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
+//! handed back an empty table because the arena could not allocate one; it can, and this does.
+
+use busbar_contract::abi::plane::{class_of_refusal, RefusalClass};
+use busbar_contract::bounded::{FactValue, Facts, Ir, ScratchBytes};
+use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
+use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
+use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
+use busbar_contract::plane::{
+    Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
+};
+use busbar_contract::unit::{
+    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, Unit, UnitEnd, UsageLocator,
+    UsageLocators,
+};
+use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor, TransportEnvelope};
+
+use crate::facts as f;
+use crate::jsonrpc;
+use crate::meta::CLASS_BYTES;
+use crate::ops;
+use crate::records as rec;
+use crate::A2aPlane;
+
+/// The per-connection codec state this plane keeps.
+///
+/// This protocol's framing is one document per frame, so there is no partial document to carry
+/// across a call; what a connection does need to remember is how far into a streamed answer it is
+/// (a stream's last event is the one that ends the unit), and WHETHER the answer streams at all —
+/// a unary answer ends on its one result, a streamed one on the frame that says it is the last.
+/// The upstream half learns which it is at `encode_egress`, from the operation the request was, and
+/// `decode_response` reads it back to decide terminality.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Codec {
+    /// How many event frames of a streamed answer this half has read.
+    pub events_read: u32,
+    /// Whether the request this half carries expects a STREAMED answer. Set at `encode_egress` on
+    /// the upstream half from the request's operation; read at `decode_response`. A unary answer
+    /// ends on its result; a streamed one ends only on `final:true` (or an error).
+    pub multi_frame: bool,
+}
+
+/// The fact key the per-name projection reports the agent's own name under.
+const SUBJECT_FACT_NAME: &str = "name";
+
+/// The fact key the per-name projection reports the priced lane under.
+const SUBJECT_FACT_LANE: &str = "lane";
+
+/// The fact key the per-name projection reports the dialling transport under.
+const SUBJECT_FACT_TRANSPORT: &str = "transport";
+
+/// The credential scheme the outbound hop is decorated under.
+///
+/// The plane NAMES the scheme and never holds what is behind it. Which secret the scheme resolves,
+/// and whether the caller may use it at all, is the egress-auth unit's answer.
+const EGRESS_SCHEME: &str = "a2a-egress";
+
+/// The envelope member naming the document type of an outbound body.
+const FIELD_CONTENT_TYPE: &str = "content-type";
+
+/// The document type every body of this protocol is.
+const CONTENT_TYPE_JSON: &[u8] = b"application/json";
+
+/// The envelope member naming which revision the hop is made under.
+const FIELD_VERSION: &str = "a2a-version";
+
+/// A fact a record leg reports back when the agent minted its own identifier for a task.
+pub const LEG_FACT_BACKEND_TASK_ID: &str = "backend_task_id";
+
+impl A2aPlane {
+    /// A leg reaching one of this plane's own records.
+    fn record_leg(schema: busbar_contract::ids::RecordSchemaId, op: &'static str) -> Leg {
+        Leg {
+            destination: DestinationFacts::PlaneRecord { schema, op },
+        }
+    }
+
+    /// A leg reaching the unit's agent, or an unreachable one when it has none.
+    ///
+    /// A plane with no agent for the unit answers honestly rather than panicking or inventing a
+    /// host: the empty host is refused by the trust unit against the allow-list, which is the right
+    /// place for that refusal to happen.
+    fn upstream_leg(&self, u: &Unit<'_>) -> Leg {
+        Leg {
+            destination: self.upstream_destination(u),
+        }
+    }
+
+    /// The agent one unit is for.
+    ///
+    /// The one the request NAMED (`/a2a/agents/{agent_id}`, read at decode), and only a configured
+    /// one. A request that names none is for the only agent there is, and for no agent at all when
+    /// several are configured: choosing among them is the caller's catalogue's answer, which this
+    /// plane does not hold. It used to take the FIRST configured agent whatever the caller named, so
+    /// a call to the second was dialled, scoped and laned as the first.
+    fn agent_for(&self, u: &Unit<'_>) -> Option<&'static crate::Agent> {
+        match u.draft_facts().get(f::FACT_AGENT_ID) {
+            Some(FactValue::Str(name)) => self.agents().iter().find(|a| a.id == name),
+            _ => match self.agents() {
+                [only] => Some(only),
+                _ => None,
+            },
+        }
+    }
+
+    /// Where a hop to the unit's agent goes.
+    fn upstream_destination(&self, u: &Unit<'_>) -> DestinationFacts {
+        match self.agent_for(u) {
+            Some(agent) => DestinationFacts::Upstream {
+                transport: agent.transport,
+                address: busbar_contract::UpstreamAddress::socket(agent.host),
+                lane: agent.lane,
+            },
+            None => DestinationFacts::Upstream {
+                transport: crate::claims::HTTP_TRANSPORT,
+                address: busbar_contract::UpstreamAddress::socket(""),
+                lane: LaneId::new(""),
+            },
+        }
+    }
+
+    /// Which method row a unit's operation class came from, where the class names one.
+    fn row_for_op(op: busbar_contract::ids::OpClassId) -> Option<&'static ops::MethodRow> {
+        ops::METHODS.iter().find(|r| r.op == op)
+    }
+}
+
+/// The facts a request body yields, read once.
+fn request_facts<'u>(body: &'u [u8], envelope: &jsonrpc::Envelope) -> Facts<'u> {
+    let mut facts = Facts::new();
+    if let Some(method) = envelope.method_str(body) {
+        let _ = facts.set(f::FACT_METHOD, FactValue::Str(method));
+        if let Some(row) = ops::row_for(method) {
+            let _ = facts.set(f::FACT_WORDING, FactValue::Str(row.wording.as_str()));
+            let _ = facts.set(f::FACT_MULTI_FRAME, FactValue::Bool(row.multi_frame));
+        }
+    }
+    if let Some(raw) = envelope.id_bytes(body) {
+        if let Ok(text) = core::str::from_utf8(raw) {
+            let _ = facts.set(f::FACT_RPC_ID, FactValue::Str(text));
+        }
+    }
+    if let Some(task) = read_str(body, jsonrpc::PTR_PARAMS_ID) {
+        let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(task));
+    }
+    facts
+}
+
+/// The span view of a body, built from the pointers this plane declared.
+///
+/// One scan of one closed grammar, into the unit's own arena, so the loop reads the spans the plane
+/// resolved instead of walking the same bytes a second time. The arena refusing is a decode
+/// failure at the step that asked for the bytes, which is what the arena's budget means.
+fn view<'u>(body: &'u [u8], pointers: &[&'u str], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let spans = busbar_contract::spans::resolve(body, pointers, ctx.arena())
+        .map_err(|_| Decode::Oversize)?;
+    Ok(Ir::new(body, spans))
+}
+
+/// The string value at one pointer of a body, with its quotes stripped.
+fn read_str<'u>(body: &'u [u8], pointer: &str) -> Option<&'u str> {
+    let raw = read_raw(body, pointer)?;
+    let inner = raw.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
+    core::str::from_utf8(inner).ok()
+}
+
+/// The raw bytes at one pointer of a body.
+///
+/// Through the contract's own span grammar, which is the kernel's: this plane used to carry a
+/// scanner of its own, and a closed grammar with a second reading is two grammars.
+fn read_raw<'u>(body: &'u [u8], pointer: &str) -> Option<&'u [u8]> {
+    match busbar_contract::spans::resolve_pointer(body, pointer) {
+        busbar_contract::spans::Resolved::Found(span) => body.get(span.start..span.end),
+        _ => None,
+    }
+}
+
+/// Whether a body has a member at one pointer at all.
+fn has(body: &[u8], pointer: &str) -> bool {
+    read_raw(body, pointer).is_some()
+}
+
+/// Which code and words this dialect answers one refusal reason with.
+///
+/// ## What this mapping is, and what it is not
+///
+/// The existing codec renders a refusal through the shared ingress vocabulary, which is visible to
+/// its own crate only, so this table cannot be read off it. What IS pinned is the ENVELOPE — the
+/// member order, the typed detail entry and the code table, all asserted byte for byte in the
+/// envelope module's own tests. What is NOT pinned is the message TEXT, which the composition root
+/// must compare against the rig's recorded answers on the day it switches this plane on. That is
+/// stated here rather than left for someone to discover.
+fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
+    // A class-to-wire table over the one classification (`busbar_contract::abi::plane::
+    // RefusalClass`; the P-item "refusal-reason collapse"). Which family a reason belongs to is
+    // decided once, there; this plane says only how each family reads on its wire. A2A's JSON-RPC
+    // binding names a small set of codes, so a busbar-specific condition rides the NEAREST defined
+    // binding with the real reason kept out of the words rather than a code the specification does
+    // not define (the rule the legacy plane's `rpcerror.rs` states). The match has no `_` arm: a
+    // class with no home is a compile error, never a silent collapse to an internal fault -- a rate
+    // limit, a breaker or a drain answered as "this node broke" tells the caller to retry the wrong
+    // thing.
+    match class_of_refusal(reason) {
+        // The caller's request was not one this node could read or take.
+        RefusalClass::TooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
+        RefusalClass::Unreadable => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request could not be read",
+        ),
+        RefusalClass::Unauthenticated => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request did not carry usable authority",
+        ),
+        // The caller is known and may not do this.
+        RefusalClass::Forbidden => (
+            jsonrpc::CODE_UNSUPPORTED_OPERATION,
+            "the caller may not perform this operation",
+        ),
+        // There is nowhere for it to go.
+        RefusalClass::NotFound => (
+            jsonrpc::CODE_INVALID_PARAMS,
+            "no agent is reachable for this request",
+        ),
+        // Every busbar-specific admission / capacity / rate / budget / breaker / drain refusal. The
+        // A2A JSON-RPC binding defines no code of its own for any of these, so each rides the nearest
+        // one -- `UnsupportedOperation`, which is how the legacy plane answers its own admission
+        // refusals too -- with a neutral message that leaks nothing about the money, the buckets or
+        // the store. A caller learns it was refused here and nothing more.
+        RefusalClass::Rejected
+        | RefusalClass::Throttled
+        | RefusalClass::Busy
+        | RefusalClass::QuotaExhausted
+        | RefusalClass::Unreachable
+        | RefusalClass::Unavailable
+        | RefusalClass::Timeout => (
+            jsonrpc::CODE_UNSUPPORTED_OPERATION,
+            "the request could not be served at this time",
+        ),
+        // A genuine node-internal fault -- this node did break, and the caller is owed that fact and
+        // not a false policy refusal.
+        RefusalClass::PlaneFault | RefusalClass::NodeFault => (
+            jsonrpc::CODE_INTERNAL,
+            "the request could not be served at this time",
+        ),
+    }
+}
+
+/// Whether one response frame ENDS its metering unit.
+///
+/// This is a money boundary: the frame this answers `true` for is the one that closes and bills the
+/// unit. It used to key on the ABSENCE of `/result/kind`, which was backwards — a real unary answer
+/// (a Task or Message) CARRIES a `kind`, so it read as non-terminal and its unit never closed, while
+/// an empty envelope carries none and read as terminal, billing `Complete` for nothing.
+///
+/// The honest predicate depends on the SHAPE of the exchange, which the wire alone cannot always
+/// tell (a streamed answer's first event can itself be a whole Task): a UNARY answer ends on its one
+/// answer — a `result` or an `error` — and an envelope carrying neither ends nothing; a STREAMED
+/// answer ends only when a frame says it is the last (`final:true`) or reports an error, so its
+/// intermediate events, `result` and all, are frames rather than endings.
+fn response_terminal(body: &[u8], multi_frame: bool) -> bool {
+    let is_error = has(body, jsonrpc::PTR_ERROR);
+    if multi_frame {
+        is_error || read_raw(body, jsonrpc::PTR_RESULT_FINAL) == Some(b"true".as_slice())
+    } else {
+        is_error || has(body, jsonrpc::PTR_RESULT)
+    }
+}
+
+/// The finish class one unit ending is.
+fn finish_of(end: &UnitEnd, multi_frame: bool) -> FinishClass {
+    // One mapping, written once in the contract and read by every plane. All this plane decides is
+    // what a COMPLETED unit is, which is a question about the exchange and not about the ending: a
+    // streamed unit ends a turn of a session that continues, a unary one ends the whole answer.
+    busbar_contract::unit::finish_class_of(
+        end,
+        if multi_frame {
+            FinishClass::TurnComplete
+        } else {
+            FinishClass::Complete
+        },
+    )
+}
+
+/// The transport fact key a request target is published under.
+///
+/// The kernel's own reserved key, named rather than guessed at.
+const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
+
+/// The pointer a bare task document carries its own identifier at.
+const PTR_TASK_ID: &str = "/id";
+
+/// The pointer a bare task document carries its conversation at.
+const PTR_CONTEXT_ID: &str = "/contextId";
+
+/// The transport fact key the request's own verb is published under.
+///
+/// The kernel's own reserved key, named rather than guessed at. Four of this plane's surfaces are
+/// one path serving two operations, and the verb is the only thing that tells them apart.
+const FACT_METHOD: &str = busbar_contract::transport::facts::METHOD;
+
+/// One of this plane's surfaces that does not carry a request envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenSurface {
+    /// A discovery document, fetched with no body and no credential.
+    Discovery,
+    /// The callback an agent this node dialled posts a task document back to.
+    Push,
+    /// An operation named by the TARGET rather than by a method name in a document.
+    Targeted(busbar_contract::ids::OpClassId),
+}
+
+/// Which surface a request target names, where the target names one that carries no envelope.
+///
+/// `None` is the document binding — the mount an envelope arrives on — which is every other claim
+/// this plane holds. A query string names no surface, so it is cut before the match: it is an
+/// argument to an operation, never part of which operation it is.
+///
+/// The four surfaces below the task collection are the ones this used to leave out. A claim with no
+/// arm here reaches the document binding, which demands an envelope of a request that carries no
+/// body at all — and an empty body is answered "nothing has arrived yet", on a surface where nothing
+/// more ever will. So the plane claimed four routes the codec serves and then held every request to
+/// them open until the caller gave up. Each of the four is one path serving two operations, told
+/// apart by the request's own verb, which is why the verb is read here.
+fn surface_of(target: &str, verb: Option<&str>) -> Option<OpenSurface> {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let is = |want: &str| verb.is_some_and(|v| v.eq_ignore_ascii_case(want));
+    match path {
+        "/.well-known/agent-card.json" | "/.well-known/oauth-protected-resource/a2a" => {
+            Some(OpenSurface::Discovery)
+        }
+        "/a2a/push" => Some(OpenSurface::Push),
+        "/a2a/tasks" => Some(OpenSurface::Targeted(ops::OP_TASK_LIST)),
+        // The authenticated card: the same document as the open one, read by a caller this node
+        // knows, and the vocabulary's own class for reading a card.
+        "/a2a/extendedAgentCard" => Some(OpenSurface::Targeted(ops::OP_AGENT_CARD)),
+        _ => {
+            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            match segments.as_slice() {
+                ["a2a", "tasks", id] if !id.is_empty() => {
+                    Some(OpenSurface::Targeted(ops::OP_TASK_GET))
+                }
+                // A task's push-notification configurations, as a collection: posting one creates
+                // it, reading the collection lists them.
+                ["a2a", "tasks", id, "pushNotificationConfigs"] if !id.is_empty() => {
+                    Some(OpenSurface::Targeted(if is("POST") {
+                        ops::OP_PUSH_CONFIG_CREATE
+                    } else {
+                        ops::OP_PUSH_CONFIG_LIST
+                    }))
+                }
+                // One configuration of that collection: reading it and removing it.
+                ["a2a", "tasks", id, "pushNotificationConfigs", config]
+                    if !id.is_empty() && !config.is_empty() =>
+                {
+                    Some(OpenSurface::Targeted(if is("DELETE") {
+                        ops::OP_PUSH_CONFIG_DELETE
+                    } else {
+                        ops::OP_PUSH_CONFIG_GET
+                    }))
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
+/// Decode one request on a surface that carries no request envelope.
+///
+/// Each of the three is a different shape and each is answered as itself. A discovery document is
+/// fetched with no body at all, so there is nothing to read and the unit is complete the moment it
+/// is recognised. A task read through the collection binding names its task in the target rather
+/// than in a document. The callback carries a task document of its own — not an envelope around
+/// one — and it is the provider-initiated class, which is what the plane says a frame arriving
+/// on a connection this node dialled MEANS.
+fn decode_open_surface<'u>(
+    surface: OpenSurface,
+    frames: &mut FrameCursor<'u>,
+    ctx: &Ctx<'u>,
+) -> Result<Ingress<'u>, Decode> {
+    let target = ctx.transport().fact(FACT_PATH).unwrap_or_default();
+    let body: &'u [u8] = frames
+        .next_frame()
+        .map(|f| f.bytes.as_slice())
+        .unwrap_or(&[]);
+    let mut facts = Facts::new();
+    let op = match surface {
+        // Both discovery documents are the same operation: reading what this node publishes about
+        // itself. They price as the card read the vocabulary already names, because that is the
+        // work — a static document handed back — and a second class for the same work would be a
+        // second price for it.
+        OpenSurface::Discovery => ops::OP_AGENT_CARD,
+        OpenSurface::Targeted(op) => {
+            if let Some(id) = task_id_of(target) {
+                let id = ctx.arena().alloc_str(id).map_err(|_| Decode::Oversize)?;
+                let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(id));
+            }
+            op
+        }
+        OpenSurface::Push => {
+            if body.is_empty() {
+                return Ok(Ingress::NeedMore);
+            }
+            if let Some(id) = read_str(body, PTR_TASK_ID) {
+                let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(id));
+            }
+            if let Some(context) = read_str(body, PTR_CONTEXT_ID) {
+                let _ = facts.set(f::FACT_CONTEXT_ID, FactValue::Str(context));
+            }
+            ops::OP_PUSH_EVENT
+        }
+    };
+    let _ = facts.set(f::FACT_MULTI_FRAME, FactValue::Bool(false));
+    Ok(Ingress::OneShot(Box::new(UnitDraft {
+        op,
+        body_ir: view(body, &[PTR_TASK_ID, PTR_CONTEXT_ID], ctx)?,
+        // Nothing here answers a request of this node's own, and nothing here is answered by a
+        // later frame: each of the three is complete in itself.
+        correlates: None,
+        correlation_out: None,
+        facts,
+    })))
+}
+
+/// The task a collection-binding target names, if it names one.
+///
+/// The task is the third segment of every target below the collection, whatever follows it: a
+/// configuration of a task belongs to that task, and a surface that could not say which task it was
+/// about would be a unit with no subject.
+fn task_id_of(target: &str) -> Option<&str> {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        ["a2a", "tasks", id, ..] if !id.is_empty() => Some(id),
+        _ => None,
+    }
+}
+
+/// The agent a target names, where it names one: the one segment below the catalogue.
+fn agent_id_of(target: &str) -> Option<&str> {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        ["a2a", "agents", id] => Some(id),
+        _ => None,
+    }
+}
+
+impl Plane for A2aPlane {
+    fn decode_ingress<'u>(
+        &self,
+        frames: &mut FrameCursor<'u>,
+        _st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<Ingress<'u>, Decode> {
+        // Which surface a request arrived on is a question about the target, and the target is a
+        // transport fact. It is asked FIRST because not every surface this plane claims carries an
+        // envelope: three of them carry no request document at all, and one carries a document of
+        // its own shape. Asking the body first meant every one of them decoded as a malformed
+        // envelope — the plane claimed surfaces it then refused everything on.
+        let verb = ctx.transport().fact(FACT_METHOD);
+        if let Some(surface) = ctx
+            .transport()
+            .fact(FACT_PATH)
+            .and_then(|target| surface_of(target, verb))
+        {
+            return decode_open_surface(surface, frames, ctx);
+        }
+        let Some(frame) = frames.next_frame() else {
+            return Ok(Ingress::NeedMore);
+        };
+        let body = frame.bytes.as_slice();
+        // An empty frame is not yet a document. This protocol frames one document per frame, so the
+        // only reason to see nothing is that nothing has arrived.
+        if body.is_empty() {
+            return Ok(Ingress::NeedMore);
+        }
+        let envelope = jsonrpc::read(body)?;
+        let method = envelope.method_str(body).ok_or(Decode::Malformed)?;
+        let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
+        let mut facts = request_facts(body, &envelope);
+        // Which agent the caller addressed is a fact about the target, read here once so every later
+        // step dials, scopes and lanes the unit against THAT agent.
+        if let Some(agent) = ctx.transport().fact(FACT_PATH).and_then(agent_id_of) {
+            let agent = ctx.arena().alloc_str(agent).map_err(|_| Decode::Oversize)?;
+            let _ = facts.set(f::FACT_AGENT_ID, FactValue::Str(agent));
+        }
+        let correlation_out = envelope
+            .id_bytes(body)
+            .and_then(|raw| f::correlation_for(raw, ctx.arena()));
+        let draft = UnitDraft {
+            op: row.op,
+            body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
+            // A request answers nothing; it is answered.
+            correlates: None,
+            correlation_out,
+            facts,
+        };
+        // A request whose answer arrives as a run of events stays OPEN across those events. One
+        // whose answer is a single document is complete in this frame.
+        if row.multi_frame {
+            Ok(Ingress::Open(Box::new(draft)))
+        } else {
+            Ok(Ingress::OneShot(Box::new(draft)))
+        }
+    }
+
+    fn encode_egress<'u>(
+        &self,
+        u: &Unit<'u>,
+        dest: &VerifiedDestination,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<EgressBody<'u>, Encode> {
+        let body = u.body().body();
+        // Record on this upstream half whether the answer will STREAM, from the operation the request
+        // is. `decode_response` reads it back to end a unary answer on its result and a streamed one
+        // only on its last frame — the wire alone cannot always tell the two apart (a streamed
+        // answer's first event can itself be a whole Task).
+        if let Some(state) = st {
+            if let Some(codec) = state.get_mut::<Codec>() {
+                codec.multi_frame = Self::row_for_op(u.op()).is_some_and(|row| row.multi_frame);
+            }
+        }
+        // The caller's envelope goes on unchanged unless a record leg came back saying the agent
+        // knows this task by a different name. That is the ONE rewrite this protocol performs, and
+        // it performs it for one reason: the identifier this node minted is not the identifier the
+        // agent minted, and relaying ours would name a task the agent has never heard of.
+        //
+        // The unchanged case is the common one, and it owns nothing: the caller's bytes are BORROWED
+        // where they already are, because they already live for the unit that is about to carry
+        // them. Copying them into the arena spent the unit's whole bounded budget on a second copy
+        // of what it was already holding, and a request larger than that budget could not be
+        // relayed at all. Only the rewrite needs a buffer of its own, because only the rewrite
+        // produces bytes that did not arrive.
+        let body = match backend_task_id(u) {
+            Some(backend) => ctx
+                .arena()
+                .alloc_bytes(&rewrite_task_id(body, backend)?)
+                .map_err(|_| Encode::ScratchExhausted)?,
+            None => ScratchBytes::new(body),
+        };
+        let mut envelope = TransportEnvelope::default();
+        let content_type = ctx
+            .arena()
+            .alloc_bytes(CONTENT_TYPE_JSON)
+            .map_err(|_| Encode::ScratchExhausted)?;
+        let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
+            name: FIELD_CONTENT_TYPE,
+            value: content_type,
+        });
+        if let Some(version) = ctx.session().and_then(|s| s.session_fact(f::FACT_VERSION)) {
+            let value = ctx
+                .arena()
+                .alloc_bytes(version.as_bytes())
+                .map_err(|_| Encode::ScratchExhausted)?;
+            let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
+                name: FIELD_VERSION,
+                value,
+            });
+        }
+        // A destination this plane cannot express a hop for is an encode failure rather than a
+        // silent hop to somewhere else.
+        if !matches!(
+            dest.facts(),
+            DestinationFacts::Upstream { .. } | DestinationFacts::SessionUpstream { .. }
+        ) {
+            return Err(Encode::Unrepresentable);
+        }
+        Ok(EgressBody {
+            envelope,
+            body,
+            auth: busbar_contract::ids::SchemeKey::new(EGRESS_SCHEME),
+        })
+    }
+
+    fn encode_ingress_frame<'u>(
+        &self,
+        _u: &Unit<'u>,
+        _f: &Frame,
+        _dest: &VerifiedDestination,
+        _st: Option<&mut PlaneSessionState>,
+        _ctx: &Ctx<'u>,
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
+        // An OPEN unit of this plane is one whose ANSWER streams; the request itself was complete in
+        // the frame that opened it. So an inbound frame arriving under an open unit belongs to no
+        // outbound request, and the honest answer is that it is consumed and nothing goes out for
+        // it. Relaying it would send the agent a document it never asked for.
+        Ok(None)
+    }
+
+    fn decode_response<'u>(
+        &self,
+        frames: &mut FrameCursor<'u>,
+        _dest: &VerifiedDestination,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<Progress<'u>, Decode> {
+        let Some(frame) = frames.next_frame() else {
+            return Ok(Progress::NeedMore);
+        };
+        let body = frame.bytes.as_slice();
+        if body.is_empty() {
+            return Ok(Progress::NeedMore);
+        }
+        // An answer carries an identifier. A document arriving on an upstream WITHOUT one is not an
+        // answer at all: it is the agent pushing something, which opens a unit of its own and runs
+        // all seven steps like any other.
+        let id = read_raw(body, jsonrpc::PTR_ID);
+        let is_error = has(body, jsonrpc::PTR_ERROR);
+        let has_result = has(body, jsonrpc::PTR_RESULT);
+        if id.is_none() && !is_error && !has_result {
+            let mut facts = Facts::new();
+            if let Some(task) = read_str(body, "/taskId").or_else(|| read_str(body, "/id")) {
+                let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(task));
+            }
+            return Ok(Progress::OneShot(Box::new(UnitDraft {
+                op: ops::OP_PUSH_EVENT,
+                body_ir: view(body, jsonrpc::RESPONSE_PTRS, ctx)?,
+                correlates: None,
+                correlation_out: None,
+                facts,
+            })));
+        }
+
+        let mut facts = Facts::new();
+        if let Some(raw) = id {
+            if let Ok(text) = core::str::from_utf8(raw) {
+                let _ = facts.set(f::FACT_RPC_ID, FactValue::Str(text));
+            }
+        }
+        if let Some(state) = read_str(body, "/result/status/state") {
+            let _ = facts.set(f::FACT_TASK_STATE, FactValue::Str(state));
+        }
+        if let Some(task) = read_str(body, "/result/id") {
+            let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(task));
+        }
+        if let Some(context) = read_str(body, "/result/contextId") {
+            let _ = facts.set(f::FACT_CONTEXT_ID, FactValue::Str(context));
+        }
+        if let Some(code) = read_raw(body, jsonrpc::PTR_ERROR_CODE) {
+            if let Ok(text) = core::str::from_utf8(code) {
+                let _ = facts.set(f::FACT_ERROR_CODE, FactValue::Str(text));
+            }
+        }
+        let for_ = id.and_then(|raw| f::correlation_for(raw, ctx.arena()));
+        // Whether this exchange streams was decided when the request went out (`encode_egress` set
+        // it on this upstream half from the request's own operation). A unary answer ends on its one
+        // result; a streamed one ends on the frame that says it is the last. See `response_terminal`.
+        let multi_frame = st
+            .as_deref()
+            .and_then(PlaneSessionState::get::<Codec>)
+            .is_some_and(|codec| codec.multi_frame);
+        let terminal = response_terminal(body, multi_frame);
+        if let Some(state) = st {
+            if let Some(codec) = state.get_mut::<Codec>() {
+                codec.events_read = codec.events_read.saturating_add(1);
+            }
+        }
+        let r = Response {
+            ir: view(body, jsonrpc::RESPONSE_PTRS, ctx)?,
+            finish: if is_error {
+                FinishClass::Error
+            } else if terminal {
+                FinishClass::Complete
+            } else {
+                FinishClass::TurnComplete
+            },
+            facts,
+        };
+        if terminal {
+            Ok(Progress::Terminal {
+                for_,
+                r: Box::new(r),
+            })
+        } else {
+            Ok(Progress::Frame {
+                for_,
+                r: Box::new(r),
+            })
+        }
+    }
+
+    fn encode_response<'u>(
+        &self,
+        r: &Response<'u>,
+        _st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        let body = r.ir.body();
+        // An answer that already IS an envelope goes back exactly as it arrived. This is the common
+        // path and it is byte-identical by construction: the agent answered the caller's own
+        // identifier, because the caller's own envelope is what was relayed.
+        if has(body, jsonrpc::PTR_VERSION) {
+            return ctx
+                .arena()
+                .alloc_bytes(body)
+                .map_err(|_| Encode::ScratchExhausted);
+        }
+        // An answer this node composed itself — the ones served out of its own records — arrives as
+        // a bare result and is wrapped here, with the identifier the decode step recorded.
+        let id = match r.facts.get(f::FACT_RPC_ID) {
+            Some(FactValue::Str(text)) => jsonrpc::id_value(text.as_bytes())?,
+            _ => serde_json::Value::Null,
+        };
+        let bytes = jsonrpc::success(&id, body)?;
+        ctx.arena()
+            .alloc_bytes(&bytes)
+            .map_err(|_| Encode::ScratchExhausted)
+    }
+
+    fn encode_refusal<'u>(
+        &self,
+        refusal: &Refusal,
+        draft: Option<&UnitDraft<'u>>,
+        _st: Option<&PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        let id = match draft.and_then(|d| d.facts.get(f::FACT_RPC_ID)) {
+            Some(FactValue::Str(text)) => jsonrpc::id_value(text.as_bytes())?,
+            _ => serde_json::Value::Null,
+        };
+        let (code, message) = refusal_render(refusal.reason);
+        let bytes = jsonrpc::error(&id, code, message)?;
+        ctx.arena()
+            .alloc_bytes(&bytes)
+            .map_err(|_| Encode::ScratchExhausted)
+    }
+
+    fn encode_end<'u>(
+        &self,
+        _u: &Unit<'u>,
+        _end: &UnitEnd,
+        _st: Option<&mut PlaneSessionState>,
+        _ctx: &Ctx<'u>,
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
+        // This protocol writes nothing to end a unit. A single answer ends when its document has
+        // been written; a streamed answer ends when its last event has. Emitting a closing frame
+        // would be a byte on the wire that is not there today.
+        Ok(None)
+    }
+
+    fn authenticate<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
+        // Three of this protocol's surfaces carry no credential by design: the two discovery
+        // documents anyone may read, and the callback an agent this node dialled posts back to.
+        // Their claims declare no scheme, so there is nothing to narrow WITHIN and this step names
+        // nothing — which is a stronger statement than the invented "anonymous" alternative it
+        // replaces, because that one was a value a plane could narrow an authenticated claim down
+        // to. The rest present a bearer credential.
+        let open_surface = matches!(u.op(), ops::OP_PUSH_EVENT);
+        CredentialLocator {
+            narrowing: if open_surface {
+                None
+            } else {
+                Some(SchemeAlt::new("bearer"))
+            },
+            // A bound session's principal is the cached one; an unbound session re-authenticates
+            // every unit, and a unit the agent pushed is the kernel's own pairing rather than
+            // anything on these bytes.
+            from_session: ctx
+                .session()
+                .is_some_and(busbar_contract::unit::SessionView::is_bound),
+        }
+    }
+
+    fn verify<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
+        match u.op() {
+            // The operations this node answers out of its own records reach a record and no agent.
+            ops::OP_TASK_LIST => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_TASK,
+                op: rec::OP_SCAN,
+            },
+            ops::OP_PUSH_CONFIG_GET => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_PUSH_CONFIG,
+                op: rec::OP_GET,
+            },
+            ops::OP_PUSH_CONFIG_LIST => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_PUSH_CONFIG,
+                op: rec::OP_SCAN,
+            },
+            ops::OP_AGENT_CARD => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_PIN,
+                op: rec::OP_GET,
+            },
+            // A push the agent sent reaches this node's own record of the task it is about.
+            ops::OP_PUSH_EVENT => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_TASK,
+                op: rec::OP_PUT,
+            },
+            // Everything else is a hop to the agent.
+            _ => self.upstream_destination(u),
+        }
+    }
+
+    fn route<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {
+        let mut plan = RoutePlan::default();
+        let mut leg = |l: Leg| {
+            let _ = plan.legs.push(l);
+        };
+        match u.op() {
+            ops::OP_MESSAGE_SEND | ops::OP_MESSAGE_STREAM => {
+                // Open the task, record that it opened, then hop.
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
+                leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
+                leg(self.upstream_leg(u));
+            }
+            ops::OP_TASK_GET | ops::OP_TASK_SUBSCRIBE => {
+                // Read the row first: it is what says whether this caller may see the task at all,
+                // and what the agent's own name for it is.
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
+                leg(self.upstream_leg(u));
+            }
+            ops::OP_TASK_CANCEL => {
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
+                leg(self.upstream_leg(u));
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
+                leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
+            }
+            ops::OP_TASK_LIST => leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_SCAN)),
+            ops::OP_PUSH_CONFIG_CREATE => {
+                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_PUT));
+                leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_PUT));
+                leg(self.upstream_leg(u));
+            }
+            ops::OP_PUSH_CONFIG_GET => leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_GET)),
+            ops::OP_PUSH_CONFIG_LIST => {
+                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_SCAN))
+            }
+            ops::OP_PUSH_CONFIG_DELETE => {
+                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_DELETE));
+                leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_DELETE));
+                leg(self.upstream_leg(u));
+            }
+            ops::OP_AGENT_CARD => leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_GET)),
+            ops::OP_PUSH_EVENT => {
+                // FIRST, and it is first so that nothing below it runs for a token that is dead: the
+                // token the agent presented must still be LIVE — its configuration present, its task
+                // not yet terminal, its deadline not yet passed. A backend reports one task several
+                // times, so this asks and spends nothing; what ends the token is the task finishing,
+                // which the last leg records.
+                leg(Self::record_leg(
+                    rec::SCHEMA_PUSH_CONFIG,
+                    rec::OP_VERIFY_LIVE,
+                ));
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
+                leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
+                // LAST, and only bites when the write above made the task terminal: a token outlives
+                // no task it was minted for. On any other update this leg is inert, which is what
+                // lets the same token carry the next callback.
+                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_REVOKE));
+            }
+            // An operation class this plane does not carry gets no legs, which is an empty plan and
+            // a refusal at the routing step. Not a panic, and not a guess.
+            _ => {}
+        }
+        plan
+    }
+
+    fn meter<'u>(&self, _u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
+        let mut locators = UsageLocators::default();
+        let _ = locators.lines.push(UsageLocator {
+            class: CLASS_BYTES,
+            // The quantity is not at a pointer: it is the size of the document the plane just read.
+            // So the locator carries the value and no location, which the contract allows precisely
+            // for the case where the plane already has the number in front of it.
+            location: None,
+            quantity: Some(r.ir.body().len() as u64),
+            // This protocol's answers do not name a lane. The lane is the agent's, and the trust
+            // unit sealed it; a plane naming a second one would be a second opinion.
+            lane: None,
+        });
+        locators
+    }
+
+    fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
+        let multi_frame = Self::row_for_op(u.op()).is_some_and(|r| r.multi_frame);
+        AuditFacts {
+            // The DRAFT's class is the one that priced the unit, and this is that class read back
+            // off the unit. A plane that named a different class here would be disputing its own
+            // earlier answer, which is exactly what the loop treats it as.
+            op_class: u.op(),
+            finish: finish_of(out, multi_frame),
+        }
+    }
+
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
+        let _ = ctx;
+        let mut facts = Facts::new();
+        match verb {
+            v if v == crate::meta::VERB_AGENTS => {
+                let _ = facts.set("count", FactValue::Int(self.agents().len() as i64));
+                for agent in self.agents() {
+                    // The agent's name is the key and the lane it is priced on is the value.
+                    // Nothing here is a credential, a price or an address: an operator reading this
+                    // learns which agents are configured and on which lane, which is what an
+                    // introspection verb is for.
+                    let _ = facts.set(agent.id, FactValue::Str(agent.lane.as_str()));
+                }
+            }
+            v if v == crate::meta::VERB_AGENT => {
+                // The projection over ONE agent. A subject that names no agent is an unsupported
+                // operation rather than an empty answer: "there is no such agent" and "that agent
+                // has nothing to report" are different facts.
+                let name = subject.ok_or(Decode::UnsupportedOperation)?;
+                let agent = self
+                    .agents()
+                    .iter()
+                    .find(|a| a.id == name)
+                    .ok_or(Decode::UnsupportedOperation)?;
+                let _ = facts.set(SUBJECT_FACT_NAME, FactValue::Str(agent.id));
+                let _ = facts.set(SUBJECT_FACT_LANE, FactValue::Str(agent.lane.as_str()));
+                let _ = facts.set(SUBJECT_FACT_TRANSPORT, FactValue::Str(agent.transport));
+            }
+            _ => return Err(Decode::UnsupportedOperation),
+        }
+        Ok(PlaneFacts { facts })
+    }
+
+    fn content_facts<'u>(
+        &self,
+        _u: &Unit<'u>,
+        r: &Response<'u>,
+        _ctx: &Ctx<'u>,
+    ) -> ContentFacts<'u> {
+        let body = r.ir.body();
+        let mut facts = Facts::new();
+        // Only the declared keys, and only what was actually read. The message content itself never
+        // appears here, and neither does anything the caller presented as authority.
+        for (key, value) in [
+            (f::FACT_TASK_ID, read_str(body, "/result/id")),
+            (f::FACT_CONTEXT_ID, read_str(body, "/result/contextId")),
+            (f::FACT_TASK_STATE, read_str(body, "/result/status/state")),
+        ] {
+            if let Some(text) = value {
+                let _ = facts.set(key, FactValue::Str(text));
+            }
+        }
+        if let Some(code) = read_raw(body, jsonrpc::PTR_ERROR_CODE) {
+            if let Ok(text) = core::str::from_utf8(code) {
+                let _ = facts.set(f::FACT_ERROR_CODE, FactValue::Str(text));
+            }
+        }
+        ContentFacts { facts }
+    }
+}
+
+impl SessionPlane for A2aPlane {
+    fn open_session<'u>(&self, _ctx: &Ctx<'u>) -> PlaneSessionState {
+        PlaneSessionState::new(Codec::default())
+    }
+
+    fn open_upstream<'u>(&self, _dest: &VerifiedDestination, _ctx: &Ctx<'u>) -> PlaneSessionState {
+        PlaneSessionState::new(Codec::default())
+    }
+}
+
+/// The agent's own name for a task, where a record leg came back carrying one.
+fn backend_task_id<'u>(u: &Unit<'u>) -> Option<&'u str> {
+    for result in u.leg_results() {
+        if let Some(FactValue::Str(text)) = result.facts.get(LEG_FACT_BACKEND_TASK_ID) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// The request with every task-identifier member replaced by the agent's own name for the task.
+///
+/// The three member names are the ones the codec already looks for, and the rewrite is done by
+/// reading the document and writing it again — which is what the codec does too, so the bytes that
+/// reach the agent are the bytes that reach it today.
+fn rewrite_task_id(body: &[u8], backend: &str) -> Result<Vec<u8>, Encode> {
+    /// The members that carry a task's identifier, in the three spellings this protocol uses.
+    const MEMBERS: [&str; 3] = ["id", "taskId", "task_id"];
+    let mut value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| Encode::Unrepresentable)?;
+    let Some(params) = value.get_mut("params").and_then(|p| p.as_object_mut()) else {
+        // Nothing to rewrite is not a failure: the caller sent no parameters, so no identifier of
+        // theirs is going anywhere.
+        return Ok(body.to_vec());
+    };
+    for member in MEMBERS {
+        if params.contains_key(member) {
+            params.insert(member.into(), serde_json::Value::String(backend.into()));
+        }
+    }
+    serde_json::to_vec(&value).map_err(|_| Encode::Unrepresentable)
+}
+
+#[cfg(test)]
+#[path = "tests/plane.rs"]
+mod tests;
