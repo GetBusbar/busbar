@@ -174,3 +174,59 @@ fn every_rule_is_proven_able_to_go_red() {
     let report = gate.selftest(&cx);
     crate::gates::verify_report(&gate, &report).expect("every rule proven RED");
 }
+
+fn r16(text: &str) -> Vec<String> {
+    vendor_runs_on(text)
+        .into_iter()
+        .map(|(_, _, l)| l)
+        .collect()
+}
+
+#[test]
+fn a_vendor_runs_on_label_is_refused_in_every_spelling() {
+    assert_eq!(
+        r16("jobs:\n  a:\n    runs-on: latchkey-large\n"),
+        ["latchkey-large"]
+    );
+    assert_eq!(
+        r16("jobs:\n  a:\n    runs-on: [self-hosted, linux]\n"),
+        ["self-hosted"]
+    );
+    assert_eq!(
+        r16("jobs:\n  a:\n    runs-on:\n      - Self-Hosted\n      - linux\n"),
+        ["Self-Hosted"]
+    );
+    assert_eq!(
+        r16("jobs:\n  a:\n    runs-on:\n      group: g\n      labels: [busbar-ec2-x]\n"),
+        ["busbar-ec2-x"]
+    );
+    assert_eq!(
+        r16("jobs:\n  a:\n    runs-on:\n      labels:\n        - busbar-canary\n"),
+        ["busbar-canary"]
+    );
+    assert_eq!(
+        r16("jobs:\n  a:\n    runs-on: ${{ x || 'latchkey-large' }}\n"),
+        ["latchkey-large"]
+    );
+    let found = vendor_runs_on("jobs:\n  a:\n    runs-on: latchkey-small\n");
+    assert_eq!(found, [(3, "a".to_string(), "latchkey-small".to_string())]);
+}
+
+#[test]
+fn gateway_expressions_and_github_hosted_images_are_allowed() {
+    for ok in [
+        "${{ fromJSON(vars.RUNNERS).large.label }}",
+        "${{ needs.preflight.outputs.runner }}",
+        "${{ matrix.os }}",
+        "${{ inputs.x }}",
+        "${{ (a == 'b') && needs.p.outputs.runner || 'ubuntu-latest' }}",
+        "ubuntu-latest",
+        "ubuntu-24.04",
+        "macos-latest",
+        "windows-2022",
+        "[ubuntu-latest, macos-latest]",
+    ] {
+        let text = format!("jobs:\n  a:\n    runs-on: {ok}\n");
+        assert!(r16(&text).is_empty(), "{ok} must be allowed");
+    }
+}

@@ -7,7 +7,7 @@
 //! that were ABOUT those files (the staged-verification graph, the draft flag, the red-branch gate,
 //! the first gate's run list) went with them, rows and code together.
 //!
-//! Four rules were never about one file. They are bans over EVERY workflow and composite action
+//! Five rules were never about one file. They are bans over EVERY workflow and composite action
 //! that remains (`promote.yml` and the reusable `plugin-*.yml` workflows the plugin repos call),
 //! and each has a specific observed failure behind it:
 //!
@@ -18,6 +18,8 @@
 //! * **R14 — every third-party action runs from a commit sha** with its tag as a trailing comment,
 //!   because an action that can be force-moved under a name we already trust runs with our tokens.
 //! * **R15 — every attestation verify names the workflow that signed**, not just the repository.
+//! * **R16 — no job hard-codes a vendor runner label.** Every job asks the runner gateway for a
+//!   logical size and `vars.RUNNERS` names the label, so a workflow never spells a vendor.
 //!
 //! **The parser stays deliberately small, and here that is a correctness argument rather than a
 //! dependency one.** The rules are assertions about what a human WROTE (a trailing `# tag` comment
@@ -50,7 +52,7 @@ const ACTIONS_DIR: &str = ".github/actions";
 const MIN_WORKFLOWS: usize = 5;
 
 /// The rule ids, which are also the ledger row ids.
-const RULES: &[&str] = &["R1", "R11", "R14", "R15"];
+const RULES: &[&str] = &["R1", "R11", "R14", "R15", "R16"];
 
 // -------------------------------------------------------------------------------------------
 // THE SMALL PARSER
@@ -418,6 +420,109 @@ impl Finding {
 #[derive(Debug, Default)]
 pub struct WorkflowRulesGate;
 
+/// Is this label one of the runner vendors' own? `self-hosted` and `busbar-canary` exactly, and
+/// anything under the `latchkey-` or `busbar-ec2-` families. GitHub-hosted images are the
+/// platform floor and are not vendor labels.
+fn is_vendor_label(label: &str) -> bool {
+    let l = label.trim().trim_matches(['\'', '"']).to_ascii_lowercase();
+    l == "self-hosted"
+        || l == "busbar-canary"
+        || l.starts_with("latchkey-")
+        || l.starts_with("busbar-ec2-")
+}
+
+/// The vendor labels one `runs-on` value spells. Text outside `${{ }}` is split into its list and
+/// mapping pieces; inside an expression only the quoted string literals count, so
+/// `${{ x || 'latchkey-large' }}` is refused while `${{ fromJSON(vars.RUNNERS).large.label }}` and
+/// `${{ matrix.os }}` have nothing to refuse.
+fn vendor_labels_in(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = value;
+    let mut outside = String::new();
+    while let Some(i) = rest.find("${{") {
+        outside.push_str(&rest[..i]);
+        outside.push(',');
+        let after = &rest[i + 3..];
+        let end = after.find("}}").unwrap_or(after.len());
+        let expr = &after[..end];
+        let mut q: Option<char> = None;
+        let mut cur = String::new();
+        for c in expr.chars() {
+            match q {
+                None if c == '\'' || c == '"' => q = Some(c),
+                Some(d) if c == d => {
+                    if is_vendor_label(&cur) {
+                        out.push(cur.trim().to_string());
+                    }
+                    cur.clear();
+                    q = None;
+                }
+                Some(_) => cur.push(c),
+                None => {}
+            }
+        }
+        rest = &after[(end + 2).min(after.len())..];
+    }
+    outside.push_str(rest);
+    for piece in outside.split(['[', ']', ',', '{', '}']) {
+        let piece = piece.trim();
+        let piece = piece.strip_prefix("labels:").unwrap_or(piece).trim();
+        if !piece.is_empty() && is_vendor_label(piece) {
+            out.push(piece.trim_matches(['\'', '"']).to_string());
+        }
+    }
+    out
+}
+
+/// Every vendor label a `runs-on` in this workflow spells, as (line, job, label). A `runs-on` is a
+/// scalar, a flow or block list, or the group form whose `labels:` is either of those.
+fn vendor_runs_on(text: &str) -> Vec<(usize, String, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut out = Vec::new();
+    let mut in_jobs = false;
+    let mut job = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let t = line.trim();
+        if indent(line) == 0 && !t.is_empty() {
+            in_jobs = t == "jobs:";
+        }
+        if in_jobs && indent(line) == 2 && t.ends_with(':') {
+            job = t.trim_end_matches(':').to_string();
+        }
+        let Some(inline) = t.strip_prefix("runs-on:") else {
+            i += 1;
+            continue;
+        };
+        let base = indent(line);
+        let mut values = vec![(i + 1, inline.to_string())];
+        let mut j = i + 1;
+        while j < lines.len() && (lines[j].trim().is_empty() || indent(lines[j]) > base) {
+            let b = lines[j].trim();
+            let b = b.strip_prefix("- ").unwrap_or(b);
+            if !b.starts_with("group:") && !b.is_empty() {
+                values.push((j + 1, b.to_string()));
+            }
+            j += 1;
+        }
+        for (n, v) in values {
+            let v = v.trim();
+            let v = v.strip_prefix("labels:").unwrap_or(v);
+            let v = match v.find(" #") {
+                Some(k) if !v.contains("${{") => &v[..k],
+                _ => v,
+            };
+            for label in vendor_labels_in(v) {
+                out.push((n, job.clone(), label));
+            }
+        }
+        i = j;
+    }
+    out
+}
+
 /// The workflow file names, sorted, with the discovery floor applied. A directory listing that
 /// silently drops a missing root is what makes "scanned nothing" indistinguishable from "found
 /// nothing", and every rule here is a ban.
@@ -672,6 +777,29 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
         }
     }
 
+    // R16. NO JOB HARD-CODES A VENDOR RUNNER LABEL.
+    //
+    // Every job asks the runner gateway for a logical size (small, medium, large, xlarge) and the
+    // org Actions variable `vars.RUNNERS` names the `runs-on` label that size maps to. A workflow
+    // that spells `latchkey-large` or `self-hosted` has pinned itself to one vendor: moving the
+    // fleet then means editing every workflow, and the one that was missed sits queued forever on
+    // a label no runner carries. Expressions are fine, including `matrix.os` and `inputs.x`; a
+    // quoted vendor literal inside an expression is the same pin and is refused too.
+    for name in &names {
+        let text = strip_comments(&read(name).unwrap_or_default());
+        for (line, job, label) in vendor_runs_on(&text) {
+            bad.push(Finding::new(
+                "R16",
+                format!(
+                    "{name}:{line}: job '{job}' runs on the vendor label '{label}'. A workflow \
+                     never names a runner vendor: use `fromJSON(vars.RUNNERS).<size>.label` \
+                     (size is small, medium, large or xlarge) or the preflight output \
+                     `needs.preflight.outputs.runner`."
+                ),
+            ));
+        }
+    }
+
     Ok(bad)
 }
 
@@ -686,6 +814,7 @@ fn rule_title(rule: &str) -> &'static str {
         "R11" => "no workflow pushes a commit to a release branch",
         "R14" => "every third-party action runs from a commit sha",
         "R15" => "every attestation verify names the workflow that signed",
+        "R16" => "no job hard-codes a vendor runner label",
         _ => "workflow rule",
     }
 }
@@ -875,6 +1004,35 @@ fn mutations() -> Vec<Mutation> {
             apply: |_| {
                 "jobs:\n  v:\n    steps:\n      - run: |\n          gh attestation verify ./x --repo GetBusbar/busbar --signer-workflow GetBusbar/busbar/.github/workflows/promote.yml\n"
                     .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R16 a job hard-codes a vendor runs-on label",
+            file: "zz-planted-runs-on.yml",
+            rule: "R16",
+            apply: |_| {
+                "jobs:\n  j:\n    runs-on: latchkey-large\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R16 a runs-on list names self-hosted",
+            file: "zz-planted-runs-on.yml",
+            rule: "R16",
+            apply: |_| {
+                "jobs:\n  j:\n    runs-on: [self-hosted, linux]\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R16 an expression falls back to a vendor literal",
+            file: "zz-planted-runs-on.yml",
+            rule: "R16",
+            apply: |_| {
+                "jobs:\n  j:\n    runs-on: ${{ inputs.runner || 'latchkey-large' }}\n    steps:\n      - run: true\n".to_string()
             },
             creates: true,
         },

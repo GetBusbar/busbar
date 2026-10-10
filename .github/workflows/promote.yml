@@ -46,7 +46,7 @@ jobs:
       # package-selector: busbar-release-cli -- .github/workflows/promote.yml -- the package lives in the busbar-release checkout at RELEASE_REF (working-directory busbar-release), not in this workspace
       - id: pre
         working-directory: busbar-release
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        env: { GITHUB_TOKEN: "${{ github.token }}", RUNNERS: "${{ vars.RUNNERS }}" }
         run: cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release -- ci preflight
   # The release artifact the slsa-verifier conformance rig judges, built ONCE, in the merge group: the
   # commit it judges is the commit the queue lands, and the ladder fast-forwards that sha to dev, where
