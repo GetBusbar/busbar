@@ -953,6 +953,21 @@ impl Gate for BlockingFfiGate {
             &["never closed", "planted_unclosed.rs"],
         ));
 
+        // THE FLOOR SITS AT THE MEASURED COUNT: one file fewer than the live population is
+        // refused. A floor set a margin below the count passes this tree, so the plant is red
+        // exactly when the floor has slipped under the number the tree measures.
+        match population::one_file_short(cx) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a population one file short of the measured floor is refused",
+                &[ROW_SCAN_FLOOR],
+                ov,
+                &["below its floor"],
+            )),
+            Err(e) => report.note_infra_failure(format!("blocking-ffi selftest: {e}")),
+        }
+
         // THE FLOOR, on the run path.
         match scan_roots(cx) {
             Ok(roots) => match candidates(cx, &roots) {
