@@ -602,7 +602,7 @@ async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_creden
 }
 
 /// ONE PLUGIN, ONE IDENTITY (ARCHITECT C'): the operator credential's module named by its CANONICAL
-/// name (the manifest name its release tarball carries: `module: busbar-auth-admin-tokens`) is the
+/// name (the manifest name its release tarball carries, its row's `linked-canonical` value) is the
 /// operator credential exactly as its key is — the same provider, the same full scope, the same
 /// carriers, the same refusal — because the kernel compares the plugin the module resolves to, not
 /// the spelling. RED before: the token on that provider was refused as misplaced, and nothing
