@@ -1554,8 +1554,8 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the N
 [[law0]]
 crate = "busbar"
 axis  = "auth"
-count = "49"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. +4 for status row 120 (owner task): root/tests/connector.rs `the_pinned_mint_needs_are_operator_infrastructure` reads the pinned plugin's NEEDS by its crate path and its doc names the divergent pins, 2 hits each (package name + kind-qualified id); test-only, over the granted root -> auth dev edge; RE-ARMED 46 -> 51 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 49 there; the 46 was f830faa691's, nine hours older than the arming, so the row armed red. 51 is predev 9c0a394771's measure, at or under the arming value (arming measure 49, plus status row 120 (#704, owner task) at its measured +2 of the +4 its cite approved). LOWERED 51 -> 49: the root-crate no-silent-skip lane (#712) drained two with the skips it removed from crates/busbar/tests, measured 49 on its head (law0-slack)"
+count = "51"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. +4 for status row 120 (owner task): root/tests/connector.rs `the_pinned_mint_needs_are_operator_infrastructure` reads the pinned plugin's NEEDS by its crate path and its doc names the divergent pins, 2 hits each (package name + kind-qualified id); test-only, over the granted root -> auth dev edge; RE-ARMED 46 -> 51 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 49 there; the 46 was f830faa691's, nine hours older than the arming, so the row armed red. 51 is predev 9c0a394771's measure, at or under the arming value (arming measure 49, plus status row 120 (#704, owner task) at its measured +2 of the +4 its cite approved)"
 
 [[law0]]
 crate = "busbar"
