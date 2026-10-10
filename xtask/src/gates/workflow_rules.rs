@@ -18,6 +18,10 @@
 //! * **R14 — every third-party action runs from a commit sha** with its tag as a trailing comment,
 //!   because an action that can be force-moved under a name we already trust runs with our tokens.
 //! * **R15 — every attestation verify names the workflow that signed**, not just the repository.
+//! * **R16 — a step that downloads the release artifact from its own run runs only where the job
+//!   that builds it runs.** `slsa-build` was merge-group-only while the predev->dev pull request's
+//!   shards (its rung runs the oracle and conformance) downloaded `slsa-artifact-<sha>` from their
+//!   own run: the artifact could never exist there, and #740 failed every run at that download.
 //!
 //! **The parser stays deliberately small, and here that is a correctness argument rather than a
 //! dependency one.** The rules are assertions about what a human WROTE (a trailing `# tag` comment
@@ -50,7 +54,11 @@ const ACTIONS_DIR: &str = ".github/actions";
 const MIN_WORKFLOWS: usize = 5;
 
 /// The rule ids, which are also the ledger row ids.
-const RULES: &[&str] = &["R1", "R11", "R14", "R15"];
+const RULES: &[&str] = &["R1", "R11", "R14", "R15", "R16"];
+
+/// The release artifact's name prefix: `promote.yml`'s `slsa-build` uploads `slsa-artifact-<sha>`,
+/// and the steps that read the release binary download it by that name (R16).
+const RELEASE_ARTIFACT: &str = "slsa-artifact-";
 
 // -------------------------------------------------------------------------------------------
 // THE SMALL PARSER
@@ -345,6 +353,202 @@ fn pushes_bare_release_branch(cmd: &str) -> bool {
         }
     }
     false
+}
+
+/// A line that opens a YAML key at exactly `indent` spaces: not a comment, not a sequence item,
+/// not deeper.
+fn opens_key_at(line: &str, indent: usize) -> bool {
+    let b = line.as_bytes();
+    b.len() > indent
+        && b[..indent].iter().all(|c| *c == b' ')
+        && !matches!(b[indent], b' ' | b'\t' | b'#' | b'-')
+}
+
+/// The jobs of a workflow, in file order: (job id, the job's lines). A job opens at exactly two
+/// spaces under the top-level `jobs:` key and runs to the next job or top-level key.
+fn jobs_of(text: &str) -> Vec<(String, Vec<&str>)> {
+    let mut out: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut in_jobs = false;
+    for line in text.lines() {
+        if opens_key_at(line, 0) {
+            in_jobs = line.trim_end() == "jobs:";
+            continue;
+        }
+        if !in_jobs {
+            continue;
+        }
+        if opens_key_at(line, 2) {
+            if let Some((id, _)) = line.trim().split_once(':') {
+                out.push((id.trim().to_string(), Vec::new()));
+                continue;
+            }
+        }
+        if let Some((_, lines)) = out.last_mut() {
+            lines.push(line);
+        }
+    }
+    out
+}
+
+/// An `if:` condition as written, without its `${{ }}` wrapper or the double quotes around the
+/// whole of it (a single quote that ends the condition, `== 'true'`, is the condition's own).
+fn bare_condition(raw: &str) -> String {
+    let c = raw.trim();
+    let c = c
+        .strip_prefix('"')
+        .and_then(|r| r.strip_suffix('"'))
+        .unwrap_or(c)
+        .trim();
+    let c = c.strip_prefix("${{").unwrap_or(c);
+    let c = c.strip_suffix("}}").unwrap_or(c);
+    c.trim().to_string()
+}
+
+/// A job's own `if:` (the line opening `if:` at four spaces), bare. `None`: the job is
+/// unconditional.
+fn job_condition(lines: &[&str]) -> Option<String> {
+    lines
+        .iter()
+        .find(|l| opens_key_at(l, 4) && l.trim_start().starts_with("if:"))
+        .map(|l| bare_condition(&l.trim_start()["if:".len()..]))
+}
+
+/// A job's steps: each step's lines, its item line first. The items sit at the indent of the first
+/// `- ` line under `steps:`; deeper lines (a `run: |` body, a block `with:`) belong to the step.
+fn steps_of<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
+    let mut out: Vec<Vec<&'a str>> = Vec::new();
+    let Some(start) = lines
+        .iter()
+        .position(|l| opens_key_at(l, 4) && l.trim_end() == "    steps:")
+    else {
+        return out;
+    };
+    let mut indent: Option<usize> = None;
+    for line in &lines[start + 1..] {
+        if opens_key_at(line, 4) {
+            break;
+        }
+        let lead = line.len() - line.trim_start().len();
+        let item = line.trim_start().starts_with("- ");
+        if item && indent.is_none() {
+            indent = Some(lead);
+        }
+        if item && Some(lead) == indent {
+            out.push(vec![*line]);
+        } else if let Some(step) = out.last_mut() {
+            step.push(*line);
+        }
+    }
+    out
+}
+
+/// A step's own `if:`, bare, in either spelling: `- if: X` or an `if:` line of the step (block),
+/// or `- { if: X, uses: ... }` (flow). `None`: the step is unconditional.
+fn step_condition(step: &[&str]) -> Option<String> {
+    let first = step.first()?.trim_start().strip_prefix("- ")?.trim_start();
+    if let Some(flow) = first.strip_prefix('{') {
+        let flow = flow.trim_start();
+        let rest = match flow.strip_prefix("if:") {
+            Some(r) => r,
+            None => &flow[flow.find(", if:")? + ", if:".len()..],
+        };
+        let end = [
+            ", uses:",
+            ", run:",
+            ", with:",
+            ", id:",
+            ", name:",
+            ", env:",
+            ", working-directory:",
+            ", continue-on-error:",
+        ]
+        .iter()
+        .filter_map(|k| rest.find(k))
+        .min()
+        .unwrap_or(rest.len());
+        return Some(bare_condition(&rest[..end]));
+    }
+    if let Some(rest) = first.strip_prefix("if:") {
+        return Some(bare_condition(rest));
+    }
+    step[1..]
+        .iter()
+        .map(|l| l.trim_start())
+        .find_map(|l| l.strip_prefix("if:"))
+        .map(bare_condition)
+}
+
+/// R16 over one workflow's comment-stripped text. Every step that downloads the release artifact
+/// from its OWN run (no `run-id:`) must run only where a job of this run uploads it. The step is
+/// safe when it waits on the builder's success (`needs.<builder>.result == 'success'`), or when
+/// the builder's `if:` does not narrow it by event; a builder narrowed by event
+/// (`github.event_name`, `github.base_ref`) must also admit the step's own condition, written into
+/// its `if:` as one of the alternatives. No builder at all is the same red: the artifact can never
+/// exist in that run.
+fn release_artifact_findings(name: &str, text: &str) -> Vec<Finding> {
+    fn carries(step: &[&str], verb: &str) -> bool {
+        let body = step.join("\n");
+        body.contains(verb) && body.contains(RELEASE_ARTIFACT)
+    }
+    let jobs = jobs_of(text);
+    let builders: Vec<(&str, Option<String>)> = jobs
+        .iter()
+        .filter(|(_, lines)| {
+            steps_of(lines)
+                .iter()
+                .any(|s| carries(s, "upload-artifact"))
+        })
+        .map(|(id, lines)| (id.as_str(), job_condition(lines)))
+        .collect();
+    let mut bad = Vec::new();
+    for (job, lines) in &jobs {
+        for step in steps_of(lines) {
+            if !carries(&step, "download-artifact") || step.join("\n").contains("run-id:") {
+                continue;
+            }
+            let gate = step_condition(&step).unwrap_or_default();
+            let when = if gate.is_empty() {
+                "always"
+            } else {
+                gate.as_str()
+            };
+            if builders.is_empty() {
+                bad.push(Finding::new(
+                    "R16",
+                    format!(
+                        "{name}: job `{job}` downloads the release artifact \
+                         (`{RELEASE_ARTIFACT}*`) from its own run, and no job of this workflow \
+                         uploads it, so the download can never find it. Build it in this run, or \
+                         download it by `run-id:` from the run that built it."
+                    ),
+                ));
+                continue;
+            }
+            for (builder, cond) in &builders {
+                if gate.contains(&format!("needs.{builder}.result == 'success'")) {
+                    continue;
+                }
+                let Some(cond) = cond else { continue };
+                let by_event =
+                    cond.contains("github.event_name") || cond.contains("github.base_ref");
+                if by_event && (gate.is_empty() || !cond.contains(gate.as_str())) {
+                    bad.push(Finding::new(
+                        "R16",
+                        format!(
+                            "{name}: job `{job}` downloads the release artifact \
+                             (`{RELEASE_ARTIFACT}*`) from its own run when `{when}`, but \
+                             `{builder}`, the job that uploads it, runs only when `{cond}`. In \
+                             every run where the first holds and the second does not, the artifact \
+                             does not exist and the download fails (#740: a merge-group-only \
+                             slsa-build under the predev->dev pull request's shards). Admit \
+                             `{when}` in `{builder}`'s `if:`."
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    bad
 }
 
 /// True when there is an actual composite-action manifest to scan, either on disk or planted by a
@@ -672,6 +876,19 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
         }
     }
 
+    // R16. A STEP THAT DOWNLOADS THE RELEASE ARTIFACT FROM ITS OWN RUN RUNS ONLY WHERE IT IS BUILT.
+    //
+    // The shards of a rung that runs the oracle or conformance (`needs_release_artifact=true`: the
+    // predev->dev pull request and up) download `slsa-artifact-<sha>` from their own run, after
+    // `ci turnstile await-job` reads `slsa-build` green, and a SKIPPED job reads green there. With
+    // slsa-build gated to merge groups, every predev->dev run waited on nothing, failed that
+    // download on all four shards, and the fold called it INFRA: #740, every run. The rule holds
+    // the builder's `if:` to admit every condition a same-run download of its artifact runs under.
+    for name in &names {
+        let text = strip_comments(&read(name).unwrap_or_default());
+        bad.extend(release_artifact_findings(name, &text));
+    }
+
     Ok(bad)
 }
 
@@ -686,6 +903,7 @@ fn rule_title(rule: &str) -> &'static str {
         "R11" => "no workflow pushes a commit to a release branch",
         "R14" => "every third-party action runs from a commit sha",
         "R15" => "every attestation verify names the workflow that signed",
+        "R16" => "a same-run download of the release artifact runs only where it is built",
         _ => "workflow rule",
     }
 }
@@ -944,7 +1162,47 @@ fn mutations() -> Vec<Mutation> {
             },
             creates: false,
         },
+        Mutation {
+            // THE REGRESSION AS IT ARRIVED (#740): the release build gated to merge groups while
+            // the predev->dev pull request's shards still download its artifact from their run.
+            label: "R16 slsa-build goes back to merge-group-only under a pull request's download",
+            file: "promote.yml",
+            rule: "R16",
+            apply: |t| {
+                reif_job(
+                    t,
+                    "slsa-build",
+                    "github.event_name == 'merge_group' && needs.preflight.outputs.run == '1'",
+                )
+            },
+            creates: false,
+        },
     ]
+}
+
+/// Replace job `job`'s own `if:` line with `if: <cond>`. The anchor is the job id and its
+/// four-space `if:` key, not today's condition, so rewording the condition cannot unprove R16; a
+/// renamed or unconditional job edits nothing, which the selftest reports as unproven.
+fn reif_job(t: &str, job: &str, cond: &str) -> String {
+    let head = format!("  {job}:");
+    let mut in_job = false;
+    let mut done = false;
+    let mut out = String::with_capacity(t.len() + cond.len());
+    for line in t.split_inclusive('\n') {
+        let bare = line.trim_end_matches('\n');
+        if opens_key_at(bare, 2) {
+            in_job = bare.trim_end() == head;
+        }
+        if !done && in_job && opens_key_at(bare, 4) && bare.trim_start().starts_with("if:") {
+            out.push_str("    if: ");
+            out.push_str(cond);
+            out.push('\n');
+            done = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// The R14 mutations both target the FIRST fully-pinned third-party action in the file, found by

@@ -174,3 +174,124 @@ fn every_rule_is_proven_able_to_go_red() {
     let report = gate.selftest(&cx);
     crate::gates::verify_report(&gate, &report).expect("every rule proven RED");
 }
+
+/// A two-job workflow: `slsa-build` (under `BUILDER_IF`) uploads the release artifact, and a shard
+/// downloads it from its own run under `STEP_IF`, in the block spelling promote.yml uses.
+const R16_FIXTURE: &str = "on: [pull_request, merge_group]
+jobs:
+  slsa-build:
+    if: BUILDER_IF
+    steps:
+      - run: cargo build --release
+      - { uses: actions/upload-artifact@abc, with: { name: \"slsa-artifact-x\", path: slsa/ } } # v7
+  hop-shard:
+    steps:
+      - if: STEP_IF
+        uses: actions/download-artifact@abc # v8
+        with: { name: \"slsa-artifact-x\", path: slsa }
+      - run: ci hop
+";
+
+fn r16(builder_if: &str, step_if: &str) -> Vec<String> {
+    let text = R16_FIXTURE
+        .replace("BUILDER_IF", builder_if)
+        .replace("STEP_IF", step_if);
+    release_artifact_findings("promote.yml", &text)
+        .into_iter()
+        .map(|f| {
+            assert_eq!(f.rule, "R16");
+            f.message
+        })
+        .collect()
+}
+
+const NEEDS_ARTIFACT: &str = "needs.preflight.outputs.needs_release_artifact == 'true'";
+
+#[test]
+fn r16_a_merge_group_only_build_under_a_pull_request_download_is_red() {
+    // #740 exactly: the builder runs only in a merge group, the download whenever the rung reads it.
+    let got = r16(
+        "github.event_name == 'merge_group' && needs.preflight.outputs.run == '1'",
+        NEEDS_ARTIFACT,
+    );
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].contains("`hop-shard`") && got[0].contains("`slsa-build`"),
+        "{got:?}"
+    );
+    // The same narrowing written as a base-branch test is the same red.
+    assert_eq!(r16("github.base_ref == 'qa'", NEEDS_ARTIFACT).len(), 1);
+}
+
+#[test]
+fn r16_a_builder_that_admits_the_download_condition_is_green() {
+    let fixed = format!(
+        "needs.preflight.outputs.run == '1' && (github.event_name == 'merge_group' || {NEEDS_ARTIFACT})"
+    );
+    assert!(r16(&fixed, NEEDS_ARTIFACT).is_empty());
+    // Wrapped in `${{ }}` the same.
+    assert!(r16(&format!("${{{{ {fixed} }}}}"), NEEDS_ARTIFACT).is_empty());
+    // A builder narrowed only by the run gate, not by event, runs wherever the run runs.
+    assert!(r16("needs.preflight.outputs.run == '1'", NEEDS_ARTIFACT).is_empty());
+}
+
+#[test]
+fn r16_a_download_that_waits_on_the_builders_success_is_green() {
+    // The soak's spelling: it downloads only after slsa-build succeeded, else builds its own.
+    assert!(r16(
+        "github.event_name == 'merge_group'",
+        "needs.slsa-build.result == 'success'"
+    )
+    .is_empty());
+}
+
+#[test]
+fn r16_an_unconditional_download_under_an_event_narrowed_builder_is_red() {
+    let text = R16_FIXTURE
+        .replace("BUILDER_IF", "github.event_name == 'merge_group'")
+        .replace("      - if: STEP_IF\n        uses:", "      - uses:");
+    assert_eq!(release_artifact_findings("promote.yml", &text).len(), 1);
+}
+
+#[test]
+fn r16_a_download_with_no_builder_in_the_run_is_red_and_a_run_id_download_is_not_judged() {
+    let orphan = R16_FIXTURE
+        .replace("BUILDER_IF", "github.event_name == 'merge_group'")
+        .replace("actions/upload-artifact@abc", "actions/cache@abc")
+        .replace("STEP_IF", NEEDS_ARTIFACT);
+    let got = release_artifact_findings("promote.yml", &orphan);
+    assert_eq!(got.len(), 1);
+    assert!(got[0]
+        .message
+        .contains("no job of this workflow uploads it"));
+    // Another run's artifact (by run-id) is not this run's to build.
+    let other = orphan.replace(
+        "with: { name: \"slsa-artifact-x\", path: slsa }",
+        "with: { name: \"slsa-artifact-x\", path: slsa, run-id: \"${{ env.RUN }}\" }",
+    );
+    assert!(release_artifact_findings("promote.yml", &other).is_empty());
+}
+
+#[test]
+fn r16_a_flow_step_condition_is_read_up_to_the_next_key() {
+    assert_eq!(
+        step_condition(&["      - { if: always(), uses: actions/upload-artifact@abc }"]).as_deref(),
+        Some("always()")
+    );
+    assert_eq!(
+        step_condition(&["      - { uses: a@b, if: \"${{ x == 'y' }}\", with: { n: 1 } }"])
+            .as_deref(),
+        Some("x == 'y'")
+    );
+    assert_eq!(step_condition(&["      - run: true"]), None);
+}
+
+#[test]
+fn r16_the_mutation_anchor_rewrites_only_the_named_jobs_if() {
+    let t = "jobs:\n  a:\n    if: one\n  slsa-build:\n    if: two\n    needs: a\n";
+    assert_eq!(
+        reif_job(t, "slsa-build", "three"),
+        "jobs:\n  a:\n    if: one\n  slsa-build:\n    if: three\n    needs: a\n"
+    );
+    assert_eq!(reif_job(t, "absent", "three"), t);
+}
