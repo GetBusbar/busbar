@@ -8,7 +8,9 @@
 //!   [`CompletionHandle`] and stores the result. A re-issued handle (a resume, or the re-call a short
 //!   answer earns) reads the stored result; nothing runs twice. The store forgets a ticket's results
 //!   when the ticket is recycled, a driver ticket's when its next tick starts, and any other
-//!   ticket's when a new op (not a short answer's re-call) starts on it.
+//!   ticket's when a new op (not a short answer's re-call) starts on it. Each op's results live
+//!   under an epoch of their own, so a pended service of an op that is over completes into
+//!   nothing: never the next op's same-numbered handle, never a wake for it.
 //! * **The short-buffer rule.** A result that does not fit the caller's buffers answers FAILED with
 //!   `needed_bytes`/`needed_items` at their full sizes and writes nothing. The one re-call on the same
 //!   handle reads the stored result; a second short answer on that handle is FAULT.
@@ -34,6 +36,7 @@ use std::collections::HashMap;
 use std::mem::size_of;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use busbar_contract::abi::host::service::{
@@ -57,8 +60,6 @@ pub use busbar_contract::services::{
 
 use super::ticket::{decode, InstanceWake, WakeRoute};
 
-/// The error text of a slot this host does not serve yet.
-pub const UNIMPLEMENTED: &str = busbar_contract::services::UNSERVED;
 /// The error text of a caller-scoped service called from an instance the host states no caller for.
 pub const NO_CALLER: &str = "no caller is bound to this instance";
 /// The error text of a claim with no time to live.
@@ -89,21 +90,40 @@ enum Entry {
     Done { stored: Stored, shorts: u8 },
 }
 
-/// The results of one dispatcher's services, by ticket then issue order.
+/// One ticket's results, stamped with the EPOCH of the op that issued them.
+#[derive(Debug)]
+struct Held {
+    /// Minted fresh (never reused) when the ticket's first result of an op is stored; a forget
+    /// (a new op or tick on the ticket, or its recycle) ends it.
+    epoch: u64,
+    entries: HashMap<u32, Entry>,
+}
+
+/// The results of one dispatcher's services, by ticket then issue order, each ticket's under the
+/// epoch of the op that issued them. A new op's handles count from 0 again, so a handle alone does
+/// not name its op: a [`Completer`] carries its op's epoch, and a completion whose epoch is not the
+/// ticket's current one is DROPPED, never stored under the next op's same-numbered handle and
+/// never a wake for it (THE DESIGN §11.11 H2, §11.12).
 #[derive(Debug, Default)]
 pub struct ServiceStore {
-    inner: Mutex<HashMap<Ticket, HashMap<u32, Entry>>>,
+    inner: Mutex<HashMap<Ticket, Held>>,
+    /// The last epoch minted.
+    epochs: AtomicU64,
 }
 
 impl ServiceStore {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Ticket, HashMap<u32, Entry>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Store a pended service's result; `false` when the handle is not running.
-    fn complete(&self, h: CompletionHandle, stored: Stored) -> bool {
+    /// Store a pended service's result; `false` when the handle is not running under `epoch`.
+    fn complete(&self, h: CompletionHandle, epoch: u64, stored: Stored) -> bool {
         let mut map = self.lock();
-        match map.get_mut(&h.ticket).and_then(|t| t.get_mut(&h.seq)) {
+        match map
+            .get_mut(&h.ticket)
+            .filter(|held| held.epoch == epoch)
+            .and_then(|held| held.entries.get_mut(&h.seq))
+        {
             Some(e @ Entry::Running) => {
                 *e = Entry::Done { stored, shorts: 0 };
                 true
@@ -113,9 +133,11 @@ impl ServiceStore {
     }
 
     /// Forget every result under `ticket` (it was recycled, a driver ticket's tick started, or a
-    /// new op started on it); how many there were.
+    /// new op started on it), ending its epoch; how many there were.
     pub(crate) fn forget(&self, ticket: Ticket) -> usize {
-        self.lock().remove(&ticket).map_or(0, |held| held.len())
+        self.lock()
+            .remove(&ticket)
+            .map_or(0, |held| held.entries.len())
     }
 
     /// Forget every result of worker `worker` (it was replaced).
@@ -124,9 +146,9 @@ impl ServiceStore {
     }
 
     /// How many results the store holds.
-    #[must_use]
-    pub fn held(&self) -> usize {
-        self.lock().values().map(HashMap::len).sum()
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        self.lock().values().map(|held| held.entries.len()).sum()
     }
 }
 
@@ -135,23 +157,27 @@ pub struct Completer {
     store: Weak<ServiceStore>,
     route: Weak<dyn WakeRoute>,
     handle: CompletionHandle,
+    /// The epoch of the op that issued `handle`.
+    epoch: u64,
 }
 
 impl std::fmt::Debug for Completer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Completer")
             .field("handle", &self.handle)
+            .field("epoch", &self.epoch)
             .finish_non_exhaustive()
     }
 }
 
 impl Completer {
-    /// Store `stored` and wake the ticket. A handle whose ticket was recycled meanwhile is dropped.
+    /// Store `stored` and wake the ticket. A handle whose op is over meanwhile (its ticket was
+    /// recycled, or a new op or tick started on it) is dropped, and wakes nothing.
     pub fn complete(self, stored: Stored) {
         let Some(store) = self.store.upgrade() else {
             return;
         };
-        if store.complete(self.handle, stored) {
+        if store.complete(self.handle, self.epoch, stored) {
             if let Some(route) = self.route.upgrade() {
                 route.wake(self.handle.ticket);
             }
@@ -274,13 +300,19 @@ pub(crate) unsafe fn serve(
         };
     }
     let h = head.handle;
-    let fresh = {
+    // The epoch of the op on the ticket: the one its first result minted, or a fresh one.
+    let (epoch, fresh) = {
         let mut map = store.lock();
-        match map.entry(h.ticket).or_default().entry(h.seq) {
-            std::collections::hash_map::Entry::Occupied(_) => false,
+        let held = map.entry(h.ticket).or_insert_with(|| Held {
+            epoch: store.epochs.fetch_add(1, Ordering::Relaxed) + 1,
+            entries: HashMap::new(),
+        });
+        let epoch = held.epoch;
+        match held.entries.entry(h.seq) {
+            std::collections::hash_map::Entry::Occupied(_) => (epoch, false),
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert(Entry::Running);
-                true
+                (epoch, true)
             }
         }
     };
@@ -289,16 +321,21 @@ pub(crate) unsafe fn serve(
             store: Arc::downgrade(store),
             route: route.clone(),
             handle: h,
+            epoch,
         };
         match body(Some(completer)) {
             Ran::Now(stored) => {
-                store.complete(h, stored);
+                store.complete(h, epoch, stored);
             }
             Ran::Later => {}
         }
     }
     let mut map = store.lock();
-    match map.get_mut(&h.ticket).and_then(|t| t.get_mut(&h.seq)) {
+    match map
+        .get_mut(&h.ticket)
+        .filter(|held| held.epoch == epoch)
+        .and_then(|held| held.entries.get_mut(&h.seq))
+    {
         Some(Entry::Running) => Answered::bare(Outcome::Pending, ""),
         Some(Entry::Done { stored, shorts }) => {
             if *shorts >= 2 {
