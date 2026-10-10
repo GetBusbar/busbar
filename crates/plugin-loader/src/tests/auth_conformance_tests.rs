@@ -26,8 +26,9 @@
 //! audience: the token the linked door identified is refused, so the transcript equality is not
 //! vacuous. [`a_door_handed_no_connection_table_identifies_no_one`] opens it with no table: it
 //! cannot fetch the JWKS, so it identifies no one — the table is what carries the fetch.
-//! [`a_third_party_signature_is_a_different_row`] signs the same `cdylib` as a third party: the row
-//! differs, so the row equality is not vacuous either.
+//! [`a_third_party_signature_is_a_different_row`] signs the same `cdylib` as a third party: the scan
+//! skips it under the egress grant, so it is never the first-party row and the row equality is not
+//! vacuous either.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -296,16 +297,33 @@ fn a_door_handed_no_connection_table_identifies_no_one() {
     );
 }
 
-/// **THE RED ARM OF THE ROW COMPARISON.** The same `cdylib` signed by a third party is a different
-/// row from the linked first-party one.
+/// **THE RED ARM OF THE ROW COMPARISON.** The same `cdylib` signed by a third party is not the
+/// linked first-party row: its needs declare `operator-infrastructure`, an egress class the host
+/// grants to a first-party plugin only (`BUSBAR-1.6.0.md` §5; ARCHITECT ruling EGRESS-GRANT
+/// 2026-10-03), so the scan skips it and names the grant.
 #[test]
 fn a_third_party_signature_is_a_different_row() {
     let [linked, dropped] = doors(true);
     let dropped_row = row(&dropped, NAME);
-    assert!(!dropped_row.starts_with("no row"), "{dropped_row}");
     assert_ne!(
         row(&linked, NAME),
         dropped_row,
         "a third-party row must not compare equal to the first-party one"
+    );
+    assert!(
+        dropped.resolve(NAME).is_none(),
+        "never admitted: {dropped_row}"
+    );
+    let skipped = dropped
+        .unresolved_reason(NAME)
+        .expect("the scan names its refusal");
+    assert_eq!(skipped.kind, crate::sign::RejectKind::EgressGrant);
+    assert!(
+        skipped.reason.contains(
+            "in the `operator-infrastructure` egress class, which the host grants to a \
+                       first-party plugin only"
+        ),
+        "{}",
+        skipped.reason
     );
 }

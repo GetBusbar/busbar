@@ -68,19 +68,60 @@ pub fn registry(
 ///
 /// # Errors
 ///
-/// A reserved or malformed publisher.
+/// A reserved or malformed publisher; in a `test-harness` build, a malformed
+/// `HARNESS_FIRST_PARTY_KEY_ENV`.
 pub fn trust_policy(
     cfg: &PluginsCfg,
     binary_version: &str,
 ) -> Result<super::loader::sign::TrustPolicy, String> {
-    super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
-        publishers: &cfg.publisher_keys(),
-        allow_unsigned: cfg.trust.allow_unsigned,
-        allow_third_party: cfg.trust.allow_third_party,
-        min_versions: &cfg.min_versions,
-        first_party_floors: &cfg.first_party_floors,
-        binary_version,
-    })
+    #[allow(unused_mut)] // assigned only in a `test-harness` build
+    let mut policy =
+        super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
+            publishers: &cfg.publisher_keys(),
+            allow_unsigned: cfg.trust.allow_unsigned,
+            allow_third_party: cfg.trust.allow_third_party,
+            min_versions: &cfg.min_versions,
+            first_party_floors: &cfg.first_party_floors,
+            binary_version,
+        })?;
+    #[cfg(feature = "test-harness")]
+    if let Some(key) =
+        harness_first_party_key(std::env::var(HARNESS_FIRST_PARTY_KEY_ENV).ok().as_deref())?
+    {
+        policy.first_party_key = Some(key);
+    }
+    Ok(policy)
+}
+
+/// THE TEST HARNESS'S FIRST-PARTY KEY SEAM (ARCHITECT ruling, busbar #700, 2026-10-10): a
+/// `test-harness` build of the binary takes its first-party key from this variable when it is set,
+/// in place of the embedded release key, whose private half no test holds. That is how a child
+/// `busbar` process under test admits a plugin a test signed first-party: a plugin whose needs sit
+/// in a first-party egress class (`BUSBAR-1.6.0.md` §5), such as the dropped-in OIDC module this
+/// crate's end-to-end battery drives. The seam exists only under `cfg(feature = "test-harness")`,
+/// which no release build enables (`crates/busbar/Cargo.toml`, `test-harness`; asserted by
+/// `root::tests::boot::the_release_feature_set_excludes_test_harness`). Without the feature, no code
+/// path reads the variable, and the embedded key stays the only first-party key.
+#[cfg(feature = "test-harness")]
+pub const HARNESS_FIRST_PARTY_KEY_ENV: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
+
+/// The harness first-party key that `raw` (the value of [`HARNESS_FIRST_PARTY_KEY_ENV`]) names:
+/// `None` when the variable is unset or empty, so the embedded release key stands.
+///
+/// # Errors
+///
+/// A value that is not a 64-hex ed25519 public key. A harness that sets the variable meant it, so
+/// a typo is refused rather than silently ignored.
+#[cfg(feature = "test-harness")]
+pub fn harness_first_party_key(
+    raw: Option<&str>,
+) -> Result<Option<super::loader::sign::VerifyingKey>, String> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(hex_key) => super::loader::sign::public_key_from_hex(hex_key)
+            .map(Some)
+            .map_err(|e| format!("{HARNESS_FIRST_PARTY_KEY_ENV} is not a usable key: {e}")),
+    }
 }
 
 /// THE ROOT'S PLUGINS FETCH (the kernel preflight's `PluginsFetch`): every `plugins.fetch` target
