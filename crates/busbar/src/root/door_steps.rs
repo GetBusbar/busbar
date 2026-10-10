@@ -1290,7 +1290,7 @@ impl std::fmt::Debug for OutboundAuths {
         f.debug_struct("OutboundAuths")
             .field(
                 "linked",
-                &self.linked.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+                &self.linked.iter().map(|(n, _, _)| *n).collect::<Vec<_>>(),
             )
             .finish_non_exhaustive()
     }
@@ -1375,7 +1375,7 @@ impl OutboundAuths {
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
         match door {
             AuthRowDoor::Linked(i) => {
-                let (_, door) = self.linked.get(i)?;
+                let (_, _, door) = self.linked.get(i)?;
                 LinkedRow::of(*door)
                     .and_then(|row| load_linked::<Auth>(&row, self.bind_with(name, conns)))
                     .ok()
@@ -1405,7 +1405,7 @@ impl OutboundAuths {
                 .linked
                 .iter()
                 .enumerate()
-                .map(|(i, (name, _))| ((*name).to_string(), AuthRowDoor::Linked(i)));
+                .map(|(i, (name, _, _))| ((*name).to_string(), AuthRowDoor::Linked(i)));
             let dropped = self
                 .dropped
                 .map_or(&[][..], |r| r.loadable())

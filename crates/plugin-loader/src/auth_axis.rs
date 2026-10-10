@@ -124,7 +124,7 @@ impl AuthRows {
     /// `serving`: the instance is opened to serve, and declares its needs on the host's table; one
     /// only read for its facts binds with no table.
     fn load(&self, row: &LoadablePlugin, label: &str, serving: bool) -> Result<Door, String> {
-        let name = &row.manifest.name;
+        let name = row.key();
         let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
         let bind = Bind {
@@ -177,10 +177,7 @@ impl AuthRows {
             .linked()
             .iter()
             .filter(|p| p.manifest.kind == AUTH)
-            .any(|p| {
-                p.manifest.config_names().any(|n| n == module)
-                    || stated_aliases(p).iter().any(|a| a == module)
-            })
+            .any(|p| p.manifest.answers_to(module) || stated_aliases(p).iter().any(|a| a == module))
     }
 
     /// THE OPERATOR CREDENTIAL'S ROW: the auth row whose Statement states `FACT_OPERATOR`, as its
