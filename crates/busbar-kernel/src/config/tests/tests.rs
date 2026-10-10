@@ -4167,6 +4167,85 @@ fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
     }
 }
 
+/// RED (Q-STEP9-a, ARCHITECT 2026-10-07; spec :567 "a plane entry named after any reserved key is
+/// refused at validation with a clear message"): a declared-verb section's depth-1 entry named
+/// after a reserved key, whose value is plainly not that knob, is refused AT LOAD — the load
+/// `--validate` and boot both run — in the reserved-name sentence, at the entry's own path and
+/// position, before the plane is handed a byte. Every reserved knob, well-shaped, still loads. (Base:
+/// each such entry loaded, and the deal stripped it silently as if it were the knob.)
+#[test]
+fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
+    use busbar_contract::section::reserved_name_refusal;
+    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
+    let head = "providers: {}\nmodels: {}\ntools:\n  srv: { url: \"https://x.example/srv\" }\n";
+    for key in [
+        "breaker",
+        "on_exhausted",
+        "gates",
+        "affinity",
+        "tier",
+        "repeatable",
+        "work",
+        "pools",
+        "hooks",
+        "upstream_credentials",
+        "fees",
+        "rate_card",
+    ] {
+        PLANE_SAW.lock().unwrap().clear();
+        let err = crate::config::deploy_from_yaml_str(&format!(
+            "{head}  {key}:\n    url: \"https://y.example/\"\n"
+        ))
+        .expect_err(key);
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "tools.{key}: {} at line 6 column 5",
+                reserved_name_refusal("tools", "card thing", key)
+            )
+        );
+        assert!(
+            PLANE_SAW.lock().unwrap().is_empty(),
+            "the refused section never reached the plane"
+        );
+    }
+    PLANE_SAW.lock().unwrap().clear();
+    crate::config::deploy_from_yaml_str(&format!(
+        "{head}  hooks: [h]\n  upstream_credentials: own\n  tier: big\n  gates: [g]\n  \
+         repeatable: [read]\n  breaker: {{ base_cooldown_secs: 3 }}\n  on_exhausted: reject\n  \
+         affinity: {{ header_name: x-s }}\n  work: {{ max_live: 2, retain_s: 3 }}\n  \
+         fees: {{ per_request: 1 }}\n  pools:\n    p1: {{ members: [srv] }}\n"
+    ))
+    .expect("every reserved knob, well-shaped, loads");
+    let saw = serde_yaml::to_string(&PLANE_SAW.lock().unwrap()[0]).unwrap();
+    assert!(saw.contains("srv") && !saw.contains("fees"), "{saw}");
+}
+
+/// The root `pools:` section is 1.5.5's: a pool named after a reserved sub-key (`tier`, `work`,
+/// `breaker`) is a POOL and loads, resolves and validates as 1.5.5 accepted it; only 1.5.5's two
+/// section words are refused as pool names, in 1.5.5's sentence.
+#[test]
+fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
+    crate::test_support::register_neutral_test_plane();
+    let pools: crate::config::PoolsCfg = serde_yaml::from_str(
+        "tier:\n  members: [{model: m}]\nwork:\n  members: [{model: m}]\n\
+         breaker:\n  members: [{model: m}]\n",
+    )
+    .expect("a pool named `tier`, `work` or `breaker` is a pool, as in 1.5.5");
+    let mut names: Vec<&String> = pools.pools.keys().collect();
+    names.sort();
+    assert_eq!(names, ["breaker", "tier", "work"]);
+    for word in busbar_contract::section::RESERVED_SECTION_KEYS {
+        let e =
+            serde_yaml::from_str::<crate::config::PoolsCfg>(&format!("{word}:\n  members: []\n"))
+                .expect_err(word);
+        assert_eq!(
+            e.to_string(),
+            busbar_contract::section::reserved_name_refusal("pools", "pool", word)
+        );
+    }
+}
+
 /// 1.5.5's flat top-level `rate_card:` loads as the fallback plane's card BYTE-IDENTICALLY: with no plane
 /// card, the resolved map is the authored map, `rate_card: {}` included.
 #[test]
