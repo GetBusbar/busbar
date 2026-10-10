@@ -439,7 +439,7 @@ fn open_session(
         if !drawn {
             return Err("the host's random source did not answer, so no session id can be minted");
         }
-        let opened = slots(plane,|t| {
+        let opened = slots(plane, |t| {
             t.open(entropy, owner.clone(), revision, carriage, now)
         });
         match opened {
@@ -513,7 +513,7 @@ pub(super) fn answer(
             open_endpoint(plane, ticket, unit, &owner, &id, requested.as_deref(), now)
         }
         SessionUnit::Delete { session } => {
-            if slots(plane,|t| t.close(&session, &owner, now)) == Some(true) {
+            if slots(plane, |t| t.close(&session, &owner, now)) == Some(true) {
                 plane.session_state.remove(&session);
                 // Each of its streams ends at its next collection.
                 due(plane, &session);
@@ -529,7 +529,7 @@ pub(super) fn answer(
             kind,
             ..
         } => {
-            let held = slots(plane,|t| {
+            let held = slots(plane, |t| {
                 let revision = t.revision(&session, &owner, now)?;
                 (t.carriage(&session, &owner, now)? == carriage).then_some(revision)
             })
@@ -554,7 +554,7 @@ pub(super) fn answer(
                 Kind::Dispatch => return None,
                 Kind::Accept(v) => {
                     if v.get("method").and_then(Value::as_str) == Some(adapt::METHOD_INITIALIZED) {
-                        slots(plane,|t| t.mark_initialized(&session, &owner, now));
+                        slots(plane, |t| t.mark_initialized(&session, &owner, now));
                     }
                     answer_of(STATUS_ACCEPTED, Vec::new())
                 }
@@ -988,7 +988,7 @@ fn deliver(plane: &McpDoor, session: &str, owner: &Owner, data: &str, now: u64) 
         .streams
         .with_all(|m| m.values().find(|s| s.session == session).map(|s| s.stream));
     if let Some(stream) = target {
-        slots(plane,|t| t.push(session, owner, stream, data, now));
+        slots(plane, |t| t.push(session, owner, stream, data, now));
         due(plane, session);
     }
 }
@@ -1040,7 +1040,7 @@ pub(super) fn tick(plane: &McpDoor) {
         .with_all(|m| m.keys().cloned().collect());
     let gone: Vec<String> = gone
         .into_iter()
-        .filter(|id| slots(plane,|t| !t.holds(id)).unwrap_or(true))
+        .filter(|id| slots(plane, |t| !t.holds(id)).unwrap_or(true))
         .collect();
     plane.session_state.with_all(|m| {
         for id in &gone {
@@ -1185,18 +1185,18 @@ fn open_stream(
                     return Some((true, false));
                 }
             };
-            let stream = slots(plane,|t| t.open_stream(&session, owner, now)).flatten()?;
+            let stream = slots(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
             let endpoint = adapt::endpoint_event(&mount, &session);
             (session, stream, 0, true, endpoint.into_bytes())
         }
         Some(session) => {
-            let carriage = slots(plane,|t| t.carriage(&session, owner, now)).flatten();
+            let carriage = slots(plane, |t| t.carriage(&session, owner, now)).flatten();
             if carriage != Some(Carriage::Endpoint) {
                 unit.pending = Some(not_found(&Value::Null));
                 return Some((true, false));
             }
             let resumed = last_event_id
-                .and_then(|cursor| slots(plane,|t| t.replay(&session, owner, &cursor, now)))
+                .and_then(|cursor| slots(plane, |t| t.replay(&session, owner, &cursor, now)))
                 .flatten();
             match resumed {
                 Some(replay) => {
@@ -1210,7 +1210,7 @@ fn open_stream(
                     (session, replay.stream, delivered, false, bytes)
                 }
                 None => {
-                    let stream = slots(plane,|t| t.open_stream(&session, owner, now)).flatten()?;
+                    let stream = slots(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
                     (session, stream, 0, false, KEEPALIVE.to_vec())
                 }
             }
@@ -1269,7 +1269,7 @@ fn step_stream(plane: &McpDoor, ticket: Ticket, unit: &mut CallUnit) -> Option<b
                         "method": "notifications/resources/updated",
                         "params": { "uri": uri },
                     });
-                    slots(plane,|t| {
+                    slots(plane, |t| {
                         t.push(
                             &held_stream.session,
                             &held_stream.owner,
@@ -1283,7 +1283,7 @@ fn step_stream(plane: &McpDoor, ticket: Ticket, unit: &mut CallUnit) -> Option<b
         }
     }
     let cursor = format!("{}-{}", held_stream.stream, held_stream.delivered);
-    let replay = slots(plane,|t| {
+    let replay = slots(plane, |t| {
         t.replay(&held_stream.session, &held_stream.owner, &cursor, now)
     })
     .flatten();
