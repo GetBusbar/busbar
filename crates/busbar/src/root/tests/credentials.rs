@@ -124,7 +124,7 @@ impl HostServices for Inner {
     fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
         Ran::Now(Stored::ready(14))
     }
-    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Later) -> Ran {
+    fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
         Ran::Now(Stored::ready(15))
     }
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
