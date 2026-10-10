@@ -514,6 +514,15 @@ pub enum AdmitRefused {
         /// The instance refused.
         asked_by: String,
     },
+    /// A declared chained record kind this host cannot chain: its kind index names no record kind,
+    /// or its framing is a word this host does not know. A record kind declared chained is
+    /// chained, never silently kept as plain records.
+    ChainUnknown {
+        /// The declaration's kind index.
+        kind: u32,
+        /// The declaration's framing word.
+        framing: u32,
+    },
 }
 
 impl std::fmt::Display for AdmitRefused {
@@ -532,6 +541,11 @@ impl std::fmt::Display for AdmitRefused {
                 f,
                 "instance `{asked_by}` declares the signing domain `{domain}`, which instance \
                  `{held_by}` holds: no instance signs as another"
+            ),
+            Self::ChainUnknown { kind, framing } => write!(
+                f,
+                "the instance declares chained record kind {kind} with framing {framing}, which \
+                 this host cannot chain: a declared chain is kept, never dropped to plain records"
             ),
         }
     }
@@ -902,6 +916,26 @@ impl KernelServices {
                 len: instance.len(),
             });
         }
+        // EVERY DECLARED CHAIN IS ONE THIS HOST CAN KEEP, judged before anything is registered: a
+        // chain it cannot keep refuses the admit rather than leaving the kind unchained (audit
+        // contract-C2 #4).
+        let chained: Vec<(String, crate::host_chains::ChainedKind)> = facts
+            .record_chains
+            .iter()
+            .map(|chain| {
+                let unknown = AdmitRefused::ChainUnknown {
+                    kind: chain.kind,
+                    framing: chain.framing,
+                };
+                let kind = facts
+                    .record_kinds
+                    .get(chain.kind as usize)
+                    .ok_or_else(|| unknown.clone())?;
+                crate::host_chains::ChainedKind::new(kind.as_str(), chain)
+                    .map(|c| (kind.as_str().to_string(), c))
+                    .ok_or(unknown)
+            })
+            .collect::<Result<_, _>>()?;
         let key: Arc<str> = Arc::from(instance);
         let (rows, default) = self.demotions.get().map_or_else(
             || (Vec::new(), false),
@@ -946,17 +980,10 @@ impl KernelServices {
                 .chains
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for chain in &facts.record_chains {
-                let Some(kind) = facts.record_kinds.get(chain.kind as usize) else {
-                    continue;
-                };
-                let slot = (Arc::clone(&key), kind.as_str().to_string());
-                if chains.contains_key(&slot) {
-                    continue;
-                }
-                if let Some(chained) = crate::host_chains::ChainedKind::new(kind.as_str(), chain) {
-                    chains.insert(slot, Arc::new(chained));
-                }
+            for (kind, chained) in chained {
+                chains
+                    .entry((Arc::clone(&key), kind))
+                    .or_insert_with(|| Arc::new(chained));
             }
         }
         self.trust.admit_decided(instance, &decided);
