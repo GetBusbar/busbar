@@ -305,8 +305,12 @@ clone_engine() {  # clone_engine <checkout> — the pinned busbar-release ref, c
   else
     git -C "$checkout" remote set-url origin "$RELEASE_REPO" >&2 2>/dev/null || true
   fi
-  git_with_token -C "$checkout" fetch --depth 1 origin "$RELEASE_REF" >&2 2>/dev/null \
-    || git_with_token -C "$checkout" fetch origin >&2
+  # A checkout that already holds the pinned commit needs no network: a Latchkey runner has no
+  # token, so a fetch there fails even though the staged engine checkout is complete.
+  if ! git -C "$checkout" cat-file -e "$RELEASE_REF^{commit}" 2>/dev/null; then
+    git_with_token -C "$checkout" fetch --depth 1 origin "$RELEASE_REF" >&2 2>/dev/null \
+      || git_with_token -C "$checkout" fetch origin >&2
+  fi
   assert_no_token "$checkout" || exit 1
   git -C "$checkout" checkout --force "$RELEASE_REF" >&2
 }
@@ -334,6 +338,17 @@ if [ "${1:-}" = "token-selftest" ]; then
   if grep -qE 'plant-token|x-access-token' "$st/fresh/.git/config"; then
     echo "  [FAILED] a stale tokenized origin survived a run"; fail=1
   else echo "  [ok]     a stale tokenized origin is scrubbed"; fi
+  # A checkout that already holds the pin is reused offline: with an unreachable origin, no fetch is
+  # attempted. Judged on git's own stderr, not the exit status: errexit is off inside a `&&`/`||`
+  # list, so a failed fetch there would not end the function, while on a tokenless runner it does.
+  ( export BUSBAR_RELEASE_TOKEN=plant-token-0123456789 RELEASE_REPO="file://$st/no-such-repo" RELEASE_REF="$ref"
+    clone_engine "$st/fresh" ) >/dev/null 2>"$st/offline.err" || true
+  if grep -qiE "fatal|error|does not appear|could not read" "$st/offline.err"; then
+    echo "  [FAILED] a checkout holding the pin still fetched: $(head -1 "$st/offline.err")"; fail=1
+  else echo "  [ok]     a checkout holding the pin is reused without a fetch"; fi
+  if grep -qE 'plant-token|x-access-token|extraheader' "$st/fresh/.git/config"; then
+    echo "  [FAILED] the offline reuse stored the token"; fail=1
+  fi
   [ "$fail" = 0 ] && { echo "oracle token-selftest: the engine clone stores no credential"; exit 0; }
   echo "oracle token-selftest: FAILED"; exit 1
 fi

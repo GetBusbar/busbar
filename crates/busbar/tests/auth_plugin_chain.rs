@@ -31,17 +31,15 @@ use busbar_kernel::config::{AuthCfg, AuthChainEntry, PluginsCfg};
 use std::path::{Path, PathBuf};
 
 /// The auth-oidc module's cdylib, built by this crate's test build as a git dev-dependency — so it
-/// lives under `deps/` WITH a metadata hash. Under CI (`cargo test -p busbar` always builds it) a
-/// missing cdylib is a HARD failure, never a silent skip; locally a missing cdylib skips cleanly.
-fn auth_cdylib() -> Option<PathBuf> {
-    let candidate = common::plugins::cdylib_path("busbar_auth_oidc_plugin");
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
+/// lives under `deps/` WITH a metadata hash. A missing cdylib is a HARD failure in every run, never
+/// a skip.
+fn auth_cdylib() -> PathBuf {
+    common::plugins::cdylib_path("busbar_auth_oidc_plugin").unwrap_or_else(|| {
         panic!(
-            "the auth-oidc plugin cdylib is not built under CI; refusing to silently skip the \
-             full-chain auth-plugin seam coverage"
-        );
-    }
-    candidate
+            "the busbar_auth_oidc_plugin cdylib is not built: run `cargo test -p busbar --no-run` \
+             first (its dev-dependency edge builds it; this test never skips)"
+        )
+    })
 }
 
 /// A fresh, empty plugins directory for this process under `tag`.
@@ -98,25 +96,19 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_load
     let mut m = common::plugins::manifest("auth", name, publisher);
     m.alias = alias.into();
     m.version = "1.5.0".into();
-    m.statement = auth_cdylib().and_then(|path| {
-        busbar_plugin_loader::dispatch::rendering_of_library(&path)
-            .expect("the auth-oidc cdylib states its door")
-            .map(hex::encode)
-    });
+    m.statement = busbar_plugin_loader::dispatch::rendering_of_library(&auth_cdylib())
+        .expect("the auth-oidc cdylib states its door")
+        .map(hex::encode);
     m
 }
 
-/// Write an UNSIGNED (structurally valid) auth-oidc tarball into `dir` under `file`, returning the
-/// cdylib bytes' presence. We use the unsigned+`allow_unsigned` path because the test cannot sign
-/// with the embedded first-party release key; this still exercises the whole load pipeline.
-fn write_auth_plugin(dir: &Path, file: &str, name: &str, alias: &str) -> bool {
-    let Some(path) = auth_cdylib() else {
-        return false;
-    };
-    let lib = std::fs::read(&path).expect("read the auth-oidc cdylib");
+/// Write an UNSIGNED (structurally valid) auth-oidc tarball into `dir` under `file`. We use the
+/// unsigned+`allow_unsigned` path because the test cannot sign with the embedded first-party release
+/// key; this still exercises the whole load pipeline.
+fn write_auth_plugin(dir: &Path, file: &str, name: &str, alias: &str) {
+    let lib = std::fs::read(auth_cdylib()).expect("read the auth-oidc cdylib");
     let tarball = unsigned_tarball(auth_manifest(name, alias, "acme"), &lib);
     std::fs::write(dir.join(file), tarball).unwrap();
-    true
 }
 
 /// An enabled plugins config over `dir` that permits the unsigned test cdylib.
@@ -159,22 +151,13 @@ fn auth_manifest_with_root_secret_schema(
 
 /// Write an UNSIGNED auth-oidc tarball whose manifest declares `audience` as a ROOT-LEVEL
 /// `x-busbar-secret` field (see [`auth_manifest_with_root_secret_schema`]).
-fn write_auth_plugin_with_root_secret_schema(
-    dir: &Path,
-    file: &str,
-    name: &str,
-    alias: &str,
-) -> bool {
-    let Some(path) = auth_cdylib() else {
-        return false;
-    };
-    let lib = std::fs::read(&path).expect("read the auth-oidc cdylib");
+fn write_auth_plugin_with_root_secret_schema(dir: &Path, file: &str, name: &str, alias: &str) {
+    let lib = std::fs::read(auth_cdylib()).expect("read the auth-oidc cdylib");
     let tarball = unsigned_tarball(
         auth_manifest_with_root_secret_schema(name, alias, "acme", "audience"),
         &lib,
     );
     std::fs::write(dir.join(file), tarball).unwrap();
-    true
 }
 
 /// An `auth.chain` naming exactly the given plugin module (with an optional `settings` map).
@@ -196,10 +179,7 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
 #[test]
 fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
     let dir = tmp_plugin_dir("auth-plugin-secret-ref");
-    if !write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "ref-auth") {
-        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
-        return;
-    }
+    write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "ref-auth");
     let plugins = plugins_cfg_allow_unsigned(&dir);
 
     // The trust root delivered via an env SecretRef: the engine resolves `{ env: VAR }` to the PEM
@@ -272,10 +252,7 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
 #[test]
 fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     let dir = tmp_plugin_dir("auth-plugin-root-secret-contract");
-    if !write_auth_plugin_with_root_secret_schema(&dir, "idp.tar.gz", "acme-idp", "sec-auth") {
-        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
-        return;
-    }
+    write_auth_plugin_with_root_secret_schema(&dir, "idp.tar.gz", "acme-idp", "sec-auth");
     let plugins = plugins_cfg_allow_unsigned(&dir);
 
     let var = format!("BUSBAR_PLUGIN_ROOT_SECRET_CONTRACT_{}", std::process::id());
@@ -349,10 +326,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
 fn auth_plugin_loads_and_identifies_through_middleware() {
     let dir = tmp_plugin_dir("auth-plugin-e2e");
     // The config chain name is the ALIAS `my-auth`; the plugin's canonical name differs on purpose.
-    if !write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "my-auth") {
-        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
-        return;
-    }
+    write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "my-auth");
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let cfg = chain_with("my-auth", settings());
 
@@ -431,10 +405,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
 fn admin_modules_rebuilt_on_reload() {
     use busbar_kernel::auth::AdminAuthChain;
     let dir = tmp_plugin_dir("admin-modules-reload");
-    if !write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "admin-oidc") {
-        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
-        return;
-    }
+    write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "admin-oidc");
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let registry = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins.dir),
@@ -482,11 +453,7 @@ fn admin_modules_rebuilt_on_reload() {
 #[test]
 fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login() {
     let dir = tmp_plugin_dir("auth-login-v1-gate");
-    let Some(path) = auth_cdylib() else {
-        eprintln!("skip: auth-oidc plugin cdylib not built (cargo test -p busbar builds it)");
-        return;
-    };
-    let lib = std::fs::read(&path).expect("read the auth-oidc cdylib");
+    let lib = std::fs::read(auth_cdylib()).expect("read the auth-oidc cdylib");
     let mut manifest = auth_manifest("acme-idp", "cap-idp", "acme");
     manifest.abi_version = 1;
     std::fs::write(dir.join("idp.tar.gz"), unsigned_tarball(manifest, &lib)).unwrap();

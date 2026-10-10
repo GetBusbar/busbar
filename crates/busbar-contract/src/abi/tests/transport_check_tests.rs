@@ -201,7 +201,7 @@ fn a_framer_sink_overrun_is_fault() {
 #[test]
 fn a_framer_unknown_flag_or_unstated_deadline_is_fault() {
     let mut o: FramerOut = z();
-    o.yielded.flags = 8;
+    o.yielded.flags = 16;
     assert_eq!(
         check_framer(Ready, &o, &[], 8, 8, 8),
         f(Rule::UnknownCode, "framer.flags")
@@ -247,6 +247,40 @@ fn a_stream_end_or_failure_without_end_of_frame_is_fault() {
     assert_eq!(
         check_framer(Ready, &o, &[failed], 8, 8, 8),
         f(Rule::Contradiction, "framer.piece.end_without_end_of_frame")
+    );
+}
+
+/// A STREAM'S OWN BACKPRESSURE is two known signals: an `emit` answering the stream full, and the
+/// empty piece saying it is writable again. The writable piece is a signal about the stream, never
+/// part of a frame: it carries no bytes and no other flag, and, unlike every other empty piece, it
+/// ends nothing. RED with the checker as it was: both are unknown bits, FAULT.
+#[test]
+fn a_full_stream_and_its_writable_piece_are_known_and_the_piece_is_empty_and_alone() {
+    let mut o: FramerOut = z();
+    o.yielded.flags = YIELD_STREAM_FULL;
+    assert_eq!(check_framer(Ready, &o, &[], 8, 8, 8), Ok(()));
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let mut writable = piece(4, 0);
+    writable.flags = PIECE_WRITABLE;
+    assert_eq!(check_framer(Ready, &o, &[writable], 8, 8, 8), Ok(()));
+    for bad in [
+        PIECE_WRITABLE | PIECE_END_OF_FRAME,
+        PIECE_WRITABLE | PIECE_STREAM_FAILED | PIECE_END_OF_FRAME,
+        PIECE_WRITABLE | PIECE_FIELDS | PIECE_END_OF_FRAME,
+    ] {
+        writable.flags = bad;
+        assert_eq!(
+            check_framer(Ready, &o, &[writable], 8, 8, 8),
+            f(Rule::Contradiction, "framer.piece.writable_not_alone"),
+            "{bad:#x}"
+        );
+    }
+    let mut carrying = piece(0, 4);
+    carrying.flags = PIECE_WRITABLE;
+    assert_eq!(
+        check_framer(Ready, &o, &[carrying], 8, 8, 8),
+        f(Rule::Contradiction, "framer.piece.writable_not_alone")
     );
 }
 
@@ -447,7 +481,8 @@ fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
         f(Rule::SpanOutOfBounds, "framer.piece.bytes")
     );
     let mut bad = piece(0, 1);
-    bad.flags = 1 << 8;
+    // The first bit no piece flag holds (`1 << 8` is PIECE_WRITABLE).
+    bad.flags = 1 << 9;
     assert_eq!(
         check_framer(Ready, &o, &[bad], 8, 8, 8),
         f(Rule::UnknownCode, "framer.piece.flags")
