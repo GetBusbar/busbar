@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 433
+   "test": 436
   }
  },
  "dropped_since_last_write": [],
@@ -2055,7 +2055,7 @@
   {
    "id": "PB-43",
    "surface": "operational routes",
-   "binding": "`/healthz` on both listeners with the unconditional auth bypass, 200 `ok` iff any lane passes the NON-MUTATING `is_ready_any_cell` over the default and every per-pool cell, else 503 `no usable lanes` (side-effect-free, never steals the single-flight recovery probe); `/metrics` is `text/plain; version=0.0.4`; `/metrics/hooks` is a CORE axum route (not a plugin route), `text/plain; version=0.0.4; charset=utf-8`, with its exposition contract verbatim (no prefixing, one `hook=` label, `busbar_`-prefixed dropped, bucketless histogram as summary, first-occurrence type wins, `HOOK_METRICS_TTL_SECS = 10`, `MAX_HOOK_METRICS 64`, the name regex); `/stats` per RT-* with its 20 per-lane fields, `\"unbounded\"` string, `Unavailable` variant names classified breaker-first, `recovery_hint_ms` floor 2000 — the 1.6.0 refusal vocabulary never reaches it; `/metrics` declared only when `export.prometheus` is configured, `RouteAuth::Key` (data-plane client token, not admin); `/metrics/hooks` mounted only when `metrics::enabled()`; `/stats` per RT-*; absent the gate, the catch-all 404",
+   "binding": "`/healthz` on both listeners with the unconditional auth bypass, 200 `ok` iff any lane passes the NON-MUTATING `is_ready_any_cell` over the default and every per-pool cell, else 503 `no usable lanes` (side-effect-free, never steals the single-flight recovery probe) (ARCHITECT RULING K5-H1, 2026-10-07, pending OWNER signature: a deployment with NO model lane answers 200 `ok` iff at least one configured plane's generation OPENED — a door plane whose open answered, any other plane whose slot was built — and 503 `no usable lanes` when none did or no plane is configured, as in 1.5.5; with model lanes the lane rule is unchanged); `/metrics` is `text/plain; version=0.0.4`; `/metrics/hooks` is a CORE axum route (not a plugin route), `text/plain; version=0.0.4; charset=utf-8`, with its exposition contract verbatim (no prefixing, one `hook=` label, `busbar_`-prefixed dropped, bucketless histogram as summary, first-occurrence type wins, `HOOK_METRICS_TTL_SECS = 10`, `MAX_HOOK_METRICS 64`, the name regex); `/stats` per RT-* with its 20 per-lane fields, `\"unbounded\"` string, `Unavailable` variant names classified breaker-first, `recovery_hint_ms` floor 2000 — the 1.6.0 refusal vocabulary never reaches it; `/metrics` declared only when `export.prometheus` is configured, `RouteAuth::Key` (data-plane client token, not admin); `/metrics/hooks` mounted only when `metrics::enabled()`; `/stats` per RT-*; absent the gate, the catch-all 404",
    "inventory": "routes-admin; ops",
    "status": "mapped",
    "checks": [
@@ -2117,6 +2117,27 @@
     },
     {
      "kind": "test",
+     "ref": "healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened",
+     "proves": "K5-H1: with no model lane, a configured plane that opened answers 200 ok",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "healthz_with_no_model_lane_is_unready_when_the_planes_open_refused",
+     "proves": "K5-H1: a configured plane whose open refused answers 503 no usable lanes",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened_plane",
+     "proves": "K5-H1: with model lanes the lane rule alone decides",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
      "ref": "thread_per_core_boots_and_serves_healthz",
      "proves": "/healthz is served unauthenticated on a real listener",
      "source": "curated",
@@ -2173,7 +2194,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:hooks|metrics-hooks@hooks-webrequest, oracle-cell:ops.scrape|metricshooks|key, oracle-cell:ops.scrape|metrics|key, oracle-cell:ops.scrape|stats|key, test:test_is_ready_any_cell_false_when_every_cell_open, test:test_is_ready_any_cell_true_when_a_pool_cell_is_ready, test:test_is_ready_is_side_effect_free, test:healthz_returns_a_real_response_not_the_default, test:thread_per_core_boots_and_serves_healthz, test:counter_renders_with_hook_label_and_verbatim_name, test:histogram_renders_as_summary, test:busbar_prefix_is_reserved, test:type_conflict_for_shared_name_is_dropped, test:test_stats_reports_at_capacity_when_lane_saturated, test:test_stats_limit_is_numeric_alias_of_max_concurrent, test:test_recovery_hint_ms"
+   "verdict_detail": "oracle-cell:hooks|metrics-hooks@hooks-webrequest, oracle-cell:ops.scrape|metricshooks|key, oracle-cell:ops.scrape|metrics|key, oracle-cell:ops.scrape|stats|key, test:test_is_ready_any_cell_false_when_every_cell_open, test:test_is_ready_any_cell_true_when_a_pool_cell_is_ready, test:test_is_ready_is_side_effect_free, test:healthz_returns_a_real_response_not_the_default, test:healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened, test:healthz_with_no_model_lane_is_unready_when_the_planes_open_refused, test:healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened_plane, test:thread_per_core_boots_and_serves_healthz, test:counter_renders_with_hook_label_and_verbatim_name, test:histogram_renders_as_summary, test:busbar_prefix_is_reserved, test:type_conflict_for_shared_name_is_dropped, test:test_stats_reports_at_capacity_when_lane_saturated, test:test_stats_limit_is_numeric_alias_of_max_concurrent, test:test_recovery_hint_ms"
   },
   {
    "id": "PB-44",

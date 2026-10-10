@@ -358,7 +358,6 @@ fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_
         body: "the-load-bearing-bytes".to_string(),
     };
     let bounds = SweepBounds {
-        abandon_secs: 10_000,
         terminal_ttl_secs: 10_000,
         max_retained: 16,
     };
@@ -389,7 +388,6 @@ fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_
                     event: None,
                 })
             },
-            |_id, _row, _pos, _now| None,
             |_id, _e| {},
         )
         .expect("submit installs the handle");
