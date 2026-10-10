@@ -954,6 +954,28 @@ impl AdminService {
             }
         }
 
+        // ── 4b. THE ONE-VERSION RULE against the plugins this build LINKS (ARCHITECT C'), after
+        // trust (an untrusted upload was refused above, before its identity was compared): the same
+        // plugin at the same version is already served by the linked row, so the install is an
+        // accepted no-op (nothing is written); another version is refused now, in the words boot
+        // would refuse it with, never published to brick the next boot.
+        match busbar_kernel::preflight::linked().and_then(|r| r.linked_copy(manifest, &file)) {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Ok(crate::v1::contract::PluginInstallView {
+                    file,
+                    name: manifest.name.clone(),
+                    interface_version: manifest.abi_version,
+                    trust,
+                    version: Some(manifest.version.clone()),
+                    publisher,
+                    note: "this build links the plugin at this version and the linked build \
+                           serves it: nothing was written",
+                });
+            }
+            Err(refusal) => return Err(AdminError::Conflict(refusal)),
+        }
+
         // ── 5. atomic publish via the crate's ONE durable-write choke point ──
         // Directory provisioning goes through the primitive too: `std::fs::create_dir_all` leaves the
         // new directory's own entry non-durable, so the FIRST plugin installed into a not-yet-existing
