@@ -19,23 +19,21 @@
 
 use std::collections::BTreeSet;
 
-use busbar_contract::secret_ref::SecretRef;
+use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
 
 use super::*;
 
-/// The words a secret source's own refusal is phrased in, matched without case.
-const SOURCE_WORDS: [&str; 4] = [
-    "environment variable",
-    "secret file",
-    "is unset",
-    "no such file",
-];
+/// The words a secret source's own refusal is phrased in, matched without case. The file source's
+/// phrase is built from its module name ([`source_in`]): this neutral crate spells no secret
+/// plugin's name.
+const SOURCE_WORDS: [&str; 3] = ["environment variable", "is unset", "no such file"];
 
 /// What of `secret`'s source `text` carries: its source's words, the reference as written and the
 /// variable it names. Empty when the text is clean.
 fn source_in(text: &str, secret: &SecretRef) -> Vec<String> {
     let lower = text.to_ascii_lowercase();
     let mut needles: Vec<String> = SOURCE_WORDS.iter().map(|w| (*w).to_string()).collect();
+    needles.push(format!("secret {SECRET_MODULE_FILE}"));
     needles.push(secret.describe());
     needles.extend(secret.env_var().map(str::to_string));
     needles
@@ -154,8 +152,8 @@ fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_clas
     .expect("the instance binds");
     let settings: &'static [u8] = Box::leak(
         format!(
-            r#"{{"ghost":{{"transport":"stdio","command":"/usr/bin/ghost","env":{{"TOKEN":{{"env":"{var}"}}}}}},
-                "live":{{"transport":"stdio","command":"/usr/bin/live","env":{{"PLAIN":"v"}}}}}}"#
+            r#"{{"ghost":{{"command":"/usr/bin/ghost","env":{{"TOKEN":{{"env":"{var}"}}}}}},
+                "live":{{"command":"/usr/bin/live","env":{{"PLAIN":"v"}}}}}}"#
         )
         .into_bytes()
         .into_boxed_slice(),

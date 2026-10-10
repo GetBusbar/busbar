@@ -5,8 +5,8 @@
 //! `credential_secret_leak_tests` was until #511 deleted it): on every door plane this build links,
 //! a secret reference that does not resolve leaves the caller-facing status line, headers and body
 //! free of its source (the variable's name, the file's path, the reference as written) and of the
-//! words a source's refusal is phrased in ("environment variable", "secret file", "is unset", "No
-//! such file"). The operator's surfaces keep naming the source (the boot's and the apply's text,
+//! words a source's refusal is phrased in ("environment variable", "is unset", the file source's
+//! own phrase, "No such file"). The operator's surfaces keep naming the source (the boot's and the apply's text,
 //! 1.5.5's bytes): the boot refusal is asserted to name it, so a fix that blinded the operator too
 //! would be caught here as well.
 //!
@@ -20,12 +20,12 @@
 //!   caller is served by it.
 //!
 //! [`every_linked_door_plane_is_driven`] keeps the set whole: a door this build links (a plane
-//! flipped onto the driver: a2a, streaming) with no driver here fails until it has one.
+//! flipped onto the driver) with no driver here fails until it has one.
 
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, StatusCode};
-use busbar_contract::secret_ref::SecretRef;
+use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
 
 use crate::root::door_steps::tests::tool_door::{
     send_headed, surface, three_tools, tool_digest, tool_server_listing, try_rig_tools, Rig, CALL,
@@ -33,13 +33,9 @@ use crate::root::door_steps::tests::tool_door::{
 use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
 /// The words a secret source's own refusal is phrased in (the linked `env` and `file` sources',
-/// the OS's), matched without case.
-const SOURCE_WORDS: [&str; 4] = [
-    "environment variable",
-    "secret file",
-    "is unset",
-    "no such file",
-];
+/// the OS's), matched without case. The file source's phrase is built from its module name
+/// ([`source_in`]): this neutral crate spells no secret plugin's name.
+const SOURCE_WORDS: [&str; 3] = ["environment variable", "is unset", "no such file"];
 
 /// Everything a caller is handed: the status line, every header, the body.
 fn rendered(status: StatusCode, headers: &HeaderMap, body: &[u8]) -> String {
@@ -65,6 +61,7 @@ fn rendered(status: StatusCode, headers: &HeaderMap, body: &[u8]) -> String {
 fn source_in(render: &str, secret: &SecretRef) -> Vec<String> {
     let lower = render.to_ascii_lowercase();
     let mut needles: Vec<String> = SOURCE_WORDS.iter().map(|w| (*w).to_string()).collect();
+    needles.push(format!("secret {SECRET_MODULE_FILE}"));
     needles.push(secret.describe());
     needles.extend(
         secret
@@ -138,7 +135,7 @@ fn member_secrets_installed() {
 /// `program_member::script` serves, its environment's `TOKEN` the reference `secret`.
 fn program_section(secret: &SecretRef) -> serde_yaml::Value {
     let mut fs = serde_yaml::Mapping::new();
-    fs.insert("transport".into(), "stdio".into());
+    fs.insert("transport".into(), super::lines::LINE_CARRIER.into());
     fs.insert("command".into(), "/bin/sh".into());
     fs.insert(
         "args".into(),
@@ -226,8 +223,8 @@ fn driven() -> Vec<String> {
     names
 }
 
-/// EVERY DOOR THIS BUILD LINKS IS DRIVEN HERE: a plane flipped onto the driver (a2a, streaming, the
-/// llm fold) joins the scan, or this fails naming it.
+/// EVERY DOOR THIS BUILD LINKS IS DRIVEN HERE: a plane flipped onto the driver joins the scan, or
+/// this fails naming it.
 #[test]
 fn every_linked_door_plane_is_driven() {
     let driven = driven();
