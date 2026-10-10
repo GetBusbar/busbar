@@ -1867,8 +1867,8 @@ mod bounds {
     use busbar_plane_mcp::{door, tool_door as plane_door};
     use busbar_plugin_loader::dispatch::kinds::plane::Plane;
     use busbar_plugin_loader::dispatch::{
-        in_head, load_linked, out_head, Bind, DispatchConfig, Dispatcher, Frame, LinkedRow,
-        NoSink, Plugin,
+        in_head, load_linked, out_head, Bind, DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink,
+        Plugin,
     };
 
     fn z<T>() -> T {

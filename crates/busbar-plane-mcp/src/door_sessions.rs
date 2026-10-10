@@ -238,17 +238,19 @@ pub(super) fn arrive(
                 None => adapt::PostKind::Stateless,
             };
             match (kind, value) {
-                (adapt::PostKind::Initialize, Some(v)) => SessionArrived::Session(Box::new(Arrival {
-                    unit: SessionUnit::Open {
-                        id: v.get("id").cloned().unwrap_or(Value::Null),
-                        requested: v
-                            .pointer("/params/protocolVersion")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                    },
-                    dispatch: None,
-                    mirror: Vec::new(),
-                })),
+                (adapt::PostKind::Initialize, Some(v)) => {
+                    SessionArrived::Session(Box::new(Arrival {
+                        unit: SessionUnit::Open {
+                            id: v.get("id").cloned().unwrap_or(Value::Null),
+                            requested: v
+                                .pointer("/params/protocolVersion")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                        },
+                        dispatch: None,
+                        mirror: Vec::new(),
+                    }))
+                }
                 (adapt::PostKind::InSession, value) => SessionArrived::Session(message(
                     held,
                     session.unwrap_or_default(),
@@ -1196,7 +1198,9 @@ fn open_stream(
                 return Some((true, false));
             }
             let resumed = last_event_id
-                .and_then(|cursor| with_sessions(plane, |t| t.replay(&session, owner, &cursor, now)))
+                .and_then(|cursor| {
+                    with_sessions(plane, |t| t.replay(&session, owner, &cursor, now))
+                })
                 .flatten();
             match resumed {
                 Some(replay) => {
@@ -1210,7 +1214,8 @@ fn open_stream(
                     (session, replay.stream, delivered, false, bytes)
                 }
                 None => {
-                    let stream = with_sessions(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
+                    let stream =
+                        with_sessions(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
                     (session, stream, 0, false, KEEPALIVE.to_vec())
                 }
             }
