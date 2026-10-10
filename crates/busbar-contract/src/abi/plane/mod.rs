@@ -1384,6 +1384,21 @@ pub struct PlaneSnapshot {
     pub listed_len: usize,
 }
 
+/// ONE PROVIDER'S DIALECT FACTS, as a plane receives them at `open` (THE DESIGN section 4: a
+/// plane receives, at open, the dialect fields of the providers it references and resolves model
+/// to dialect itself; the kernel checks no dialect).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderFacts {
+    /// The provider's name: its key in the root `providers:` map.
+    pub name: AbiStr,
+    /// Its `protocol`, as the configuration resolved it (after the catalog merge).
+    pub protocol: AbiStr,
+    /// Its `error_map`, as one JSON object; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it
+    /// states none.
+    pub error_map: Blob,
+}
+
 /// The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1397,6 +1412,13 @@ pub struct PlaneOpenIn {
     /// as written; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it writes none (ARCHITECT
     /// Q-L3B-AUD: a plane reads its own sections and states its claims from them). A tail addition.
     pub owned: Blob,
+    /// THE DIALECT FACTS OF THE PROVIDERS ITS SECTION REFERENCES (each `models.<m>.provider`), one
+    /// per provider, in the order first referenced; NULL/0 = none. Read at `open` only: the root
+    /// `providers:` a door plane is served over are the deployment's at boot. A tail addition: a
+    /// host whose `in` ends before it hands none (the `in` is read up to its `size`).
+    pub providers: *const ProviderFacts,
+    /// How many.
+    pub providers_len: usize,
 }
 
 /// The plane's `open` `out`: the lifecycle's, plus the first generation's snapshot.
