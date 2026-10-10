@@ -285,12 +285,13 @@ test_plane_owned:
     let read = |name: &str| {
         String::from_utf8_lossy(&std::fs::read(dir.join(name)).unwrap_or_default()).into_owned()
     };
-    let whole = serde_json::json!({ "env": plain_var });
+    let whole = serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): plain_var });
     let part = serde_json::to_value(busbar_contract::secret_ref::SecretRef::template(format!(
         "Bearer ${{{plain_var}}}"
     )))
     .expect("a reference");
-    let written_reference = serde_json::json!({ "env": ref_var });
+    let written_reference =
+        serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): ref_var });
     for name in ["open.settings", "open.owned", "refresh.settings"] {
         let text = read(name);
         assert!(!text.is_empty(), "the plane recorded its {name}");
@@ -307,8 +308,9 @@ test_plane_owned:
         let text = read(name);
         let settings: serde_json::Value = serde_json::from_str(&text).expect("JSON");
         assert_eq!(settings["reg1"]["token"], whole, "{name}: {text}");
-        assert_eq!(settings["reg1"]["env"]["WHOLE"], whole, "{name}: {text}");
-        assert_eq!(settings["reg1"]["env"]["PART"], part, "{name}: {text}");
+        let env = &settings["reg1"][busbar_contract::conn::PROGRAM_ENV_KEY];
+        assert_eq!(env["WHOLE"], whole, "{name}: {text}");
+        assert_eq!(env["PART"], part, "{name}: {text}");
         assert_eq!(
             settings["reg1"]["api_key"], written_reference,
             "{name}: {text}"

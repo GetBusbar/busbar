@@ -451,8 +451,11 @@ impl std::fmt::Debug for ConnAuth {
 /// reach the same running program.
 pub const PROGRAM_GENERATION_FIELD: &str = "generation";
 
+/// The registration key a member's program environment is read from ([`Program::from_settings`]).
+pub const PROGRAM_ENV_KEY: &str = "env";
+
 /// The registration keys a member's program is read from ([`Program::of_member`]).
-pub const PROGRAM_KEYS: [&str; 3] = ["command", "args", "env"];
+pub const PROGRAM_KEYS: [&str; 3] = ["command", "args", PROGRAM_ENV_KEY];
 
 /// A PROGRAM a need dials (its `transport` a byte-stream framer the program's pipes carry): the
 /// three things a spawn needs that one target string cannot spell — the absolute path
@@ -567,7 +570,7 @@ impl Program {
         // An environment value is a string, or a secret REFERENCE the host resolves at the spawn.
         let mut env = Vec::new();
         let mut env_refs = Vec::new();
-        if let Some(v) = map.get("env") {
+        if let Some(v) = map.get(PROGRAM_ENV_KEY) {
             for (k, v) in v.as_object().ok_or(ProgramRefused::Env)? {
                 match v {
                     serde_json::Value::String(text) => env.push((k.clone(), text.clone())),

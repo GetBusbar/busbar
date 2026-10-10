@@ -199,7 +199,11 @@ fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
 fn a_programs_env_refsironment_is_held_as_its_reference() {
     let p = Program::from_settings(&serde_json::json!({
         "command": "/usr/bin/server",
-        "env": {"PLAIN": "v", "KEY": {"env": "SECRET_VAR"}, "T": crate::secret_ref::SecretRef::template("Bearer ${SECRET_VAR}")}
+        (crate::conn::PROGRAM_ENV_KEY): {
+            "PLAIN": "v",
+            "KEY": {(crate::secret_ref::SECRET_MODULE_ENV): "SECRET_VAR"},
+            "T": crate::secret_ref::SecretRef::template("Bearer ${SECRET_VAR}")
+        }
     }))
     .expect("a program");
     assert_eq!(p.env, vec![("PLAIN".to_owned(), "v".to_owned())]);
@@ -224,7 +228,10 @@ fn a_programs_env_refsironment_is_held_as_its_reference() {
         serde_json::json!({"nope": 1}),
     ] {
         assert_eq!(
-            Program::from_settings(&serde_json::json!({"command": "/bin/x", "env": {"K": bad}})),
+            Program::from_settings(&serde_json::json!({
+                "command": "/bin/x",
+                (crate::conn::PROGRAM_ENV_KEY): {"K": bad}
+            })),
             Err(ProgramRefused::Env)
         );
     }

@@ -313,7 +313,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
         let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
             "command": "/bin/sh",
             "args": ["-c", "echo \"got:$DECLARED\"; read line; echo \"again:$line\""],
-            "env": {"DECLARED": "yes"},
+            (busbar_contract::conn::PROGRAM_ENV_KEY): {"DECLARED": "yes"},
         }))
         .expect("a program");
         // The next frame on `conn`, read through the table.
