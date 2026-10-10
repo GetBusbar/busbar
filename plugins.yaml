@@ -535,6 +535,20 @@ plugins:
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
+  - repo: busbar-transport-webrtc
+    kind: transport
+    alias: webrtc
+    crate: busbar-transport-webrtc-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:transport plugin cdylib: the webrtc transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "transport-webrtc/declares.json"
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    released: false
+    pending_crate: true
   - repo: busbar-hook-ranking
     kind: hook
     alias: ranking

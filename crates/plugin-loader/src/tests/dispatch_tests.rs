@@ -1425,7 +1425,8 @@ fn red_every_door_refusal() {
     );
 }
 
-extern "C" fn null_door() -> *const Door {
+/// A door that states nothing: a linked row whose load fails (`LoadError::NullDoor`).
+pub(crate) extern "C" fn null_door() -> *const Door {
     std::ptr::null()
 }
 
