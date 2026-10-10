@@ -116,6 +116,8 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
                 len: 0,
             },
             owned: NO_BLOB,
+            providers: std::ptr::null(),
+            providers_len: 0,
         },
         PlaneOpenOut {
             open: OpenOut {

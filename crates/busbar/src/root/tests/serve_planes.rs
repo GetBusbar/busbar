@@ -137,7 +137,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
         None,
         None,
     )
-    .expect("the door plane composes");
+    .expect("the door plane composes (the plane_driver_test_plane example cdylib, current: run `cargo build --workspace --examples`)");
     assert_eq!(served.planes.len(), 1, "one plane composed");
     let p = &served.planes[0];
     assert_eq!(p.instance, instance);
@@ -200,6 +200,77 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
     )
     .expect("an empty composition");
     assert!(served.planes.is_empty());
+}
+
+/// RED, THE DIALECT FACTS AT OPEN (THE DESIGN §4: a plane receives, at open, the dialect fields of
+/// the providers it references): the providers its section's `models.<m>.provider` entries name,
+/// once each in the order first referenced, cross `PlaneOpenIn::providers` with their resolved
+/// `protocol` and `error_map` (absent when none). An unreferenced provider is not handed, and a
+/// section that references none hands none. The test plane echoes what it was handed.
+#[test]
+fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
+    use crate::root::door_steps::{dialect_facts, ProviderRoute, StyleParams};
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plane = bound("serve-open-dialect-facts", &dispatcher);
+    // The kernel's host services the plane's open is handed, as a composition installs them.
+    let _late = composed_services();
+    let route = |protocol: &str, error_map: &[(&str, &str)]| ProviderRoute {
+        base_url: "http://127.0.0.1:9".to_string(),
+        protocol: protocol.to_string(),
+        error_map: error_map
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+        credential: busbar_contract::secret_ref::SecretRef::none(),
+        style: None,
+        params: StyleParams::default(),
+    };
+    let providers: BTreeMap<String, ProviderRoute> = [
+        ("eng-b".to_string(), route("dial-two", &[])),
+        (
+            "eng-a".to_string(),
+            route("dial-one", &[("429", "rate_limited")]),
+        ),
+        ("unused".to_string(), route("dial-one", &[])),
+    ]
+    .into_iter()
+    .collect();
+    let section: serde_yaml::Value = serde_yaml::from_str(
+        "models:\n  m1: {provider: eng-a}\n  m2: {provider: eng-b}\n  m3: {provider: eng-a}\n",
+    )
+    .expect("a section");
+    let facts = dialect_facts(&section, &providers);
+    let names: Vec<&str> = facts.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["eng-a", "eng-b"], "referenced, once each, in order");
+    let snapshot =
+        super::open(&plane, &section, None, &Default::default(), &facts).expect("the door opens");
+    let handed: serde_json::Value = serde_json::from_slice(
+        snapshot
+            .resource_facts
+            .as_deref()
+            .expect("the plane was handed its providers' facts"),
+    )
+    .expect("JSON");
+    assert_eq!(
+        handed,
+        serde_json::json!([
+            ["eng-a", "dial-one", {"429": "rate_limited"}],
+            ["eng-b", "dial-two", null]
+        ])
+    );
+    let none = dialect_facts(&serde_yaml::Value::Null, &providers);
+    assert!(none.is_empty(), "a section that references none hands none");
+    // A second instance (an instance opens once): a section that references none is handed none.
+    let plane = bound("serve-open-dialect-none", &dispatcher);
+    let snapshot = super::open(
+        &plane,
+        &serde_yaml::Value::Null,
+        None,
+        &Default::default(),
+        &none,
+    )
+    .expect("the door opens");
+    assert_eq!(snapshot.resource_facts, None);
 }
 
 /// THE RED ARM OF "NEVER SKIPS": a fixture that is not built fails the test, naming what builds it.
