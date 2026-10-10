@@ -17,19 +17,27 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET, measured at [`FLOOR`] against the real count and raised as the tree grows, never
-//!   lowered to accommodate a scan that stopped finding things.
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 941 on predev bd39476618), not a margin
+//!   below it: one file fewer is refused until a reviewed diff re-measures. It is raised as the
+//!   tree grows, never lowered to accommodate a scan that stopped finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
-//!   a tree that shrank; only this catches one crate quietly leaving the scan while 700 other files
-//!   keep the total comfortably above the floor.
+//!   a tree that shrank; only this catches one crate quietly leaving the scan while the other files
+//!   keep the total above the floor.
 
-use crate::ctx::{Ctx, SourceFile, WalkSpec};
+use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 
-/// The aggregate floor — A RATCHET. Measured at 725 non-test `.rs` files under `crates/` on the
-/// 1.6.0 integration tree; set below that with room for a genuine consolidation, and raised when
-/// the tree grows. Lowering it is how a gate stops reading the repository without saying so, so a
-/// diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 700;
+/// The aggregate floor — A RATCHET. Measured at 941 non-test `.rs` files under `crates/` across 24
+/// crates on predev bd39476618, and pinned AT that number (it was 700 against a population of 725,
+/// then left standing while the tree grew, so 241 files could vanish with every row green). It was
+/// first pinned at 948 on predev 5e672d125d; the egress-auth consolidation then removed 11 files
+/// and added 4, and a floor above the count leaves every gate's floor row red on a clean tree. It
+/// was re-pinned from 941 to 942 when predev grew by one file, which the selftest plant caught,
+/// and back to 941 when #648 (q128-kernel-ledger) deleted `busbar-kernel-ledger/src/usage/series.rs`
+/// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind. A
+/// drop below 941 is refused until a reviewed diff re-measures; the selftest plant
+/// removes one file and fails if the floor sits under the count. Lowering it is how a gate stops
+/// reading the repository without saying so, so a diff that lowers it is the diff to refuse.
+pub const FLOOR: usize = 941;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.
@@ -135,4 +143,25 @@ pub fn source_population(cx: &Ctx) -> Result<Population, String> {
         crates,
         drained,
     })
+}
+
+/// THE SELFTEST PLANT FOR THE FLOOR'S POSITION: the live population with exactly ONE file removed
+/// (from a crate that keeps at least one other, so no crate drains). A floor that sits AT the
+/// measured count refuses this; a floor set a margin below the count passes it, which is the defect
+/// the plant exists to catch. `Err` when the population cannot be read or holds no removable file.
+pub fn one_file_short(cx: &Ctx) -> Result<Overlay, String> {
+    let pop = source_population(cx)?;
+    let crate_of = |rel: &str| rel.split('/').nth(1).unwrap_or_default().to_string();
+    let victim = pop.files.iter().rev().find(|f| {
+        let c = crate_of(&f.rel_str());
+        pop.files
+            .iter()
+            .filter(|g| crate_of(&g.rel_str()) == c)
+            .count()
+            > 1
+    });
+    let victim = victim.ok_or_else(|| "no crate holds a second file to remove".to_string())?;
+    let mut ov = Overlay::new();
+    ov.remove(&victim.rel);
+    Ok(ov)
 }
