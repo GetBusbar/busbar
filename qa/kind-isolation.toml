@@ -1782,8 +1782,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:secret"
-count = "117"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "116"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9), lowered 117 -> 116 by the deletion of the kernel's dead ask-state seal (audit K2-H3); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1794,8 +1794,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1175"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
+count = "1171"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); lowered 1175 -> 1171 by the deletion of the kernel's dead ask-state seal (audit K2-H3): its two `crate::mcp::roots` doc links and its two `\\x6dcp` seal domains"
 
 [[law0]]
 crate = "busbar-kernel"
