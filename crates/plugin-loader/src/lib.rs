@@ -45,7 +45,6 @@ mod ffi_thread;
 pub mod highwater;
 pub mod hook_door;
 mod host;
-mod hostlog;
 /// NEVER SHIPPED: the framed connection-table stand-in with in-process far ends (`test-support`,
 /// and the published conformance suite's `far_ends`), for a build that cannot link the process's
 /// connector. No TLS library: TLS stays in the connector.
